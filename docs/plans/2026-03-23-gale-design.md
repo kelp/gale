@@ -231,6 +231,65 @@ Each feature degrades gracefully without a key — search
 falls back to substring matching, missing deps show the
 raw error, migration requires manual entry.
 
+## Recipe repositories
+
+Gale pulls recipes from git repos. Users can add any
+number of sources:
+
+```toml
+# ~/.gale/config.toml
+[[repos]]
+name = "core"
+url = "https://github.com/kelp/gale-recipes"
+priority = 1
+
+[[repos]]
+name = "mycompany"
+url = "https://github.com/acme/gale-recipes"
+priority = 2
+```
+
+Priority controls resolution order when multiple repos
+have the same package name. Lower number wins.
+
+### Repository structure
+
+A recipe repo is a flat git repo of TOML files:
+
+```
+recipes/
+  jq.toml
+  ripgrep.toml
+  python.toml
+  nodejs.toml
+```
+
+No build system, no CI required, no special tooling.
+Just TOML files in a git repo.
+
+### Creating your own
+
+```
+gale repo init myrecipes        # scaffolds a repo
+gale create-recipe <github-url> # AI generates a recipe
+gale import homebrew jq         # ports a brew formula
+gale repo publish               # pushes to your remote
+```
+
+Users who add an API key can generate recipes from a
+GitHub URL or port Homebrew formulas. The output is a
+TOML file saved to their own repo. They own it, they
+host it, gale reads it.
+
+### Why federated
+
+- Companies can host internal tool recipes privately
+- Users can package personal tools without upstreaming
+- No gatekeeper — the official repo is a default, not
+  a requirement
+- AI-generated recipes don't need review to be useful
+  to the person who made them
+
 ## Open questions
 
 - Exact binary cache format and hosting (GitHub Releases
