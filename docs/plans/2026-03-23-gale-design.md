@@ -203,6 +203,34 @@ The CLI should feel polished out of the box.
 - Linux aarch64, x86_64 (secondary)
 - Darwin framework linking handled per-recipe
 
+## AI features
+
+Gale works fully without AI. Adding an LLM API key to
+`~/.gale/config.toml` enables optional AI-powered features:
+
+```toml
+[ai]
+provider = "anthropic"
+api_key = "sk-ant-..."
+```
+
+### Planned AI features
+
+- **Smart search** — `gale search "process JSON"` uses
+  natural language to find packages, not just name matching
+- **Recipe generation** — `gale create-recipe <github-url>`
+  reads a project's build system and writes the recipe
+- **Dependency inference** — AI reads build errors and
+  suggests missing dependencies
+- **Migration** — `gale import homebrew` reads `brew list`
+  and generates `gale.toml`
+- **Auto-update agent** — runs in CI, watches upstream
+  releases, bumps recipes (see AI update agent section)
+
+Each feature degrades gracefully without a key — search
+falls back to substring matching, missing deps show the
+raw error, migration requires manual entry.
+
 ## Open questions
 
 - Exact binary cache format and hosting (GitHub Releases
