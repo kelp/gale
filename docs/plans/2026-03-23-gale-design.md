@@ -287,16 +287,37 @@ number of sources:
 [[repos]]
 name = "core"
 url = "https://github.com/kelp/gale-recipes"
+key = "gale-ed25519:abc123..."
 priority = 1
 
 [[repos]]
 name = "mycompany"
 url = "https://github.com/acme/gale-recipes"
+key = "gale-ed25519:def456..."
 priority = 2
 ```
 
 Priority controls resolution order when multiple repos
 have the same package name. Lower number wins.
+
+### Trust model
+
+Binaries are signed with ed25519 keys. Each recipe repo
+owner generates a keypair. The public key is declared in
+the repo config. No key, no install.
+
+- Repo owner signs binaries at build time with their
+  private key
+- Gale verifies the signature on download using the
+  public key from config
+- No web of trust, no keyring management — just explicit
+  per-repo keys
+- Go stdlib has ed25519 support, no external deps needed
+- `gale repo init` generates the keypair automatically
+
+Unsigned packages are rejected by default. This is
+stricter than Homebrew (no signing) and simpler than
+Arch (GPG web of trust).
 
 ### Repository structure
 
