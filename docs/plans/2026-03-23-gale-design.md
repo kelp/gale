@@ -182,6 +182,21 @@ The TOML recipe format was chosen partly because
 structured data is safer for AI manipulation than shell
 scripts.
 
+## Terminal output
+
+Borrow vibeutils' colored help and output patterns:
+
+- Syntax-highlighted flags and subcommands in `--help`
+- Colored status output (install progress, environment
+  activation, errors)
+- Smart terminal detection (NO_COLOR, 256-color, truecolor)
+- Graceful degradation to plain text in pipes and dumb
+  terminals
+- Share vibeutils' terminal/color library if possible, or
+  port the approach
+
+The CLI should feel polished out of the box.
+
 ## Platform support
 
 - macOS aarch64 (primary)
