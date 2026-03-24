@@ -2,7 +2,7 @@
 
 A macOS-first package manager for developer CLI tools and
 per-project environments. Combines Homebrew's simplicity
-with Nix's isolation. Written in Zig.
+with Nix's isolation. Written in Go.
 
 ## Goals
 
@@ -73,9 +73,8 @@ runtime = ["oniguruma"]
 ```
 
 TOML was chosen over shell scripts for programmatic
-validation and linting. The parser will be a minimal
-subset implementation in Zig (strings, string arrays,
-tables, comments) to avoid external dependencies.
+validation and linting. Go has mature TOML libraries
+(BurntSushi/toml) with struct tag support.
 
 ### Binary distribution
 
@@ -192,8 +191,8 @@ Borrow vibeutils' colored help and output patterns:
 - Smart terminal detection (NO_COLOR, 256-color, truecolor)
 - Graceful degradation to plain text in pipes and dumb
   terminals
-- Share vibeutils' terminal/color library if possible, or
-  port the approach
+- Use a Go color library (fatih/color, charmbracelet/lipgloss)
+  inspired by vibeutils' approach
 
 The CLI should feel polished out of the box.
 
