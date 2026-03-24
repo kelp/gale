@@ -287,7 +287,7 @@ func TestParseAppConfigAIAPIKey(t *testing.T) {
 func TestFindGaleConfigInCurrentDir(t *testing.T) {
 	dir := t.TempDir()
 	galePath := filepath.Join(dir, "gale.toml")
-	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0644); err != nil {
+	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
 		t.Fatalf("failed to write gale.toml: %v", err)
 	}
 
@@ -303,11 +303,11 @@ func TestFindGaleConfigInCurrentDir(t *testing.T) {
 func TestFindGaleConfigInParentDir(t *testing.T) {
 	parent := t.TempDir()
 	child := filepath.Join(parent, "subdir")
-	if err := os.Mkdir(child, 0755); err != nil {
+	if err := os.Mkdir(child, 0o755); err != nil {
 		t.Fatalf("failed to create subdir: %v", err)
 	}
 	galePath := filepath.Join(parent, "gale.toml")
-	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0644); err != nil {
+	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
 		t.Fatalf("failed to write gale.toml: %v", err)
 	}
 
@@ -324,11 +324,11 @@ func TestFindGaleConfigInGrandparentDir(t *testing.T) {
 	grandparent := t.TempDir()
 	parent := filepath.Join(grandparent, "a")
 	child := filepath.Join(parent, "b")
-	if err := os.MkdirAll(child, 0755); err != nil {
+	if err := os.MkdirAll(child, 0o755); err != nil {
 		t.Fatalf("failed to create dirs: %v", err)
 	}
 	galePath := filepath.Join(grandparent, "gale.toml")
-	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0644); err != nil {
+	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
 		t.Fatalf("failed to write gale.toml: %v", err)
 	}
 
@@ -439,7 +439,7 @@ func TestAddPackageToExistingConfig(t *testing.T) {
 	path := filepath.Join(dir, "gale.toml")
 
 	initial := "[packages]\njq = \"1.7.1\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
@@ -471,7 +471,7 @@ func TestAddPackagePreservesExisting(t *testing.T) {
 	path := filepath.Join(dir, "gale.toml")
 
 	initial := "[packages]\njq = \"1.7.1\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
@@ -503,7 +503,7 @@ func TestAddPackageUpdatesExistingVersion(t *testing.T) {
 	path := filepath.Join(dir, "gale.toml")
 
 	initial := "[packages]\njq = \"1.7.1\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
@@ -561,7 +561,7 @@ func TestRemovePackageFromConfig(t *testing.T) {
 	path := filepath.Join(dir, "gale.toml")
 
 	initial := "[packages]\njq = \"1.7.1\"\nripgrep = \"14.0\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
@@ -592,7 +592,7 @@ func TestRemovePackagePreservesOthers(t *testing.T) {
 	path := filepath.Join(dir, "gale.toml")
 
 	initial := "[packages]\njq = \"1.7.1\"\nripgrep = \"14.0\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
@@ -624,7 +624,7 @@ func TestRemovePackageNonexistentReturnsError(t *testing.T) {
 	path := filepath.Join(dir, "gale.toml")
 
 	initial := "[packages]\njq = \"1.7.1\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 

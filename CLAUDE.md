@@ -10,6 +10,8 @@ go build ./cmd/gale/          # build
 go test ./...                  # all tests
 go test ./internal/recipe/...  # single package
 go vet ./...                   # lint
+gofumpt -l .                   # check formatting
+gofumpt -w .                   # fix formatting
 ```
 
 ## Project Layout
@@ -37,3 +39,4 @@ internal/ai/       Anthropic SDK integration
   filesystem operations
 - No panics in library code
 - Keep packages focused — one responsibility each
+- Format all Go code with gofumpt before committing

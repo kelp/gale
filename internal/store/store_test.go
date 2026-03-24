@@ -65,7 +65,7 @@ func TestIsInstalledReturnsTrueWhenExists(t *testing.T) {
 	s := NewStore(root)
 
 	dir := filepath.Join(root, "jq", "1.7.1")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("failed to create directory: %v", err)
 	}
 
@@ -88,7 +88,7 @@ func TestIsInstalledReturnsFalseForDifferentVersion(t *testing.T) {
 	s := NewStore(root)
 
 	dir := filepath.Join(root, "jq", "1.7.1")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("failed to create directory: %v", err)
 	}
 
@@ -129,7 +129,7 @@ func TestListSinglePackage(t *testing.T) {
 	s := NewStore(root)
 
 	dir := filepath.Join(root, "jq", "1.7.1")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("failed to create directory: %v", err)
 	}
 
@@ -157,7 +157,7 @@ func TestListMultiplePackages(t *testing.T) {
 		filepath.Join(root, "ripgrep", "14.0.0"),
 	}
 	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0755); err != nil {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("failed to create directory: %v", err)
 		}
 	}
@@ -191,7 +191,7 @@ func TestListMultipleVersions(t *testing.T) {
 		filepath.Join(root, "jq", "1.8.0"),
 	}
 	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0755); err != nil {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("failed to create directory: %v", err)
 		}
 	}
@@ -232,7 +232,7 @@ func TestRemoveDeletesVersionDirectory(t *testing.T) {
 	s := NewStore(root)
 
 	dir := filepath.Join(root, "jq", "1.7.1")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("failed to create directory: %v", err)
 	}
 
@@ -263,7 +263,7 @@ func TestRemoveCleansUpEmptyParentDirectory(t *testing.T) {
 	s := NewStore(root)
 
 	dir := filepath.Join(root, "jq", "1.7.1")
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("failed to create directory: %v", err)
 	}
 
@@ -287,7 +287,7 @@ func TestRemoveKeepsParentWhenOtherVersionsExist(t *testing.T) {
 		filepath.Join(root, "jq", "1.8.0"),
 	}
 	for _, d := range dirs {
-		if err := os.MkdirAll(d, 0755); err != nil {
+		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatalf("failed to create directory: %v", err)
 		}
 	}

@@ -11,12 +11,12 @@ import (
 // The caller decides whether to enable color (by checking
 // NO_COLOR, TTY status, etc.) and passes the decision in.
 type Output struct {
-	w       io.Writer
-	color   bool
-	cyan    *color.Color
-	green   *color.Color
-	yellow  *color.Color
-	red     *color.Color
+	w      io.Writer
+	color  bool
+	cyan   *color.Color
+	green  *color.Color
+	yellow *color.Color
+	red    *color.Color
 }
 
 // New creates an Output that writes to w.

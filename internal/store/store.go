@@ -31,7 +31,7 @@ func NewStore(root string) *Store {
 // Returns the full path to the version directory.
 func (s *Store) Create(name, version string) (string, error) {
 	dir := filepath.Join(s.Root, name, version)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create store directory: %w", err)
 	}
 	return dir, nil
