@@ -230,6 +230,53 @@ Each feature degrades gracefully without a key — search
 falls back to substring matching, missing deps show the
 raw error, migration requires manual entry.
 
+### Agent architecture
+
+AI features fall into two categories:
+
+**Single-shot** (one API call, no loop):
+- `gale search` — prompt with query, return results
+- `gale import homebrew` — read formula, translate, done
+
+**Agentic** (tool-calling loop, iterates until success):
+- `gale create-recipe` — clone repo, read build system,
+  draft recipe, try build, fix errors, retry
+- Auto-update agent — check upstream, bump version,
+  build, verify, handle failures
+
+The agent loop uses Anthropic's tool use API. The agent
+gets a focused set of tools:
+
+- `read_file` — read a file from the cloned repo
+- `list_files` — list directory contents
+- `run_command` — execute a build in a sandbox
+- `write_recipe` — write or update the TOML recipe
+- `fetch_url` — check upstream releases
+- `search_recipes` — look at existing recipes for patterns
+
+Output is streaming log lines, like `docker build`:
+
+```
+$ gale create-recipe https://github.com/jqlang/jq
+Reading repository...
+Found autotools build system
+Writing recipe draft...
+Attempting test build...
+Build failed: missing oniguruma dependency
+Adding runtime dependency...
+Retrying build...
+Build succeeded
+Wrote recipes/jq.toml
+```
+
+The agent runs autonomously — no interactive prompts.
+It succeeds or reports what went wrong. Users edit the
+resulting TOML if they disagree with a decision.
+
+The CI auto-update agent uses the same loop but runs
+headless. On failure, it opens a GitHub issue instead
+of retrying indefinitely.
+
 ## Recipe repositories
 
 Gale pulls recipes from git repos. Users can add any
