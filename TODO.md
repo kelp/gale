@@ -29,8 +29,12 @@
 
 ## AI Features
 
-- [ ] **AI-enabled import** — Use Claude to handle complex
-  Homebrew formula translation. Ruby build logic,
+Use the Claude Code SDK for all AI features — no custom
+agent loop. The SDK handles tool calling, retries, and
+streaming. Our code provides focused prompts and tools.
+
+- [ ] **AI-enabled import** — Use Claude Code SDK to
+  translate complex Homebrew formulas. Ruby build logic,
   conditional deps, and patches need AI interpretation,
   not just JSON metadata scraping.
 
@@ -39,16 +43,16 @@
   Falls back to simple substring matching without a key.
 
 - [ ] **AI-enabled recipe generation** — `gale create-recipe`
-  agent loop: clone repo, read build system, draft recipe,
-  try build, fix errors, retry. Streaming output.
+  invokes Claude Code SDK with tools for reading repos,
+  running builds, and writing TOML. The SDK handles the
+  agent loop.
 
 - [ ] **Recipe generation prompt engineering** — Capture
   learnings from manually creating the first recipes
   (build quirks, configure flags, dependency patterns,
   timestamp fixes, symlink handling) and encode them
-  into the prompt for Claude-powered recipe generation.
-  The prompt should produce recipes that work on the
-  first try.
+  into the prompt. The prompt should produce recipes
+  that work on the first try.
 
 ## CLI Polish
 
