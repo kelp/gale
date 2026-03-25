@@ -78,7 +78,7 @@ gale install <pkg>[@version]   Install a package
 gale remove <pkg>              Remove a package
 gale list                      List packages
 gale sync                      Install everything in gale.toml
-gale update                    Re-resolve latest pins
+gale update                    Update all packages to latest
 gale shell                     Launch subshell with project env
 gale run <cmd> [-- args]       Run command in project env
 gale hook <shell>              Output shell activation hook
