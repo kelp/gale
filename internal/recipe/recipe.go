@@ -11,7 +11,28 @@ type Recipe struct {
 	Package      Package
 	Source       Source
 	Build        Build
+	Binary       map[string]Binary `toml:"binary"`
 	Dependencies Dependencies
+}
+
+// Binary holds a prebuilt archive location for a platform.
+type Binary struct {
+	URL    string `toml:"url"`
+	SHA256 string `toml:"sha256"`
+}
+
+// BinaryForPlatform returns the binary for the given OS and
+// architecture, or nil if none exists. Keys are "GOOS-GOARCH".
+func (r *Recipe) BinaryForPlatform(goos, goarch string) *Binary {
+	if r.Binary == nil {
+		return nil
+	}
+	key := goos + "-" + goarch
+	b, ok := r.Binary[key]
+	if !ok {
+		return nil
+	}
+	return &b
 }
 
 // Package holds the package metadata.

@@ -406,6 +406,106 @@ func TestParseMalformedTOMLNoPanic(t *testing.T) {
 	}
 }
 
+// --- Behavior 5: Binary sections ---
+
+const recipeWithBinaries = `
+[package]
+name = "jq"
+version = "1.7.1"
+description = "Command-line JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
+sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+
+[build]
+steps = ["make install"]
+
+[binary.darwin-arm64]
+url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64"
+sha256 = "abc123"
+
+[binary.linux-amd64]
+url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-linux-amd64"
+sha256 = "def456"
+
+[dependencies]
+build = ["autoconf"]
+`
+
+func TestParseBinarySection(t *testing.T) {
+	r, err := Parse(recipeWithBinaries)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2", len(r.Binary))
+	}
+}
+
+func TestParseBinaryDarwinArm64URL(t *testing.T) {
+	r, err := Parse(recipeWithBinaries)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b, ok := r.Binary["darwin-arm64"]
+	if !ok {
+		t.Fatal("missing binary for darwin-arm64")
+	}
+	if b.URL != "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64" {
+		t.Errorf("URL = %q", b.URL)
+	}
+}
+
+func TestParseBinaryDarwinArm64SHA256(t *testing.T) {
+	r, err := Parse(recipeWithBinaries)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := r.Binary["darwin-arm64"]
+	if b.SHA256 != "abc123" {
+		t.Errorf("SHA256 = %q, want %q", b.SHA256, "abc123")
+	}
+}
+
+func TestParseNoBinarySectionIsValid(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Binary != nil && len(r.Binary) != 0 {
+		t.Errorf("Binary should be nil or empty, got %d entries",
+			len(r.Binary))
+	}
+}
+
+func TestBinaryForPlatformFound(t *testing.T) {
+	r, err := Parse(recipeWithBinaries)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := r.BinaryForPlatform("darwin", "arm64")
+	if b == nil {
+		t.Fatal("expected non-nil binary for darwin-arm64")
+	}
+	if b.SHA256 != "abc123" {
+		t.Errorf("SHA256 = %q, want %q", b.SHA256, "abc123")
+	}
+}
+
+func TestBinaryForPlatformNotFound(t *testing.T) {
+	r, err := Parse(recipeWithBinaries)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := r.BinaryForPlatform("windows", "amd64")
+	if b != nil {
+		t.Error("expected nil binary for windows-amd64")
+	}
+}
+
 // containsField checks if the error message contains the field name
 // in a case-insensitive manner.
 func containsField(msg, field string) bool {
