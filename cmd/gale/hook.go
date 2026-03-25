@@ -9,8 +9,13 @@ import (
 
 var hookCmd = &cobra.Command{
 	Use:       "hook <shell>",
-	Short:     "Output shell hook for environment activation",
-	Long:      "Prints a shell script to eval in your shell config for auto-activation.",
+	Short:     "Print shell integration script",
+	Long: `Print a script that activates project environments on cd.
+Add to your shell config:
+
+  eval "$(gale hook zsh)"     # .zshrc
+  eval "$(gale hook bash)"    # .bashrc
+  gale hook fish | source     # config.fish`,
 	Args:      cobra.ExactArgs(1),
 	ValidArgs: []string{"fish", "zsh", "bash"},
 	RunE: func(cmd *cobra.Command, args []string) error {

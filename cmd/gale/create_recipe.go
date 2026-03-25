@@ -10,8 +10,8 @@ import (
 
 var createRecipeCmd = &cobra.Command{
 	Use:   "create-recipe <github-url>",
-	Short: "Generate a recipe from a GitHub repository",
-	Long:  "Uses AI to analyze a GitHub repo and generate a recipe TOML file.",
+	Short: "Generate a recipe from a GitHub repo",
+	Long:  "Analyze a GitHub repository and generate a recipe TOML file. Requires an API key in ~/.gale/config.toml.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repoURL := args[0]

@@ -15,7 +15,7 @@ import (
 var searchCmd = &cobra.Command{
 	Use:   "search <query>",
 	Short: "Search for packages",
-	Long:  "Search for packages by name. Uses AI-enhanced search if an API key is configured.",
+	Long:  "Search for packages by name across all configured repositories.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]

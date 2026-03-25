@@ -15,7 +15,7 @@ var shellProject string
 
 var shellCmd = &cobra.Command{
 	Use:   "shell",
-	Short: "Launch a subshell with the project environment",
+	Short: "Open a shell with the project environment",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		projectDir := shellProject

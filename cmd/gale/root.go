@@ -9,9 +9,9 @@ import (
 var rootCmd = &cobra.Command{
 	Use:   "gale",
 	Short: "Fast, isolated package management for developers",
-	Long: `Gale is a package manager for CLI tools and runtimes. It installs
-into isolated, versioned directories. Per-project environments
-activate automatically and stay out of your way.`,
+	Long: `Gale is a package manager for developer tools and runtimes.
+Each version installs in its own directory — nothing conflicts.
+Projects get isolated environments, activated automatically on cd.`,
 }
 
 func Execute() {

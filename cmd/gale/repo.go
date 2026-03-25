@@ -72,7 +72,7 @@ var repoRemoveCmd = &cobra.Command{
 
 var repoListCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List configured recipe repositories",
+	Short: "List recipe repositories",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		galeDir, err := galeConfigDir()
@@ -109,7 +109,7 @@ var repoListCmd = &cobra.Command{
 
 var repoInitCmd = &cobra.Command{
 	Use:   "init <name>",
-	Short: "Scaffold a new recipe repository with a signing keypair",
+	Short: "Create a new recipe repository",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]

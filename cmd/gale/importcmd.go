@@ -11,7 +11,7 @@ import (
 var importCmd = &cobra.Command{
 	Use:   "import homebrew [package]",
 	Short: "Import packages from Homebrew",
-	Long:  "Translate Homebrew formula to gale.toml entries. Requires an API key.",
+	Long:  "Convert Homebrew packages to gale.toml entries. Requires an API key in ~/.gale/config.toml.",
 	Args:  cobra.RangeArgs(1, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		source := args[0]
