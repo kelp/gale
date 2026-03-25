@@ -7,11 +7,18 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/profile"
+	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
-var installGlobal bool
+var (
+	installGlobal bool
+	installRecipe string
+)
 
 var installCmd = &cobra.Command{
 	Use:   "install <package>[@version]",
@@ -25,6 +32,13 @@ var installCmd = &cobra.Command{
 
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
+		// If --recipe flag is provided, install from recipe file.
+		if installRecipe != "" {
+			return installFromRecipeFile(installRecipe, out)
+		}
+
+		// Otherwise, just add to gale.toml (full repo-based
+		// install flow is not yet implemented).
 		configPath, err := resolveConfigPath(installGlobal)
 		if err != nil {
 			return err
@@ -43,7 +57,56 @@ var installCmd = &cobra.Command{
 func init() {
 	installCmd.Flags().BoolVarP(&installGlobal, "global", "g",
 		false, "Install to global config")
+	installCmd.Flags().StringVar(&installRecipe, "recipe", "",
+		"Install from a recipe TOML file")
 	rootCmd.AddCommand(installCmd)
+}
+
+func installFromRecipeFile(recipePath string, out *output.Output) error {
+	data, err := os.ReadFile(recipePath)
+	if err != nil {
+		return fmt.Errorf("reading recipe: %w", err)
+	}
+
+	r, err := recipe.Parse(string(data))
+	if err != nil {
+		return fmt.Errorf("parsing recipe: %w", err)
+	}
+
+	galeDir, err := galeConfigDir()
+	if err != nil {
+		return err
+	}
+
+	storeRoot := defaultStoreRoot()
+	binDir := filepath.Join(galeDir, "bin")
+
+	inst := &installer.Installer{
+		Store:   store.NewStore(storeRoot),
+		Profile: profile.NewProfile(binDir),
+	}
+
+	out.Info(fmt.Sprintf("Installing %s@%s...",
+		r.Package.Name, r.Package.Version))
+
+	result, err := inst.Install(r)
+	if err != nil {
+		return fmt.Errorf("install failed: %w", err)
+	}
+
+	switch result.Method {
+	case "cached":
+		out.Success(fmt.Sprintf("%s@%s already installed",
+			result.Name, result.Version))
+	case "binary":
+		out.Success(fmt.Sprintf("Installed %s@%s from binary",
+			result.Name, result.Version))
+	case "source":
+		out.Success(fmt.Sprintf("Installed %s@%s (built from source)",
+			result.Name, result.Version))
+	}
+
+	return nil
 }
 
 // parsePackageArg splits "name@version" into name and version.
@@ -64,7 +127,6 @@ func resolveConfigPath(global bool) (string, error) {
 		return filepath.Join(home, ".gale", "gale.toml"), nil
 	}
 
-	// Look for project gale.toml, fall back to global.
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("getting working dir: %w", err)
@@ -75,6 +137,5 @@ func resolveConfigPath(global bool) (string, error) {
 		return path, nil
 	}
 
-	// No project config found — use local gale.toml.
 	return filepath.Join(cwd, "gale.toml"), nil
 }

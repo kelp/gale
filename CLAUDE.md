@@ -30,6 +30,8 @@ internal/repo/     recipe repository management
 internal/trust/    ed25519 signing and verification
 internal/ai/       Anthropic SDK integration
 internal/homebrew/ Homebrew API formula fetching
+internal/build/    build-from-source orchestration
+internal/installer/ install flow (binary or source)
 ```
 
 ## Conventions
