@@ -1,12 +1,12 @@
 # Gale
 
-A macOS-first package manager for developer CLI tools.
-Combines Homebrew's simplicity with Nix's isolation.
-Written in Go.
+Fast, isolated package management for developers.
+Versioned installs, per-project environments that
+activate automatically.
 
 ## Features
 
-- Install CLI tools and runtimes from prebuilt binaries
+- Install CLI tools and runtimes into isolated directories
 - Per-project environments that activate on `cd`
 - Declarative `gale.toml` for reproducible setups
 - Federated recipe repositories with ed25519 signing

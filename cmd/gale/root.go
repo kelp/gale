@@ -8,10 +8,10 @@ import (
 
 var rootCmd = &cobra.Command{
 	Use:   "gale",
-	Short: "A macOS-first package manager for developer tools",
-	Long: `Gale is a package manager that combines Homebrew's simplicity
-with Nix's isolation. Install CLI tools and language runtimes
-from prebuilt binaries with per-project environments.`,
+	Short: "Fast, isolated package management for developers",
+	Long: `Gale is a package manager for CLI tools and runtimes. It installs
+into isolated, versioned directories. Per-project environments
+activate automatically and stay out of your way.`,
 }
 
 func Execute() {
