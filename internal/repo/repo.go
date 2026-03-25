@@ -88,6 +88,8 @@ func (m *Manager) Fetch(name string) error {
 }
 
 // listRecipes returns all .toml files in a repo's recipes/ directory.
+// Supports both flat layout (recipes/*.toml) and letter subdirectories
+// (recipes/j/jq.toml).
 func listRecipes(repo RepoConfig) ([]SearchResult, error) {
 	recipesDir := filepath.Join(repo.CacheDir, "recipes")
 	entries, err := os.ReadDir(recipesDir)
@@ -102,6 +104,25 @@ func listRecipes(repo RepoConfig) ([]SearchResult, error) {
 	var results []SearchResult
 	for _, entry := range entries {
 		if entry.IsDir() {
+			// Recurse into subdirectory (letter buckets).
+			subDir := filepath.Join(recipesDir, entry.Name())
+			subEntries, err := os.ReadDir(subDir)
+			if err != nil {
+				return nil, fmt.Errorf("reading subdir %s: %w",
+					entry.Name(), err)
+			}
+			for _, sub := range subEntries {
+				if sub.IsDir() || !strings.HasSuffix(sub.Name(), ".toml") {
+					continue
+				}
+				pkg := strings.TrimSuffix(sub.Name(), ".toml")
+				results = append(results, SearchResult{
+					RepoName: repo.Name,
+					Package:  pkg,
+					FilePath: filepath.Join(subDir, sub.Name()),
+					Priority: repo.Priority,
+				})
+			}
 			continue
 		}
 		name := entry.Name()

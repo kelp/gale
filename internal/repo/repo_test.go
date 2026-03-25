@@ -601,6 +601,76 @@ func TestListAllIncludesPriority(t *testing.T) {
 	}
 }
 
+// --- Behavior 6: Letter subdirectory support ---
+
+func setupCachedRepoWithLetterDirs(
+	t *testing.T, cacheRoot, name string,
+	recipes map[string]string,
+) {
+	t.Helper()
+	for fname, content := range recipes {
+		letter := string(fname[0])
+		dir := filepath.Join(cacheRoot, name, "recipes", letter)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+		p := filepath.Join(dir, fname)
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("failed to write %s: %v", fname, err)
+		}
+	}
+}
+
+func TestSearchFindsRecipesInLetterSubdirs(t *testing.T) {
+	cacheRoot := t.TempDir()
+	setupCachedRepoWithLetterDirs(t, cacheRoot, "core", map[string]string{
+		"jq.toml":      "[package]\nname = \"jq\"\n",
+		"ripgrep.toml": "[package]\nname = \"ripgrep\"\n",
+	})
+
+	m := NewManager(cacheRoot)
+	m.AddRepo(RepoConfig{
+		Name:     "core",
+		CacheDir: filepath.Join(cacheRoot, "core"),
+		Priority: 1,
+	})
+
+	results, err := m.Search("jq")
+	if err != nil {
+		t.Fatalf("Search error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("Search results = %d, want 1", len(results))
+	}
+	if results[0].Package != "jq" {
+		t.Errorf("Package = %q, want %q", results[0].Package, "jq")
+	}
+}
+
+func TestListAllFindsRecipesInLetterSubdirs(t *testing.T) {
+	cacheRoot := t.TempDir()
+	setupCachedRepoWithLetterDirs(t, cacheRoot, "core", map[string]string{
+		"jq.toml":      "[package]\nname = \"jq\"\n",
+		"ripgrep.toml": "[package]\nname = \"ripgrep\"\n",
+		"bat.toml":     "[package]\nname = \"bat\"\n",
+	})
+
+	m := NewManager(cacheRoot)
+	m.AddRepo(RepoConfig{
+		Name:     "core",
+		CacheDir: filepath.Join(cacheRoot, "core"),
+		Priority: 1,
+	})
+
+	results, err := m.ListAll()
+	if err != nil {
+		t.Fatalf("ListAll error: %v", err)
+	}
+	if len(results) != 3 {
+		t.Fatalf("ListAll results = %d, want 3", len(results))
+	}
+}
+
 func TestListAllSortsByPackageName(t *testing.T) {
 	cacheRoot := t.TempDir()
 	setupCachedRepo(t, cacheRoot, "core", map[string]string{
