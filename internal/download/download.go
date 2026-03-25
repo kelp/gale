@@ -125,6 +125,18 @@ func ExtractTarGz(archivePath, destDir string) error {
 				return fmt.Errorf("extract %s: %w",
 					hdr.Name, err)
 			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(
+				filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf(
+					"create parent directory for %s: %w",
+					hdr.Name, err)
+			}
+			os.Remove(target)
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return fmt.Errorf("create symlink %s: %w",
+					hdr.Name, err)
+			}
 		default:
 			return fmt.Errorf("unsupported tar entry type %d for %s",
 				hdr.Typeflag, hdr.Name)
@@ -229,6 +241,18 @@ func ExtractTarZstd(archivePath, destDir string) error {
 				return fmt.Errorf("extract %s: %w",
 					hdr.Name, err)
 			}
+		case tar.TypeSymlink:
+			if err := os.MkdirAll(
+				filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf(
+					"create parent directory for %s: %w",
+					hdr.Name, err)
+			}
+			os.Remove(target)
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return fmt.Errorf("create symlink %s: %w",
+					hdr.Name, err)
+			}
 		default:
 			return fmt.Errorf("unsupported tar entry type %d for %s",
 				hdr.Typeflag, hdr.Name)
@@ -274,6 +298,26 @@ func CreateTarZstd(sourceDir, archivePath string) error {
 		// Use forward slashes in the archive.
 		rel = filepath.ToSlash(rel)
 
+		// Check for symlinks via Lstat (Walk uses Stat which follows them).
+		linfo, err := os.Lstat(path)
+		if err != nil {
+			return fmt.Errorf("lstat %s: %w", rel, err)
+		}
+
+		if linfo.Mode()&os.ModeSymlink != 0 {
+			target, err := os.Readlink(path)
+			if err != nil {
+				return fmt.Errorf("readlink %s: %w", rel, err)
+			}
+			hdr := &tar.Header{
+				Typeflag: tar.TypeSymlink,
+				Name:     rel,
+				Linkname: target,
+				Mode:     int64(linfo.Mode()),
+			}
+			return tw.WriteHeader(hdr)
+		}
+
 		if info.IsDir() {
 			hdr := &tar.Header{
 				Typeflag: tar.TypeDir,
@@ -289,8 +333,8 @@ func CreateTarZstd(sourceDir, archivePath string) error {
 		hdr := &tar.Header{
 			Typeflag: tar.TypeReg,
 			Name:     rel,
-			Size:     info.Size(),
-			Mode:     int64(info.Mode()),
+			Size:     linfo.Size(),
+			Mode:     int64(linfo.Mode()),
 		}
 		if err := tw.WriteHeader(hdr); err != nil {
 			return fmt.Errorf("write file header %s: %w", rel, err)

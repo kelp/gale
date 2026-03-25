@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"time"
 
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/recipe"
@@ -44,6 +45,11 @@ func Build(r *recipe.Recipe, outputDir string) (*BuildResult, error) {
 	srcDir := filepath.Join(workspace, "src")
 	if err := download.ExtractTarGz(tarballPath, srcDir); err != nil {
 		return nil, fmt.Errorf("extract source: %w", err)
+	}
+
+	// Reset file timestamps to avoid autotools clock-skew errors.
+	if err := touchAll(srcDir); err != nil {
+		return nil, fmt.Errorf("reset timestamps: %w", err)
 	}
 
 	// Detect single top-level directory.
@@ -109,14 +115,13 @@ func detectSourceRoot(srcDir string) (string, error) {
 }
 
 // runStep executes a single build step using sh -c with PREFIX
-// and JOBS environment variables set.
+// and JOBS environment variables set. Uses a clean environment
+// with only essential variables to avoid interference from the
+// host environment (e.g., nix coreutils aliases).
 func runStep(step, sourceRoot, prefixDir, jobs string) error {
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = sourceRoot
-	cmd.Env = append(os.Environ(),
-		"PREFIX="+prefixDir,
-		"JOBS="+jobs,
-	)
+	cmd.Env = buildEnv(prefixDir, jobs)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -124,6 +129,38 @@ func runStep(step, sourceRoot, prefixDir, jobs string) error {
 	}
 
 	return nil
+}
+
+// buildEnv constructs a minimal, clean environment for build steps.
+func buildEnv(prefixDir, jobs string) []string {
+	env := []string{
+		"PREFIX=" + prefixDir,
+		"JOBS=" + jobs,
+		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
+		"HOME=" + os.Getenv("HOME"),
+		"TMPDIR=" + os.Getenv("TMPDIR"),
+		"LANG=en_US.UTF-8",
+	}
+	// Pass through compiler if set.
+	if cc := os.Getenv("CC"); cc != "" {
+		env = append(env, "CC="+cc)
+	}
+	if cxx := os.Getenv("CXX"); cxx != "" {
+		env = append(env, "CXX="+cxx)
+	}
+	return env
+}
+
+// touchAll resets all file modification times under dir to now.
+// Prevents autotools clock-skew errors after extracting tarballs.
+func touchAll(dir string) error {
+	now := time.Now()
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		return os.Chtimes(path, now, now)
+	})
 }
 
 // computeSHA256 returns the hex-encoded SHA256 hash of the file
