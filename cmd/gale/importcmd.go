@@ -4,53 +4,37 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/kelp/gale/internal/homebrew"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
 var importCmd = &cobra.Command{
-	Use:   "import homebrew [package]",
-	Short: "Import packages from Homebrew",
-	Long:  "Convert Homebrew packages to gale.toml entries. Requires an API key in ~/.gale/config.toml.",
-	Args:  cobra.RangeArgs(1, 2),
+	Use:   "import homebrew <package>",
+	Short: "Generate a recipe from a Homebrew formula",
+	Long: `Fetch a Homebrew formula from the public API and generate
+a gale recipe TOML file. Does not require Homebrew to be installed.`,
+	Args: cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		source := args[0]
 		if source != "homebrew" {
-			return fmt.Errorf("unsupported import source: %s (only 'homebrew' is supported)", source)
+			return fmt.Errorf("unsupported source: %s (only 'homebrew' is supported)", source)
 		}
 
+		pkg := args[1]
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		galeDir, err := galeConfigDir()
+		out.Info(fmt.Sprintf("Fetching formula for %s...", pkg))
+
+		f, err := homebrew.FetchFormula(pkg, "https://formulae.brew.sh")
 		if err != nil {
-			return err
+			return fmt.Errorf("fetching formula: %w", err)
 		}
 
-		client := loadAIClient(galeDir)
-		if client == nil {
-			return fmt.Errorf("import requires an AI API key in ~/.gale/config.toml")
-		}
+		fmt.Print(f.ToRecipeTOML())
 
-		pkg := ""
-		if len(args) > 1 {
-			pkg = args[1]
-		}
-
-		prompt := "Read the output of 'brew list' and generate gale.toml [packages] entries for each installed formula. Output only the TOML."
-		if pkg != "" {
-			prompt = fmt.Sprintf(
-				"Translate the Homebrew formula for %q into a gale.toml package entry. Output only the TOML line like: %s = \"version\".",
-				pkg, pkg)
-		}
-
-		out.Info("Translating Homebrew packages...")
-		result, err := client.Complete(prompt)
-		if err != nil {
-			return fmt.Errorf("AI translation: %w", err)
-		}
-
-		fmt.Println(result)
-		out.Success("Import complete")
+		out.Success(fmt.Sprintf("Recipe generated for %s@%s",
+			f.Name, f.Version))
 		return nil
 	},
 }

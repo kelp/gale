@@ -29,6 +29,7 @@ internal/env/      PATH building, shell hooks
 internal/repo/     recipe repository management
 internal/trust/    ed25519 signing and verification
 internal/ai/       Anthropic SDK integration
+internal/homebrew/ Homebrew API formula fetching
 ```
 
 ## Conventions
