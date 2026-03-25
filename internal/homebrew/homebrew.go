@@ -234,7 +234,9 @@ func parseSystemCall(line string) string {
 		}
 		// Skip Ruby interpolation and method calls.
 		if strings.HasPrefix(part, "*") ||
-			strings.HasPrefix(part, "#") ||
+			strings.Contains(part, "#{Formula") ||
+			strings.Contains(part, "#{etc}") ||
+			strings.Contains(part, "#{share}") ||
 			strings.Contains(part, "(") {
 			continue
 		}
@@ -247,7 +249,19 @@ func parseSystemCall(line string) string {
 		return ""
 	}
 
-	return strings.Join(args, " ")
+	cmd := strings.Join(args, " ")
+
+	// Translate Ruby interpolation for common Homebrew paths.
+	cmd = strings.ReplaceAll(cmd, "#{prefix}", "${PREFIX}")
+	cmd = strings.ReplaceAll(cmd, "#{buildpath}", ".")
+
+	// Remove args that reference other Homebrew formulas
+	// (e.g., #{Formula["openssl@3"].opt_prefix}) — these
+	// need manual translation.
+	re := regexp.MustCompile(`\s*--[a-z-]+=#{Formula\[[^\]]+\][^"]*}`)
+	cmd = re.ReplaceAllString(cmd, "")
+
+	return strings.TrimSpace(cmd)
 }
 
 // removeBlock removes a Ruby block (e.g., "head do...end").
