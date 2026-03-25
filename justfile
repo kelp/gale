@@ -1,0 +1,37 @@
+# Default: run tests and lint
+default: test lint
+
+# Build the binary
+build:
+    go build -o gale ./cmd/gale/
+
+# Run all tests
+test:
+    go test ./...
+
+# Run tests with verbose output
+test-v:
+    go test -v ./...
+
+# Run tests for a single package
+test-pkg pkg:
+    go test -v ./internal/{{pkg}}/...
+
+# Lint with go vet
+lint:
+    go vet ./...
+
+# Check formatting
+fmt-check:
+    gofumpt -l .
+
+# Fix formatting
+fmt:
+    gofumpt -w .
+
+# Run all checks (test + lint + format)
+check: test lint fmt-check
+
+# Clean build artifacts
+clean:
+    rm -f gale
