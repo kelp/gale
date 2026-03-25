@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // Fetch downloads a file from url to destPath.
@@ -174,6 +176,151 @@ func ExtractZip(archivePath, destDir string) error {
 			return fmt.Errorf("extract %s: %w", zf.Name, err)
 		}
 		rc.Close()
+	}
+
+	return nil
+}
+
+// ExtractTarZstd extracts a tar.zst file to destDir, preserving
+// relative paths and creating directories as needed.
+func ExtractTarZstd(archivePath, destDir string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer f.Close()
+
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("create zstd reader: %w", err)
+	}
+	defer zr.Close()
+
+	tr := tar.NewReader(zr)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read tar entry: %w", err)
+		}
+
+		target := filepath.Join(destDir, hdr.Name)
+
+		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) {
+			return fmt.Errorf("illegal path in archive: %s", hdr.Name)
+		}
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("create directory %s: %w",
+					hdr.Name, err)
+			}
+		case tar.TypeReg:
+			if err := os.MkdirAll(
+				filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf(
+					"create parent directory for %s: %w",
+					hdr.Name, err)
+			}
+			if err := writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
+				return fmt.Errorf("extract %s: %w",
+					hdr.Name, err)
+			}
+		default:
+			return fmt.Errorf("unsupported tar entry type %d for %s",
+				hdr.Typeflag, hdr.Name)
+		}
+	}
+
+	return nil
+}
+
+// CreateTarZstd creates a tar.zst archive from sourceDir.
+// Files are stored relative to the sourceDir root with no
+// wrapper directory. File permissions are preserved.
+func CreateTarZstd(sourceDir, archivePath string) error {
+	f, err := os.Create(archivePath)
+	if err != nil {
+		return fmt.Errorf("create archive file: %w", err)
+	}
+	defer f.Close()
+
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		return fmt.Errorf("create zstd writer: %w", err)
+	}
+	defer zw.Close()
+
+	tw := tar.NewWriter(zw)
+	defer tw.Close()
+
+	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+
+		// Skip the root directory itself.
+		if path == sourceDir {
+			return nil
+		}
+
+		rel, err := filepath.Rel(sourceDir, path)
+		if err != nil {
+			return fmt.Errorf("compute relative path: %w", err)
+		}
+		// Use forward slashes in the archive.
+		rel = filepath.ToSlash(rel)
+
+		if info.IsDir() {
+			hdr := &tar.Header{
+				Typeflag: tar.TypeDir,
+				Name:     rel + "/",
+				Mode:     int64(info.Mode()),
+			}
+			if err := tw.WriteHeader(hdr); err != nil {
+				return fmt.Errorf("write dir header %s: %w", rel, err)
+			}
+			return nil
+		}
+
+		hdr := &tar.Header{
+			Typeflag: tar.TypeReg,
+			Name:     rel,
+			Size:     info.Size(),
+			Mode:     int64(info.Mode()),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			return fmt.Errorf("write file header %s: %w", rel, err)
+		}
+
+		src, err := os.Open(path)
+		if err != nil {
+			return fmt.Errorf("open source file %s: %w", rel, err)
+		}
+		defer src.Close()
+
+		if _, err := io.Copy(tw, src); err != nil {
+			return fmt.Errorf("write file content %s: %w", rel, err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("walk source directory: %w", err)
+	}
+
+	// Close in reverse order: tar, then zstd, then file.
+	if err := tw.Close(); err != nil {
+		return fmt.Errorf("close tar writer: %w", err)
+	}
+	if err := zw.Close(); err != nil {
+		return fmt.Errorf("close zstd writer: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("close archive file: %w", err)
 	}
 
 	return nil

@@ -14,6 +14,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/klauspost/compress/zstd"
 )
 
 // --- Behavior 1: Download file from URL ---
@@ -486,5 +488,340 @@ func createZip(t *testing.T, archivePath string, files map[string]string) {
 		if _, err := w.Write([]byte(content)); err != nil {
 			t.Fatalf("failed to write zip content: %v", err)
 		}
+	}
+}
+
+// createTarZstd builds a tar.zst archive at archivePath containing
+// the given files map (relative path -> content). Directory
+// entries are emitted for any intermediate paths.
+func createTarZstd(t *testing.T, archivePath string, files map[string]string) {
+	t.Helper()
+
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("failed to create archive file: %v", err)
+	}
+	defer f.Close()
+
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatalf("failed to create zstd writer: %v", err)
+	}
+	defer zw.Close()
+
+	tw := tar.NewWriter(zw)
+	defer tw.Close()
+
+	// Collect and sort names for deterministic output.
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	dirs := make(map[string]bool)
+	for _, name := range names {
+		// Emit directory entries for each ancestor path.
+		if dir := filepath.Dir(name); dir != "." {
+			parts := strings.Split(
+				filepath.ToSlash(dir), "/")
+			for i := range parts {
+				d := strings.Join(parts[:i+1], "/") + "/"
+				if !dirs[d] {
+					dirs[d] = true
+					dhdr := &tar.Header{
+						Typeflag: tar.TypeDir,
+						Name:     d,
+						Mode:     0o755,
+					}
+					if err := tw.WriteHeader(dhdr); err != nil {
+						t.Fatalf("failed to write dir header: %v",
+							err)
+					}
+				}
+			}
+		}
+
+		content := files[name]
+		hdr := &tar.Header{
+			Name: name,
+			Mode: 0o644,
+			Size: int64(len(content)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("failed to write tar header: %v", err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatalf("failed to write tar content: %v", err)
+		}
+	}
+}
+
+// --- Behavior 7: Extract tar.zst ---
+
+func TestExtractTarZstdPreservesFileContents(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "test.tar.zst")
+	createTarZstd(t, archivePath, map[string]string{
+		"hello.txt": "hello world",
+	})
+
+	destDir := filepath.Join(t.TempDir(), "extracted")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatalf("failed to create dest dir: %v", err)
+	}
+
+	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
+	if err != nil {
+		t.Fatalf("failed to read extracted file: %v", err)
+	}
+	if string(got) != "hello world" {
+		t.Errorf("file contents = %q, want %q",
+			string(got), "hello world")
+	}
+}
+
+func TestExtractTarZstdPreservesRelativePaths(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "test.tar.zst")
+	createTarZstd(t, archivePath, map[string]string{
+		"subdir/nested.txt": "nested content",
+	})
+
+	destDir := filepath.Join(t.TempDir(), "extracted")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatalf("failed to create dest dir: %v", err)
+	}
+
+	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(
+		filepath.Join(destDir, "subdir", "nested.txt"))
+	if err != nil {
+		t.Fatalf("failed to read extracted file: %v", err)
+	}
+	if string(got) != "nested content" {
+		t.Errorf("file contents = %q, want %q",
+			string(got), "nested content")
+	}
+}
+
+func TestExtractTarZstdMultipleFiles(t *testing.T) {
+	archivePath := filepath.Join(t.TempDir(), "test.tar.zst")
+	createTarZstd(t, archivePath, map[string]string{
+		"a.txt": "aaa",
+		"b.txt": "bbb",
+	})
+
+	destDir := filepath.Join(t.TempDir(), "extracted")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatalf("failed to create dest dir: %v", err)
+	}
+
+	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	for _, name := range []string{"a.txt", "b.txt"} {
+		if _, err := os.Stat(
+			filepath.Join(destDir, name)); err != nil {
+			t.Errorf("expected file %q to exist: %v", name, err)
+		}
+	}
+}
+
+// --- Behavior 8: Create tar.zst ---
+
+func TestCreateTarZstdRoundTrip(t *testing.T) {
+	sourceDir := t.TempDir()
+
+	// Populate source directory with files.
+	files := map[string]string{
+		"root.txt":        "root content",
+		"sub/nested.txt":  "nested content",
+		"sub/another.txt": "another file",
+	}
+	for name, content := range files {
+		p := filepath.Join(sourceDir, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatalf("failed to create dir: %v", err)
+		}
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatalf("failed to write file: %v", err)
+		}
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "output.tar.zst")
+	if err := CreateTarZstd(sourceDir, archivePath); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Verify the archive exists.
+	info, err := os.Stat(archivePath)
+	if err != nil {
+		t.Fatalf("archive not created: %v", err)
+	}
+	if info.Size() == 0 {
+		t.Fatal("archive is empty")
+	}
+
+	// Extract and verify round-trip.
+	destDir := filepath.Join(t.TempDir(), "extracted")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatalf("failed to create dest dir: %v", err)
+	}
+
+	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+		t.Fatalf("failed to extract: %v", err)
+	}
+
+	for name, want := range files {
+		got, err := os.ReadFile(filepath.Join(destDir, name))
+		if err != nil {
+			t.Errorf("missing file %q: %v", name, err)
+			continue
+		}
+		if string(got) != want {
+			t.Errorf("file %q contents = %q, want %q",
+				name, string(got), want)
+		}
+	}
+}
+
+func TestCreateTarZstdNoWrapperDirectory(t *testing.T) {
+	sourceDir := t.TempDir()
+
+	if err := os.WriteFile(
+		filepath.Join(sourceDir, "file.txt"),
+		[]byte("data"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "output.tar.zst")
+	if err := CreateTarZstd(sourceDir, archivePath); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Open the archive and check that entries are relative,
+	// with no wrapper directory matching the source dir name.
+	f, err := os.Open(archivePath)
+	if err != nil {
+		t.Fatalf("failed to open archive: %v", err)
+	}
+	defer f.Close()
+
+	zr, err := zstd.NewReader(f)
+	if err != nil {
+		t.Fatalf("failed to create zstd reader: %v", err)
+	}
+	defer zr.Close()
+
+	tr := tar.NewReader(zr)
+	sourceName := filepath.Base(sourceDir)
+	for {
+		hdr, err := tr.Next()
+		if err != nil {
+			break
+		}
+		if strings.HasPrefix(hdr.Name, sourceName+"/") {
+			t.Errorf("entry %q has wrapper directory %q",
+				hdr.Name, sourceName)
+		}
+		if strings.HasPrefix(hdr.Name, "/") {
+			t.Errorf("entry %q is absolute, want relative",
+				hdr.Name)
+		}
+	}
+}
+
+// --- Security: tar.zst path traversal rejection ---
+
+func TestExtractTarZstdRejectsPathTraversal(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "evil.tar.zst")
+	destDir := t.TempDir()
+
+	// Build a tar.zst with a path-traversal entry.
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("failed to create archive: %v", err)
+	}
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatalf("failed to create zstd writer: %v", err)
+	}
+	tw := tar.NewWriter(zw)
+	hdr := &tar.Header{
+		Name: "../escape.txt",
+		Mode: 0o644,
+		Size: 5,
+	}
+	if err := tw.WriteHeader(hdr); err != nil {
+		t.Fatalf("failed to write header: %v", err)
+	}
+	if _, err := tw.Write([]byte("owned")); err != nil {
+		t.Fatalf("failed to write content: %v", err)
+	}
+	tw.Close()
+	zw.Close()
+	f.Close()
+
+	err = ExtractTarZstd(archive, destDir)
+	if err == nil {
+		t.Fatal("expected error for path traversal")
+	}
+}
+
+// --- Create tar.zst preserves executability ---
+
+func TestCreateTarZstdPreservesExecutability(t *testing.T) {
+	sourceDir := t.TempDir()
+
+	// Create a regular file and an executable file.
+	if err := os.WriteFile(
+		filepath.Join(sourceDir, "normal.txt"),
+		[]byte("data"), 0o644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(sourceDir, "run.sh"),
+		[]byte("#!/bin/sh"), 0o755); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "output.tar.zst")
+	if err := CreateTarZstd(sourceDir, archivePath); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	// Extract and verify permissions are preserved.
+	destDir := filepath.Join(t.TempDir(), "extracted")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatalf("failed to create dest dir: %v", err)
+	}
+
+	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+		t.Fatalf("failed to extract: %v", err)
+	}
+
+	info, err := os.Stat(filepath.Join(destDir, "run.sh"))
+	if err != nil {
+		t.Fatalf("failed to stat run.sh: %v", err)
+	}
+	if info.Mode()&0o111 == 0 {
+		t.Errorf("run.sh should be executable, got mode %v",
+			info.Mode())
+	}
+
+	info, err = os.Stat(filepath.Join(destDir, "normal.txt"))
+	if err != nil {
+		t.Fatalf("failed to stat normal.txt: %v", err)
+	}
+	if info.Mode()&0o111 != 0 {
+		t.Errorf("normal.txt should not be executable, got mode %v",
+			info.Mode())
 	}
 }
