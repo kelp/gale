@@ -82,8 +82,9 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 	binDir := filepath.Join(galeDir, "bin")
 
 	inst := &installer.Installer{
-		Store:   store.NewStore(storeRoot),
-		Profile: profile.NewProfile(binDir),
+		Store:    store.NewStore(storeRoot),
+		Profile:  profile.NewProfile(binDir),
+		Resolver: recipeFileResolver(recipePath),
 	}
 
 	out.Info(fmt.Sprintf("Installing %s@%s...",
@@ -107,6 +108,35 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 	}
 
 	return nil
+}
+
+// recipeFileResolver returns a RecipeResolver that looks for
+// recipes in the same repo as the given recipe file. Assumes
+// letter-bucketed layout: recipes/<letter>/<name>.toml.
+func recipeFileResolver(recipePath string) installer.RecipeResolver {
+	// Walk up to find the recipes/ directory.
+	absPath, err := filepath.Abs(recipePath)
+	if err != nil {
+		return nil
+	}
+	// recipePath is like .../recipes/j/jq.toml
+	// We want the directory containing "recipes/".
+	dir := filepath.Dir(filepath.Dir(filepath.Dir(absPath)))
+	recipesDir := filepath.Join(dir, "recipes")
+
+	return func(name string) (*recipe.Recipe, error) {
+		letter := string(name[0])
+		path := filepath.Join(recipesDir, letter, name+".toml")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf(
+					"no recipe for %q — install it manually", name)
+			}
+			return nil, fmt.Errorf("read recipe %q: %w", name, err)
+		}
+		return recipe.Parse(string(data))
+	}
 }
 
 // parsePackageArg splits "name@version" into name and version.
