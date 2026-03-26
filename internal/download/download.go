@@ -137,6 +137,9 @@ func ExtractTarGz(archivePath, destDir string) error {
 				return fmt.Errorf("create symlink %s: %w",
 					hdr.Name, err)
 			}
+		case tar.TypeXGlobalHeader, tar.TypeXHeader:
+			// PAX headers — skip silently.
+			continue
 		default:
 			return fmt.Errorf("unsupported tar entry type %d for %s",
 				hdr.Typeflag, hdr.Name)
@@ -253,6 +256,9 @@ func ExtractTarZstd(archivePath, destDir string) error {
 				return fmt.Errorf("create symlink %s: %w",
 					hdr.Name, err)
 			}
+		case tar.TypeXGlobalHeader, tar.TypeXHeader:
+			// PAX headers — skip silently.
+			continue
 		default:
 			return fmt.Errorf("unsupported tar entry type %d for %s",
 				hdr.Typeflag, hdr.Name)

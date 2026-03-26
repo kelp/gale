@@ -248,7 +248,7 @@ func parseSystemCall(line string) string {
 			continue
 		}
 		if strings.HasPrefix(part, "*std_cargo_args") {
-			args = append(args, "--root", "${PREFIX}")
+			args = append(args, "--path", ".", "--root", "${PREFIX}")
 			continue
 		}
 		// Skip Ruby interpolation and method calls.

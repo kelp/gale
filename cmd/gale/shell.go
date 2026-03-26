@@ -67,7 +67,11 @@ func init() {
 }
 
 func defaultStoreRoot() string {
-	return filepath.Join("/", "gale", "packages")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join("/", "gale", "packages")
+	}
+	return filepath.Join(home, ".gale", "packages")
 }
 
 func buildShellEnv(environ *env.Environment) []string {
