@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    strategy:
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Test
+        run: go test ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Format check
+        run: |
+          go install mvdan.cc/gofumpt@latest
+          UNFORMATTED=$(gofumpt -l .)
+          if [ -n "$UNFORMATTED" ]; then
+            echo "::error::Files need formatting:"
+            echo "$UNFORMATTED"
+            exit 1
+          fi
+
+      - name: Build
+        run: go build -o gale ./cmd/gale/
