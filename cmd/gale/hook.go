@@ -8,8 +8,8 @@ import (
 )
 
 var hookCmd = &cobra.Command{
-	Use:       "hook <shell>",
-	Short:     "Print shell integration script",
+	Use:   "hook <shell>",
+	Short: "Print shell integration script",
 	Long: `Print a script that activates project environments on cd.
 Add to your shell config:
 
