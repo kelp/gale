@@ -59,6 +59,31 @@ internal/installer/ install flow (binary or source)
 - Keep packages focused — one responsibility each
 - Format all Go code with gofumpt before committing
 
+## Two-Repo Architecture
+
+Gale is split across two repositories:
+
+- **gale** — the tool (this repo). Go code, CLI, all
+  internal packages. CI runs tests on macOS + Linux,
+  builds the binary, publishes releases.
+- **gale-recipes** — the content (`../gale-recipes`).
+  Recipe TOML files. CI builds every recipe on each
+  platform, pushes tar.zst binaries to GHCR via ORAS,
+  and updates `[binary.<platform>]` sections in the
+  recipe TOML.
+
+**Dependency chain**: gale-recipes CI needs a `gale`
+binary to build recipes. gale needs OCI pull support
+(`internal/oci/`) so users can install prebuilt binaries
+from GHCR instead of building from source.
+
+**Install flow**: `gale install jq` checks for a
+`[binary.<platform>]` match first (OCI pull from GHCR),
+falls back to building from source via `[build]` steps.
+
+**Development methodology**: strict red-green TDD via the
+`/tdd-orchestrate` pipeline for every new module.
+
 ## Gotchas
 
 - The build module uses a clean PATH to avoid nix
