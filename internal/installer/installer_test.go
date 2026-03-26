@@ -10,11 +10,13 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/kelp/gale/internal/profile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
+	"github.com/klauspost/compress/zstd"
 )
 
 func TestInstallFromSourceCreatesBinary(t *testing.T) {
@@ -136,6 +138,83 @@ func TestInstallResultFields(t *testing.T) {
 	}
 }
 
+func TestInstallBinaryFromGHCR(t *testing.T) {
+	// Create a tar.zst with bin/testpkg.
+	binContent := "#!/bin/sh\necho ghcr-binary"
+	tarzst := createTestTarZstd(t, "bin/testpkg", binContent)
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	// Use env var for auth (skips token exchange).
+	t.Setenv("GALE_GITHUB_TOKEN", "test-ghcr-token")
+
+	// Mock GHCR blob endpoint — requires auth header.
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			if gotAuth != "Bearer test-ghcr-token" {
+				http.Error(w, "unauthorized",
+					http.StatusUnauthorized)
+				return
+			}
+			w.Write(blobData)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	binDir := t.TempDir()
+	inst := &Installer{
+		Store:   store.NewStore(storeRoot),
+		Profile: profile.NewProfile(binDir),
+	}
+
+	// URL must contain ghcr.io to trigger auth path.
+	// We use the test server but embed ghcr.io in the
+	// host via a redirect, or we adjust isGHCR. Simplest:
+	// use the test server URL directly and make isGHCR
+	// also match /v2/.../blobs/ paths.
+	blobURL := fmt.Sprintf(
+		"%s/v2/kelp/gale-recipes/testpkg/blobs/sha256:%s",
+		srv.URL, hash)
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    blobURL,
+				SHA256: hash,
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+	if result.Method != "binary" {
+		t.Errorf("Method = %q, want %q",
+			result.Method, "binary")
+	}
+
+	// Verify binary exists in store.
+	storeBin := filepath.Join(storeRoot,
+		"testpkg", "1.0", "bin", "testpkg")
+	if _, err := os.Stat(storeBin); err != nil {
+		t.Errorf("binary not in store: %v", err)
+	}
+
+	// Verify symlink in profile.
+	profileBin := filepath.Join(binDir, "testpkg")
+	if _, err := os.Lstat(profileBin); err != nil {
+		t.Errorf("binary not linked in profile: %v", err)
+	}
+}
+
 // --- helpers ---
 
 func createTestSourceTarGz(t *testing.T) string {
@@ -185,4 +264,41 @@ func hashFile(t *testing.T, path string) string {
 		t.Fatalf("hash: %v", err)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+func createTestTarZstd(t *testing.T, name, content string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pkg.tar.zst")
+
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create tar.zst: %v", err)
+	}
+	defer f.Close()
+
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatalf("create zstd writer: %v", err)
+	}
+	defer zw.Close()
+
+	tw := tar.NewWriter(zw)
+	defer tw.Close()
+
+	// Create parent directory.
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeDir,
+		Name:     "bin/",
+		Mode:     0o755,
+	})
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     name,
+		Mode:     0o755,
+		Size:     int64(len(content)),
+	})
+	tw.Write([]byte(content))
+
+	return path
 }

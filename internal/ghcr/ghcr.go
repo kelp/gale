@@ -13,6 +13,14 @@ import (
 // Tests override this to point at httptest servers.
 var tokenEndpoint = "https://ghcr.io/token"
 
+// SetTokenEndpoint overrides the token endpoint URL.
+// Returns the previous value for restoring in tests.
+func SetTokenEndpoint(url string) string {
+	old := tokenEndpoint
+	tokenEndpoint = url
+	return old
+}
+
 // Token fetches an anonymous bearer token for pulling
 // from the given GHCR repository. If the GALE_GITHUB_TOKEN
 // environment variable is set, its value is returned
