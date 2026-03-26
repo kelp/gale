@@ -566,3 +566,57 @@ func serveFile(t *testing.T, filePath string) *httptest.Server {
 
 	return srv
 }
+
+// --- Extra PATH dirs ---
+
+func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
+	// Create a fake tool in a temp dir.
+	toolDir := t.TempDir()
+	toolPath := filepath.Join(toolDir, "mytool")
+	err := os.WriteFile(toolPath,
+		[]byte("#!/bin/sh\necho mytool-output > \"$1\""),
+		0o755)
+	if err != nil {
+		t.Fatalf("write tool: %v", err)
+	}
+
+	tarball, hash := createSourceTarGz(t, map[string]string{
+		"testpkg-1.0/README": "hello",
+	})
+	srv := serveFile(t, tarball)
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: srv.URL, SHA256: hash},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"mytool $PREFIX/bin/output.txt",
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	result, err := Build(r, outputDir, toolDir)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+	if result.Archive == "" {
+		t.Error("expected non-empty archive path")
+	}
+
+	// Extract and verify mytool was found.
+	extractDir := t.TempDir()
+	if err := download.ExtractTarZstd(
+		result.Archive, extractDir); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	data, err := os.ReadFile(
+		filepath.Join(extractDir, "bin", "output.txt"))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !strings.Contains(string(data), "mytool-output") {
+		t.Errorf("output = %q, want mytool-output", data)
+	}
+}

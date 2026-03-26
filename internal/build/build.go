@@ -23,8 +23,9 @@ type BuildResult struct {
 }
 
 // Build builds a recipe from source and packages the result.
-// outputDir is where the tar.zst will be written.
-func Build(r *recipe.Recipe, outputDir string) (*BuildResult, error) {
+// outputDir is where the tar.zst will be written. Optional
+// extraPaths are prepended to the build environment PATH.
+func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResult, error) {
 	workspace, err := os.MkdirTemp("", "gale-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
@@ -68,7 +69,7 @@ func Build(r *recipe.Recipe, outputDir string) (*BuildResult, error) {
 	// Run build steps.
 	jobs := strconv.Itoa(runtime.NumCPU())
 	for _, step := range r.Build.Steps {
-		if err := runStep(step, sourceRoot, prefixDir, jobs); err != nil {
+		if err := runStep(step, sourceRoot, prefixDir, jobs, extraPaths); err != nil {
 			return nil, err
 		}
 	}
@@ -119,10 +120,10 @@ func detectSourceRoot(srcDir string) (string, error) {
 // and JOBS environment variables set. Uses a clean environment
 // with only essential variables to avoid interference from the
 // host environment (e.g., nix coreutils aliases).
-func runStep(step, sourceRoot, prefixDir, jobs string) error {
+func runStep(step, sourceRoot, prefixDir, jobs string, extraPaths []string) error {
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = sourceRoot
-	cmd.Env = buildEnv(prefixDir, jobs)
+	cmd.Env = buildEnv(prefixDir, jobs, extraPaths)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -135,9 +136,12 @@ func runStep(step, sourceRoot, prefixDir, jobs string) error {
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
-func buildEnv(prefixDir, jobs string) []string {
+func buildEnv(prefixDir, jobs string, extraPaths []string) []string {
 	home := os.Getenv("HOME")
 	path := buildPath(home)
+	if len(extraPaths) > 0 {
+		path = strings.Join(extraPaths, ":") + ":" + path
+	}
 	tmpdir := os.Getenv("TMPDIR")
 	if tmpdir == "" {
 		tmpdir = "/tmp"
