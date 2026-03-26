@@ -47,6 +47,7 @@ internal/ai/        Anthropic SDK integration
 internal/homebrew/  Homebrew formula file parser
 internal/build/     build-from-source orchestration
 internal/installer/ install flow (binary or source)
+internal/ghcr/      GHCR anonymous token exchange
 ```
 
 ## Conventions
