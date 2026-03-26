@@ -8,8 +8,7 @@
 - [x] Package store directory management
 - [x] Colored terminal output with NO_COLOR support
 - [x] HTTP download, SHA256 verification
-- [x] tar.gz and zip extraction
-- [x] tar.zst extract and create (klauspost/compress)
+- [x] tar.gz, zip, and tar.zst extraction and creation
 - [x] Symlink profile management (~/.gale/bin/)
 - [x] Lock file read/write and stale detection
 - [x] Environment management and shell hooks (fish/zsh/bash)
@@ -17,15 +16,27 @@
 - [x] Letter-bucketed recipe repo layout (recipes/j/jq.toml)
 - [x] ed25519 signing and verification
 - [x] Anthropic API client with graceful degradation
-- [x] Homebrew API formula fetching (no local brew needed)
 - [x] Binary platform sections in recipe format
 - [x] Build-from-source module (download, verify, build,
   package as tar.zst)
 - [x] Installer module (binary or source, store, profile)
 - [x] CLI: install, remove, list, shell, run, hook, update,
   sync, build, search, import, create-recipe, repo
-- [x] First recipe: jq 1.7.1 (built from source, tested)
 - [x] Linux test suite via Docker/OrbStack
+- [x] Homebrew formula file parser (heuristic, no API)
+  - Parses Ruby formula directly from GitHub
+  - Extracts metadata, deps, build steps
+  - Handles autotools and cargo patterns
+  - Translates #{prefix} and *std_configure_args
+  - Warnings for incomplete parsing
+  - BSD-2-Clause attribution in output
+- [x] Default store root to ~/.gale/packages (no root needed)
+- [x] PAX header support in tar extraction
+- [x] Symlink handling in tar.zst create/extract
+- [x] Clean build environment (avoids nix tool interference)
+- [x] Autotools timestamp fix (touchAll after extraction)
+- [x] 7 recipes tested and building from source:
+  jq, just, fd, ripgrep, bat, git-delta, starship
 
 ## AI Features
 
@@ -33,10 +44,10 @@ Use the Claude Code SDK for all AI features — no custom
 agent loop. The SDK handles tool calling, retries, and
 streaming. Our code provides focused prompts and tools.
 
-- [ ] **AI-enabled import** — Use Claude Code SDK to
-  translate complex Homebrew formulas. Ruby build logic,
-  conditional deps, and patches need AI interpretation,
-  not just JSON metadata scraping.
+- [ ] **AI-enabled import fallback** — When heuristic
+  parsing produces warnings (empty version, missing
+  build steps), offer to fix with Claude Code SDK.
+  Heuristic first, AI as fallback.
 
 - [ ] **AI-enabled search** — `gale search` should use
   natural language via Claude API when a key is configured.
@@ -47,12 +58,12 @@ streaming. Our code provides focused prompts and tools.
   running builds, and writing TOML. The SDK handles the
   agent loop.
 
-- [ ] **Recipe generation prompt engineering** — Capture
-  learnings from manually creating the first recipes
-  (build quirks, configure flags, dependency patterns,
-  timestamp fixes, symlink handling) and encode them
-  into the prompt. The prompt should produce recipes
-  that work on the first try.
+- [ ] **Recipe generation prompt engineering** — Encode
+  learnings from building the first 7 recipes into the
+  prompt: autotools timestamp sensitivity, clean build
+  env, cargo --path flag, symlink handling, PAX headers,
+  --with-oniguruma=builtin pattern. The prompt should
+  produce recipes that work on the first try.
 
 ## CLI Polish
 
@@ -113,9 +124,11 @@ streaming. Our code provides focused prompts and tools.
 
 ## Build System
 
-- [ ] **Build dependency resolution** — Resolve and install
-  build dependencies before running build steps.
-  Currently assumes build deps are on the host.
+- [ ] **Build dependency checking** — Before building,
+  check that required tools (cargo, go, autoconf, etc.)
+  are available. Tell the user what's missing and how
+  to install it. Assume stock macOS + Xcode CLT as the
+  baseline.
 
 - [ ] **Per-platform build overrides** — Allow `[build.*]`
   sections that override build steps for specific
