@@ -33,8 +33,16 @@ recipe TOML file. Does not require Homebrew to be installed.`,
 
 		fmt.Print(f.ToRecipeTOML())
 
-		out.Success(fmt.Sprintf("Recipe generated for %s@%s",
-			f.Name, f.Version))
+		for _, w := range f.Warnings {
+			out.Warn(w)
+		}
+
+		if len(f.Warnings) > 0 {
+			out.Info("Review the generated recipe before use")
+		} else {
+			out.Success(fmt.Sprintf("Recipe generated for %s@%s",
+				f.Name, f.Version))
+		}
 		return nil
 	},
 }

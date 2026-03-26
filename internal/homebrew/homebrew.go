@@ -20,6 +20,7 @@ type Formula struct {
 	RuntimeDeps []string
 	BuildDeps   []string
 	BuildSteps  []string
+	Warnings    []string
 }
 
 // defaultBaseURL is the raw GitHub URL for homebrew-core formulas.
@@ -69,6 +70,24 @@ func ParseFormula(name, ruby string) (*Formula, error) {
 
 	// Extract build steps from install method.
 	f.BuildSteps = extractBuildSteps(ruby)
+
+	// Detect issues.
+	if f.Version == "" {
+		f.Warnings = append(f.Warnings,
+			"could not detect version from source URL")
+	}
+	if f.SourceURL == "" {
+		f.Warnings = append(f.Warnings,
+			"could not find source URL")
+	}
+	if f.SHA256 == "" {
+		f.Warnings = append(f.Warnings,
+			"could not find SHA256 hash")
+	}
+	if len(f.BuildSteps) == 0 {
+		f.Warnings = append(f.Warnings,
+			"could not detect build steps")
+	}
 
 	return f, nil
 }
@@ -294,7 +313,14 @@ func removeBlock(ruby, start string) string {
 func (f *Formula) ToRecipeTOML() string {
 	var b strings.Builder
 
-	fmt.Fprintf(&b, "# Generated from Homebrew formula (BSD-2-Clause)\n\n")
+	fmt.Fprintf(&b, "# Generated from Homebrew formula (BSD-2-Clause)\n")
+	if len(f.Warnings) > 0 {
+		for _, w := range f.Warnings {
+			fmt.Fprintf(&b, "# WARNING: %s\n", w)
+		}
+		fmt.Fprintf(&b, "# Review and edit before use\n")
+	}
+	fmt.Fprintf(&b, "\n")
 	fmt.Fprintf(&b, "[package]\n")
 	fmt.Fprintf(&b, "name = %q\n", f.Name)
 	fmt.Fprintf(&b, "version = %q\n", f.Version)
