@@ -2,12 +2,15 @@ package installer
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/profile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
@@ -84,8 +87,19 @@ func installBinary(bin *recipe.Binary, storeDir string) error {
 	tmpFile := storeDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)
 
-	if err := download.Fetch(bin.URL, tmpFile); err != nil {
-		return fmt.Errorf("fetch binary: %w", err)
+	if isGHCR(bin.URL) {
+		repo := repoFromURL(bin.URL)
+		token, err := ghcr.Token(repo)
+		if err != nil {
+			return fmt.Errorf("ghcr auth: %w", err)
+		}
+		if err := download.FetchWithAuth(bin.URL, tmpFile, token); err != nil {
+			return fmt.Errorf("fetch binary: %w", err)
+		}
+	} else {
+		if err := download.Fetch(bin.URL, tmpFile); err != nil {
+			return fmt.Errorf("fetch binary: %w", err)
+		}
 	}
 
 	if err := download.VerifySHA256(tmpFile, bin.SHA256); err != nil {
@@ -97,6 +111,40 @@ func installBinary(bin *recipe.Binary, storeDir string) error {
 	}
 
 	return nil
+}
+
+// isGHCR returns true if the URL points to a GHCR blob
+// endpoint. Matches both ghcr.io host and the /v2/.../blobs/
+// path pattern used by OCI registries.
+func isGHCR(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	if u.Host == "ghcr.io" {
+		return true
+	}
+	// Also match OCI blob URL pattern for any host (enables
+	// testing with httptest servers).
+	return strings.HasPrefix(u.Path, "/v2/") &&
+		strings.Contains(u.Path, "/blobs/")
+}
+
+// repoFromURL extracts the repository path from a GHCR blob
+// URL like "https://ghcr.io/v2/owner/repo/name/blobs/sha256:...".
+// Returns "owner/repo/name".
+func repoFromURL(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	// Path: /v2/owner/repo/name/blobs/sha256:...
+	// Strip "/v2/" prefix and "/blobs/..." suffix.
+	p := strings.TrimPrefix(u.Path, "/v2/")
+	if idx := strings.Index(p, "/blobs/"); idx != -1 {
+		p = p[:idx]
+	}
+	return p
 }
 
 func installFromSource(r *recipe.Recipe, storeDir string) error {
