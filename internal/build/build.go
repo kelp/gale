@@ -138,12 +138,16 @@ func runStep(step, sourceRoot, prefixDir, jobs string) error {
 func buildEnv(prefixDir, jobs string) []string {
 	home := os.Getenv("HOME")
 	path := buildPath(home)
+	tmpdir := os.Getenv("TMPDIR")
+	if tmpdir == "" {
+		tmpdir = "/tmp"
+	}
 	env := []string{
 		"PREFIX=" + prefixDir,
 		"JOBS=" + jobs,
 		"PATH=" + path,
 		"HOME=" + home,
-		"TMPDIR=" + os.Getenv("TMPDIR"),
+		"TMPDIR=" + tmpdir,
 		"LANG=en_US.UTF-8",
 	}
 	// Pass through compiler if set.
