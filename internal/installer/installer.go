@@ -16,10 +16,15 @@ import (
 	"github.com/kelp/gale/internal/store"
 )
 
+// RecipeResolver finds and parses a recipe by package name.
+// Returns nil if the package has no recipe.
+type RecipeResolver func(name string) (*recipe.Recipe, error)
+
 // Installer installs packages into the store and links them.
 type Installer struct {
-	Store   *store.Store
-	Profile *profile.Profile
+	Store    *store.Store
+	Profile  *profile.Profile
+	Resolver RecipeResolver
 }
 
 // InstallResult holds the outcome of an install.
@@ -61,7 +66,15 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	}
 
 	if method != "binary" {
-		if err := installFromSource(r, storeDir); err != nil {
+		// Resolve and install build deps, collect their
+		// bin dirs for the build PATH.
+		depPaths, err := inst.installBuildDeps(r)
+		if err != nil {
+			os.RemoveAll(storeDir)
+			return nil, fmt.Errorf("install build deps: %w", err)
+		}
+
+		if err := installFromSource(r, storeDir, depPaths); err != nil {
 			// Clean up failed install.
 			os.RemoveAll(storeDir)
 			return nil, fmt.Errorf("build from source: %w", err)
@@ -147,7 +160,42 @@ func repoFromURL(rawURL string) string {
 	return p
 }
 
-func installFromSource(r *recipe.Recipe, storeDir string) error {
+// installBuildDeps installs build dependencies and returns
+// their bin directory paths.
+func (inst *Installer) installBuildDeps(r *recipe.Recipe) ([]string, error) {
+	if len(r.Dependencies.Build) == 0 || inst.Resolver == nil {
+		return nil, nil
+	}
+
+	var binDirs []string
+	for _, dep := range r.Dependencies.Build {
+		// Check if already installed — find its version
+		// by resolving the recipe.
+		depRecipe, err := inst.Resolver(dep)
+		if err != nil {
+			return nil, fmt.Errorf("resolve dep %q: %w", dep, err)
+		}
+		if depRecipe == nil {
+			return nil, fmt.Errorf(
+				"no recipe found for build dependency %q", dep)
+		}
+
+		// Install the dep (will be cached if already present).
+		if _, err := inst.Install(depRecipe); err != nil {
+			return nil, fmt.Errorf("install dep %q: %w", dep, err)
+		}
+
+		// Add its bin dir to the list.
+		depDir := filepath.Join(inst.Store.Root,
+			dep, depRecipe.Package.Version, "bin")
+		if _, err := os.Stat(depDir); err == nil {
+			binDirs = append(binDirs, depDir)
+		}
+	}
+	return binDirs, nil
+}
+
+func installFromSource(r *recipe.Recipe, storeDir string, extraPaths []string) error {
 	// Build to a temp directory.
 	tmpDir, err := os.MkdirTemp("", "gale-install-*")
 	if err != nil {
@@ -155,7 +203,7 @@ func installFromSource(r *recipe.Recipe, storeDir string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := build.Build(r, tmpDir)
+	result, err := build.Build(r, tmpDir, extraPaths...)
 	if err != nil {
 		return err
 	}
