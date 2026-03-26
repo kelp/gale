@@ -825,3 +825,61 @@ func TestCreateTarZstdPreservesExecutability(t *testing.T) {
 			info.Mode())
 	}
 }
+
+// --- FetchWithAuth tests ---
+
+func TestFetchWithAuthSendsAuthHeader(t *testing.T) {
+	var gotAuth string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = r.Header.Get("Authorization")
+			fmt.Fprint(w, "content")
+		}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	err := FetchWithAuth(srv.URL+"/blob", dest, "my-token-123")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotAuth != "Bearer my-token-123" {
+		t.Errorf("Authorization = %q, want %q",
+			gotAuth, "Bearer my-token-123")
+	}
+}
+
+func TestFetchWithAuthWritesFile(t *testing.T) {
+	want := "binary-content-here"
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, want)
+		}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	err := FetchWithAuth(srv.URL+"/blob", dest, "tok")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read file: %v", err)
+	}
+	if string(got) != want {
+		t.Errorf("file content = %q, want %q", got, want)
+	}
+}
+
+func TestFetchWithAuthErrorsOnNon200(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "denied", http.StatusForbidden)
+		}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	err := FetchWithAuth(srv.URL+"/blob", dest, "tok")
+	if err == nil {
+		t.Fatal("expected error for 403 status")
+	}
+}

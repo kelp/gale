@@ -52,6 +52,48 @@ func Fetch(url, destPath string) error {
 	return nil
 }
 
+// FetchWithAuth downloads a file from url to destPath with a
+// bearer token in the Authorization header.
+func FetchWithAuth(url, destPath, bearerToken string) error {
+	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
+		return fmt.Errorf("create destination directory: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+bearerToken)
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("fetch %s: %w", url, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
+	}
+
+	f, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("create destination file: %w", err)
+	}
+
+	if _, err := io.Copy(f, resp.Body); err != nil {
+		f.Close()
+		os.Remove(destPath)
+		return fmt.Errorf("write destination file: %w", err)
+	}
+
+	if err := f.Close(); err != nil {
+		os.Remove(destPath)
+		return fmt.Errorf("close destination file: %w", err)
+	}
+
+	return nil
+}
+
 // VerifySHA256 checks that the file at path has the expected
 // SHA256 hash. The expected value must be hex-encoded. On
 // mismatch the error contains both the expected and actual hashes.
