@@ -33,15 +33,19 @@
   gale — resolves compilers without importing full PATH)
 - [x] 9 recipes: jq, just, fd, ripgrep, bat, git-delta,
   starship, fzf, eza
+- [x] GHCR binary pull with anonymous token exchange
+- [x] Authenticated HTTP fetch (FetchWithAuth)
+- [x] Installer GHCR integration (auto-detect, auth, fallback)
 
-## OCI/GHCR Distribution (next)
+## GHCR Distribution
 
 Two sides: gale pulls binaries, gale-recipes pushes them.
 
-- [ ] **OCI pull in gale** — `internal/oci/` package that
-  pulls tar.zst artifacts from GHCR. The installer checks
-  `[binary.<platform>]` first, falls back to source build.
-  Uses ORAS client library or raw OCI registry HTTP API.
+- [x] **GHCR pull in gale** — `internal/ghcr/` package
+  handles anonymous token exchange. Installer detects
+  GHCR blob URLs, fetches with bearer auth, falls back
+  to source build. No full OCI client needed — uses
+  direct blob URLs like Homebrew.
 
 - [ ] **Build farm in gale-recipes** — GitHub Actions
   workflows that build each recipe on macos-latest and
