@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/kelp/gale/internal/download"
@@ -132,12 +133,15 @@ func runStep(step, sourceRoot, prefixDir, jobs string) error {
 }
 
 // buildEnv constructs a minimal, clean environment for build steps.
+// Resolves build tool locations from the host PATH so nix-installed
+// compilers work, without pulling in the full nix coreutils.
 func buildEnv(prefixDir, jobs string) []string {
 	home := os.Getenv("HOME")
+	path := buildPath(home)
 	env := []string{
 		"PREFIX=" + prefixDir,
 		"JOBS=" + jobs,
-		"PATH=" + home + "/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+		"PATH=" + path,
 		"HOME=" + home,
 		"TMPDIR=" + os.Getenv("TMPDIR"),
 		"LANG=en_US.UTF-8",
@@ -150,6 +154,51 @@ func buildEnv(prefixDir, jobs string) []string {
 		env = append(env, "CXX="+cxx)
 	}
 	return env
+}
+
+// buildPath constructs the PATH for build steps. Includes
+// well-known tool directories (Homebrew, cargo, gale) plus
+// any directories where common build tools are found on the
+// host. This avoids importing the full host PATH (which may
+// contain nix coreutils that break autotools) while still
+// finding compilers regardless of how they were installed.
+func buildPath(home string) string {
+	// Well-known directories that should always be checked.
+	base := []string{
+		home + "/.gale/bin",
+		home + "/.cargo/bin",
+		"/opt/homebrew/bin",
+		"/usr/local/bin",
+		"/usr/bin",
+		"/bin",
+		"/usr/sbin",
+		"/sbin",
+	}
+
+	seen := map[string]bool{}
+	for _, d := range base {
+		seen[d] = true
+	}
+
+	// Resolve common build tools from the host environment
+	// and prepend their directories if not already included.
+	tools := []string{"go", "cargo", "rustc", "cmake", "autoconf", "automake", "libtool"}
+	var extra []string
+
+	for _, tool := range tools {
+		p, err := exec.LookPath(tool)
+		if err != nil {
+			continue
+		}
+		dir := filepath.Dir(p)
+		if seen[dir] {
+			continue
+		}
+		seen[dir] = true
+		extra = append(extra, dir)
+	}
+
+	return strings.Join(append(extra, base...), ":")
 }
 
 // touchAll resets all file modification times under dir to now.
