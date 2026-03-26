@@ -47,15 +47,13 @@ Two sides: gale pulls binaries, gale-recipes pushes them.
   to source build. No full OCI client needed — uses
   direct blob URLs like Homebrew.
 
-- [ ] **Build farm in gale-recipes** — GitHub Actions
-  workflows that build each recipe on macos-latest and
-  ubuntu-latest. Produces tar.zst for darwin-arm64,
-  linux-amd64, linux-arm64. Pushes to GHCR via ORAS.
-  Updates `[binary.<platform>]` sections in recipe TOML
-  and commits back.
+- [x] **Build farm in gale-recipes** — GitHub Actions
+  builds each recipe on macOS arm64 and Linux amd64.
+  Pushes tar.zst to GHCR via ORAS. Updates
+  `[binary.<platform>]` sections and commits back.
 
-- [ ] **gale CI** — Run tests on macos-latest and
-  ubuntu-latest. Build the binary. Run on push and PR.
+- [x] **gale CI** — Tests, vet, gofumpt, build on
+  macOS arm64 and Linux amd64.
 
 ## AI Features
 
@@ -133,11 +131,32 @@ streaming. Our code provides focused prompts and tools.
 
 - [ ] **Build dependency checking** — Before building,
   check that required tools (cargo, go, autoconf, etc.)
-  are available. Tell the user what's missing and how
-  to install it. Assume stock macOS + Xcode CLT as the
-  baseline.
+  are available. Install missing deps via gale (binary
+  preferred, source fallback). Add installed deps' bin
+  dirs to the build PATH. Error clearly if a dep has
+  no recipe.
 
 - [ ] **Per-platform build overrides** — Allow `[build.*]`
   sections that override build steps for specific
   platforms (e.g., different configure flags on Linux
   vs macOS).
+
+## Language Toolchains
+
+Design how gale manages compilers and language runtimes.
+These distribute prebuilt binaries — recipes would be
+pure `[binary.<platform>]` with no `[build]` block.
+
+- [ ] **Go** — download official tarball from go.dev.
+  Handles the `go/` prefix in extraction.
+- [ ] **Rust (rustup + cargo + rustc)** — download
+  rustup-init binary, or package cargo/rustc directly
+  from static.rust-lang.org.
+- [ ] **Zig** — single binary download from ziglang.org.
+- [ ] **Node.js / npm** — download official tarball.
+  Needed for recipes with npm build steps.
+- [ ] **Design decisions** — how do these interact with
+  system-installed versions? Should gale prefer its own
+  Go/Rust over the host's? How do per-project envs
+  pick a specific version? Relationship with rustup's
+  own version management.
