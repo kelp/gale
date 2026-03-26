@@ -24,19 +24,34 @@
   sync, build, search, import, create-recipe, repo
 - [x] Linux test suite via Docker/OrbStack
 - [x] Homebrew formula file parser (heuristic, no API)
-  - Parses Ruby formula directly from GitHub
-  - Extracts metadata, deps, build steps
-  - Handles autotools and cargo patterns
-  - Translates #{prefix} and *std_configure_args
-  - Warnings for incomplete parsing
-  - BSD-2-Clause attribution in output
 - [x] Default store root to ~/.gale/packages (no root needed)
 - [x] PAX header support in tar extraction
 - [x] Symlink handling in tar.zst create/extract
 - [x] Clean build environment (avoids nix tool interference)
 - [x] Autotools timestamp fix (touchAll after extraction)
-- [x] 7 recipes tested and building from source:
-  jq, just, fd, ripgrep, bat, git-delta, starship
+- [x] Build tool discovery from host PATH (nix, Homebrew,
+  gale — resolves compilers without importing full PATH)
+- [x] 9 recipes: jq, just, fd, ripgrep, bat, git-delta,
+  starship, fzf, eza
+
+## OCI/GHCR Distribution (next)
+
+Two sides: gale pulls binaries, gale-recipes pushes them.
+
+- [ ] **OCI pull in gale** — `internal/oci/` package that
+  pulls tar.zst artifacts from GHCR. The installer checks
+  `[binary.<platform>]` first, falls back to source build.
+  Uses ORAS client library or raw OCI registry HTTP API.
+
+- [ ] **Build farm in gale-recipes** — GitHub Actions
+  workflows that build each recipe on macos-latest and
+  ubuntu-latest. Produces tar.zst for darwin-arm64,
+  linux-amd64, linux-arm64. Pushes to GHCR via ORAS.
+  Updates `[binary.<platform>]` sections in recipe TOML
+  and commits back.
+
+- [ ] **gale CI** — Run tests on macos-latest and
+  ubuntu-latest. Build the binary. Run on push and PR.
 
 ## AI Features
 
@@ -59,11 +74,12 @@ streaming. Our code provides focused prompts and tools.
   agent loop.
 
 - [ ] **Recipe generation prompt engineering** — Encode
-  learnings from building the first 7 recipes into the
+  learnings from building the first 9 recipes into the
   prompt: autotools timestamp sensitivity, clean build
   env, cargo --path flag, symlink handling, PAX headers,
-  --with-oniguruma=builtin pattern. The prompt should
-  produce recipes that work on the first try.
+  --with-oniguruma=builtin pattern, Go mkdir + -o flag.
+  The prompt should produce recipes that work on the
+  first try.
 
 ## CLI Polish
 
@@ -73,9 +89,6 @@ streaming. Our code provides focused prompts and tools.
   with ANSI color, or if we need a custom help function.
 
 ## CI & Release
-
-- [ ] **GitHub Actions CI** — Run tests on macos-latest
-  and ubuntu-latest. Build the binary. Run on push and PR.
 
 - [ ] **Release management** — Just targets for version
   bump, git tag, and GitHub release creation. Automate
@@ -93,16 +106,6 @@ streaming. Our code provides focused prompts and tools.
 
 - [ ] **Self-update** — `gale update-self` or similar to
   download the latest gale binary and replace itself.
-
-- [ ] **OCI/GHCR binary hosting** — Store prebuilt packages
-  in GitHub Container Registry via ORAS. Free for public
-  packages, no bandwidth charges.
-
-- [ ] **Build farm** — GitHub Actions workflows to build
-  recipes on macos-latest and ubuntu-latest for
-  darwin-arm64, linux-amd64, linux-arm64. Upload
-  tar.zst packages to GHCR. Populate `[binary.*]`
-  sections in recipes.
 
 ## Auto-Update Agent
 
