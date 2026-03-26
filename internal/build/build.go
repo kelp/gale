@@ -133,11 +133,12 @@ func runStep(step, sourceRoot, prefixDir, jobs string) error {
 
 // buildEnv constructs a minimal, clean environment for build steps.
 func buildEnv(prefixDir, jobs string) []string {
+	home := os.Getenv("HOME")
 	env := []string{
 		"PREFIX=" + prefixDir,
 		"JOBS=" + jobs,
-		"PATH=/usr/bin:/bin:/usr/sbin:/sbin",
-		"HOME=" + os.Getenv("HOME"),
+		"PATH=" + home + "/.cargo/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+		"HOME=" + home,
 		"TMPDIR=" + os.Getenv("TMPDIR"),
 		"LANG=en_US.UTF-8",
 	}
@@ -157,9 +158,13 @@ func touchAll(dir string) error {
 	now := time.Now()
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return err
+			return nil // skip broken symlinks and errors
 		}
-		return os.Chtimes(path, now, now)
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil // skip symlinks
+		}
+		_ = os.Chtimes(path, now, now) // best effort
+		return nil
 	})
 }
 
