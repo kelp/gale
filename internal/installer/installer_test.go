@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/profile"
@@ -212,6 +213,110 @@ func TestInstallBinaryFromGHCR(t *testing.T) {
 	profileBin := filepath.Join(binDir, "testpkg")
 	if _, err := os.Lstat(profileBin); err != nil {
 		t.Errorf("binary not linked in profile: %v", err)
+	}
+}
+
+func TestInstallResolvesBuildDeps(t *testing.T) {
+	// Create a tar.zst for the dep: bin/deptool that writes
+	// a marker file.
+	depScript := "#!/bin/sh\necho dep-was-here > \"$1\""
+	depTarzst := createTestTarZstd(t, "bin/deptool", depScript)
+	depHash := hashFile(t, depTarzst)
+	depData, err := os.ReadFile(depTarzst)
+	if err != nil {
+		t.Fatalf("read dep tar.zst: %v", err)
+	}
+
+	// Create source tar.gz for the main package.
+	srcTar := createTestSourceTarGz(t)
+	srcHash := hashFile(t, srcTar)
+
+	// Serve both files.
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/dep.tar.zst":
+				w.Write(depData)
+			case "/source.tar.gz":
+				http.ServeFile(w, r, srcTar)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	binDir := t.TempDir()
+	inst := &Installer{
+		Store:   store.NewStore(storeRoot),
+		Profile: profile.NewProfile(binDir),
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if name == "deptool" {
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name: "deptool", Version: "1.0",
+					},
+					Source: recipe.Source{
+						URL:    srv.URL + "/dep.tar.zst",
+						SHA256: depHash,
+					},
+					Binary: map[string]recipe.Binary{
+						fmt.Sprintf("%s-%s",
+							runtime.GOOS, runtime.GOARCH): {
+							URL:    srv.URL + "/dep.tar.zst",
+							SHA256: depHash,
+						},
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown dep: %s", name)
+		},
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "mypkg", Version: "2.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: srcHash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"deptool $PREFIX/bin/marker.txt",
+				"echo '#!/bin/sh' > $PREFIX/bin/mypkg",
+				"chmod +x $PREFIX/bin/mypkg",
+			},
+		},
+		Dependencies: recipe.Dependencies{
+			Build: []string{"deptool"},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+	if result.Method != "source" {
+		t.Errorf("Method = %q, want %q",
+			result.Method, "source")
+	}
+
+	// Verify deptool was installed in store.
+	depBin := filepath.Join(storeRoot,
+		"deptool", "1.0", "bin", "deptool")
+	if _, err := os.Stat(depBin); err != nil {
+		t.Errorf("dep not in store: %v", err)
+	}
+
+	// Verify main package built with deptool available.
+	marker := filepath.Join(storeRoot,
+		"mypkg", "2.0", "bin", "marker.txt")
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("marker not found: %v", err)
+	}
+	if !strings.Contains(string(data), "dep-was-here") {
+		t.Errorf("marker = %q, want dep-was-here", data)
 	}
 }
 
