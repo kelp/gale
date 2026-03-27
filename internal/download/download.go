@@ -179,6 +179,19 @@ func ExtractTarGz(archivePath, destDir string) error {
 				return fmt.Errorf("create symlink %s: %w",
 					hdr.Name, err)
 			}
+		case tar.TypeLink:
+			linkTarget := filepath.Join(destDir, hdr.Linkname)
+			if err := os.MkdirAll(
+				filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf(
+					"create parent directory for %s: %w",
+					hdr.Name, err)
+			}
+			os.Remove(target)
+			if err := os.Link(linkTarget, target); err != nil {
+				return fmt.Errorf("create hard link %s: %w",
+					hdr.Name, err)
+			}
 		case tar.TypeXGlobalHeader, tar.TypeXHeader:
 			// PAX headers — skip silently.
 			continue
@@ -296,6 +309,19 @@ func ExtractTarZstd(archivePath, destDir string) error {
 			os.Remove(target)
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
 				return fmt.Errorf("create symlink %s: %w",
+					hdr.Name, err)
+			}
+		case tar.TypeLink:
+			linkTarget := filepath.Join(destDir, hdr.Linkname)
+			if err := os.MkdirAll(
+				filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf(
+					"create parent directory for %s: %w",
+					hdr.Name, err)
+			}
+			os.Remove(target)
+			if err := os.Link(linkTarget, target); err != nil {
+				return fmt.Errorf("create hard link %s: %w",
 					hdr.Name, err)
 			}
 		case tar.TypeXGlobalHeader, tar.TypeXHeader:

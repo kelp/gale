@@ -375,6 +375,51 @@ func TestExtractTarGzRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+func TestExtractTarGzHandlesHardLinks(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "hardlink.tar.gz")
+	destDir := t.TempDir()
+
+	// Build a tar.gz with a file and a hard link to it.
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	content := "hardlink-target-content"
+	tw.WriteHeader(&tar.Header{
+		Name: "original.txt",
+		Mode: 0o644,
+		Size: int64(len(content)),
+	})
+	tw.Write([]byte(content))
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeLink,
+		Name:     "linked.txt",
+		Linkname: "original.txt",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	err = ExtractTarGz(archive, destDir)
+	if err != nil {
+		t.Fatalf("ExtractTarGz error: %v", err)
+	}
+
+	// Both files should exist with same content.
+	got, err := os.ReadFile(filepath.Join(destDir, "linked.txt"))
+	if err != nil {
+		t.Fatalf("read hard link: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("linked.txt = %q, want %q", got, content)
+	}
+}
+
 func TestExtractZipRejectsPathTraversal(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "evil.zip")
 	destDir := t.TempDir()
