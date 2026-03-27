@@ -65,46 +65,28 @@
 - [x] All 9 recipes verified with local builds
   (8 pass, eza needs newer Rust)
 
-## GHCR Distribution
+## Declarative Environments (in progress)
 
-Two sides: gale pulls binaries, gale-recipes pushes them.
-
-- [x] **GHCR pull in gale** — `internal/ghcr/` package
-  handles anonymous token exchange. Installer detects
-  GHCR blob URLs, fetches with bearer auth, falls back
-  to source build. No full OCI client needed — uses
-  direct blob URLs like Homebrew.
-
-- [x] **Build farm in gale-recipes** — GitHub Actions
-  builds each recipe on macOS arm64 and Linux amd64.
-  Pushes tar.zst to GHCR via ORAS. Updates
-  `[binary.<platform>]` sections and commits back.
-
-- [x] **gale CI** — Tests, vet, gofumpt, build on
-  macOS arm64 and Linux amd64.
-
-## Install UX (next)
-
-`gale install jq` should just work. Fetches recipe
-from public registry, installs binary, updates config.
-
-- [x] **Registry package** — `internal/registry/` fetches
-  recipes by name from GitHub raw URLs on demand.
-- [x] **Rewrite `gale install`** — fetch recipe from
-  registry, install (binary preferred), add to
-  gale.toml. Default global, prompt if project
-  gale.toml exists. `-g`/`-p` flags skip prompt.
-  Keep `--recipe` as escape hatch for local files.
-- [x] **`gale add` command** — add to gale.toml without
-  installing. Validates recipe exists. Accepts
-  multiple packages. Project scope by default.
-- [x] **Implement `gale sync`** — install all packages
-  from gale.toml. Used by teammates after clone.
-- [x] **Interactive scope prompt** — when gale.toml
-  exists and no `-g`/`-p` flag, ask `[g/p]`. Default
-  global. TTY-only; silent global in non-TTY.
-- [x] **Registry URL config** — override default URL
-  in `~/.gale/config.toml` `[registry]` section.
+- [x] **Generation model** — `internal/generation/`
+  builds gen directories with bin/ symlinks into the
+  store. Atomic swap via `current` symlink. Replaces
+  the old imperative profile model.
+- [x] **Installer decoupled** — installer only writes
+  to the store. Commands rebuild generation after
+  store changes.
+- [ ] **`gale env` command** — print
+  `export PATH=<dir>/current/bin:$PATH` for the
+  current scope. Used by CI and direnv.
+- [ ] **`gale init` command** — bootstrap a project:
+  create gale.toml, .envrc, update .gitignore.
+- [ ] **direnv integration** — `gale hook direnv`
+  outputs `use_gale` function. Replaces shell hooks.
+- [ ] **direnv recipe** — package direnv as a gale
+  recipe so it can be installed globally.
+- [ ] **Delete old shell hooks** — remove fish/zsh/bash
+  chpwd hooks, replace with direnv + `gale env`.
+- [ ] **Remove `internal/profile/`** — dead code once
+  generation model is fully wired.
 
 ## AI Features
 
@@ -195,16 +177,12 @@ keeps recipes current with upstream releases.
 
 ### Recipe format additions
 
-- [ ] **Add `[source].repo` field** — explicit GitHub
+- [x] **Add `[source].repo` field** — explicit GitHub
   owner/repo (e.g., `repo = "jqlang/jq"`). Used to
-  query GitHub Releases API. Starting point for GitHub
-  projects; will need other detection methods later
-  for non-GitHub sources.
-- [ ] **Add `[source].released_at` field** — date the
-  current version was first seen (e.g.,
-  `released_at = "2024-12-15"`). Used for cooldown
-  enforcement. Agent skips if less than 3 days old.
-- [ ] **Update all existing recipes** with `repo` and
+  query GitHub Releases API.
+- [x] **Add `[source].released_at` field** — date the
+  current version was first seen. Used for cooldown.
+- [x] **Update all existing recipes** with `repo` and
   `released_at` fields.
 
 ### Workflow: version checker
@@ -252,9 +230,37 @@ keeps recipes current with upstream releases.
   platforms (e.g., different configure flags on Linux
   vs macOS).
 
-- [ ] Design / review where gale does it's builds. We want it to be in a
-  place that is scratch, but safe from filling disk. Probably create a gale
-  specific tmp dir in the users homedir, and clean it up after we're done.
+- [ ] **Build directory location** — builds currently
+  use system TMPDIR. Move to a gale-specific scratch
+  dir in the user's homedir, clean up after build.
+
+## Recipes: Shared Library Support
+
+Now that the generation model puts lib/ alongside bin/
+in each gen directory, recipes can ship shared libraries
+properly. The gen's lib/ dir has a stable, known path
+(`~/.gale/current/lib/`) so dylib references can use
+`@executable_path/../lib` on macOS or `$ORIGIN/../lib`
+on Linux.
+
+- [ ] **Post-build dylib fixup** — after building a
+  package that produces shared libraries, rewrite
+  dylib paths with `install_name_tool` (macOS) or
+  `patchelf --set-rpath` (Linux) so binaries find
+  their libs relative to the gen directory.
+- [ ] **Re-evaluate Rust recipes** — bat, ripgrep, fd,
+  starship, eza, git-delta, just currently static-link
+  everything via cargo. Some could benefit from shared
+  deps (libgit2, pcre2, oniguruma) to reduce binary
+  size and allow dep updates without full rebuilds.
+- [ ] **jq with shared libjq** — now that we can ship
+  libs, revisit whether jq should build libjq as a
+  shared library (for use by other tools) instead of
+  the current --enable-all-static approach.
+- [ ] **Generation lib/ symlinks** — extend
+  `generation.Build()` to also symlink lib/ entries
+  from the store into the gen directory, alongside
+  bin/.
 
 ## Language Toolchains
 
