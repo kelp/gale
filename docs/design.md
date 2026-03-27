@@ -1,0 +1,187 @@
+# Design
+
+## What Gale Is
+
+Gale is a package manager for developer CLI tools.
+It replaces three tools with one:
+
+- **Homebrew** — global package installation
+- **Nix / home-manager** — declarative package manifests
+- **direnv + Nix flakes** — per-project environments
+
+Gale is inspired by Nix and Homebrew but is not a clone
+of either. It takes the best ideas from both — Nix's
+declarative model, Homebrew's simplicity — and refines
+them into something smaller and more opinionated.
+
+## Directory Layout
+
+```
+~/.gale/
+  gale.toml       Package manifest (source of truth)
+  config.toml     Settings (registry URL, API keys)
+  current → gen/2 Symlink to active generation
+  gen/            Generation snapshots
+    2/bin/        Symlinks into pkg/
+  pkg/            Package store (immutable)
+    jq/1.8.1/
+    fd/10.4.2/
+  README.md       Auto-generated, explains this layout
+```
+
+## Terminology
+
+**Store** (`pkg/`): where package contents live. Each
+version gets its own directory. Once installed, a store
+entry is never modified — only deleted when the package
+is removed. Inspired by the Nix store, but simpler:
+no content-addressing, just `name/version/`.
+
+**Generation** (`gen/`): a numbered snapshot of symlinks
+pointing into the store. "Gen" is short for generation.
+Each gen directory contains `bin/`, and eventually
+`lib/` and `man/`. Generations are cheap to create and
+disposable — only the one pointed to by `current`
+matters.
+
+**Current** (`current`): a symlink to the active gen.
+This is what users put on PATH: `~/.gale/current/bin`.
+Swapping `current` to a new gen atomically updates the
+entire environment. Inspired by Nix generations, but
+using human-friendly incrementing integers (1, 2, 3)
+instead of content hashes.
+
+## Why Generations
+
+The old model: each `gale install` and `gale remove`
+added or removed individual symlinks in `~/.gale/bin/`.
+This was imperative — the bin directory was a history
+of mutations. If something went wrong, you couldn't
+tell what state it should be in.
+
+The new model: the bin directory is a **function of
+gale.toml**. Read the manifest, build a gen directory,
+swap the symlink. Idempotent, predictable, recoverable.
+Run `gale sync` and you always get the right state.
+
+## Atomic Swap
+
+Updating the environment is a single `os.Rename` call:
+
+1. Build `gen/<N>/bin/` with symlinks to the store
+2. Create temp symlink: `current-new → gen/<N>`
+3. `os.Rename("current-new", "current")` — atomic
+4. Delete `gen/<N-1>/`
+
+Step 3 is one syscall. PATH never sees a broken or
+partially-built state.
+
+## Global vs Project
+
+Global and project environments use the same model:
+
+```
+# Global
+~/.gale/gale.toml    → ~/.gale/current/bin/
+~/.gale/gen/2/bin/jq → ~/.gale/pkg/jq/1.8.1/bin/jq
+
+# Project
+./gale.toml          → ./.gale/current/bin/
+./.gale/gen/1/bin/jq → ~/.gale/pkg/jq/1.7.1/bin/jq
+```
+
+Both read a gale.toml manifest and produce a gen
+directory with symlinks. Project symlinks point into
+the central store in `~/.gale/pkg/` — so moving a
+project directory doesn't break anything (the `.gale/`
+dir inside is gitignored and rebuilt on `gale sync`).
+
+## Environment Activation
+
+**Global**: add `~/.gale/current/bin` to PATH in your
+shell config. Done.
+
+**Project**: direnv. `gale init` creates a `.envrc`
+with `use gale`. When you `cd` into the project,
+direnv runs `gale sync` and adds `.gale/current/bin`
+to PATH. When you leave, direnv restores PATH.
+
+**CI / scripts**: `eval "$(gale env)"` prints the
+right `export PATH=...` for the current directory.
+
+We chose direnv over custom shell hooks because:
+- direnv is battle-tested and handles PATH restoration
+- One mechanism for all shells (no fish/zsh/bash hooks)
+- Users already know direnv
+- Less code for us to maintain
+
+## Install Flow
+
+`gale install jq`:
+
+1. Fetch recipe from registry (GitHub raw URL)
+2. Install to store: try prebuilt binary from GHCR
+   first, fall back to building from source
+3. Add `jq = "1.8.1"` to gale.toml
+4. Rebuild generation from gale.toml
+
+The installer only writes to the store. It knows
+nothing about generations or symlinks. The command
+layer handles the generation rebuild.
+
+## Build Environment
+
+Source builds run in a clean shell with minimal PATH
+to avoid interference from nix coreutils or other
+non-standard tools. Build tools (go, cargo, rustc)
+are resolved from the host via `exec.LookPath` and
+symlinked individually into a temp directory — so
+only the specific binary is available, not everything
+else in its parent directory.
+
+This prevents nix vibeutils (`ls`, `mv`, etc.) from
+leaking into autotools configure checks.
+
+## Static Linking
+
+CLI tools are statically linked when possible. This
+avoids dylib path issues: a dynamically-linked binary
+embeds the absolute path to its shared libraries at
+build time, and that path is a temp directory that
+gets deleted after the build.
+
+For autotools projects (like jq): `--disable-shared
+--enable-all-static`. For Rust: cargo static-links
+by default. For Go: static by default.
+
+Shared library support (with `install_name_tool` or
+`patchelf` fixup) is planned for packages that need
+it, but static is the default policy.
+
+## Two-Repo Architecture
+
+- **gale** — the CLI tool. Go code, all packages.
+- **gale-recipes** — recipe TOML files. CI builds
+  each recipe on macOS arm64 and Linux amd64, pushes
+  tar.zst to GHCR, updates binary sections.
+
+Recipes are fetched on demand from GitHub raw URLs.
+No git clone needed for installation.
+
+## Bootstrap
+
+Fresh machine setup:
+
+```bash
+# Install gale binary
+# Add to .zshrc:
+export PATH="$HOME/.gale/current/bin:$PATH"
+eval "$(gale hook direnv)"
+# Copy manifest from dotfiles:
+cp ~/dotfiles/gale.toml ~/.gale/gale.toml
+# Install everything:
+gale sync
+```
+
+After sync, direnv is available (it's a gale package),
+and project environments activate on `cd`.

@@ -1,12 +1,14 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code)
-when working with code in this repository.
+Guidance for Claude Code when working in this repository.
+For design rationale, see `docs/design.md`.
 
 ## Overview
 
 Gale is a macOS-first package manager for developer CLI
-tools. Written in Go.
+tools. Written in Go. Goal: replace Homebrew, Nix, and
+home-manager with one tool that handles global packages
+and per-project environments.
 
 ## Build & Test
 
@@ -14,95 +16,99 @@ tools. Written in Go.
 just              # test + lint (default)
 just build        # build binary
 just test         # all tests
-just test-pkg recipe  # single package tests
+just test-pkg foo # single package tests
 just check        # test + lint + format check
 just fmt          # fix formatting with gofumpt
-```
-
-Or directly:
-
-```
-go build ./cmd/gale/
-go test ./...
-go test ./internal/recipe/...
-go vet ./...
-gofumpt -l .
+just lint         # golangci-lint + go vet
 ```
 
 ## Project Layout
 
 ```
-cmd/gale/           CLI entry point (cobra commands)
-internal/recipe/    TOML recipe parsing
-internal/config/    gale.toml and config.toml parsing
-internal/store/     package store directory management
-internal/output/    colored terminal output
-internal/download/  HTTP fetch, SHA256, tar.gz/zip/tar.zst
-internal/profile/   symlink management (~/.gale/bin/)
-internal/lockfile/  gale.lock read/write
-internal/env/       PATH building, shell hooks
-internal/repo/      recipe repository management
-internal/trust/     ed25519 signing and verification
-internal/ai/        Anthropic SDK integration
-internal/homebrew/  Homebrew formula file parser
-internal/build/     build-from-source orchestration
-internal/installer/ install flow (binary or source)
-internal/ghcr/      GHCR anonymous token exchange
+cmd/gale/              CLI (cobra commands)
+internal/generation/   gen dirs with symlinks, atomic swap
+internal/installer/    install to store (binary or source)
+internal/store/        package store (~/.gale/pkg/)
+internal/build/        build-from-source orchestration
+internal/download/     HTTP fetch, SHA256, tar extraction
+internal/ghcr/         GHCR anonymous token exchange
+internal/registry/     on-demand recipe fetch from GitHub
+internal/recipe/       TOML recipe parsing
+internal/config/       gale.toml and config.toml parsing
+internal/env/          direnv hook, PATH building
+internal/output/       colored terminal output
+internal/lockfile/     gale.lock read/write
+internal/repo/         recipe repository management
+internal/trust/        ed25519 signing and verification
+internal/ai/           Anthropic SDK integration
+internal/homebrew/     Homebrew formula file parser
 ```
 
-## Conventions
+## Key Concepts
 
-- Error handling: return errors, wrap with
-  `fmt.Errorf("context: %w", err)`
-- Testing: table-driven tests, temp directories for
-  filesystem operations
-- No panics in library code
-- Keep packages focused — one responsibility each
-- Format all Go code with gofumpt before committing
+**Store** (`~/.gale/pkg/`): immutable package storage.
+One directory per package per version. Append-only.
+
+**Generation** (`~/.gale/gen/<N>/`): a snapshot of
+symlinks into the store. `current` symlink points to
+the active gen. Rebuilt declaratively from gale.toml
+on every install/remove/sync. Atomic swap via
+`os.Rename`. "gen" is short for generation.
+
+**current** (`~/.gale/current`): symlink to the active
+gen directory. User adds `~/.gale/current/bin` to PATH.
+One symlink swap updates bin, lib, man — everything.
+
+**Registry**: fetches recipes on demand from GitHub raw
+URLs. Letter-bucketed: `recipes/j/jq.toml`. No git
+clone needed.
 
 ## Two-Repo Architecture
 
-Gale is split across two repositories:
+- **gale** (this repo) — the CLI tool.
+- **gale-recipes** (`../gale-recipes`) — recipe TOML
+  files. CI builds recipes, pushes binaries to GHCR.
 
-- **gale** — the tool (this repo). Go code, CLI, all
-  internal packages. CI runs tests on macOS + Linux,
-  builds the binary, publishes releases.
-- **gale-recipes** — the content (`../gale-recipes`).
-  Recipe TOML files. CI builds every recipe on each
-  platform, pushes tar.zst binaries to GHCR via ORAS,
-  and updates `[binary.<platform>]` sections in the
-  recipe TOML.
+Install flow: `gale install jq` fetches the recipe
+from the registry, pulls a prebuilt binary from GHCR
+if available, falls back to building from source.
 
-**Dependency chain**: gale-recipes CI needs a `gale`
-binary to build recipes. gale needs OCI pull support
-(`internal/oci/`) so users can install prebuilt binaries
-from GHCR instead of building from source.
+## Environment Activation
 
-**Install flow**: `gale install jq` checks for a
-`[binary.<platform>]` match first (OCI pull from GHCR),
-falls back to building from source via `[build]` steps.
+**Global**: `~/.gale/current/bin` on PATH.
 
-**Development methodology**: strict red-green TDD via the
-`/tdd-orchestrate` pipeline for every new module.
+**Project**: direnv integration. `gale init` creates
+`.envrc` with `use gale`. direnv calls `gale sync`
+and adds `.gale/current/bin` to PATH. Project and
+global share the same generation model.
+
+`gale env` prints `export PATH=...` for CI/scripts.
+
+## Conventions
+
+- Error handling: `fmt.Errorf("context: %w", err)`
+- Testing: table-driven, temp dirs for filesystem ops
+- TDD: `/tdd-orchestrate` pipeline for new modules
+- No panics in library code
+- One responsibility per package
+- Format with gofumpt, lint with golangci-lint
 
 ## Gotchas
 
-- The build module uses a clean PATH to avoid nix
-  coreutils interfering with autotools. Build tools
-  (go, cargo, rustc) are resolved from the host PATH
-  via `exec.LookPath` and their directories added
-  individually. See `buildPath()` in
-  `internal/build/build.go`.
-- Tar extraction must handle PAX headers
-  (`TypeXGlobalHeader`, `TypeXHeader`) — GitHub tarballs
-  include them. Skip silently.
-- `CreateTarZstd` must use `os.Lstat` to detect symlinks
-  instead of following them. `filepath.Walk` follows
-  symlinks by default, which causes `write too long`
-  errors for symlinked shared libraries.
+- Build PATH isolates individual tools via symlinks
+  into a temp dir, preventing nix vibeutils (ls, mv)
+  from leaking in and breaking autotools. See
+  `buildPath()` in `internal/build/build.go`.
+- Tar extraction handles PAX headers, hard links,
+  symlinks, and validates paths against traversal.
+  Shared `extractTar()` helper in `internal/download/`.
 - Autotools builds need timestamp reset (`touchAll`)
-  after extraction to avoid clock-skew errors. Skip
-  symlinks and use best-effort `Chtimes`.
+  after extraction to avoid clock-skew errors.
 - Recipe repo uses letter-bucketed layout
-  (`recipes/j/jq.toml`). The `repo.Manager` recurses
-  into single-letter subdirectories under `recipes/`.
+  (`recipes/j/jq.toml`).
+- macOS `/var` is a symlink to `/private/var`. Tests
+  that compare paths must `filepath.EvalSymlinks` both
+  sides.
+- Prefer static linking for CLI tools to avoid dylib
+  path issues. Use `--disable-shared --enable-all-static`
+  for autotools projects like jq.

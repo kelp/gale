@@ -135,18 +135,10 @@ streaming. Our code provides focused prompts and tools.
 
 ## Documentation
 
-- [ ] **docs/design.md** — Document the generation model,
-  terminology, and design decisions. Key terms: "gen"
-  is short for generation (a numbered snapshot of
-  symlinks into the store). `current` symlink points
-  to the active gen. Atomic swap via os.Rename.
-  Explain how global and project environments share
-  the same model. Why direnv over shell hooks. Why
-  static linking for CLI tools. How gale differs from
-  Nix and Homebrew.
-- [ ] **Update CLAUDE.md** — Add generation model to
-  project layout, update gotchas, add pointer to
-  design doc.
+- [x] **docs/design.md** — generation model, terminology,
+  design decisions, bootstrap flow.
+- [x] **CLAUDE.md rewrite** — updated project layout,
+  key concepts, gotchas, pointer to design doc.
 
 ## CLI Polish
 
