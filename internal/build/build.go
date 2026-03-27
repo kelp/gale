@@ -68,7 +68,8 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 
 	// Run build steps.
 	jobs := strconv.Itoa(runtime.NumCPU())
-	for _, step := range r.Build.Steps {
+	build := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
+	for _, step := range build.Steps {
 		if err := runStep(step, sourceRoot, prefixDir, jobs, extraPaths); err != nil {
 			return nil, err
 		}

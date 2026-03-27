@@ -10,7 +10,7 @@ import (
 type Recipe struct {
 	Package      Package
 	Source       Source
-	Build        Build
+	Build        Build             `toml:"-"`
 	Binary       map[string]Binary `toml:"binary"`
 	Dependencies Dependencies
 }
@@ -56,8 +56,30 @@ type Source struct {
 
 // Build holds the build system and steps.
 type Build struct {
-	System string
-	Steps  []string
+	System   string
+	Steps    []string
+	Platform map[string]PlatformBuild `toml:"-"`
+}
+
+// PlatformBuild holds per-platform build overrides.
+type PlatformBuild struct {
+	Steps []string
+}
+
+// BuildForPlatform returns the build config for the given
+// platform. If a per-platform override exists, it is
+// returned. Otherwise the default Build is returned.
+func (r *Recipe) BuildForPlatform(goos, goarch string) Build {
+	key := goos + "-" + goarch
+	if r.Build.Platform != nil {
+		if pb, ok := r.Build.Platform[key]; ok {
+			return Build{
+				System: r.Build.System,
+				Steps:  pb.Steps,
+			}
+		}
+	}
+	return r.Build
 }
 
 // Dependencies holds build-time and runtime dependency lists.
@@ -66,12 +88,33 @@ type Dependencies struct {
 	Runtime []string
 }
 
+// rawRecipe is used for initial TOML decoding before
+// extracting per-platform build overrides.
+type rawRecipe struct {
+	Package      Package
+	Source       Source
+	Build        map[string]interface{} `toml:"build"`
+	Binary       map[string]Binary      `toml:"binary"`
+	Dependencies Dependencies
+}
+
 // Parse parses a TOML recipe string and validates it.
 func Parse(data string) (*Recipe, error) {
-	var r Recipe
-	if err := toml.Unmarshal([]byte(data), &r); err != nil {
+	var raw rawRecipe
+	if err := toml.Unmarshal([]byte(data), &raw); err != nil {
 		return nil, fmt.Errorf("invalid TOML: %w", err)
 	}
+
+	r := &Recipe{
+		Package:      raw.Package,
+		Source:       raw.Source,
+		Binary:       raw.Binary,
+		Dependencies: raw.Dependencies,
+	}
+
+	// Extract build section.
+	r.Build = parseBuild(raw.Build)
+
 	if r.Package.Name == "" {
 		return nil, fmt.Errorf("missing required field: package.name")
 	}
@@ -84,5 +127,59 @@ func Parse(data string) (*Recipe, error) {
 	if r.Source.SHA256 == "" {
 		return nil, fmt.Errorf("missing required field: source.sha256")
 	}
-	return &r, nil
+	return r, nil
+}
+
+// parseBuild extracts Build and per-platform overrides
+// from the raw TOML map.
+func parseBuild(raw map[string]interface{}) Build {
+	b := Build{}
+	if raw == nil {
+		return b
+	}
+
+	// Extract top-level steps.
+	if steps, ok := raw["steps"]; ok {
+		if arr, ok := steps.([]interface{}); ok {
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					b.Steps = append(b.Steps, s)
+				}
+			}
+		}
+	}
+
+	// Extract system.
+	if sys, ok := raw["system"]; ok {
+		if s, ok := sys.(string); ok {
+			b.System = s
+		}
+	}
+
+	// Extract per-platform overrides (sub-tables).
+	for key, val := range raw {
+		if key == "steps" || key == "system" {
+			continue
+		}
+		sub, ok := val.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		pb := PlatformBuild{}
+		if steps, ok := sub["steps"]; ok {
+			if arr, ok := steps.([]interface{}); ok {
+				for _, v := range arr {
+					if s, ok := v.(string); ok {
+						pb.Steps = append(pb.Steps, s)
+					}
+				}
+			}
+		}
+		if b.Platform == nil {
+			b.Platform = make(map[string]PlatformBuild)
+		}
+		b.Platform[key] = pb
+	}
+
+	return b
 }

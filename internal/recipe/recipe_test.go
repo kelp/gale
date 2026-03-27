@@ -561,3 +561,62 @@ func TestParseWithoutSourceMetaFieldsStillWorks(t *testing.T) {
 			r.Source.ReleasedAt)
 	}
 }
+
+// --- Per-platform build overrides ---
+
+const recipeWithPlatformBuild = `[package]
+name = "go"
+version = "1.24.2"
+
+[source]
+url = "https://go.dev/dl/go1.24.2.src.tar.gz"
+sha256 = "abc123"
+
+[build]
+steps = ["echo default"]
+
+[build.darwin-arm64]
+steps = ["echo darwin-arm64"]
+
+[build.linux-amd64]
+steps = ["echo linux-amd64"]
+`
+
+func TestBuildForPlatformReturnsOverride(t *testing.T) {
+	r, err := Parse(recipeWithPlatformBuild)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b := r.BuildForPlatform("darwin", "arm64")
+	if len(b.Steps) != 1 || b.Steps[0] != "echo darwin-arm64" {
+		t.Errorf("steps = %v, want [echo darwin-arm64]",
+			b.Steps)
+	}
+}
+
+func TestBuildForPlatformFallsBackToDefault(t *testing.T) {
+	r, err := Parse(recipeWithPlatformBuild)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b := r.BuildForPlatform("freebsd", "amd64")
+	if len(b.Steps) != 1 || b.Steps[0] != "echo default" {
+		t.Errorf("steps = %v, want [echo default]",
+			b.Steps)
+	}
+}
+
+func TestBuildForPlatformNoOverridesUsesDefault(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b := r.BuildForPlatform("darwin", "arm64")
+	if len(b.Steps) != len(r.Build.Steps) {
+		t.Errorf("steps length = %d, want %d",
+			len(b.Steps), len(r.Build.Steps))
+	}
+}
