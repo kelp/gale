@@ -63,6 +63,24 @@ One symlink swap updates bin, lib, man — everything.
 URLs. Letter-bucketed: `recipes/j/jq.toml`. No git
 clone needed.
 
+## CLI Commands
+
+```
+gale install <pkg>[@ver]  Install package (binary or source)
+gale remove <pkg>         Remove package from store + config
+gale add <pkg> [pkg...]   Add to gale.toml without installing
+gale sync                 Install all packages in gale.toml
+gale env                  Print export PATH for current scope
+gale init                 Bootstrap project (gale.toml, .envrc)
+gale hook direnv          Print use_gale function for direnvrc
+gale build <recipe.toml>  Build recipe from source
+gale search <query>       Search for packages
+gale list                 List packages in gale.toml
+gale shell                Open shell with project environment
+gale run <cmd>            Run command in project environment
+gale import homebrew <n>  Import Homebrew formula as recipe
+```
+
 ## Two-Repo Architecture
 
 - **gale** (this repo) — the CLI tool.
