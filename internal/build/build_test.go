@@ -620,3 +620,42 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 		t.Errorf("output = %q, want mytool-output", data)
 	}
 }
+
+// --- Behavior 9: resolveTools creates isolated symlink dir ---
+
+func TestResolveToolsCreatesSymlinks(t *testing.T) {
+	// Create a fake bin dir with a tool and a decoy.
+	fakeBin := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Fake tool binary.
+	if err := os.WriteFile(
+		filepath.Join(fakeBin, "fakecargo"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Decoy that should NOT be linked.
+	if err := os.WriteFile(
+		filepath.Join(fakeBin, "ls"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	toolsDir := t.TempDir()
+	resolveTools(toolsDir, []string{
+		filepath.Join(fakeBin, "fakecargo"),
+	})
+
+	// fakecargo should be symlinked.
+	if _, err := os.Lstat(
+		filepath.Join(toolsDir, "fakecargo")); err != nil {
+		t.Errorf("expected fakecargo symlink: %v", err)
+	}
+
+	// ls should NOT be in the tools dir.
+	if _, err := os.Lstat(
+		filepath.Join(toolsDir, "ls")); err == nil {
+		t.Error("ls should not be in isolated tools dir")
+	}
+}

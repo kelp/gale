@@ -44,6 +44,16 @@
 - [x] Binary verification in CI before GHCR push
 - [x] Signed bot commits via GitHub API
 - [x] Registry package: on-demand recipe fetch from GitHub
+- [x] Install UX: install, add, sync, remove all work
+  end-to-end with registry fetch and GHCR binary pull
+- [x] Interactive scope prompt ([g/p]) with TTY detection
+- [x] Registry URL config override in config.toml
+- [x] Full remove: unlinks symlinks, cleans store, updates
+  config
+- [x] golangci-lint clean: all issues fixed or suppressed
+- [x] CI: golangci-lint, race detector, govulncheck
+- [x] Shared extractTar helper (deduped tar.gz/tar.zst)
+- [x] Hard link path traversal validation in tar extraction
 
 ## GHCR Distribution
 
@@ -70,20 +80,20 @@ from public registry, installs binary, updates config.
 
 - [x] **Registry package** — `internal/registry/` fetches
   recipes by name from GitHub raw URLs on demand.
-- [ ] **Rewrite `gale install`** — fetch recipe from
+- [x] **Rewrite `gale install`** — fetch recipe from
   registry, install (binary preferred), add to
   gale.toml. Default global, prompt if project
   gale.toml exists. `-g`/`-p` flags skip prompt.
   Keep `--recipe` as escape hatch for local files.
-- [ ] **`gale add` command** — add to gale.toml without
+- [x] **`gale add` command** — add to gale.toml without
   installing. Validates recipe exists. Accepts
   multiple packages. Project scope by default.
-- [ ] **Implement `gale sync`** — install all packages
+- [x] **Implement `gale sync`** — install all packages
   from gale.toml. Used by teammates after clone.
-- [ ] **Interactive scope prompt** — when gale.toml
+- [x] **Interactive scope prompt** — when gale.toml
   exists and no `-g`/`-p` flag, ask `[g/p]`. Default
   global. TTY-only; silent global in non-TTY.
-- [ ] **Registry URL config** — override default URL
+- [x] **Registry URL config** — override default URL
   in `~/.gale/config.toml` `[registry]` section.
 
 ## AI Features

@@ -138,7 +138,12 @@ func runStep(step, sourceRoot, prefixDir, jobs string, extraPaths []string) erro
 // compilers work, without pulling in the full nix coreutils.
 func buildEnv(prefixDir, jobs string, extraPaths []string) []string {
 	home := os.Getenv("HOME")
-	path := buildPath(home)
+	toolsDir, err := os.MkdirTemp("", "gale-tools-*")
+	if err != nil {
+		toolsDir = filepath.Join(os.TempDir(), "gale-tools")
+		_ = os.MkdirAll(toolsDir, 0o755)
+	}
+	path := buildPath(home, toolsDir)
 	if len(extraPaths) > 0 {
 		path = strings.Join(extraPaths, ":") + ":" + path
 	}
@@ -164,14 +169,12 @@ func buildEnv(prefixDir, jobs string, extraPaths []string) []string {
 	return env
 }
 
-// buildPath constructs the PATH for build steps. Includes
-// well-known tool directories (Homebrew, cargo, gale) plus
-// any directories where common build tools are found on the
-// host. This avoids importing the full host PATH (which may
-// contain nix coreutils that break autotools) while still
-// finding compilers regardless of how they were installed.
-func buildPath(home string) string {
-	// Well-known directories that should always be checked.
+// buildPath constructs the PATH for build steps. Creates an
+// isolated tools directory with symlinks to resolved build
+// tools, avoiding importing directories that may contain
+// non-standard coreutils (e.g. nix vibeutils) that break
+// autotools.
+func buildPath(home, toolsDir string) string {
 	base := []string{
 		home + "/.gale/bin",
 		home + "/.cargo/bin",
@@ -183,30 +186,43 @@ func buildPath(home string) string {
 		"/sbin",
 	}
 
-	seen := map[string]bool{}
+	// Resolve common build tools from the host environment.
+	// If a tool lives in a well-known base directory, no
+	// symlink is needed. Otherwise, symlink just that binary
+	// into toolsDir to avoid pulling in the whole directory.
+	tools := []string{"go", "cargo", "rustc", "cmake", "autoconf", "automake", "libtool"}
+	baseSet := map[string]bool{}
 	for _, d := range base {
-		seen[d] = true
+		baseSet[d] = true
 	}
 
-	// Resolve common build tools from the host environment
-	// and prepend their directories if not already included.
-	tools := []string{"go", "cargo", "rustc", "cmake", "autoconf", "automake", "libtool"}
-	var extra []string
-
+	var resolved []string
 	for _, tool := range tools {
 		p, err := exec.LookPath(tool)
 		if err != nil {
 			continue
 		}
-		dir := filepath.Dir(p)
-		if seen[dir] {
+		if baseSet[filepath.Dir(p)] {
 			continue
 		}
-		seen[dir] = true
-		extra = append(extra, dir)
+		resolved = append(resolved, p)
 	}
 
-	return strings.Join(append(extra, base...), ":")
+	resolveTools(toolsDir, resolved)
+
+	// Prepend toolsDir so isolated symlinks take priority.
+	return strings.Join(append([]string{toolsDir}, base...), ":")
+}
+
+// resolveTools creates symlinks in toolsDir pointing to each
+// resolved tool path. This isolates individual binaries from
+// directories that may contain incompatible coreutils.
+func resolveTools(toolsDir string, toolPaths []string) {
+	for _, p := range toolPaths {
+		name := filepath.Base(p)
+		link := filepath.Join(toolsDir, name)
+		_ = os.Symlink(p, link) // best effort
+	}
 }
 
 // touchAll resets all file modification times under dir to now.
