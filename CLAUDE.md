@@ -112,3 +112,10 @@ global share the same generation model.
 - Prefer static linking for CLI tools to avoid dylib
   path issues. Use `--disable-shared --enable-all-static`
   for autotools projects like jq.
+- gale-recipes CI pushes binary sections to main
+  after builds. Expect push rejections — use
+  `git pull --rebase` before pushing.
+- gosec G306 flags `os.WriteFile` with 0644. Use
+  `//nolint:gosec` for world-readable files.
+- Use `go:embed` to bake files into the binary
+  (see `internal/generation/gale-readme.md`).
