@@ -1,12 +1,16 @@
 package generation
 
 import (
+	_ "embed"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 )
+
+//go:embed gale-readme.md
+var galeReadme []byte
 
 // Build creates a new generation from the package map,
 // atomically swaps the current symlink, and cleans up
@@ -79,6 +83,11 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 				"remove previous generation: %w", err)
 		}
 	}
+
+	// Write README (best effort, world-readable).
+	_ = os.WriteFile( //nolint:gosec // G306 — README should be 0644
+		filepath.Join(galeDir, "README.md"),
+		galeReadme, 0o644)
 
 	return nil
 }
