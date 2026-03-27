@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // Link represents a symlink in the profile.
@@ -97,6 +98,28 @@ func (p *Profile) List() ([]Link, error) {
 		})
 	}
 	return links, nil
+}
+
+// UnlinkPackageBinaries removes all symlinks in the profile
+// that point into the given store directory.
+func (p *Profile) UnlinkPackageBinaries(storeDir string) error {
+	links, err := p.List()
+	if err != nil {
+		return err
+	}
+
+	prefix := storeDir + string(filepath.Separator)
+	for _, link := range links {
+		if strings.HasPrefix(link.Target, prefix) {
+			if err := os.Remove(
+				filepath.Join(p.BinDir, link.Name),
+			); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf(
+					"remove symlink %s: %w", link.Name, err)
+			}
+		}
+	}
+	return nil
 }
 
 // LinkPackageBinaries creates symlinks for all executables

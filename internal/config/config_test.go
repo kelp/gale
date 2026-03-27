@@ -652,3 +652,32 @@ func TestParseAppConfigMalformedTOML(t *testing.T) {
 		t.Fatal("expected error for malformed TOML")
 	}
 }
+
+// --- Behavior: Registry URL in AppConfig ---
+
+const appConfigWithRegistry = `
+[registry]
+url = "https://example.com/recipes"
+`
+
+func TestParseAppConfigRegistryURL(t *testing.T) {
+	cfg, err := ParseAppConfig(appConfigWithRegistry)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Registry.URL != "https://example.com/recipes" {
+		t.Errorf("Registry.URL = %q, want %q",
+			cfg.Registry.URL, "https://example.com/recipes")
+	}
+}
+
+func TestParseAppConfigRegistryURLEmpty(t *testing.T) {
+	cfg, err := ParseAppConfig("")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Registry.URL != "" {
+		t.Errorf("Registry.URL = %q, want empty",
+			cfg.Registry.URL)
+	}
+}

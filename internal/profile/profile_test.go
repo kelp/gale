@@ -491,3 +491,86 @@ func TestLinkPackageBinariesEmptyDirNoError(t *testing.T) {
 		t.Errorf("List length = %d, want 0", len(links))
 	}
 }
+
+// --- Behavior 6: Unlink all symlinks pointing into a store dir ---
+
+func TestUnlinkPackageBinariesRemovesMatchingSymlinks(t *testing.T) {
+	binDir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), "jq", "1.7.1")
+	pkgBinDir := filepath.Join(storeDir, "bin")
+	if err := os.MkdirAll(pkgBinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(pkgBinDir, "jq"), []byte("bin"), 0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewProfile(binDir)
+	if err := p.LinkPackageBinaries(pkgBinDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := p.UnlinkPackageBinaries(storeDir); err != nil {
+		t.Fatalf("UnlinkPackageBinaries error: %v", err)
+	}
+
+	links, err := p.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 0 {
+		t.Errorf("expected 0 links after unlink, got %d", len(links))
+	}
+}
+
+func TestUnlinkPackageBinariesLeavesOtherSymlinks(t *testing.T) {
+	binDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	// Create two packages.
+	jqBinDir := filepath.Join(storeRoot, "jq", "1.7.1", "bin")
+	fdBinDir := filepath.Join(storeRoot, "fd", "9.0.0", "bin")
+	for _, d := range []string{jqBinDir, fdBinDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(
+		filepath.Join(jqBinDir, "jq"), []byte("bin"), 0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(fdBinDir, "fd"), []byte("bin"), 0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	p := NewProfile(binDir)
+	if err := p.LinkPackageBinaries(jqBinDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := p.LinkPackageBinaries(fdBinDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Unlink only jq.
+	jqStoreDir := filepath.Join(storeRoot, "jq", "1.7.1")
+	if err := p.UnlinkPackageBinaries(jqStoreDir); err != nil {
+		t.Fatal(err)
+	}
+
+	links, err := p.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("expected 1 link, got %d", len(links))
+	}
+	if links[0].Name != "fd" {
+		t.Errorf("remaining link = %q, want %q",
+			links[0].Name, "fd")
+	}
+}

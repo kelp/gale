@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -11,13 +13,15 @@ import (
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/profile"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
 var (
-	installGlobal bool
-	installRecipe string
+	installGlobal  bool
+	installProject bool
+	installRecipe  string
 )
 
 var installCmd = &cobra.Command{
@@ -25,11 +29,11 @@ var installCmd = &cobra.Command{
 	Short: "Install a package",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name, version := parsePackageArg(args[0])
-		if version == "" {
-			version = "latest"
+		if err := validateInstallFlags(installGlobal, installProject); err != nil {
+			return err
 		}
 
+		name, version := parsePackageArg(args[0])
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
 		// If --recipe flag is provided, install from recipe file.
@@ -37,19 +41,73 @@ var installCmd = &cobra.Command{
 			return installFromRecipeFile(installRecipe, out)
 		}
 
-		// Otherwise, just add to gale.toml (full repo-based
-		// install flow is not yet implemented).
-		configPath, err := resolveConfigPath(installGlobal)
+		// Fetch recipe from registry.
+		reg := newRegistry()
+		out.Info(fmt.Sprintf("Fetching recipe for %s...", name))
+
+		r, err := reg.FetchRecipe(name)
+		if err != nil {
+			return fmt.Errorf("fetching recipe: %w", err)
+		}
+
+		// Check version match if a specific version was requested.
+		if err := checkVersionMatch(version, r.Package.Version); err != nil {
+			return err
+		}
+
+		// Set up installer.
+		galeDir, err := galeConfigDir()
 		if err != nil {
 			return err
 		}
 
-		if err := config.AddPackage(configPath, name, version); err != nil {
-			return fmt.Errorf("adding package: %w", err)
+		storeRoot := defaultStoreRoot()
+		binDir := filepath.Join(galeDir, "bin")
+
+		inst := &installer.Installer{
+			Store:    store.NewStore(storeRoot),
+			Profile:  profile.NewProfile(binDir),
+			Resolver: reg.FetchRecipe,
 		}
 
-		out.Success(fmt.Sprintf("Added %s@%s to %s",
-			name, version, configPath))
+		out.Info(fmt.Sprintf("Installing %s@%s...",
+			r.Package.Name, r.Package.Version))
+
+		result, err := inst.Install(r)
+		if err != nil {
+			return fmt.Errorf("install failed: %w", err)
+		}
+
+		// Determine scope and add to gale.toml.
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getting working dir: %w", err)
+		}
+		useGlobal := resolveScope(installGlobal, installProject,
+			cwd, isStdinTTY(), os.Stdin)
+		configPath, err := resolveConfigPath(useGlobal)
+		if err != nil {
+			return err
+		}
+
+		if err := config.AddPackage(configPath, name,
+			r.Package.Version); err != nil {
+			return fmt.Errorf("adding to config: %w", err)
+		}
+
+		switch result.Method {
+		case "cached":
+			out.Success(fmt.Sprintf("%s@%s already installed",
+				result.Name, result.Version))
+		case "binary":
+			out.Success(fmt.Sprintf("Installed %s@%s from binary",
+				result.Name, result.Version))
+		case "source":
+			out.Success(fmt.Sprintf(
+				"Installed %s@%s (built from source)",
+				result.Name, result.Version))
+		}
+
 		return nil
 	},
 }
@@ -57,9 +115,103 @@ var installCmd = &cobra.Command{
 func init() {
 	installCmd.Flags().BoolVarP(&installGlobal, "global", "g",
 		false, "Install to global config")
+	installCmd.Flags().BoolVarP(&installProject, "project", "p",
+		false, "Install to project config")
 	installCmd.Flags().StringVar(&installRecipe, "recipe", "",
 		"Install from a recipe TOML file")
 	rootCmd.AddCommand(installCmd)
+}
+
+// checkVersionMatch returns an error if the requested version
+// doesn't match the recipe version. Empty or "latest" always
+// matches.
+func checkVersionMatch(requested, actual string) error {
+	if requested == "" || requested == "latest" {
+		return nil
+	}
+	if requested != actual {
+		return fmt.Errorf(
+			"version mismatch: requested %s but recipe has %s",
+			requested, actual)
+	}
+	return nil
+}
+
+// validateInstallFlags returns an error if conflicting flags
+// are set.
+func validateInstallFlags(global, project bool) error {
+	if global && project {
+		return fmt.Errorf(
+			"cannot use both --global and --project")
+	}
+	return nil
+}
+
+// resolveScope determines whether to use global config.
+// Returns true for global, false for project. When no flag is
+// set and a project gale.toml exists, prompts via reader if
+// isTTY is true, otherwise defaults to global.
+func resolveScope(global, project bool, cwd string, isTTY bool, reader io.Reader) bool {
+	if global {
+		return true
+	}
+	if project {
+		return false
+	}
+
+	// Check if a project gale.toml exists.
+	_, err := config.FindGaleConfig(cwd)
+	if err != nil {
+		// No project config found — use global.
+		return true
+	}
+
+	// Project config exists. Prompt if TTY.
+	if !isTTY {
+		return true
+	}
+
+	fmt.Fprintf(os.Stderr,
+		"gale.toml found — install globally or to project? [g/p] ")
+	scanner := bufio.NewScanner(reader)
+	if scanner.Scan() {
+		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
+		if answer == "p" {
+			return false
+		}
+	}
+	return true
+}
+
+// isStdinTTY returns true if stdin is a terminal.
+func isStdinTTY() bool {
+	fi, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+// newRegistry creates a Registry, using the URL from
+// ~/.gale/config.toml if configured.
+func newRegistry() *registry.Registry {
+	galeDir, err := galeConfigDir()
+	if err != nil {
+		return registry.New()
+	}
+
+	data, err := os.ReadFile(
+		filepath.Join(galeDir, "config.toml"))
+	if err != nil {
+		return registry.New()
+	}
+
+	cfg, err := config.ParseAppConfig(string(data))
+	if err != nil {
+		return registry.New()
+	}
+
+	return registry.NewWithURL(cfg.Registry.URL)
 }
 
 func installFromRecipeFile(recipePath string, out *output.Output) error {

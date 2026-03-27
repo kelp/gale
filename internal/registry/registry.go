@@ -23,6 +23,15 @@ func New() *Registry {
 	return &Registry{BaseURL: DefaultURL}
 }
 
+// NewWithURL returns a Registry with the given base URL.
+// If url is empty, DefaultURL is used.
+func NewWithURL(url string) *Registry {
+	if url == "" {
+		return New()
+	}
+	return &Registry{BaseURL: url}
+}
+
 // FetchRecipe downloads and parses the recipe for the named
 // package from the registry.
 func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
