@@ -231,129 +231,35 @@ func TestBuildEnvironmentNilVarsProducesEmptyMap(t *testing.T) {
 	}
 }
 
-// --- Behavior 4: Generate fish shell hook ---
+// --- Behavior 4: Generate direnv hook ---
 
-func TestGenerateHookFishNoError(t *testing.T) {
-	hook, err := GenerateHook("fish")
+func TestGenerateHookDirenvNoError(t *testing.T) {
+	hook, err := GenerateHook("direnv")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if hook == "" {
-		t.Error("expected non-empty fish hook output")
+		t.Error("expected non-empty direnv hook output")
 	}
 }
 
-func TestGenerateHookFishContainsSetGx(t *testing.T) {
-	hook, err := GenerateHook("fish")
+func TestGenerateHookDirenvContainsUseGale(t *testing.T) {
+	hook, err := GenerateHook("direnv")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(hook, "set -gx") {
-		t.Errorf("fish hook missing 'set -gx': %q", hook)
+	if !strings.Contains(hook, "use_gale") {
+		t.Errorf("direnv hook missing 'use_gale': %q", hook)
 	}
 }
 
-func TestGenerateHookFishContainsHookFunction(t *testing.T) {
-	hook, err := GenerateHook("fish")
+func TestGenerateHookDirenvContainsPATHAdd(t *testing.T) {
+	hook, err := GenerateHook("direnv")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(hook, "_gale_hook") {
-		t.Errorf("fish hook missing '_gale_hook': %q", hook)
-	}
-}
-
-func TestGenerateHookFishContainsPATH(t *testing.T) {
-	hook, err := GenerateHook("fish")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(hook, "PATH") {
-		t.Errorf("fish hook missing 'PATH': %q", hook)
-	}
-}
-
-// --- Behavior 5: Generate zsh shell hook ---
-
-func TestGenerateHookZshNoError(t *testing.T) {
-	hook, err := GenerateHook("zsh")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if hook == "" {
-		t.Error("expected non-empty zsh hook output")
-	}
-}
-
-func TestGenerateHookZshContainsExport(t *testing.T) {
-	hook, err := GenerateHook("zsh")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(hook, "export") {
-		t.Errorf("zsh hook missing 'export': %q", hook)
-	}
-}
-
-func TestGenerateHookZshContainsHookFunction(t *testing.T) {
-	hook, err := GenerateHook("zsh")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(hook, "_gale_hook") {
-		t.Errorf("zsh hook missing '_gale_hook': %q", hook)
-	}
-}
-
-func TestGenerateHookZshContainsPATH(t *testing.T) {
-	hook, err := GenerateHook("zsh")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(hook, "PATH") {
-		t.Errorf("zsh hook missing 'PATH': %q", hook)
-	}
-}
-
-// --- Behavior 6: Generate bash shell hook ---
-
-func TestGenerateHookBashNoError(t *testing.T) {
-	hook, err := GenerateHook("bash")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if hook == "" {
-		t.Error("expected non-empty bash hook output")
-	}
-}
-
-func TestGenerateHookBashContainsExport(t *testing.T) {
-	hook, err := GenerateHook("bash")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(hook, "export") {
-		t.Errorf("bash hook missing 'export': %q", hook)
-	}
-}
-
-func TestGenerateHookBashContainsHookFunction(t *testing.T) {
-	hook, err := GenerateHook("bash")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(hook, "_gale_hook") {
-		t.Errorf("bash hook missing '_gale_hook': %q", hook)
-	}
-}
-
-func TestGenerateHookBashContainsPATH(t *testing.T) {
-	hook, err := GenerateHook("bash")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !strings.Contains(hook, "PATH") {
-		t.Errorf("bash hook missing 'PATH': %q", hook)
+	if !strings.Contains(hook, "PATH_add") {
+		t.Errorf("direnv hook missing 'PATH_add': %q", hook)
 	}
 }
 

@@ -10,14 +10,13 @@ import (
 var hookCmd = &cobra.Command{
 	Use:   "hook <shell>",
 	Short: "Print shell integration script",
-	Long: `Print a script that integrates gale with your shell.
+	Long: `Print a script that integrates gale with direnv.
 
-  eval "$(gale hook direnv)"  # ~/.config/direnv/direnvrc
-  eval "$(gale hook zsh)"     # .zshrc (legacy)
-  eval "$(gale hook bash)"    # .bashrc (legacy)
-  gale hook fish | source     # config.fish (legacy)`,
+Add to ~/.config/direnv/direnvrc:
+
+  eval "$(gale hook direnv)"`,
 	Args:      cobra.ExactArgs(1),
-	ValidArgs: []string{"direnv", "fish", "zsh", "bash"},
+	ValidArgs: []string{"direnv"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		script, err := env.GenerateHook(args[0])
 		if err != nil {

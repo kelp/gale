@@ -67,17 +67,12 @@ func BuildEnvironment(storeRoot string, global, project map[string]string, vars 
 	return env
 }
 
-// GenerateHook generates a shell hook script for the given shell.
+// GenerateHook generates a hook script for the given
+// integration. Currently only "direnv" is supported.
 func GenerateHook(shell string) (string, error) {
 	switch shell {
 	case "direnv":
 		return generateDirenvHook(), nil
-	case "fish":
-		return generateFishHook(), nil
-	case "zsh":
-		return generateZshHook(), nil
-	case "bash":
-		return generateBashHook(), nil
 	default:
 		return "", ErrUnsupportedShell
 	}
@@ -100,87 +95,6 @@ use_gale() {
     PATH_add "$gale_dir/current/bin"
   fi
 }
-`
-}
-
-func generateFishHook() string {
-	return `# Gale shell hook for fish
-set -gx GALE_SHELL fish
-
-function _gale_hook --on-variable PWD
-    set -l gale_env (gale env fish 2>/dev/null)
-    if test $status -eq 0
-        eval $gale_env
-    else
-        # Remove gale PATH entries when leaving a project.
-        set -l clean_path
-        for p in $PATH
-            if not string match -q '*/.gale/store/*' $p
-                set -a clean_path $p
-            end
-        end
-        set -gx PATH $clean_path
-    end
-end
-
-_gale_hook
-`
-}
-
-func generateZshHook() string {
-	return `# Gale shell hook for zsh
-export GALE_SHELL=zsh
-
-_gale_hook() {
-    local gale_env
-    gale_env=$(gale env zsh 2>/dev/null)
-    if [ $? -eq 0 ]; then
-        eval "$gale_env"
-    else
-        # Remove gale PATH entries when leaving a project.
-        local clean_path=""
-        local IFS=:
-        for p in $PATH; do
-            case "$p" in
-                */.gale/store/*) ;;
-                *) clean_path="${clean_path:+$clean_path:}$p" ;;
-            esac
-        done
-        export PATH="$clean_path"
-    fi
-}
-
-autoload -U add-zsh-hook
-add-zsh-hook chpwd _gale_hook
-_gale_hook
-`
-}
-
-func generateBashHook() string {
-	return `# Gale shell hook for bash
-export GALE_SHELL=bash
-
-_gale_hook() {
-    local gale_env
-    gale_env=$(gale env bash 2>/dev/null)
-    if [ $? -eq 0 ]; then
-        eval "$gale_env"
-    else
-        # Remove gale PATH entries when leaving a project.
-        local clean_path=""
-        local IFS=:
-        for p in $PATH; do
-            case "$p" in
-                */.gale/store/*) ;;
-                *) clean_path="${clean_path:+$clean_path:}$p" ;;
-            esac
-        done
-        export PATH="$clean_path"
-    fi
-}
-
-PROMPT_COMMAND="_gale_hook${PROMPT_COMMAND:+;$PROMPT_COMMAND}"
-_gale_hook
 `
 }
 
