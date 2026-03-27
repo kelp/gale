@@ -102,6 +102,13 @@ global share the same generation model.
 
 `gale env` prints `export PATH=...` for CI/scripts.
 
+## Principles
+
+- Everything from source. GHCR binaries are a cache,
+  not a substitute. See `docs/design.md`.
+- Prebuilt binaries only for compiler bootstraps.
+- Declarative over imperative (gale.toml → generation).
+
 ## Conventions
 
 - Error handling: `fmt.Errorf("context: %w", err)`

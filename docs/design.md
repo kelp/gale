@@ -14,6 +14,31 @@ of either. It takes the best ideas from both — Nix's
 declarative model, Homebrew's simplicity — and refines
 them into something smaller and more opinionated.
 
+## Principles
+
+**Everything from source.** Every recipe defines how
+to build from source. Prebuilt binaries (GHCR cache)
+are an optimization, not a substitute. If someone
+wants to verify what they're running, they can build
+it themselves. This is the model Homebrew and Nix use
+at distro scale.
+
+**Prebuilt binaries only for compiler bootstraps.**
+Building Go requires a Go compiler. Building Rust
+requires a Rust compiler. These bootstrap binaries
+are the one exception — a prebuilt binary used only
+during the build, never shipped to users.
+
+**Declarative over imperative.** The state of your
+environment is a function of gale.toml, not a history
+of commands you ran. `gale sync` always converges to
+the correct state.
+
+**One tool.** Gale replaces Homebrew (global packages),
+Nix/home-manager (declarative manifests), and
+direnv+flakes (per-project environments). Users should
+not need multiple package managers.
+
 ## Directory Layout
 
 ```
