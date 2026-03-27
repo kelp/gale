@@ -119,6 +119,9 @@ func (p *Profile) LinkPackageBinaries(pkgBinDir string) error {
 			continue
 		}
 		target := filepath.Join(pkgBinDir, entry.Name())
+		linkPath := filepath.Join(p.BinDir, entry.Name())
+		// Remove existing symlink if present (upgrade).
+		os.Remove(linkPath)
 		if err := p.Link(entry.Name(), target); err != nil {
 			return fmt.Errorf("link package binary %s: %w",
 				entry.Name(), err)

@@ -153,6 +153,14 @@ keeps recipes current with upstream releases.
   GitHub issue with the build error and recipe name.
   Human fixes it later.
 
+## Package Lifecycle
+
+- [ ] **Version cleanup policy** — when upgrading a
+  package, should old versions be removed automatically
+  or kept? Design options: keep N versions, keep for
+  N days, explicit `gale gc` command, or always remove.
+  Currently old versions stay in the store after upgrade.
+
 ## Build System
 
 - [x] **Build dependency checking** — Installer resolves

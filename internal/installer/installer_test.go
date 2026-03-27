@@ -139,6 +139,72 @@ func TestInstallResultFields(t *testing.T) {
 	}
 }
 
+func TestInstallUpgradeMovesSymlink(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	hash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	binDir := t.TempDir()
+	inst := &Installer{
+		Store:   store.NewStore(storeRoot),
+		Profile: profile.NewProfile(binDir),
+	}
+
+	// Install v1.0.
+	r1 := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: srv.URL, SHA256: hash},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho v1' > $PREFIX/bin/testpkg",
+				"chmod +x $PREFIX/bin/testpkg",
+			},
+		},
+	}
+	_, err := inst.Install(r1)
+	if err != nil {
+		t.Fatalf("Install v1.0 error: %v", err)
+	}
+
+	// Install v2.0 of the same package.
+	r2 := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "2.0"},
+		Source:  recipe.Source{URL: srv.URL, SHA256: hash},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho v2' > $PREFIX/bin/testpkg",
+				"chmod +x $PREFIX/bin/testpkg",
+			},
+		},
+	}
+	result, err := inst.Install(r2)
+	if err != nil {
+		t.Fatalf("Install v2.0 error: %v", err)
+	}
+	if result.Method != "source" {
+		t.Errorf("Method = %q, want %q", result.Method, "source")
+	}
+
+	// Verify symlink points to v2.0.
+	linkPath := filepath.Join(binDir, "testpkg")
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if !strings.Contains(target, "2.0") {
+		t.Errorf("symlink target = %q, want path containing 2.0",
+			target)
+	}
+}
+
 func TestInstallBinaryFromGHCR(t *testing.T) {
 	// Create a tar.zst with bin/testpkg.
 	binContent := "#!/bin/sh\necho ghcr-binary"
