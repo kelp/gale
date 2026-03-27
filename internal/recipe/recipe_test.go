@@ -511,3 +511,53 @@ func TestBinaryForPlatformNotFound(t *testing.T) {
 func containsField(msg, field string) bool {
 	return strings.Contains(strings.ToLower(msg), strings.ToLower(field))
 }
+
+// --- Source repo and released_at fields ---
+
+const recipeWithSourceMeta = `
+[package]
+name = "jq"
+version = "1.7.1"
+
+[source]
+url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
+sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+repo = "jqlang/jq"
+released_at = "2024-12-15"
+`
+
+func TestParseSourceRepo(t *testing.T) {
+	r, err := Parse(recipeWithSourceMeta)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Source.Repo != "jqlang/jq" {
+		t.Errorf("Source.Repo = %q, want %q",
+			r.Source.Repo, "jqlang/jq")
+	}
+}
+
+func TestParseSourceReleasedAt(t *testing.T) {
+	r, err := Parse(recipeWithSourceMeta)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Source.ReleasedAt != "2024-12-15" {
+		t.Errorf("Source.ReleasedAt = %q, want %q",
+			r.Source.ReleasedAt, "2024-12-15")
+	}
+}
+
+func TestParseWithoutSourceMetaFieldsStillWorks(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Source.Repo != "" {
+		t.Errorf("Source.Repo = %q, want empty", r.Source.Repo)
+	}
+	if r.Source.ReleasedAt != "" {
+		t.Errorf("Source.ReleasedAt = %q, want empty",
+			r.Source.ReleasedAt)
+	}
+}
