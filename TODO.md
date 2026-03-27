@@ -83,6 +83,19 @@ streaming. Our code provides focused prompts and tools.
   The prompt should produce recipes that work on the
   first try.
 
+## Agent Teams for Recipe Development
+
+- [ ] **Recipe creation team** — use Claude Code agent
+  teams to parallelize recipe onboarding. One agent
+  imports from Homebrew and writes the recipe, another
+  builds and verifies the binary. They iterate until
+  the build passes. Good for filling out our base set.
+- [ ] **Build recovery team** — when the auto-updater's
+  version bump breaks a build, spin up a team: one
+  agent reads the error and fixes the recipe, another
+  tests the fix. Falls back to opening an issue if the
+  team can't resolve it.
+
 ## CLI Polish
 
 - [ ] **Colored help output** — Syntax-highlighted flags
