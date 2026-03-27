@@ -70,7 +70,7 @@ func TestInstallSkipsAlreadyInstalled(t *testing.T) {
 	os.MkdirAll(binPath, 0o755)
 
 	inst := &Installer{
-		Store:   s,
+		Store: s,
 	}
 
 	r := &recipe.Recipe{

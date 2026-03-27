@@ -68,9 +68,10 @@ func BuildEnvironment(storeRoot string, global, project map[string]string, vars 
 }
 
 // GenerateHook generates a shell hook script for the given shell.
-// shell must be "fish", "zsh", or "bash".
 func GenerateHook(shell string) (string, error) {
 	switch shell {
+	case "direnv":
+		return generateDirenvHook(), nil
 	case "fish":
 		return generateFishHook(), nil
 	case "zsh":
@@ -80,6 +81,26 @@ func GenerateHook(shell string) (string, error) {
 	default:
 		return "", ErrUnsupportedShell
 	}
+}
+
+func generateDirenvHook() string {
+	return `# Gale integration for direnv.
+# Add to ~/.config/direnv/direnvrc:
+#   eval "$(gale hook direnv)"
+
+use_gale() {
+  local gale_dir
+  gale_dir="$(pwd)/.gale"
+
+  # Sync project packages quietly.
+  gale sync 2>/dev/null || true
+
+  # Add the project's current/bin to PATH.
+  if [ -d "$gale_dir/current/bin" ]; then
+    PATH_add "$gale_dir/current/bin"
+  fi
+}
+`
 }
 
 func generateFishHook() string {
