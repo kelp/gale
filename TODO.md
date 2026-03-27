@@ -111,30 +111,54 @@ streaming. Our code provides focused prompts and tools.
 
 ## Auto-Update Agent
 
-- [ ] **Upstream watcher** — Monitor upstream releases for
-  each recipe. Bump version and hash in the TOML.
-  Trigger a build, verify it passes.
+Daily GitHub Actions workflow in gale-recipes that
+keeps recipes current with upstream releases.
 
-- [ ] **AI-assisted build recovery** — When an upstream
-  update breaks the build, use Claude or Claude Code
-  to diagnose and fix the recipe. Fall back to opening
-  a GitHub issue if automated fixes fail.
+### Recipe format additions
 
-- [ ] **Dependency cooldown policy** — Wait 3 days before
-  adopting new upstream versions by default. Protects
-  against supply chain attacks and yanked releases.
+- [ ] **Add `[source].repo` field** — explicit GitHub
+  owner/repo (e.g., `repo = "jqlang/jq"`). Used to
+  query GitHub Releases API. Starting point for GitHub
+  projects; will need other detection methods later
+  for non-GitHub sources.
+- [ ] **Add `[source].released_at` field** — date the
+  current version was first seen (e.g.,
+  `released_at = "2024-12-15"`). Used for cooldown
+  enforcement. Agent skips if less than 3 days old.
+- [ ] **Update all existing recipes** with `repo` and
+  `released_at` fields.
+
+### Workflow: version checker
+
+- [ ] **Cron workflow** — runs daily in gale-recipes.
+  For each recipe with `[source].repo`, queries
+  `gh api /repos/{owner}/{repo}/releases/latest`.
+- [ ] **Cooldown enforcement** — if new version is less
+  than 3 days old (from upstream release date), skip.
   Security patches can be fast-tracked manually.
   See: nesbitt.io/2026/03/04 and
   simonwillison.net/2025/Nov/21/dependency-cooldowns/
+- [ ] **PR per update** — each version bump creates a
+  PR with updated version, SHA256, and source URL.
+  CI builds it on both platforms. Reviewable and
+  auditable.
+
+### AI-assisted build recovery
+
+- [ ] **Claude Code SDK integration** — when a version
+  bump breaks the build, read the build error and
+  attempt a recipe fix (adjust flags, deps, build
+  steps). If fix works, push to the PR.
+- [ ] **Issue fallback** — if AI fix fails, open a
+  GitHub issue with the build error and recipe name.
+  Human fixes it later.
 
 ## Build System
 
-- [ ] **Build dependency checking** — Before building,
-  check that required tools (cargo, go, autoconf, etc.)
-  are available. Install missing deps via gale (binary
-  preferred, source fallback). Add installed deps' bin
-  dirs to the build PATH. Error clearly if a dep has
-  no recipe.
+- [x] **Build dependency checking** — Installer resolves
+  build deps from recipes, installs them (binary
+  preferred, source fallback), adds bin dirs to the
+  build PATH. Uses RecipeResolver for lookup.
 
 - [ ] **Per-platform build overrides** — Allow `[build.*]`
   sections that override build steps for specific
