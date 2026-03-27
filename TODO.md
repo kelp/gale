@@ -36,6 +36,14 @@
 - [x] GHCR binary pull with anonymous token exchange
 - [x] Authenticated HTTP fetch (FetchWithAuth)
 - [x] Installer GHCR integration (auto-detect, auth, fallback)
+- [x] Hard link support in tar extraction
+- [x] Package upgrade moves symlinks (no manual cleanup)
+- [x] Build dep auto-install (resolve, install, add to PATH)
+- [x] Auto-update agent (daily cron, cooldown, PRs)
+- [x] Recipe source.repo and released_at fields
+- [x] Binary verification in CI before GHCR push
+- [x] Signed bot commits via GitHub API
+- [x] Registry package: on-demand recipe fetch from GitHub
 
 ## GHCR Distribution
 
@@ -54,6 +62,29 @@ Two sides: gale pulls binaries, gale-recipes pushes them.
 
 - [x] **gale CI** — Tests, vet, gofumpt, build on
   macOS arm64 and Linux amd64.
+
+## Install UX (next)
+
+`gale install jq` should just work. Fetches recipe
+from public registry, installs binary, updates config.
+
+- [x] **Registry package** — `internal/registry/` fetches
+  recipes by name from GitHub raw URLs on demand.
+- [ ] **Rewrite `gale install`** — fetch recipe from
+  registry, install (binary preferred), add to
+  gale.toml. Default global, prompt if project
+  gale.toml exists. `-g`/`-p` flags skip prompt.
+  Keep `--recipe` as escape hatch for local files.
+- [ ] **`gale add` command** — add to gale.toml without
+  installing. Validates recipe exists. Accepts
+  multiple packages. Project scope by default.
+- [ ] **Implement `gale sync`** — install all packages
+  from gale.toml. Used by teammates after clone.
+- [ ] **Interactive scope prompt** — when gale.toml
+  exists and no `-g`/`-p` flag, ask `[g/p]`. Default
+  global. TTY-only; silent global in non-TTY.
+- [ ] **Registry URL config** — override default URL
+  in `~/.gale/config.toml` `[registry]` section.
 
 ## AI Features
 
