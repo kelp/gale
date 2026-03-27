@@ -1,0 +1,448 @@
+package generation
+
+import (
+	"os"
+	"path/filepath"
+	"testing"
+)
+
+// helper creates a fake store entry with executables.
+// Layout: <storeRoot>/<name>/<version>/bin/<executables...>
+func createStoreEntry(t *testing.T, storeRoot, name, version string, executables []string) {
+	t.Helper()
+	binDir := filepath.Join(storeRoot, name, version, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("failed to create store bin dir: %v", err)
+	}
+	for _, exe := range executables {
+		path := filepath.Join(binDir, exe)
+		if err := os.WriteFile(path, []byte("fake"), 0o755); err != nil {
+			t.Fatalf("failed to create executable %q: %v", exe, err)
+		}
+	}
+}
+
+// --- Behavior 1: Build creates generation dir with bin/ symlinks ---
+
+func TestBuildCreatesGenerationDirWithBinSymlinks(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+	createStoreEntry(t, storeRoot, "fd", "10.4.2", []string{"fd"})
+
+	pkgs := map[string]string{
+		"jq": "1.8.1",
+		"fd": "10.4.2",
+	}
+
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	genBinDir := filepath.Join(galeDir, "generations", "1", "bin")
+	info, err := os.Stat(genBinDir)
+	if err != nil {
+		t.Fatalf("generation bin dir does not exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("expected %q to be a directory", genBinDir)
+	}
+
+	// Verify symlinks exist for each executable.
+	for _, exe := range []string{"jq", "fd"} {
+		linkPath := filepath.Join(genBinDir, exe)
+		linfo, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Errorf("symlink %q does not exist: %v", exe, err)
+			continue
+		}
+		if linfo.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("expected %q to be a symlink", linkPath)
+		}
+	}
+}
+
+func TestBuildSymlinksPointToStoreExecutables(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	pkgs := map[string]string{"jq": "1.8.1"}
+
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	linkPath := filepath.Join(galeDir, "generations", "1", "bin", "jq")
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("failed to read symlink: %v", err)
+	}
+
+	// Resolve the symlink target relative to the link's directory
+	// to get an absolute path for comparison.
+	wantTarget := filepath.Join(storeRoot, "jq", "1.8.1", "bin", "jq")
+	// Resolve both paths to handle macOS /var → /private/var.
+	wantTarget, err = filepath.EvalSymlinks(wantTarget)
+	if err != nil {
+		t.Fatalf("failed to eval want target: %v", err)
+	}
+	resolved := target
+	if !filepath.IsAbs(target) {
+		resolved = filepath.Join(filepath.Dir(linkPath), target)
+	}
+	resolved, err = filepath.EvalSymlinks(resolved)
+	if err != nil {
+		t.Fatalf("failed to eval symlinks: %v", err)
+	}
+	if resolved != wantTarget {
+		t.Errorf("symlink resolves to %q, want %q", resolved, wantTarget)
+	}
+}
+
+func TestBuildLinksMultipleExecutablesFromOnePackage(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "ripgrep", "14.1.0", []string{"rg", "rg-helper"})
+
+	pkgs := map[string]string{"ripgrep": "14.1.0"}
+
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	genBinDir := filepath.Join(galeDir, "generations", "1", "bin")
+	for _, exe := range []string{"rg", "rg-helper"} {
+		linkPath := filepath.Join(genBinDir, exe)
+		linfo, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Errorf("symlink %q does not exist: %v", exe, err)
+			continue
+		}
+		if linfo.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("expected %q to be a symlink", linkPath)
+		}
+	}
+}
+
+// --- Behavior 2: Build performs atomic swap of current symlink ---
+
+func TestBuildCreatesCurrentSymlink(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	pkgs := map[string]string{"jq": "1.8.1"}
+
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	currentPath := filepath.Join(galeDir, "current")
+	info, err := os.Lstat(currentPath)
+	if err != nil {
+		t.Fatalf("current symlink does not exist: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("expected %q to be a symlink", currentPath)
+	}
+}
+
+func TestBuildCurrentSymlinkIsRelative(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	pkgs := map[string]string{"jq": "1.8.1"}
+
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	currentPath := filepath.Join(galeDir, "current")
+	target, err := os.Readlink(currentPath)
+	if err != nil {
+		t.Fatalf("failed to read current symlink: %v", err)
+	}
+	if filepath.IsAbs(target) {
+		t.Errorf("current symlink target %q should be relative", target)
+	}
+}
+
+func TestBuildCurrentSymlinkPointsToNewGeneration(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	pkgs := map[string]string{"jq": "1.8.1"}
+
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	currentPath := filepath.Join(galeDir, "current")
+	target, err := os.Readlink(currentPath)
+	if err != nil {
+		t.Fatalf("failed to read current symlink: %v", err)
+	}
+	if target != filepath.Join("generations", "1") {
+		t.Errorf("current symlink = %q, want %q",
+			target, filepath.Join("generations", "1"))
+	}
+}
+
+func TestBuildUpdatesCurrentSymlinkOnSecondBuild(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+	createStoreEntry(t, storeRoot, "fd", "10.4.2", []string{"fd"})
+
+	// First build.
+	pkgs1 := map[string]string{"jq": "1.8.1"}
+	if err := Build(pkgs1, galeDir, storeRoot); err != nil {
+		t.Fatalf("first Build error: %v", err)
+	}
+
+	// Second build.
+	pkgs2 := map[string]string{"jq": "1.8.1", "fd": "10.4.2"}
+	if err := Build(pkgs2, galeDir, storeRoot); err != nil {
+		t.Fatalf("second Build error: %v", err)
+	}
+
+	currentPath := filepath.Join(galeDir, "current")
+	target, err := os.Readlink(currentPath)
+	if err != nil {
+		t.Fatalf("failed to read current symlink: %v", err)
+	}
+	if target != filepath.Join("generations", "2") {
+		t.Errorf("current symlink = %q, want %q",
+			target, filepath.Join("generations", "2"))
+	}
+}
+
+// --- Behavior 3: Build cleans up previous generation ---
+
+func TestBuildRemovesPreviousGeneration(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	// First build creates generation 1.
+	pkgs := map[string]string{"jq": "1.8.1"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("first Build error: %v", err)
+	}
+
+	gen1Dir := filepath.Join(galeDir, "generations", "1")
+	if _, err := os.Stat(gen1Dir); err != nil {
+		t.Fatalf("generation 1 should exist after first build: %v", err)
+	}
+
+	// Second build creates generation 2 and removes generation 1.
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("second Build error: %v", err)
+	}
+
+	if _, err := os.Stat(gen1Dir); !os.IsNotExist(err) {
+		t.Errorf("generation 1 directory should be removed after second build")
+	}
+
+	gen2Dir := filepath.Join(galeDir, "generations", "2")
+	if _, err := os.Stat(gen2Dir); err != nil {
+		t.Errorf("generation 2 should exist: %v", err)
+	}
+}
+
+// --- Behavior 4: Current reads active generation number ---
+
+func TestCurrentReturnsActiveGenerationNumber(t *testing.T) {
+	galeDir := t.TempDir()
+
+	// Manually set up a current symlink pointing to generation 3.
+	gensDir := filepath.Join(galeDir, "generations", "3", "bin")
+	if err := os.MkdirAll(gensDir, 0o755); err != nil {
+		t.Fatalf("failed to create generations dir: %v", err)
+	}
+	if err := os.Symlink(
+		filepath.Join("generations", "3"),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatalf("failed to create current symlink: %v", err)
+	}
+
+	got, err := Current(galeDir)
+	if err != nil {
+		t.Fatalf("Current error: %v", err)
+	}
+	if got != 3 {
+		t.Errorf("Current = %d, want 3", got)
+	}
+}
+
+func TestCurrentReturnsZeroWhenNoCurrentExists(t *testing.T) {
+	galeDir := t.TempDir()
+
+	got, err := Current(galeDir)
+	if err != nil {
+		t.Fatalf("Current error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("Current = %d, want 0", got)
+	}
+}
+
+func TestCurrentReturnsErrorForNonNumericSymlinkTarget(t *testing.T) {
+	galeDir := t.TempDir()
+
+	// Create a current symlink pointing to a non-numeric generation.
+	gensDir := filepath.Join(galeDir, "generations", "corrupt")
+	if err := os.MkdirAll(gensDir, 0o755); err != nil {
+		t.Fatalf("failed to create generations dir: %v", err)
+	}
+	if err := os.Symlink(
+		filepath.Join("generations", "corrupt"),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatalf("failed to create current symlink: %v", err)
+	}
+
+	_, err := Current(galeDir)
+	if err == nil {
+		t.Fatal("expected Current to return an error for non-numeric target")
+	}
+}
+
+// --- Behavior 5: Next returns incremented generation number ---
+
+func TestNextReturnsIncrementedNumber(t *testing.T) {
+	galeDir := t.TempDir()
+
+	// Set up current generation as 5.
+	gensDir := filepath.Join(galeDir, "generations", "5", "bin")
+	if err := os.MkdirAll(gensDir, 0o755); err != nil {
+		t.Fatalf("failed to create generations dir: %v", err)
+	}
+	if err := os.Symlink(
+		filepath.Join("generations", "5"),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatalf("failed to create current symlink: %v", err)
+	}
+
+	got, err := Next(galeDir)
+	if err != nil {
+		t.Fatalf("Next error: %v", err)
+	}
+	if got != 6 {
+		t.Errorf("Next = %d, want 6", got)
+	}
+}
+
+func TestNextReturnsOneWhenNoCurrentExists(t *testing.T) {
+	galeDir := t.TempDir()
+
+	got, err := Next(galeDir)
+	if err != nil {
+		t.Fatalf("Next error: %v", err)
+	}
+	if got != 1 {
+		t.Errorf("Next = %d, want 1", got)
+	}
+}
+
+// --- Behavior 6: Build creates generations/ dir if missing ---
+
+func TestBuildCreatesGenerationsDirIfMissing(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	// Verify generations/ does not exist yet.
+	gensDir := filepath.Join(galeDir, "generations")
+	if _, err := os.Stat(gensDir); !os.IsNotExist(err) {
+		t.Fatalf("generations dir should not exist before Build")
+	}
+
+	pkgs := map[string]string{"jq": "1.8.1"}
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	info, err := os.Stat(gensDir)
+	if err != nil {
+		t.Fatalf("generations dir should exist after Build: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("expected %q to be a directory", gensDir)
+	}
+}
+
+// --- Behavior 7: Build works with empty package map ---
+
+func TestBuildWithEmptyPackageMap(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	pkgs := map[string]string{}
+
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	// Generation dir should exist with an empty bin/.
+	genBinDir := filepath.Join(galeDir, "generations", "1", "bin")
+	info, err := os.Stat(genBinDir)
+	if err != nil {
+		t.Fatalf("generation bin dir does not exist: %v", err)
+	}
+	if !info.IsDir() {
+		t.Errorf("expected %q to be a directory", genBinDir)
+	}
+
+	// bin/ should be empty.
+	entries, err := os.ReadDir(genBinDir)
+	if err != nil {
+		t.Fatalf("failed to read bin dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("bin dir should be empty, got %d entries", len(entries))
+	}
+}
+
+func TestBuildWithEmptyPackageMapCreatesCurrentSymlink(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	pkgs := map[string]string{}
+
+	err := Build(pkgs, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	currentPath := filepath.Join(galeDir, "current")
+	info, err := os.Lstat(currentPath)
+	if err != nil {
+		t.Fatalf("current symlink does not exist: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("expected %q to be a symlink", currentPath)
+	}
+}
