@@ -9,9 +9,9 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/profile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
@@ -62,11 +62,9 @@ var installCmd = &cobra.Command{
 		}
 
 		storeRoot := defaultStoreRoot()
-		binDir := filepath.Join(galeDir, "bin")
 
 		inst := &installer.Installer{
 			Store:    store.NewStore(storeRoot),
-			Profile:  profile.NewProfile(binDir),
 			Resolver: reg.FetchRecipe,
 		}
 
@@ -93,6 +91,12 @@ var installCmd = &cobra.Command{
 		if err := config.AddPackage(configPath, name,
 			r.Package.Version); err != nil {
 			return fmt.Errorf("adding to config: %w", err)
+		}
+
+		// Rebuild generation from gale.toml.
+		if err := rebuildGeneration(galeDir, storeRoot,
+			configPath); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
 		}
 
 		switch result.Method {
@@ -231,11 +235,9 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 	}
 
 	storeRoot := defaultStoreRoot()
-	binDir := filepath.Join(galeDir, "bin")
 
 	inst := &installer.Installer{
 		Store:    store.NewStore(storeRoot),
-		Profile:  profile.NewProfile(binDir),
 		Resolver: recipeFileResolver(recipePath),
 	}
 
@@ -245,6 +247,13 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 	result, err := inst.Install(r)
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
+	}
+
+	// Rebuild global generation.
+	configPath := filepath.Join(galeDir, "gale.toml")
+	if err := rebuildGeneration(galeDir, storeRoot,
+		configPath); err != nil {
+		return fmt.Errorf("rebuild generation: %w", err)
 	}
 
 	switch result.Method {
@@ -260,6 +269,32 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 	}
 
 	return nil
+}
+
+// rebuildGeneration reads gale.toml and rebuilds the
+// generation symlinks.
+func rebuildGeneration(galeDir, storeRoot, configPath string) error {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// No config yet — build empty generation.
+			return generation.Build(
+				map[string]string{}, galeDir, storeRoot)
+		}
+		return fmt.Errorf("read config: %w", err)
+	}
+
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		return fmt.Errorf("parse config: %w", err)
+	}
+
+	pkgs := cfg.Packages
+	if pkgs == nil {
+		pkgs = map[string]string{}
+	}
+
+	return generation.Build(pkgs, galeDir, storeRoot)
 }
 
 // recipeFileResolver returns a RecipeResolver that looks for

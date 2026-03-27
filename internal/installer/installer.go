@@ -11,7 +11,6 @@ import (
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/ghcr"
-	"github.com/kelp/gale/internal/profile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
@@ -20,10 +19,9 @@ import (
 // Returns nil if the package has no recipe.
 type RecipeResolver func(name string) (*recipe.Recipe, error)
 
-// Installer installs packages into the store and links them.
+// Installer installs packages into the store.
 type Installer struct {
 	Store    *store.Store
-	Profile  *profile.Profile
 	Resolver RecipeResolver
 }
 
@@ -78,14 +76,6 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 			// Clean up failed install.
 			os.RemoveAll(storeDir)
 			return nil, fmt.Errorf("build from source: %w", err)
-		}
-	}
-
-	// Link binaries into profile.
-	binDir := filepath.Join(storeDir, "bin")
-	if _, err := os.Stat(binDir); err == nil {
-		if err := inst.Profile.LinkPackageBinaries(binDir); err != nil {
-			return nil, fmt.Errorf("link binaries: %w", err)
 		}
 	}
 

@@ -7,7 +7,6 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/profile"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -27,9 +26,7 @@ var removeCmd = &cobra.Command{
 		}
 
 		storeRoot := defaultStoreRoot()
-		binDir := filepath.Join(galeDir, "bin")
 		st := store.NewStore(storeRoot)
-		prof := profile.NewProfile(binDir)
 
 		// Find installed versions of this package.
 		pkgs, err := st.List()
@@ -43,16 +40,6 @@ var removeCmd = &cobra.Command{
 				continue
 			}
 
-			storeDir := filepath.Join(storeRoot,
-				pkg.Name, pkg.Version)
-
-			// Remove symlinks pointing into this store dir.
-			if err := prof.UnlinkPackageBinaries(storeDir); err != nil {
-				out.Warn(fmt.Sprintf(
-					"failed to unlink binaries: %v", err))
-			}
-
-			// Remove from store.
 			if err := st.Remove(pkg.Name, pkg.Version); err != nil {
 				return fmt.Errorf("removing from store: %w", err)
 			}
@@ -62,8 +49,11 @@ var removeCmd = &cobra.Command{
 			removed = true
 		}
 
-		// Remove from gale.toml (best effort — may not be
-		// in config if installed via --recipe).
+		if !removed {
+			return fmt.Errorf("%s is not installed", name)
+		}
+
+		// Remove from gale.toml (best effort).
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting working dir: %w", err)
@@ -88,12 +78,13 @@ var removeCmd = &cobra.Command{
 			}
 		}
 
-		if removed {
-			out.Success(fmt.Sprintf("Removed %s", name))
-		} else {
-			return fmt.Errorf("%s is not installed", name)
+		// Rebuild generation (removed pkg vanishes).
+		if err := rebuildGeneration(galeDir, storeRoot,
+			globalConfig); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
 		}
 
+		out.Success(fmt.Sprintf("Removed %s", name))
 		return nil
 	},
 }

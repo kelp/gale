@@ -14,7 +14,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/profile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/klauspost/compress/zstd"
@@ -31,10 +30,8 @@ func TestInstallFromSourceCreatesBinary(t *testing.T) {
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
-	binDir := t.TempDir()
 	inst := &Installer{
-		Store:   store.NewStore(storeRoot),
-		Profile: profile.NewProfile(binDir),
+		Store: store.NewStore(storeRoot),
 	}
 
 	r := &recipe.Recipe{
@@ -62,17 +59,10 @@ func TestInstallFromSourceCreatesBinary(t *testing.T) {
 	if _, err := os.Stat(storeBin); err != nil {
 		t.Errorf("binary not in store: %v", err)
 	}
-
-	// Verify symlink in profile.
-	profileBin := filepath.Join(binDir, "testpkg")
-	if _, err := os.Lstat(profileBin); err != nil {
-		t.Errorf("binary not linked in profile: %v", err)
-	}
 }
 
 func TestInstallSkipsAlreadyInstalled(t *testing.T) {
 	storeRoot := t.TempDir()
-	binDir := t.TempDir()
 
 	s := store.NewStore(storeRoot)
 	s.Create("testpkg", "1.0")
@@ -81,7 +71,6 @@ func TestInstallSkipsAlreadyInstalled(t *testing.T) {
 
 	inst := &Installer{
 		Store:   s,
-		Profile: profile.NewProfile(binDir),
 	}
 
 	r := &recipe.Recipe{
@@ -109,10 +98,8 @@ func TestInstallResultFields(t *testing.T) {
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
-	binDir := t.TempDir()
 	inst := &Installer{
-		Store:   store.NewStore(storeRoot),
-		Profile: profile.NewProfile(binDir),
+		Store: store.NewStore(storeRoot),
 	}
 
 	r := &recipe.Recipe{
@@ -150,10 +137,8 @@ func TestInstallUpgradeMovesSymlink(t *testing.T) {
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
-	binDir := t.TempDir()
 	inst := &Installer{
-		Store:   store.NewStore(storeRoot),
-		Profile: profile.NewProfile(binDir),
+		Store: store.NewStore(storeRoot),
 	}
 
 	// Install v1.0.
@@ -193,15 +178,12 @@ func TestInstallUpgradeMovesSymlink(t *testing.T) {
 		t.Errorf("Method = %q, want %q", result.Method, "source")
 	}
 
-	// Verify symlink points to v2.0.
-	linkPath := filepath.Join(binDir, "testpkg")
-	target, err := os.Readlink(linkPath)
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
+	// Verify both versions exist in store.
+	if !inst.Store.IsInstalled("testpkg", "1.0") {
+		t.Error("v1.0 not in store")
 	}
-	if !strings.Contains(target, "2.0") {
-		t.Errorf("symlink target = %q, want path containing 2.0",
-			target)
+	if !inst.Store.IsInstalled("testpkg", "2.0") {
+		t.Error("v2.0 not in store")
 	}
 }
 
@@ -233,10 +215,8 @@ func TestInstallBinaryFromGHCR(t *testing.T) {
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
-	binDir := t.TempDir()
 	inst := &Installer{
-		Store:   store.NewStore(storeRoot),
-		Profile: profile.NewProfile(binDir),
+		Store: store.NewStore(storeRoot),
 	}
 
 	// URL must contain ghcr.io to trigger auth path.
@@ -274,12 +254,6 @@ func TestInstallBinaryFromGHCR(t *testing.T) {
 	if _, err := os.Stat(storeBin); err != nil {
 		t.Errorf("binary not in store: %v", err)
 	}
-
-	// Verify symlink in profile.
-	profileBin := filepath.Join(binDir, "testpkg")
-	if _, err := os.Lstat(profileBin); err != nil {
-		t.Errorf("binary not linked in profile: %v", err)
-	}
 }
 
 func TestInstallResolvesBuildDeps(t *testing.T) {
@@ -312,10 +286,8 @@ func TestInstallResolvesBuildDeps(t *testing.T) {
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
-	binDir := t.TempDir()
 	inst := &Installer{
-		Store:   store.NewStore(storeRoot),
-		Profile: profile.NewProfile(binDir),
+		Store: store.NewStore(storeRoot),
 		Resolver: func(name string) (*recipe.Recipe, error) {
 			if name == "deptool" {
 				return &recipe.Recipe{

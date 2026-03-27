@@ -3,12 +3,10 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/profile"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -54,11 +52,9 @@ var syncCmd = &cobra.Command{
 		}
 
 		storeRoot := defaultStoreRoot()
-		binDir := filepath.Join(galeDir, "bin")
 
 		inst := &installer.Installer{
 			Store:    store.NewStore(storeRoot),
-			Profile:  profile.NewProfile(binDir),
 			Resolver: reg.FetchRecipe,
 		}
 
@@ -97,6 +93,12 @@ var syncCmd = &cobra.Command{
 					result.Name, result.Version))
 				installed++
 			}
+		}
+
+		// Rebuild generation from gale.toml.
+		if err := rebuildGeneration(galeDir, storeRoot,
+			galePath); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
 		}
 
 		out.Success(fmt.Sprintf(
