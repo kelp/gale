@@ -65,7 +65,7 @@
 - [x] All 9 recipes verified with local builds
   (8 pass, eza needs newer Rust)
 
-## Declarative Environments (in progress)
+## Declarative Environments
 
 - [x] **Generation model** — `internal/generation/`
   builds gen directories with bin/ symlinks into the
@@ -74,19 +74,23 @@
 - [x] **Installer decoupled** — installer only writes
   to the store. Commands rebuild generation after
   store changes.
-- [ ] **`gale env` command** — print
+- [x] **`gale env` command** — prints
   `export PATH=<dir>/current/bin:$PATH` for the
   current scope. Used by CI and direnv.
-- [ ] **`gale init` command** — bootstrap a project:
-  create gale.toml, .envrc, update .gitignore.
-- [ ] **direnv integration** — `gale hook direnv`
-  outputs `use_gale` function. Replaces shell hooks.
-- [ ] **direnv recipe** — package direnv as a gale
-  recipe so it can be installed globally.
-- [ ] **Delete old shell hooks** — remove fish/zsh/bash
-  chpwd hooks, replace with direnv + `gale env`.
-- [ ] **Remove `internal/profile/`** — dead code once
-  generation model is fully wired.
+- [x] **`gale init` command** — bootstraps a project:
+  creates gale.toml, .envrc, updates .gitignore.
+- [x] **direnv integration** — `gale hook direnv`
+  outputs `use_gale` function for direnvrc.
+- [x] **direnv recipe** — direnv 2.37.1, single Go
+  binary, builds and runs.
+- [x] **Deleted old shell hooks** — removed fish/zsh/bash
+  chpwd hooks, replaced with direnv + `gale env`.
+- [x] **Removed `internal/profile/`** — replaced by
+  `internal/generation/`.
+- [x] **Embedded README** — `go:embed` README.md written
+  into .gale/ on every generation rebuild.
+- [x] **Shortened paths** — `packages/` → `pkg/`,
+  `generations/` → `gen/`.
 
 ## AI Features
 
