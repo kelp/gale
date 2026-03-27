@@ -215,7 +215,7 @@ func touchAll(dir string) error {
 	now := time.Now()
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil // skip broken symlinks and errors
+			return nil //nolint:nilerr // best-effort: skip broken symlinks
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil // skip symlinks

@@ -55,7 +55,7 @@ func Verify(data []byte, signature, publicKey string) (bool, error) {
 
 	sigRaw, err := base64.StdEncoding.DecodeString(signature)
 	if err != nil {
-		return false, nil
+		return false, nil //nolint:nilerr // malformed signature is not an error, just invalid
 	}
 
 	if len(sigRaw) != ed25519.SignatureSize {

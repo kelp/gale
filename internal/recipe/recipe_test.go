@@ -475,7 +475,7 @@ func TestParseNoBinarySectionIsValid(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if r.Binary != nil && len(r.Binary) != 0 {
+	if len(r.Binary) != 0 {
 		t.Errorf("Binary should be nil or empty, got %d entries",
 			len(r.Binary))
 	}

@@ -33,10 +33,10 @@ func setupBareRepo(t *testing.T, recipes map[string]string) string {
 		}
 	}
 
-	runIn(t, work, "git", "add", ".")
-	runIn(t, work, "git", "-c", "user.name=test",
+	gitIn(t, work, "add", ".")
+	gitIn(t, work, "-c", "user.name=test",
 		"-c", "user.email=test@test", "commit", "-m", "init")
-	runIn(t, work, "git", "push")
+	gitIn(t, work, "push")
 
 	return bare
 }
@@ -51,15 +51,15 @@ func run(t *testing.T, name string, args ...string) {
 	}
 }
 
-// runIn executes a command in a specific directory.
-func runIn(t *testing.T, dir, name string, args ...string) {
+// gitIn executes a git command in a specific directory.
+func gitIn(t *testing.T, dir string, args ...string) {
 	t.Helper()
-	cmd := exec.Command(name, args...)
+	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		t.Fatalf("command %v in %s failed: %v\n%s",
-			cmd.Args, dir, err, out)
+		t.Fatalf("git %v in %s failed: %v\n%s",
+			args, dir, err, out)
 	}
 }
 
@@ -174,10 +174,10 @@ func TestFetchPicksUpNewRecipe(t *testing.T) {
 		[]byte("[package]\nname = \"ripgrep\"\n"), 0o644); err != nil {
 		t.Fatalf("failed to write new recipe: %v", err)
 	}
-	runIn(t, work, "git", "add", ".")
-	runIn(t, work, "git", "-c", "user.name=test",
+	gitIn(t, work, "add", ".")
+	gitIn(t, work, "-c", "user.name=test",
 		"-c", "user.email=test@test", "commit", "-m", "add ripgrep")
-	runIn(t, work, "git", "push")
+	gitIn(t, work, "push")
 
 	// Fetch should pick up the new recipe.
 	if err := m.Fetch("core"); err != nil {

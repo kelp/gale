@@ -17,8 +17,9 @@ test-v:
 test-pkg pkg:
     go test -v ./internal/{{pkg}}/...
 
-# Lint with go vet
+# Lint with golangci-lint and go vet
 lint:
+    golangci-lint run ./...
     go vet ./...
 
 # Check formatting
@@ -28,6 +29,10 @@ fmt-check:
 # Fix formatting
 fmt:
     gofumpt -w .
+
+# Run tests with race detector
+test-race:
+    go test -race ./...
 
 # Run all checks (test + lint + format)
 check: test lint fmt-check

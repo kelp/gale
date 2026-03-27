@@ -135,70 +135,8 @@ func ExtractTarGz(archivePath, destDir string) error {
 	defer gr.Close()
 
 	tr := tar.NewReader(gr)
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read tar entry: %w", err)
-		}
-
-		target := filepath.Join(destDir, hdr.Name)
-
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) {
-			return fmt.Errorf("illegal path in archive: %s", hdr.Name)
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return fmt.Errorf("create directory %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err)
-			}
-			if err := writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
-				return fmt.Errorf("extract %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeSymlink:
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err)
-			}
-			os.Remove(target)
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return fmt.Errorf("create symlink %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeLink:
-			linkTarget := filepath.Join(destDir, hdr.Linkname)
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err)
-			}
-			os.Remove(target)
-			if err := os.Link(linkTarget, target); err != nil {
-				return fmt.Errorf("create hard link %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeXGlobalHeader, tar.TypeXHeader:
-			// PAX headers — skip silently.
-			continue
-		default:
-			return fmt.Errorf("unsupported tar entry type %d for %s",
-				hdr.Typeflag, hdr.Name)
-		}
+	if err := extractTar(tr, destDir); err != nil {
+		return err
 	}
 
 	return nil
@@ -214,9 +152,10 @@ func ExtractZip(archivePath, destDir string) error {
 	defer r.Close()
 
 	for _, zf := range r.File {
-		target := filepath.Join(destDir, zf.Name)
+		target := filepath.Join(destDir, zf.Name) //nolint:gosec // G305 — path validated below
+		cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
 
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) {
+		if !strings.HasPrefix(filepath.Clean(target), cleanDest) {
 			return fmt.Errorf("illegal path in archive: %s", zf.Name)
 		}
 
@@ -267,6 +206,18 @@ func ExtractTarZstd(archivePath, destDir string) error {
 	defer zr.Close()
 
 	tr := tar.NewReader(zr)
+	if err := extractTar(tr, destDir); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// extractTar reads entries from a tar reader and extracts them
+// to destDir. Validates paths to prevent directory traversal.
+func extractTar(tr *tar.Reader, destDir string) error {
+	cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
+
 	for {
 		hdr, err := tr.Next()
 		if err == io.EOF {
@@ -276,9 +227,9 @@ func ExtractTarZstd(archivePath, destDir string) error {
 			return fmt.Errorf("read tar entry: %w", err)
 		}
 
-		target := filepath.Join(destDir, hdr.Name)
+		target := filepath.Join(destDir, hdr.Name) //nolint:gosec // G305 — path validated below
 
-		if !strings.HasPrefix(filepath.Clean(target), filepath.Clean(destDir)+string(os.PathSeparator)) {
+		if !strings.HasPrefix(filepath.Clean(target), cleanDest) {
 			return fmt.Errorf("illegal path in archive: %s", hdr.Name)
 		}
 
@@ -312,7 +263,10 @@ func ExtractTarZstd(archivePath, destDir string) error {
 					hdr.Name, err)
 			}
 		case tar.TypeLink:
-			linkTarget := filepath.Join(destDir, hdr.Linkname)
+			linkTarget := filepath.Join(destDir, hdr.Linkname) //nolint:gosec // G305 — path validated below
+			if !strings.HasPrefix(filepath.Clean(linkTarget), cleanDest) {
+				return fmt.Errorf("illegal hard link target in archive: %s", hdr.Linkname)
+			}
 			if err := os.MkdirAll(
 				filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf(

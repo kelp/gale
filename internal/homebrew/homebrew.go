@@ -23,9 +23,6 @@ type Formula struct {
 	Warnings    []string
 }
 
-// defaultBaseURL is the raw GitHub URL for homebrew-core formulas.
-const defaultBaseURL = "https://raw.githubusercontent.com/Homebrew/homebrew-core/master/Formula"
-
 // FetchFormula fetches and parses a formula from GitHub.
 // baseURL overrides the default raw GitHub URL (for testing).
 func FetchFormula(name, baseURL string) (*Formula, error) {
