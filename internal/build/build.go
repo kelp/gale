@@ -75,6 +75,11 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 		}
 	}
 
+	// Fix dynamic library paths for portability.
+	if err := FixupBinaries(prefixDir); err != nil {
+		return nil, fmt.Errorf("fixup binaries: %w", err)
+	}
+
 	// Package prefix as tar.zst.
 	archiveName := fmt.Sprintf("%s-%s.tar.zst", r.Package.Name, r.Package.Version)
 	archivePath := filepath.Join(outputDir, archiveName)
