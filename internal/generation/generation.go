@@ -20,7 +20,7 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	next := prev + 1
 
 	genDir := filepath.Join(
-		galeDir, "generations", strconv.Itoa(next))
+		galeDir, "gen", strconv.Itoa(next))
 	genBinDir := filepath.Join(genDir, "bin")
 	if err := os.MkdirAll(genBinDir, 0o755); err != nil {
 		return fmt.Errorf("create generation bin dir: %w", err)
@@ -55,7 +55,7 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 
 	// Atomic swap: create a temporary symlink then rename.
 	relTarget := filepath.Join(
-		"generations", strconv.Itoa(next))
+		"gen", strconv.Itoa(next))
 	tmpLink := filepath.Join(galeDir, "current-new")
 	if err := os.Remove(tmpLink); err != nil && !errors.Is(err, os.ErrNotExist) {
 		cleanup()
@@ -73,7 +73,7 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	// Clean up previous generation.
 	if prev > 0 {
 		prevDir := filepath.Join(
-			galeDir, "generations", strconv.Itoa(prev))
+			galeDir, "gen", strconv.Itoa(prev))
 		if err := os.RemoveAll(prevDir); err != nil {
 			return fmt.Errorf(
 				"remove previous generation: %w", err)

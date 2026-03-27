@@ -54,6 +54,16 @@
 - [x] CI: golangci-lint, race detector, govulncheck
 - [x] Shared extractTar helper (deduped tar.gz/tar.zst)
 - [x] Hard link path traversal validation in tar extraction
+- [x] Generation model: declarative bin/ via atomic
+  symlink swap (internal/generation/)
+- [x] Installer decoupled from symlinks — store only,
+  commands rebuild generation after store changes
+- [x] Build PATH isolation: symlink individual tools
+  to prevent nix vibeutils contamination
+- [x] jq recipe: static build (--disable-shared
+  --enable-all-static)
+- [x] All 9 recipes verified with local builds
+  (8 pass, eza needs newer Rust)
 
 ## GHCR Distribution
 
@@ -136,6 +146,21 @@ streaming. Our code provides focused prompts and tools.
   agent reads the error and fixes the recipe, another
   tests the fix. Falls back to opening an issue if the
   team can't resolve it.
+
+## Documentation
+
+- [ ] **docs/design.md** — Document the generation model,
+  terminology, and design decisions. Key terms: "gen"
+  is short for generation (a numbered snapshot of
+  symlinks into the store). `current` symlink points
+  to the active gen. Atomic swap via os.Rename.
+  Explain how global and project environments share
+  the same model. Why direnv over shell hooks. Why
+  static linking for CLI tools. How gale differs from
+  Nix and Homebrew.
+- [ ] **Update CLAUDE.md** — Add generation model to
+  project layout, update gotchas, add pointer to
+  design doc.
 
 ## CLI Polish
 
@@ -226,6 +251,10 @@ keeps recipes current with upstream releases.
   sections that override build steps for specific
   platforms (e.g., different configure flags on Linux
   vs macOS).
+
+- [ ] Design / review where gale does it's builds. We want it to be in a
+  place that is scratch, but safe from filling disk. Probably create a gale
+  specific tmp dir in the users homedir, and clean it up after we're done.
 
 ## Language Toolchains
 
