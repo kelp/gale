@@ -130,7 +130,7 @@ var repoInitCmd = &cobra.Command{
 		}
 
 		keyFile := filepath.Join(name, "keys.json")
-		keyData, err := json.MarshalIndent(kp, "", "  ")
+		keyData, err := json.MarshalIndent(kp, "", "  ") //nolint:gosec // G117 — ed25519 signing key struct, not a hardcoded credential
 		if err != nil {
 			return fmt.Errorf("encoding keys: %w", err)
 		}

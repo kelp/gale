@@ -83,7 +83,7 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	}
 
 	// Write README (best effort, world-readable).
-	_ = os.WriteFile( //nolint:gosec // G306 — README should be 0644
+	_ = os.WriteFile(
 		filepath.Join(galeDir, "README.md"),
 		galeReadme, 0o644)
 

@@ -242,7 +242,7 @@ func touchAll(dir string) error {
 		if info.Mode()&os.ModeSymlink != 0 {
 			return nil // skip symlinks
 		}
-		_ = os.Chtimes(path, now, now) // best effort
+		_ = os.Chtimes(path, now, now) //nolint:gosec // G122 — best-effort timestamp reset, race is acceptable
 		return nil
 	})
 }

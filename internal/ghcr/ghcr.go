@@ -11,7 +11,7 @@ import (
 
 // tokenEndpoint is the base URL for the GHCR token service.
 // Tests override this to point at httptest servers.
-var tokenEndpoint = "https://ghcr.io/token"
+var tokenEndpoint = "https://ghcr.io/token" //nolint:gosec // G101 — URL, not a credential
 
 // SetTokenEndpoint overrides the token endpoint URL.
 // Returns the previous value for restoring in tests.

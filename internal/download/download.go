@@ -368,7 +368,7 @@ func CreateTarZstd(sourceDir, archivePath string) error {
 			return fmt.Errorf("write file header %s: %w", rel, err)
 		}
 
-		src, err := os.Open(path)
+		src, err := os.Open(path) //nolint:gosec // G122 — Walk callback, race is acceptable for archive creation
 		if err != nil {
 			return fmt.Errorf("open source file %s: %w", rel, err)
 		}

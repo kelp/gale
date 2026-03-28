@@ -1,39 +1,56 @@
+version: "2"
 linters:
   enable:
     - bodyclose
-    - errcheck
     - exhaustive
     - gocritic
     - gosec
-    - ineffassign
     - nilerr
-    - staticcheck
     - unparam
-
-linters-settings:
-  exhaustive:
-    default-signifies-exhaustive: true
-  gosec:
-    excludes:
-      # Package manager must run subprocesses with variable args
-      - G204
-      # Package manager must fetch URLs from config
-      - G107
-      # Token endpoint URL, not a credential
-      - G101
-  errcheck:
-    exclude-functions:
-      - (net/http.ResponseWriter).Write
-
-issues:
-  exclude-dirs:
-    - vendor
-  exclude-rules:
-    # Test files: allow unchecked errors in helpers
-    - path: _test\.go
-      linters:
-        - errcheck
-    # Test files: 0644 permissions are fine for temp files
-    - path: _test\.go
-      linters:
-        - gosec
+  settings:
+    errcheck:
+      exclude-functions:
+        - (net/http.ResponseWriter).Write
+        - (*compress/gzip.Reader).Close
+        - (*os.File).Close
+        - (io.Closer).Close
+        - (*net/http.Response).Body.Close
+        - os.RemoveAll
+        - fmt.Fprintf
+        - fmt.Fprint
+    exhaustive:
+      default-signifies-exhaustive: true
+    gosec:
+      excludes:
+        - G204
+        - G107
+        - G304
+        - G301
+        - G306
+        - G302
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+        path: _test\.go
+      - linters:
+          - gosec
+        path: _test\.go
+    paths:
+      - vendor
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

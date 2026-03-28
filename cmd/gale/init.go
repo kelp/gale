@@ -60,7 +60,7 @@ func writeIfNotExists(path, content string) error {
 	if _, err := os.Stat(path); err == nil {
 		return nil // already exists
 	}
-	return os.WriteFile(path, []byte(content), 0o644) //nolint:gosec // G306 — project files should be world-readable
+	return os.WriteFile(path, []byte(content), 0o644)
 }
 
 // appendToGitignore adds a line to .gitignore if not
