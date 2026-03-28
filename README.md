@@ -1,14 +1,8 @@
 # Gale
 
-**One tool for all your dev packages.** Install CLI
-tools, languages, and runtimes into isolated
-directories. Pin versions per project. Activate
-on `cd`.
-
-No more juggling Homebrew, nix, asdf, and mise.
-Declare what you need in `gale.toml`. Gale installs
-it — prebuilt binary when available, source build
-when not.
+Fast, isolated package management for developers.
+Versioned installs, per-project environments that
+activate automatically.
 
 ## Install
 
