@@ -32,17 +32,38 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 	}
 	defer os.RemoveAll(workspace)
 
-	// Fetch source tarball.
-	fmt.Fprintf(os.Stderr, "  Downloading %s\n", r.Source.URL)
+	// Fetch source tarball (check cache first).
 	tarballPath := filepath.Join(workspace, "source.tar.gz")
-	if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
-		return nil, fmt.Errorf("fetch source: %w", err)
+	cached := false
+	if cacheDir := sourceCache(); cacheDir != "" {
+		cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
+		if _, err := os.Stat(cachedFile); err == nil {
+			fmt.Fprintf(os.Stderr, "  Using cached source (%s)\n",
+				r.Source.SHA256[:12])
+			if err := copyFile(cachedFile, tarballPath); err == nil {
+				cached = true
+			}
+		}
+	}
+	if !cached {
+		fmt.Fprintf(os.Stderr, "  Downloading %s\n", r.Source.URL)
+		if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
+			return nil, fmt.Errorf("fetch source: %w", err)
+		}
 	}
 
 	// Verify source SHA256.
 	fmt.Fprintf(os.Stderr, "  Verifying SHA256...\n")
 	if err := download.VerifySHA256(tarballPath, r.Source.SHA256); err != nil {
 		return nil, fmt.Errorf("verify source: %w", err)
+	}
+
+	// Save to cache after successful verify.
+	if !cached {
+		if cacheDir := sourceCache(); cacheDir != "" {
+			cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
+			_ = copyFile(tarballPath, cachedFile)
+		}
 	}
 
 	// Extract source.
@@ -275,4 +296,44 @@ func computeSHA256(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// sourceCache returns the path to ~/.gale/cache/, creating
+// it if needed. Returns empty string if unavailable.
+func sourceCache() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(home, ".gale", "cache")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	return dir
+}
+
+// copyFile copies src to dst.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+
+	if _, err := io.Copy(out, in); err != nil {
+		out.Close()
+		os.Remove(dst)
+		return err
+	}
+
+	return out.Close()
 }
