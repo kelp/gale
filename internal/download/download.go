@@ -118,7 +118,7 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	var line string
 	if pw.total > 0 {
 		pct := float64(pw.written) / float64(pw.total) * 100
-		line = fmt.Sprintf("    %s / %s (%.0f%%) %s/s",
+		line = fmt.Sprintf("    %s / %s (%3.0f%%) %s/s",
 			formatBytes(pw.written), formatBytes(pw.total),
 			pct, formatBytes(int64(speed)))
 	} else {
@@ -141,8 +141,9 @@ func (pw *progressWriter) finish() {
 		elapsed = 0.001
 	}
 	speed := float64(pw.written) / elapsed
-	line := fmt.Sprintf("    %s  %s/s",
-		formatBytes(pw.written), formatBytes(int64(speed)))
+	line := fmt.Sprintf("    %s in %.1fs (%s/s)",
+		formatBytes(pw.written), elapsed,
+		formatBytes(int64(speed)))
 	for len(line) < 70 {
 		line += " "
 	}

@@ -56,9 +56,10 @@ func (o *Output) Error(msg string) {
 	o.writeMsg(o.red, "xxx ", msg)
 }
 
-// Step writes a sub-step message with a dimmed arrow.
+// Step writes a sub-step message indented under the
+// main arrow.
 func (o *Output) Step(msg string) {
-	o.writeMsg(o.cyan, "    ", msg)
+	o.writeMsg(o.cyan, "  > ", msg)
 }
 
 func (o *Output) writeMsg(c *color.Color, prefix, msg string) {
