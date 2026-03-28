@@ -6,6 +6,8 @@ import (
 	"net/http/httptest"
 	"sync"
 	"testing"
+
+	"github.com/kelp/gale/internal/trust"
 )
 
 // validTOML is a minimal recipe that recipe.Parse accepts.
@@ -844,5 +846,124 @@ func TestFetchRecipeVersionConnectionFailure(t *testing.T) {
 	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error for connection failure")
+	}
+}
+
+// --- Behavior 27: FetchRecipe verifies signature ---
+
+func TestFetchRecipeVerifiesSignature(t *testing.T) {
+	kp, err := trust.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+
+	recipeBody := []byte(validTOML)
+	sig, err := trust.Sign(recipeBody, kp.PrivateKey)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/t/testpkg.toml":
+				w.Write(recipeBody)
+			case "/recipes/t/testpkg.toml.sig":
+				fmt.Fprint(w, sig)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:   srv.URL,
+		PublicKey: kp.PublicKey,
+	}
+	rec, err := reg.FetchRecipe("testpkg")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Name != "testpkg" {
+		t.Errorf("Name = %q, want %q",
+			rec.Package.Name, "testpkg")
+	}
+}
+
+// --- Behavior 28: FetchRecipe rejects bad signature ---
+
+func TestFetchRecipeRejectsBadSignature(t *testing.T) {
+	kp1, _ := trust.GenerateKeyPair()
+	kp2, _ := trust.GenerateKeyPair()
+
+	recipeBody := []byte(validTOML)
+	sig, _ := trust.Sign(recipeBody, kp1.PrivateKey)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/t/testpkg.toml":
+				w.Write(recipeBody)
+			case "/recipes/t/testpkg.toml.sig":
+				fmt.Fprint(w, sig)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:   srv.URL,
+		PublicKey: kp2.PublicKey,
+	}
+	_, err := reg.FetchRecipe("testpkg")
+	if err == nil {
+		t.Fatal("expected error for bad signature")
+	}
+}
+
+// --- Behavior 29: FetchRecipe rejects missing signature ---
+
+func TestFetchRecipeRejectsMissingSignature(t *testing.T) {
+	kp, _ := trust.GenerateKeyPair()
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/t/testpkg.toml":
+				fmt.Fprint(w, validTOML)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:   srv.URL,
+		PublicKey: kp.PublicKey,
+	}
+	_, err := reg.FetchRecipe("testpkg")
+	if err == nil {
+		t.Fatal("expected error for missing signature")
+	}
+}
+
+// --- Behavior 30: Empty PublicKey skips verification ---
+
+func TestFetchRecipeNoPublicKeySkipsVerification(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, validTOML)
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	rec, err := reg.FetchRecipe("testpkg")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Name != "testpkg" {
+		t.Errorf("Name = %q, want %q",
+			rec.Package.Name, "testpkg")
 	}
 }

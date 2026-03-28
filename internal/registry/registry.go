@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/trust"
 )
 
 const DefaultURL = "https://raw.githubusercontent.com/" +
@@ -18,7 +19,8 @@ const defaultGHCRBase = "kelp/gale-recipes"
 // Registry fetches recipe TOML files from a remote HTTP
 // registry using letter-bucketed paths.
 type Registry struct {
-	BaseURL string
+	BaseURL   string
+	PublicKey string // ed25519 public key (base64); empty = skip verification
 }
 
 // New returns a Registry configured with DefaultURL.
@@ -61,6 +63,10 @@ func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("fetch recipe %s: %w", name, err)
+	}
+
+	if err := r.verifyRecipe(body, url); err != nil {
+		return nil, fmt.Errorf("recipe %s: %w", name, err)
 	}
 
 	rec, err := recipe.Parse(string(body))
@@ -202,6 +208,46 @@ func ghcrBaseFromURL(rawURL string) string {
 		return defaultGHCRBase
 	}
 	return parts[0] + "/" + parts[1]
+}
+
+// fetchSignature fetches the .sig file for the given recipe URL.
+func (r *Registry) fetchSignature(url string) (string, error) {
+	sigURL := url + ".sig"
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(sigURL)
+	if err != nil {
+		return "", fmt.Errorf("fetch signature: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("fetch signature: HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read signature: %w", err)
+	}
+	return strings.TrimSpace(string(body)), nil
+}
+
+// verifyRecipe checks the recipe signature if a public key is
+// configured. Returns nil when PublicKey is empty (verification
+// disabled).
+func (r *Registry) verifyRecipe(data []byte, recipeURL string) error {
+	if r.PublicKey == "" {
+		return nil
+	}
+	sig, err := r.fetchSignature(recipeURL)
+	if err != nil {
+		return fmt.Errorf("signature verification: %w", err)
+	}
+	ok, err := trust.Verify(data, sig, r.PublicKey)
+	if err != nil {
+		return fmt.Errorf("signature verification: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("signature verification failed: invalid signature")
+	}
+	return nil
 }
 
 // parseVersionIndex parses a .versions file into a
