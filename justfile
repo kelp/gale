@@ -49,6 +49,35 @@ install:
 bootstrap: build
     ./gale install --source . gale
 
+# Tag a release (runs checks first)
+tag version: check
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if git tag --list | grep -q "^v{{version}}$"; then
+      echo "Tag v{{version}} already exists"
+      exit 1
+    fi
+    # Update CHANGELOG header.
+    sed -i '' "s/^## v.*-dev.*/## v{{version}} — $(date +%Y-%m-%d)/" CHANGELOG.md
+    git add CHANGELOG.md
+    git commit -m "Release v{{version}}"
+    git tag "v{{version}}"
+    echo "Tagged v{{version}} — run 'just release {{version}}' to publish"
+
+# Push tag and create GitHub release
+release version:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! git tag --list | grep -q "^v{{version}}$"; then
+      echo "Tag v{{version}} does not exist — run 'just tag {{version}}' first"
+      exit 1
+    fi
+    git push origin main "v{{version}}"
+    gh release create "v{{version}}" \
+      --title "v{{version}}" \
+      --notes-file RELEASENOTES.md
+    echo "Published https://github.com/kelp/gale/releases/tag/v{{version}}"
+
 # Clean build artifacts
 clean:
     rm -f gale

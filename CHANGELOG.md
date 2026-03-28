@@ -26,6 +26,9 @@
 - Colored help output with section headers, command
   names, and flag names. Respects `NO_COLOR` env var
   and `--no-color` flag.
+- `just tag` and `just release` targets for the full
+  release flow: checks, CHANGELOG update, tag, push,
+  GitHub release.
 - `build.BuildLocal()` builds a recipe from a local
   source directory, skipping download and verification.
 - `recipe.ParseLocal()` parses recipes without requiring

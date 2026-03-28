@@ -173,13 +173,10 @@ streaming. Our code provides focused prompts and tools.
 
 ## CI & Release
 
-- [ ] **Release management** — Just targets for version
-  bump, git tag, and GitHub release creation. Automate
-  the full release flow.
-
-- [ ] **RELEASENOTES.md** — Update on each version bump.
-  The release process extracts the current version's
-  notes and includes them in the GitHub release body.
+- [x] **Release management** — `just tag <ver>` runs
+  checks, updates CHANGELOG, commits, and tags.
+  `just release <ver>` pushes and creates GitHub release
+  from RELEASENOTES.md.
 
 - [x] **Versioning infrastructure** — `gale --version`
   prints git hash via ldflags. Semver tags to come.
