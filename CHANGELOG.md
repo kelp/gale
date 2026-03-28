@@ -15,8 +15,7 @@
 - `gale add` command adds packages to gale.toml
   without installing.
 - `gale hook direnv` outputs `use_gale` function for
-  direnv integration. Replaces fish/zsh/bash shell
-  hooks.
+  direnv integration.
 - Interactive scope prompt (`[g/p]`) when a project
   gale.toml exists and no `-g`/`-p` flag is set.
 - Registry URL override in `~/.gale/config.toml`.
@@ -28,9 +27,6 @@
 - Embedded README.md written into `.gale/` on every
   generation rebuild.
 - Streaming build output for long-running builds.
-- 15 recipes: jq, just, fd, ripgrep, bat, git-delta,
-  starship, fzf, eza, direnv, go, rust, cmake,
-  pkgconf, lazygit, patchelf.
 - golangci-lint v2 with strict configuration.
 - CI: golangci-lint, race detector, govulncheck on
   macOS arm64 and Linux amd64.
@@ -46,10 +42,9 @@
 - `gale sync` falls back to `~/.gale/gale.toml` when
   no project config exists.
 - `gale shell` and `gale run` use the generation model
-  (current/bin on PATH) instead of concatenating store
-  paths.
+  instead of concatenating store paths.
 - Installer decoupled from symlinks — only manages
-  the store. Commands rebuild the generation.
+  the store.
 - Build PATH isolates individual tools via symlinks
   to prevent nix vibeutils contamination.
 - Shortened directory names: `packages/` to `pkg/`,
@@ -57,8 +52,119 @@
 
 ### Removed
 
-- `internal/profile/` package replaced by
+- `internal/profile/` replaced by
   `internal/generation/`.
 - Fish, zsh, and bash shell hooks replaced by direnv.
-- Dead code in `internal/env/`: BuildPATH,
-  BuildEnvironment, MergePackages, DetectConfig.
+- Dead code: BuildPATH, BuildEnvironment,
+  MergePackages, DetectConfig from `internal/env/`.
+
+## 2025-03-26
+
+### Added
+
+- On-demand recipe registry fetch from GitHub raw
+  URLs. No git clone needed.
+- Auto-update agent: daily cron workflow in
+  gale-recipes, 3-day cooldown, PR per update.
+- `[source].repo` and `[source].released_at` fields
+  for upstream release tracking.
+- Binary verification in CI before GHCR push.
+- Signed bot commits via GitHub API.
+- Hard link support in tar extraction.
+- Hard link path traversal validation.
+- Shared `extractTar` helper (deduplicated tar.gz
+  and tar.zst extraction).
+
+### Fixed
+
+- Package upgrade now moves symlinks instead of
+  failing on existing ones.
+
+## 2025-03-25
+
+### Added
+
+- GHCR anonymous token exchange for pulling prebuilt
+  binaries from GitHub Container Registry.
+- Authenticated HTTP fetch (`FetchWithAuth`) with
+  bearer tokens.
+- GHCR integration in installer: auto-detects GHCR
+  URLs, authenticates, falls back to source build.
+- GitHub Actions CI on macOS arm64 and Linux amd64.
+- Build dependency auto-install: resolver fetches and
+  installs build deps, adds their bin dirs to the
+  build PATH.
+- Extra PATH parameter in `build.Build()` for build
+  dep binaries.
+
+### Changed
+
+- Build tool discovery resolves compilers from host
+  PATH via `exec.LookPath` instead of importing the
+  full host PATH.
+- Default TMPDIR to `/tmp` when unset (Linux CI fix).
+
+## 2025-03-24
+
+### Added
+
+- Homebrew formula file parser with heuristic Ruby
+  extraction. Handles deps, build steps, version
+  detection, and Homebrew-specific helpers.
+- `gale import homebrew <name>` command.
+- Build-from-source module: download, verify SHA256,
+  extract, run build steps, package as tar.zst.
+- `gale build <recipe.toml>` command.
+- Installer module: binary-preferred install with
+  source fallback.
+- `--recipe` flag for installing from local files.
+- Letter-bucketed recipe repo layout
+  (`recipes/j/jq.toml`).
+- tar.zst extract and create support.
+- Binary platform sections in recipe format
+  (`[binary.darwin-arm64]`).
+- Symlink handling in tar archives.
+- Autotools timestamp reset (`touchAll`) to prevent
+  clock-skew errors.
+
+### Changed
+
+- Import command reworked from Homebrew API to direct
+  formula file parsing.
+
+## 2025-03-23
+
+### Added
+
+- Project scaffolding: Go module, cobra CLI, justfile.
+- Recipe TOML parsing and validation.
+- Config parsing (gale.toml, config.toml) with
+  directory walking.
+- Package store directory management.
+- Colored terminal output with `NO_COLOR` support.
+- HTTP download with SHA256 verification.
+- tar.gz and zip extraction.
+- Symlink profile management (`~/.gale/bin/`).
+- Lock file read/write with stale detection.
+- Environment management and shell hooks
+  (fish, zsh, bash).
+- Recipe repository clone/fetch/search.
+- ed25519 signing and verification.
+- Anthropic API client with graceful degradation.
+- CLI commands: install, remove, list, shell, run,
+  hook, update, sync, search, import, create-recipe,
+  repo add/remove/list/init.
+- README with project description and usage.
+
+## 2025-03-22
+
+### Added
+
+- Initial design document covering architecture,
+  package management model, environment activation,
+  AI features, federated repositories, and ed25519
+  trust model.
+
+### Changed
+
+- Implementation language switched from Zig to Go.
