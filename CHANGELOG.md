@@ -40,8 +40,17 @@
   `${PLATFORM}` available in build steps.
 - Auto-detect `--local`: `gale build` inside a
   recipes repo auto-detects local dep resolution.
+- `${VERSION}` build variable: recipe version
+  available in build steps alongside `${PREFIX}`.
+- Style guide: `docs/style-guide.md` covering
+  writing, documentation, and code conventions.
 
 ### Changed
+
+- Man page rewritten in OpenBSD mandoc style with
+  EXAMPLES section.
+- README rewritten: concise reference, practical
+  examples, correct PATH setup.
 
 - Build functions accept `*BuildDeps` struct instead
   of variadic path strings. Carries both bin dirs
@@ -64,6 +73,10 @@
 - Transitive deps' lib/include/bin paths now
   available in build env (previously only direct
   deps' paths were returned).
+- Lint: `cargo install` no longer falsely triggers
+  missing `go` dep warning.
+- `gale lint` skips `.binaries.toml` and `.versions`
+  files.
 
 ## v0.3.0 — 2026-03-28
 
