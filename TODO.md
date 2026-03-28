@@ -227,10 +227,21 @@ keeps recipes current with upstream releases.
   preferred, source fallback), adds bin dirs to the
   build PATH. Uses RecipeResolver for lookup.
 
-- [ ] **Per-platform build overrides** — Allow `[build.*]`
-  sections that override build steps for specific
-  platforms (e.g., different configure flags on Linux
-  vs macOS).
+- [x] **Per-platform build overrides** — `[build.<platform>]`
+  sections override `[build]` for specific platforms.
+  Used by Go and Rust recipes for platform-specific
+  bootstrap URLs.
+
+- [ ] **Source download cache** — cache downloaded
+  source tarballs in `~/.gale/cache/` keyed by SHA256.
+  Skip download if cached file matches. In CI, use
+  `actions/cache` on `~/.gale/cache/` between runs.
+  Avoids re-downloading 300MB Rust source on every build.
+
+- [ ] **Stream build output** — `gale build` currently
+  buffers all build output in memory via CombinedOutput.
+  For long builds (Rust: 30+ min), this causes
+  StreamTooLong errors. Stream to stderr instead.
 
 - [ ] **Build directory location** — builds currently
   use system TMPDIR. Move to a gale-specific scratch
