@@ -139,6 +139,59 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 	}, nil
 }
 
+// BuildLocal builds a recipe using a local source directory
+// instead of downloading. The source directory is used as the
+// build root directly. Optional extraPaths are prepended to
+// the build environment PATH.
+func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, extraPaths ...string) (*BuildResult, error) {
+	workspace, err := os.MkdirTemp("", "gale-build-*")
+	if err != nil {
+		return nil, fmt.Errorf("create workspace: %w", err)
+	}
+	defer os.RemoveAll(workspace)
+
+	// Create prefix directory.
+	prefixDir := filepath.Join(workspace, "prefix")
+	if err := os.MkdirAll(prefixDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create prefix directory: %w", err)
+	}
+
+	// Run build steps against the local source directory.
+	jobs := strconv.Itoa(runtime.NumCPU())
+	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
+	for i, step := range buildCfg.Steps {
+		out.Step(fmt.Sprintf("[%d/%d] %s",
+			i+1, len(buildCfg.Steps), step))
+		if err := runStep(step, sourceDir, prefixDir, jobs, extraPaths); err != nil {
+			return nil, err
+		}
+	}
+
+	// Fix dynamic library paths for portability.
+	out.Step("Fixing library paths...")
+	if err := FixupBinaries(prefixDir); err != nil {
+		return nil, fmt.Errorf("fixup binaries: %w", err)
+	}
+
+	// Package prefix as tar.zst.
+	archiveName := fmt.Sprintf("%s-%s.tar.zst", r.Package.Name, r.Package.Version)
+	archivePath := filepath.Join(outputDir, archiveName)
+	if err := download.CreateTarZstd(prefixDir, archivePath); err != nil {
+		return nil, fmt.Errorf("create archive: %w", err)
+	}
+
+	// Compute SHA256 of the archive.
+	hash, err := computeSHA256(archivePath)
+	if err != nil {
+		return nil, fmt.Errorf("hash archive: %w", err)
+	}
+
+	return &BuildResult{
+		Archive: archivePath,
+		SHA256:  hash,
+	}, nil
+}
+
 // detectSourceRoot returns the source root directory. If the
 // extracted source contains exactly one top-level subdirectory,
 // that directory is returned. Otherwise srcDir itself is returned.

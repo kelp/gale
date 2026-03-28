@@ -130,6 +130,33 @@ func Parse(data string) (*Recipe, error) {
 	return r, nil
 }
 
+// ParseLocal parses a TOML recipe for local-source builds.
+// Skips source.url and source.sha256 validation since the
+// source is provided locally.
+func ParseLocal(data string) (*Recipe, error) {
+	var raw rawRecipe
+	if err := toml.Unmarshal([]byte(data), &raw); err != nil {
+		return nil, fmt.Errorf("invalid TOML: %w", err)
+	}
+
+	r := &Recipe{
+		Package:      raw.Package,
+		Source:       raw.Source,
+		Binary:       raw.Binary,
+		Dependencies: raw.Dependencies,
+	}
+
+	r.Build = parseBuild(raw.Build)
+
+	if r.Package.Name == "" {
+		return nil, fmt.Errorf("missing required field: package.name")
+	}
+	if r.Package.Version == "" {
+		return nil, fmt.Errorf("missing required field: package.version")
+	}
+	return r, nil
+}
+
 // parseBuild extracts Build and per-platform overrides
 // from the raw TOML map.
 func parseBuild(raw map[string]interface{}) Build {

@@ -621,6 +621,150 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 	}
 }
 
+// --- Behavior 8: BuildLocal uses local source directory ---
+
+func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
+	// Create a local source directory with a simple script.
+	srcDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(srcDir, "hello.sh"),
+		[]byte("#!/bin/sh\necho hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:    "testpkg",
+			Version: "1.0",
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin && cp hello.sh $PREFIX/bin/hello && chmod +x $PREFIX/bin/hello",
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	result, err := BuildLocal(r, srcDir, outputDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Archive == "" {
+		t.Error("expected Archive path to be set")
+	}
+	if result.SHA256 == "" {
+		t.Error("expected SHA256 to be set")
+	}
+
+	// Verify the archive contains the built binary.
+	extractDir := t.TempDir()
+	if err := download.ExtractTarZstd(result.Archive, extractDir); err != nil {
+		t.Fatalf("failed to extract: %v", err)
+	}
+	helloPath := filepath.Join(extractDir, "bin", "hello")
+	if _, err := os.Stat(helloPath); err != nil {
+		t.Fatalf("bin/hello not found in output: %v", err)
+	}
+}
+
+func TestBuildLocalDoesNotRequireSourceSection(t *testing.T) {
+	srcDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(srcDir, "README"),
+		[]byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:    "testpkg",
+			Version: "1.0",
+		},
+		// No Source section — BuildLocal should not need it.
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin && echo '#!/bin/sh' > $PREFIX/bin/hello && chmod +x $PREFIX/bin/hello",
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	result, err := BuildLocal(r, srcDir, outputDir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.Archive == "" {
+		t.Error("expected non-empty archive path")
+	}
+}
+
+func TestBuildLocalStepFailureReturnsError(t *testing.T) {
+	srcDir := t.TempDir()
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:    "testpkg",
+			Version: "1.0",
+		},
+		Build: recipe.Build{
+			Steps: []string{"exit 1"},
+		},
+	}
+
+	outputDir := t.TempDir()
+	_, err := BuildLocal(r, srcDir, outputDir)
+	if err == nil {
+		t.Fatal("expected error for failing build step")
+	}
+}
+
+func TestBuildLocalWithExtraPaths(t *testing.T) {
+	toolDir := t.TempDir()
+	toolPath := filepath.Join(toolDir, "mytool")
+	if err := os.WriteFile(toolPath,
+		[]byte("#!/bin/sh\necho mytool-output > \"$1\""),
+		0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srcDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(srcDir, "README"),
+		[]byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"mytool $PREFIX/bin/output.txt",
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	result, err := BuildLocal(r, srcDir, outputDir, toolDir)
+	if err != nil {
+		t.Fatalf("BuildLocal error: %v", err)
+	}
+
+	extractDir := t.TempDir()
+	if err := download.ExtractTarZstd(
+		result.Archive, extractDir); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	data, err := os.ReadFile(
+		filepath.Join(extractDir, "bin", "output.txt"))
+	if err != nil {
+		t.Fatalf("read output: %v", err)
+	}
+	if !strings.Contains(string(data), "mytool-output") {
+		t.Errorf("output = %q, want mytool-output", data)
+	}
+}
+
 // --- Behavior 9: resolveTools creates isolated symlink dir ---
 
 func TestResolveToolsCreatesSymlinks(t *testing.T) {

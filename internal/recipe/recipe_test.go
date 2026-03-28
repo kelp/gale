@@ -608,6 +608,48 @@ func TestBuildForPlatformFallsBackToDefault(t *testing.T) {
 	}
 }
 
+// --- Behavior: ParseLocal skips source validation ---
+
+func TestParseLocalWithoutSourceSection(t *testing.T) {
+	input := `
+[package]
+name = "gale"
+version = "dev"
+
+[build]
+steps = ["mkdir -p ${PREFIX}/bin && go build -o ${PREFIX}/bin/gale ./cmd/gale/"]
+`
+	r, err := ParseLocal(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Package.Name != "gale" {
+		t.Errorf("name = %q, want gale", r.Package.Name)
+	}
+}
+
+func TestParseLocalStillRequiresPackageName(t *testing.T) {
+	input := `
+[package]
+version = "1.0"
+`
+	_, err := ParseLocal(input)
+	if err == nil {
+		t.Fatal("expected error for missing package.name")
+	}
+}
+
+func TestParseLocalStillRequiresPackageVersion(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+`
+	_, err := ParseLocal(input)
+	if err == nil {
+		t.Fatal("expected error for missing package.version")
+	}
+}
+
 func TestBuildForPlatformNoOverridesUsesDefault(t *testing.T) {
 	r, err := Parse(validRecipe)
 	if err != nil {

@@ -37,6 +37,14 @@ test-race:
 # Run all checks (test + lint + format)
 check: test lint fmt-check
 
+# Install gale from local source using gale itself
+install:
+    gale install --source . gale
+
+# Bootstrap gale (first-time: build with go, then self-install)
+bootstrap: build
+    ./gale install --source . gale
+
 # Clean build artifacts
 clean:
     rm -f gale

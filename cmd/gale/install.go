@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -22,6 +23,7 @@ var (
 	installGlobal  bool
 	installProject bool
 	installRecipe  string
+	installSource  string
 )
 
 var installCmd = &cobra.Command{
@@ -35,6 +37,11 @@ var installCmd = &cobra.Command{
 
 		name, version := parsePackageArg(args[0])
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+
+		// If --source flag is provided, build from local source.
+		if installSource != "" {
+			return installFromLocalSource(name, installRecipe, installSource, out)
+		}
 
 		// If --recipe flag is provided, install from recipe file.
 		if installRecipe != "" {
@@ -123,6 +130,8 @@ func init() {
 		false, "Install to project config")
 	installCmd.Flags().StringVar(&installRecipe, "recipe", "",
 		"Install from a recipe TOML file")
+	installCmd.Flags().StringVar(&installSource, "source", "",
+		"Build from a local source directory")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -216,6 +225,112 @@ func newRegistry() *registry.Registry {
 	}
 
 	return registry.NewWithURL(cfg.Registry.URL)
+}
+
+func installFromLocalSource(name, recipePath, sourceDir string, out *output.Output) error {
+	// Resolve source directory to absolute path.
+	absSource, err := filepath.Abs(sourceDir)
+	if err != nil {
+		return fmt.Errorf("resolve source path: %w", err)
+	}
+
+	// Resolve the recipe file.
+	resolvedRecipe, err := resolveRecipePath(name, recipePath, absSource)
+	if err != nil {
+		return err
+	}
+
+	data, err := os.ReadFile(resolvedRecipe)
+	if err != nil {
+		return fmt.Errorf("reading recipe: %w", err)
+	}
+
+	r, err := recipe.ParseLocal(string(data))
+	if err != nil {
+		return fmt.Errorf("parsing recipe: %w", err)
+	}
+
+	// Override version with git short hash from source dir.
+	version, err := gitShortHash(absSource)
+	if err != nil {
+		return fmt.Errorf("detecting version: %w", err)
+	}
+	r.Package.Version = version
+
+	galeDir, err := galeConfigDir()
+	if err != nil {
+		return err
+	}
+
+	storeRoot := defaultStoreRoot()
+
+	inst := &installer.Installer{
+		Store:    store.NewStore(storeRoot),
+		Resolver: recipeFileResolver(resolvedRecipe),
+	}
+
+	out.Info(fmt.Sprintf("Installing %s@%s from local source...",
+		r.Package.Name, r.Package.Version))
+
+	result, err := inst.InstallLocal(r, absSource)
+	if err != nil {
+		return fmt.Errorf("install failed: %w", err)
+	}
+
+	// Add to global gale.toml and rebuild generation.
+	configPath := filepath.Join(galeDir, "gale.toml")
+	if err := config.AddPackage(configPath,
+		r.Package.Name, r.Package.Version); err != nil {
+		return fmt.Errorf("adding to config: %w", err)
+	}
+	if err := rebuildGeneration(galeDir, storeRoot,
+		configPath); err != nil {
+		return fmt.Errorf("rebuild generation: %w", err)
+	}
+
+	switch result.Method {
+	case "cached":
+		out.Success(fmt.Sprintf("%s@%s already installed",
+			result.Name, result.Version))
+	case "source":
+		out.Success(fmt.Sprintf(
+			"Installed %s@%s (built from local source)",
+			result.Name, result.Version))
+	}
+
+	return nil
+}
+
+// gitShortHash returns the short git commit hash for the
+// given directory. Returns an error if the directory is not
+// a git repository.
+func gitShortHash(dir string) (string, error) {
+	cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse in %s: %w", dir, err)
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// resolveRecipePath finds the recipe TOML file. If recipePath
+// is provided, uses it directly. Otherwise, checks for a
+// sibling gale-recipes directory next to sourceDir.
+func resolveRecipePath(name, recipePath, sourceDir string) (string, error) {
+	if recipePath != "" {
+		return recipePath, nil
+	}
+
+	letter := string(name[0])
+	sibling := filepath.Join(filepath.Dir(sourceDir), "gale-recipes")
+	candidate := filepath.Join(sibling, "recipes", letter, name+".toml")
+	if _, err := os.Stat(candidate); err == nil {
+		return candidate, nil
+	}
+
+	return "", fmt.Errorf(
+		"no recipe found for %q — use --recipe to specify a recipe file", name)
 }
 
 func installFromRecipeFile(recipePath string, out *output.Output) error {

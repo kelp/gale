@@ -86,6 +86,47 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	}, nil
 }
 
+// InstallLocal installs a recipe from a local source directory.
+// Skips binary install and downloads — builds directly from
+// sourceDir using build.BuildLocal.
+func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*InstallResult, error) {
+	name := r.Package.Name
+	version := r.Package.Version
+
+	// Skip if already installed.
+	if inst.Store.IsInstalled(name, version) {
+		return &InstallResult{
+			Name:    name,
+			Version: version,
+			Method:  "cached",
+		}, nil
+	}
+
+	// Create store directory.
+	storeDir, err := inst.Store.Create(name, version)
+	if err != nil {
+		return nil, fmt.Errorf("create store dir: %w", err)
+	}
+
+	// Resolve and install build deps.
+	depPaths, err := inst.installBuildDeps(r)
+	if err != nil {
+		os.RemoveAll(storeDir)
+		return nil, fmt.Errorf("install build deps: %w", err)
+	}
+
+	if err := installFromLocalSource(r, sourceDir, storeDir, depPaths); err != nil {
+		os.RemoveAll(storeDir)
+		return nil, fmt.Errorf("build from local source: %w", err)
+	}
+
+	return &InstallResult{
+		Name:    name,
+		Version: version,
+		Method:  "source",
+	}, nil
+}
+
 func installBinary(bin *recipe.Binary, storeDir string) error {
 	tmpFile := storeDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)
@@ -183,6 +224,25 @@ func (inst *Installer) installBuildDeps(r *recipe.Recipe) ([]string, error) {
 		}
 	}
 	return binDirs, nil
+}
+
+func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, extraPaths []string) error {
+	tmpDir, err := os.MkdirTemp("", "gale-install-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	result, err := build.BuildLocal(r, sourceDir, tmpDir, extraPaths...)
+	if err != nil {
+		return err
+	}
+
+	if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
+		return fmt.Errorf("extract build output: %w", err)
+	}
+
+	return nil
 }
 
 func installFromSource(r *recipe.Recipe, storeDir string, extraPaths []string) error {
