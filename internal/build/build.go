@@ -130,10 +130,11 @@ func runStep(step, sourceRoot, prefixDir, jobs string, extraPaths []string) erro
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = sourceRoot
 	cmd.Env = buildEnv(prefixDir, jobs, extraPaths)
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		return fmt.Errorf("build step %q failed: %s\n%s", step, err, output)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("build step %q failed: %s", step, err)
 	}
 
 	return nil
