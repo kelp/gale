@@ -164,18 +164,20 @@ Read this file before adding a new command.
 hex SHA256. Used by build and download.VerifySHA256.
 
 When adding a new command that installs packages, use
-`newCmdContext` + `installPackage`. When adding a new
-build mode, delegate to `BuildLocal` after obtaining
-the source directory.
+`newCmdContext` + `ctx.Resolver` + `ctx.Installer.Install`.
+For versioned installs, use `resolveVersionedRecipe`.
+When adding a new build mode, delegate to `BuildLocal`
+after obtaining the source directory.
 
 ## Adding a New Command
 
 1. Create `cmd/gale/<name>.go` with cobra command
 2. Use `newCmdContext(local)` for config/store/resolver
-3. Use `ctx.installPackage()` to install packages
-4. Use `reportResult()` for consistent output
-5. Use `finalizeInstall()` for config + generation
-6. Register in `init()` with `rootCmd.AddCommand`
+3. Use `ctx.Installer.Install(r)` to install packages
+4. Use `resolveVersionedRecipe()` for @version support
+5. Use `reportResult()` for consistent output
+6. Use `finalizeInstall()` for config + generation
+7. Register in `init()` with `rootCmd.AddCommand`
 
 ## Conventions
 
@@ -212,3 +214,24 @@ the source directory.
   `//nolint:gosec` for world-readable files.
 - Use `go:embed` to bake files into the binary
   (see `internal/generation/gale-readme.md`).
+
+## Testing Homebrew Formula
+
+Test the `kelp/tap/gale` formula in an OrbStack VM
+(avoids installing Homebrew on the dev machine):
+
+```sh
+# Install brew in the VM (one-time)
+orbctl run -m ubuntu-24.04 bash -c \
+  'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
+
+# Install gale from tap
+orbctl run -m ubuntu-24.04 bash -c \
+  'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" && brew install kelp/tap/gale'
+
+# Run brew test
+orbctl run -m ubuntu-24.04 bash -c \
+  'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" && brew test kelp/tap/gale'
+```
+
+Formula source: `~/code/homebrew-tap/Formula/gale.rb`

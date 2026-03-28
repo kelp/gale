@@ -58,17 +58,27 @@ var updateCmd = &cobra.Command{
 		}
 
 		// Determine which packages to update.
-		targets := cfg.Packages
+		// Parse @version from args if present.
+		type target struct {
+			current string // version in gale.toml
+			pinned  string // explicit @version (empty = latest)
+		}
+		targets := make(map[string]target)
+
 		if len(args) > 0 {
-			targets = make(map[string]string)
-			for _, name := range args {
-				ver, ok := cfg.Packages[name]
+			for _, arg := range args {
+				name, ver := parsePackageArg(arg)
+				current, ok := cfg.Packages[name]
 				if !ok {
 					out.Warn(fmt.Sprintf(
 						"%s not in gale.toml, skipping", name))
 					continue
 				}
-				targets[name] = ver
+				targets[name] = target{current, ver}
+			}
+		} else {
+			for name, ver := range cfg.Packages {
+				targets[name] = target{ver, ""}
 			}
 		}
 
@@ -78,24 +88,42 @@ var updateCmd = &cobra.Command{
 		}
 
 		var updated int
-		for name, currentVer := range targets {
-			r, err := ctx.Resolver(name)
+		for name, t := range targets {
+			var newVersion string
+
+			if t.pinned != "" {
+				// Explicit @version — fetch that version.
+				newVersion = t.pinned
+			} else {
+				// No @version — check latest from registry.
+				r, err := ctx.Resolver(name)
+				if err != nil {
+					out.Warn(fmt.Sprintf(
+						"Skipping %s: %v", name, err))
+					continue
+				}
+				if r.Package.Version == t.current {
+					out.Info(fmt.Sprintf(
+						"%s@%s is up to date",
+						name, t.current))
+					continue
+				}
+				newVersion = r.Package.Version
+			}
+
+			// Fetch the recipe for the target version.
+			r, err := resolveVersionedRecipe(
+				ctx, name, newVersion)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Skipping %s: %v", name, err))
 				continue
 			}
 
-			if r.Package.Version == currentVer {
-				out.Info(fmt.Sprintf(
-					"%s@%s is up to date", name, currentVer))
-				continue
-			}
-
 			out.Info(fmt.Sprintf("Updating %s %s → %s...",
-				name, currentVer, r.Package.Version))
+				name, t.current, r.Package.Version))
 
-			result, err := ctx.installPackage(name, out)
+			result, err := ctx.Installer.Install(r)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Failed to update %s: %v", name, err))

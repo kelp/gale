@@ -85,7 +85,8 @@
 - [x] CLI consistency redesign: strict sync respects
   pinned versions, all config writes honor scope,
   `--local` on all commands, `@version` support on
-  install/add, shared `addToConfig` helper.
+  install/update/add, shared `addToConfig` and
+  `resolveVersionedRecipe` helpers.
 - [x] Versioned registry: `.versions` index files
   map version→commit hash. `FetchRecipeVersion`
   fetches recipes at specific commits. Backfilled
@@ -208,8 +209,10 @@ streaming. Our code provides focused prompts and tools.
 - [x] **Install script** — `curl | sh` one-liner that
   downloads the right binary for the platform.
   Detects OS/arch, supports GALE_VERSION env var.
-- [ ] **Homebrew tap** — `brew install kelp/tap/gale`
-  as a migration bridge for Homebrew users.
+- [x] **Homebrew tap** — `brew install kelp/tap/gale`
+  as a migration bridge for Homebrew users. Source
+  build with Go, installs man page. Bottles to come
+  once release binaries are live.
 
 ## Auto-Update Agent
 

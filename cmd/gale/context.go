@@ -85,26 +85,6 @@ func newCmdContext(local bool) (*cmdContext, error) {
 	}, nil
 }
 
-// installPackage resolves a recipe by name and installs it.
-// Returns the install result. Does not update config or
-// rebuild the generation — callers handle that.
-func (ctx *cmdContext) installPackage(name string, out *output.Output) (*installer.InstallResult, error) {
-	r, err := ctx.Resolver(name)
-	if err != nil {
-		return nil, err
-	}
-
-	out.Info(fmt.Sprintf("Installing %s@%s...",
-		r.Package.Name, r.Package.Version))
-
-	result, err := ctx.Installer.Install(r)
-	if err != nil {
-		return nil, fmt.Errorf("install %s: %w", name, err)
-	}
-
-	return result, nil
-}
-
 // LoadConfig reads and parses the gale.toml that this
 // context points to.
 func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
@@ -224,6 +204,37 @@ func addToConfig(name, version string, global, project bool) (string, error) {
 		return "", fmt.Errorf("adding %s to config: %w", name, err)
 	}
 	return configPath, nil
+}
+
+// resolveVersionedRecipe fetches a recipe for a specific
+// version. If the version matches the latest, uses the
+// resolver directly. Otherwise falls back to the versioned
+// registry index. Returns an error if the version can't be
+// found.
+func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Recipe, error) {
+	// Try the resolver first — if latest matches, use it.
+	r, err := ctx.Resolver(name)
+	if err == nil && r.Package.Version == version {
+		return r, nil
+	}
+
+	// Try versioned registry fetch (not available in
+	// --local mode).
+	if ctx.Registry != nil {
+		pinned, vErr := ctx.Registry.FetchRecipeVersion(
+			name, version)
+		if vErr == nil {
+			return pinned, nil
+		}
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf(
+			"resolving %s@%s: %w", name, version, err)
+	}
+	return nil, fmt.Errorf(
+		"%s@%s not found (registry has %s)",
+		name, version, r.Package.Version)
 }
 
 // reportResult prints the install/update result message.

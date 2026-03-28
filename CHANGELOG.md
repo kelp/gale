@@ -1,5 +1,55 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `gale which <binary>` shows which package provides a
+  binary and its store path.
+- `gale outdated` shows packages with newer versions
+  available in the registry.
+- `gale diff` shows what `gale sync` would change.
+- `@version` support: `gale install jq@1.7.1`,
+  `gale update jq@1.8.1`, `gale add jq@1.7.1` pin
+  specific versions. Fetches exact version from the
+  versioned registry index.
+- Versioned registry: `.versions` index files map
+  versions to commit hashes. `FetchRecipeVersion`
+  fetches recipes at specific commits.
+- `--local` flag on `gale install` and `gale add`.
+- `--recipe` flag on `gale update`.
+- Cross-compiled release binaries for darwin-arm64,
+  darwin-amd64, linux-amd64, linux-arm64. Built by
+  GitHub Actions on each release.
+- Install script: `curl -fsSL .../install.sh | sh`
+  with OS/arch detection and version pinning.
+- `addToConfig` shared helper for scope-aware config
+  writes across install, update, and add.
+- `resolveVersionedRecipe` shared helper for @version
+  resolution across install, update, and sync.
+
+### Changed
+
+- **Strict sync**: `gale sync` respects pinned versions
+  in gale.toml. Checks store first, then tries versioned
+  registry fetch. Errors with guidance when a version
+  can't be found instead of silently installing latest.
+- **Scope consistency**: `--source`, `--git`, and
+  `--recipe` on install now honor `-g`/`-p` scope flags.
+  Previously hardcoded to global config.
+- **Semver dev versions**: `--source` builds use
+  `git describe` formatted as semver
+  (e.g., `0.2.0-dev.7+5395b8f`) instead of bare hashes.
+- `gale add` uses proper scope resolution with `-g`/`-p`
+  flags and interactive prompt.
+
+### Removed
+
+- `checkVersionMatch` — replaced by direct versioned
+  recipe fetch via `FetchRecipeVersion`.
+- `installPackage` method — replaced by direct
+  `ctx.Installer.Install(r)` calls.
+
 ## v0.2.0 — 2026-03-28
 
 ### Added
