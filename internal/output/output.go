@@ -56,10 +56,24 @@ func (o *Output) Error(msg string) {
 	o.writeMsg(o.red, "xxx ", msg)
 }
 
+// Step writes a sub-step message with a dimmed arrow.
+func (o *Output) Step(msg string) {
+	o.writeMsg(o.cyan, "    ", msg)
+}
+
 func (o *Output) writeMsg(c *color.Color, prefix, msg string) {
 	if o.color {
 		fmt.Fprintf(o.w, "%s%s\n", c.Sprint(prefix), msg)
 	} else {
 		fmt.Fprintf(o.w, "%s%s\n", prefix, msg)
 	}
+}
+
+// StepPrefix returns the colored prefix string for use in
+// progress lines that need \r overwriting.
+func (o *Output) StepPrefix() string {
+	if o.color {
+		return o.cyan.Sprint("    ")
+	}
+	return "    "
 }

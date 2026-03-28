@@ -115,15 +115,21 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	}
 	speed := float64(pw.written) / elapsed
 
+	var line string
 	if pw.total > 0 {
 		pct := float64(pw.written) / float64(pw.total) * 100
-		fmt.Fprintf(os.Stderr, "\r  %s / %s (%.0f%%) %s/s",
+		line = fmt.Sprintf("    %s / %s (%.0f%%) %s/s",
 			formatBytes(pw.written), formatBytes(pw.total),
 			pct, formatBytes(int64(speed)))
 	} else {
-		fmt.Fprintf(os.Stderr, "\r  %s  %s/s",
+		line = fmt.Sprintf("    %s  %s/s",
 			formatBytes(pw.written), formatBytes(int64(speed)))
 	}
+	// Pad to 70 chars to overwrite previous longer lines.
+	for len(line) < 70 {
+		line += " "
+	}
+	fmt.Fprintf(os.Stderr, "\r%s", line)
 
 	return n, nil
 }
@@ -134,8 +140,12 @@ func (pw *progressWriter) finish() {
 		elapsed = 0.001
 	}
 	speed := float64(pw.written) / elapsed
-	fmt.Fprintf(os.Stderr, "\r  %s  %s/s  done\n",
+	line := fmt.Sprintf("    %s  %s/s",
 		formatBytes(pw.written), formatBytes(int64(speed)))
+	for len(line) < 70 {
+		line += " "
+	}
+	fmt.Fprintf(os.Stderr, "\r%s\n", line)
 }
 
 func formatBytes(b int64) string {

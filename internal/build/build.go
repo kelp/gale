@@ -13,8 +13,18 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
 )
+
+// out is the build output writer. Initialized to colored
+// stderr output. Callers can override with SetOutput.
+var out = output.New(os.Stderr, true)
+
+// SetOutput overrides the build output writer.
+func SetOutput(o *output.Output) {
+	out = o
+}
 
 // BuildResult holds the output of a successful build.
 type BuildResult struct {
@@ -38,22 +48,22 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 	if cacheDir := sourceCache(); cacheDir != "" {
 		cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
 		if _, err := os.Stat(cachedFile); err == nil {
-			fmt.Fprintf(os.Stderr, "  Using cached source (%s)\n",
-				r.Source.SHA256[:12])
+			out.Step(fmt.Sprintf("Using cached source (%s)",
+				r.Source.SHA256[:12]))
 			if err := copyFile(cachedFile, tarballPath); err == nil {
 				cached = true
 			}
 		}
 	}
 	if !cached {
-		fmt.Fprintf(os.Stderr, "  Downloading %s\n", r.Source.URL)
+		out.Step(fmt.Sprintf("Downloading %s", r.Source.URL))
 		if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
 			return nil, fmt.Errorf("fetch source: %w", err)
 		}
 	}
 
 	// Verify source SHA256.
-	fmt.Fprintf(os.Stderr, "  Verifying SHA256...\n")
+	out.Step("Verifying SHA256...")
 	if err := download.VerifySHA256(tarballPath, r.Source.SHA256); err != nil {
 		return nil, fmt.Errorf("verify source: %w", err)
 	}
@@ -67,7 +77,7 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 	}
 
 	// Extract source.
-	fmt.Fprintf(os.Stderr, "  Extracting source...\n")
+	out.Step("Extracting source...")
 	srcDir := filepath.Join(workspace, "src")
 	if err := download.ExtractTarGz(tarballPath, srcDir); err != nil {
 		return nil, fmt.Errorf("extract source: %w", err)
@@ -91,24 +101,22 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 	}
 
 	// Run build steps.
-	fmt.Fprintf(os.Stderr, "  Running build steps...\n")
 	jobs := strconv.Itoa(runtime.NumCPU())
-	build := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
-	for i, step := range build.Steps {
-		// Show step number and a truncated preview.
+	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
+	for i, step := range buildCfg.Steps {
 		preview := step
-		if len(preview) > 60 {
-			preview = preview[:60] + "..."
+		if len(preview) > 55 {
+			preview = preview[:55] + "..."
 		}
-		fmt.Fprintf(os.Stderr, "  [%d/%d] %s\n",
-			i+1, len(build.Steps), preview)
+		out.Step(fmt.Sprintf("[%d/%d] %s",
+			i+1, len(buildCfg.Steps), preview))
 		if err := runStep(step, sourceRoot, prefixDir, jobs, extraPaths); err != nil {
 			return nil, err
 		}
 	}
 
 	// Fix dynamic library paths for portability.
-	fmt.Fprintf(os.Stderr, "  Fixing library paths...\n")
+	out.Step("Fixing library paths...")
 	if err := FixupBinaries(prefixDir); err != nil {
 		return nil, fmt.Errorf("fixup binaries: %w", err)
 	}
