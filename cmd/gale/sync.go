@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/installer"
@@ -18,6 +19,8 @@ var syncCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
+		// Find config: project gale.toml first, fall back
+		// to global ~/.gale/gale.toml.
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting working dir: %w", err)
@@ -25,12 +28,17 @@ var syncCmd = &cobra.Command{
 
 		galePath, err := config.FindGaleConfig(cwd)
 		if err != nil {
-			return fmt.Errorf("no gale.toml found: %w", err)
+			// No project config — use global.
+			globalDir, dirErr := galeConfigDir()
+			if dirErr != nil {
+				return dirErr
+			}
+			galePath = filepath.Join(globalDir, "gale.toml")
 		}
 
 		data, err := os.ReadFile(galePath)
 		if err != nil {
-			return fmt.Errorf("reading config: %w", err)
+			return fmt.Errorf("reading %s: %w", galePath, err)
 		}
 
 		cfg, err := config.ParseGaleConfig(string(data))
@@ -43,14 +51,21 @@ var syncCmd = &cobra.Command{
 			return nil
 		}
 
-		// Set up registry and installer.
-		reg := newRegistry()
-
+		// Determine gale dir: if config is in a project,
+		// use project's .gale/. Otherwise use ~/.gale/.
 		galeDir, err := galeConfigDir()
 		if err != nil {
 			return err
 		}
+		configDir := filepath.Dir(galePath)
+		globalDir, _ := galeConfigDir()
+		if configDir != globalDir {
+			// Project config — use .gale/ next to it.
+			galeDir = filepath.Join(configDir, ".gale")
+		}
 
+		// Set up registry and installer.
+		reg := newRegistry()
 		storeRoot := defaultStoreRoot()
 
 		inst := &installer.Installer{
