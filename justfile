@@ -57,8 +57,8 @@ tag version: check
       echo "Tag v{{version}} already exists"
       exit 1
     fi
-    # Update CHANGELOG header.
-    sed -i '' "s/^## v.*-dev.*/## v{{version}} — $(date +%Y-%m-%d)/" CHANGELOG.md
+    # Update CHANGELOG: replace first version header.
+    sed -i '' "0,/^## v/{s/^## v.*/## v{{version}} — $(date +%Y-%m-%d)/;}" CHANGELOG.md
     git add CHANGELOG.md
     git commit -m "Release v{{version}}"
     git tag "v{{version}}"
