@@ -274,19 +274,9 @@ on Linux.
 - [x] **Post-build dylib fixup** — `FixupBinaries`
   rewrites dylib paths with `install_name_tool` (macOS)
   or `patchelf --set-rpath` (Linux) after every build.
-- [ ] **Re-evaluate Rust recipes** — bat, ripgrep, fd,
-  starship, eza, git-delta, just currently static-link
-  everything via cargo. Some could benefit from shared
-  deps (libgit2, pcre2, oniguruma) to reduce binary
-  size and allow dep updates without full rebuilds.
-- [ ] **jq with shared libjq** — now that we can ship
-  libs, revisit whether jq should build libjq as a
-  shared library (for use by other tools) instead of
-  the current --enable-all-static approach.
-- [ ] **Generation lib/ symlinks** — extend
-  `generation.Build()` to also symlink lib/ entries
-  from the store into the gen directory, alongside
-  bin/.
+- Static linking is the right default for CLI tools.
+  Shared libs add complexity with no practical benefit.
+  The generation model supports lib/ if ever needed.
 
 ## Language Toolchains
 
