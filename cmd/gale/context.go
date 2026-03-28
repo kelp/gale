@@ -8,6 +8,7 @@ import (
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
+	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
@@ -86,13 +87,39 @@ func newCmdContext(local bool) (*cmdContext, error) {
 }
 
 // LoadConfig reads and parses the gale.toml that this
-// context points to.
+// context points to. If gale.toml doesn't exist, falls
+// back to reading .tool-versions in the same directory.
 func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
 	data, err := os.ReadFile(ctx.GalePath)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return ctx.loadToolVersionsFallback()
+		}
 		return nil, fmt.Errorf("reading %s: %w", ctx.GalePath, err)
 	}
 	return config.ParseGaleConfig(string(data))
+}
+
+// loadToolVersionsFallback checks for a .tool-versions file
+// in the same directory as the expected gale.toml.
+func (ctx *cmdContext) loadToolVersionsFallback() (*config.GaleConfig, error) {
+	dir := filepath.Dir(ctx.GalePath)
+	tvPath := filepath.Join(dir, ".tool-versions")
+	data, err := os.ReadFile(tvPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return &config.GaleConfig{
+				Packages: map[string]string{},
+			}, nil
+		}
+		return nil, fmt.Errorf("reading .tool-versions: %w", err)
+	}
+
+	pkgs, err := config.ParseToolVersions(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("parsing .tool-versions: %w", err)
+	}
+	return &config.GaleConfig{Packages: pkgs}, nil
 }
 
 // rebuildGeneration reads gale.toml and rebuilds the
@@ -178,13 +205,45 @@ func findLocalRecipesDir(dir string) (string, error) {
 	return recipesDir, nil
 }
 
-// finalizeInstall adds a package to gale.toml and rebuilds
-// the generation.
-func finalizeInstall(galeDir, storeRoot, configPath, name, version string) error {
+// lockfilePath returns the gale.lock path for a given
+// gale.toml path.
+func lockfilePath(configPath string) string {
+	return configPath[:len(configPath)-len(".toml")] + ".lock"
+}
+
+// writeConfigAndLock adds a package to gale.toml and
+// updates gale.lock. Does not rebuild the generation —
+// callers handle that (once per command, not per package).
+func writeConfigAndLock(configPath, name, version, sha256 string) error {
 	if err := config.AddPackage(configPath, name, version); err != nil {
 		return fmt.Errorf("adding to config: %w", err)
 	}
+	return updateLockfile(
+		lockfilePath(configPath), name, version, sha256)
+}
+
+// finalizeInstall adds a package to gale.toml, updates
+// gale.lock, and rebuilds the generation.
+func finalizeInstall(galeDir, storeRoot, configPath, name, version, sha256 string) error {
+	if err := writeConfigAndLock(
+		configPath, name, version, sha256); err != nil {
+		return err
+	}
 	return rebuildGeneration(galeDir, storeRoot, configPath)
+}
+
+// updateLockfile reads the lockfile, updates one package
+// entry, and writes it back.
+func updateLockfile(lockPath, name, version, sha256 string) error {
+	lf, err := lockfile.Read(lockPath)
+	if err != nil {
+		return err
+	}
+	lf.Packages[name] = lockfile.LockedPackage{
+		Version: version,
+		SHA256:  sha256,
+	}
+	return lockfile.Write(lockPath, lf)
 }
 
 // addToConfig resolves scope and writes a package version

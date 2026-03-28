@@ -10,9 +10,15 @@ import (
 	"github.com/BurntSushi/toml"
 )
 
+// LockedPackage represents a pinned package in the lockfile.
+type LockedPackage struct {
+	Version string `toml:"version"`
+	SHA256  string `toml:"sha256,omitempty"`
+}
+
 // LockFile represents a gale.lock file.
 type LockFile struct {
-	Packages map[string]string `toml:"packages"`
+	Packages map[string]LockedPackage `toml:"packages"`
 }
 
 // Read reads a gale.lock file. Returns empty LockFile
@@ -22,7 +28,7 @@ func Read(path string) (*LockFile, error) {
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return &LockFile{
-				Packages: make(map[string]string),
+				Packages: make(map[string]LockedPackage),
 			}, nil
 		}
 		return nil, fmt.Errorf("reading lock file: %w", err)
@@ -33,7 +39,7 @@ func Read(path string) (*LockFile, error) {
 		return nil, fmt.Errorf("parsing lock file: %w", err)
 	}
 	if lf.Packages == nil {
-		lf.Packages = make(map[string]string)
+		lf.Packages = make(map[string]LockedPackage)
 	}
 	return &lf, nil
 }
@@ -106,8 +112,8 @@ func IsStale(
 		return true, nil
 	}
 	for name, version := range tomlPackages {
-		lockVersion, ok := lf.Packages[name]
-		if !ok || lockVersion != version {
+		locked, ok := lf.Packages[name]
+		if !ok || locked.Version != version {
 			return true, nil
 		}
 	}

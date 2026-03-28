@@ -3,57 +3,35 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/kelp/gale/internal/ai"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/repo"
 	"github.com/spf13/cobra"
 )
 
 var searchCmd = &cobra.Command{
 	Use:   "search <query>",
 	Short: "Search for packages",
-	Long:  "Search for packages by name across all configured repositories.",
+	Long:  "Search for packages by name or description using fuzzy matching.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		galeDir, err := galeConfigDir()
+		reg := newRegistry()
+		results, err := reg.Search(query)
 		if err != nil {
-			return err
-		}
-
-		// Try AI-enhanced search first.
-		client := loadAIClient()
-		if client != nil {
-			result, err := client.Complete(
-				fmt.Sprintf("List CLI tool package names matching: %s. Return only names, one per line.", query))
-			if err == nil {
-				out.Info("AI-enhanced search results:")
-				fmt.Println(result)
-				return nil
-			}
-			// Fall through to local search on AI error.
-		}
-
-		// Local substring search across repos.
-		cacheRoot := filepath.Join(galeDir, "repos")
-		mgr := repo.NewManager(cacheRoot)
-
-		results, err := mgr.Search(query)
-		if err != nil {
-			return fmt.Errorf("searching repos: %w", err)
+			return fmt.Errorf("searching: %w", err)
 		}
 
 		if len(results) == 0 {
-			out.Warn(fmt.Sprintf("No packages found matching %q", query))
+			out.Warn(fmt.Sprintf(
+				"No packages found matching %q", query))
 			return nil
 		}
 
 		for _, r := range results {
-			fmt.Printf("%s (%s)\n", r.Package, r.RepoName)
+			fmt.Printf("%-20s %s\n", r.Name, r.Description)
 		}
 		return nil
 	},

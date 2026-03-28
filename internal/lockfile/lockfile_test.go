@@ -9,32 +9,21 @@ import (
 
 // --- Behavior 1: Read lock file ---
 
-const validLockTOML = `[packages]
-jq = "1.7.1"
-ripgrep = "14.1.0"
+const validLockTOML = `[packages.jq]
+version = "1.7.1"
+sha256 = "abc123"
+
+[packages.ripgrep]
+version = "14.1.0"
+sha256 = "def456"
 `
 
-func TestReadReturnsNonNilLockFile(t *testing.T) {
+func TestReadParsesPackages(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path, []byte(validLockTOML), 0o644); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
-	}
-
-	lf, err := Read(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if lf == nil {
-		t.Fatal("expected non-nil LockFile")
-	}
-}
-
-func TestReadParsesPackageCount(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path, []byte(validLockTOML), 0o644); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
+	if err := os.WriteFile(path,
+		[]byte(validLockTOML), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	lf, err := Read(path)
@@ -42,75 +31,42 @@ func TestReadParsesPackageCount(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(lf.Packages) != 2 {
-		t.Errorf("Packages length = %d, want 2", len(lf.Packages))
+		t.Fatalf("got %d packages, want 2",
+			len(lf.Packages))
+	}
+	if lf.Packages["jq"].Version != "1.7.1" {
+		t.Errorf("jq version = %q, want 1.7.1",
+			lf.Packages["jq"].Version)
+	}
+	if lf.Packages["jq"].SHA256 != "abc123" {
+		t.Errorf("jq sha256 = %q, want abc123",
+			lf.Packages["jq"].SHA256)
+	}
+	if lf.Packages["ripgrep"].Version != "14.1.0" {
+		t.Errorf("ripgrep version = %q, want 14.1.0",
+			lf.Packages["ripgrep"].Version)
 	}
 }
 
-func TestReadParsesJqVersion(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path, []byte(validLockTOML), 0o644); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
-	}
+func TestReadMissingFileReturnsEmpty(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gale.lock")
 
 	lf, err := Read(path)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if lf.Packages["jq"] != "1.7.1" {
-		t.Errorf("Packages[jq] = %q, want %q",
-			lf.Packages["jq"], "1.7.1")
-	}
-}
-
-func TestReadParsesRipgrepVersion(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path, []byte(validLockTOML), 0o644); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
-	}
-
-	lf, err := Read(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if lf.Packages["ripgrep"] != "14.1.0" {
-		t.Errorf("Packages[ripgrep] = %q, want %q",
-			lf.Packages["ripgrep"], "14.1.0")
-	}
-}
-
-func TestReadMissingFileReturnsEmptyLockFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	lf, err := Read(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if lf == nil {
-		t.Fatal("expected non-nil LockFile for missing file")
 	}
 	if len(lf.Packages) != 0 {
-		t.Errorf("Packages length = %d, want 0", len(lf.Packages))
+		t.Errorf("got %d packages, want 0",
+			len(lf.Packages))
 	}
 }
 
-func TestReadMissingFileReturnsNoError(t *testing.T) {
+func TestReadMalformedTOMLErrors(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gale.lock")
-
-	_, err := Read(path)
-	if err != nil {
-		t.Errorf("expected no error for missing file, got: %v", err)
-	}
-}
-
-func TestReadMalformedTOMLReturnsError(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path, []byte("this is not [valid toml"), 0o644); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
+	if err := os.WriteFile(path,
+		[]byte("not [valid toml"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	_, err := Read(path)
@@ -121,84 +77,14 @@ func TestReadMalformedTOMLReturnsError(t *testing.T) {
 
 // --- Behavior 2: Write lock file ---
 
-func TestWriteCreatesFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	lf := &LockFile{
-		Packages: map[string]string{
-			"jq":      "1.7.1",
-			"ripgrep": "14.1.0",
-		},
-	}
-
-	if err := Write(path, lf); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("expected file to exist: %v", err)
-	}
-}
-
-func TestWriteProducesNonEmptyFile(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	lf := &LockFile{
-		Packages: map[string]string{"jq": "1.7.1"},
-	}
-
-	if err := Write(path, lf); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read written file: %v", err)
-	}
-	if len(data) == 0 {
-		t.Fatal("written file is empty")
-	}
-}
-
 func TestWriteRoundTrips(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gale.lock")
 
 	original := &LockFile{
-		Packages: map[string]string{
-			"jq":      "1.7.1",
-			"ripgrep": "14.1.0",
-		},
-	}
-
-	if err := Write(path, original); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	parsed, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
-	if parsed.Packages["jq"] != "1.7.1" {
-		t.Errorf("round-trip Packages[jq] = %q, want %q",
-			parsed.Packages["jq"], "1.7.1")
-	}
-	if parsed.Packages["ripgrep"] != "14.1.0" {
-		t.Errorf("round-trip Packages[ripgrep] = %q, want %q",
-			parsed.Packages["ripgrep"], "14.1.0")
-	}
-}
-
-func TestWriteRoundTripsPackageCount(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	original := &LockFile{
-		Packages: map[string]string{
-			"jq":      "1.7.1",
-			"ripgrep": "14.1.0",
+		Packages: map[string]LockedPackage{
+			"jq":      {Version: "1.7.1", SHA256: "abc"},
+			"ripgrep": {Version: "14.1.0", SHA256: "def"},
 		},
 	}
 
@@ -211,274 +97,218 @@ func TestWriteRoundTripsPackageCount(t *testing.T) {
 		t.Fatalf("Read error: %v", err)
 	}
 	if len(parsed.Packages) != 2 {
-		t.Errorf("round-trip Packages length = %d, want 2",
+		t.Fatalf("got %d packages, want 2",
 			len(parsed.Packages))
+	}
+	if parsed.Packages["jq"].Version != "1.7.1" {
+		t.Errorf("jq version = %q, want 1.7.1",
+			parsed.Packages["jq"].Version)
+	}
+	if parsed.Packages["jq"].SHA256 != "abc" {
+		t.Errorf("jq sha256 = %q, want abc",
+			parsed.Packages["jq"].SHA256)
 	}
 }
 
-func TestWriteEmptyPackages(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	lf := &LockFile{
-		Packages: map[string]string{},
-	}
-
-	if err := Write(path, lf); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	parsed, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
-	if len(parsed.Packages) != 0 {
-		t.Errorf("Packages length = %d, want 0",
-			len(parsed.Packages))
-	}
-}
-
-func TestWriteOverwritesExistingFile(t *testing.T) {
+func TestWriteOverwrites(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gale.lock")
 
 	first := &LockFile{
-		Packages: map[string]string{"jq": "1.7.1"},
+		Packages: map[string]LockedPackage{
+			"jq": {Version: "1.7.1"},
+		},
 	}
 	if err := Write(path, first); err != nil {
-		t.Fatalf("first Write error: %v", err)
+		t.Fatal(err)
 	}
 
 	second := &LockFile{
-		Packages: map[string]string{"ripgrep": "14.1.0"},
+		Packages: map[string]LockedPackage{
+			"ripgrep": {Version: "14.1.0"},
+		},
 	}
 	if err := Write(path, second); err != nil {
-		t.Fatalf("second Write error: %v", err)
+		t.Fatal(err)
 	}
 
 	parsed, err := Read(path)
 	if err != nil {
-		t.Fatalf("Read error: %v", err)
+		t.Fatal(err)
 	}
-	if _, exists := parsed.Packages["jq"]; exists {
-		t.Error("expected jq to be gone after overwrite")
+	if _, ok := parsed.Packages["jq"]; ok {
+		t.Error("jq should be gone after overwrite")
 	}
-	if parsed.Packages["ripgrep"] != "14.1.0" {
-		t.Errorf("Packages[ripgrep] = %q, want %q",
-			parsed.Packages["ripgrep"], "14.1.0")
+	if parsed.Packages["ripgrep"].Version != "14.1.0" {
+		t.Errorf("ripgrep = %q, want 14.1.0",
+			parsed.Packages["ripgrep"].Version)
+	}
+}
+
+func TestWriteEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.lock")
+
+	lf := &LockFile{
+		Packages: map[string]LockedPackage{},
+	}
+	if err := Write(path, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	parsed, err := Read(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed.Packages) != 0 {
+		t.Errorf("got %d, want 0", len(parsed.Packages))
 	}
 }
 
 // --- Behavior 3: Detect stale lock ---
 
-func TestIsStaleReturnsFalseWhenInSync(t *testing.T) {
+func writeLock(t *testing.T, path string, pkgs map[string]LockedPackage) {
+	t.Helper()
+	lf := &LockFile{Packages: pkgs}
+	if err := Write(path, lf); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestIsStaleInSync(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
-	pkgs := map[string]string{
-		"jq":      "1.7.1",
-		"ripgrep": "14.1.0",
-	}
+	pkgs := map[string]string{"jq": "1.7.1"}
 
-	if err := os.WriteFile(tomlPath, []byte("[packages]\njq = \"1.7.1\"\nripgrep = \"14.1.0\"\n"), 0o644); err != nil {
-		t.Fatalf("failed to write gale.toml: %v", err)
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.7.1"},
+	})
 
-	lf := &LockFile{Packages: pkgs}
-	if err := Write(lockPath, lf); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
-	}
-
-	// Ensure lock file is newer than gale.toml.
+	// Lock must be newer than toml.
 	past := time.Now().Add(-10 * time.Second)
 	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatalf("failed to set gale.toml mtime: %v", err)
+		t.Fatal(err)
 	}
 
 	stale, err := IsStale(tomlPath, lockPath, pkgs)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
 	if stale {
-		t.Error("IsStale = true, want false when in sync")
+		t.Error("expected not stale when in sync")
 	}
 }
 
-func TestIsStaleReturnsTrueWhenTOMLIsNewer(t *testing.T) {
+func TestIsStaleTOMLNewer(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	pkgs := map[string]string{"jq": "1.7.1"}
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.7.1"},
+	})
 
-	lf := &LockFile{Packages: pkgs}
-	if err := Write(lockPath, lf); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
-	}
-
-	// Set lock file to the past.
 	past := time.Now().Add(-10 * time.Second)
 	if err := os.Chtimes(lockPath, past, past); err != nil {
-		t.Fatalf("failed to set lock mtime: %v", err)
+		t.Fatal(err)
 	}
 
-	// Write gale.toml after the lock so it's newer.
-	if err := os.WriteFile(tomlPath, []byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatalf("failed to write gale.toml: %v", err)
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	stale, err := IsStale(tomlPath, lockPath, pkgs)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
 	if !stale {
-		t.Error("IsStale = false, want true when gale.toml is newer")
+		t.Error("expected stale when toml is newer")
 	}
 }
 
-func TestIsStaleReturnsTrueWhenTOMLHasExtraPackage(t *testing.T) {
+func TestIsStaleExtraPackage(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	tomlPkgs := map[string]string{
-		"jq":      "1.7.1",
-		"ripgrep": "14.1.0",
+		"jq": "1.7.1", "ripgrep": "14.1.0",
 	}
 
-	lockPkgs := map[string]string{
-		"jq": "1.7.1",
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.7.1"},
+	})
 
-	if err := os.WriteFile(tomlPath, []byte("[packages]\njq = \"1.7.1\"\nripgrep = \"14.1.0\"\n"), 0o644); err != nil {
-		t.Fatalf("failed to write gale.toml: %v", err)
-	}
-
-	lf := &LockFile{Packages: lockPkgs}
-	if err := Write(lockPath, lf); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
-	}
-
-	// Set gale.toml to the past so mtime is not the trigger.
 	past := time.Now().Add(-10 * time.Second)
 	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatalf("failed to set gale.toml mtime: %v", err)
+		t.Fatal(err)
 	}
 
 	stale, err := IsStale(tomlPath, lockPath, tomlPkgs)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
 	if !stale {
-		t.Error("IsStale = false, want true when toml has extra package")
+		t.Error("expected stale when toml has extra pkg")
 	}
 }
 
-func TestIsStaleReturnsTrueWhenLockHasExtraPackage(t *testing.T) {
+func TestIsStaleMissingLock(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
-	tomlPkgs := map[string]string{
-		"jq": "1.7.1",
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 
-	lockPkgs := map[string]string{
-		"jq":      "1.7.1",
-		"ripgrep": "14.1.0",
+	stale, err := IsStale(tomlPath, lockPath,
+		map[string]string{"jq": "1.7.1"})
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	if err := os.WriteFile(tomlPath, []byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatalf("failed to write gale.toml: %v", err)
+	if !stale {
+		t.Error("expected stale when lock missing")
 	}
+}
 
-	lf := &LockFile{Packages: lockPkgs}
-	if err := Write(lockPath, lf); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
+func TestIsStaleVersionDiffers(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "gale.toml")
+	lockPath := filepath.Join(dir, "gale.lock")
+
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.8.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.7.1"},
+	})
 
-	// Set gale.toml to the past so mtime is not the trigger.
 	past := time.Now().Add(-10 * time.Second)
 	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatalf("failed to set gale.toml mtime: %v", err)
+		t.Fatal(err)
 	}
 
-	stale, err := IsStale(tomlPath, lockPath, tomlPkgs)
+	stale, err := IsStale(tomlPath, lockPath,
+		map[string]string{"jq": "1.8.0"})
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatal(err)
 	}
 	if !stale {
-		t.Error("IsStale = false, want true when lock has extra package")
-	}
-}
-
-func TestIsStaleReturnsTrueWhenLockFileMissing(t *testing.T) {
-	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	pkgs := map[string]string{"jq": "1.7.1"}
-
-	if err := os.WriteFile(tomlPath, []byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatalf("failed to write gale.toml: %v", err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath, pkgs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !stale {
-		t.Error("IsStale = false, want true when lock file is missing")
-	}
-}
-
-func TestIsStaleReturnsNoErrorWhenLockFileMissing(t *testing.T) {
-	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	pkgs := map[string]string{"jq": "1.7.1"}
-
-	if err := os.WriteFile(tomlPath, []byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatalf("failed to write gale.toml: %v", err)
-	}
-
-	_, err := IsStale(tomlPath, lockPath, pkgs)
-	if err != nil {
-		t.Errorf("expected no error for missing lock file, got: %v",
-			err)
-	}
-}
-
-func TestIsStaleReturnsTrueWhenVersionsDiffer(t *testing.T) {
-	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	tomlPkgs := map[string]string{"jq": "1.8.0"}
-	lockPkgs := map[string]string{"jq": "1.7.1"}
-
-	if err := os.WriteFile(tomlPath, []byte("[packages]\njq = \"1.8.0\"\n"), 0o644); err != nil {
-		t.Fatalf("failed to write gale.toml: %v", err)
-	}
-
-	lf := &LockFile{Packages: lockPkgs}
-	if err := Write(lockPath, lf); err != nil {
-		t.Fatalf("failed to write lock file: %v", err)
-	}
-
-	// Set gale.toml to the past so mtime is not the trigger.
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatalf("failed to set gale.toml mtime: %v", err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath, tomlPkgs)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !stale {
-		t.Error("IsStale = false, want true when versions differ")
+		t.Error("expected stale when versions differ")
 	}
 }

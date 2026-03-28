@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
@@ -130,10 +129,12 @@ var updateCmd = &cobra.Command{
 				continue
 			}
 
-			// Update version in gale.toml.
-			if err := config.AddPackage(ctx.GalePath,
-				name, r.Package.Version); err != nil {
-				return fmt.Errorf("updating config: %w", err)
+			// Update gale.toml and lockfile.
+			if err := writeConfigAndLock(ctx.GalePath,
+				name, r.Package.Version,
+				result.SHA256); err != nil {
+				return fmt.Errorf("updating %s: %w",
+					name, err)
 			}
 
 			reportResult(out, result, "Updated", "built from source")

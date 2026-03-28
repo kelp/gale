@@ -277,6 +277,11 @@ keeps recipes current with upstream releases.
   build deps from recipes, installs them (binary
   preferred, source fallback), adds bin dirs to the
   build PATH. Uses RecipeResolver for lookup.
+- [x] **Build dep library/header paths** — build env
+  injects LIBRARY_PATH, C_INCLUDE_PATH, and
+  PKG_CONFIG_PATH from installed build deps' store
+  paths. Recipes can link against dep libraries
+  without explicit -L/-I flags.
 
 - [x] **Per-platform build overrides** — `[build.<platform>]`
   sections override `[build]` for specific platforms.
@@ -346,13 +351,15 @@ pure `[binary.<platform>]` with no `[build]` block.
 
 ## Recipe Ecosystem
 
-- [ ] **Fuzzy search** — `gale search` with substring
-  and fuzzy matching against a registry index. Current
-  search needs the exact name.
-- [ ] **Lockfile pinning** — pin exact SHA256 per
-  package so `gale sync` is reproducible across
-  machines. The lockfile module exists but isn't
-  wired into install/sync.
+- [x] **Fuzzy search** — `gale search` with substring,
+  prefix, and subsequence matching against a registry
+  index (`index.tsv`). Searches name and description,
+  ranks by relevance.
+- [x] **Lockfile pinning** — `gale.lock` stores
+  version + SHA256 per package. Written by install
+  and update. Lockfile format: TOML with
+  `[packages.<name>]` sections containing version
+  and sha256 fields.
 
 ## Project Environments
 
@@ -360,9 +367,11 @@ pure `[binary.<platform>]` with no `[build]` block.
   sync first if gale.toml changed since last sync.
 - [ ] **Environment variables** — `[vars]` section in
   gale.toml, exported by direnv via `use_gale`.
-- [ ] **`.tool-versions` compatibility** — read
-  asdf/mise format as an alternative to gale.toml
-  for teams migrating from those tools.
+- [x] **`.tool-versions` compatibility** — fallback
+  to `.tool-versions` when no gale.toml exists.
+  Parses asdf/mise format, maps names (golang→go,
+  nodejs→node). Both files can coexist for mixed
+  teams.
 
 ## Trust and Security
 

@@ -42,7 +42,7 @@ func TestBuildSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir)
+	result, err := Build(r, outputDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestBuildStepRunsWithPREFIXAndJOBS(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir)
+	result, err := Build(r, outputDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -141,7 +141,7 @@ func TestBuildStepMultipleStepsRunInOrder(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir)
+	result, err := Build(r, outputDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -186,7 +186,7 @@ func TestBuildStepFailureReturnsError(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir)
+	_, err := Build(r, outputDir, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -216,7 +216,7 @@ func TestBuildStepFailureErrorContainsStep(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir)
+	_, err := Build(r, outputDir, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -251,7 +251,7 @@ func TestBuildStepFailureSecondStepStopsExecution(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir)
+	_, err := Build(r, outputDir, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -283,7 +283,7 @@ func TestBuildSourceHashMismatchReturnsError(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir)
+	_, err := Build(r, outputDir, nil)
 	if err == nil {
 		t.Fatal("expected error for hash mismatch")
 	}
@@ -324,7 +324,7 @@ func TestBuildSourceHashMismatchDoesNotRunSteps(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, _ = Build(r, outputDir)
+	_, _ = Build(r, outputDir, nil)
 
 	if _, err := os.Stat(markerPath); err == nil {
 		t.Error("build steps should not have run after hash mismatch")
@@ -362,7 +362,7 @@ func TestBuildCdIntoSingleTopLevelDirectory(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir)
+	result, err := Build(r, outputDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -407,7 +407,7 @@ func TestBuildOutputIsValidTarZstd(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir)
+	result, err := Build(r, outputDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -451,7 +451,7 @@ func TestBuildOutputSHA256MatchesArchive(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir)
+	result, err := Build(r, outputDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -597,7 +597,9 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, toolDir)
+	result, err := Build(r, outputDir, &BuildDeps{
+		BinDirs: []string{toolDir},
+	})
 	if err != nil {
 		t.Fatalf("Build error: %v", err)
 	}
@@ -645,7 +647,7 @@ func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := BuildLocal(r, srcDir, outputDir)
+	result, err := BuildLocal(r, srcDir, outputDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -689,7 +691,7 @@ func TestBuildLocalDoesNotRequireSourceSection(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := BuildLocal(r, srcDir, outputDir)
+	result, err := BuildLocal(r, srcDir, outputDir, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -712,7 +714,7 @@ func TestBuildLocalStepFailureReturnsError(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := BuildLocal(r, srcDir, outputDir)
+	_, err := BuildLocal(r, srcDir, outputDir, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -745,7 +747,9 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := BuildLocal(r, srcDir, outputDir, toolDir)
+	result, err := BuildLocal(r, srcDir, outputDir, &BuildDeps{
+		BinDirs: []string{toolDir},
+	})
 	if err != nil {
 		t.Fatalf("BuildLocal error: %v", err)
 	}

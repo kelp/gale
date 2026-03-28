@@ -256,7 +256,54 @@ func TestFetchRecipeVersionNotFound(t *testing.T) {
 	}
 }
 
-// --- Behavior 9: FetchRecipe errors on connection failure ---
+// --- Behavior 9: fuzzyMatch scores strings ---
+
+func TestFuzzyMatch(t *testing.T) {
+	tests := []struct {
+		query   string
+		target  string
+		isMatch bool
+	}{
+		{"jq", "jq", true},
+		{"jq", "yq", false},
+		{"json", "jq", false},
+		{"json", "lightweight and flexible command-line json processor", true},
+		{"fzf", "fzf", true},
+		{"fuzzy", "fzf", false},
+		{"fuzzy", "Command-line fuzzy finder written in Go", true},
+		{"git", "git-delta", true},
+		{"git", "lazygit", true},
+		{"ls", "eza", false},
+		{"ls", "Modern, maintained replacement for ls", true},
+		{"jq", "jq", true}, // Search lowercases both sides
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.query+"→"+tt.target, func(t *testing.T) {
+			score := fuzzyScore(tt.query, tt.target)
+			if tt.isMatch && score == 0 {
+				t.Errorf("expected match for %q in %q",
+					tt.query, tt.target)
+			}
+			if !tt.isMatch && score > 0 {
+				t.Errorf("unexpected match for %q in %q (score=%d)",
+					tt.query, tt.target, score)
+			}
+		})
+	}
+}
+
+func TestFuzzyScoreRanking(t *testing.T) {
+	// Exact name match should rank higher than description match.
+	nameScore := fuzzyScore("jq", "jq")
+	descScore := fuzzyScore("jq", "not-jq")
+	if nameScore <= descScore {
+		t.Errorf("name match (%d) should rank higher than "+
+			"non-match (%d)", nameScore, descScore)
+	}
+}
+
+// --- Behavior 10: FetchRecipe errors on connection failure ---
 
 func TestFetchRecipeErrorsOnConnectionFailure(t *testing.T) {
 	// Start a server then immediately close it to get an

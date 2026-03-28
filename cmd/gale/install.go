@@ -121,7 +121,7 @@ var installCmd = &cobra.Command{
 		}
 
 		if err := finalizeInstall(galeDir, storeRoot,
-			configPath, name, r.Package.Version); err != nil {
+			configPath, name, r.Package.Version, result.SHA256); err != nil {
 			return err
 		}
 
@@ -242,9 +242,19 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot string, loc
 			"recipe for %s has no source.repo — cannot build from git", name)
 	}
 
+	// Use the same resolver for build dep resolution.
+	var depResolver installer.RecipeResolver
+	if local {
+		cwd, _ := os.Getwd()
+		recipesDir, _ := findLocalRecipesDir(cwd)
+		depResolver = localRecipeResolver(recipesDir)
+	} else {
+		depResolver = newRegistry().FetchRecipe
+	}
+
 	inst := &installer.Installer{
 		Store:    store.NewStore(storeRoot),
-		Resolver: newRegistry().FetchRecipe,
+		Resolver: depResolver,
 	}
 
 	out.Info(fmt.Sprintf("Installing %s from git (%s)...",
@@ -256,7 +266,8 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot string, loc
 	}
 
 	if err := finalizeInstall(galeDir, storeRoot,
-		configPath, r.Package.Name, result.Version); err != nil {
+		configPath, r.Package.Name, result.Version,
+		result.SHA256); err != nil {
 		return err
 	}
 
@@ -309,7 +320,8 @@ func installFromLocalSource(name, recipePath, sourceDir, configPath, galeDir, st
 	}
 
 	if err := finalizeInstall(galeDir, storeRoot,
-		configPath, r.Package.Name, r.Package.Version); err != nil {
+		configPath, r.Package.Name, r.Package.Version,
+		result.SHA256); err != nil {
 		return err
 	}
 
@@ -405,7 +417,8 @@ func installFromRecipeFile(recipePath, configPath, galeDir, storeRoot string, ou
 	}
 
 	if err := finalizeInstall(galeDir, storeRoot,
-		configPath, r.Package.Name, r.Package.Version); err != nil {
+		configPath, r.Package.Name, r.Package.Version,
+		result.SHA256); err != nil {
 		return err
 	}
 

@@ -6,10 +6,10 @@ import (
 
 func TestFormatOutdated(t *testing.T) {
 	tests := []struct {
-		name       string
-		items      []outdatedItem
-		wantLines  int
-		wantEmpty  bool
+		name      string
+		items     []outdatedItem
+		wantLines int
+		wantEmpty bool
 	}{
 		{
 			"no outdated packages",

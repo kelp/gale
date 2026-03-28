@@ -73,18 +73,28 @@ func ParseAppConfig(data string) (*AppConfig, error) {
 // FindGaleConfig walks up from dir to find gale.toml.
 // Returns the path to the found file.
 func FindGaleConfig(dir string) (string, error) {
+	path := findFileUp(dir, "gale.toml")
+	if path == "" {
+		return "", ErrGaleConfigNotFound
+	}
+	return path, nil
+}
+
+// findFileUp walks up from dir looking for a file with the
+// given name. Returns the full path if found, empty if not.
+func findFileUp(dir, name string) string {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
-		return "", fmt.Errorf("resolving absolute path: %w", err)
+		return ""
 	}
 	for {
-		candidate := filepath.Join(dir, "gale.toml")
+		candidate := filepath.Join(dir, name)
 		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
+			return candidate
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
-			return "", ErrGaleConfigNotFound
+			return ""
 		}
 		dir = parent
 	}

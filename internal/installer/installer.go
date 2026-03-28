@@ -29,7 +29,8 @@ type Installer struct {
 type InstallResult struct {
 	Name    string
 	Version string
-	Method  string // "binary" or "source"
+	Method  string // "binary", "source", or "cached"
+	SHA256  string // hex hash of installed archive
 }
 
 // Install installs a recipe into the store and links binaries.
@@ -53,12 +54,14 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	}
 
 	method := "source"
+	var sha256 string
 
 	// Try binary first.
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	if bin != nil {
 		if err := installBinary(bin, storeDir); err == nil {
 			method = "binary"
+			sha256 = bin.SHA256
 		} else {
 			// Clean partial download before source fallback.
 			os.RemoveAll(storeDir)
@@ -75,17 +78,20 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 			return nil, fmt.Errorf("install build deps: %w", err)
 		}
 
-		if err := installFromSource(r, storeDir, depPaths); err != nil {
+		hash, buildErr := installFromSource(r, storeDir, depPaths)
+		if buildErr != nil {
 			// Clean up failed install.
 			os.RemoveAll(storeDir)
-			return nil, fmt.Errorf("build from source: %w", err)
+			return nil, fmt.Errorf("build from source: %w", buildErr)
 		}
+		sha256 = hash
 	}
 
 	return &InstallResult{
 		Name:    name,
 		Version: version,
 		Method:  method,
+		SHA256:  sha256,
 	}, nil
 }
 
@@ -118,15 +124,17 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 		return nil, fmt.Errorf("install build deps: %w", err)
 	}
 
-	if err := installFromLocalSource(r, sourceDir, storeDir, depPaths); err != nil {
+	hash, buildErr := installFromLocalSource(r, sourceDir, storeDir, depPaths)
+	if buildErr != nil {
 		os.RemoveAll(storeDir)
-		return nil, fmt.Errorf("build from local source: %w", err)
+		return nil, fmt.Errorf("build from local source: %w", buildErr)
 	}
 
 	return &InstallResult{
 		Name:    name,
 		Version: version,
 		Method:  "source",
+		SHA256:  hash,
 	}, nil
 }
 
@@ -148,7 +156,7 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	buildResult, hash, err := build.BuildGit(r, tmpDir, depPaths...)
+	buildResult, hash, err := build.BuildGit(r, tmpDir, depsToBuildDeps(depPaths))
 	if err != nil {
 		return nil, fmt.Errorf("git build: %w", err)
 	}
@@ -176,6 +184,7 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 		Name:    name,
 		Version: hash,
 		Method:  "source",
+		SHA256:  buildResult.SHA256,
 	}, nil
 }
 
@@ -245,12 +254,19 @@ func repoFromURL(rawURL string) string {
 
 // InstallBuildDeps installs build dependencies and returns
 // their bin directory paths.
-func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) ([]string, error) {
+// DepPaths holds the resolved paths from installed build
+// dependencies.
+type DepPaths struct {
+	BinDirs    []string // bin/ directories for PATH
+	StoreDirs  []string // root store directories for each dep
+}
+
+func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
 	if len(r.Dependencies.Build) == 0 || inst.Resolver == nil {
-		return nil, nil
+		return &DepPaths{}, nil
 	}
 
-	var binDirs []string
+	var result DepPaths
 	for _, dep := range r.Dependencies.Build {
 		// Check if already installed — find its version
 		// by resolving the recipe.
@@ -268,42 +284,57 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) ([]string, error) {
 			return nil, fmt.Errorf("install dep %q: %w", dep, err)
 		}
 
-		// Add its bin dir to the list.
-		depDir := filepath.Join(inst.Store.Root,
-			dep, depRecipe.Package.Version, "bin")
-		if _, err := os.Stat(depDir); err == nil {
-			binDirs = append(binDirs, depDir)
+		// Record the store path.
+		storeDir := filepath.Join(inst.Store.Root,
+			dep, depRecipe.Package.Version)
+		result.StoreDirs = append(result.StoreDirs, storeDir)
+
+		binDir := filepath.Join(storeDir, "bin")
+		if _, err := os.Stat(binDir); err == nil {
+			result.BinDirs = append(result.BinDirs, binDir)
 		}
 	}
-	return binDirs, nil
+	return &result, nil
 }
 
-func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, extraPaths []string) error {
+func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *DepPaths) (string, error) {
 	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := build.BuildLocal(r, sourceDir, tmpDir, extraPaths...)
+	result, err := build.BuildLocal(r, sourceDir, tmpDir, depsToBuildDeps(deps))
 	if err != nil {
-		return err
+		return "", err
 	}
-	return extractBuild(result, storeDir)
+	return result.SHA256, extractBuild(result, storeDir)
 }
 
-func installFromSource(r *recipe.Recipe, storeDir string, extraPaths []string) error {
+func installFromSource(r *recipe.Recipe, storeDir string, deps *DepPaths) (string, error) {
 	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := build.Build(r, tmpDir, extraPaths...)
+	result, err := build.Build(r, tmpDir, depsToBuildDeps(deps))
 	if err != nil {
-		return err
+		return "", err
 	}
-	return extractBuild(result, storeDir)
+	return result.SHA256, extractBuild(result, storeDir)
+}
+
+// depsToBuildDeps converts installer DepPaths to build
+// BuildDeps. Returns nil if deps is nil.
+func depsToBuildDeps(deps *DepPaths) *build.BuildDeps {
+	if deps == nil {
+		return nil
+	}
+	return &build.BuildDeps{
+		BinDirs:   deps.BinDirs,
+		StoreDirs: deps.StoreDirs,
+	}
 }
 
 // extractBuild extracts a build archive into the store dir.

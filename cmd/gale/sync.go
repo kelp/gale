@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -32,6 +33,12 @@ var syncCmd = &cobra.Command{
 			return nil
 		}
 
+		// Read lockfile for SHA256 verification.
+		lf, err := lockfile.Read(lockfilePath(ctx.GalePath))
+		if err != nil {
+			return fmt.Errorf("reading lockfile: %w", err)
+		}
+
 		var installed, failed int
 		for name, version := range cfg.Packages {
 			// Check store first — pinned version present?
@@ -41,35 +48,16 @@ var syncCmd = &cobra.Command{
 				continue
 			}
 
-			// Not in store — fetch recipe, check version.
-			r, err := ctx.Resolver(name)
+			// Not in store — fetch recipe for pinned version.
+			r, err := resolveVersionedRecipe(
+				ctx, name, version)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
-					"Failed to resolve %s: %v", name, err))
+					"%s@%s: %v. "+
+						"Run 'gale update %s' to install latest.",
+					name, version, err, name))
 				failed++
 				continue
-			}
-
-			if r.Package.Version != version {
-				// Latest doesn't match pin. Try versioned
-				// fetch from the registry index.
-				if ctx.Registry != nil {
-					pinned, vErr := ctx.Registry.FetchRecipeVersion(
-						name, version)
-					if vErr == nil {
-						r = pinned
-					}
-				}
-
-				// Still doesn't match after versioned fetch.
-				if r.Package.Version != version {
-					out.Warn(fmt.Sprintf(
-						"%s@%s not in store (registry has %s). "+
-							"Run 'gale update %s' to install latest.",
-						name, version, r.Package.Version, name))
-					failed++
-					continue
-				}
 			}
 
 			// Versions match — install.
@@ -80,6 +68,21 @@ var syncCmd = &cobra.Command{
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Failed to install %s: %v", name, err))
+				failed++
+				continue
+			}
+
+			// Verify SHA256 against lockfile if present.
+			locked, hasLock := lf.Packages[name]
+			if hasLock && locked.SHA256 != "" &&
+				result.SHA256 != "" &&
+				locked.SHA256 != result.SHA256 {
+				out.Warn(fmt.Sprintf(
+					"%s@%s SHA256 mismatch "+
+						"(lock: %s..., got: %s...)",
+					name, version,
+					locked.SHA256[:12],
+					result.SHA256[:12]))
 				failed++
 				continue
 			}

@@ -37,7 +37,7 @@ var buildCmd = &cobra.Command{
 		}
 
 		// Resolve and install build dependencies.
-		var depPaths []string
+		var deps *build.BuildDeps
 		if len(r.Dependencies.Build) > 0 {
 			cwd, err := os.Getwd()
 			if err != nil {
@@ -61,9 +61,13 @@ var buildCmd = &cobra.Command{
 				Resolver: resolver,
 			}
 
-			depPaths, err = inst.InstallBuildDeps(r)
+			depPaths, err := inst.InstallBuildDeps(r)
 			if err != nil {
 				return fmt.Errorf("install build deps: %w", err)
+			}
+			deps = &build.BuildDeps{
+				BinDirs:   depPaths.BinDirs,
+				StoreDirs: depPaths.StoreDirs,
 			}
 		}
 
@@ -75,7 +79,7 @@ var buildCmd = &cobra.Command{
 		if buildGit {
 			out.Info(fmt.Sprintf("Building %s from git (%s)...",
 				r.Package.Name, r.Source.Repo))
-			result, hash, err := build.BuildGit(r, outputDir, depPaths...)
+			result, hash, err := build.BuildGit(r, outputDir, deps)
 			if err != nil {
 				return fmt.Errorf("build failed: %w", err)
 			}
@@ -88,7 +92,7 @@ var buildCmd = &cobra.Command{
 		out.Info(fmt.Sprintf("Building %s@%s from source...",
 			r.Package.Name, r.Package.Version))
 
-		result, err := build.Build(r, outputDir, depPaths...)
+		result, err := build.Build(r, outputDir, deps)
 		if err != nil {
 			return fmt.Errorf("build failed: %w", err)
 		}

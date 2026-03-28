@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Fuzzy search: `gale search` matches against a
+  registry index by name and description. Scores
+  by exact, prefix, substring, and subsequence match.
+- Lockfile pinning: `gale.lock` stores version +
+  SHA256 per package. Written on install and update.
+  Sync verifies SHA256 against lockfile.
+- `.tool-versions` compatibility: `gale sync` falls
+  back to `.tool-versions` when no gale.toml exists.
+  Maps asdf/mise names (golang→go, nodejs→node).
+- Build dep library/header resolution: build steps
+  now get `LIBRARY_PATH`, `C_INCLUDE_PATH`, and
+  `PKG_CONFIG_PATH` from installed build deps. Recipes
+  with `build = ["bzip2"]` can link `-lbz2` without
+  explicit `-L` flags.
+
+### Changed
+
+- Build functions accept `*BuildDeps` struct instead
+  of variadic path strings. Carries both bin dirs
+  (for PATH) and store dirs (for lib/include paths).
+- `lockfilePath()` and `writeConfigAndLock()` shared
+  helpers replace duplicated lock path computation
+  across install, update, and sync.
+- Sync uses `resolveVersionedRecipe` instead of
+  inlining the versioned recipe resolution logic.
+
+### Fixed
+
+- `installFromGit --local` now uses local resolver
+  for build dep resolution. Previously hardcoded
+  the registry, ignoring the `--local` flag for
+  transitive deps.
+
 ## v0.3.0 — 2026-03-28
 
 ### Added
