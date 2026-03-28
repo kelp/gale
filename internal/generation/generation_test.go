@@ -446,3 +446,70 @@ func TestBuildWithEmptyPackageMapCreatesCurrentSymlink(t *testing.T) {
 		t.Errorf("expected %q to be a symlink", currentPath)
 	}
 }
+
+// --- Behavior 8: Build symlinks lib, man, include ---
+
+func TestBuildSymlinksLibDir(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	// Create a package with lib/ contents.
+	pkgDir := filepath.Join(storeRoot, "pkgconf", "2.5.1")
+	for _, sub := range []string{"bin", "lib"} {
+		if err := os.MkdirAll(
+			filepath.Join(pkgDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.WriteFile(filepath.Join(pkgDir, "bin", "pkgconf"),
+		[]byte("fake"), 0o755)
+	os.WriteFile(filepath.Join(pkgDir, "lib", "libpkgconf.7.dylib"),
+		[]byte("fake"), 0o755)
+
+	pkgs := map[string]string{"pkgconf": "2.5.1"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	genLib := filepath.Join(galeDir, "current", "lib",
+		"libpkgconf.7.dylib")
+	info, err := os.Lstat(genLib)
+	if err != nil {
+		t.Fatalf("lib symlink not found: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("expected symlink at %q", genLib)
+	}
+}
+
+func TestBuildSymlinksManSubdirs(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	pkgDir := filepath.Join(storeRoot, "jq", "1.8.1")
+	for _, sub := range []string{"bin", "man/man1"} {
+		if err := os.MkdirAll(
+			filepath.Join(pkgDir, sub), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	os.WriteFile(filepath.Join(pkgDir, "bin", "jq"),
+		[]byte("fake"), 0o755)
+	os.WriteFile(filepath.Join(pkgDir, "man", "man1", "jq.1"),
+		[]byte("fake"), 0o644)
+
+	pkgs := map[string]string{"jq": "1.8.1"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	genMan := filepath.Join(galeDir, "current", "man",
+		"man1", "jq.1")
+	info, err := os.Lstat(genMan)
+	if err != nil {
+		t.Fatalf("man symlink not found: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("expected symlink at %q", genMan)
+	}
+}
