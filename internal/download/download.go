@@ -35,7 +35,9 @@ func Fetch(url, destPath string) error {
 		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 
-	return writeWithProgress(resp.Body, resp.ContentLength, destPath)
+	// Use URL filename for progress display.
+	name := filepath.Base(url)
+	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
 }
 
 // FetchWithAuth downloads a file from url to destPath with a
@@ -61,12 +63,18 @@ func FetchWithAuth(url, destPath, bearerToken string) error {
 		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 
-	return writeWithProgress(resp.Body, resp.ContentLength, destPath)
+	name := filepath.Base(url)
+	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
 }
+
+// ProgressPrefix is the colored prefix used for download
+// progress lines. Set by the build module to match the
+// output style.
+var ProgressPrefix = "  > "
 
 // writeWithProgress copies from reader to a file at destPath,
 // printing download progress to stderr.
-func writeWithProgress(reader io.Reader, total int64, destPath string) error {
+func writeWithProgress(reader io.Reader, total int64, destPath, name string) error {
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("create destination file: %w", err)
@@ -75,6 +83,7 @@ func writeWithProgress(reader io.Reader, total int64, destPath string) error {
 	pw := &progressWriter{
 		total: total,
 		start: time.Now(),
+		name:  name,
 	}
 	if _, err := io.Copy(f, io.TeeReader(reader, pw)); err != nil {
 		f.Close()
@@ -97,6 +106,7 @@ type progressWriter struct {
 	total   int64 // -1 if unknown
 	start   time.Time
 	last    time.Time
+	name    string
 }
 
 func (pw *progressWriter) Write(p []byte) (int, error) {
@@ -118,11 +128,13 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 	var line string
 	if pw.total > 0 {
 		pct := float64(pw.written) / float64(pw.total) * 100
-		line = fmt.Sprintf("  > %s / %s (%3.0f%%) %s/s",
+		line = fmt.Sprintf("%s%s %s / %s (%3.0f%%) %s/s",
+			ProgressPrefix, pw.name,
 			formatBytes(pw.written), formatBytes(pw.total),
 			pct, formatBytes(int64(speed)))
 	} else {
-		line = fmt.Sprintf("  > %s  %s/s",
+		line = fmt.Sprintf("%s%s %s  %s/s",
+			ProgressPrefix, pw.name,
 			formatBytes(pw.written), formatBytes(int64(speed)))
 	}
 	// Pad to clear previous longer lines, then \r to
@@ -141,7 +153,8 @@ func (pw *progressWriter) finish() {
 		elapsed = 0.001
 	}
 	speed := float64(pw.written) / elapsed
-	line := fmt.Sprintf("  > %s in %.1fs (%s/s)",
+	line := fmt.Sprintf("%s%s %s in %.1fs (%s/s)",
+		ProgressPrefix, pw.name,
 		formatBytes(pw.written), elapsed,
 		formatBytes(int64(speed)))
 	for len(line) < 70 {

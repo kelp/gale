@@ -21,6 +21,10 @@ import (
 // stderr output. Callers can override with SetOutput.
 var out = output.New(os.Stderr, true)
 
+func init() {
+	download.ProgressPrefix = out.StepPrefix()
+}
+
 // SetOutput overrides the build output writer.
 func SetOutput(o *output.Output) {
 	out = o
@@ -56,7 +60,6 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 		}
 	}
 	if !cached {
-		out.Step("Downloading...")
 		if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
 			return nil, fmt.Errorf("fetch source: %w", err)
 		}

@@ -74,7 +74,7 @@ func (o *Output) writeMsg(c *color.Color, prefix, msg string) {
 // progress lines that need \r overwriting.
 func (o *Output) StepPrefix() string {
 	if o.color {
-		return o.cyan.Sprint("    ")
+		return o.cyan.Sprint("  > ")
 	}
-	return "    "
+	return "  > "
 }
