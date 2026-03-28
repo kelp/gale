@@ -1,0 +1,56 @@
+name: Release
+
+on:
+  release:
+    types: [created]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+          - goos: darwin
+            goarch: amd64
+          - goos: linux
+            goarch: amd64
+          - goos: linux
+            goarch: arm64
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Build
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${REF_NAME#v}"
+          BINARY="gale-${REF_NAME}-${GOOS}-${GOARCH}"
+          go build \
+            -ldflags "-X main.version=${VERSION}" \
+            -o "${BINARY}" \
+            ./cmd/gale/
+          tar czf "${BINARY}.tar.gz" "${BINARY}"
+          sha256sum "${BINARY}.tar.gz" > "${BINARY}.tar.gz.sha256"
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          BINARY="gale-${REF_NAME}-${GOOS}-${GOARCH}"
+          gh release upload "${REF_NAME}" \
+            "${BINARY}.tar.gz" \
+            "${BINARY}.tar.gz.sha256"

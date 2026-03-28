@@ -167,7 +167,96 @@ func TestFetchRecipeUsesCustomBaseURL(t *testing.T) {
 	}
 }
 
-// --- Behavior 7: FetchRecipe errors on connection failure ---
+// --- Behavior 7: parseVersionIndex parses version→commit map ---
+
+func TestParseVersionIndex(t *testing.T) {
+	input := "1.7.1 abc1234def5678901234567890abcdef12345678\n" +
+		"1.8.1 9876543210abcdef9876543210abcdef98765432\n"
+
+	idx, err := parseVersionIndex(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(idx) != 2 {
+		t.Fatalf("got %d entries, want 2", len(idx))
+	}
+	if idx["1.7.1"] != "abc1234def5678901234567890abcdef12345678" {
+		t.Errorf("1.7.1 = %q", idx["1.7.1"])
+	}
+	if idx["1.8.1"] != "9876543210abcdef9876543210abcdef98765432" {
+		t.Errorf("1.8.1 = %q", idx["1.8.1"])
+	}
+}
+
+func TestParseVersionIndexSkipsBlanks(t *testing.T) {
+	input := "1.0.0 aaaa\n\n  \n2.0.0 bbbb\n"
+	idx, err := parseVersionIndex(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(idx) != 2 {
+		t.Fatalf("got %d entries, want 2", len(idx))
+	}
+}
+
+func TestParseVersionIndexErrorsOnBadLine(t *testing.T) {
+	input := "1.0.0\n"
+	_, err := parseVersionIndex(input)
+	if err == nil {
+		t.Fatal("expected error for malformed line")
+	}
+}
+
+// --- Behavior 8: FetchRecipeVersion fetches pinned version ---
+
+func TestFetchRecipeVersion(t *testing.T) {
+	// Serve both the .versions index and the recipe at a
+	// specific commit.
+	const commit = "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.7.1 " + commit + "\n" +
+		"1.8.1 9876543210abcdef9876543210abcdef98765432\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.versions":
+				fmt.Fprint(w, versionsBody)
+			case "/" + commit + "/recipes/j/jq.toml":
+				fmt.Fprint(w, validTOML)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	rec, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Name != "testpkg" {
+		t.Errorf("Name = %q, want %q",
+			rec.Package.Name, "testpkg")
+	}
+}
+
+func TestFetchRecipeVersionNotFound(t *testing.T) {
+	versionsBody := "1.8.1 abc123\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, versionsBody)
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	if err == nil {
+		t.Fatal("expected error for version not in index")
+	}
+}
+
+// --- Behavior 9: FetchRecipe errors on connection failure ---
 
 func TestFetchRecipeErrorsOnConnectionFailure(t *testing.T) {
 	// Start a server then immediately close it to get an

@@ -14,6 +14,7 @@ var (
 	updateLocal  bool
 	updateSource string
 	updateGit    bool
+	updateRecipe string
 )
 
 var updateCmd = &cobra.Command{
@@ -28,10 +29,18 @@ var updateCmd = &cobra.Command{
 				"--source requires exactly one package name")
 		}
 
+		// Resolve context for config path. All branches
+		// use ctx.GalePath for config writes.
+		ctx, err := newCmdContext(updateLocal)
+		if err != nil {
+			return err
+		}
+
 		// --source: rebuild from local source directory.
 		if updateSource != "" {
 			return installFromLocalSource(
-				args[0], "", updateSource, out)
+				args[0], updateRecipe, updateSource,
+				ctx.GalePath, ctx.GaleDir, ctx.StoreRoot, out)
 		}
 
 		// --git: check remote HEAD, rebuild if changed.
@@ -40,12 +49,7 @@ var updateCmd = &cobra.Command{
 				return fmt.Errorf(
 					"--git requires exactly one package name")
 			}
-			return updateFromGit(args[0], updateLocal, out)
-		}
-
-		ctx, err := newCmdContext(updateLocal)
-		if err != nil {
-			return err
+			return updateFromGit(args[0], ctx, out)
 		}
 
 		cfg, err := ctx.LoadConfig()
@@ -125,13 +129,7 @@ var updateCmd = &cobra.Command{
 
 // updateFromGit checks if the remote HEAD changed, and
 // rebuilds from git if so.
-func updateFromGit(name string, local bool, out *output.Output) error {
-	// Resolve recipe to get source.repo.
-	ctx, err := newCmdContext(local)
-	if err != nil {
-		return err
-	}
-
+func updateFromGit(name string, ctx *cmdContext, out *output.Output) error {
 	r, err := ctx.Resolver(name)
 	if err != nil {
 		return fmt.Errorf("fetching recipe: %w", err)
@@ -162,7 +160,9 @@ func updateFromGit(name string, local bool, out *output.Output) error {
 
 	out.Info(fmt.Sprintf("Updating %s to %s...",
 		name, remoteHash))
-	return installFromGit(name, "", out)
+	return installFromGit(name, updateRecipe,
+		ctx.GalePath, ctx.GaleDir, ctx.StoreRoot,
+		updateLocal, out)
 }
 
 func init() {
@@ -172,5 +172,7 @@ func init() {
 		"Rebuild from a local source directory")
 	updateCmd.Flags().BoolVar(&updateGit, "git", false,
 		"Update from git repository HEAD")
+	updateCmd.Flags().StringVar(&updateRecipe, "recipe", "",
+		"Use a specific recipe TOML file")
 	rootCmd.AddCommand(updateCmd)
 }

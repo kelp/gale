@@ -32,19 +32,60 @@ var syncCmd = &cobra.Command{
 			return nil
 		}
 
-		var installed int
-		for name := range cfg.Packages {
-			result, err := ctx.installPackage(name, out)
+		var installed, failed int
+		for name, version := range cfg.Packages {
+			// Check store first — pinned version present?
+			if ctx.Installer.Store.IsInstalled(name, version) {
+				out.Info(fmt.Sprintf(
+					"%s@%s up to date", name, version))
+				continue
+			}
+
+			// Not in store — fetch recipe, check version.
+			r, err := ctx.Resolver(name)
+			if err != nil {
+				out.Warn(fmt.Sprintf(
+					"Failed to resolve %s: %v", name, err))
+				failed++
+				continue
+			}
+
+			if r.Package.Version != version {
+				// Latest doesn't match pin. Try versioned
+				// fetch from the registry index.
+				if ctx.Registry != nil {
+					pinned, vErr := ctx.Registry.FetchRecipeVersion(
+						name, version)
+					if vErr == nil {
+						r = pinned
+					}
+				}
+
+				// Still doesn't match after versioned fetch.
+				if r.Package.Version != version {
+					out.Warn(fmt.Sprintf(
+						"%s@%s not in store (registry has %s). "+
+							"Run 'gale update %s' to install latest.",
+						name, version, r.Package.Version, name))
+					failed++
+					continue
+				}
+			}
+
+			// Versions match — install.
+			out.Info(fmt.Sprintf("Installing %s@%s...",
+				name, version))
+
+			result, err := ctx.Installer.Install(r)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Failed to install %s: %v", name, err))
+				failed++
 				continue
 			}
 
 			reportResult(out, result, "Installed", "built from source")
-			if result.Method != "cached" {
-				installed++
-			}
+			installed++
 		}
 
 		if err := rebuildGeneration(ctx.GaleDir,
@@ -52,8 +93,17 @@ var syncCmd = &cobra.Command{
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 
+		if failed > 0 {
+			out.Warn(fmt.Sprintf(
+				"Sync finished with %d error(s)", failed))
+			return fmt.Errorf(
+				"%d package(s) could not be synced", failed)
+		}
+
 		out.Success(fmt.Sprintf(
-			"Sync complete: %d packages installed", installed))
+			"Sync complete: %d installed, %d up to date",
+			installed,
+			len(cfg.Packages)-installed))
 		return nil
 	},
 }

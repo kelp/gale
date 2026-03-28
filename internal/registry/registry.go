@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/kelp/gale/internal/recipe"
@@ -66,4 +67,99 @@ func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 	}
 
 	return rec, nil
+}
+
+// FetchRecipeVersion fetches a recipe at a specific version
+// by looking up the commit hash in the .versions index, then
+// fetching the recipe at that commit.
+func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, error) {
+	if name == "" {
+		return nil, fmt.Errorf("name must not be empty")
+	}
+
+	// Fetch the versions index.
+	bucket := string(name[0])
+	indexURL := fmt.Sprintf("%s/recipes/%s/%s.versions",
+		r.BaseURL, bucket, name)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(indexURL)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"fetch version index for %s: %w", name, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(
+			"version index for %s: HTTP %d", name, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"read version index for %s: %w", name, err)
+	}
+
+	idx, err := parseVersionIndex(string(body))
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse version index for %s: %w", name, err)
+	}
+
+	commit, ok := idx[version]
+	if !ok {
+		return nil, fmt.Errorf(
+			"%s@%s: version not found in registry", name, version)
+	}
+
+	// Fetch recipe at the specific commit.
+	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
+		r.BaseURL, commit, bucket, name)
+
+	resp2, err := client.Get(recipeURL)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"fetch %s@%s recipe: %w", name, version, err)
+	}
+	defer resp2.Body.Close()
+
+	if resp2.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(
+			"fetch %s@%s recipe: HTTP %d",
+			name, version, resp2.StatusCode)
+	}
+
+	recipeBody, err := io.ReadAll(resp2.Body)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"read %s@%s recipe: %w", name, version, err)
+	}
+
+	rec, err := recipe.Parse(string(recipeBody))
+	if err != nil {
+		return nil, fmt.Errorf(
+			"parse %s@%s recipe: %w", name, version, err)
+	}
+
+	return rec, nil
+}
+
+// parseVersionIndex parses a .versions file into a
+// version→commit map. Each line is "version commit-hash".
+func parseVersionIndex(data string) (map[string]string, error) {
+	idx := make(map[string]string)
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf(
+				"malformed version line: %q", line)
+		}
+		idx[parts[0]] = parts[1]
+	}
+	return idx, nil
 }

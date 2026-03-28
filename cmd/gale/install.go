@@ -20,6 +20,7 @@ import (
 var (
 	installGlobal  bool
 	installProject bool
+	installLocal   bool
 	installRecipe  string
 	installSource  string
 	installGit     bool
@@ -37,57 +38,8 @@ var installCmd = &cobra.Command{
 		name, version := parsePackageArg(args[0])
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		// If --source flag is provided, build from local source.
-		if installSource != "" {
-			return installFromLocalSource(name, installRecipe, installSource, out)
-		}
-
-		// If --git flag is provided, clone and build from git.
-		if installGit {
-			return installFromGit(name, installRecipe, out)
-		}
-
-		// If --recipe flag is provided, install from recipe file.
-		if installRecipe != "" {
-			return installFromRecipeFile(installRecipe, out)
-		}
-
-		// Fetch recipe from registry.
-		reg := newRegistry()
-		out.Info(fmt.Sprintf("Fetching recipe for %s...", name))
-
-		r, err := reg.FetchRecipe(name)
-		if err != nil {
-			return fmt.Errorf("fetching recipe: %w", err)
-		}
-
-		// Check version match if a specific version was requested.
-		if err := checkVersionMatch(version, r.Package.Version); err != nil {
-			return err
-		}
-
-		// Set up installer.
-		galeDir, err := galeConfigDir()
-		if err != nil {
-			return err
-		}
-
-		storeRoot := defaultStoreRoot()
-
-		inst := &installer.Installer{
-			Store:    store.NewStore(storeRoot),
-			Resolver: reg.FetchRecipe,
-		}
-
-		out.Info(fmt.Sprintf("Installing %s@%s...",
-			r.Package.Name, r.Package.Version))
-
-		result, err := inst.Install(r)
-		if err != nil {
-			return fmt.Errorf("install failed: %w", err)
-		}
-
-		// Determine scope and add to gale.toml.
+		// Resolve scope and paths up front — all branches
+		// use the same config path.
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting working dir: %w", err)
@@ -97,6 +49,75 @@ var installCmd = &cobra.Command{
 		configPath, err := resolveConfigPath(useGlobal)
 		if err != nil {
 			return err
+		}
+		galeDir, err := galeConfigDir()
+		if err != nil {
+			return err
+		}
+		storeRoot := defaultStoreRoot()
+
+		// If --source flag is provided, build from local source.
+		if installSource != "" {
+			return installFromLocalSource(name, installRecipe,
+				installSource, configPath, galeDir, storeRoot, out)
+		}
+
+		// If --git flag is provided, clone and build from git.
+		if installGit {
+			return installFromGit(name, installRecipe,
+				configPath, galeDir, storeRoot, installLocal, out)
+		}
+
+		// If --recipe flag is provided, install from recipe file.
+		if installRecipe != "" {
+			return installFromRecipeFile(installRecipe,
+				configPath, galeDir, storeRoot, out)
+		}
+
+		// Fetch recipe from registry or local recipes.
+		var resolver installer.RecipeResolver
+		if installLocal {
+			recipesDir, dirErr := findLocalRecipesDir(cwd)
+			if dirErr != nil {
+				return dirErr
+			}
+			resolver = localRecipeResolver(recipesDir)
+		} else {
+			resolver = newRegistry().FetchRecipe
+		}
+
+		out.Info(fmt.Sprintf("Fetching recipe for %s...", name))
+
+		var r *recipe.Recipe
+		if version != "" && version != "latest" && !installLocal {
+			// Specific version requested — fetch from
+			// versioned registry index.
+			reg := newRegistry()
+			r, err = reg.FetchRecipeVersion(name, version)
+			if err != nil {
+				return fmt.Errorf("fetching %s@%s: %w",
+					name, version, err)
+			}
+			// Use the registry for dep resolution too.
+			resolver = reg.FetchRecipe
+		} else {
+			r, err = resolver(name)
+			if err != nil {
+				return fmt.Errorf("fetching recipe: %w", err)
+			}
+		}
+
+		inst := &installer.Installer{
+			Store:    store.NewStore(storeRoot),
+			Resolver: resolver,
+		}
+
+		out.Info(fmt.Sprintf("Installing %s@%s...",
+			r.Package.Name, r.Package.Version))
+
+		result, err := inst.Install(r)
+		if err != nil {
+			return fmt.Errorf("install failed: %w", err)
 		}
 
 		if err := finalizeInstall(galeDir, storeRoot,
@@ -115,6 +136,8 @@ func init() {
 		false, "Install to global config")
 	installCmd.Flags().BoolVarP(&installProject, "project", "p",
 		false, "Install to project config")
+	installCmd.Flags().BoolVar(&installLocal, "local", false,
+		"Resolve recipes from sibling gale-recipes directory")
 	installCmd.Flags().StringVar(&installRecipe, "recipe", "",
 		"Install from a recipe TOML file")
 	installCmd.Flags().StringVar(&installSource, "source", "",
@@ -122,21 +145,6 @@ func init() {
 	installCmd.Flags().BoolVar(&installGit, "git", false,
 		"Clone and build from git repository")
 	rootCmd.AddCommand(installCmd)
-}
-
-// checkVersionMatch returns an error if the requested version
-// doesn't match the recipe version. Empty or "latest" always
-// matches.
-func checkVersionMatch(requested, actual string) error {
-	if requested == "" || requested == "latest" {
-		return nil
-	}
-	if requested != actual {
-		return fmt.Errorf(
-			"version mismatch: requested %s but recipe has %s",
-			requested, actual)
-	}
-	return nil
 }
 
 // validateInstallFlags returns an error if conflicting flags
@@ -194,24 +202,11 @@ func isStdinTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-func installFromGit(name, recipePath string, out *output.Output) error {
-	// Resolve recipe from registry or --recipe flag.
+func installFromGit(name, recipePath, configPath, galeDir, storeRoot string, local bool, out *output.Output) error {
+	// Resolve recipe from registry, local, or --recipe flag.
 	var r *recipe.Recipe
-	var resolvedRecipe string
 	if recipePath != "" {
-		resolvedRecipe = recipePath
-	} else {
-		// Fetch from registry to get the recipe.
-		reg := newRegistry()
-		fetched, err := reg.FetchRecipe(name)
-		if err != nil {
-			return fmt.Errorf("fetching recipe: %w", err)
-		}
-		r = fetched
-	}
-
-	if resolvedRecipe != "" {
-		data, err := os.ReadFile(resolvedRecipe)
+		data, err := os.ReadFile(recipePath)
 		if err != nil {
 			return fmt.Errorf("reading recipe: %w", err)
 		}
@@ -220,6 +215,26 @@ func installFromGit(name, recipePath string, out *output.Output) error {
 			return fmt.Errorf("parsing recipe: %w", err)
 		}
 		r = parsed
+	} else {
+		var resolver installer.RecipeResolver
+		if local {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("getting working dir: %w", err)
+			}
+			recipesDir, err := findLocalRecipesDir(cwd)
+			if err != nil {
+				return err
+			}
+			resolver = localRecipeResolver(recipesDir)
+		} else {
+			resolver = newRegistry().FetchRecipe
+		}
+		fetched, err := resolver(name)
+		if err != nil {
+			return fmt.Errorf("fetching recipe: %w", err)
+		}
+		r = fetched
 	}
 
 	if r.Source.Repo == "" {
@@ -227,12 +242,6 @@ func installFromGit(name, recipePath string, out *output.Output) error {
 			"recipe for %s has no source.repo — cannot build from git", name)
 	}
 
-	galeDir, err := galeConfigDir()
-	if err != nil {
-		return err
-	}
-
-	storeRoot := defaultStoreRoot()
 	inst := &installer.Installer{
 		Store:    store.NewStore(storeRoot),
 		Resolver: newRegistry().FetchRecipe,
@@ -246,8 +255,6 @@ func installFromGit(name, recipePath string, out *output.Output) error {
 		return fmt.Errorf("install failed: %w", err)
 	}
 
-	// Add to global gale.toml and rebuild generation.
-	configPath := filepath.Join(galeDir, "gale.toml")
 	if err := finalizeInstall(galeDir, storeRoot,
 		configPath, r.Package.Name, result.Version); err != nil {
 		return err
@@ -258,7 +265,7 @@ func installFromGit(name, recipePath string, out *output.Output) error {
 	return nil
 }
 
-func installFromLocalSource(name, recipePath, sourceDir string, out *output.Output) error {
+func installFromLocalSource(name, recipePath, sourceDir, configPath, galeDir, storeRoot string, out *output.Output) error {
 	// Resolve source directory to absolute path.
 	absSource, err := filepath.Abs(sourceDir)
 	if err != nil {
@@ -281,19 +288,12 @@ func installFromLocalSource(name, recipePath, sourceDir string, out *output.Outp
 		return fmt.Errorf("parsing recipe: %w", err)
 	}
 
-	// Override version with git short hash from source dir.
-	version, err := gitShortHash(absSource)
+	// Override version with semver dev version from git.
+	version, err := gitDevVersion(absSource)
 	if err != nil {
 		return fmt.Errorf("detecting version: %w", err)
 	}
 	r.Package.Version = version
-
-	galeDir, err := galeConfigDir()
-	if err != nil {
-		return err
-	}
-
-	storeRoot := defaultStoreRoot()
 
 	inst := &installer.Installer{
 		Store:    store.NewStore(storeRoot),
@@ -308,8 +308,6 @@ func installFromLocalSource(name, recipePath, sourceDir string, out *output.Outp
 		return fmt.Errorf("install failed: %w", err)
 	}
 
-	// Add to global gale.toml and rebuild generation.
-	configPath := filepath.Join(galeDir, "gale.toml")
 	if err := finalizeInstall(galeDir, storeRoot,
 		configPath, r.Package.Name, r.Package.Version); err != nil {
 		return err
@@ -320,17 +318,47 @@ func installFromLocalSource(name, recipePath, sourceDir string, out *output.Outp
 	return nil
 }
 
-// gitShortHash returns the short git commit hash for the
-// given directory. Returns an error if the directory is not
-// a git repository.
-func gitShortHash(dir string) (string, error) {
-	cmd := exec.Command("git", "rev-parse", "--short", "HEAD")
+// gitDevVersion returns a semver-compliant version string
+// for the given git directory. Uses git describe to find the
+// nearest tag and formats as:
+//   - "0.2.0" when exactly on tag v0.2.0
+//   - "0.2.0-dev.7+5395b8f" when 7 commits ahead
+//   - "0.0.0-dev+5395b8f" when no tags exist
+func gitDevVersion(dir string) (string, error) {
+	cmd := exec.Command("git", "describe",
+		"--tags", "--always")
 	cmd.Dir = dir
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git rev-parse in %s: %w", dir, err)
+		return "", fmt.Errorf("git describe in %s: %w", dir, err)
 	}
-	return strings.TrimSpace(string(out)), nil
+	return formatDevVersion(strings.TrimSpace(string(out))), nil
+}
+
+// formatDevVersion converts git describe output to semver.
+//
+//	"v0.2.0"            → "0.2.0"
+//	"v0.2.0-7-g5395b8f" → "0.2.0-dev.7+5395b8f"
+//	"5395b8f"           → "0.0.0-dev+5395b8f"
+func formatDevVersion(describe string) string {
+	// No tags: bare hash.
+	if !strings.Contains(describe, ".") {
+		return "0.0.0-dev+" + describe
+	}
+
+	// Strip leading "v".
+	describe = strings.TrimPrefix(describe, "v")
+
+	// Exactly on a tag: "0.2.0".
+	parts := strings.SplitN(describe, "-", 3)
+	if len(parts) == 1 {
+		return describe
+	}
+
+	// Ahead of tag: "0.2.0-7-g5395b8f".
+	// parts[0]="0.2.0", parts[1]="7", parts[2]="g5395b8f"
+	hash := strings.TrimPrefix(parts[2], "g")
+	return parts[0] + "-dev." + parts[1] + "+" + hash
 }
 
 // resolveRecipePath finds the recipe TOML file. If recipePath
@@ -352,7 +380,7 @@ func resolveRecipePath(name, recipePath, sourceDir string) (string, error) {
 		"no recipe found for %q — use --recipe to specify a recipe file", name)
 }
 
-func installFromRecipeFile(recipePath string, out *output.Output) error {
+func installFromRecipeFile(recipePath, configPath, galeDir, storeRoot string, out *output.Output) error {
 	data, err := os.ReadFile(recipePath)
 	if err != nil {
 		return fmt.Errorf("reading recipe: %w", err)
@@ -362,13 +390,6 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 	if err != nil {
 		return fmt.Errorf("parsing recipe: %w", err)
 	}
-
-	galeDir, err := galeConfigDir()
-	if err != nil {
-		return err
-	}
-
-	storeRoot := defaultStoreRoot()
 
 	inst := &installer.Installer{
 		Store:    store.NewStore(storeRoot),
@@ -383,8 +404,6 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 		return fmt.Errorf("install failed: %w", err)
 	}
 
-	// Add to gale.toml and rebuild generation.
-	configPath := filepath.Join(galeDir, "gale.toml")
 	if err := finalizeInstall(galeDir, storeRoot,
 		configPath, r.Package.Name, r.Package.Version); err != nil {
 		return err

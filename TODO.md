@@ -82,6 +82,17 @@
   `extractBuild`, `TmpDir`, `HashFile`, `reportResult`,
   `finalizeInstall`, `loadAppConfig`, `LoadConfig`.
   Moved helpers to context.go and paths.go.
+- [x] CLI consistency redesign: strict sync respects
+  pinned versions, all config writes honor scope,
+  `--local` on all commands, `@version` support on
+  install/add, shared `addToConfig` helper.
+- [x] Versioned registry: `.versions` index files
+  map version→commit hash. `FetchRecipeVersion`
+  fetches recipes at specific commits. Backfilled
+  from git history.
+- [x] Semver dev versions: `--source` builds use
+  `git describe` formatted as semver
+  (`0.2.0-dev.7+5395b8f`).
 
 ## Declarative Environments
 
@@ -190,11 +201,13 @@ streaming. Our code provides focused prompts and tools.
 
 ## Distribution
 
-- [ ] **Cross-compiled release binaries** — CI builds
-  gale for darwin-arm64, darwin-amd64, linux-amd64
-  and attaches binaries to GitHub releases.
-- [ ] **Install script** — `curl | sh` one-liner that
+- [x] **Cross-compiled release binaries** — CI builds
+  gale for darwin-arm64, darwin-amd64, linux-amd64,
+  linux-arm64 and attaches binaries to GitHub releases.
+  Release workflow triggers on `gh release create`.
+- [x] **Install script** — `curl | sh` one-liner that
   downloads the right binary for the platform.
+  Detects OS/arch, supports GALE_VERSION env var.
 - [ ] **Homebrew tap** — `brew install kelp/tap/gale`
   as a migration bridge for Homebrew users.
 
@@ -318,12 +331,13 @@ pure `[binary.<platform>]` with no `[build]` block.
 - [x] **`gale doctor`** — checks config, store,
   generation, PATH, direnv, symlinks, and orphaned
   versions. Shows fix suggestions for each issue.
-- [ ] **`gale which <binary>`** — show which package
-  provides a binary and its store path.
-- [ ] **`gale diff`** — show what would change if
-  `gale sync` ran now (new installs, version changes,
-  removals).
-- [ ] **`gale outdated`** — show packages with newer
+- [x] **`gale which <binary>`** — show which package
+  provides a binary and its store path. Resolves
+  symlinks from current generation back to store.
+- [x] **`gale diff`** — show what would change if
+  `gale sync` ran now (new installs, version
+  mismatches).
+- [x] **`gale outdated`** — show packages with newer
   versions available upstream. Queries the registry
   for each package in gale.toml.
 

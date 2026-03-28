@@ -34,41 +34,6 @@ func TestParsePackageArg(t *testing.T) {
 	}
 }
 
-func TestCheckVersionMatch(t *testing.T) {
-	tests := []struct {
-		name        string
-		requested   string
-		actual      string
-		wantErr     bool
-		errContains string
-	}{
-		{"empty requested uses recipe version", "", "1.7.1", false, ""},
-		{"latest uses recipe version", "latest", "1.7.1", false, ""},
-		{"matching version passes", "1.7.1", "1.7.1", false, ""},
-		{
-			"mismatched version errors", "2.0.0", "1.7.1",
-			true, "version mismatch",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := checkVersionMatch(tt.requested, tt.actual)
-			if tt.wantErr && err == nil {
-				t.Fatal("expected error, got nil")
-			}
-			if !tt.wantErr && err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-			if tt.errContains != "" && err != nil &&
-				!strings.Contains(err.Error(), tt.errContains) {
-				t.Errorf("error %q should contain %q",
-					err.Error(), tt.errContains)
-			}
-		})
-	}
-}
-
 func TestValidateInstallFlags(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -90,6 +55,45 @@ func TestValidateInstallFlags(t *testing.T) {
 			}
 			if !tt.wantErr && err != nil {
 				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
+func TestFormatDevVersion(t *testing.T) {
+	tests := []struct {
+		name     string
+		describe string
+		want     string
+	}{
+		{
+			"on tag",
+			"v0.2.0",
+			"0.2.0",
+		},
+		{
+			"commits ahead of tag",
+			"v0.2.0-7-g5395b8f",
+			"0.2.0-dev.7+5395b8f",
+		},
+		{
+			"no tags, bare hash",
+			"5395b8f",
+			"0.0.0-dev+5395b8f",
+		},
+		{
+			"one commit ahead",
+			"v1.0.0-1-gabcdef0",
+			"1.0.0-dev.1+abcdef0",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := formatDevVersion(tt.describe)
+			if got != tt.want {
+				t.Errorf("formatDevVersion(%q) = %q, want %q",
+					tt.describe, got, tt.want)
 			}
 		})
 	}

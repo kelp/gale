@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -12,6 +11,7 @@ import (
 var (
 	addGlobal  bool
 	addProject bool
+	addLocal   bool
 )
 
 var addCmd = &cobra.Command{
@@ -24,35 +24,59 @@ var addCmd = &cobra.Command{
 		}
 
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
-		reg := newRegistry()
 
-		// Default to project scope for add.
-		configPath, err := resolveConfigPath(addGlobal)
+		// Set up resolver for version lookup.
+		cwd, err := os.Getwd()
 		if err != nil {
-			return err
+			return fmt.Errorf("getting working dir: %w", err)
+		}
+
+		var resolver func(string) (string, error)
+		if addLocal {
+			recipesDir, dirErr := findLocalRecipesDir(cwd)
+			if dirErr != nil {
+				return dirErr
+			}
+			localRes := localRecipeResolver(recipesDir)
+			resolver = func(name string) (string, error) {
+				r, err := localRes(name)
+				if err != nil {
+					return "", err
+				}
+				return r.Package.Version, nil
+			}
+		} else {
+			reg := newRegistry()
+			resolver = func(name string) (string, error) {
+				r, err := reg.FetchRecipe(name)
+				if err != nil {
+					return "", err
+				}
+				return r.Package.Version, nil
+			}
 		}
 
 		for _, arg := range args {
 			name, version := parsePackageArg(arg)
 
-			// Validate recipe exists.
-			r, err := reg.FetchRecipe(name)
-			if err != nil {
-				return fmt.Errorf("validating %s: %w", name, err)
+			// If @version specified, trust the user.
+			if version == "" {
+				resolved, err := resolver(name)
+				if err != nil {
+					return fmt.Errorf("resolving %s: %w",
+						name, err)
+				}
+				version = resolved
 			}
 
-			if err := checkVersionMatch(version, r.Package.Version); err != nil {
+			configPath, err := addToConfig(
+				name, version, addGlobal, addProject)
+			if err != nil {
 				return err
 			}
 
-			actualVersion := r.Package.Version
-			if err := config.AddPackage(configPath, name,
-				actualVersion); err != nil {
-				return fmt.Errorf("adding %s: %w", name, err)
-			}
-
 			out.Success(fmt.Sprintf("Added %s@%s to %s",
-				name, actualVersion, configPath))
+				name, version, configPath))
 		}
 
 		return nil
@@ -64,5 +88,7 @@ func init() {
 		false, "Add to global config")
 	addCmd.Flags().BoolVarP(&addProject, "project", "p",
 		false, "Add to project config")
+	addCmd.Flags().BoolVar(&addLocal, "local", false,
+		"Resolve recipes from sibling gale-recipes directory")
 	rootCmd.AddCommand(addCmd)
 }

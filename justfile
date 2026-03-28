@@ -3,7 +3,7 @@ default: test lint
 
 # Build the binary
 build:
-    go build -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o gale ./cmd/gale/
+    go build -ldflags "-X main.version=$(just _dev-version)" -o gale ./cmd/gale/
 
 # Run all tests
 test:
@@ -43,7 +43,7 @@ check: test lint fmt-check
 
 # Install gale from local source using gale itself
 install:
-    gale install --source . gale
+    gale update --source . gale
 
 # Bootstrap gale (first-time: build with go, then self-install)
 bootstrap: build
@@ -85,6 +85,19 @@ release version:
       --title "v{{version}}" \
       --notes "$NOTES"
     echo "Published https://github.com/kelp/gale/releases/tag/v{{version}}"
+    echo "Release workflow will build and attach binaries."
+
+# Format git describe as semver (used by build and install)
+_dev-version:
+    #!/usr/bin/env bash
+    desc=$(git describe --tags --always)
+    if [[ "$desc" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
+      echo "${BASH_REMATCH[1]}"
+    elif [[ "$desc" =~ ^v?([0-9]+\.[0-9]+\.[0-9]+)-([0-9]+)-g([0-9a-f]+)$ ]]; then
+      echo "${BASH_REMATCH[1]}-dev.${BASH_REMATCH[2]}+${BASH_REMATCH[3]}"
+    else
+      echo "0.0.0-dev+${desc}"
+    fi
 
 # Clean build artifacts
 clean:

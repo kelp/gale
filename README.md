@@ -14,13 +14,22 @@ activate automatically.
 
 ## Install
 
-Gale is not yet published. Build from source:
+```sh
+curl -fsSL https://raw.githubusercontent.com/kelp/gale/main/scripts/install.sh | sh
+```
+
+Or specify a version:
+
+```sh
+GALE_VERSION=0.2.0 curl -fsSL https://raw.githubusercontent.com/kelp/gale/main/scripts/install.sh | sh
+```
+
+Build from source:
 
 ```sh
 git clone https://github.com/kelp/gale
 cd gale
 go build -o gale ./cmd/gale/
-# Copy to somewhere on your PATH
 ```
 
 ## Setup
@@ -79,11 +88,18 @@ gale install <pkg>[@ver]  Install a package
 gale remove <pkg>         Remove a package
 gale add <pkg> [pkg...]   Add to gale.toml without installing
 gale sync                 Install all packages in gale.toml
+gale update [pkg...]      Update packages to latest version
 gale list                 List packages in gale.toml
+gale outdated             Show packages with newer versions
+gale diff                 Show what sync would change
+gale which <binary>       Show which package provides a binary
+gale gc                   Remove unused versions from store
+gale doctor               Check installation for problems
 gale env                  Print export PATH for current scope
 gale init                 Bootstrap project (gale.toml, .envrc)
 gale hook direnv          Print use_gale function for direnvrc
 gale build <recipe.toml>  Build recipe from source
+gale lint <recipe.toml>   Validate recipe files
 gale search <query>       Search for packages
 gale shell                Open shell with project environment
 gale run <cmd>            Run command in project environment
@@ -144,15 +160,17 @@ if available, and falls back to building from source.
 
 When working on gale or recipes locally:
 
+- `--local` — resolve recipes from sibling
+  `gale-recipes/` directory. Available on install,
+  sync, update, build, and add.
 - `--source <dir>` — build from a local source
-  directory instead of downloading. Auto-finds the
-  recipe in a sibling `gale-recipes/` directory.
-  Version is detected from `git rev-parse --short HEAD`.
-- `--recipe <file>` — use a local recipe TOML file
-  instead of fetching from the registry.
-- `--local` (on `gale sync`) — resolve all recipes
-  from the sibling `gale-recipes/` directory instead
-  of the remote registry.
+  directory. Auto-finds the recipe in sibling
+  `gale-recipes/`. Version is semver from git
+  describe (e.g., `0.2.0-dev.7+5395b8f`).
+- `--recipe <file>` — use a specific recipe TOML
+  file. Available on install and update.
+- `--git` — clone and build from git HEAD.
+  Available on install, update, and build.
 
 ### Adding a Recipe
 

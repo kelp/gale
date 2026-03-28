@@ -22,6 +22,7 @@ type cmdContext struct {
 	StoreRoot string
 	Resolver  installer.RecipeResolver
 	Installer *installer.Installer
+	Registry  *registry.Registry // nil when --local
 }
 
 // newCmdContext resolves the config, store, and installer.
@@ -57,6 +58,7 @@ func newCmdContext(local bool) (*cmdContext, error) {
 	// Set up resolver.
 	storeRoot := defaultStoreRoot()
 	var resolver installer.RecipeResolver
+	var reg *registry.Registry
 	if local {
 		recipesDir, dirErr := findLocalRecipesDir(cwd)
 		if dirErr != nil {
@@ -64,7 +66,7 @@ func newCmdContext(local bool) (*cmdContext, error) {
 		}
 		resolver = localRecipeResolver(recipesDir)
 	} else {
-		reg := newRegistry()
+		reg = newRegistry()
 		resolver = reg.FetchRecipe
 	}
 
@@ -79,6 +81,7 @@ func newCmdContext(local bool) (*cmdContext, error) {
 		StoreRoot: storeRoot,
 		Resolver:  resolver,
 		Installer: inst,
+		Registry:  reg,
 	}, nil
 }
 
@@ -202,6 +205,25 @@ func finalizeInstall(galeDir, storeRoot, configPath, name, version string) error
 		return fmt.Errorf("adding to config: %w", err)
 	}
 	return rebuildGeneration(galeDir, storeRoot, configPath)
+}
+
+// addToConfig resolves scope and writes a package version
+// to gale.toml. Returns the config path used.
+func addToConfig(name, version string, global, project bool) (string, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting working dir: %w", err)
+	}
+	useGlobal := resolveScope(global, project,
+		cwd, isStdinTTY(), os.Stdin)
+	configPath, err := resolveConfigPath(useGlobal)
+	if err != nil {
+		return "", err
+	}
+	if err := config.AddPackage(configPath, name, version); err != nil {
+		return "", fmt.Errorf("adding %s to config: %w", name, err)
+	}
+	return configPath, nil
 }
 
 // reportResult prints the install/update result message.
