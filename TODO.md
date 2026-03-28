@@ -142,13 +142,9 @@ streaming. Our code provides focused prompts and tools.
 
 ## Refactors
 
-- [ ] **Update `gale shell` and `gale run`** — these
-  still use `env.BuildPATH` which concatenates store
-  paths directly onto PATH. Should use the generation
-  model instead: sync the project, then set PATH to
-  `.gale/current/bin`. Also remove unused functions
-  from `internal/env/` (BuildPATH, MergePackages,
-  BuildEnvironment, DetectConfig).
+- [x] **Update `gale shell` and `gale run`** — now use
+  generation model (current/bin on PATH). Removed dead
+  code from internal/env/.
 
 ## CLI Polish
 
