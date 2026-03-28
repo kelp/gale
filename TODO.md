@@ -31,8 +31,9 @@
 - [x] Autotools timestamp fix (touchAll after extraction)
 - [x] Build tool discovery from host PATH (nix, Homebrew,
   gale — resolves compilers without importing full PATH)
-- [x] 9 recipes: jq, just, fd, ripgrep, bat, git-delta,
-  starship, fzf, eza
+- [x] 18 recipes: jq, just, fd, ripgrep, bat, git-delta,
+  starship, fzf, eza, direnv, go, rust, cmake, pkgconf,
+  patchelf, lazygit, actionlint, gale
 - [x] GHCR binary pull with anonymous token exchange
 - [x] Authenticated HTTP fetch (FetchWithAuth)
 - [x] Installer GHCR integration (auto-detect, auth, fallback)
@@ -64,6 +65,11 @@
   --enable-all-static)
 - [x] All 9 recipes verified with local builds
   (8 pass, eza needs newer Rust)
+- [x] Local source builds (`--source` flag, `BuildLocal`,
+  `ParseLocal`, `InstallLocal`, git hash versioning)
+- [x] Recipe auto-find in sibling gale-recipes directory
+- [x] Gale recipe in gale-recipes (Go build pattern)
+- [x] Self-install via `just bootstrap` / `just install`
 
 ## Declarative Environments
 
@@ -145,6 +151,19 @@ streaming. Our code provides focused prompts and tools.
 - [x] **Update `gale shell` and `gale run`** — now use
   generation model (current/bin on PATH). Removed dead
   code from internal/env/.
+
+## Recipe Linter
+
+- [ ] **`gale lint` command** — validate recipe TOML files
+  against the schema. Checks: required fields present
+  ([package] name/version/description/license/homepage,
+  [source] url/sha256, [build] steps), sha256 is valid
+  64-char hex, repo field is owner/repo format,
+  released_at is a valid date, build steps reference
+  ${PREFIX}, file path matches
+  `recipes/<first-letter>/<name>.toml`. Warn on missing
+  `repo` field (no auto-update). Run in CI on PRs to
+  catch errors before build.
 
 ## CLI Polish
 
@@ -232,11 +251,9 @@ keeps recipes current with upstream releases.
   Used by Go and Rust recipes for platform-specific
   bootstrap URLs.
 
-- [ ] **Source download cache** — cache downloaded
+- [x] **Source download cache** — cache downloaded
   source tarballs in `~/.gale/cache/` keyed by SHA256.
-  Skip download if cached file matches. In CI, use
-  `actions/cache` on `~/.gale/cache/` between runs.
-  Avoids re-downloading 300MB Rust source on every build.
+  Skip download if cached file matches.
 
 - [x] **Stream build output** — switched from
   CombinedOutput to streaming stdout/stderr. Long
@@ -255,11 +272,9 @@ properly. The gen's lib/ dir has a stable, known path
 `@executable_path/../lib` on macOS or `$ORIGIN/../lib`
 on Linux.
 
-- [ ] **Post-build dylib fixup** — after building a
-  package that produces shared libraries, rewrite
-  dylib paths with `install_name_tool` (macOS) or
-  `patchelf --set-rpath` (Linux) so binaries find
-  their libs relative to the gen directory.
+- [x] **Post-build dylib fixup** — `FixupBinaries`
+  rewrites dylib paths with `install_name_tool` (macOS)
+  or `patchelf --set-rpath` (Linux) after every build.
 - [ ] **Re-evaluate Rust recipes** — bat, ripgrep, fd,
   starship, eza, git-delta, just currently static-link
   everything via cargo. Some could benefit from shared
@@ -280,11 +295,10 @@ Design how gale manages compilers and language runtimes.
 These distribute prebuilt binaries — recipes would be
 pure `[binary.<platform>]` with no `[build]` block.
 
-- [ ] **Go** — download official tarball from go.dev.
-  Handles the `go/` prefix in extraction.
-- [ ] **Rust (rustup + cargo + rustc)** — download
-  rustup-init binary, or package cargo/rustc directly
-  from static.rust-lang.org.
+- [x] **Go** — recipe builds from source using a
+  bootstrap binary. Binary sections for both platforms.
+- [x] **Rust** — recipe builds from source with vendored
+  OpenSSL. CI build in progress.
 - [ ] **Zig** — single binary download from ziglang.org.
 - [ ] **Node.js / npm** — download official tarball.
   Needed for recipes with npm build steps.
