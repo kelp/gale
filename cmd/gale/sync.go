@@ -3,12 +3,9 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -21,26 +18,14 @@ var syncCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		// Find config: project gale.toml first, fall back
-		// to global ~/.gale/gale.toml.
-		cwd, err := os.Getwd()
+		ctx, err := newCmdContext(syncLocal)
 		if err != nil {
-			return fmt.Errorf("getting working dir: %w", err)
+			return err
 		}
 
-		galePath, err := config.FindGaleConfig(cwd)
+		data, err := os.ReadFile(ctx.GalePath)
 		if err != nil {
-			// No project config — use global.
-			globalDir, dirErr := galeConfigDir()
-			if dirErr != nil {
-				return dirErr
-			}
-			galePath = filepath.Join(globalDir, "gale.toml")
-		}
-
-		data, err := os.ReadFile(galePath)
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", galePath, err)
+			return fmt.Errorf("reading %s: %w", ctx.GalePath, err)
 		}
 
 		cfg, err := config.ParseGaleConfig(string(data))
@@ -53,52 +38,9 @@ var syncCmd = &cobra.Command{
 			return nil
 		}
 
-		// Determine gale dir: if config is in a project,
-		// use project's .gale/. Otherwise use ~/.gale/.
-		galeDir, err := galeConfigDir()
-		if err != nil {
-			return err
-		}
-		configDir := filepath.Dir(galePath)
-		globalDir, _ := galeConfigDir()
-		if configDir != globalDir {
-			// Project config — use .gale/ next to it.
-			galeDir = filepath.Join(configDir, ".gale")
-		}
-
-		// Set up resolver: --local uses sibling gale-recipes,
-		// otherwise use the remote registry.
-		storeRoot := defaultStoreRoot()
-		var resolver installer.RecipeResolver
-		if syncLocal {
-			recipesDir, dirErr := findLocalRecipesDir(cwd)
-			if dirErr != nil {
-				return dirErr
-			}
-			resolver = localRecipeResolver(recipesDir)
-		} else {
-			reg := newRegistry()
-			resolver = reg.FetchRecipe
-		}
-
-		inst := &installer.Installer{
-			Store:    store.NewStore(storeRoot),
-			Resolver: resolver,
-		}
-
 		var installed int
 		for name := range cfg.Packages {
-			r, err := resolver(name)
-			if err != nil {
-				out.Warn(fmt.Sprintf(
-					"Skipping %s: %v", name, err))
-				continue
-			}
-
-			out.Info(fmt.Sprintf("Installing %s@%s...",
-				r.Package.Name, r.Package.Version))
-
-			result, err := inst.Install(r)
+			result, err := ctx.installPackage(name, out)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Failed to install %s: %v", name, err))
@@ -123,9 +65,8 @@ var syncCmd = &cobra.Command{
 			}
 		}
 
-		// Rebuild generation from gale.toml.
-		if err := rebuildGeneration(galeDir, storeRoot,
-			galePath); err != nil {
+		if err := rebuildGeneration(ctx.GaleDir,
+			ctx.StoreRoot, ctx.GalePath); err != nil {
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 

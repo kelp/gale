@@ -5,29 +5,39 @@ import (
 	"os"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
+var (
+	updateLocal  bool
+	updateSource string
+)
+
 var updateCmd = &cobra.Command{
-	Use:   "update",
-	Short: "Update all packages to the latest version",
-	Args:  cobra.NoArgs,
+	Use:   "update [package...]",
+	Short: "Update packages to the latest version",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting working dir: %w", err)
+		// --source requires exactly one package name.
+		if updateSource != "" && len(args) != 1 {
+			return fmt.Errorf(
+				"--source requires exactly one package name")
 		}
 
-		galePath, err := config.FindGaleConfig(cwd)
-		if err != nil {
-			return fmt.Errorf("no gale.toml found: %w", err)
+		// --source: rebuild from local source directory.
+		if updateSource != "" {
+			return installFromLocalSource(
+				args[0], "", updateSource, out)
 		}
 
-		data, err := os.ReadFile(galePath)
+		ctx, err := newCmdContext(updateLocal)
+		if err != nil {
+			return err
+		}
+
+		data, err := os.ReadFile(ctx.GalePath)
 		if err != nil {
 			return fmt.Errorf("reading config: %w", err)
 		}
@@ -37,25 +47,89 @@ var updateCmd = &cobra.Command{
 			return fmt.Errorf("parsing config: %w", err)
 		}
 
-		// For now, pin "latest" to "latest" — real resolution
-		// will come when we have recipe repository support.
-		lf := &lockfile.LockFile{
-			Packages: make(map[string]string),
-		}
-		for name, version := range cfg.Packages {
-			lf.Packages[name] = version
+		// Determine which packages to update.
+		targets := cfg.Packages
+		if len(args) > 0 {
+			targets = make(map[string]string)
+			for _, name := range args {
+				ver, ok := cfg.Packages[name]
+				if !ok {
+					out.Warn(fmt.Sprintf(
+						"%s not in gale.toml, skipping", name))
+					continue
+				}
+				targets[name] = ver
+			}
 		}
 
-		lockPath := galePath[:len(galePath)-len("gale.toml")] + "gale.lock"
-		if err := lockfile.Write(lockPath, lf); err != nil {
-			return fmt.Errorf("writing lock file: %w", err)
+		if len(targets) == 0 {
+			out.Info("No packages to update.")
+			return nil
 		}
 
-		out.Success(fmt.Sprintf("Updated %s", lockPath))
+		var updated int
+		for name, currentVer := range targets {
+			r, err := ctx.Resolver(name)
+			if err != nil {
+				out.Warn(fmt.Sprintf(
+					"Skipping %s: %v", name, err))
+				continue
+			}
+
+			if r.Package.Version == currentVer {
+				out.Info(fmt.Sprintf(
+					"%s@%s is up to date", name, currentVer))
+				continue
+			}
+
+			out.Info(fmt.Sprintf("Updating %s %s → %s...",
+				name, currentVer, r.Package.Version))
+
+			result, err := ctx.installPackage(name, out)
+			if err != nil {
+				out.Warn(fmt.Sprintf(
+					"Failed to update %s: %v", name, err))
+				continue
+			}
+
+			// Update version in gale.toml.
+			if err := config.AddPackage(ctx.GalePath,
+				name, r.Package.Version); err != nil {
+				return fmt.Errorf("updating config: %w", err)
+			}
+
+			switch result.Method {
+			case "binary":
+				out.Success(fmt.Sprintf(
+					"Updated %s@%s from binary",
+					name, r.Package.Version))
+			case "source":
+				out.Success(fmt.Sprintf(
+					"Updated %s@%s (built from source)",
+					name, r.Package.Version))
+			}
+			updated++
+		}
+
+		if err := rebuildGeneration(ctx.GaleDir,
+			ctx.StoreRoot, ctx.GalePath); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
+		}
+
+		if updated == 0 {
+			out.Success("Everything is up to date.")
+		} else {
+			out.Success(fmt.Sprintf(
+				"Updated %d package(s)", updated))
+		}
 		return nil
 	},
 }
 
 func init() {
+	updateCmd.Flags().BoolVar(&updateLocal, "local", false,
+		"Resolve recipes from sibling gale-recipes directory")
+	updateCmd.Flags().StringVar(&updateSource, "source", "",
+		"Rebuild from a local source directory")
 	rootCmd.AddCommand(updateCmd)
 }

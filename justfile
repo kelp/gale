@@ -3,7 +3,7 @@ default: test lint
 
 # Build the binary
 build:
-    go build -o gale ./cmd/gale/
+    go build -ldflags "-X main.version=$(git rev-parse --short HEAD)" -o gale ./cmd/gale/
 
 # Run all tests
 test:
@@ -29,6 +29,10 @@ fmt-check:
 # Fix formatting
 fmt:
     gofumpt -w .
+
+# Show test coverage per package
+cover:
+    go test -cover ./...
 
 # Run tests with race detector
 test-race:

@@ -8,9 +8,16 @@
   source directory. Version detected from
   `git rev-parse --short HEAD`. Auto-finds recipe in
   sibling `gale-recipes/` directory.
-- `--local` flag on `gale sync` resolves all recipes
-  from a sibling `gale-recipes/` directory instead of
-  the remote registry.
+- `--local` flag on `gale sync` and `gale update`
+  resolves recipes from a sibling `gale-recipes/`
+  directory instead of the remote registry.
+- `gale update [package...]` checks for newer recipe
+  versions and installs them. Supports `--source` for
+  local source rebuilds.
+- `gale --version` prints the version. Injected from
+  `git rev-parse --short HEAD` via ldflags at build
+  time; defaults to `dev`.
+- `just cover` target shows per-package test coverage.
 - `build.BuildLocal()` builds a recipe from a local
   source directory, skipping download and verification.
 - `recipe.ParseLocal()` parses recipes without requiring
