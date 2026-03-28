@@ -49,8 +49,8 @@ install:
 bootstrap: build
     ./gale install --source . gale
 
-# Tag a release (runs checks first)
-tag version: check
+# Tag a release (formats, runs checks first)
+tag version: fmt check
     #!/usr/bin/env bash
     set -euo pipefail
     if git tag --list | grep -q "^v{{version}}$"; then

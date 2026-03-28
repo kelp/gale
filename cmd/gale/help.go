@@ -10,9 +10,9 @@ import (
 )
 
 var (
-	bold    = color.New(color.Bold)
-	cyan    = color.New(color.FgCyan)
-	yellow  = color.New(color.Bold, color.FgYellow)
+	bold   = color.New(color.Bold)
+	cyan   = color.New(color.FgCyan)
+	yellow = color.New(color.Bold, color.FgYellow)
 )
 
 func colorHelp(cmd *cobra.Command, args []string) {
