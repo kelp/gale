@@ -14,12 +14,17 @@ and per-project environments.
 
 ```
 just              # test + lint (default)
-just build        # build binary
+just build        # build binary (ldflags version)
 just test         # all tests
 just test-pkg foo # single package tests
 just check        # test + lint + format check
+just cover        # test coverage per package
 just fmt          # fix formatting with gofumpt
 just lint         # golangci-lint + go vet
+just bootstrap    # first-time: go build + self-install
+just install      # rebuild gale from current source
+just tag 0.2.0    # run checks, update CHANGELOG, tag
+just release 0.2.0 # push tag, create GitHub release
 ```
 
 ## Project Layout
@@ -42,6 +47,8 @@ internal/repo/         recipe repository management
 internal/trust/        ed25519 signing and verification
 internal/ai/           Anthropic SDK integration
 internal/homebrew/     Homebrew formula file parser
+internal/lint/         recipe TOML validation
+internal/gitutil/      git clone, ls-remote, URL expansion
 ```
 
 ## Key Concepts
@@ -70,16 +77,32 @@ gale install <pkg>[@ver]  Install package (binary or source)
 gale remove <pkg>         Remove package from store + config
 gale add <pkg> [pkg...]   Add to gale.toml without installing
 gale sync                 Install all packages in gale.toml
+gale update [pkg...]      Update packages to latest version
+gale list                 List packages in gale.toml
+gale gc                   Remove unused versions from store
+gale doctor               Diagnose setup issues
 gale env                  Print export PATH for current scope
 gale init                 Bootstrap project (gale.toml, .envrc)
 gale hook direnv          Print use_gale function for direnvrc
 gale build <recipe.toml>  Build recipe from source
+gale lint <recipe.toml>   Validate recipe files
 gale search <query>       Search for packages
-gale list                 List packages in gale.toml
 gale shell                Open shell with project environment
 gale run <cmd>            Run command in project environment
 gale import homebrew <n>  Import Homebrew formula as recipe
 ```
+
+### Key Flags
+
+- `--local` (sync, update, build): resolve recipes
+  from sibling `../gale-recipes/` directory
+- `--source <dir>` (install, update): build from a
+  local source directory, version from git hash
+- `--git` (install, update, build): clone repo and
+  build from HEAD instead of downloading tarball
+- `--recipe <file>` (install): use a local recipe file
+- `--no-color` (global): disable colored output
+- `--dry-run` (gc): preview without removing
 
 ## Two-Repo Architecture
 
@@ -108,6 +131,56 @@ global share the same generation model.
   not a substitute. See `docs/design.md`.
 - Prebuilt binaries only for compiler bootstraps.
 - Declarative over imperative (gale.toml → generation).
+
+## Code Reuse
+
+New commands MUST reuse existing helpers. Do not
+duplicate logic — call through to shared functions.
+
+**`cmd/gale/context.go`** — shared setup for commands
+that operate on gale.toml:
+- `newCmdContext(local bool)` resolves config path,
+  gale dir, store, resolver, and installer
+- `installPackage(name, out)` resolves + installs one
+  package via the context's resolver
+- Used by: sync, update
+
+**`cmd/gale/install.go`** — shared helpers used across
+multiple commands:
+- `localRecipeResolver(recipesDir)` — resolver that
+  reads from a local recipes directory. Used by
+  install, sync, update, build.
+- `findLocalRecipesDir(dir)` — finds sibling
+  `../gale-recipes/recipes/`. Used by sync, update,
+  build.
+- `rebuildGeneration(galeDir, storeRoot, configPath)`
+  — reads gale.toml and rebuilds generation. Used by
+  install, sync, update, gc.
+- `newRegistry()` — creates registry with optional
+  config.toml URL override.
+
+**`cmd/gale/repo.go`** — `galeConfigDir()` returns
+`~/.gale/`. Used everywhere.
+
+**`cmd/gale/shell.go`** — `defaultStoreRoot()` returns
+`~/.gale/pkg/`. Used everywhere.
+
+**`internal/installer/`** — the Installer struct:
+- `Install(r)` — binary-first, source fallback
+- `InstallLocal(r, sourceDir)` — build from local dir
+- `InstallGit(r)` — clone and build from git
+- `InstallBuildDeps(r)` — install build deps, return
+  bin dirs. Exported for `gale build` to reuse.
+
+**`internal/build/`** — three build paths:
+- `Build(r, outputDir)` — download tarball + build
+- `BuildLocal(r, sourceDir, outputDir)` — local dir
+- `BuildGit(r, outputDir)` — clone + BuildLocal
+
+When adding a new command that installs packages, use
+`newCmdContext` + `installPackage`. When adding a new
+build mode, delegate to `BuildLocal` after obtaining
+the source directory.
 
 ## Conventions
 
