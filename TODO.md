@@ -259,9 +259,8 @@ keeps recipes current with upstream releases.
   CombinedOutput to streaming stdout/stderr. Long
   builds no longer crash from memory pressure.
 
-- [ ] **Build directory location** — builds currently
-  use system TMPDIR. Move to a gale-specific scratch
-  dir in the user's homedir, clean up after build.
+- [x] **Build directory location** — builds use
+  `~/.gale/tmp/` instead of system TMPDIR.
 
 ## Recipes: Shared Library Support
 

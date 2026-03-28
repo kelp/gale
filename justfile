@@ -74,10 +74,16 @@ release version:
       echo "Tag v{{version}} does not exist — run 'just tag {{version}}' first"
       exit 1
     fi
+    # Extract release notes from CHANGELOG.md for this version.
+    NOTES=$(awk '/^## v{{version}} /{found=1; next} /^## v/{if(found) exit} found' CHANGELOG.md)
+    if [ -z "$NOTES" ]; then
+      echo "No CHANGELOG section found for v{{version}}"
+      exit 1
+    fi
     git push origin main "v{{version}}"
     gh release create "v{{version}}" \
       --title "v{{version}}" \
-      --notes-file RELEASENOTES.md
+      --notes "$NOTES"
     echo "Published https://github.com/kelp/gale/releases/tag/v{{version}}"
 
 # Clean build artifacts

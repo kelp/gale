@@ -229,8 +229,22 @@ func (inst *Installer) installBuildDeps(r *recipe.Recipe) ([]string, error) {
 	return binDirs, nil
 }
 
+// galeTmpDir returns ~/.gale/tmp/ for build scratch space.
+// Falls back to system temp if unavailable.
+func galeTmpDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(home, ".gale", "tmp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	return dir
+}
+
 func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, extraPaths []string) error {
-	tmpDir, err := os.MkdirTemp("", "gale-install-*")
+	tmpDir, err := os.MkdirTemp(galeTmpDir(), "gale-install-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
@@ -250,7 +264,7 @@ func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, extraP
 
 func installFromSource(r *recipe.Recipe, storeDir string, extraPaths []string) error {
 	// Build to a temp directory.
-	tmpDir, err := os.MkdirTemp("", "gale-install-*")
+	tmpDir, err := os.MkdirTemp(galeTmpDir(), "gale-install-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

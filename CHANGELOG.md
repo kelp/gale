@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.3-dev
+
+### Changed
+
+- Release notes auto-extracted from CHANGELOG.md.
+  Removed manual RELEASENOTES.md.
+- Build scratch space moved from system TMPDIR to
+  `~/.gale/tmp/`. Keeps build artifacts in user space.
+
 ## v0.1.2 — 2026-03-27
 
 ### Added

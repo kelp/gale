@@ -40,7 +40,7 @@ type BuildResult struct {
 // outputDir is where the tar.zst will be written. Optional
 // extraPaths are prepended to the build environment PATH.
 func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResult, error) {
-	workspace, err := os.MkdirTemp("", "gale-build-*")
+	workspace, err := os.MkdirTemp(galeTmpDir(), "gale-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
@@ -144,7 +144,7 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 // build root directly. Optional extraPaths are prepended to
 // the build environment PATH.
 func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, extraPaths ...string) (*BuildResult, error) {
-	workspace, err := os.MkdirTemp("", "gale-build-*")
+	workspace, err := os.MkdirTemp(galeTmpDir(), "gale-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
@@ -238,7 +238,7 @@ func runStep(step, sourceRoot, prefixDir, jobs string, extraPaths []string) erro
 // compilers work, without pulling in the full nix coreutils.
 func buildEnv(prefixDir, jobs string, extraPaths []string) []string {
 	home := os.Getenv("HOME")
-	toolsDir, err := os.MkdirTemp("", "gale-tools-*")
+	toolsDir, err := os.MkdirTemp(galeTmpDir(), "gale-tools-*")
 	if err != nil {
 		toolsDir = filepath.Join(os.TempDir(), "gale-tools")
 		_ = os.MkdirAll(toolsDir, 0o755)
@@ -356,6 +356,20 @@ func computeSHA256(path string) (string, error) {
 	}
 
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// galeTmpDir returns the path to ~/.gale/tmp/, creating it
+// if needed. Falls back to system temp if unavailable.
+func galeTmpDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Join(home, ".gale", "tmp")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return ""
+	}
+	return dir
 }
 
 // sourceCache returns the path to ~/.gale/cache/, creating
