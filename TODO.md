@@ -140,6 +140,16 @@ streaming. Our code provides focused prompts and tools.
 - [x] **CLAUDE.md rewrite** — updated project layout,
   key concepts, gotchas, pointer to design doc.
 
+## Refactors
+
+- [ ] **Update `gale shell` and `gale run`** — these
+  still use `env.BuildPATH` which concatenates store
+  paths directly onto PATH. Should use the generation
+  model instead: sync the project, then set PATH to
+  `.gale/current/bin`. Also remove unused functions
+  from `internal/env/` (BuildPATH, MergePackages,
+  BuildEnvironment, DetectConfig).
+
 ## CLI Polish
 
 - [ ] **Colored help output** — Syntax-highlighted flags
