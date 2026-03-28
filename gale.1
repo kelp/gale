@@ -10,86 +10,60 @@
 .Op Ar args ...
 .Sh DESCRIPTION
 .Nm
-installs CLI tools and runtimes into versioned,
-isolated directories.
-Each version occupies its own path in the store.
-Nothing conflicts.
-.Pp
-Projects declare dependencies in
-.Pa gale.toml ,
-pinning exact versions.
-.Cm sync
-installs those versions.
-.Cm update
-bumps them.
-A lockfile
-.Pq Pa gale.lock
-records SHA256 hashes for verification.
-.Pp
-Prebuilt binaries are pulled from GHCR when available.
-Otherwise packages build from source.
-Per-project environments activate on
-.Xr cd 1
-via
-.Xr direnv 1 .
+installs packages into versioned, isolated directories.
+Each version has its own store path.
+Projects pin dependencies in
+.Pa gale.toml ;
+a lockfile records SHA256 hashes.
+Prebuilt binaries are preferred; source builds are
+the fallback.
 .Sh COMMANDS
 .Ss Package Management
-.Bl -tag -width "create-recipe" -compact
+.Bl -tag -width Ds
 .It Cm install Ar pkg Ns Op @ Ns Ar ver
 Install a package.
-Fetches the latest version, or a specific version
-with
-.Ar @ver .
 .It Cm remove Ar pkg
-Remove a package from the store and config.
+Remove a package.
 .It Cm add Ar pkg Ns Op @ Ns Ar ver ...
-Add packages to
+Add to
 .Pa gale.toml
 without installing.
 .It Cm sync
-Install all packages at the versions pinned in
-.Pa gale.toml .
-Verifies SHA256 against
-.Pa gale.lock .
+Install packages at pinned versions.
 .It Cm update Op Ar pkg Ns Op @ Ns Ar ver ...
-Update packages to the latest version, or to a
-specific version with
-.Ar @ver .
-Without arguments, updates all packages.
+Update to latest or specified version.
 .It Cm list
 List packages in
 .Pa gale.toml .
 .It Cm gc
-Remove unused package versions from the store.
+Remove unused versions from the store.
 .El
 .Ss Inspection
-.Bl -tag -width "create-recipe" -compact
+.Bl -tag -width Ds
 .It Cm which Ar binary
-Show which package provides a binary and its
-store path.
+Show which package provides a binary.
 .It Cm outdated
-Show packages with newer versions available.
+Show packages with newer versions.
 .It Cm diff
 Show what
 .Cm sync
 would change.
 .It Cm doctor
-Check the installation for problems.
+Check for problems.
 .It Cm search Ar query
-Search for packages by name or description.
+Search by name or description.
 .El
 .Ss Project Environment
-.Bl -tag -width "create-recipe" -compact
+.Bl -tag -width Ds
 .It Cm env
 Print
 .Ev PATH
-export for the current scope.
+export.
 .It Cm init
 Create
 .Pa gale.toml
 and
-.Pa .envrc
-for a project.
+.Pa .envrc .
 .It Cm shell
 Open a shell with the project environment.
 .It Cm run Ar cmd
@@ -97,105 +71,120 @@ Run a command in the project environment.
 .It Cm hook direnv
 Print
 .Fn use_gale
-function for direnvrc.
+for direnvrc.
 .El
 .Ss Recipe Development
-.Bl -tag -width "create-recipe" -compact
+.Bl -tag -width Ds
 .It Cm build Ar recipe.toml
-Build a recipe from source.
+Build from source.
 .It Cm lint Ar recipe.toml ...
 Validate recipe files.
 .It Cm import homebrew Ar name
-Import a Homebrew formula as a recipe.
+Import a Homebrew formula.
 .El
 .Sh FLAGS
-.Bl -tag -width "--no-color" -compact
+.Bl -tag -width Ds
 .It Fl -local
-Resolve recipes from a sibling
-.Pa gale-recipes
-directory.
-Available on
-.Cm install , sync , update , build , add .
+Resolve recipes from sibling
+.Pa gale-recipes .
 .It Fl -source Ar dir
 Build from a local source directory.
-Version detected from
-.Xr git-describe 1 ,
-formatted as semver.
 .It Fl -git
-Clone and build from the git repository HEAD.
+Build from git HEAD.
 .It Fl -recipe Ar file
-Use a specific recipe TOML file.
+Use a specific recipe file.
 .It Fl g , -global
-Write to the global config.
+Write to global config.
 .It Fl p , -project
-Write to the project config.
+Write to project config.
 .It Fl -no-color
 Disable colored output.
-Respects
-.Ev NO_COLOR .
 .El
 .Sh BUILD ENVIRONMENT
-Build steps run in a clean shell.
-These variables are set:
-.Bl -tag -width "DYLD_FALLBACK_LIBRARY_PATH"
+Build steps run in a clean shell with these variables:
+.Pp
+.Bl -tag -width "DYLD_FALLBACK_LIBRARY_PATH" -compact
 .It Ev PREFIX
-Install destination directory.
+Install destination.
 .It Ev VERSION
-The recipe's package version.
+Package version from the recipe.
 .It Ev JOBS
-CPU count for parallel make.
+CPU count.
 .It Ev OS
-Operating system
-.Pq e.g., Dq darwin , Dq linux .
+Operating system.
 .It Ev ARCH
-Architecture
-.Pq e.g., Dq arm64 , Dq amd64 .
+Architecture.
 .It Ev PLATFORM
-OS and architecture joined
-.Pq e.g., Dq darwin-arm64 .
+.Ev OS Ns - Ns Ev ARCH .
 .It Ev LIBRARY_PATH
-Library directories from build dependencies.
+Library directories from dependencies.
 .It Ev C_INCLUDE_PATH
-Header directories from build dependencies.
+Header directories from dependencies.
 .It Ev PKG_CONFIG_PATH
-Pkg-config directories from build dependencies.
+Pkg-config directories from dependencies.
 .It Ev LD_LIBRARY_PATH
-Dynamic linker path (Linux only).
+Dynamic linker path (Linux).
 .It Ev DYLD_FALLBACK_LIBRARY_PATH
-Dynamic linker fallback path (macOS only).
+Dynamic linker fallback path (macOS).
 .El
+.Sh EXAMPLES
+Install a package:
+.Bd -literal -offset indent
+$ gale install jq
+.Ed
+.Pp
+Pin a specific version:
+.Bd -literal -offset indent
+$ gale install jq@1.7.1
+.Ed
+.Pp
+Set up a project:
+.Bd -literal -offset indent
+$ gale init
+$ echo 'go = "1.26.1"' >> gale.toml
+$ gale sync
+.Ed
+.Pp
+Check what needs updating:
+.Bd -literal -offset indent
+$ gale outdated
+jq 1.7.1 \(-> 1.8.1
+.Ed
+.Pp
+Build a recipe from source:
+.Bd -literal -offset indent
+$ gale build recipes/j/jq.toml
+.Ed
+.Pp
+Find which package provides a binary:
+.Bd -literal -offset indent
+$ gale which jq
+jq@1.8.1
+/Users/you/.gale/pkg/jq/1.8.1/bin/jq
+.Ed
 .Sh ENVIRONMENT
-.Bl -tag -width "NO_COLOR"
-.It Ev PATH
-Add
-.Pa ~/.gale/current/bin
-for globally installed packages.
+.Bl -tag -width Ds
 .It Ev NO_COLOR
 Disables colored output when set.
 .El
 .Sh FILES
-.Bl -tag -width "~/.gale/gale.toml"
+.Bl -tag -width "~/.gale/config.toml" -compact
 .It Pa ~/.gale/gale.toml
 Global package declarations.
 .It Pa ~/.gale/config.toml
 Application settings.
 .It Pa ~/.gale/pkg/
 Package store.
-One directory per package per version.
 .It Pa ~/.gale/current/
-Symlink to the active generation.
+Active generation symlink.
 .It Pa gale.toml
 Project package declarations.
 .It Pa gale.lock
-Lockfile with version and SHA256 per package.
-.It Pa .envrc
-Direnv integration, created by
-.Cm init .
+Lockfile.
 .El
 .Sh EXIT STATUS
 .Ex -std
 .Sh SEE ALSO
-.Xr direnv 1 ,
-.Xr git-describe 1
+.Xr direnv 1
 .Sh AUTHORS
 .An Travis Cole Aq Mt kelp@plek.org
