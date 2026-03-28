@@ -14,6 +14,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/klauspost/compress/zstd"
@@ -444,4 +445,497 @@ func createTestTarZstd(t *testing.T, name, content string) string {
 	tw.Write([]byte(content))
 
 	return path
+}
+
+// --- Install cached ---
+
+func TestInstallCachedReturnsWithoutDownload(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	// Pre-install the package.
+	dir, err := s.Create("mypkg", "3.0")
+	if err != nil {
+		t.Fatalf("create store dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatalf("create bin: %v", err)
+	}
+
+	inst := &Installer{Store: s}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "mypkg", Version: "3.0"},
+		Source:  recipe.Source{URL: "http://should-not-be-called", SHA256: "bad"},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != "cached" {
+		t.Errorf("Method = %q, want %q", result.Method, "cached")
+	}
+	if result.Name != "mypkg" {
+		t.Errorf("Name = %q, want %q", result.Name, "mypkg")
+	}
+	if result.Version != "3.0" {
+		t.Errorf("Version = %q, want %q", result.Version, "3.0")
+	}
+}
+
+// --- Install binary (non-GHCR) via httptest ---
+
+func TestInstallBinaryNonGHCR(t *testing.T) {
+	// Create a tar.zst with bin/tool.
+	binContent := "#!/bin/sh\necho direct-binary"
+	tarzst := createTestTarZstd(t, "bin/tool", binContent)
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+	}
+
+	// Plain HTTP URL (not /v2/.../blobs/) triggers
+	// non-GHCR download path.
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "tool", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    srv.URL + "/tool-1.0.tar.zst",
+				SHA256: hash,
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != "binary" {
+		t.Errorf("Method = %q, want %q", result.Method, "binary")
+	}
+	if result.SHA256 != hash {
+		t.Errorf("SHA256 = %q, want %q", result.SHA256, hash)
+	}
+
+	// Verify file extracted to store.
+	storeBin := filepath.Join(storeRoot,
+		"tool", "1.0", "bin", "tool")
+	got, err := os.ReadFile(storeBin)
+	if err != nil {
+		t.Fatalf("read store binary: %v", err)
+	}
+	if string(got) != binContent {
+		t.Errorf("binary content = %q, want %q",
+			string(got), binContent)
+	}
+}
+
+// --- Install binary SHA256 mismatch falls back to source ---
+
+func TestInstallBinaryBadHashFallsBackToSource(t *testing.T) {
+	// Create a tar.zst to serve as the "binary" download.
+	tarzst := createTestTarZstd(t, "bin/pkg", "binary")
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	// Create source tar.gz for the fallback build.
+	srcTar := createTestSourceTarGz(t)
+	srcHash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/binary.tar.zst":
+				w.Write(blobData)
+			case "/source.tar.gz":
+				http.ServeFile(w, r, srcTar)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "pkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: srcHash,
+		},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    srv.URL + "/binary.tar.zst",
+				SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+			},
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh' > $PREFIX/bin/pkg",
+				"chmod +x $PREFIX/bin/pkg",
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != "source" {
+		t.Errorf("Method = %q, want %q", result.Method, "source")
+	}
+}
+
+// --- InstallLocal cached ---
+
+func TestInstallLocalCachedReturnsEarly(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	dir, err := s.Create("localpkg", "1.0")
+	if err != nil {
+		t.Fatalf("create store dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatalf("create bin: %v", err)
+	}
+
+	inst := &Installer{Store: s}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "localpkg", Version: "1.0"},
+	}
+
+	result, err := inst.InstallLocal(r, "/nonexistent/should/not/be/used")
+	if err != nil {
+		t.Fatalf("InstallLocal: %v", err)
+	}
+	if result.Method != "cached" {
+		t.Errorf("Method = %q, want %q", result.Method, "cached")
+	}
+	if result.Name != "localpkg" {
+		t.Errorf("Name = %q, want %q", result.Name, "localpkg")
+	}
+	if result.Version != "1.0" {
+		t.Errorf("Version = %q, want %q", result.Version, "1.0")
+	}
+}
+
+// --- InstallLocal builds from directory ---
+
+func TestInstallLocalBuildsFromSource(t *testing.T) {
+	// Create a local source directory with a placeholder file.
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(sourceDir, "README"),
+		[]byte("local source"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name: "localbuild", Version: "0.1",
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho local' > $PREFIX/bin/localbuild",
+				"chmod +x $PREFIX/bin/localbuild",
+			},
+		},
+	}
+
+	result, err := inst.InstallLocal(r, sourceDir)
+	if err != nil {
+		t.Fatalf("InstallLocal: %v", err)
+	}
+	if result.Method != "source" {
+		t.Errorf("Method = %q, want %q", result.Method, "source")
+	}
+	if result.SHA256 == "" {
+		t.Error("SHA256 should be populated after build")
+	}
+
+	// Verify binary extracted to store.
+	storeBin := filepath.Join(storeRoot,
+		"localbuild", "0.1", "bin", "localbuild")
+	if _, err := os.Stat(storeBin); err != nil {
+		t.Errorf("binary not in store: %v", err)
+	}
+}
+
+// --- Install SHA256 populated ---
+
+func TestInstallResultSHA256Populated(t *testing.T) {
+	binContent := "#!/bin/sh\necho sha-test"
+	tarzst := createTestTarZstd(t, "bin/sha", binContent)
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "sha", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    srv.URL + "/sha.tar.zst",
+				SHA256: hash,
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.SHA256 != hash {
+		t.Errorf("SHA256 = %q, want %q", result.SHA256, hash)
+	}
+}
+
+// --- depsToBuildDeps ---
+
+func TestDepsToBuildDepsNil(t *testing.T) {
+	got := depsToBuildDeps(nil)
+	if got != nil {
+		t.Errorf("depsToBuildDeps(nil) = %v, want nil", got)
+	}
+}
+
+func TestDepsToBuildDepsPopulated(t *testing.T) {
+	deps := &DepPaths{
+		BinDirs:   []string{"/store/a/1.0/bin", "/store/b/2.0/bin"},
+		StoreDirs: []string{"/store/a/1.0", "/store/b/2.0"},
+	}
+	got := depsToBuildDeps(deps)
+	if got == nil {
+		t.Fatal("depsToBuildDeps returned nil for non-nil input")
+	}
+	if len(got.BinDirs) != 2 {
+		t.Errorf("BinDirs len = %d, want 2", len(got.BinDirs))
+	}
+	if got.BinDirs[0] != "/store/a/1.0/bin" {
+		t.Errorf("BinDirs[0] = %q, want %q",
+			got.BinDirs[0], "/store/a/1.0/bin")
+	}
+	if len(got.StoreDirs) != 2 {
+		t.Errorf("StoreDirs len = %d, want 2",
+			len(got.StoreDirs))
+	}
+	if got.StoreDirs[1] != "/store/b/2.0" {
+		t.Errorf("StoreDirs[1] = %q, want %q",
+			got.StoreDirs[1], "/store/b/2.0")
+	}
+}
+
+// --- extractBuild ---
+
+func TestExtractBuildExtractsArchive(t *testing.T) {
+	// Create a tar.zst with known content.
+	tarzst := createTestTarZstd(t, "bin/hello", "world")
+	hash := hashFile(t, tarzst)
+
+	storeDir := t.TempDir()
+	result := &build.BuildResult{
+		Archive: tarzst,
+		SHA256:  hash,
+	}
+
+	if err := extractBuild(result, storeDir); err != nil {
+		t.Fatalf("extractBuild: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(storeDir, "bin", "hello"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(got) != "world" {
+		t.Errorf("content = %q, want %q", string(got), "world")
+	}
+}
+
+func TestExtractBuildBadArchiveReturnsError(t *testing.T) {
+	storeDir := t.TempDir()
+	result := &build.BuildResult{
+		Archive: "/nonexistent/archive.tar.zst",
+		SHA256:  "abc",
+	}
+
+	err := extractBuild(result, storeDir)
+	if err == nil {
+		t.Fatal("expected error for nonexistent archive")
+	}
+	if !strings.Contains(err.Error(), "extract build output") {
+		t.Errorf("error = %q, want to contain %q",
+			err.Error(), "extract build output")
+	}
+}
+
+// --- isGHCR ---
+
+func TestIsGHCR(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{
+			name: "ghcr.io host",
+			url:  "https://ghcr.io/v2/kelp/gale-recipes/jq/blobs/sha256:abc",
+			want: true,
+		},
+		{
+			name: "OCI blob pattern on other host",
+			url:  "http://localhost:8080/v2/owner/repo/blobs/sha256:abc",
+			want: true,
+		},
+		{
+			name: "plain HTTP URL",
+			url:  "https://example.com/releases/tool-1.0.tar.zst",
+			want: false,
+		},
+		{
+			name: "invalid URL",
+			url:  "://bad",
+			want: false,
+		},
+		{
+			name: "v2 path without blobs",
+			url:  "http://localhost/v2/owner/repo/manifests/latest",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isGHCR(tt.url)
+			if got != tt.want {
+				t.Errorf("isGHCR(%q) = %v, want %v",
+					tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- repoFromURL ---
+
+func TestRepoFromURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "standard GHCR blob URL",
+			url:  "https://ghcr.io/v2/kelp/gale-recipes/jq/blobs/sha256:abc123",
+			want: "kelp/gale-recipes/jq",
+		},
+		{
+			name: "test server URL",
+			url:  "http://localhost:8080/v2/owner/repo/blobs/sha256:def456",
+			want: "owner/repo",
+		},
+		{
+			name: "invalid URL",
+			url:  "://bad",
+			want: "",
+		},
+		{
+			name: "no blobs segment",
+			url:  "https://ghcr.io/v2/kelp/repo/manifests/latest",
+			want: "kelp/repo/manifests/latest",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := repoFromURL(tt.url)
+			if got != tt.want {
+				t.Errorf("repoFromURL(%q) = %q, want %q",
+					tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- Install with no binary section builds from source ---
+
+func TestInstallNoBinarySectionBuildsSource(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	srcHash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "srconly", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: srcHash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh' > $PREFIX/bin/srconly",
+				"chmod +x $PREFIX/bin/srconly",
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != "source" {
+		t.Errorf("Method = %q, want %q", result.Method, "source")
+	}
+	if result.SHA256 == "" {
+		t.Error("SHA256 should be populated after source build")
+	}
 }

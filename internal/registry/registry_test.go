@@ -473,3 +473,376 @@ func TestGhcrBaseFromNonGitHubURL(t *testing.T) {
 			got, defaultGHCRBase)
 	}
 }
+
+// --- Behavior 13: Search happy path ---
+
+func TestSearchHappyPath(t *testing.T) {
+	index := "jq\tLightweight and flexible command-line JSON processor\n" +
+		"yq\tProcess YAML, JSON, XML, CSV and properties\n" +
+		"ripgrep\tRecursively search directories for a regex\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/index.tsv" {
+				http.NotFound(w, r)
+				return
+			}
+			fmt.Fprint(w, index)
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	results, err := reg.Search("json")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected at least one result")
+	}
+
+	// jq's description contains "JSON" so it should match.
+	found := false
+	for _, r := range results {
+		if r.Name == "jq" {
+			found = true
+			if r.Score <= 0 {
+				t.Errorf("jq score = %d, want > 0", r.Score)
+			}
+		}
+	}
+	if !found {
+		t.Error("expected jq in search results")
+	}
+
+	// yq also mentions JSON in its description.
+	foundYQ := false
+	for _, r := range results {
+		if r.Name == "yq" {
+			foundYQ = true
+		}
+	}
+	if !foundYQ {
+		t.Error("expected yq in search results")
+	}
+
+	// ripgrep should NOT match "json".
+	for _, r := range results {
+		if r.Name == "ripgrep" {
+			t.Errorf("ripgrep should not match 'json', score=%d",
+				r.Score)
+		}
+	}
+}
+
+// --- Behavior 14: Search returns empty for no match ---
+
+func TestSearchNoResults(t *testing.T) {
+	index := "jq\tJSON processor\n" +
+		"ripgrep\tSearch directories\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, index)
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	results, err := reg.Search("zzzznotexist")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) != 0 {
+		t.Errorf("expected 0 results, got %d", len(results))
+	}
+}
+
+// --- Behavior 15: Search errors on HTTP failure ---
+
+func TestSearchHTTPError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "server error",
+				http.StatusInternalServerError)
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	_, err := reg.Search("anything")
+	if err == nil {
+		t.Fatal("expected error for HTTP 500")
+	}
+}
+
+// --- Behavior 16: Search connection failure ---
+
+func TestSearchConnectionFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {}))
+	addr := srv.URL
+	srv.Close()
+
+	reg := &Registry{BaseURL: addr}
+	_, err := reg.Search("anything")
+	if err == nil {
+		t.Fatal("expected error for connection failure")
+	}
+}
+
+// --- Behavior 17: FetchRecipeVersion with malformed .versions ---
+
+func TestFetchRecipeVersionBadIndex(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			// Return malformed data: three fields per line.
+			fmt.Fprint(w, "1.0.0 abc123 extra-field\n")
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
+	if err == nil {
+		t.Fatal("expected error for malformed version index")
+	}
+}
+
+// --- Behavior 18: FetchRecipeVersion recipe fetch 404 ---
+
+func TestFetchRecipeVersionRecipeFetchFails(t *testing.T) {
+	const commit = "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.7.1 " + commit + "\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.versions":
+				fmt.Fprint(w, versionsBody)
+			default:
+				// The recipe at the commit URL is not found.
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	if err == nil {
+		t.Fatal("expected error when recipe at commit returns 404")
+	}
+}
+
+// --- Behavior 19: FetchRecipeVersion index 404 ---
+
+func TestFetchRecipeVersionIndex404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
+	if err == nil {
+		t.Fatal("expected error when .versions returns 404")
+	}
+}
+
+// --- Behavior 20: Stale .binaries.toml version skips merge ---
+
+func TestFetchRecipeBinariesStaleVersion(t *testing.T) {
+	// Recipe is version 1.8.1; binaries.toml says 1.7.0.
+	// MergeBinaries should skip because versions differ.
+	const staleBinaries = `version = "1.7.0"
+
+[darwin-arm64]
+sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
+`
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.toml":
+				fmt.Fprint(w, recipeNoBinaries) // version 1.8.1
+			case "/recipes/j/jq.binaries.toml":
+				fmt.Fprint(w, staleBinaries) // version 1.7.0
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 0 {
+		t.Errorf("Binary count = %d, want 0 (stale version "+
+			"should not merge)", len(rec.Binary))
+	}
+}
+
+// --- Behavior 21: parseIndex edge cases ---
+
+func TestParseIndex(t *testing.T) {
+	tests := []struct {
+		name    string
+		input   string
+		want    []indexEntry
+	}{
+		{
+			"normal entries",
+			"jq\tJSON processor\nripgrep\tSearch tool\n",
+			[]indexEntry{
+				{Name: "jq", Description: "JSON processor"},
+				{Name: "ripgrep", Description: "Search tool"},
+			},
+		},
+		{
+			"missing description",
+			"jq\n",
+			[]indexEntry{
+				{Name: "jq", Description: ""},
+			},
+		},
+		{
+			"empty lines skipped",
+			"jq\tJSON processor\n\n\nripgrep\tSearch\n",
+			[]indexEntry{
+				{Name: "jq", Description: "JSON processor"},
+				{Name: "ripgrep", Description: "Search"},
+			},
+		},
+		{
+			"whitespace-only lines skipped",
+			"jq\tJSON\n   \n  \t \n",
+			[]indexEntry{
+				{Name: "jq", Description: "JSON"},
+			},
+		},
+		{
+			"empty input",
+			"",
+			nil,
+		},
+		{
+			"description with tabs",
+			"jq\tJSON\tprocessor\ttool\n",
+			[]indexEntry{
+				{Name: "jq", Description: "JSON\tprocessor\ttool"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseIndex(tt.input)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d entries, want %d",
+					len(got), len(tt.want))
+			}
+			for i, g := range got {
+				if g.Name != tt.want[i].Name {
+					t.Errorf("[%d] Name = %q, want %q",
+						i, g.Name, tt.want[i].Name)
+				}
+				if g.Description != tt.want[i].Description {
+					t.Errorf("[%d] Description = %q, want %q",
+						i, g.Description, tt.want[i].Description)
+				}
+			}
+		})
+	}
+}
+
+// --- Behavior 22: FetchRecipe empty name ---
+
+func TestFetchRecipeEmptyName(t *testing.T) {
+	reg := New()
+	_, err := reg.FetchRecipe("")
+	if err == nil {
+		t.Fatal("expected error for empty name")
+	}
+}
+
+// --- Behavior 23: FetchRecipeVersion empty name ---
+
+func TestFetchRecipeVersionEmptyName(t *testing.T) {
+	reg := New()
+	_, err := reg.FetchRecipeVersion("", "1.0.0")
+	if err == nil {
+		t.Fatal("expected error for empty name")
+	}
+}
+
+// --- Behavior 24: NewWithURL empty string uses default ---
+
+func TestNewWithURLEmpty(t *testing.T) {
+	reg := NewWithURL("")
+	if reg.BaseURL != DefaultURL {
+		t.Errorf("BaseURL = %q, want %q",
+			reg.BaseURL, DefaultURL)
+	}
+}
+
+func TestNewWithURLCustom(t *testing.T) {
+	reg := NewWithURL("https://example.com/recipes")
+	if reg.BaseURL != "https://example.com/recipes" {
+		t.Errorf("BaseURL = %q, want %q",
+			reg.BaseURL, "https://example.com/recipes")
+	}
+}
+
+// --- Behavior 25: Search sorts by score descending ---
+
+func TestSearchResultsSortedByScore(t *testing.T) {
+	// "jq" should score highest for query "jq" (exact name
+	// match). "jqp" has prefix match. An entry with "jq" only
+	// in description scores lower.
+	index := "jq\tJSON processor\n" +
+		"jqp\tA TUI playground for jq\n" +
+		"yq\tYAML processor like jq\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, index)
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	results, err := reg.Search("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(results) < 2 {
+		t.Fatalf("expected at least 2 results, got %d",
+			len(results))
+	}
+	// Results should be in descending score order.
+	for i := 1; i < len(results); i++ {
+		if results[i].Score > results[i-1].Score {
+			t.Errorf("results not sorted: [%d].Score=%d > "+
+				"[%d].Score=%d",
+				i, results[i].Score, i-1, results[i-1].Score)
+		}
+	}
+	// First result should be "jq" (exact match).
+	if results[0].Name != "jq" {
+		t.Errorf("first result = %q, want %q",
+			results[0].Name, "jq")
+	}
+}
+
+// --- Behavior 26: FetchRecipeVersion connection failure ---
+
+func TestFetchRecipeVersionConnectionFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {}))
+	addr := srv.URL
+	srv.Close()
+
+	reg := &Registry{BaseURL: addr}
+	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
+	if err == nil {
+		t.Fatal("expected error for connection failure")
+	}
+}
