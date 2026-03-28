@@ -13,6 +13,8 @@ import (
 const DefaultURL = "https://raw.githubusercontent.com/" +
 	"kelp/gale-recipes/main"
 
+const defaultGHCRBase = "kelp/gale-recipes"
+
 // Registry fetches recipe TOML files from a remote HTTP
 // registry using letter-bucketed paths.
 type Registry struct {
@@ -64,6 +66,16 @@ func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 	rec, err := recipe.Parse(string(body))
 	if err != nil {
 		return nil, fmt.Errorf("fetch recipe %s: %w", name, err)
+	}
+
+	// If the recipe has no inline binary entries, try to
+	// fetch a separate .binaries.toml file.
+	if len(rec.Binary) == 0 {
+		idx, _ := r.fetchBinaries(name)
+		if idx != nil {
+			base := ghcrBaseFromURL(r.BaseURL)
+			recipe.MergeBinaries(rec, idx, base)
+		}
 	}
 
 	return rec, nil
@@ -143,6 +155,53 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	}
 
 	return rec, nil
+}
+
+// fetchBinaries fetches the .binaries.toml file for a
+// package. Returns nil (not error) if the file is not found.
+func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
+	bucket := string(name[0])
+	url := fmt.Sprintf("%s/recipes/%s/%s.binaries.toml",
+		r.BaseURL, bucket, name)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, nil //nolint:nilerr // network error is not fatal
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, nil
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf(
+			"fetch binaries %s: HTTP %d", name, resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"read binaries %s: %w", name, err)
+	}
+
+	return recipe.ParseBinaryIndex(string(body))
+}
+
+// ghcrBaseFromURL extracts the "owner/repo" from a
+// raw.githubusercontent.com URL. Falls back to the default
+// GHCR base if the URL doesn't match the expected pattern.
+func ghcrBaseFromURL(rawURL string) string {
+	const prefix = "https://raw.githubusercontent.com/"
+	if !strings.HasPrefix(rawURL, prefix) {
+		return defaultGHCRBase
+	}
+	path := strings.TrimPrefix(rawURL, prefix)
+	parts := strings.SplitN(path, "/", 3)
+	if len(parts) < 2 {
+		return defaultGHCRBase
+	}
+	return parts[0] + "/" + parts[1]
 }
 
 // parseVersionIndex parses a .versions file into a

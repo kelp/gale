@@ -186,9 +186,32 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 			}
 			return nil, fmt.Errorf("read recipe %q: %w", name, err)
 		}
-		return recipe.Parse(string(data))
+		rec, err := recipe.Parse(string(data))
+		if err != nil {
+			return nil, err
+		}
+
+		// If recipe has no inline binaries, try the
+		// separate .binaries.toml file.
+		if len(rec.Binary) == 0 {
+			binPath := filepath.Join(
+				recipesDir, letter, name+".binaries.toml")
+			binData, readErr := os.ReadFile(binPath)
+			if readErr == nil {
+				idx, parseErr := recipe.ParseBinaryIndex(
+					string(binData))
+				if parseErr == nil {
+					recipe.MergeBinaries(
+						rec, idx, localGHCRBase)
+				}
+			}
+		}
+
+		return rec, nil
 	}
 }
+
+const localGHCRBase = "kelp/gale-recipes"
 
 // findLocalRecipesDir finds a sibling gale-recipes directory
 // relative to dir. Returns the path to the recipes/ subdirectory.

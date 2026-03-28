@@ -197,6 +197,16 @@ func TestTokenIgnoresEmptyEnvVar(t *testing.T) {
 
 // --- Behavior 6: Constructs correct token URL ---
 
+// --- Behavior: BlobURL constructs correct URL ---
+
+func TestBlobURL(t *testing.T) {
+	got := BlobURL("kelp/gale-recipes", "jq", "abc123")
+	want := "https://ghcr.io/v2/kelp/gale-recipes/jq/blobs/sha256:abc123"
+	if got != want {
+		t.Errorf("BlobURL() = %q, want %q", got, want)
+	}
+}
+
 func TestTokenSendsCorrectRequest(t *testing.T) {
 	type reqInfo struct {
 		method  string

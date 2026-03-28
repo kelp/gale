@@ -37,11 +37,15 @@ func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			var mu sync.Mutex
 			var gotPath string
+			var set bool
 
 			srv := httptest.NewServer(http.HandlerFunc(
 				func(w http.ResponseWriter, r *http.Request) {
 					mu.Lock()
-					gotPath = r.URL.Path
+					if !set {
+						gotPath = r.URL.Path
+						set = true
+					}
 					mu.Unlock()
 					fmt.Fprint(w, validTOML)
 				}))
@@ -317,5 +321,155 @@ func TestFetchRecipeErrorsOnConnectionFailure(t *testing.T) {
 	_, err := reg.FetchRecipe("jq")
 	if err == nil {
 		t.Fatal("expected error for connection failure")
+	}
+}
+
+// --- Behavior 11: FetchRecipe merges .binaries.toml ---
+
+const recipeNoBinaries = `[package]
+name = "jq"
+version = "1.8.1"
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://example.com/jq-1.8.1.tar.gz"
+sha256 = "abc123"
+`
+
+const binariesToml = `version = "1.8.1"
+
+[darwin-arm64]
+sha256 = "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e"
+
+[linux-amd64]
+sha256 = "a903b0ca428c174e611ad78ee6508fefeab7a8b2eb60e55b554280679b2c07c6"
+`
+
+func TestFetchRecipeMergesBinariesToml(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.toml":
+				fmt.Fprint(w, recipeNoBinaries)
+			case "/recipes/j/jq.binaries.toml":
+				fmt.Fprint(w, binariesToml)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
+	}
+	b := rec.Binary["darwin-arm64"]
+	if b.SHA256 != "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e" {
+		t.Errorf("SHA256 = %q", b.SHA256)
+	}
+}
+
+func TestFetchRecipeBinaries404NoError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.toml":
+				fmt.Fprint(w, recipeNoBinaries)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 0 {
+		t.Errorf("Binary count = %d, want 0",
+			len(rec.Binary))
+	}
+}
+
+func TestFetchRecipeInlineBinariesSkipsFetch(t *testing.T) {
+	var binariesFetched bool
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.toml":
+				fmt.Fprint(w, validTOML+`
+[binary.darwin-arm64]
+url = "https://example.com/jq-darwin"
+sha256 = "inline123"
+`)
+			case "/recipes/j/jq.binaries.toml":
+				binariesFetched = true
+				fmt.Fprint(w, binariesToml)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{BaseURL: srv.URL}
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if binariesFetched {
+		t.Error(".binaries.toml fetched despite inline binaries")
+	}
+	if rec.Binary["darwin-arm64"].SHA256 != "inline123" {
+		t.Errorf("expected inline binary SHA256")
+	}
+}
+
+// --- Behavior 12: ghcrBaseFromURL parses owner/repo ---
+
+func TestGhcrBaseFromRawGitHubURL(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			"standard",
+			"https://raw.githubusercontent.com/kelp/gale-recipes/main",
+			"kelp/gale-recipes",
+		},
+		{
+			"with refs",
+			"https://raw.githubusercontent.com/org/repo/refs/heads/main",
+			"org/repo",
+		},
+		{
+			"trailing slash",
+			"https://raw.githubusercontent.com/kelp/gale-recipes/main/",
+			"kelp/gale-recipes",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ghcrBaseFromURL(tt.url)
+			if got != tt.want {
+				t.Errorf("ghcrBaseFromURL(%q) = %q, want %q",
+					tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestGhcrBaseFromNonGitHubURL(t *testing.T) {
+	got := ghcrBaseFromURL("https://example.com/recipes")
+	if got != defaultGHCRBase {
+		t.Errorf("ghcrBaseFromURL(non-github) = %q, want %q",
+			got, defaultGHCRBase)
 	}
 }
