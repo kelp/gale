@@ -169,19 +169,43 @@ leaking into autotools configure checks.
 
 ## Static Linking
 
-CLI tools are statically linked when possible. This
-avoids dylib path issues: a dynamically-linked binary
-embeds the absolute path to its shared libraries at
-build time, and that path is a temp directory that
-gets deleted after the build.
+Gale prefers static linking for all CLI tools.
+
+**Why not shared libraries?** The traditional benefits
+— smaller binaries, shared memory pages, patch-once
+security updates — assume a mutable OS with long-lived
+installs. That model is fading:
+
+- **Containers killed shared memory savings.** Each
+  container has its own filesystem namespace. Even
+  identical shared libraries in different containers
+  are different inodes — no page sharing across
+  containers. Most containers run one process anyway.
+- **Immutable deployments killed patch-once.** Whether
+  you're rebuilding a container image or a static
+  binary, it's a new artifact either way. The
+  "update one .so, fix everything" benefit assumes
+  mutable systems.
+- **Disk is cheap.** A 20MB static binary vs 2MB
+  dynamic + 18MB of shared libs is the same disk
+  cost. The simplicity tradeoff is worth it.
+
+**Where shared libs still make sense:** libc (kernel
+interface), graphics frameworks (Cocoa, GTK, libGL),
+and OS-level services (PAM, NSS). You can't
+statically link the window system.
+
+**Gale's policy:** static by default. The generation
+model supports `lib/` and `include/` symlinks, and
+`FixupBinaries` rewrites dylib paths with
+`install_name_tool` (macOS) or `patchelf` (Linux)
+for packages that need dynamic linking. But for
+developer CLI tools, static is simpler and more
+portable.
 
 For autotools projects (like jq): `--disable-shared
---enable-all-static`. For Rust: cargo static-links
-by default. For Go: static by default.
-
-Shared library support (with `install_name_tool` or
-`patchelf` fixup) is planned for packages that need
-it, but static is the default policy.
+--enable-all-static`. Rust and Go produce static
+binaries by default.
 
 ## Two-Repo Architecture
 
