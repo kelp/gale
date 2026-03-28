@@ -56,7 +56,7 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 		}
 	}
 	if !cached {
-		out.Step(fmt.Sprintf("Downloading %s", r.Source.URL))
+		out.Step("Downloading...")
 		if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
 			return nil, fmt.Errorf("fetch source: %w", err)
 		}
