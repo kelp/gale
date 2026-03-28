@@ -23,6 +23,9 @@
   convention, and warns on missing optional fields.
 - Man page (`gale.1`) in mandoc format. Installed to
   `man/man1/` and symlinked by the generation model.
+- Colored help output with section headers, command
+  names, and flag names. Respects `NO_COLOR` env var
+  and `--no-color` flag.
 - `build.BuildLocal()` builds a recipe from a local
   source directory, skipping download and verification.
 - `recipe.ParseLocal()` parses recipes without requiring

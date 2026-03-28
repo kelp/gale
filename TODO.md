@@ -166,10 +166,10 @@ streaming. Our code provides focused prompts and tools.
 
 ## CLI Polish
 
-- [ ] **Colored help output** — Syntax-highlighted flags
-  and subcommands in `--help`, similar to vibeutils.
-  Explore whether cobra supports custom help templates
-  with ANSI color, or if we need a custom help function.
+- [x] **Colored help output** — custom help function
+  with colored section headers, command names, and
+  flags via fatih/color. Supports `--no-color` flag
+  and `NO_COLOR` env var.
 
 ## CI & Release
 
@@ -236,6 +236,16 @@ keeps recipes current with upstream releases.
   or kept? Design options: keep N versions, keep for
   N days, explicit `gale gc` command, or always remove.
   Currently old versions stay in the store after upgrade.
+
+## Installer Resilience
+
+- [ ] **Binary pull fallback** — when a GHCR binary pull
+  fails (digest mismatch, 404, network error), fall back
+  to: (1) a previously cached version in the store, then
+  (2) building from source. Currently a bad digest in a
+  `[binary.*]` section breaks all recipes that depend on
+  that package (e.g. stale Go binary sections break every
+  Go recipe in CI).
 
 ## Build System
 

@@ -18,6 +18,15 @@ var rootCmd = &cobra.Command{
 	Long: `Gale is a package manager for developer tools and runtimes.
 Each version installs in its own directory — nothing conflicts.
 Projects get isolated environments, activated automatically on cd.`,
+	PersistentPreRun: func(cmd *cobra.Command, args []string) {
+		applyNoColor()
+	},
+}
+
+func init() {
+	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color",
+		false, "Disable colored output")
+	rootCmd.SetHelpFunc(colorHelp)
 }
 
 func Execute() {
