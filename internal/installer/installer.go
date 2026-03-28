@@ -59,8 +59,11 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	if bin != nil {
 		if err := installBinary(bin, storeDir); err == nil {
 			method = "binary"
+		} else {
+			// Clean partial download before source fallback.
+			os.RemoveAll(storeDir)
+			_ = os.MkdirAll(storeDir, 0o755) //nolint:gosec
 		}
-		// Fall through to source on binary failure.
 	}
 
 	if method != "binary" {

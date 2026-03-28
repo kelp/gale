@@ -228,21 +228,16 @@ keeps recipes current with upstream releases.
 
 ## Package Lifecycle
 
-- [ ] **Version cleanup policy** — when upgrading a
-  package, should old versions be removed automatically
-  or kept? Design options: keep N versions, keep for
-  N days, explicit `gale gc` command, or always remove.
-  Currently old versions stay in the store after upgrade.
+- [x] **Version cleanup** — `gale gc` removes store
+  versions not referenced by any gale.toml. `--dry-run`
+  previews what would be removed.
 
 ## Installer Resilience
 
-- [ ] **Binary pull fallback** — when a GHCR binary pull
-  fails (digest mismatch, 404, network error), fall back
-  to: (1) a previously cached version in the store, then
-  (2) building from source. Currently a bad digest in a
-  `[binary.*]` section breaks all recipes that depend on
-  that package (e.g. stale Go binary sections break every
-  Go recipe in CI).
+- [x] **Binary pull fallback** — when binary install
+  fails, the store directory is cleaned before falling
+  back to source build. Prevents partial downloads from
+  breaking the source fallback.
 
 ## Build System
 

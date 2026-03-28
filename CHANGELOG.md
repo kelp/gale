@@ -29,6 +29,13 @@
 - `just tag` and `just release` targets for the full
   release flow: checks, CHANGELOG update, tag, push,
   GitHub release.
+- `gale gc` command removes unused package versions
+  from the store. Supports `--dry-run`.
+
+### Fixed
+
+- Binary install fallback cleans partial downloads
+  from the store directory before building from source.
 - `build.BuildLocal()` builds a recipe from a local
   source directory, skipping download and verification.
 - `recipe.ParseLocal()` parses recipes without requiring
