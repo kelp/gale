@@ -108,12 +108,8 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 	jobs := strconv.Itoa(runtime.NumCPU())
 	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
 	for i, step := range buildCfg.Steps {
-		preview := step
-		if len(preview) > 55 {
-			preview = preview[:55] + "..."
-		}
 		out.Step(fmt.Sprintf("[%d/%d] %s",
-			i+1, len(buildCfg.Steps), preview))
+			i+1, len(buildCfg.Steps), step))
 		if err := runStep(step, sourceRoot, prefixDir, jobs, extraPaths); err != nil {
 			return nil, err
 		}
