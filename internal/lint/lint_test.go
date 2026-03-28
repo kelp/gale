@@ -212,6 +212,48 @@ steps = ["make install PREFIX=${PREFIX}"]
 	}
 }
 
+func TestLintRepoFullURLNoWarning(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "https://gitlab.freedesktop.org/pkgconf/pkgconf"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "repo") {
+		t.Errorf("full URL repo should not warn, got %v", issues)
+	}
+}
+
+func TestLintRepoBadFormatWarning(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "just-a-name"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "repo") {
+		t.Errorf("expected warning about repo format, got %v", issues)
+	}
+}
+
 // --- Warning: bad released_at ---
 
 func TestLintBadReleasedAtWarning(t *testing.T) {

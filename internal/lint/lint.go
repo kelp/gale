@@ -111,6 +111,10 @@ func Lint(data, filePath string) []Issue {
 	}
 	if r.Source.Repo == "" {
 		addWarn("missing source.repo (no auto-update)")
+	} else if !isValidRepo(r.Source.Repo) {
+		addWarn(fmt.Sprintf(
+			"source.repo should be owner/repo or a full URL: %q",
+			r.Source.Repo))
 	}
 
 	// Warning: released_at format.
@@ -174,6 +178,17 @@ func toStringSlice(v interface{}) []string {
 		}
 	}
 	return out
+}
+
+// isValidRepo returns true if repo is either an owner/repo
+// shorthand (e.g., "jqlang/jq") or a full URL.
+func isValidRepo(repo string) bool {
+	if strings.HasPrefix(repo, "https://") {
+		return true
+	}
+	// owner/repo: exactly one slash, no other special chars.
+	parts := strings.Split(repo, "/")
+	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
 }
 
 func checkFilePath(filePath, name string, addErr func(string)) {
