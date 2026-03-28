@@ -181,12 +181,16 @@ after obtaining the source directory.
 
 ## Conventions
 
-- Error handling: `fmt.Errorf("context: %w", err)`
-- Testing: table-driven, temp dirs for filesystem ops
-- TDD: `/tdd-orchestrate` pipeline for new modules
-- No panics in library code
-- One responsibility per package
+See `docs/style-guide.md` for the full style guide
+covering writing, documentation, code, and naming.
+
+Key rules:
+
+- TDD: write the failing test first
+- Error wrapping: `fmt.Errorf("context: %w", err)`
 - Format with gofumpt, lint with golangci-lint
+- Check `context.go` for shared helpers before
+  writing new CLI code
 
 ## Gotchas
 
