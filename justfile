@@ -58,7 +58,9 @@ tag version: check
       exit 1
     fi
     # Update CHANGELOG: replace first version header.
-    sed -i '' "0,/^## v/{s/^## v.*/## v{{version}} — $(date +%Y-%m-%d)/;}" CHANGELOG.md
+    awk -v ver="## v{{version}} — $(date +%Y-%m-%d)" \
+      '/^## v/ && !done { print ver; done=1; next } 1' \
+      CHANGELOG.md > CHANGELOG.tmp && mv CHANGELOG.tmp CHANGELOG.md
     git add CHANGELOG.md
     git commit -m "Release v{{version}}"
     git tag "v{{version}}"
