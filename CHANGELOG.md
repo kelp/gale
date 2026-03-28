@@ -18,6 +18,11 @@
   `git rev-parse --short HEAD` via ldflags at build
   time; defaults to `dev`.
 - `just cover` target shows per-package test coverage.
+- `gale lint` command validates recipe TOML files.
+  Checks required fields, SHA256 format, file path
+  convention, and warns on missing optional fields.
+- Man page (`gale.1`) in mandoc format. Installed to
+  `man/man1/` and symlinked by the generation model.
 - `build.BuildLocal()` builds a recipe from a local
   source directory, skipping download and verification.
 - `recipe.ParseLocal()` parses recipes without requiring

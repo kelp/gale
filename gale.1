@@ -1,0 +1,103 @@
+.Dd March 28, 2026
+.Dt GALE 1
+.Os
+.Sh NAME
+.Nm gale
+.Nd fast, isolated package management for developers
+.Sh SYNOPSIS
+.Nm
+.Ar command
+.Op Ar args ...
+.Sh DESCRIPTION
+.Nm
+installs CLI tools and runtimes into isolated,
+versioned directories.
+Projects get per-directory environments that activate
+automatically on
+.Xr cd 1
+via
+.Xr direnv 1 .
+.Pp
+Packages are declared in
+.Pa gale.toml
+and installed from recipes in a federated registry.
+Prebuilt binaries are pulled from GHCR when available;
+otherwise packages are built from source.
+.Sh COMMANDS
+.Bl -tag -width "create-recipe" -compact
+.It Cm install Ar pkg Ns Op @ Ns Ar ver
+Install a package.
+.It Cm remove Ar pkg
+Remove a package.
+.It Cm add Ar pkg ...
+Add packages to
+.Pa gale.toml
+without installing.
+.It Cm sync
+Install all packages in
+.Pa gale.toml .
+.It Cm update Op Ar pkg ...
+Update packages to the latest version.
+.It Cm list
+List packages in
+.Pa gale.toml .
+.It Cm env
+Print
+.Ev PATH
+export for the current scope.
+.It Cm init
+Bootstrap a project with
+.Pa gale.toml
+and
+.Pa .envrc .
+.It Cm build Ar recipe.toml
+Build a recipe from source.
+.It Cm lint Ar recipe.toml ...
+Validate recipe files.
+.It Cm search Ar query
+Search for packages.
+.It Cm shell
+Open a shell with the project environment.
+.It Cm run Ar cmd
+Run a command in the project environment.
+.It Cm hook direnv
+Print
+.Fn use_gale
+function for direnvrc.
+.It Cm import homebrew Ar name
+Import a Homebrew formula as a recipe.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width "MANPATH"
+.It Ev PATH
+Add
+.Pa ~/.gale/current/bin
+to use globally installed packages.
+.It Ev MANPATH
+Add
+.Pa ~/.gale/current/man
+to read man pages for installed packages.
+.El
+.Sh FILES
+.Bl -tag -width "~/.gale/gale.toml"
+.It Pa ~/.gale/gale.toml
+Global package declarations.
+.It Pa ~/.gale/config.toml
+Application settings (registry URL, AI config).
+.It Pa ~/.gale/pkg/
+Package store.
+One directory per package per version.
+.It Pa ~/.gale/current/
+Symlink to the active generation directory.
+.It Pa gale.toml
+Project package declarations.
+.It Pa .envrc
+Direnv integration file created by
+.Cm init .
+.El
+.Sh EXIT STATUS
+.Ex -std
+.Sh SEE ALSO
+.Xr direnv 1
+.Sh AUTHORS
+.An Travis Cole Aq Mt kelp@plek.org

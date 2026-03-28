@@ -70,6 +70,11 @@
 - [x] Recipe auto-find in sibling gale-recipes directory
 - [x] Gale recipe in gale-recipes (Go build pattern)
 - [x] Self-install via `just bootstrap` / `just install`
+- [x] `gale --version` via ldflags (git hash for dev)
+- [x] `gale update` command with `--local` and `--source`
+- [x] `gale lint` recipe validator
+- [x] Man page (`gale.1`) in mandoc format
+- [x] Shared `cmdContext` for sync/update CLI commands
 
 ## Declarative Environments
 
@@ -154,16 +159,10 @@ streaming. Our code provides focused prompts and tools.
 
 ## Recipe Linter
 
-- [ ] **`gale lint` command** — validate recipe TOML files
-  against the schema. Checks: required fields present
-  ([package] name/version/description/license/homepage,
-  [source] url/sha256, [build] steps), sha256 is valid
-  64-char hex, repo field is owner/repo format,
-  released_at is a valid date, build steps reference
-  ${PREFIX}, file path matches
-  `recipes/<first-letter>/<name>.toml`. Warn on missing
-  `repo` field (no auto-update). Run in CI on PRs to
-  catch errors before build.
+- [x] **`gale lint` command** — validates recipe TOML
+  files. Errors: missing required fields, invalid SHA256,
+  wrong file path. Warnings: missing description/license/
+  homepage/repo, bad released_at, no ${PREFIX} in steps.
 
 ## CLI Polish
 
@@ -182,9 +181,8 @@ streaming. Our code provides focused prompts and tools.
   The release process extracts the current version's
   notes and includes them in the GitHub release body.
 
-- [ ] **Versioning infrastructure** — Embed version in the
-  binary at build time via ldflags. `gale --version`
-  should print the version.
+- [x] **Versioning infrastructure** — `gale --version`
+  prints git hash via ldflags. Semver tags to come.
 
 ## Distribution
 
