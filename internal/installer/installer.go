@@ -130,6 +130,56 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 	}, nil
 }
 
+// InstallGit clones a git repo and builds from the clone.
+// Returns the install result with the commit hash as version.
+func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
+	name := r.Package.Name
+
+	// Resolve and install build deps.
+	depPaths, err := inst.InstallBuildDeps(r)
+	if err != nil {
+		return nil, fmt.Errorf("install build deps: %w", err)
+	}
+
+	// Build from git — returns hash as version.
+	tmpDir, err := os.MkdirTemp(galeTmpDir(), "gale-install-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	result, hash, err := build.BuildGit(r, tmpDir, depPaths...)
+	if err != nil {
+		return nil, fmt.Errorf("git build: %w", err)
+	}
+
+	// Skip if this hash is already installed.
+	if inst.Store.IsInstalled(name, hash) {
+		return &InstallResult{
+			Name:    name,
+			Version: hash,
+			Method:  "cached",
+		}, nil
+	}
+
+	// Create store dir and extract.
+	storeDir, err := inst.Store.Create(name, hash)
+	if err != nil {
+		return nil, fmt.Errorf("create store dir: %w", err)
+	}
+
+	if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
+		os.RemoveAll(storeDir)
+		return nil, fmt.Errorf("extract build output: %w", err)
+	}
+
+	return &InstallResult{
+		Name:    name,
+		Version: hash,
+		Method:  "source",
+	}, nil
+}
+
 func installBinary(bin *recipe.Binary, storeDir string) error {
 	tmpFile := storeDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)

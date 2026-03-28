@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -12,6 +13,7 @@ import (
 var (
 	updateLocal  bool
 	updateSource string
+	updateGit    bool
 )
 
 var updateCmd = &cobra.Command{
@@ -30,6 +32,15 @@ var updateCmd = &cobra.Command{
 		if updateSource != "" {
 			return installFromLocalSource(
 				args[0], "", updateSource, out)
+		}
+
+		// --git: check remote HEAD, rebuild if changed.
+		if updateGit {
+			if len(args) != 1 {
+				return fmt.Errorf(
+					"--git requires exactly one package name")
+			}
+			return updateFromGit(args[0], updateLocal, out)
 		}
 
 		ctx, err := newCmdContext(updateLocal)
@@ -126,10 +137,58 @@ var updateCmd = &cobra.Command{
 	},
 }
 
+// updateFromGit checks if the remote HEAD changed, and
+// rebuilds from git if so.
+func updateFromGit(name string, local bool, out *output.Output) error {
+	// Resolve recipe to get source.repo.
+	ctx, err := newCmdContext(local)
+	if err != nil {
+		return err
+	}
+
+	r, err := ctx.Resolver(name)
+	if err != nil {
+		return fmt.Errorf("fetching recipe: %w", err)
+	}
+	if r.Source.Repo == "" {
+		return fmt.Errorf(
+			"recipe for %s has no source.repo", name)
+	}
+
+	// Check remote HEAD.
+	remoteHash, err := gitutil.RemoteHead(
+		r.Source.Repo, r.Source.Branch)
+	if err != nil {
+		return fmt.Errorf("checking remote: %w", err)
+	}
+
+	// Compare to installed version.
+	data, err := os.ReadFile(ctx.GalePath)
+	if err != nil {
+		return fmt.Errorf("reading config: %w", err)
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		return fmt.Errorf("parsing config: %w", err)
+	}
+
+	if cfg.Packages[name] == remoteHash {
+		out.Success(fmt.Sprintf(
+			"%s@%s is up to date", name, remoteHash))
+		return nil
+	}
+
+	out.Info(fmt.Sprintf("Updating %s to %s...",
+		name, remoteHash))
+	return installFromGit(name, "", out)
+}
+
 func init() {
 	updateCmd.Flags().BoolVar(&updateLocal, "local", false,
 		"Resolve recipes from sibling gale-recipes directory")
 	updateCmd.Flags().StringVar(&updateSource, "source", "",
 		"Rebuild from a local source directory")
+	updateCmd.Flags().BoolVar(&updateGit, "git", false,
+		"Update from git repository HEAD")
 	rootCmd.AddCommand(updateCmd)
 }

@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
 )
@@ -190,6 +191,36 @@ func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, extraPaths ...str
 		Archive: archivePath,
 		SHA256:  hash,
 	}, nil
+}
+
+// BuildGit clones a git repo and builds from the clone.
+// Returns the build result and the short commit hash used
+// as the version. The recipe's version is overridden with
+// the hash.
+func BuildGit(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResult, string, error) {
+	if r.Source.Repo == "" {
+		return nil, "", fmt.Errorf("no source.repo for git build")
+	}
+
+	cloneDir, err := os.MkdirTemp(galeTmpDir(), "gale-git-*")
+	if err != nil {
+		return nil, "", fmt.Errorf("create clone dir: %w", err)
+	}
+	defer os.RemoveAll(cloneDir)
+
+	out.Step(fmt.Sprintf("Cloning %s...", r.Source.Repo))
+	hash, err := gitutil.Clone(r.Source.Repo, cloneDir, r.Source.Branch)
+	if err != nil {
+		return nil, "", fmt.Errorf("clone: %w", err)
+	}
+
+	r.Package.Version = hash
+	result, err := BuildLocal(r, cloneDir, outputDir, extraPaths...)
+	if err != nil {
+		return nil, "", err
+	}
+
+	return result, hash, nil
 }
 
 // detectSourceRoot returns the source root directory. If the

@@ -75,6 +75,9 @@
 - [x] `gale lint` recipe validator
 - [x] Man page (`gale.1`) in mandoc format
 - [x] Shared `cmdContext` for sync/update CLI commands
+- [x] Git source builds (`--git` flag on install/build/
+  update). Clones repo, builds from HEAD, versions by
+  short hash. Update checks remote HEAD first.
 
 ## Declarative Environments
 

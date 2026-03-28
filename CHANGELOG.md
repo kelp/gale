@@ -9,6 +9,14 @@
 - `gale build --local` resolves build dependencies from
   a sibling gale-recipes directory. Build deps are now
   installed automatically before building.
+- `--git` flag on install, build, and update clones a
+  git repo and builds from HEAD. Version is the short
+  commit hash. Update checks remote HEAD before
+  rebuilding.
+- `internal/gitutil/` package for git clone, ls-remote,
+  and repo URL expansion.
+- `source.branch` field in recipe format for specifying
+  a git branch to clone.
 
 ### Changed
 

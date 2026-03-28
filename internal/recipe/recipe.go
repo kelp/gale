@@ -47,11 +47,14 @@ type Package struct {
 // Source holds the source archive location and checksum.
 // Repo and ReleasedAt are optional — used by the
 // auto-update agent to track upstream releases.
+// Branch is optional — used for git clone builds
+// (defaults to the repo's default branch).
 type Source struct {
 	URL        string `toml:"url"`
 	SHA256     string `toml:"sha256"`
 	Repo       string `toml:"repo"`
 	ReleasedAt string `toml:"released_at"`
+	Branch     string `toml:"branch"`
 }
 
 // Build holds the build system and steps.

@@ -12,7 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var buildLocal bool
+var (
+	buildLocal bool
+	buildGit   bool
+)
 
 var buildCmd = &cobra.Command{
 	Use:   "build <recipe.toml>",
@@ -64,13 +67,26 @@ var buildCmd = &cobra.Command{
 			}
 		}
 
-		out.Info(fmt.Sprintf("Building %s@%s from source...",
-			r.Package.Name, r.Package.Version))
-
 		outputDir, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting working dir: %w", err)
 		}
+
+		if buildGit {
+			out.Info(fmt.Sprintf("Building %s from git (%s)...",
+				r.Package.Name, r.Source.Repo))
+			result, hash, err := build.BuildGit(r, outputDir, depPaths...)
+			if err != nil {
+				return fmt.Errorf("build failed: %w", err)
+			}
+			out.Success(fmt.Sprintf("Built %s@%s", r.Package.Name, hash))
+			fmt.Printf("archive: %s\n", result.Archive)
+			fmt.Printf("sha256:  %s\n", result.SHA256)
+			return nil
+		}
+
+		out.Info(fmt.Sprintf("Building %s@%s from source...",
+			r.Package.Name, r.Package.Version))
 
 		result, err := build.Build(r, outputDir, depPaths...)
 		if err != nil {
@@ -87,5 +103,7 @@ var buildCmd = &cobra.Command{
 func init() {
 	buildCmd.Flags().BoolVar(&buildLocal, "local", false,
 		"Resolve build dependencies from sibling gale-recipes directory")
+	buildCmd.Flags().BoolVar(&buildGit, "git", false,
+		"Clone and build from git repository instead of tarball")
 	rootCmd.AddCommand(buildCmd)
 }
