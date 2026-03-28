@@ -249,8 +249,12 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 		return fmt.Errorf("install failed: %w", err)
 	}
 
-	// Rebuild global generation.
+	// Add to gale.toml and rebuild generation.
 	configPath := filepath.Join(galeDir, "gale.toml")
+	if err := config.AddPackage(configPath,
+		r.Package.Name, r.Package.Version); err != nil {
+		return fmt.Errorf("adding to config: %w", err)
+	}
 	if err := rebuildGeneration(galeDir, storeRoot,
 		configPath); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
