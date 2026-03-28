@@ -78,6 +78,10 @@
 - [x] Git source builds (`--git` flag on install/build/
   update). Clones repo, builds from HEAD, versions by
   short hash. Update checks remote HEAD first.
+- [x] Code reuse refactoring: shared `buildFromDir`,
+  `extractBuild`, `TmpDir`, `HashFile`, `reportResult`,
+  `finalizeInstall`, `loadAppConfig`, `LoadConfig`.
+  Moved helpers to context.go and paths.go.
 
 ## Declarative Environments
 
