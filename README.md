@@ -21,7 +21,7 @@ brew install kelp/tap/gale
 Add gale to your PATH:
 
 ```sh
-export PATH="$HOME/.gale/current/bin:$PATH"
+export PATH="$HOME/.gale/bin:$HOME/.gale/current/bin:$PATH"
 ```
 
 Install a package:
@@ -34,7 +34,8 @@ Set up a project:
 
 ```sh
 gale init
-gale install go just golangci-lint
+gale install go
+gale install just
 gale sync
 ```
 
