@@ -57,9 +57,8 @@ tag version: fmt check
       echo "Tag v{{version}} already exists"
       exit 1
     fi
-    # Update CHANGELOG: replace first version header.
-    awk -v ver="## v{{version}} — $(date +%Y-%m-%d)" \
-      '/^## v/ && !done { print ver; done=1; next } 1' \
+    # Update CHANGELOG: replace "## Unreleased" with version.
+    sed "s/^## Unreleased$/## v{{version}} — $(date +%Y-%m-%d)/" \
       CHANGELOG.md > CHANGELOG.tmp && mv CHANGELOG.tmp CHANGELOG.md
     git add CHANGELOG.md
     git commit -m "Release v{{version}}"
