@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-03-28
 
 ### Added
 
@@ -23,10 +23,7 @@
   GitHub Actions on each release.
 - Install script: `curl -fsSL .../install.sh | sh`
   with OS/arch detection and version pinning.
-- `addToConfig` shared helper for scope-aware config
-  writes across install, update, and add.
-- `resolveVersionedRecipe` shared helper for @version
-  resolution across install, update, and sync.
+- Homebrew tap: `brew install kelp/tap/gale`.
 
 ### Changed
 
