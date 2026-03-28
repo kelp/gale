@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/kelp/gale/internal/lint"
 	"github.com/kelp/gale/internal/output"
@@ -18,6 +19,11 @@ var lintCmd = &cobra.Command{
 
 		hasErrors := false
 		for _, path := range args {
+			if strings.HasSuffix(path, ".binaries.toml") ||
+				strings.HasSuffix(path, ".versions") {
+				continue
+			}
+
 			data, err := os.ReadFile(path)
 			if err != nil {
 				return fmt.Errorf("reading %s: %w", path, err)
