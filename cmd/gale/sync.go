@@ -12,6 +12,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var syncLocal bool
+
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Install all packages in gale.toml",
@@ -64,18 +66,29 @@ var syncCmd = &cobra.Command{
 			galeDir = filepath.Join(configDir, ".gale")
 		}
 
-		// Set up registry and installer.
-		reg := newRegistry()
+		// Set up resolver: --local uses sibling gale-recipes,
+		// otherwise use the remote registry.
 		storeRoot := defaultStoreRoot()
+		var resolver installer.RecipeResolver
+		if syncLocal {
+			recipesDir, dirErr := findLocalRecipesDir(cwd)
+			if dirErr != nil {
+				return dirErr
+			}
+			resolver = localRecipeResolver(recipesDir)
+		} else {
+			reg := newRegistry()
+			resolver = reg.FetchRecipe
+		}
 
 		inst := &installer.Installer{
 			Store:    store.NewStore(storeRoot),
-			Resolver: reg.FetchRecipe,
+			Resolver: resolver,
 		}
 
 		var installed int
 		for name := range cfg.Packages {
-			r, err := reg.FetchRecipe(name)
+			r, err := resolver(name)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Skipping %s: %v", name, err))
@@ -123,5 +136,7 @@ var syncCmd = &cobra.Command{
 }
 
 func init() {
+	syncCmd.Flags().BoolVar(&syncLocal, "local", false,
+		"Resolve recipes from sibling gale-recipes directory")
 	rootCmd.AddCommand(syncCmd)
 }

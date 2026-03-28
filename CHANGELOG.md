@@ -4,6 +4,27 @@
 
 ### Added
 
+- `--source` flag on `gale install` builds from a local
+  source directory. Version detected from
+  `git rev-parse --short HEAD`. Auto-finds recipe in
+  sibling `gale-recipes/` directory.
+- `--local` flag on `gale sync` resolves all recipes
+  from a sibling `gale-recipes/` directory instead of
+  the remote registry.
+- `build.BuildLocal()` builds a recipe from a local
+  source directory, skipping download and verification.
+- `recipe.ParseLocal()` parses recipes without requiring
+  `source.url` and `source.sha256` fields.
+- `installer.InstallLocal()` installs from a local
+  source directory via `BuildLocal`.
+- Source download cache in `~/.gale/cache/` keyed by
+  SHA256. Skips re-downloading cached tarballs.
+- Project `gale.toml` with dev dependencies: go, just,
+  golangci-lint, gofumpt.
+- `just bootstrap` target builds gale with `go build`,
+  then self-installs via `gale install --source .`.
+- `just install` rebuilds gale from current source
+  using gale itself.
 - Declarative environment model with atomic generation
   swap. `~/.gale/current` symlink points to a numbered
   generation directory containing bin/, lib/, man/,

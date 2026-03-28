@@ -333,6 +333,40 @@ func resolveRecipePath(name, recipePath, sourceDir string) (string, error) {
 		"no recipe found for %q — use --recipe to specify a recipe file", name)
 }
 
+// findLocalRecipesDir finds a sibling gale-recipes directory
+// relative to dir. Returns the path to the recipes/ subdirectory.
+func findLocalRecipesDir(dir string) (string, error) {
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	recipesDir := filepath.Join(filepath.Dir(absDir), "gale-recipes", "recipes")
+	if _, err := os.Stat(recipesDir); err != nil {
+		return "", fmt.Errorf(
+			"no sibling gale-recipes found next to %s", absDir)
+	}
+	return recipesDir, nil
+}
+
+// localRecipeResolver returns a RecipeResolver that reads
+// recipes from a local recipes directory using letter-bucketed
+// layout: <recipesDir>/<letter>/<name>.toml.
+func localRecipeResolver(recipesDir string) installer.RecipeResolver {
+	return func(name string) (*recipe.Recipe, error) {
+		letter := string(name[0])
+		path := filepath.Join(recipesDir, letter, name+".toml")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return nil, fmt.Errorf(
+					"no local recipe for %q", name)
+			}
+			return nil, fmt.Errorf("read recipe %q: %w", name, err)
+		}
+		return recipe.Parse(string(data))
+	}
+}
+
 func installFromRecipeFile(recipePath string, out *output.Output) error {
 	data, err := os.ReadFile(recipePath)
 	if err != nil {
@@ -420,7 +454,6 @@ func rebuildGeneration(galeDir, storeRoot, configPath string) error {
 // recipes in the same repo as the given recipe file. Assumes
 // letter-bucketed layout: recipes/<letter>/<name>.toml.
 func recipeFileResolver(recipePath string) installer.RecipeResolver {
-	// Walk up to find the recipes/ directory.
 	absPath, err := filepath.Abs(recipePath)
 	if err != nil {
 		return nil
@@ -428,21 +461,7 @@ func recipeFileResolver(recipePath string) installer.RecipeResolver {
 	// recipePath is like .../recipes/j/jq.toml
 	// We want the directory containing "recipes/".
 	dir := filepath.Dir(filepath.Dir(filepath.Dir(absPath)))
-	recipesDir := filepath.Join(dir, "recipes")
-
-	return func(name string) (*recipe.Recipe, error) {
-		letter := string(name[0])
-		path := filepath.Join(recipesDir, letter, name+".toml")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, fmt.Errorf(
-					"no recipe for %q — install it manually", name)
-			}
-			return nil, fmt.Errorf("read recipe %q: %w", name, err)
-		}
-		return recipe.Parse(string(data))
-	}
+	return localRecipeResolver(filepath.Join(dir, "recipes"))
 }
 
 // parsePackageArg splits "name@version" into name and version.
