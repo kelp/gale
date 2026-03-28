@@ -125,11 +125,12 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 		line = fmt.Sprintf("    %s  %s/s",
 			formatBytes(pw.written), formatBytes(int64(speed)))
 	}
-	// Pad to 70 chars to overwrite previous longer lines.
+	// Pad to clear previous longer lines, then \r to
+	// park cursor at column 0.
 	for len(line) < 70 {
 		line += " "
 	}
-	fmt.Fprintf(os.Stderr, "\r%s", line)
+	fmt.Fprintf(os.Stderr, "\r%s\r", line)
 
 	return n, nil
 }
