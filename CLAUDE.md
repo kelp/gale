@@ -143,27 +143,19 @@ that operate on gale.toml:
   gale dir, store, resolver, and installer
 - `installPackage(name, out)` resolves + installs one
   package via the context's resolver
-- Used by: sync, update
+- `LoadConfig()` reads and parses the context's gale.toml
+- `rebuildGeneration()` rebuilds generation from config
+- `newRegistry()` creates registry with config.toml URL
+- `localRecipeResolver()` reads from local recipes dir
+- `findLocalRecipesDir()` finds sibling gale-recipes
+- `loadAppConfig()` reads ~/.gale/config.toml
+- `reportResult()` prints install/update outcome
+- `finalizeInstall()` adds to config + rebuilds gen
+- Used by: sync, update, install, build, gc
 
-**`cmd/gale/install.go`** — shared helpers used across
-multiple commands:
-- `localRecipeResolver(recipesDir)` — resolver that
-  reads from a local recipes directory. Used by
-  install, sync, update, build.
-- `findLocalRecipesDir(dir)` — finds sibling
-  `../gale-recipes/recipes/`. Used by sync, update,
-  build.
-- `rebuildGeneration(galeDir, storeRoot, configPath)`
-  — reads gale.toml and rebuilds generation. Used by
-  install, sync, update, gc.
-- `newRegistry()` — creates registry with optional
-  config.toml URL override.
-
-**`cmd/gale/repo.go`** — `galeConfigDir()` returns
-`~/.gale/`. Used everywhere.
-
-**`cmd/gale/shell.go`** — `defaultStoreRoot()` returns
-`~/.gale/pkg/`. Used everywhere.
+**`cmd/gale/paths.go`** — path helpers:
+- `galeConfigDir()` returns `~/.gale/`
+- `defaultStoreRoot()` returns `~/.gale/pkg/`
 
 **`internal/installer/`** — the Installer struct:
 - `Install(r)` — binary-first, source fallback
@@ -176,6 +168,15 @@ multiple commands:
 - `Build(r, outputDir)` — download tarball + build
 - `BuildLocal(r, sourceDir, outputDir)` — local dir
 - `BuildGit(r, outputDir)` — clone + BuildLocal
+- `buildFromDir()` — shared tail (steps, fixup, archive)
+- `TmpDir()` — returns ~/.gale/tmp/ (exported, used
+  by installer). Do not duplicate — import from build.
+
+**`internal/download/`** — `HashFile(path)` returns
+hex SHA256. Used by build and download.VerifySHA256.
+
+**`internal/installer/`** — `extractBuild()` shared
+by Install, InstallLocal, and InstallGit.
 
 When adding a new command that installs packages, use
 `newCmdContext` + `installPackage`. When adding a new
@@ -217,3 +218,7 @@ the source directory.
   `//nolint:gosec` for world-readable files.
 - Use `go:embed` to bake files into the binary
   (see `internal/generation/gale-readme.md`).
+- Build temp dirs use ~/.gale/tmp/ via build.TmpDir().
+  Do not duplicate galeTmpDir — import from build.
+- recipe.parse(data, requireSource) is the shared
+  parser. Parse/ParseLocal are thin wrappers.
