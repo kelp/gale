@@ -238,10 +238,9 @@ keeps recipes current with upstream releases.
   `actions/cache` on `~/.gale/cache/` between runs.
   Avoids re-downloading 300MB Rust source on every build.
 
-- [ ] **Stream build output** — `gale build` currently
-  buffers all build output in memory via CombinedOutput.
-  For long builds (Rust: 30+ min), this causes
-  StreamTooLong errors. Stream to stderr instead.
+- [x] **Stream build output** — switched from
+  CombinedOutput to streaming stdout/stderr. Long
+  builds no longer crash from memory pressure.
 
 - [ ] **Build directory location** — builds currently
   use system TMPDIR. Move to a gale-specific scratch
