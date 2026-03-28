@@ -6,8 +6,6 @@ import (
 	"os/exec"
 	"path/filepath"
 
-	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/env"
 	"github.com/spf13/cobra"
 )
 
@@ -18,32 +16,19 @@ var shellCmd = &cobra.Command{
 	Short: "Open a shell with the project environment",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		projectDir := shellProject
-		if projectDir == "" {
-			cwd, err := os.Getwd()
+		var galeDir string
+		var err error
+		if shellProject != "" {
+			// Explicit project dir — use its .gale/.
+			galeDir = filepath.Join(shellProject, ".gale")
+		} else {
+			galeDir, err = resolveGaleDir()
 			if err != nil {
-				return fmt.Errorf("getting working dir: %w", err)
+				return err
 			}
-			projectDir = cwd
 		}
 
-		galePath, err := config.FindGaleConfig(projectDir)
-		if err != nil {
-			return fmt.Errorf("no gale.toml found: %w", err)
-		}
-
-		data, err := os.ReadFile(galePath)
-		if err != nil {
-			return fmt.Errorf("reading config: %w", err)
-		}
-
-		cfg, err := config.ParseGaleConfig(string(data))
-		if err != nil {
-			return fmt.Errorf("parsing config: %w", err)
-		}
-
-		storeRoot := defaultStoreRoot()
-		environ := env.BuildEnvironment(storeRoot, nil, cfg.Packages, cfg.Vars)
+		binDir := filepath.Join(galeDir, "current", "bin")
 
 		shell := os.Getenv("SHELL")
 		if shell == "" {
@@ -54,7 +39,7 @@ var shellCmd = &cobra.Command{
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
-		c.Env = buildShellEnv(environ)
+		c.Env = prependPATH(binDir)
 
 		return c.Run()
 	},
@@ -74,15 +59,12 @@ func defaultStoreRoot() string {
 	return filepath.Join(home, ".gale", "pkg")
 }
 
-func buildShellEnv(environ *env.Environment) []string {
+// prependPATH returns the current environment with binDir
+// prepended to PATH.
+func prependPATH(binDir string) []string {
 	result := os.Environ()
-	if environ.PATH != "" {
-		currentPath := os.Getenv("PATH")
-		result = append(result,
-			fmt.Sprintf("PATH=%s:%s", environ.PATH, currentPath))
-	}
-	for k, v := range environ.Vars {
-		result = append(result, fmt.Sprintf("%s=%s", k, v))
-	}
+	currentPath := os.Getenv("PATH")
+	result = append(result,
+		fmt.Sprintf("PATH=%s:%s", binDir, currentPath))
 	return result
 }

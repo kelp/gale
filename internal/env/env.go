@@ -1,71 +1,10 @@
 package env
 
-import (
-	"errors"
-	"os"
-	"path/filepath"
-	"sort"
-	"strings"
-
-	"github.com/kelp/gale/internal/config"
-)
+import "errors"
 
 // ErrUnsupportedShell is returned when GenerateHook receives
-// an unknown shell name.
+// an unknown integration name.
 var ErrUnsupportedShell = errors.New("unsupported shell")
-
-// Environment represents a resolved environment.
-type Environment struct {
-	PATH string
-	Vars map[string]string
-}
-
-// BuildPATH creates a PATH string from packages in the store.
-func BuildPATH(storeRoot string, packages map[string]string) string {
-	if len(packages) == 0 {
-		return ""
-	}
-
-	// Sort names for deterministic output.
-	names := make([]string, 0, len(packages))
-	for name := range packages {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	entries := make([]string, 0, len(names))
-	for _, name := range names {
-		entries = append(entries,
-			filepath.Join(storeRoot, name, packages[name], "bin"))
-	}
-	return strings.Join(entries, string(os.PathListSeparator))
-}
-
-// MergePackages merges global and project packages.
-// Project entries take priority over global.
-func MergePackages(global, project map[string]string) map[string]string {
-	merged := make(map[string]string)
-	for k, v := range global {
-		merged[k] = v
-	}
-	for k, v := range project {
-		merged[k] = v
-	}
-	return merged
-}
-
-// BuildEnvironment creates an Environment from packages and vars.
-func BuildEnvironment(storeRoot string, global, project map[string]string, vars map[string]string) *Environment {
-	merged := MergePackages(global, project)
-	env := &Environment{
-		PATH: BuildPATH(storeRoot, merged),
-		Vars: make(map[string]string),
-	}
-	for k, v := range vars {
-		env.Vars[k] = v
-	}
-	return env
-}
 
 // GenerateHook generates a hook script for the given
 // integration. Currently only "direnv" is supported.
@@ -96,9 +35,4 @@ use_gale() {
   fi
 }
 `
-}
-
-// DetectConfig checks if dir or any parent contains a gale.toml file.
-func DetectConfig(dir string) (string, error) {
-	return config.FindGaleConfig(dir)
 }
