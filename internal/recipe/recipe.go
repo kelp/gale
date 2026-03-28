@@ -101,42 +101,16 @@ type rawRecipe struct {
 	Dependencies Dependencies
 }
 
-// Parse parses a TOML recipe string and validates it.
-func Parse(data string) (*Recipe, error) {
-	var raw rawRecipe
-	if err := toml.Unmarshal([]byte(data), &raw); err != nil {
-		return nil, fmt.Errorf("invalid TOML: %w", err)
-	}
-
-	r := &Recipe{
-		Package:      raw.Package,
-		Source:       raw.Source,
-		Binary:       raw.Binary,
-		Dependencies: raw.Dependencies,
-	}
-
-	// Extract build section.
-	r.Build = parseBuild(raw.Build)
-
-	if r.Package.Name == "" {
-		return nil, fmt.Errorf("missing required field: package.name")
-	}
-	if r.Package.Version == "" {
-		return nil, fmt.Errorf("missing required field: package.version")
-	}
-	if r.Source.URL == "" {
-		return nil, fmt.Errorf("missing required field: source.url")
-	}
-	if r.Source.SHA256 == "" {
-		return nil, fmt.Errorf("missing required field: source.sha256")
-	}
-	return r, nil
-}
+// Parse parses a TOML recipe string and validates all
+// required fields including source.url and source.sha256.
+func Parse(data string) (*Recipe, error) { return parse(data, true) }
 
 // ParseLocal parses a TOML recipe for local-source builds.
 // Skips source.url and source.sha256 validation since the
 // source is provided locally.
-func ParseLocal(data string) (*Recipe, error) {
+func ParseLocal(data string) (*Recipe, error) { return parse(data, false) }
+
+func parse(data string, requireSource bool) (*Recipe, error) {
 	var raw rawRecipe
 	if err := toml.Unmarshal([]byte(data), &raw); err != nil {
 		return nil, fmt.Errorf("invalid TOML: %w", err)
@@ -156,6 +130,14 @@ func ParseLocal(data string) (*Recipe, error) {
 	}
 	if r.Package.Version == "" {
 		return nil, fmt.Errorf("missing required field: package.version")
+	}
+	if requireSource {
+		if r.Source.URL == "" {
+			return nil, fmt.Errorf("missing required field: source.url")
+		}
+		if r.Source.SHA256 == "" {
+			return nil, fmt.Errorf("missing required field: source.sha256")
+		}
 	}
 	return r, nil
 }

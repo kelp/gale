@@ -142,17 +142,16 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 	}
 
 	// Build from git — returns hash as version.
-	tmpDir, err := os.MkdirTemp(galeTmpDir(), "gale-install-*")
+	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
 		return nil, fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, hash, err := build.BuildGit(r, tmpDir, depPaths...)
+	buildResult, hash, err := build.BuildGit(r, tmpDir, depPaths...)
 	if err != nil {
 		return nil, fmt.Errorf("git build: %w", err)
 	}
-
 	// Skip if this hash is already installed.
 	if inst.Store.IsInstalled(name, hash) {
 		return &InstallResult{
@@ -168,9 +167,9 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
 
-	if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
+	if err := extractBuild(buildResult, storeDir); err != nil {
 		os.RemoveAll(storeDir)
-		return nil, fmt.Errorf("extract build output: %w", err)
+		return nil, err
 	}
 
 	return &InstallResult{
@@ -279,22 +278,8 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) ([]string, error) {
 	return binDirs, nil
 }
 
-// galeTmpDir returns ~/.gale/tmp/ for build scratch space.
-// Falls back to system temp if unavailable.
-func galeTmpDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	dir := filepath.Join(home, ".gale", "tmp")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ""
-	}
-	return dir
-}
-
 func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, extraPaths []string) error {
-	tmpDir, err := os.MkdirTemp(galeTmpDir(), "gale-install-*")
+	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
@@ -304,17 +289,11 @@ func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, extraP
 	if err != nil {
 		return err
 	}
-
-	if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
-		return fmt.Errorf("extract build output: %w", err)
-	}
-
-	return nil
+	return extractBuild(result, storeDir)
 }
 
 func installFromSource(r *recipe.Recipe, storeDir string, extraPaths []string) error {
-	// Build to a temp directory.
-	tmpDir, err := os.MkdirTemp(galeTmpDir(), "gale-install-*")
+	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
@@ -324,11 +303,13 @@ func installFromSource(r *recipe.Recipe, storeDir string, extraPaths []string) e
 	if err != nil {
 		return err
 	}
+	return extractBuild(result, storeDir)
+}
 
-	// Extract the built archive into the store.
+// extractBuild extracts a build archive into the store dir.
+func extractBuild(result *build.BuildResult, storeDir string) error {
 	if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
 		return fmt.Errorf("extract build output: %w", err)
 	}
-
 	return nil
 }

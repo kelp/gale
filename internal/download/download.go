@@ -175,28 +175,35 @@ func formatBytes(b int64) string {
 	}
 }
 
-// VerifySHA256 checks that the file at path has the expected
-// SHA256 hash. The expected value must be hex-encoded. On
-// mismatch the error contains both the expected and actual hashes.
-func VerifySHA256(path, expected string) error {
+// HashFile returns the hex-encoded SHA256 hash of the
+// file at the given path.
+func HashFile(path string) (string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("open file for hashing: %w", err)
+		return "", fmt.Errorf("open file for hashing: %w", err)
 	}
 	defer f.Close()
 
 	h := sha256.New()
 	if _, err := io.Copy(h, f); err != nil {
-		return fmt.Errorf("hash file: %w", err)
+		return "", fmt.Errorf("hash file: %w", err)
 	}
 
-	actual := fmt.Sprintf("%x", h.Sum(nil))
+	return fmt.Sprintf("%x", h.Sum(nil)), nil
+}
+
+// VerifySHA256 checks that the file at path has the expected
+// SHA256 hash. The expected value must be hex-encoded.
+func VerifySHA256(path, expected string) error {
+	actual, err := HashFile(path)
+	if err != nil {
+		return err
+	}
 	if actual != expected {
 		return fmt.Errorf(
 			"sha256 mismatch: expected %s, got %s",
 			expected, actual)
 	}
-
 	return nil
 }
 

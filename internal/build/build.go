@@ -1,7 +1,6 @@
 package build
 
 import (
-	"crypto/sha256"
 	"fmt"
 	"io"
 	"os"
@@ -41,7 +40,7 @@ type BuildResult struct {
 // outputDir is where the tar.zst will be written. Optional
 // extraPaths are prepended to the build environment PATH.
 func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResult, error) {
-	workspace, err := os.MkdirTemp(galeTmpDir(), "gale-build-*")
+	workspace, err := os.MkdirTemp(TmpDir(), "gale-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
@@ -98,46 +97,7 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 		return nil, fmt.Errorf("detect source root: %w", err)
 	}
 
-	// Create prefix directory.
-	prefixDir := filepath.Join(workspace, "prefix")
-	if err := os.MkdirAll(prefixDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create prefix directory: %w", err)
-	}
-
-	// Run build steps.
-	jobs := strconv.Itoa(runtime.NumCPU())
-	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
-	for i, step := range buildCfg.Steps {
-		out.Step(fmt.Sprintf("[%d/%d] %s",
-			i+1, len(buildCfg.Steps), step))
-		if err := runStep(step, sourceRoot, prefixDir, jobs, extraPaths); err != nil {
-			return nil, err
-		}
-	}
-
-	// Fix dynamic library paths for portability.
-	out.Step("Fixing library paths...")
-	if err := FixupBinaries(prefixDir); err != nil {
-		return nil, fmt.Errorf("fixup binaries: %w", err)
-	}
-
-	// Package prefix as tar.zst.
-	archiveName := fmt.Sprintf("%s-%s.tar.zst", r.Package.Name, r.Package.Version)
-	archivePath := filepath.Join(outputDir, archiveName)
-	if err := download.CreateTarZstd(prefixDir, archivePath); err != nil {
-		return nil, fmt.Errorf("create archive: %w", err)
-	}
-
-	// Compute SHA256 of the archive.
-	hash, err := computeSHA256(archivePath)
-	if err != nil {
-		return nil, fmt.Errorf("hash archive: %w", err)
-	}
-
-	return &BuildResult{
-		Archive: archivePath,
-		SHA256:  hash,
-	}, nil
+	return buildFromDir(r, sourceRoot, workspace, outputDir, extraPaths)
 }
 
 // BuildLocal builds a recipe using a local source directory
@@ -145,19 +105,23 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 // build root directly. Optional extraPaths are prepended to
 // the build environment PATH.
 func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, extraPaths ...string) (*BuildResult, error) {
-	workspace, err := os.MkdirTemp(galeTmpDir(), "gale-build-*")
+	workspace, err := os.MkdirTemp(TmpDir(), "gale-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
 	}
 	defer os.RemoveAll(workspace)
 
-	// Create prefix directory.
+	return buildFromDir(r, sourceDir, workspace, outputDir, extraPaths)
+}
+
+// buildFromDir runs build steps, fixes binaries, and packages
+// the result. Shared by Build and BuildLocal.
+func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, extraPaths []string) (*BuildResult, error) {
 	prefixDir := filepath.Join(workspace, "prefix")
 	if err := os.MkdirAll(prefixDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create prefix directory: %w", err)
 	}
 
-	// Run build steps against the local source directory.
 	jobs := strconv.Itoa(runtime.NumCPU())
 	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
 	for i, step := range buildCfg.Steps {
@@ -168,21 +132,18 @@ func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, extraPaths ...str
 		}
 	}
 
-	// Fix dynamic library paths for portability.
 	out.Step("Fixing library paths...")
 	if err := FixupBinaries(prefixDir); err != nil {
 		return nil, fmt.Errorf("fixup binaries: %w", err)
 	}
 
-	// Package prefix as tar.zst.
 	archiveName := fmt.Sprintf("%s-%s.tar.zst", r.Package.Name, r.Package.Version)
 	archivePath := filepath.Join(outputDir, archiveName)
 	if err := download.CreateTarZstd(prefixDir, archivePath); err != nil {
 		return nil, fmt.Errorf("create archive: %w", err)
 	}
 
-	// Compute SHA256 of the archive.
-	hash, err := computeSHA256(archivePath)
+	hash, err := download.HashFile(archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("hash archive: %w", err)
 	}
@@ -202,7 +163,7 @@ func BuildGit(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildR
 		return nil, "", fmt.Errorf("no source.repo for git build")
 	}
 
-	cloneDir, err := os.MkdirTemp(galeTmpDir(), "gale-git-*")
+	cloneDir, err := os.MkdirTemp(TmpDir(), "gale-git-*")
 	if err != nil {
 		return nil, "", fmt.Errorf("create clone dir: %w", err)
 	}
@@ -269,7 +230,7 @@ func runStep(step, sourceRoot, prefixDir, jobs string, extraPaths []string) erro
 // compilers work, without pulling in the full nix coreutils.
 func buildEnv(prefixDir, jobs string, extraPaths []string) []string {
 	home := os.Getenv("HOME")
-	toolsDir, err := os.MkdirTemp(galeTmpDir(), "gale-tools-*")
+	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
 	if err != nil {
 		toolsDir = filepath.Join(os.TempDir(), "gale-tools")
 		_ = os.MkdirAll(toolsDir, 0o755)
@@ -372,26 +333,9 @@ func touchAll(dir string) error {
 	})
 }
 
-// computeSHA256 returns the hex-encoded SHA256 hash of the file
-// at the given path.
-func computeSHA256(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-
-	return fmt.Sprintf("%x", h.Sum(nil)), nil
-}
-
-// galeTmpDir returns the path to ~/.gale/tmp/, creating it
+// TmpDir returns the path to ~/.gale/tmp/, creating it
 // if needed. Falls back to system temp if unavailable.
-func galeTmpDir() string {
+func TmpDir() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return ""
