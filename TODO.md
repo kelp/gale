@@ -246,6 +246,15 @@ keeps recipes current with upstream releases.
 
 ## Build System
 
+- [ ] **`gale build --local` flag** — resolve build
+  dependencies from a sibling gale-recipes directory
+  instead of the remote registry. Without this, CI
+  builds fail when build deps (go, rust) can't be
+  fetched from the registry. Same pattern as
+  `gale sync --local`.
+
+
+
 - [x] **Build dependency checking** — Installer resolves
   build deps from recipes, installs them (binary
   preferred, source fallback), adds bin dirs to the
@@ -304,9 +313,9 @@ pure `[binary.<platform>]` with no `[build]` block.
 
 ## Developer Workflow
 
-- [ ] **`gale doctor`** — diagnose common issues: PATH
-  not set, direnv not hooked, stale generations,
-  orphaned store entries, missing dependencies.
+- [x] **`gale doctor`** — checks config, store,
+  generation, PATH, direnv, symlinks, and orphaned
+  versions. Shows fix suggestions for each issue.
 - [ ] **`gale which <binary>`** — show which package
   provides a binary and its store path.
 - [ ] **`gale diff`** — show what would change if

@@ -2,6 +2,11 @@
 
 ## v0.1.3-dev
 
+### Added
+
+- `gale doctor` diagnoses setup issues: config, store,
+  generation, PATH, direnv, and orphaned versions.
+
 ### Changed
 
 - Release notes auto-extracted from CHANGELOG.md.
