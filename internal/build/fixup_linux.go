@@ -40,7 +40,7 @@ func FixupBinaries(prefixDir string) error {
 		// patchelf not available — skip fixup silently.
 		// Static binaries don't need it, and patchelf
 		// may not be installed yet during bootstrap.
-		return nil
+		return nil //nolint:nilerr // intentional: missing patchelf is not an error
 	}
 
 	// Scan bin/ and lib/ for ELF files.
