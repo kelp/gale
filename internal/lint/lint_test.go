@@ -371,6 +371,34 @@ steps = ["cargo install --root ${PREFIX}"]
 	}
 }
 
+func TestLintCargoInstallNoFalseGoWarning(t *testing.T) {
+	data := `
+[package]
+name = "zoxide"
+version = "0.9.6"
+description = "Shell extension"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "ajeetdsouza/zoxide"
+url = "https://example.com/zoxide.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[dependencies]
+build = ["rust"]
+[build]
+steps = ["cargo install --path . --root ${PREFIX}"]
+`
+	issues := Lint(data, "")
+	for _, issue := range issues {
+		if strings.Contains(issue.Message, "go") &&
+			strings.Contains(issue.Message, "not in build deps") {
+			t.Errorf(
+				"false positive: cargo install matched as go install: %s",
+				issue.Message)
+		}
+	}
+}
+
 func TestLintMakeMissingGnumakeDep(t *testing.T) {
 	data := `
 [package]

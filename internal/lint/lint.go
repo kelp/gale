@@ -243,7 +243,7 @@ func checkBuildDeps(
 		}
 		for _, step := range steps {
 			for _, sub := range pat.substrs {
-				if strings.Contains(step, sub) {
+				if containsCommand(step, sub) {
 					addWarn(fmt.Sprintf(
 						"build step uses %q but %q "+
 							"is not in build deps",
@@ -276,6 +276,23 @@ func checkBuildDeps(
 			"build step uses \"make\" but \"gnumake\" " +
 				"is not in build deps")
 	}
+}
+
+// containsCommand checks if sub appears in s as a command
+// (at the start or after a non-alphanumeric character), not
+// as a substring of another word. This prevents "go install"
+// from matching inside "cargo install".
+func containsCommand(s, sub string) bool {
+	idx := strings.Index(s, sub)
+	if idx < 0 {
+		return false
+	}
+	if idx == 0 {
+		return true
+	}
+	prev := s[idx-1]
+	return prev == ' ' || prev == '\t' || prev == ';' ||
+		prev == '&' || prev == '|' || prev == '('
 }
 
 func checkPlatforms(
