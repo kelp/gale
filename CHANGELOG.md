@@ -18,6 +18,28 @@
   `PKG_CONFIG_PATH` from installed build deps. Recipes
   with `build = ["bzip2"]` can link `-lbz2` without
   explicit `-L` flags.
+- Binary index separation: `.binaries.toml` files
+  alongside recipes. GHCR URLs derived at runtime.
+  Backward compatible with inline `[binary.*]`.
+- Lint: warns on missing build deps (`go build`
+  without `build = ["go"]`, etc.). Validates
+  platform strings.
+- Runtime deps installed at build time. Recipes no
+  longer need to list deps in both `build` and
+  `runtime`.
+- Transitive dep resolution with cycle detection.
+  If A→B→C, all three paths in build env.
+- Dynamic linker paths: `LD_LIBRARY_PATH` (Linux),
+  `DYLD_FALLBACK_LIBRARY_PATH` (macOS) set from
+  build deps.
+- Recipe `platforms` field: restrict builds to
+  specific platforms. `gale build` skips gracefully.
+- Recipe `verify` field: CI can read custom verify
+  commands instead of guessing `--version`/`--help`.
+- Platform variables: `${OS}`, `${ARCH}`,
+  `${PLATFORM}` available in build steps.
+- Auto-detect `--local`: `gale build` inside a
+  recipes repo auto-detects local dep resolution.
 
 ### Changed
 
@@ -29,6 +51,9 @@
   across install, update, and sync.
 - Sync uses `resolveVersionedRecipe` instead of
   inlining the versioned recipe resolution logic.
+- `InstallBuildDeps` refactored: public wrapper +
+  private recursive `installDepsInner` with shared
+  `seen` map for cycle detection and dedup.
 
 ### Fixed
 
@@ -36,6 +61,9 @@
   for build dep resolution. Previously hardcoded
   the registry, ignoring the `--local` flag for
   transitive deps.
+- Transitive deps' lib/include/bin paths now
+  available in build env (previously only direct
+  deps' paths were returned).
 
 ## v0.3.0 — 2026-03-28
 

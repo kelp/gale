@@ -262,21 +262,38 @@ type DepPaths struct {
 }
 
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
-	if len(r.Dependencies.Build) == 0 || inst.Resolver == nil {
+	seen := make(map[string]bool)
+	return inst.installDepsInner(r, seen)
+}
+
+// installDepsInner recursively installs build and runtime
+// dependencies. The seen map prevents cycles and deduplicates
+// diamond dependency graphs.
+func (inst *Installer) installDepsInner(
+	r *recipe.Recipe,
+	seen map[string]bool,
+) (*DepPaths, error) {
+	allDeps := append([]string{}, r.Dependencies.Build...)
+	allDeps = append(allDeps, r.Dependencies.Runtime...)
+
+	if len(allDeps) == 0 || inst.Resolver == nil {
 		return &DepPaths{}, nil
 	}
 
 	var result DepPaths
-	for _, dep := range r.Dependencies.Build {
-		// Check if already installed — find its version
-		// by resolving the recipe.
+	for _, dep := range allDeps {
+		if seen[dep] {
+			continue
+		}
+		seen[dep] = true
+
 		depRecipe, err := inst.Resolver(dep)
 		if err != nil {
 			return nil, fmt.Errorf("resolve dep %q: %w", dep, err)
 		}
 		if depRecipe == nil {
 			return nil, fmt.Errorf(
-				"no recipe found for build dependency %q", dep)
+				"no recipe found for dependency %q", dep)
 		}
 
 		// Install the dep (will be cached if already present).
@@ -284,7 +301,7 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
 			return nil, fmt.Errorf("install dep %q: %w", dep, err)
 		}
 
-		// Record the store path.
+		// Record this dep's store path.
 		storeDir := filepath.Join(inst.Store.Root,
 			dep, depRecipe.Package.Version)
 		result.StoreDirs = append(result.StoreDirs, storeDir)
@@ -293,6 +310,17 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
 		if _, err := os.Stat(binDir); err == nil {
 			result.BinDirs = append(result.BinDirs, binDir)
 		}
+
+		// Recurse for transitive deps.
+		transitive, err := inst.installDepsInner(depRecipe, seen)
+		if err != nil {
+			return nil, fmt.Errorf("transitive deps of %q: %w",
+				dep, err)
+		}
+		result.BinDirs = append(
+			result.BinDirs, transitive.BinDirs...)
+		result.StoreDirs = append(
+			result.StoreDirs, transitive.StoreDirs...)
 	}
 	return &result, nil
 }

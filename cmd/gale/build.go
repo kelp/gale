@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/installer"
@@ -44,11 +46,25 @@ var buildCmd = &cobra.Command{
 				return fmt.Errorf("getting working dir: %w", err)
 			}
 
+			useLocal := buildLocal
+			var detectedDir string
+			if !useLocal {
+				detectedDir = detectRecipesRepo(recipePath)
+				if detectedDir != "" {
+					useLocal = true
+				}
+			}
+
 			var resolver installer.RecipeResolver
-			if buildLocal {
-				recipesDir, err := findLocalRecipesDir(cwd)
-				if err != nil {
-					return err
+			if useLocal {
+				var recipesDir string
+				if detectedDir != "" {
+					recipesDir = detectedDir
+				} else {
+					recipesDir, err = findLocalRecipesDir(cwd)
+					if err != nil {
+						return err
+					}
 				}
 				resolver = localRecipeResolver(recipesDir)
 			} else {
@@ -110,4 +126,34 @@ func init() {
 	buildCmd.Flags().BoolVar(&buildGit, "git", false,
 		"Clone and build from git repository instead of tarball")
 	rootCmd.AddCommand(buildCmd)
+}
+
+// detectRecipesRepo checks if the recipe file is inside a
+// recipes repo (path contains /recipes/<letter>/<name>.toml).
+// Returns the recipes root directory if detected, empty string
+// otherwise.
+func detectRecipesRepo(recipePath string) string {
+	abs, err := filepath.Abs(recipePath)
+	if err != nil {
+		return ""
+	}
+
+	// Look for /recipes/<letter>/ in the path.
+	normalized := filepath.ToSlash(abs)
+	idx := strings.Index(normalized, "/recipes/")
+	if idx < 0 {
+		return ""
+	}
+
+	// Verify the structure: recipes/<single-char>/<name>.toml
+	rest := normalized[idx+len("/recipes/"):]
+	parts := strings.SplitN(rest, "/", 3)
+	if len(parts) < 2 {
+		return ""
+	}
+	if len(parts[0]) != 1 {
+		return ""
+	}
+
+	return filepath.FromSlash(normalized[:idx])
 }

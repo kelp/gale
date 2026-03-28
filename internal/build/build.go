@@ -1,6 +1,7 @@
 package build
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -36,10 +37,35 @@ type BuildResult struct {
 	SHA256  string // hex-encoded hash of the archive
 }
 
+// ErrUnsupportedPlatform is returned when a recipe restricts
+// platforms and the current platform is not in the list.
+var ErrUnsupportedPlatform = errors.New("unsupported platform")
+
+// checkPlatform returns an error if the recipe restricts
+// platforms and the current platform is not in the list.
+func checkPlatform(r *recipe.Recipe) error {
+	if len(r.Package.Platforms) == 0 {
+		return nil // no restriction
+	}
+	current := runtime.GOOS + "-" + runtime.GOARCH
+	for _, p := range r.Package.Platforms {
+		if p == current {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s: %w (%s not in %v)",
+		r.Package.Name, ErrUnsupportedPlatform,
+		current, r.Package.Platforms)
+}
+
 // Build builds a recipe from source and packages the result.
 // outputDir is where the tar.zst will be written. Optional
 // extraPaths are prepended to the build environment PATH.
 func Build(r *recipe.Recipe, outputDir string, deps *BuildDeps) (*BuildResult, error) {
+	if err := checkPlatform(r); err != nil {
+		return nil, err
+	}
+
 	workspace, err := os.MkdirTemp(TmpDir(), "gale-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
@@ -104,6 +130,10 @@ func Build(r *recipe.Recipe, outputDir string, deps *BuildDeps) (*BuildResult, e
 // instead of downloading. The source directory is used as the
 // build root directly.
 func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, deps *BuildDeps) (*BuildResult, error) {
+	if err := checkPlatform(r); err != nil {
+		return nil, err
+	}
+
 	workspace, err := os.MkdirTemp(TmpDir(), "gale-build-*")
 	if err != nil {
 		return nil, fmt.Errorf("create workspace: %w", err)
@@ -158,6 +188,10 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, deps
 // as the version. The recipe's version is overridden with
 // the hash.
 func BuildGit(r *recipe.Recipe, outputDir string, deps *BuildDeps) (*BuildResult, string, error) {
+	if err := checkPlatform(r); err != nil {
+		return nil, "", err
+	}
+
 	if r.Source.Repo == "" {
 		return nil, "", fmt.Errorf("no source.repo for git build")
 	}
@@ -258,6 +292,13 @@ func buildEnv(prefixDir, jobs string, deps *BuildDeps) []string {
 		"LANG=en_US.UTF-8",
 	}
 
+	// Platform variables for use in build steps.
+	env = append(env,
+		"OS="+runtime.GOOS,
+		"ARCH="+runtime.GOARCH,
+		"PLATFORM="+runtime.GOOS+"-"+runtime.GOARCH,
+	)
+
 	// Build library/include/pkgconfig paths from dep
 	// store directories.
 	if deps != nil && len(deps.StoreDirs) > 0 {
@@ -270,10 +311,19 @@ func buildEnv(prefixDir, jobs string, deps *BuildDeps) []string {
 			pcPaths = append(pcPaths,
 				filepath.Join(d, "lib", "pkgconfig"))
 		}
+		libPathStr := strings.Join(libPaths, ":")
 		env = append(env,
-			"LIBRARY_PATH="+strings.Join(libPaths, ":"),
+			"LIBRARY_PATH="+libPathStr,
 			"C_INCLUDE_PATH="+strings.Join(incPaths, ":"),
 			"PKG_CONFIG_PATH="+strings.Join(pcPaths, ":"))
+
+		switch runtime.GOOS {
+		case "linux":
+			env = append(env, "LD_LIBRARY_PATH="+libPathStr)
+		case "darwin":
+			env = append(env,
+				"DYLD_FALLBACK_LIBRARY_PATH="+libPathStr)
+		}
 	}
 
 	// Pass through compiler if set.

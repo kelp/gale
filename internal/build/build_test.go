@@ -4,11 +4,13 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"testing"
@@ -806,4 +808,129 @@ func TestResolveToolsCreatesSymlinks(t *testing.T) {
 		filepath.Join(toolsDir, "ls")); err == nil {
 		t.Error("ls should not be in isolated tools dir")
 	}
+}
+
+// --- Behavior 10: Dynamic linker paths in buildEnv ---
+
+func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
+	deps := &BuildDeps{
+		StoreDirs: []string{"/fake/store/pkg"},
+	}
+	env := buildEnv("/tmp/prefix", "4", deps)
+
+	envMap := envToMap(env)
+
+	// Should always have LIBRARY_PATH.
+	if _, ok := envMap["LIBRARY_PATH"]; !ok {
+		t.Error("expected LIBRARY_PATH in env")
+	}
+
+	// Platform-specific dynamic linker path.
+	switch runtime.GOOS {
+	case "linux":
+		val, ok := envMap["LD_LIBRARY_PATH"]
+		if !ok {
+			t.Fatal("expected LD_LIBRARY_PATH on linux")
+		}
+		if val != envMap["LIBRARY_PATH"] {
+			t.Errorf("LD_LIBRARY_PATH = %q, want %q",
+				val, envMap["LIBRARY_PATH"])
+		}
+	case "darwin":
+		val, ok := envMap["DYLD_FALLBACK_LIBRARY_PATH"]
+		if !ok {
+			t.Fatal(
+				"expected DYLD_FALLBACK_LIBRARY_PATH on darwin")
+		}
+		if val != envMap["LIBRARY_PATH"] {
+			t.Errorf(
+				"DYLD_FALLBACK_LIBRARY_PATH = %q, want %q",
+				val, envMap["LIBRARY_PATH"])
+		}
+	}
+}
+
+func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
+	env := buildEnv("/tmp/prefix", "4", nil)
+	envMap := envToMap(env)
+
+	if _, ok := envMap["LD_LIBRARY_PATH"]; ok {
+		t.Error("LD_LIBRARY_PATH should not be set without deps")
+	}
+	if _, ok := envMap["DYLD_FALLBACK_LIBRARY_PATH"]; ok {
+		t.Error(
+			"DYLD_FALLBACK_LIBRARY_PATH should not be set " +
+				"without deps")
+	}
+}
+
+// --- Behavior 11: Platform variables in buildEnv ---
+
+func TestBuildEnvIncludesPlatformVars(t *testing.T) {
+	env := buildEnv("/tmp/prefix", "4", nil)
+	envMap := envToMap(env)
+
+	if val, ok := envMap["OS"]; !ok || val != runtime.GOOS {
+		t.Errorf("OS = %q, want %q", val, runtime.GOOS)
+	}
+	if val, ok := envMap["ARCH"]; !ok || val != runtime.GOARCH {
+		t.Errorf("ARCH = %q, want %q", val, runtime.GOARCH)
+	}
+	want := runtime.GOOS + "-" + runtime.GOARCH
+	if val, ok := envMap["PLATFORM"]; !ok || val != want {
+		t.Errorf("PLATFORM = %q, want %q", val, want)
+	}
+}
+
+// --- Behavior 12: checkPlatform ---
+
+func TestCheckPlatformEmptyListReturnsNil(t *testing.T) {
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:      "testpkg",
+			Platforms: nil,
+		},
+	}
+	if err := checkPlatform(r); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+}
+
+func TestCheckPlatformCurrentInListReturnsNil(t *testing.T) {
+	current := runtime.GOOS + "-" + runtime.GOARCH
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:      "testpkg",
+			Platforms: []string{current},
+		},
+	}
+	if err := checkPlatform(r); err != nil {
+		t.Errorf("expected nil, got %v", err)
+	}
+}
+
+func TestCheckPlatformCurrentNotInListReturnsError(t *testing.T) {
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:      "testpkg",
+			Platforms: []string{"fakeos-fakearch"},
+		},
+	}
+	err := checkPlatform(r)
+	if err == nil {
+		t.Fatal("expected error for unsupported platform")
+	}
+	if !errors.Is(err, ErrUnsupportedPlatform) {
+		t.Errorf("expected ErrUnsupportedPlatform, got %v", err)
+	}
+}
+
+// envToMap converts a []string env slice to a map.
+func envToMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, e := range env {
+		k, v, _ := strings.Cut(e, "=")
+		m[k] = v
+	}
+	return m
 }

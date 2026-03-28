@@ -662,3 +662,86 @@ func TestBuildForPlatformNoOverridesUsesDefault(t *testing.T) {
 			len(b.Steps), len(r.Build.Steps))
 	}
 }
+
+// --- Behavior: platforms field ---
+
+const recipeWithPlatforms = `
+[package]
+name = "jq"
+version = "1.7.1"
+platforms = ["linux-amd64", "darwin-arm64"]
+
+[source]
+url = "https://example.com/jq.tar.gz"
+sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+
+[build]
+steps = ["make install"]
+`
+
+func TestParsePlatformsField(t *testing.T) {
+	r, err := Parse(recipeWithPlatforms)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := []string{"linux-amd64", "darwin-arm64"}
+	if len(r.Package.Platforms) != len(want) {
+		t.Fatalf("Platforms length = %d, want %d",
+			len(r.Package.Platforms), len(want))
+	}
+	for i, p := range r.Package.Platforms {
+		if p != want[i] {
+			t.Errorf("Platforms[%d] = %q, want %q",
+				i, p, want[i])
+		}
+	}
+}
+
+func TestParsePlatformsEmptyByDefault(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Package.Platforms) != 0 {
+		t.Errorf("Platforms should be empty, got %v",
+			r.Package.Platforms)
+	}
+}
+
+// --- Behavior: verify field ---
+
+const recipeWithVerify = `
+[package]
+name = "lua"
+version = "5.4.7"
+verify = "lua -v"
+
+[source]
+url = "https://example.com/lua.tar.gz"
+sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+
+[build]
+steps = ["make install"]
+`
+
+func TestParseVerifyField(t *testing.T) {
+	r, err := Parse(recipeWithVerify)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Package.Verify != "lua -v" {
+		t.Errorf("Verify = %q, want %q",
+			r.Package.Verify, "lua -v")
+	}
+}
+
+func TestParseVerifyEmptyByDefault(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Package.Verify != "" {
+		t.Errorf("Verify = %q, want empty",
+			r.Package.Verify)
+	}
+}

@@ -301,6 +301,173 @@ steps = ["make", "make install"]
 	}
 }
 
+// --- Warning: missing build deps ---
+
+func TestLintGoBuildMissingGoDep(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "go") {
+		t.Errorf("expected warning about missing go dep, got %v",
+			issues)
+	}
+}
+
+func TestLintGoBuildWithGoDep(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[dependencies]
+build = ["go"]
+[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "missing build dep") {
+		t.Errorf("should not warn when go dep is present, got %v",
+			issues)
+	}
+}
+
+func TestLintCargoBuildMissingRustDep(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["cargo install --root ${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "rust") {
+		t.Errorf("expected warning about missing rust dep, got %v",
+			issues)
+	}
+}
+
+func TestLintMakeMissingGnumakeDep(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["make -j${JOBS}", "make install PREFIX=${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "gnumake") {
+		t.Errorf("expected warning about missing gnumake dep, got %v",
+			issues)
+	}
+}
+
+func TestLintConfigureMakeNoGnumakeWarning(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = [
+  "./configure --prefix=${PREFIX}",
+  "make -j${JOBS}",
+  "make install",
+]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "gnumake") {
+		t.Errorf(
+			"should not warn about gnumake with ./configure, got %v",
+			issues)
+	}
+}
+
+// --- Warning: invalid platform strings ---
+
+func TestLintValidPlatformNoWarning(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+platforms = ["linux-amd64"]
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "platform") {
+		t.Errorf("should not warn for valid platform, got %v",
+			issues)
+	}
+}
+
+func TestLintInvalidPlatformWarning(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+platforms = ["invalid-platform"]
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "platform") {
+		t.Errorf("expected warning about invalid platform, got %v",
+			issues)
+	}
+}
+
 // --- helpers ---
 
 func hasError(issues []Issue, substr string) bool {

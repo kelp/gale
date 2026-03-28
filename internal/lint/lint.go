@@ -25,12 +25,17 @@ type recipe struct {
 		Description string
 		License     string
 		Homepage    string
+		Platforms   []string
 	}
 	Source struct {
 		URL        string
 		SHA256     string
 		Repo       string
 		ReleasedAt string `toml:"released_at"`
+	}
+	Dependencies struct {
+		Build   []string `toml:"build"`
+		Runtime []string `toml:"runtime"`
 	}
 	Build  map[string]interface{}
 	Binary map[string]struct {
@@ -142,6 +147,14 @@ func Lint(data, filePath string) []Issue {
 		}
 	}
 
+	// Warning: missing build deps implied by build steps.
+	if len(steps) > 0 {
+		checkBuildDeps(steps, r.Dependencies.Build, addWarn)
+	}
+
+	// Warning: unrecognized platform strings.
+	checkPlatforms(r.Package.Platforms, addWarn)
+
 	return issues
 }
 
@@ -189,6 +202,91 @@ func isValidRepo(repo string) bool {
 	// owner/repo: exactly one slash, no other special chars.
 	parts := strings.Split(repo, "/")
 	return len(parts) == 2 && parts[0] != "" && parts[1] != ""
+}
+
+// validPlatforms lists the recognized <os>-<arch> values.
+var validPlatforms = map[string]bool{
+	"darwin-arm64": true,
+	"darwin-amd64": true,
+	"linux-amd64":  true,
+	"linux-arm64":  true,
+}
+
+// depPatterns maps a tool pattern to the expected build dep.
+// Each entry has a list of substrings to match in step text,
+// and an optional skip condition.
+type depPattern struct {
+	substrs []string // any match triggers the check
+	dep     string   // expected dep name
+}
+
+var depPatterns = []depPattern{
+	{substrs: []string{"go build", "go install"}, dep: "go"},
+	{substrs: []string{"cargo build", "cargo install"}, dep: "rust"},
+	{substrs: []string{"cmake"}, dep: "cmake"},
+	{substrs: []string{"pkg-config", "pkgconf"}, dep: "pkgconf"},
+	// gnumake is handled separately due to ./configure exception
+}
+
+func checkBuildDeps(
+	steps, buildDeps []string, addWarn func(string),
+) {
+	depSet := make(map[string]bool, len(buildDeps))
+	for _, d := range buildDeps {
+		depSet[d] = true
+	}
+
+	// Check standard patterns.
+	for _, pat := range depPatterns {
+		if depSet[pat.dep] {
+			continue
+		}
+		for _, step := range steps {
+			for _, sub := range pat.substrs {
+				if strings.Contains(step, sub) {
+					addWarn(fmt.Sprintf(
+						"build step uses %q but %q "+
+							"is not in build deps",
+						sub, pat.dep))
+					goto nextPattern
+				}
+			}
+		}
+	nextPattern:
+	}
+
+	// Check make → gnumake, but skip if ./configure present
+	// (autotools provides its own make).
+	if depSet["gnumake"] {
+		return
+	}
+	hasConfigure := false
+	hasMake := false
+	for _, step := range steps {
+		if strings.Contains(step, "./configure") {
+			hasConfigure = true
+		}
+		if step == "make" ||
+			strings.HasPrefix(step, "make ") {
+			hasMake = true
+		}
+	}
+	if hasMake && !hasConfigure {
+		addWarn(
+			"build step uses \"make\" but \"gnumake\" " +
+				"is not in build deps")
+	}
+}
+
+func checkPlatforms(
+	platforms []string, addWarn func(string),
+) {
+	for _, p := range platforms {
+		if !validPlatforms[p] {
+			addWarn(fmt.Sprintf(
+				"unrecognized platform %q", p))
+		}
+	}
 }
 
 func checkFilePath(filePath, name string, addErr func(string)) {

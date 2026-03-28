@@ -42,6 +42,8 @@ type Package struct {
 	Description string
 	License     string
 	Homepage    string
+	Platforms   []string `toml:"platforms,omitempty"`
+	Verify      string   `toml:"verify,omitempty"`
 }
 
 // Source holds the source archive location and checksum.
