@@ -6,6 +6,9 @@
 
 - `gale doctor` diagnoses setup issues: config, store,
   generation, PATH, direnv, and orphaned versions.
+- `gale build --local` resolves build dependencies from
+  a sibling gale-recipes directory. Build deps are now
+  installed automatically before building.
 
 ### Changed
 

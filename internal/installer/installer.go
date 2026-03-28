@@ -69,7 +69,7 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	if method != "binary" {
 		// Resolve and install build deps, collect their
 		// bin dirs for the build PATH.
-		depPaths, err := inst.installBuildDeps(r)
+		depPaths, err := inst.InstallBuildDeps(r)
 		if err != nil {
 			os.RemoveAll(storeDir)
 			return nil, fmt.Errorf("install build deps: %w", err)
@@ -112,7 +112,7 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 	}
 
 	// Resolve and install build deps.
-	depPaths, err := inst.installBuildDeps(r)
+	depPaths, err := inst.InstallBuildDeps(r)
 	if err != nil {
 		os.RemoveAll(storeDir)
 		return nil, fmt.Errorf("install build deps: %w", err)
@@ -194,9 +194,9 @@ func repoFromURL(rawURL string) string {
 	return p
 }
 
-// installBuildDeps installs build dependencies and returns
+// InstallBuildDeps installs build dependencies and returns
 // their bin directory paths.
-func (inst *Installer) installBuildDeps(r *recipe.Recipe) ([]string, error) {
+func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) ([]string, error) {
 	if len(r.Dependencies.Build) == 0 || inst.Resolver == nil {
 		return nil, nil
 	}

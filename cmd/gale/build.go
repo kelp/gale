@@ -5,10 +5,14 @@ import (
 	"os"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
+
+var buildLocal bool
 
 var buildCmd = &cobra.Command{
 	Use:   "build <recipe.toml>",
@@ -29,6 +33,37 @@ var buildCmd = &cobra.Command{
 			return fmt.Errorf("parsing recipe: %w", err)
 		}
 
+		// Resolve and install build dependencies.
+		var depPaths []string
+		if len(r.Dependencies.Build) > 0 {
+			cwd, err := os.Getwd()
+			if err != nil {
+				return fmt.Errorf("getting working dir: %w", err)
+			}
+
+			var resolver installer.RecipeResolver
+			if buildLocal {
+				recipesDir, err := findLocalRecipesDir(cwd)
+				if err != nil {
+					return err
+				}
+				resolver = localRecipeResolver(recipesDir)
+			} else {
+				reg := newRegistry()
+				resolver = reg.FetchRecipe
+			}
+
+			inst := &installer.Installer{
+				Store:    store.NewStore(defaultStoreRoot()),
+				Resolver: resolver,
+			}
+
+			depPaths, err = inst.InstallBuildDeps(r)
+			if err != nil {
+				return fmt.Errorf("install build deps: %w", err)
+			}
+		}
+
 		out.Info(fmt.Sprintf("Building %s@%s from source...",
 			r.Package.Name, r.Package.Version))
 
@@ -37,7 +72,7 @@ var buildCmd = &cobra.Command{
 			return fmt.Errorf("getting working dir: %w", err)
 		}
 
-		result, err := build.Build(r, outputDir)
+		result, err := build.Build(r, outputDir, depPaths...)
 		if err != nil {
 			return fmt.Errorf("build failed: %w", err)
 		}
@@ -50,5 +85,7 @@ var buildCmd = &cobra.Command{
 }
 
 func init() {
+	buildCmd.Flags().BoolVar(&buildLocal, "local", false,
+		"Resolve build dependencies from sibling gale-recipes directory")
 	rootCmd.AddCommand(buildCmd)
 }

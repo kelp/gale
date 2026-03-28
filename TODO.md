@@ -246,14 +246,9 @@ keeps recipes current with upstream releases.
 
 ## Build System
 
-- [ ] **`gale build --local` flag** — resolve build
-  dependencies from a sibling gale-recipes directory
-  instead of the remote registry. Without this, CI
-  builds fail when build deps (go, rust) can't be
-  fetched from the registry. Same pattern as
-  `gale sync --local`.
-
-
+- [x] **`gale build --local` flag** — resolves build
+  deps from sibling gale-recipes. Reuses
+  `Installer.InstallBuildDeps()`.
 
 - [x] **Build dependency checking** — Installer resolves
   build deps from recipes, installs them (binary
