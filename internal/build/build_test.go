@@ -816,7 +816,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/pkg"},
 	}
-	env := buildEnv("/tmp/prefix", "4", deps)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", deps)
 
 	envMap := envToMap(env)
 
@@ -851,7 +851,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 }
 
 func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", nil)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["LD_LIBRARY_PATH"]; ok {
@@ -867,7 +867,7 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 // --- Behavior 11: Platform variables in buildEnv ---
 
 func TestBuildEnvIncludesPlatformVars(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", nil)
 	envMap := envToMap(env)
 
 	if val, ok := envMap["OS"]; !ok || val != runtime.GOOS {
@@ -922,6 +922,17 @@ func TestCheckPlatformCurrentNotInListReturnsError(t *testing.T) {
 	}
 	if !errors.Is(err, ErrUnsupportedPlatform) {
 		t.Errorf("expected ErrUnsupportedPlatform, got %v", err)
+	}
+}
+
+// --- Behavior 13: VERSION variable in buildEnv ---
+
+func TestBuildEnvIncludesVersion(t *testing.T) {
+	env := buildEnv("/tmp/prefix", "4", "1.8.1", nil)
+	envMap := envToMap(env)
+
+	if val, ok := envMap["VERSION"]; !ok || val != "1.8.1" {
+		t.Errorf("VERSION = %q, want %q", val, "1.8.1")
 	}
 }
 

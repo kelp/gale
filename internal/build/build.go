@@ -153,10 +153,11 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, deps
 
 	jobs := strconv.Itoa(runtime.NumCPU())
 	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
+	version := r.Package.Version
 	for i, step := range buildCfg.Steps {
 		out.Step(fmt.Sprintf("[%d/%d] %s",
 			i+1, len(buildCfg.Steps), step))
-		if err := runStep(step, sourceDir, prefixDir, jobs, deps); err != nil {
+		if err := runStep(step, sourceDir, prefixDir, jobs, version, deps); err != nil {
 			return nil, err
 		}
 	}
@@ -244,10 +245,10 @@ func detectSourceRoot(srcDir string) (string, error) {
 // and JOBS environment variables set. Uses a clean environment
 // with only essential variables to avoid interference from the
 // host environment (e.g., nix coreutils aliases).
-func runStep(step, sourceRoot, prefixDir, jobs string, deps *BuildDeps) error {
+func runStep(step, sourceRoot, prefixDir, jobs, version string, deps *BuildDeps) error {
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = sourceRoot
-	cmd.Env = buildEnv(prefixDir, jobs, deps)
+	cmd.Env = buildEnv(prefixDir, jobs, version, deps)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 
@@ -268,7 +269,7 @@ type BuildDeps struct {
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
-func buildEnv(prefixDir, jobs string, deps *BuildDeps) []string {
+func buildEnv(prefixDir, jobs, version string, deps *BuildDeps) []string {
 	home := os.Getenv("HOME")
 	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
 	if err != nil {
@@ -285,6 +286,7 @@ func buildEnv(prefixDir, jobs string, deps *BuildDeps) []string {
 	}
 	env := []string{
 		"PREFIX=" + prefixDir,
+		"VERSION=" + version,
 		"JOBS=" + jobs,
 		"PATH=" + path,
 		"HOME=" + home,
