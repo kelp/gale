@@ -183,8 +183,13 @@ streaming. Our code provides focused prompts and tools.
 
 ## Distribution
 
-- [ ] **Self-update** — `gale update-self` or similar to
-  download the latest gale binary and replace itself.
+- [ ] **Cross-compiled release binaries** — CI builds
+  gale for darwin-arm64, darwin-amd64, linux-amd64
+  and attaches binaries to GitHub releases.
+- [ ] **Install script** — `curl | sh` one-liner that
+  downloads the right binary for the platform.
+- [ ] **Homebrew tap** — `brew install kelp/tap/gale`
+  as a migration bridge for Homebrew users.
 
 ## Auto-Update Agent
 
@@ -296,3 +301,48 @@ pure `[binary.<platform>]` with no `[build]` block.
   Go/Rust over the host's? How do per-project envs
   pick a specific version? Relationship with rustup's
   own version management.
+
+## Developer Workflow
+
+- [ ] **`gale doctor`** — diagnose common issues: PATH
+  not set, direnv not hooked, stale generations,
+  orphaned store entries, missing dependencies.
+- [ ] **`gale which <binary>`** — show which package
+  provides a binary and its store path.
+- [ ] **`gale diff`** — show what would change if
+  `gale sync` ran now (new installs, version changes,
+  removals).
+- [ ] **`gale outdated`** — show packages with newer
+  versions available upstream. Queries the registry
+  for each package in gale.toml.
+
+## Recipe Ecosystem
+
+- [ ] **Fuzzy search** — `gale search` with substring
+  and fuzzy matching against a registry index. Current
+  search needs the exact name.
+- [ ] **Lockfile pinning** — pin exact SHA256 per
+  package so `gale sync` is reproducible across
+  machines. The lockfile module exists but isn't
+  wired into install/sync.
+
+## Project Environments
+
+- [ ] **Auto-sync on run** — `gale run` and `gale shell`
+  sync first if gale.toml changed since last sync.
+- [ ] **Environment variables** — `[vars]` section in
+  gale.toml, exported by direnv via `use_gale`.
+- [ ] **`.tool-versions` compatibility** — read
+  asdf/mise format as an alternative to gale.toml
+  for teams migrating from those tools.
+
+## Trust and Security
+
+- [ ] **Recipe signing verification** — verify ed25519
+  signatures on install. The trust module exists but
+  isn't wired into the install flow.
+- [ ] **SBOM generation** — `gale sbom` outputs a
+  software bill of materials for installed packages.
+- [ ] **Reproducible builds** — verify that a source
+  build produces the same SHA256 as the GHCR binary.
+  Detect supply chain tampering.
