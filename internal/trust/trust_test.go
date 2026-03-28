@@ -375,3 +375,23 @@ func TestRoundTripLargeData(t *testing.T) {
 		t.Error("round-trip with large data failed")
 	}
 }
+
+// --- Behavior 6: Embedded public key ---
+
+func TestRecipePublicKeyNotEmpty(t *testing.T) {
+	key := RecipePublicKey()
+	if key == "" {
+		t.Fatal("RecipePublicKey() returned empty string")
+	}
+}
+
+func TestRecipePublicKeyIsValidBase64(t *testing.T) {
+	key := RecipePublicKey()
+	raw, err := base64.StdEncoding.DecodeString(key)
+	if err != nil {
+		t.Fatalf("RecipePublicKey is not valid base64: %v", err)
+	}
+	if len(raw) != 32 {
+		t.Errorf("decoded length = %d, want 32", len(raw))
+	}
+}

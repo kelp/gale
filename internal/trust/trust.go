@@ -1,11 +1,22 @@
 package trust
 
 import (
+	_ "embed"
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
+	"strings"
 )
+
+//go:embed pubkey.txt
+var recipePublicKey string
+
+// RecipePublicKey returns the embedded base64-encoded ed25519 public key
+// used to verify recipe signatures.
+func RecipePublicKey() string {
+	return strings.TrimSpace(recipePublicKey)
+}
 
 // KeyPair represents an ed25519 keypair.
 type KeyPair struct {
