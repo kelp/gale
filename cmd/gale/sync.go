@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
@@ -23,14 +22,9 @@ var syncCmd = &cobra.Command{
 			return err
 		}
 
-		data, err := os.ReadFile(ctx.GalePath)
+		cfg, err := ctx.LoadConfig()
 		if err != nil {
-			return fmt.Errorf("reading %s: %w", ctx.GalePath, err)
-		}
-
-		cfg, err := config.ParseGaleConfig(string(data))
-		if err != nil {
-			return fmt.Errorf("parsing config: %w", err)
+			return err
 		}
 
 		if len(cfg.Packages) == 0 {
@@ -47,20 +41,8 @@ var syncCmd = &cobra.Command{
 				continue
 			}
 
-			switch result.Method {
-			case "cached":
-				out.Info(fmt.Sprintf(
-					"%s@%s already installed",
-					result.Name, result.Version))
-			case "binary":
-				out.Success(fmt.Sprintf(
-					"Installed %s@%s from binary",
-					result.Name, result.Version))
-				installed++
-			case "source":
-				out.Success(fmt.Sprintf(
-					"Installed %s@%s (built from source)",
-					result.Name, result.Version))
+			reportResult(out, result, "Installed", "built from source")
+			if result.Method != "cached" {
 				installed++
 			}
 		}

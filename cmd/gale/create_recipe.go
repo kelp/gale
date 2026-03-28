@@ -17,12 +17,7 @@ var createRecipeCmd = &cobra.Command{
 		repoURL := args[0]
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		galeDir, err := galeConfigDir()
-		if err != nil {
-			return err
-		}
-
-		client := loadAIClient(galeDir)
+		client := loadAIClient()
 		if client == nil {
 			return fmt.Errorf("create-recipe requires an AI API key in ~/.gale/config.toml")
 		}

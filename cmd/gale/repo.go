@@ -152,11 +152,3 @@ func init() {
 	repoCmd.AddCommand(repoInitCmd)
 	rootCmd.AddCommand(repoCmd)
 }
-
-func galeConfigDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("finding home dir: %w", err)
-	}
-	return filepath.Join(home, ".gale"), nil
-}

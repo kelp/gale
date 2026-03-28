@@ -10,11 +10,9 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
-	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -101,29 +99,12 @@ var installCmd = &cobra.Command{
 			return err
 		}
 
-		if err := config.AddPackage(configPath, name,
-			r.Package.Version); err != nil {
-			return fmt.Errorf("adding to config: %w", err)
+		if err := finalizeInstall(galeDir, storeRoot,
+			configPath, name, r.Package.Version); err != nil {
+			return err
 		}
 
-		// Rebuild generation from gale.toml.
-		if err := rebuildGeneration(galeDir, storeRoot,
-			configPath); err != nil {
-			return fmt.Errorf("rebuild generation: %w", err)
-		}
-
-		switch result.Method {
-		case "cached":
-			out.Success(fmt.Sprintf("%s@%s already installed",
-				result.Name, result.Version))
-		case "binary":
-			out.Success(fmt.Sprintf("Installed %s@%s from binary",
-				result.Name, result.Version))
-		case "source":
-			out.Success(fmt.Sprintf(
-				"Installed %s@%s (built from source)",
-				result.Name, result.Version))
-		}
+		reportResult(out, result, "Installed", "built from source")
 
 		return nil
 	},
@@ -213,28 +194,6 @@ func isStdinTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-// newRegistry creates a Registry, using the URL from
-// ~/.gale/config.toml if configured.
-func newRegistry() *registry.Registry {
-	galeDir, err := galeConfigDir()
-	if err != nil {
-		return registry.New()
-	}
-
-	data, err := os.ReadFile(
-		filepath.Join(galeDir, "config.toml"))
-	if err != nil {
-		return registry.New()
-	}
-
-	cfg, err := config.ParseAppConfig(string(data))
-	if err != nil {
-		return registry.New()
-	}
-
-	return registry.NewWithURL(cfg.Registry.URL)
-}
-
 func installFromGit(name, recipePath string, out *output.Output) error {
 	// Resolve recipe from registry or --recipe flag.
 	var r *recipe.Recipe
@@ -289,24 +248,12 @@ func installFromGit(name, recipePath string, out *output.Output) error {
 
 	// Add to global gale.toml and rebuild generation.
 	configPath := filepath.Join(galeDir, "gale.toml")
-	if err := config.AddPackage(configPath,
-		r.Package.Name, result.Version); err != nil {
-		return fmt.Errorf("adding to config: %w", err)
-	}
-	if err := rebuildGeneration(galeDir, storeRoot,
-		configPath); err != nil {
-		return fmt.Errorf("rebuild generation: %w", err)
+	if err := finalizeInstall(galeDir, storeRoot,
+		configPath, r.Package.Name, result.Version); err != nil {
+		return err
 	}
 
-	switch result.Method {
-	case "cached":
-		out.Success(fmt.Sprintf("%s@%s already installed",
-			result.Name, result.Version))
-	case "source":
-		out.Success(fmt.Sprintf(
-			"Installed %s@%s (built from git)",
-			result.Name, result.Version))
-	}
+	reportResult(out, result, "Installed", "built from git")
 
 	return nil
 }
@@ -363,24 +310,12 @@ func installFromLocalSource(name, recipePath, sourceDir string, out *output.Outp
 
 	// Add to global gale.toml and rebuild generation.
 	configPath := filepath.Join(galeDir, "gale.toml")
-	if err := config.AddPackage(configPath,
-		r.Package.Name, r.Package.Version); err != nil {
-		return fmt.Errorf("adding to config: %w", err)
-	}
-	if err := rebuildGeneration(galeDir, storeRoot,
-		configPath); err != nil {
-		return fmt.Errorf("rebuild generation: %w", err)
+	if err := finalizeInstall(galeDir, storeRoot,
+		configPath, r.Package.Name, r.Package.Version); err != nil {
+		return err
 	}
 
-	switch result.Method {
-	case "cached":
-		out.Success(fmt.Sprintf("%s@%s already installed",
-			result.Name, result.Version))
-	case "source":
-		out.Success(fmt.Sprintf(
-			"Installed %s@%s (built from local source)",
-			result.Name, result.Version))
-	}
+	reportResult(out, result, "Installed", "built from local source")
 
 	return nil
 }
@@ -417,40 +352,6 @@ func resolveRecipePath(name, recipePath, sourceDir string) (string, error) {
 		"no recipe found for %q — use --recipe to specify a recipe file", name)
 }
 
-// findLocalRecipesDir finds a sibling gale-recipes directory
-// relative to dir. Returns the path to the recipes/ subdirectory.
-func findLocalRecipesDir(dir string) (string, error) {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
-	recipesDir := filepath.Join(filepath.Dir(absDir), "gale-recipes", "recipes")
-	if _, err := os.Stat(recipesDir); err != nil {
-		return "", fmt.Errorf(
-			"no sibling gale-recipes found next to %s", absDir)
-	}
-	return recipesDir, nil
-}
-
-// localRecipeResolver returns a RecipeResolver that reads
-// recipes from a local recipes directory using letter-bucketed
-// layout: <recipesDir>/<letter>/<name>.toml.
-func localRecipeResolver(recipesDir string) installer.RecipeResolver {
-	return func(name string) (*recipe.Recipe, error) {
-		letter := string(name[0])
-		path := filepath.Join(recipesDir, letter, name+".toml")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, fmt.Errorf(
-					"no local recipe for %q", name)
-			}
-			return nil, fmt.Errorf("read recipe %q: %w", name, err)
-		}
-		return recipe.Parse(string(data))
-	}
-}
-
 func installFromRecipeFile(recipePath string, out *output.Output) error {
 	data, err := os.ReadFile(recipePath)
 	if err != nil {
@@ -484,54 +385,14 @@ func installFromRecipeFile(recipePath string, out *output.Output) error {
 
 	// Add to gale.toml and rebuild generation.
 	configPath := filepath.Join(galeDir, "gale.toml")
-	if err := config.AddPackage(configPath,
-		r.Package.Name, r.Package.Version); err != nil {
-		return fmt.Errorf("adding to config: %w", err)
-	}
-	if err := rebuildGeneration(galeDir, storeRoot,
-		configPath); err != nil {
-		return fmt.Errorf("rebuild generation: %w", err)
+	if err := finalizeInstall(galeDir, storeRoot,
+		configPath, r.Package.Name, r.Package.Version); err != nil {
+		return err
 	}
 
-	switch result.Method {
-	case "cached":
-		out.Success(fmt.Sprintf("%s@%s already installed",
-			result.Name, result.Version))
-	case "binary":
-		out.Success(fmt.Sprintf("Installed %s@%s from binary",
-			result.Name, result.Version))
-	case "source":
-		out.Success(fmt.Sprintf("Installed %s@%s (built from source)",
-			result.Name, result.Version))
-	}
+	reportResult(out, result, "Installed", "built from source")
 
 	return nil
-}
-
-// rebuildGeneration reads gale.toml and rebuilds the
-// generation symlinks.
-func rebuildGeneration(galeDir, storeRoot, configPath string) error {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// No config yet — build empty generation.
-			return generation.Build(
-				map[string]string{}, galeDir, storeRoot)
-		}
-		return fmt.Errorf("read config: %w", err)
-	}
-
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		return fmt.Errorf("parse config: %w", err)
-	}
-
-	pkgs := cfg.Packages
-	if pkgs == nil {
-		pkgs = map[string]string{}
-	}
-
-	return generation.Build(pkgs, galeDir, storeRoot)
 }
 
 // recipeFileResolver returns a RecipeResolver that looks for

@@ -51,14 +51,6 @@ func init() {
 	rootCmd.AddCommand(shellCmd)
 }
 
-func defaultStoreRoot() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join("/", "gale", "pkg")
-	}
-	return filepath.Join(home, ".gale", "pkg")
-}
-
 // prependPATH returns the current environment with binDir
 // prepended to PATH.
 func prependPATH(binDir string) []string {

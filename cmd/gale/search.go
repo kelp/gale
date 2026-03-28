@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 
 	"github.com/kelp/gale/internal/ai"
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/repo"
 	"github.com/spf13/cobra"
@@ -27,7 +26,7 @@ var searchCmd = &cobra.Command{
 		}
 
 		// Try AI-enhanced search first.
-		client := loadAIClient(galeDir)
+		client := loadAIClient()
 		if client != nil {
 			result, err := client.Complete(
 				fmt.Sprintf("List CLI tool package names matching: %s. Return only names, one per line.", query))
@@ -66,14 +65,8 @@ func init() {
 
 // loadAIClient creates an AI client from config.toml, or nil
 // if no API key is configured.
-func loadAIClient(galeDir string) *ai.Client {
-	configPath := filepath.Join(galeDir, "config.toml")
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil
-	}
-
-	cfg, err := config.ParseAppConfig(string(data))
+func loadAIClient() *ai.Client {
+	cfg, err := loadAppConfig()
 	if err != nil {
 		return nil
 	}

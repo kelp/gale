@@ -48,14 +48,9 @@ var updateCmd = &cobra.Command{
 			return err
 		}
 
-		data, err := os.ReadFile(ctx.GalePath)
+		cfg, err := ctx.LoadConfig()
 		if err != nil {
-			return fmt.Errorf("reading config: %w", err)
-		}
-
-		cfg, err := config.ParseGaleConfig(string(data))
-		if err != nil {
-			return fmt.Errorf("parsing config: %w", err)
+			return err
 		}
 
 		// Determine which packages to update.
@@ -109,16 +104,7 @@ var updateCmd = &cobra.Command{
 				return fmt.Errorf("updating config: %w", err)
 			}
 
-			switch result.Method {
-			case "binary":
-				out.Success(fmt.Sprintf(
-					"Updated %s@%s from binary",
-					name, r.Package.Version))
-			case "source":
-				out.Success(fmt.Sprintf(
-					"Updated %s@%s (built from source)",
-					name, r.Package.Version))
-			}
+			reportResult(out, result, "Updated", "built from source")
 			updated++
 		}
 
@@ -163,13 +149,9 @@ func updateFromGit(name string, local bool, out *output.Output) error {
 	}
 
 	// Compare to installed version.
-	data, err := os.ReadFile(ctx.GalePath)
+	cfg, err := ctx.LoadConfig()
 	if err != nil {
-		return fmt.Errorf("reading config: %w", err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		return fmt.Errorf("parsing config: %w", err)
+		return err
 	}
 
 	if cfg.Packages[name] == remoteHash {
