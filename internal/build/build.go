@@ -33,17 +33,20 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 	defer os.RemoveAll(workspace)
 
 	// Fetch source tarball.
+	fmt.Fprintf(os.Stderr, "  Downloading %s\n", r.Source.URL)
 	tarballPath := filepath.Join(workspace, "source.tar.gz")
 	if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
 		return nil, fmt.Errorf("fetch source: %w", err)
 	}
 
 	// Verify source SHA256.
+	fmt.Fprintf(os.Stderr, "  Verifying SHA256...\n")
 	if err := download.VerifySHA256(tarballPath, r.Source.SHA256); err != nil {
 		return nil, fmt.Errorf("verify source: %w", err)
 	}
 
 	// Extract source.
+	fmt.Fprintf(os.Stderr, "  Extracting source...\n")
 	srcDir := filepath.Join(workspace, "src")
 	if err := download.ExtractTarGz(tarballPath, srcDir); err != nil {
 		return nil, fmt.Errorf("extract source: %w", err)
@@ -67,15 +70,24 @@ func Build(r *recipe.Recipe, outputDir string, extraPaths ...string) (*BuildResu
 	}
 
 	// Run build steps.
+	fmt.Fprintf(os.Stderr, "  Running build steps...\n")
 	jobs := strconv.Itoa(runtime.NumCPU())
 	build := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
-	for _, step := range build.Steps {
+	for i, step := range build.Steps {
+		// Show step number and a truncated preview.
+		preview := step
+		if len(preview) > 60 {
+			preview = preview[:60] + "..."
+		}
+		fmt.Fprintf(os.Stderr, "  [%d/%d] %s\n",
+			i+1, len(build.Steps), preview)
 		if err := runStep(step, sourceRoot, prefixDir, jobs, extraPaths); err != nil {
 			return nil, err
 		}
 	}
 
 	// Fix dynamic library paths for portability.
+	fmt.Fprintf(os.Stderr, "  Fixing library paths...\n")
 	if err := FixupBinaries(prefixDir); err != nil {
 		return nil, fmt.Errorf("fixup binaries: %w", err)
 	}
