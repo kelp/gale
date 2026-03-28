@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"time"
+
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -33,23 +35,7 @@ func Fetch(url, destPath string) error {
 		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 
-	f, err := os.Create(destPath)
-	if err != nil {
-		return fmt.Errorf("create destination file: %w", err)
-	}
-
-	if _, err := io.Copy(f, resp.Body); err != nil {
-		f.Close()
-		os.Remove(destPath)
-		return fmt.Errorf("write destination file: %w", err)
-	}
-
-	if err := f.Close(); err != nil {
-		os.Remove(destPath)
-		return fmt.Errorf("close destination file: %w", err)
-	}
-
-	return nil
+	return writeWithProgress(resp.Body, resp.ContentLength, destPath)
 }
 
 // FetchWithAuth downloads a file from url to destPath with a
@@ -75,16 +61,27 @@ func FetchWithAuth(url, destPath, bearerToken string) error {
 		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 
+	return writeWithProgress(resp.Body, resp.ContentLength, destPath)
+}
+
+// writeWithProgress copies from reader to a file at destPath,
+// printing download progress to stderr.
+func writeWithProgress(reader io.Reader, total int64, destPath string) error {
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("create destination file: %w", err)
 	}
 
-	if _, err := io.Copy(f, resp.Body); err != nil {
+	pw := &progressWriter{
+		total: total,
+		start: time.Now(),
+	}
+	if _, err := io.Copy(f, io.TeeReader(reader, pw)); err != nil {
 		f.Close()
 		os.Remove(destPath)
 		return fmt.Errorf("write destination file: %w", err)
 	}
+	pw.finish()
 
 	if err := f.Close(); err != nil {
 		os.Remove(destPath)
@@ -92,6 +89,66 @@ func FetchWithAuth(url, destPath, bearerToken string) error {
 	}
 
 	return nil
+}
+
+// progressWriter prints download progress to stderr.
+type progressWriter struct {
+	written int64
+	total   int64 // -1 if unknown
+	start   time.Time
+	last    time.Time
+}
+
+func (pw *progressWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	pw.written += int64(n)
+
+	now := time.Now()
+	if now.Sub(pw.last) < 250*time.Millisecond {
+		return n, nil
+	}
+	pw.last = now
+
+	elapsed := now.Sub(pw.start).Seconds()
+	if elapsed == 0 {
+		return n, nil
+	}
+	speed := float64(pw.written) / elapsed
+
+	if pw.total > 0 {
+		pct := float64(pw.written) / float64(pw.total) * 100
+		fmt.Fprintf(os.Stderr, "\r  %s / %s (%.0f%%) %s/s",
+			formatBytes(pw.written), formatBytes(pw.total),
+			pct, formatBytes(int64(speed)))
+	} else {
+		fmt.Fprintf(os.Stderr, "\r  %s  %s/s",
+			formatBytes(pw.written), formatBytes(int64(speed)))
+	}
+
+	return n, nil
+}
+
+func (pw *progressWriter) finish() {
+	elapsed := time.Since(pw.start).Seconds()
+	if elapsed == 0 {
+		elapsed = 0.001
+	}
+	speed := float64(pw.written) / elapsed
+	fmt.Fprintf(os.Stderr, "\r  %s  %s/s  done\n",
+		formatBytes(pw.written), formatBytes(int64(speed)))
+}
+
+func formatBytes(b int64) string {
+	switch {
+	case b >= 1<<30:
+		return fmt.Sprintf("%.1f GB", float64(b)/(1<<30))
+	case b >= 1<<20:
+		return fmt.Sprintf("%.1f MB", float64(b)/(1<<20))
+	case b >= 1<<10:
+		return fmt.Sprintf("%.1f KB", float64(b)/(1<<10))
+	default:
+		return fmt.Sprintf("%d B", b)
+	}
 }
 
 // VerifySHA256 checks that the file at path has the expected
