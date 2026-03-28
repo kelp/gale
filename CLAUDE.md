@@ -137,27 +137,15 @@ global share the same generation model.
 New commands MUST reuse existing helpers. Do not
 duplicate logic — call through to shared functions.
 
-**`cmd/gale/context.go`** — shared setup for commands
-that operate on gale.toml:
-- `newCmdContext(local bool)` resolves config path,
-  gale dir, store, resolver, and installer
-- `installPackage(name, out)` resolves + installs one
-  package via the context's resolver
-- `LoadConfig()` reads and parses the context's gale.toml
-- `rebuildGeneration()` rebuilds generation from config
-- `newRegistry()` creates registry with config.toml URL
-- `localRecipeResolver()` reads from local recipes dir
-- `findLocalRecipesDir()` finds sibling gale-recipes
-- `loadAppConfig()` reads ~/.gale/config.toml
-- `reportResult()` prints install/update outcome
-- `finalizeInstall()` adds to config + rebuilds gen
-- Used by: sync, update, install, build, gc
+**`cmd/gale/context.go`** — all shared CLI helpers:
+config resolution, registry, resolver, generation
+rebuild, result reporting, install finalization.
+Read this file before adding a new command.
 
-**`cmd/gale/paths.go`** — path helpers:
-- `galeConfigDir()` returns `~/.gale/`
-- `defaultStoreRoot()` returns `~/.gale/pkg/`
+**`cmd/gale/paths.go`** — `galeConfigDir()` and
+`defaultStoreRoot()`.
 
-**`internal/installer/`** — the Installer struct:
+**`internal/installer/`** — Installer struct:
 - `Install(r)` — binary-first, source fallback
 - `InstallLocal(r, sourceDir)` — build from local dir
 - `InstallGit(r)` — clone and build from git
@@ -175,13 +163,19 @@ that operate on gale.toml:
 **`internal/download/`** — `HashFile(path)` returns
 hex SHA256. Used by build and download.VerifySHA256.
 
-**`internal/installer/`** — `extractBuild()` shared
-by Install, InstallLocal, and InstallGit.
-
 When adding a new command that installs packages, use
 `newCmdContext` + `installPackage`. When adding a new
 build mode, delegate to `BuildLocal` after obtaining
 the source directory.
+
+## Adding a New Command
+
+1. Create `cmd/gale/<name>.go` with cobra command
+2. Use `newCmdContext(local)` for config/store/resolver
+3. Use `ctx.installPackage()` to install packages
+4. Use `reportResult()` for consistent output
+5. Use `finalizeInstall()` for config + generation
+6. Register in `init()` with `rootCmd.AddCommand`
 
 ## Conventions
 
@@ -218,7 +212,3 @@ the source directory.
   `//nolint:gosec` for world-readable files.
 - Use `go:embed` to bake files into the binary
   (see `internal/generation/gale-readme.md`).
-- Build temp dirs use ~/.gale/tmp/ via build.TmpDir().
-  Do not duplicate galeTmpDir — import from build.
-- recipe.parse(data, requireSource) is the shared
-  parser. Parse/ParseLocal are thin wrappers.
