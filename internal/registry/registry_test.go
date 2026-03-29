@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 
@@ -1122,5 +1123,87 @@ func TestFetchRecipeVersionRejectsBadSignature(t *testing.T) {
 	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
 	if err == nil {
 		t.Fatal("expected error for bad signature")
+	}
+}
+
+// --- Behavior 35: end-to-end signature verification ---
+
+func TestFetchRecipeEndToEndSignatureFlow(t *testing.T) {
+	kp, err := trust.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair: %v", err)
+	}
+
+	recipeBody := []byte(recipeNoBinaries)
+	recipeSig, _ := trust.Sign(recipeBody, kp.PrivateKey)
+
+	binBody := []byte(binariesToml)
+	binSig, _ := trust.Sign(binBody, kp.PrivateKey)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.toml":
+				w.Write(recipeBody)
+			case "/recipes/j/jq.toml.sig":
+				fmt.Fprint(w, recipeSig)
+			case "/recipes/j/jq.binaries.toml":
+				w.Write(binBody)
+			case "/recipes/j/jq.binaries.toml.sig":
+				fmt.Fprint(w, binSig)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:   srv.URL,
+		PublicKey: kp.PublicKey,
+	}
+
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if rec.Package.Name != "jq" {
+		t.Errorf("Name = %q, want %q",
+			rec.Package.Name, "jq")
+	}
+	if rec.Package.Version != "1.8.1" {
+		t.Errorf("Version = %q, want %q",
+			rec.Package.Version, "1.8.1")
+	}
+	if len(rec.Binary) != 2 {
+		t.Errorf("Binary count = %d, want 2",
+			len(rec.Binary))
+	}
+
+	// Tamper with recipe body — signature should reject.
+	tamperedBody := []byte(
+		strings.ReplaceAll(
+			string(recipeBody), "1.8.1", "1.8.2-evil"))
+
+	srv2 := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.toml":
+				w.Write(tamperedBody)
+			case "/recipes/j/jq.toml.sig":
+				fmt.Fprint(w, recipeSig)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv2.Close()
+
+	reg2 := &Registry{
+		BaseURL:   srv2.URL,
+		PublicKey: kp.PublicKey,
+	}
+	_, err = reg2.FetchRecipe("jq")
+	if err == nil {
+		t.Fatal("expected error for tampered recipe")
 	}
 }
