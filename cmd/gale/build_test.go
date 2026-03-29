@@ -5,9 +5,10 @@ import "testing"
 func TestDetectRecipesRepoWithValidPath(t *testing.T) {
 	path := "/home/user/code/gale-recipes/recipes/j/jq.toml"
 	got := detectRecipesRepo(path)
-	if got != "/home/user/code/gale-recipes" {
+	want := "/home/user/code/gale-recipes/recipes"
+	if got != want {
 		t.Errorf("detectRecipesRepo(%q) = %q, want %q",
-			path, got, "/home/user/code/gale-recipes")
+			path, got, want)
 	}
 }
 

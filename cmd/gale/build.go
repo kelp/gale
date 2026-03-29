@@ -155,5 +155,5 @@ func detectRecipesRepo(recipePath string) string {
 		return ""
 	}
 
-	return filepath.FromSlash(normalized[:idx])
+	return filepath.FromSlash(normalized[:idx+len("/recipes")])
 }
