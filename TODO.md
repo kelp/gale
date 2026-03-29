@@ -265,12 +265,10 @@ credentials and the recipe signing key.
 Prerequisite. Protects the repo that holds recipes
 and CI workflows. No code changes — GitHub settings.
 
-- [ ] **Enable signed commit requirement** — add
-  branch protection rule or ruleset on gale-recipes
-  `main` requiring verified signed commits. Bot
-  commits via GitHub API are signed by GitHub's key
-  (already working). Your pushes are signed with
-  your SSH key (already working).
+- [x] **Enable signed commit requirement** — ruleset
+  on gale-recipes `main` requires verified signed
+  commits. Bot commits via GitHub API are signed by
+  GitHub's key. Pushes are signed with SSH key.
 
 ### Layer 1: Recipe signing
 
