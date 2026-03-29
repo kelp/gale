@@ -333,11 +333,8 @@ what the source produces.
 - [x] **`gale audit <pkg>`** — rebuilds from source,
   compares SHA256 against lockfile hash. Reports
   match or mismatch with both hashes.
-- [ ] **Deterministic build investigation** — identify
-  which recipes produce reproducible builds today
-  and what prevents others (timestamps, embedded
-  paths, build IDs). Document per-recipe status.
-  Use `gale audit` to test.
+- [ ] **Deterministic build investigation** — moved
+  to gale-recipes TODO. Run `gale audit` per recipe.
 
 ### Layer 5: SBOM
 
