@@ -134,7 +134,10 @@ See `man gale` for the full reference.
 
 Recipes are TOML files in
 [gale-recipes](https://github.com/kelp/gale-recipes).
-Each recipe defines how to build a package from source.
+The repository has over 500 recipes today, covering
+tools like jq, ripgrep, git, terraform, kubectl, and
+Go. Each recipe defines how to build a package from
+source.
 Prebuilt binaries cached in GHCR are an optimization
 — every recipe can build from source if needed.
 
