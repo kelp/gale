@@ -1,4 +1,4 @@
-# Using Gale with Chezmoi
+# Using Gale with [Chezmoi](https://www.chezmoi.io/)
 
 Gale's global config lives in `~/.gale/gale.toml`.
 This file declares every tool you want on every
