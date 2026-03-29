@@ -214,6 +214,125 @@ streaming. Our code provides focused prompts and tools.
   build with Go, installs man page. Bottles to come
   once release binaries are live.
 
+## Supply Chain Security
+
+Each layer builds on the previous one. Implement in
+order — later layers assume earlier ones exist.
+
+Two independent protection layers:
+
+- **Git layer** — signed commits enforced on
+  gale-recipes `main`. Protects the repo. Attacker
+  needs SSH signing key + push token to modify
+  anything, including CI workflows.
+- **Recipe layer** — ed25519 signatures verified by
+  gale at fetch time. Protects the delivery path
+  (raw.githubusercontent.com → gale). Gale can't
+  see git signatures, so it needs its own.
+
+The git layer guards the CI secrets that hold the
+recipe signing key. Together they create a two-factor
+barrier: compromise requires both git signing
+credentials and the recipe signing key.
+
+### Layer 0: Signed commit enforcement
+
+Prerequisite. Protects the repo that holds recipes
+and CI workflows. No code changes — GitHub settings.
+
+- [ ] **Enable signed commit requirement** — add
+  branch protection rule or ruleset on gale-recipes
+  `main` requiring verified signed commits. Bot
+  commits via GitHub API are signed by GitHub's key
+  (already working). Your pushes are signed with
+  your SSH key (already working).
+
+### Layer 1: Recipe signing
+
+Foundation for all client-side verification.
+
+- [x] **Generate ed25519 keypair** — one-time setup.
+  Private key stored as `RECIPE_SIGNING_KEY` secret
+  in gale-recipes GitHub Actions. Public key embedded
+  in gale binary at `internal/trust/pubkey.txt`.
+- [x] **Sign recipes in CI** — gale-recipes CI signs
+  each recipe TOML with ed25519 on commit/merge.
+  Detached `.sig` files stored alongside recipes.
+  Scripts: `scripts/sign-file.go`,
+  `scripts/sign-recipes.sh`.
+- [x] **Embed public key in gale** — `go:embed` bakes
+  `pubkey.txt` into the binary.
+  `trust.RecipePublicKey()` exposes it.
+- [x] **Verify signatures on fetch** — registry
+  fetches `.sig` alongside recipe and binaries
+  index. Verifies with `trust.Verify()` before
+  parsing. Rejects unsigned or bad-signature
+  recipes. `FetchRecipe`, `FetchRecipeVersion`,
+  and `fetchBinaries` all verify.
+- [x] **Local recipes skip verification** — `--local`
+  and `--recipe` bypass the registry entirely, so
+  no signature check. No explicit flag needed.
+
+### Layer 2: Source URL validation
+
+Prevents recipes from pointing at arbitrary domains.
+Requires Layer 1 so that the validation rules can't
+be bypassed by modifying the recipe.
+
+- [ ] **Validate source URLs** — reject `source.url`
+  values that don't match a known set of trusted
+  hosts (github.com, gitlab.com, etc.). Enforced
+  at recipe parse time. The allowlist lives in code,
+  not in config.
+- [ ] **Enforce `source.repo` consistency** — when
+  `source.repo` is set (e.g., `jqlang/jq`), verify
+  that `source.url` points at that repo's releases
+  or archive. Catch URL/repo mismatches.
+
+### Layer 3: Binary attestation verification
+
+Proves prebuilt binaries were built by our CI from
+our source. Requires Layer 1 so we trust the recipe
+that tells us which binary to expect.
+
+- [ ] **Verify Sigstore attestations on install** —
+  during binary install, query the GitHub attestation
+  API for the binary's SHA256. Use `sigstore-go` to
+  validate the certificate chain and Rekor log entry.
+  Verify the attestation's subject matches our CI
+  workflow.
+- [ ] **Fallback on failure** — if attestation
+  verification fails, fall back to source build with
+  a warning. Never silently install an unattested
+  binary.
+- [ ] **`gale verify <pkg>`** — standalone command to
+  check attestations for already-installed packages.
+
+### Layer 4: Reproducible build verification
+
+Proves that a prebuilt binary matches what you'd get
+from a source build. The strongest guarantee: even
+a compromised CI can't serve a different binary than
+what the source produces.
+
+- [ ] **`gale audit <pkg>`** — build from source into
+  a temp dir, compare SHA256 against the installed
+  binary. Report match/mismatch.
+- [ ] **Deterministic build investigation** — identify
+  which recipes produce reproducible builds today
+  and what prevents others (timestamps, embedded
+  paths, build IDs). Document per-recipe status.
+
+### Layer 5: SBOM
+
+Useful once the other layers establish a trusted
+chain from source to installed binary.
+
+- [ ] **`gale sbom`** — output a software bill of
+  materials for installed packages. Include package
+  name, version, source URL, SHA256, build method
+  (binary/source), and attestation status.
+
 ## Auto-Update Agent
 
 Daily GitHub Actions workflow in gale-recipes that
@@ -373,13 +492,3 @@ pure `[binary.<platform>]` with no `[build]` block.
   nodejs→node). Both files can coexist for mixed
   teams.
 
-## Trust and Security
-
-- [ ] **Recipe signing verification** — verify ed25519
-  signatures on install. The trust module exists but
-  isn't wired into the install flow.
-- [ ] **SBOM generation** — `gale sbom` outputs a
-  software bill of materials for installed packages.
-- [ ] **Reproducible builds** — verify that a source
-  build produces the same SHA256 as the GHCR binary.
-  Detect supply chain tampering.
