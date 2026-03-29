@@ -48,6 +48,7 @@ internal/trust/        ed25519 signing and verification
 internal/ai/           Anthropic SDK integration
 internal/homebrew/     Homebrew formula file parser
 internal/lint/         recipe TOML validation
+internal/attestation/  Sigstore attestation via gh CLI
 internal/gitutil/      git clone, ls-remote, URL expansion
 ```
 
@@ -90,6 +91,9 @@ gale search <query>       Search for packages
 gale shell                Open shell with project environment
 gale run <cmd>            Run command in project environment
 gale import homebrew <n>  Import Homebrew formula as recipe
+gale audit <pkg>         Rebuild and compare SHA256
+gale verify <pkg>        Check Sigstore attestation
+gale sbom [pkg]          Software bill of materials
 ```
 
 ### Key Flags
@@ -103,6 +107,8 @@ gale import homebrew <n>  Import Homebrew formula as recipe
 - `--recipe <file>` (install): use a local recipe file
 - `--no-color` (global): disable colored output
 - `--dry-run` (gc): preview without removing
+- `--json` (sbom): machine-readable JSON output
+- `--vars-only` (env): print only [vars] exports
 
 ## Two-Repo Architecture
 
@@ -124,6 +130,15 @@ and adds `.gale/current/bin` to PATH. Project and
 global share the same generation model.
 
 `gale env` prints `export PATH=...` for CI/scripts.
+Also exports `[vars]` from gale.toml. `gale run` and
+`gale shell` auto-sync when gale.toml changes.
+
+## Documentation
+
+- `docs/` — user-facing guides (getting started,
+  direnv, chezmoi, CI, troubleshooting, recipes)
+- `docs/dev/` — development reference (design,
+  style guide, build improvements)
 
 ## Principles
 
@@ -218,6 +233,9 @@ Key rules:
   `//nolint:gosec` for world-readable files.
 - Use `go:embed` to bake files into the binary
   (see `internal/generation/gale-readme.md`).
+- `internal/attestation/` uses `Disable()`/`Enable()`
+  for tests. Installer tests call `attestation.Disable()`
+  in TestMain to avoid hitting real gh CLI.
 
 ## Testing Homebrew Formula
 
