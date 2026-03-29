@@ -345,43 +345,8 @@ what the source produces.
 
 ## Auto-Update Agent
 
-Daily GitHub Actions workflow in gale-recipes that
-keeps recipes current with upstream releases.
-
-### Recipe format additions
-
-- [x] **Add `[source].repo` field** — explicit GitHub
-  owner/repo (e.g., `repo = "jqlang/jq"`). Used to
-  query GitHub Releases API.
-- [x] **Add `[source].released_at` field** — date the
-  current version was first seen. Used for cooldown.
-- [x] **Update all existing recipes** with `repo` and
-  `released_at` fields.
-
-### Workflow: version checker
-
-- [ ] **Cron workflow** — runs daily in gale-recipes.
-  For each recipe with `[source].repo`, queries
-  `gh api /repos/{owner}/{repo}/releases/latest`.
-- [ ] **Cooldown enforcement** — if new version is less
-  than 3 days old (from upstream release date), skip.
-  Security patches can be fast-tracked manually.
-  See: nesbitt.io/2026/03/04 and
-  simonwillison.net/2025/Nov/21/dependency-cooldowns/
-- [ ] **PR per update** — each version bump creates a
-  PR with updated version, SHA256, and source URL.
-  CI builds it on both platforms. Reviewable and
-  auditable.
-
-### AI-assisted build recovery
-
-- [ ] **Claude Code SDK integration** — when a version
-  bump breaks the build, read the build error and
-  attempt a recipe fix (adjust flags, deps, build
-  steps). If fix works, push to the PR.
-- [ ] **Issue fallback** — if AI fix fails, open a
-  GitHub issue with the build error and recipe name.
-  Human fixes it later.
+Moved to gale-recipes TODO. Recipe format additions
+(`source.repo`, `source.released_at`) are complete.
 
 ## Package Lifecycle
 
@@ -454,9 +419,8 @@ pure `[binary.<platform>]` with no `[build]` block.
   bootstrap binary. Binary sections for both platforms.
 - [x] **Rust** — recipe builds from source with vendored
   OpenSSL. CI build in progress.
-- [ ] **Zig** — single binary download from ziglang.org.
-- [ ] **Node.js / npm** — download official tarball.
-  Needed for recipes with npm build steps.
+- [x] **Zig** — recipe in gale-recipes.
+- [x] **Node.js** — recipe in gale-recipes.
 - [ ] **Design decisions** — how do these interact with
   system-installed versions? Should gale prefer its own
   Go/Rust over the host's? How do per-project envs
@@ -492,10 +456,11 @@ pure `[binary.<platform>]` with no `[build]` block.
 
 ## Project Environments
 
-- [ ] **Auto-sync on run** — `gale run` and `gale shell`
+- [x] **Auto-sync on run** — `gale run` and `gale shell`
   sync first if gale.toml changed since last sync.
-- [ ] **Environment variables** — `[vars]` section in
-  gale.toml, exported by direnv via `use_gale`.
+- [x] **Environment variables** — `[vars]` section in
+  gale.toml, exported by direnv via `use_gale` and
+  `gale env`. Supports `--vars-only` flag.
 - [x] **`.tool-versions` compatibility** — fallback
   to `.tool-versions` when no gale.toml exists.
   Parses asdf/mise format, maps names (golang→go,
