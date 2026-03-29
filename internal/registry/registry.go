@@ -157,6 +157,10 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 			"read %s@%s recipe: %w", name, version, err)
 	}
 
+	if err := r.verifyRecipe(recipeBody, recipeURL); err != nil {
+		return nil, fmt.Errorf("%s@%s: %w", name, version, err)
+	}
+
 	rec, err := recipe.Parse(string(recipeBody))
 	if err != nil {
 		return nil, fmt.Errorf(

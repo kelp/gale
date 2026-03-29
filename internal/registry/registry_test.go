@@ -1047,3 +1047,80 @@ func TestFetchRecipeRejectsBadBinariesSignature(t *testing.T) {
 		t.Fatal("expected error for bad binaries signature")
 	}
 }
+
+// --- Behavior 33: FetchRecipeVersion verifies signature ---
+
+func TestFetchRecipeVersionVerifiesSignature(t *testing.T) {
+	kp, _ := trust.GenerateKeyPair()
+
+	const commit = "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.7.1 " + commit + "\n"
+
+	recipeBody := []byte(validTOML)
+	sig, _ := trust.Sign(recipeBody, kp.PrivateKey)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.versions":
+				fmt.Fprint(w, versionsBody)
+			case "/" + commit + "/recipes/j/jq.toml":
+				w.Write(recipeBody)
+			case "/" + commit + "/recipes/j/jq.toml.sig":
+				fmt.Fprint(w, sig)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:   srv.URL,
+		PublicKey: kp.PublicKey,
+	}
+	rec, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Name != "testpkg" {
+		t.Errorf("Name = %q, want %q",
+			rec.Package.Name, "testpkg")
+	}
+}
+
+// --- Behavior 34: FetchRecipeVersion rejects bad signature ---
+
+func TestFetchRecipeVersionRejectsBadSignature(t *testing.T) {
+	kp1, _ := trust.GenerateKeyPair()
+	kp2, _ := trust.GenerateKeyPair()
+
+	const commit = "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.7.1 " + commit + "\n"
+
+	recipeBody := []byte(validTOML)
+	sig, _ := trust.Sign(recipeBody, kp1.PrivateKey)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.versions":
+				fmt.Fprint(w, versionsBody)
+			case "/" + commit + "/recipes/j/jq.toml":
+				w.Write(recipeBody)
+			case "/" + commit + "/recipes/j/jq.toml.sig":
+				fmt.Fprint(w, sig)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:   srv.URL,
+		PublicKey: kp2.PublicKey,
+	}
+	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	if err == nil {
+		t.Fatal("expected error for bad signature")
+	}
+}
