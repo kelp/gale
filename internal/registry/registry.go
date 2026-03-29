@@ -23,18 +23,26 @@ type Registry struct {
 	PublicKey string // ed25519 public key (base64); empty = skip verification
 }
 
-// New returns a Registry configured with DefaultURL.
+// New returns a Registry configured with DefaultURL and
+// the embedded recipe signing public key.
 func New() *Registry {
-	return &Registry{BaseURL: DefaultURL}
+	return &Registry{
+		BaseURL:   DefaultURL,
+		PublicKey: trust.RecipePublicKey(),
+	}
 }
 
-// NewWithURL returns a Registry with the given base URL.
-// If url is empty, DefaultURL is used.
+// NewWithURL returns a Registry with the given base URL
+// and the embedded recipe signing public key. If url is
+// empty, DefaultURL is used.
 func NewWithURL(url string) *Registry {
 	if url == "" {
 		return New()
 	}
-	return &Registry{BaseURL: url}
+	return &Registry{
+		BaseURL:   url,
+		PublicKey: trust.RecipePublicKey(),
+	}
 }
 
 // FetchRecipe downloads and parses the recipe for the named
