@@ -77,7 +77,10 @@ func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 	// If the recipe has no inline binary entries, try to
 	// fetch a separate .binaries.toml file.
 	if len(rec.Binary) == 0 {
-		idx, _ := r.fetchBinaries(name)
+		idx, err := r.fetchBinaries(name)
+		if err != nil {
+			return nil, err
+		}
 		if idx != nil {
 			base := ghcrBaseFromURL(r.BaseURL)
 			recipe.MergeBinaries(rec, idx, base)
@@ -189,6 +192,10 @@ func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 	if err != nil {
 		return nil, fmt.Errorf(
 			"read binaries %s: %w", name, err)
+	}
+
+	if err := r.verifyRecipe(body, url); err != nil {
+		return nil, fmt.Errorf("binaries %s: %w", name, err)
 	}
 
 	return recipe.ParseBinaryIndex(string(body))

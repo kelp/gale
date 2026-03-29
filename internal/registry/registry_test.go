@@ -967,3 +967,83 @@ func TestFetchRecipeNoPublicKeySkipsVerification(t *testing.T) {
 			rec.Package.Name, "testpkg")
 	}
 }
+
+// --- Behavior 31: FetchRecipe verifies binaries signature ---
+
+func TestFetchRecipeVerifiesBinariesSignature(t *testing.T) {
+	kp, _ := trust.GenerateKeyPair()
+
+	recipeBody := []byte(recipeNoBinaries)
+	recipeSig, _ := trust.Sign(recipeBody, kp.PrivateKey)
+
+	binBody := []byte(binariesToml)
+	binSig, _ := trust.Sign(binBody, kp.PrivateKey)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.toml":
+				w.Write(recipeBody)
+			case "/recipes/j/jq.toml.sig":
+				fmt.Fprint(w, recipeSig)
+			case "/recipes/j/jq.binaries.toml":
+				w.Write(binBody)
+			case "/recipes/j/jq.binaries.toml.sig":
+				fmt.Fprint(w, binSig)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:   srv.URL,
+		PublicKey: kp.PublicKey,
+	}
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
+	}
+}
+
+// --- Behavior 32: FetchRecipe rejects bad binaries signature ---
+
+func TestFetchRecipeRejectsBadBinariesSignature(t *testing.T) {
+	kp1, _ := trust.GenerateKeyPair()
+	kp2, _ := trust.GenerateKeyPair()
+
+	recipeBody := []byte(recipeNoBinaries)
+	recipeSig, _ := trust.Sign(recipeBody, kp1.PrivateKey)
+
+	binBody := []byte(binariesToml)
+	binSig, _ := trust.Sign(binBody, kp2.PrivateKey)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/recipes/j/jq.toml":
+				w.Write(recipeBody)
+			case "/recipes/j/jq.toml.sig":
+				fmt.Fprint(w, recipeSig)
+			case "/recipes/j/jq.binaries.toml":
+				w.Write(binBody)
+			case "/recipes/j/jq.binaries.toml.sig":
+				fmt.Fprint(w, binSig)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:   srv.URL,
+		PublicKey: kp1.PublicKey,
+	}
+	_, err := reg.FetchRecipe("jq")
+	if err == nil {
+		t.Fatal("expected error for bad binaries signature")
+	}
+}
