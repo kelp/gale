@@ -330,23 +330,21 @@ from a source build. The strongest guarantee: even
 a compromised CI can't serve a different binary than
 what the source produces.
 
-- [ ] **`gale audit <pkg>`** — build from source into
-  a temp dir, compare SHA256 against the installed
-  binary. Report match/mismatch.
+- [x] **`gale audit <pkg>`** — rebuilds from source,
+  compares SHA256 against lockfile hash. Reports
+  match or mismatch with both hashes.
 - [ ] **Deterministic build investigation** — identify
   which recipes produce reproducible builds today
   and what prevents others (timestamps, embedded
   paths, build IDs). Document per-recipe status.
+  Use `gale audit` to test.
 
 ### Layer 5: SBOM
 
-Useful once the other layers establish a trusted
-chain from source to installed binary.
-
-- [ ] **`gale sbom`** — output a software bill of
-  materials for installed packages. Include package
-  name, version, source URL, SHA256, build method
-  (binary/source), and attestation status.
+- [x] **`gale sbom`** — lists packages with version,
+  license, source host, and install method. Supports
+  `--json` for machine-readable output and single
+  package filtering.
 
 ## Auto-Update Agent
 
