@@ -215,17 +215,17 @@ steps = ["make install PREFIX=${PREFIX}"]
 func TestLintRepoFullURLNoWarning(t *testing.T) {
 	data := `
 [package]
-name = "foo"
-version = "1.0"
+name = "pkgconf"
+version = "2.5.1"
 description = "A tool"
 license = "MIT"
 homepage = "https://example.com"
 [source]
 repo = "https://gitlab.freedesktop.org/pkgconf/pkgconf"
-url = "https://example.com/foo.tar.gz"
+url = "https://gitlab.freedesktop.org/pkgconf/pkgconf/-/archive/2.5.1/pkgconf-2.5.1.tar.gz"
 sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
 [build]
-steps = ["make install PREFIX=${PREFIX}"]
+steps = ["./configure --prefix=${PREFIX}", "make install"]
 `
 	issues := Lint(data, "")
 	if hasWarning(issues, "repo") {
@@ -492,6 +492,119 @@ steps = ["make install PREFIX=${PREFIX}"]
 	issues := Lint(data, "")
 	if !hasWarning(issues, "platform") {
 		t.Errorf("expected warning about invalid platform, got %v",
+			issues)
+	}
+}
+
+// --- Warning: source URL / repo mismatch ---
+
+func TestLintRepoURLMismatchWarning(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "jqlang/jq"
+url = "https://github.com/evil/payload/releases/download/v1.0/payload.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "does not match") {
+		t.Errorf("expected warning about URL/repo mismatch, got %v",
+			issues)
+	}
+}
+
+func TestLintRepoURLMatchNoWarning(t *testing.T) {
+	data := `
+[package]
+name = "jq"
+version = "1.8.1"
+description = "Lightweight JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+[source]
+repo = "jqlang/jq"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-1.8.1.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["./configure --prefix=${PREFIX}", "make install"]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "does not match") {
+		t.Errorf("should not warn when repo matches URL, got %v",
+			issues)
+	}
+}
+
+func TestLintRepoURLNonGitHubURLSkipped(t *testing.T) {
+	data := `
+[package]
+name = "go"
+version = "1.24.2"
+description = "Go programming language"
+license = "BSD-3-Clause"
+homepage = "https://go.dev"
+[source]
+repo = "golang/go"
+url = "https://go.dev/dl/go1.24.2.src.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["cd src && ./make.bash"]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "does not match") {
+		t.Errorf(
+			"should not warn when URL is on a different host, got %v",
+			issues)
+	}
+}
+
+func TestLintRepoURLFullURLRepoSkipped(t *testing.T) {
+	data := `
+[package]
+name = "pkgconf"
+version = "2.5.1"
+description = "Package compiler and linker metadata toolkit"
+license = "ISC"
+homepage = "https://pkgconf.org"
+[source]
+repo = "https://gitlab.freedesktop.org/pkgconf/pkgconf"
+url = "https://distfiles.ariadne.space/pkgconf/pkgconf-2.5.1.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["./configure --prefix=${PREFIX}", "make install"]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "does not match") {
+		t.Errorf(
+			"should not check full URL repos, got %v",
+			issues)
+	}
+}
+
+func TestLintRepoURLSkipsWhenRepoEmpty(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "does not match") {
+		t.Errorf("should not check URL match when repo is empty, got %v",
 			issues)
 	}
 }

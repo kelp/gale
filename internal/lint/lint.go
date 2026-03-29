@@ -122,6 +122,11 @@ func Lint(data, filePath string) []Issue {
 			r.Source.Repo))
 	}
 
+	// Warning: source URL / repo mismatch.
+	if r.Source.Repo != "" && r.Source.URL != "" {
+		checkRepoURL(r.Source.Repo, r.Source.URL, addWarn)
+	}
+
 	// Warning: released_at format.
 	if r.Source.ReleasedAt != "" {
 		if _, err := time.Parse("2006-01-02",
@@ -303,6 +308,30 @@ func checkPlatforms(
 			addWarn(fmt.Sprintf(
 				"unrecognized platform %q", p))
 		}
+	}
+}
+
+// checkRepoURL warns if source.url is on github.com but
+// points at a different repo than source.repo declares.
+// Only checks GitHub shorthand repos (owner/repo) against
+// GitHub URLs. Non-GitHub URLs are fine — many projects
+// distribute tarballs from their own CDN.
+func checkRepoURL(repo, sourceURL string, addWarn func(string)) {
+	// Only check GitHub shorthand repos.
+	if strings.HasPrefix(repo, "https://") {
+		return
+	}
+
+	// Only check when URL is on github.com.
+	if !strings.Contains(sourceURL, "github.com/") {
+		return
+	}
+
+	expected := "github.com/" + repo + "/"
+	if !strings.Contains(sourceURL, expected) {
+		addWarn(fmt.Sprintf(
+			"source.url does not match source.repo %q",
+			repo))
 	}
 }
 
