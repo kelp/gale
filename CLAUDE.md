@@ -98,8 +98,10 @@ gale sbom [pkg]          Software bill of materials
 
 ### Key Flags
 
-- `--local` (sync, update, build): resolve recipes
-  from sibling `../gale-recipes/` directory
+- `--local` (sync, update): resolve recipes from
+  sibling `../gale-recipes/` directory. `gale build`
+  auto-detects when the recipe is inside a recipes
+  repo and resolves deps locally.
 - `--source <dir>` (install, update): build from a
   local source directory, version from git hash
 - `--git` (install, update, build): clone repo and

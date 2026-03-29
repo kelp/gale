@@ -14,10 +14,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	buildLocal bool
-	buildGit   bool
-)
+var buildGit bool
 
 var buildCmd = &cobra.Command{
 	Use:   "build <recipe.toml>",
@@ -41,31 +38,8 @@ var buildCmd = &cobra.Command{
 		// Resolve and install build dependencies.
 		var deps *build.BuildDeps
 		if len(r.Dependencies.Build) > 0 {
-			cwd, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("getting working dir: %w", err)
-			}
-
-			useLocal := buildLocal
-			var detectedDir string
-			if !useLocal {
-				detectedDir = detectRecipesRepo(recipePath)
-				if detectedDir != "" {
-					useLocal = true
-				}
-			}
-
 			var resolver installer.RecipeResolver
-			if useLocal {
-				var recipesDir string
-				if detectedDir != "" {
-					recipesDir = detectedDir
-				} else {
-					recipesDir, err = findLocalRecipesDir(cwd)
-					if err != nil {
-						return err
-					}
-				}
+			if recipesDir := detectRecipesRepo(recipePath); recipesDir != "" {
 				resolver = localRecipeResolver(recipesDir)
 			} else {
 				reg := newRegistry()
@@ -121,8 +95,6 @@ var buildCmd = &cobra.Command{
 }
 
 func init() {
-	buildCmd.Flags().BoolVar(&buildLocal, "local", false,
-		"Resolve build dependencies from sibling gale-recipes directory")
 	buildCmd.Flags().BoolVar(&buildGit, "git", false,
 		"Clone and build from git repository instead of tarball")
 	rootCmd.AddCommand(buildCmd)
