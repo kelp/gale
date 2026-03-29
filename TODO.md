@@ -136,10 +136,8 @@
 
 ## Shell Completions
 
-- [ ] **Generate completions** — cobra supports
-  bash, zsh, fish, powershell. Add `gale completion`
-  command. Tab-complete package names, commands,
-  `@version` syntax.
+- [x] **Generate completions** — `gale completion`
+  generates scripts for bash, zsh, fish, powershell.
 
 ## Package Pinning
 
