@@ -180,14 +180,6 @@ is a single prompt with no tools — needs everything.
   Claude API when a key is configured. Falls back
   to simple substring matching without a key.
 
-## Agent Teams
-
-- [ ] **Build recovery team** — when the auto-updater's
-  version bump breaks a build, spin up a team: one
-  agent reads the error and fixes the recipe, another
-  tests the fix. Falls back to opening an issue if the
-  team can't resolve it.
-
 ## Documentation
 
 - [x] **docs/design.md** — generation model, terminology,
