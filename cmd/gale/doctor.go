@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
@@ -183,6 +184,16 @@ var doctorCmd = &cobra.Command{
 		if orphaned > 0 {
 			out.Warn(fmt.Sprintf(
 				"%d orphaned version(s) (run gale gc)", orphaned))
+		}
+
+		// 10. gh CLI for attestation verification.
+		if _, err := exec.LookPath("gh"); err != nil {
+			out.Warn("gh CLI not found — attestation " +
+				"verification disabled\n  " +
+				"Install: https://cli.github.com")
+		} else {
+			out.Success(
+				"gh CLI available (attestation verification)")
 		}
 
 		if failed {

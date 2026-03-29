@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/ghcr"
@@ -211,6 +212,14 @@ func installBinary(bin *recipe.Binary, storeDir string) error {
 		return fmt.Errorf("verify binary: %w", err)
 	}
 
+	// Verify Sigstore attestation for GHCR binaries.
+	if isGHCR(bin.URL) && attestation.Available() {
+		if err := attestation.VerifyFile(
+			tmpFile, attestation.DefaultRepo); err != nil {
+			return fmt.Errorf("attestation: %w", err)
+		}
+	}
+
 	if err := download.ExtractTarZstd(tmpFile, storeDir); err != nil {
 		return fmt.Errorf("extract binary: %w", err)
 	}
@@ -257,8 +266,8 @@ func repoFromURL(rawURL string) string {
 // DepPaths holds the resolved paths from installed build
 // dependencies.
 type DepPaths struct {
-	BinDirs    []string // bin/ directories for PATH
-	StoreDirs  []string // root store directories for each dep
+	BinDirs   []string // bin/ directories for PATH
+	StoreDirs []string // root store directories for each dep
 }
 
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
