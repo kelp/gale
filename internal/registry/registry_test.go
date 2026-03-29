@@ -688,9 +688,9 @@ sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 
 func TestParseIndex(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   string
-		want    []indexEntry
+		name  string
+		input string
+		want  []indexEntry
 	}{
 		{
 			"normal entries",

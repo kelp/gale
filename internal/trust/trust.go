@@ -1,9 +1,9 @@
 package trust
 
 import (
-	_ "embed"
 	"crypto/ed25519"
 	"crypto/rand"
+	_ "embed"
 	"encoding/base64"
 	"fmt"
 	"strings"
