@@ -251,7 +251,7 @@ without hardcoding or running `uname`.
 
 ## 10. Binary Index Separation
 
-See `docs/binary-index-design.md` for the full
+See `docs/dev/binary-index-design.md` for the full
 proposal. Summary: move `[binary.<platform>]` sections
 out of recipe TOMLs into separate `.binaries` files
 managed by CI.

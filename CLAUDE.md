@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 Guidance for Claude Code when working in this repository.
-For design rationale, see `docs/design.md`.
+For design rationale, see `docs/dev/design.md`.
 
 ## Overview
 
@@ -128,7 +128,7 @@ global share the same generation model.
 ## Principles
 
 - Everything from source. GHCR binaries are a cache,
-  not a substitute. See `docs/design.md`.
+  not a substitute. See `docs/dev/design.md`.
 - Prebuilt binaries only for compiler bootstraps.
 - Declarative over imperative (gale.toml → generation).
 
@@ -181,7 +181,7 @@ after obtaining the source directory.
 
 ## Conventions
 
-See `docs/style-guide.md` for the full style guide
+See `docs/dev/style-guide.md` for the full style guide
 covering writing, documentation, code, and naming.
 
 Key rules:
