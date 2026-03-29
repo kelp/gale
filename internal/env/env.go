@@ -33,6 +33,9 @@ use_gale() {
   if [ -d "$gale_dir/current/bin" ]; then
     PATH_add "$gale_dir/current/bin"
   fi
+
+  # Export project variables from [vars] in gale.toml.
+  eval "$(gale env --vars-only 2>/dev/null)" || true
 }
 `
 }

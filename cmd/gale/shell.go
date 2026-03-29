@@ -6,6 +6,8 @@ import (
 	"os/exec"
 	"path/filepath"
 
+	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/lockfile"
 	"github.com/spf13/cobra"
 )
 
@@ -16,6 +18,8 @@ var shellCmd = &cobra.Command{
 	Short: "Open a shell with the project environment",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		syncIfNeeded()
+
 		var galeDir string
 		var err error
 		if shellProject != "" {
@@ -49,6 +53,37 @@ func init() {
 	shellCmd.Flags().StringVar(&shellProject, "project", "",
 		"Path to project directory")
 	rootCmd.AddCommand(shellCmd)
+}
+
+// syncIfNeeded runs gale sync when the lockfile is stale
+// relative to gale.toml. Returns silently if no project
+// config exists or if already up to date.
+func syncIfNeeded() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+	configPath, err := config.FindGaleConfig(cwd)
+	if err != nil {
+		return
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		return
+	}
+	lp := lockfilePath(configPath)
+	stale, err := lockfile.IsStale(configPath, lp, cfg.Packages)
+	if err != nil || !stale {
+		return
+	}
+	cmd := exec.Command("gale", "sync")
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
+	_ = cmd.Run()
 }
 
 // prependPATH returns the current environment with binDir

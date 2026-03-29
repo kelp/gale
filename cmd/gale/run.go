@@ -13,6 +13,8 @@ var runCmd = &cobra.Command{
 	Short: "Run a command in the project environment",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		syncIfNeeded()
+
 		galeDir, err := resolveGaleDir()
 		if err != nil {
 			return err

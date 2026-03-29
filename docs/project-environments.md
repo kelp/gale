@@ -68,6 +68,7 @@ runs the `use_gale` function. That function:
 
 1. Runs `gale sync` to install any missing packages.
 2. Adds `.gale/current/bin` to PATH.
+3. Exports variables from `[vars]` in gale.toml.
 
 The `.gale/` directory inside the project contains
 generations and a `current` symlink, just like the
@@ -137,6 +138,49 @@ go version go1.24.0 darwin/arm64
 The project's `golangci-lint` is only available
 inside the project directory. Global `jq` is
 available everywhere.
+
+## Environment variables
+
+The `[vars]` section in gale.toml defines environment
+variables that are exported when the project
+environment activates:
+
+```toml
+[packages]
+  go = "1.26.1"
+
+[vars]
+  GOFLAGS = "-mod=vendor"
+  CGO_ENABLED = "0"
+```
+
+direnv exports these alongside PATH changes. You
+can also print them with `gale env`:
+
+```
+$ gale env
+export PATH="/Users/you/code/myproject/.gale/current/bin:$PATH"
+export CGO_ENABLED="0"
+export GOFLAGS="-mod=vendor"
+```
+
+Or just the variables:
+
+```
+$ gale env --vars-only
+export CGO_ENABLED="0"
+export GOFLAGS="-mod=vendor"
+```
+
+## Auto-sync
+
+`gale run` and `gale shell` detect when `gale.toml`
+has changed since the last sync and run `gale sync`
+automatically before executing. No need to remember
+to sync manually after editing the manifest.
+
+direnv's `use_gale` function also syncs on every
+directory change.
 
 ## Sharing with teammates
 
