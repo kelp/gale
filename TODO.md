@@ -275,19 +275,15 @@ Foundation for all client-side verification.
 
 ### Layer 2: Source URL validation
 
-Prevents recipes from pointing at arbitrary domains.
-Requires Layer 1 so that the validation rules can't
-be bypassed by modifying the recipe.
-
-- [ ] **Validate source URLs** — reject `source.url`
-  values that don't match a known set of trusted
-  hosts (github.com, gitlab.com, etc.). Enforced
-  at recipe parse time. The allowlist lives in code,
-  not in config.
-- [ ] **Enforce `source.repo` consistency** — when
-  `source.repo` is set (e.g., `jqlang/jq`), verify
-  that `source.url` points at that repo's releases
-  or archive. Catch URL/repo mismatches.
+- [x] **Enforce `source.repo` consistency** — lint
+  warns when a GitHub source URL points at a
+  different repo than `source.repo` declares.
+  Only checks GitHub shorthand repos against
+  GitHub URLs. Non-GitHub URLs (official CDNs,
+  mirrors) are skipped — no false positives.
+  Host allowlist dropped: signing already guards
+  recipe authenticity, and the allowlist would
+  need constant maintenance.
 
 ### Layer 3: Binary attestation verification
 
