@@ -122,6 +122,32 @@
 - [x] **Shortened paths** — `packages/` → `pkg/`,
   `generations/` → `gen/`.
 
+## Remote Environments
+
+- [ ] **`gale sync --remote <host>`** — SSH into a
+  remote machine and run gale sync. Pushes gale.toml,
+  bootstraps gale if not installed, syncs packages.
+  One command to provision a dev box.
+- [ ] **`gale export --remote <host>`** — push the
+  local gale.toml to a remote machine and sync.
+  Snapshot your environment onto another box.
+- [ ] **`gale diff --remote <host>`** — compare
+  local vs remote package versions. Show mismatches.
+
+## Shell Completions
+
+- [ ] **Generate completions** — cobra supports
+  bash, zsh, fish, powershell. Add `gale completion`
+  command. Tab-complete package names, commands,
+  `@version` syntax.
+
+## Package Pinning
+
+- [ ] **`gale pin <pkg>`** — lock a package version
+  so `gale update` skips it. Useful for "I need
+  exactly this Go version, don't touch it."
+  Unpin with `gale unpin <pkg>`.
+
 ## Recipe Creation
 
 Recipe creation is handled by Claude Code with a
