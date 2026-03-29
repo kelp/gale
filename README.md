@@ -13,13 +13,13 @@ starting over. Nix solves all of this — declarative
 config, rollback, per-project isolation — but demands
 you learn a language and debug cryptic build failures.
 Gale gives you the declarative model without the
-complexity. Homebrew's simplicity with Nix's
-guarantees.
+complexity. Gale is as easy to use as Homebrew and as predictable
+as Nix, without the baggage of either.
 
 ## Install
 
 ```sh
-curl -fsSL https://tcole.net/gale/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/kelp/gale/main/scripts/install.sh | sh
 ```
 
 Or with Homebrew:
@@ -119,6 +119,8 @@ gale doctor               Diagnose setup issues
 gale gc                   Clean unused versions
 gale init                 Set up a project
 gale env                  Print PATH and vars for shell
+gale shell                Open shell with project env
+gale run <cmd>            Run command in project env
 gale build <recipe>       Build from source
 gale lint <recipe>        Validate a recipe
 gale audit <pkg>          Rebuild and compare hashes
