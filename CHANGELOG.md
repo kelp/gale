@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Supply chain security layers 0-5 complete:
+  signed commit enforcement, recipe signing,
+  source URL/repo consistency lint, binary
+  attestation verification via gh CLI, `gale audit`
+  for reproducible build checks, and `gale sbom`
+  for software bill of materials.
+- `gale verify <pkg>` checks Sigstore attestation
+  for installed packages via OCI URI.
+- `gale audit <pkg>` rebuilds from source and
+  compares SHA256 against the installed binary.
+- `gale sbom` lists packages with version, license,
+  source, and install method. Supports `--json`.
+- `gale doctor` warns when gh CLI is not available
+  for attestation verification.
+- Auto-sync: `gale run` and `gale shell` sync
+  automatically when gale.toml changes.
+- Environment variables: `[vars]` section in
+  gale.toml exported by direnv and `gale env`.
+  `--vars-only` flag for variable-only output.
+- User guides: getting started, bootstrapping,
+  chezmoi, project environments, Homebrew migration,
+  CI/CD, updates, troubleshooting, source builds,
+  and recipe authoring.
+
+### Changed
+
+- Docs reorganized: user guides in `docs/`,
+  development reference in `docs/dev/`.
+- `--local` flag removed from `gale build`.
+  Auto-detection handles it.
+
+### Fixed
+
+- `detectRecipesRepo` returned wrong path, causing
+  `gale build` without `--local` to fail resolving
+  build deps inside gale-recipes.
+
 ## v0.4.0 — 2026-03-28
 
 ### Added
