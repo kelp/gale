@@ -122,63 +122,33 @@
 - [x] **Shortened paths** — `packages/` → `pkg/`,
   `generations/` → `gen/`.
 
-## Recipe Creation (`gale create-recipe`)
+## Recipe Creation
 
-Rewrite `create-recipe` as an agentic workflow using
-the Claude Code SDK. Point it at a URL or GitHub repo,
-it produces a working recipe. Current implementation
-is a single prompt with no tools — needs everything.
+Recipe creation is handled by Claude Code with a
+skill in gale-recipes. The skill has full context
+(CLAUDE.md, 113+ recipe examples, gale build, gale
+lint, shell access) and produces working recipes in
+~30 seconds with parallel agents. Building a custom
+SDK integration into `gale create-recipe` would
+reimplement a worse version of this.
 
-### Core workflow
+The current `gale create-recipe` command is a thin
+stub. Options:
 
-- [ ] **Accept URL or repo** — GitHub repo URL, source
-  tarball URL, or `owner/repo` shorthand. Detect which
-  and resolve to a concrete source tarball URL.
-- [ ] **Download and hash** — fetch the source tarball,
-  compute SHA256 locally. If upstream publishes a
-  checksum file alongside the tarball, fetch and
-  compare. Write the verified hash into the recipe.
-- [ ] **Detect build system** — read the repo contents
-  (configure.ac, CMakeLists.txt, Cargo.toml, go.mod,
-  Makefile, meson.build, etc.) and infer the build
-  system and steps.
-- [ ] **Generate recipe TOML** — fill all fields:
-  package metadata from GitHub API (description,
-  license, homepage), source URL + SHA256, build
-  steps, build deps, repo shorthand, released_at.
-- [ ] **Build and iterate** — run `gale build` on the
-  generated recipe. If it fails, read the error,
-  fix the recipe, retry. Loop until the build
-  passes or give up with a diagnostic.
-- [ ] **Write and lint** — save the recipe to the
-  correct letter-bucketed path in gale-recipes,
-  run `gale lint` to verify.
+- [ ] **Remove it** — document the Claude Code skill
+  workflow instead. Honest about where the value is.
+- [ ] **Keep as simple helper** — just download the
+  tarball, compute SHA256, and output a template
+  TOML with the hash filled in. No AI. Useful even
+  without Claude Code.
 
-### SDK integration
+### Other AI features (on hold)
 
-- [ ] **Claude Code SDK agent loop** — provide tools
-  for: reading repo files (GitHub API), running
-  shell commands (download, build, lint), writing
-  TOML. The SDK handles retries and tool calling.
-- [ ] **Prompt engineering** — encode build system
-  learnings into the prompt: autotools timestamp
-  sensitivity, clean build env, cargo --path flag,
-  Go mkdir + -o flag, static linking defaults,
-  --with-oniguruma=builtin pattern, ${PREFIX}
-  usage, build dep requirements.
-
-### Homebrew import improvements
-
-- [ ] **AI-enabled import fallback** — when heuristic
-  parsing produces warnings (empty version, missing
-  build steps), offer to fix with Claude Code SDK.
-  Heuristic first, AI as fallback.
-
-## AI-Enabled Search
-
-- [ ] **`gale search` with natural language** — use
-  Claude API when a key is configured. Falls back
-  to simple substring matching without a key.
+- **AI-enabled import fallback** — deferred. The
+  heuristic parser works well enough, and Claude
+  Code can fix edge cases interactively.
+- **AI-enabled search** — deferred. Substring
+  matching across 113 recipes is sufficient.
 
 ## Documentation
 
@@ -192,6 +162,43 @@ is a single prompt with no tools — needs everything.
 - [x] **Update `gale shell` and `gale run`** — now use
   generation model (current/bin on PATH). Removed dead
   code from internal/env/.
+
+### cmd/gale/ cleanup
+
+- [ ] **Split context.go** — it's a grab bag of
+  helpers that's grown organically. Group by concern:
+  config resolution, recipe resolution, generation
+  rebuild, install finalization.
+- [ ] **Unify recipe resolution** —
+  `localRecipeResolver`, `recipeFileResolver`,
+  `findLocalRecipesDir`, `detectRecipesRepo` all do
+  variations of the same thing. The detectRecipesRepo
+  bug happened because two functions disagreed on
+  what "recipes dir" means. Consolidate into one
+  clear abstraction.
+- [ ] **syncIfNeeded calls gale as subprocess** —
+  works but fails if gale isn't on PATH. Consider
+  inlining the sync logic or using a shared function.
+
+### Attestation testability
+
+- [ ] **Replace Disable/Enable with interface** —
+  attestation.Disable() is test-only API pollution.
+  An interface or function field on Installer would
+  be cleaner.
+
+### SBOM format
+
+- [ ] **CycloneDX or SPDX output** — current JSON is
+  custom. Add a standard format option when someone
+  needs compliance tooling.
+
+### Audit usefulness
+
+- [ ] **Document audit limitations** — `gale audit`
+  will rarely report "reproducible" until builds are
+  deterministic. Be honest about this in help text
+  and docs.
 
 ## Recipe Linter
 
