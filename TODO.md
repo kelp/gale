@@ -314,18 +314,14 @@ Proves prebuilt binaries were built by our CI from
 our source. Requires Layer 1 so we trust the recipe
 that tells us which binary to expect.
 
-- [ ] **Verify Sigstore attestations on install** —
-  during binary install, query the GitHub attestation
-  API for the binary's SHA256. Use `sigstore-go` to
-  validate the certificate chain and Rekor log entry.
-  Verify the attestation's subject matches our CI
-  workflow.
-- [ ] **Fallback on failure** — if attestation
-  verification fails, fall back to source build with
-  a warning. Never silently install an unattested
-  binary.
-- [ ] **`gale verify <pkg>`** — standalone command to
-  check attestations for already-installed packages.
+- [x] **Verify Sigstore attestations on install** —
+  shells out to `gh attestation verify` after SHA256
+  check. Skips gracefully when gh CLI not installed.
+  Falls back to source build on attestation failure.
+- [x] **`gale verify <pkg>`** — verifies attestation
+  for installed packages via OCI URI. Requires gh.
+- [x] **Doctor check** — `gale doctor` warns when gh
+  CLI is not available.
 
 ### Layer 4: Reproducible build verification
 
