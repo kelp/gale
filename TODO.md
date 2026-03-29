@@ -122,41 +122,66 @@
 - [x] **Shortened paths** — `packages/` → `pkg/`,
   `generations/` → `gen/`.
 
-## AI Features
+## Recipe Creation (`gale create-recipe`)
 
-Use the Claude Code SDK for all AI features — no custom
-agent loop. The SDK handles tool calling, retries, and
-streaming. Our code provides focused prompts and tools.
+Rewrite `create-recipe` as an agentic workflow using
+the Claude Code SDK. Point it at a URL or GitHub repo,
+it produces a working recipe. Current implementation
+is a single prompt with no tools — needs everything.
 
-- [ ] **AI-enabled import fallback** — When heuristic
+### Core workflow
+
+- [ ] **Accept URL or repo** — GitHub repo URL, source
+  tarball URL, or `owner/repo` shorthand. Detect which
+  and resolve to a concrete source tarball URL.
+- [ ] **Download and hash** — fetch the source tarball,
+  compute SHA256 locally. If upstream publishes a
+  checksum file alongside the tarball, fetch and
+  compare. Write the verified hash into the recipe.
+- [ ] **Detect build system** — read the repo contents
+  (configure.ac, CMakeLists.txt, Cargo.toml, go.mod,
+  Makefile, meson.build, etc.) and infer the build
+  system and steps.
+- [ ] **Generate recipe TOML** — fill all fields:
+  package metadata from GitHub API (description,
+  license, homepage), source URL + SHA256, build
+  steps, build deps, repo shorthand, released_at.
+- [ ] **Build and iterate** — run `gale build` on the
+  generated recipe. If it fails, read the error,
+  fix the recipe, retry. Loop until the build
+  passes or give up with a diagnostic.
+- [ ] **Write and lint** — save the recipe to the
+  correct letter-bucketed path in gale-recipes,
+  run `gale lint` to verify.
+
+### SDK integration
+
+- [ ] **Claude Code SDK agent loop** — provide tools
+  for: reading repo files (GitHub API), running
+  shell commands (download, build, lint), writing
+  TOML. The SDK handles retries and tool calling.
+- [ ] **Prompt engineering** — encode build system
+  learnings into the prompt: autotools timestamp
+  sensitivity, clean build env, cargo --path flag,
+  Go mkdir + -o flag, static linking defaults,
+  --with-oniguruma=builtin pattern, ${PREFIX}
+  usage, build dep requirements.
+
+### Homebrew import improvements
+
+- [ ] **AI-enabled import fallback** — when heuristic
   parsing produces warnings (empty version, missing
   build steps), offer to fix with Claude Code SDK.
   Heuristic first, AI as fallback.
 
-- [ ] **AI-enabled search** — `gale search` should use
-  natural language via Claude API when a key is configured.
-  Falls back to simple substring matching without a key.
+## AI-Enabled Search
 
-- [ ] **AI-enabled recipe generation** — `gale create-recipe`
-  invokes Claude Code SDK with tools for reading repos,
-  running builds, and writing TOML. The SDK handles the
-  agent loop.
+- [ ] **`gale search` with natural language** — use
+  Claude API when a key is configured. Falls back
+  to simple substring matching without a key.
 
-- [ ] **Recipe generation prompt engineering** — Encode
-  learnings from building the first 9 recipes into the
-  prompt: autotools timestamp sensitivity, clean build
-  env, cargo --path flag, symlink handling, PAX headers,
-  --with-oniguruma=builtin pattern, Go mkdir + -o flag.
-  The prompt should produce recipes that work on the
-  first try.
+## Agent Teams
 
-## Agent Teams for Recipe Development
-
-- [ ] **Recipe creation team** — use Claude Code agent
-  teams to parallelize recipe onboarding. One agent
-  imports from Homebrew and writes the recipe, another
-  builds and verifies the binary. They iterate until
-  the build passes. Good for filling out our base set.
 - [ ] **Build recovery team** — when the auto-updater's
   version bump breaks a build, spin up a team: one
   agent reads the error and fixes the recipe, another
