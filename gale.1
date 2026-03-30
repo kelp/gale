@@ -79,6 +79,13 @@ for direnvrc.
 Build from source.
 .It Cm lint Ar recipe.toml ...
 Validate recipe files.
+.It Cm create-recipe Ar repo
+Generate a recipe from a GitHub repo using AI.
+Accepts
+.Ar owner/repo
+or a full URL.
+Requires an Anthropic API key in
+.Pa ~/.gale/config.toml .
 .It Cm import homebrew Ar name
 Import a Homebrew formula.
 .El

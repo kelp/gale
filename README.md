@@ -121,11 +121,17 @@ gale init                 Set up a project
 gale env                  Print PATH and vars for shell
 gale shell                Open shell with project env
 gale run <cmd>            Run command in project env
+gale pin <pkg>            Pin version, skip on update
+gale unpin <pkg>          Unpin a package
 gale build <recipe>       Build from source
 gale lint <recipe>        Validate a recipe
+gale create-recipe <repo> Generate recipe with AI
 gale audit <pkg>          Rebuild and compare hashes
 gale verify <pkg>         Check binary attestation
 gale sbom [pkg]           Software bill of materials
+gale remote sync <host>   Sync packages to remote host
+gale remote diff <host>   Compare local vs remote
+gale completion <shell>   Generate shell completions
 ```
 
 See `man gale` for the full reference.
@@ -140,6 +146,12 @@ Go. Each recipe defines how to build a package from
 source.
 Prebuilt binaries cached in GHCR are an optimization
 — every recipe can build from source if needed.
+
+`gale create-recipe owner/repo` generates a recipe
+from a GitHub repository using the Anthropic API.
+It detects the build system, computes the SHA256,
+and produces a valid recipe. Requires an API key
+in `~/.gale/config.toml`.
 
 ```toml
 [package]
@@ -163,6 +175,19 @@ steps = [
   "go build -o ${PREFIX}/bin/mytool .",
 ]
 ```
+
+## Optional Dependencies
+
+**[gh](https://cli.github.com/)** — GitHub CLI.
+Used by `gale verify` and `gale audit` for Sigstore
+attestation verification. If not installed, gale
+skips attestation checks during install. `gale doctor`
+reports its availability.
+
+**Anthropic API key** — used by `gale create-recipe`
+for AI-powered recipe generation. Configure in
+`~/.gale/config.toml` under `[anthropic]`. Not needed
+for any other gale functionality.
 
 ## Development
 
