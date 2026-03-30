@@ -163,6 +163,31 @@ func loadAppConfig() (*config.AppConfig, error) {
 	return config.ParseAppConfig(string(data))
 }
 
+// resolveBuildDebug resolves the debug mode from CLI
+// flags, recipe setting, and config. Precedence:
+// CLI flag > recipe > config > default (release).
+func resolveBuildDebug(recipeDebug, cliDebug, cliRelease bool) bool {
+	// CLI flags override everything.
+	if cliRelease {
+		return false
+	}
+	if cliDebug {
+		return true
+	}
+
+	// Recipe setting.
+	if recipeDebug {
+		return true
+	}
+
+	// Config setting.
+	if cfg, err := loadAppConfig(); err == nil {
+		return cfg.Build.Debug
+	}
+
+	return false
+}
+
 // newRegistry creates a Registry, using the URL from
 // ~/.gale/config.toml if configured.
 func newRegistry() *registry.Registry {

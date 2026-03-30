@@ -63,6 +63,7 @@ type Source struct {
 type Build struct {
 	System   string
 	Steps    []string
+	Debug    bool                     `toml:"debug,omitempty"`
 	Platform map[string]PlatformBuild `toml:"-"`
 }
 

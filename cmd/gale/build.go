@@ -13,7 +13,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var buildGit bool
+var (
+	buildGit     bool
+	buildDebug   bool
+	buildRelease bool
+)
 
 var buildCmd = &cobra.Command{
 	Use:   "build <recipe.toml>",
@@ -66,10 +70,14 @@ var buildCmd = &cobra.Command{
 			return fmt.Errorf("getting working dir: %w", err)
 		}
 
+		// Resolve debug mode: CLI > recipe > config > default.
+		debug := resolveBuildDebug(r.Build.Debug,
+			buildDebug, buildRelease)
+
 		if buildGit {
 			out.Info(fmt.Sprintf("Building %s from git (%s)...",
 				r.Package.Name, r.Source.Repo))
-			result, hash, err := build.BuildGit(r, outputDir, deps)
+			result, hash, err := build.BuildGit(r, outputDir, debug, deps)
 			if err != nil {
 				return fmt.Errorf("build failed: %w", err)
 			}
@@ -82,7 +90,7 @@ var buildCmd = &cobra.Command{
 		out.Info(fmt.Sprintf("Building %s@%s from source...",
 			r.Package.Name, r.Package.Version))
 
-		result, err := build.Build(r, outputDir, deps)
+		result, err := build.Build(r, outputDir, debug, deps)
 		if err != nil {
 			return fmt.Errorf("build failed: %w", err)
 		}
@@ -97,5 +105,9 @@ var buildCmd = &cobra.Command{
 func init() {
 	buildCmd.Flags().BoolVar(&buildGit, "git", false,
 		"Clone and build from git repository instead of tarball")
+	buildCmd.Flags().BoolVar(&buildDebug, "debug", false,
+		"Build with debug flags (-O0 -g)")
+	buildCmd.Flags().BoolVar(&buildRelease, "release", false,
+		"Build with release flags (overrides recipe debug)")
 	rootCmd.AddCommand(buildCmd)
 }

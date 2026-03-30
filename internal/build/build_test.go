@@ -44,7 +44,7 @@ func TestBuildSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, nil)
+	result, err := Build(r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestBuildStepRunsWithPREFIXAndJOBS(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, nil)
+	result, err := Build(r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestBuildStepMultipleStepsRunInOrder(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, nil)
+	result, err := Build(r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestBuildStepFailureReturnsError(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, nil)
+	_, err := Build(r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -218,7 +218,7 @@ func TestBuildStepFailureErrorContainsStep(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, nil)
+	_, err := Build(r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -253,7 +253,7 @@ func TestBuildStepFailureSecondStepStopsExecution(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, nil)
+	_, err := Build(r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -285,7 +285,7 @@ func TestBuildSourceHashMismatchReturnsError(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, nil)
+	_, err := Build(r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for hash mismatch")
 	}
@@ -326,7 +326,7 @@ func TestBuildSourceHashMismatchDoesNotRunSteps(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, _ = Build(r, outputDir, nil)
+	_, _ = Build(r, outputDir, false, nil)
 
 	if _, err := os.Stat(markerPath); err == nil {
 		t.Error("build steps should not have run after hash mismatch")
@@ -364,7 +364,7 @@ func TestBuildCdIntoSingleTopLevelDirectory(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, nil)
+	result, err := Build(r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -409,7 +409,7 @@ func TestBuildOutputIsValidTarZstd(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, nil)
+	result, err := Build(r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -453,7 +453,7 @@ func TestBuildOutputSHA256MatchesArchive(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, nil)
+	result, err := Build(r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -599,7 +599,7 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, &BuildDeps{
+	result, err := Build(r, outputDir, false, &BuildDeps{
 		BinDirs: []string{toolDir},
 	})
 	if err != nil {
@@ -649,7 +649,7 @@ func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := BuildLocal(r, srcDir, outputDir, nil)
+	result, err := BuildLocal(r, srcDir, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -693,7 +693,7 @@ func TestBuildLocalDoesNotRequireSourceSection(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := BuildLocal(r, srcDir, outputDir, nil)
+	result, err := BuildLocal(r, srcDir, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -716,7 +716,7 @@ func TestBuildLocalStepFailureReturnsError(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := BuildLocal(r, srcDir, outputDir, nil)
+	_, err := BuildLocal(r, srcDir, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -749,7 +749,7 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := BuildLocal(r, srcDir, outputDir, &BuildDeps{
+	result, err := BuildLocal(r, srcDir, outputDir, false, &BuildDeps{
 		BinDirs: []string{toolDir},
 	})
 	if err != nil {
@@ -816,7 +816,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/pkg"},
 	}
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", deps)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, deps)
 
 	envMap := envToMap(env)
 
@@ -859,7 +859,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 }
 
 func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["LD_LIBRARY_PATH"]; ok {
@@ -883,7 +883,7 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 // --- Behavior 11: Platform variables in buildEnv ---
 
 func TestBuildEnvIncludesPlatformVars(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
 	envMap := envToMap(env)
 
 	if val, ok := envMap["OS"]; !ok || val != runtime.GOOS {
@@ -944,7 +944,7 @@ func TestCheckPlatformCurrentNotInListReturnsError(t *testing.T) {
 // --- Behavior 13: VERSION variable in buildEnv ---
 
 func TestBuildEnvIncludesVersion(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.8.1", "", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.8.1", "", false, nil)
 	envMap := envToMap(env)
 
 	if val, ok := envMap["VERSION"]; !ok || val != "1.8.1" {
@@ -988,7 +988,7 @@ func TestBuildEnvCMakePrefixPath(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/a", "/fake/store/b"},
 	}
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", deps)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", false, deps)
 	envMap := envToMap(env)
 
 	val, ok := envMap["CMAKE_PREFIX_PATH"]
@@ -1006,7 +1006,7 @@ func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/a"},
 	}
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "go", deps)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "go", false, deps)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["CMAKE_PREFIX_PATH"]; ok {
@@ -1015,11 +1015,71 @@ func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
 }
 
 func TestBuildEnvNoCMakePrefixPathWithoutDeps(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", false, nil)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["CMAKE_PREFIX_PATH"]; ok {
 		t.Error("CMAKE_PREFIX_PATH should not be set without deps")
+	}
+}
+
+// --- Behavior 16: Compiler flags in buildEnv ---
+
+func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	envMap := envToMap(env)
+
+	if val := envMap["CFLAGS"]; val != "-O2" {
+		t.Errorf("CFLAGS = %q, want %q", val, "-O2")
+	}
+	if val := envMap["CXXFLAGS"]; val != "-O2" {
+		t.Errorf("CXXFLAGS = %q, want %q", val, "-O2")
+	}
+	if val := envMap["LDFLAGS"]; val != "-Wl,-S" {
+		t.Errorf("LDFLAGS = %q, want %q", val, "-Wl,-S")
+	}
+}
+
+func TestBuildEnvDebugFlags(t *testing.T) {
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", true, nil)
+	envMap := envToMap(env)
+
+	if val := envMap["CFLAGS"]; val != "-O0 -g" {
+		t.Errorf("CFLAGS = %q, want %q", val, "-O0 -g")
+	}
+	if val := envMap["CXXFLAGS"]; val != "-O0 -g" {
+		t.Errorf("CXXFLAGS = %q, want %q", val, "-O0 -g")
+	}
+	if val, ok := envMap["LDFLAGS"]; ok && val != "" {
+		t.Errorf("LDFLAGS should be empty in debug, got %q", val)
+	}
+}
+
+func TestBuildEnvZeroARDateAlwaysSet(t *testing.T) {
+	// Release mode.
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	envMap := envToMap(env)
+	if envMap["ZERO_AR_DATE"] != "1" {
+		t.Error("ZERO_AR_DATE not set in release mode")
+	}
+
+	// Debug mode.
+	env = buildEnv("/tmp/prefix", "4", "1.0.0", "", true, nil)
+	envMap = envToMap(env)
+	if envMap["ZERO_AR_DATE"] != "1" {
+		t.Error("ZERO_AR_DATE not set in debug mode")
+	}
+}
+
+func TestBuildEnvUserCFLAGSNotOverridden(t *testing.T) {
+	t.Setenv("CFLAGS", "-march=native")
+
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	envMap := envToMap(env)
+
+	if val := envMap["CFLAGS"]; val != "-march=native" {
+		t.Errorf("CFLAGS = %q, want user-set %q",
+			val, "-march=native")
 	}
 }
 

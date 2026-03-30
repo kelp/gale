@@ -158,7 +158,7 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	buildResult, hash, err := build.BuildGit(r, tmpDir, depsToBuildDeps(depPaths))
+	buildResult, hash, err := build.BuildGit(r, tmpDir, r.Build.Debug, depsToBuildDeps(depPaths))
 	if err != nil {
 		return nil, fmt.Errorf("git build: %w", err)
 	}
@@ -369,7 +369,7 @@ func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := build.BuildLocal(r, sourceDir, tmpDir, depsToBuildDeps(deps))
+	result, err := build.BuildLocal(r, sourceDir, tmpDir, r.Build.Debug, depsToBuildDeps(deps))
 	if err != nil {
 		return "", err
 	}
@@ -383,7 +383,7 @@ func installFromSource(r *recipe.Recipe, storeDir string, deps *DepPaths) (strin
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := build.Build(r, tmpDir, depsToBuildDeps(deps))
+	result, err := build.Build(r, tmpDir, r.Build.Debug, depsToBuildDeps(deps))
 	if err != nil {
 		return "", err
 	}

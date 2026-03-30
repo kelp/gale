@@ -61,7 +61,7 @@ func checkPlatform(r *recipe.Recipe) error {
 // Build builds a recipe from source and packages the result.
 // outputDir is where the tar.zst will be written. Optional
 // extraPaths are prepended to the build environment PATH.
-func Build(r *recipe.Recipe, outputDir string, deps *BuildDeps) (*BuildResult, error) {
+func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*BuildResult, error) {
 	if err := checkPlatform(r); err != nil {
 		return nil, err
 	}
@@ -123,13 +123,13 @@ func Build(r *recipe.Recipe, outputDir string, deps *BuildDeps) (*BuildResult, e
 		return nil, fmt.Errorf("detect source root: %w", err)
 	}
 
-	return buildFromDir(r, sourceRoot, workspace, outputDir, deps)
+	return buildFromDir(r, sourceRoot, workspace, outputDir, debug, deps)
 }
 
 // BuildLocal builds a recipe using a local source directory
 // instead of downloading. The source directory is used as the
 // build root directly.
-func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, deps *BuildDeps) (*BuildResult, error) {
+func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, debug bool, deps *BuildDeps) (*BuildResult, error) {
 	if err := checkPlatform(r); err != nil {
 		return nil, err
 	}
@@ -140,12 +140,12 @@ func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, deps *BuildDeps) 
 	}
 	defer os.RemoveAll(workspace)
 
-	return buildFromDir(r, sourceDir, workspace, outputDir, deps)
+	return buildFromDir(r, sourceDir, workspace, outputDir, debug, deps)
 }
 
 // buildFromDir runs build steps, fixes binaries, and packages
 // the result. Shared by Build and BuildLocal.
-func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, deps *BuildDeps) (*BuildResult, error) {
+func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debug bool, deps *BuildDeps) (*BuildResult, error) {
 	prefixDir := filepath.Join(workspace, "prefix")
 	if err := os.MkdirAll(prefixDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create prefix directory: %w", err)
@@ -157,7 +157,7 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, deps
 	for i, step := range buildCfg.Steps {
 		out.Step(fmt.Sprintf("[%d/%d] %s",
 			i+1, len(buildCfg.Steps), step))
-		if err := runStep(step, sourceDir, prefixDir, jobs, version, buildCfg.System, deps); err != nil {
+		if err := runStep(step, sourceDir, prefixDir, jobs, version, buildCfg.System, debug, deps); err != nil {
 			return nil, err
 		}
 	}
@@ -188,7 +188,7 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, deps
 // Returns the build result and the short commit hash used
 // as the version. The recipe's version is overridden with
 // the hash.
-func BuildGit(r *recipe.Recipe, outputDir string, deps *BuildDeps) (*BuildResult, string, error) {
+func BuildGit(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*BuildResult, string, error) {
 	if err := checkPlatform(r); err != nil {
 		return nil, "", err
 	}
@@ -210,7 +210,7 @@ func BuildGit(r *recipe.Recipe, outputDir string, deps *BuildDeps) (*BuildResult
 	}
 
 	r.Package.Version = hash
-	result, err := BuildLocal(r, cloneDir, outputDir, deps)
+	result, err := BuildLocal(r, cloneDir, outputDir, debug, deps)
 	if err != nil {
 		return nil, "", err
 	}
@@ -245,10 +245,10 @@ func detectSourceRoot(srcDir string) (string, error) {
 // and JOBS environment variables set. Uses a clean environment
 // with only essential variables to avoid interference from the
 // host environment (e.g., nix coreutils aliases).
-func runStep(step, sourceRoot, prefixDir, jobs, version, system string, deps *BuildDeps) error {
+func runStep(step, sourceRoot, prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) error {
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = sourceRoot
-	cmd.Env = buildEnv(prefixDir, jobs, version, system, deps)
+	cmd.Env = buildEnv(prefixDir, jobs, version, system, debug, deps)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 
@@ -285,7 +285,7 @@ func SystemDeps(system string) []string {
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
-func buildEnv(prefixDir, jobs, version, system string, deps *BuildDeps) []string {
+func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) []string {
 	home := os.Getenv("HOME")
 	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
 	if err != nil {
@@ -361,7 +361,34 @@ func buildEnv(prefixDir, jobs, version, system string, deps *BuildDeps) []string
 	if cxx := os.Getenv("CXX"); cxx != "" {
 		env = append(env, "CXX="+cxx)
 	}
+
+	// Default compiler flags. User-set values take
+	// precedence — only set if not already in the
+	// environment.
+	if debug {
+		setDefault(&env, "CFLAGS", "-O0 -g")
+		setDefault(&env, "CXXFLAGS", "-O0 -g")
+		setDefault(&env, "LDFLAGS", "")
+	} else {
+		setDefault(&env, "CFLAGS", "-O2")
+		setDefault(&env, "CXXFLAGS", "-O2")
+		setDefault(&env, "LDFLAGS", "-Wl,-S")
+	}
+
+	// Deterministic ar timestamps.
+	env = append(env, "ZERO_AR_DATE=1")
+
 	return env
+}
+
+// setDefault appends key=val to env only if key is not
+// already set in the host environment.
+func setDefault(env *[]string, key, val string) {
+	if os.Getenv(key) != "" {
+		*env = append(*env, key+"="+os.Getenv(key))
+		return
+	}
+	*env = append(*env, key+"="+val)
 }
 
 // buildPath constructs the PATH for build steps. Creates an

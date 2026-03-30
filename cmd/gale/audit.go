@@ -77,7 +77,7 @@ tampering.`,
 		out.Info(fmt.Sprintf(
 			"Rebuilding %s@%s from source...", name, pkg.Version))
 		tmpDir := build.TmpDir()
-		result, err := build.Build(r, tmpDir, deps)
+		result, err := build.Build(r, tmpDir, r.Build.Debug, deps)
 		if err != nil {
 			return fmt.Errorf("build failed: %w", err)
 		}

@@ -38,8 +38,14 @@ type Repo struct {
 // AppConfig represents ~/.gale/config.toml (app-level settings).
 type AppConfig struct {
 	Repos     []Repo         `toml:"repos"`
+	Build     BuildConfig    `toml:"build"`
 	Anthropic AIConfig       `toml:"anthropic"`
 	Registry  RegistryConfig `toml:"registry"`
+}
+
+// BuildConfig holds build-related settings.
+type BuildConfig struct {
+	Debug bool `toml:"debug,omitempty"`
 }
 
 // AIConfig holds Anthropic API settings.
