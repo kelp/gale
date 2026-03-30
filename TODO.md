@@ -124,15 +124,12 @@
 
 ## Remote Environments
 
-- [ ] **`gale sync --remote <host>`** — SSH into a
-  remote machine and run gale sync. Pushes gale.toml,
-  bootstraps gale if not installed, syncs packages.
-  One command to provision a dev box.
-- [ ] **`gale export --remote <host>`** — push the
-  local gale.toml to a remote machine and sync.
-  Snapshot your environment onto another box.
-- [ ] **`gale diff --remote <host>`** — compare
-  local vs remote package versions. Show mismatches.
+- [x] **`gale remote sync <host>`** — SSH to host,
+  bootstrap gale if missing, push gale.toml, sync.
+- [x] **`gale remote export <host>`** — push
+  gale.toml and sync without bootstrap check.
+- [x] **`gale remote diff <host>`** — compare
+  local vs remote package versions.
 
 ## Shell Completions
 
@@ -141,10 +138,9 @@
 
 ## Package Pinning
 
-- [ ] **`gale pin <pkg>`** — lock a package version
-  so `gale update` skips it. Useful for "I need
-  exactly this Go version, don't touch it."
-  Unpin with `gale unpin <pkg>`.
+- [x] **`gale pin <pkg>`** — lock a package version
+  so `gale update` skips it. `[pinned]` section in
+  gale.toml. `gale unpin <pkg>` to remove.
 
 ## Recipe Creation
 
@@ -393,16 +389,10 @@ Moved to gale-recipes TODO. Recipe format additions
   store paths. Recipes can link against dep
   libraries without explicit -L/-I flags.
 
-- [ ] **Build system presets** — make `build.system`
-  smarter. When `system = "cmake"`, auto-add cmake
-  to build deps, set `CMAKE_PREFIX_PATH` from dep
-  store dirs, default steps to cmake configure/build/
-  install. When `system = "autotools"`, default to
-  configure/make/make install with standard flags.
-  When `system = "go"`, default to mkdir + go build.
-  Recipe author can still override steps. Inspired
-  by OpenBSD ports modules but without the framework
-  complexity.
+- [x] **Build system presets** — `SystemDeps()` auto-adds
+  build deps for cmake, go, cargo. `CMAKE_PREFIX_PATH`
+  set for cmake builds. Deduplicates against explicit
+  deps.
 
 - [x] **Per-platform build overrides** — `[build.<platform>]`
   sections override `[build]` for specific platforms.
@@ -412,6 +402,10 @@ Moved to gale-recipes TODO. Recipe format additions
 - [x] **Source download cache** — cache downloaded
   source tarballs in `~/.gale/cache/` keyed by SHA256.
   Skip download if cached file matches.
+
+- [x] **tar.xz and tar.bz2 extraction** — xz via
+  ulikunitz/xz, bz2 via stdlib. `ExtractSource`
+  dispatcher auto-detects format from filename.
 
 - [x] **Stream build output** — switched from
   CombinedOutput to streaming stdout/stderr. Long
