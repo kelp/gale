@@ -171,63 +171,6 @@ func newRegistry() *registry.Registry {
 	return registry.NewWithURL(cfg.Registry.URL)
 }
 
-// localRecipeResolver returns a RecipeResolver that reads
-// recipes from a local recipes directory using letter-bucketed
-// layout: <recipesDir>/<letter>/<name>.toml.
-func localRecipeResolver(recipesDir string) installer.RecipeResolver {
-	return func(name string) (*recipe.Recipe, error) {
-		letter := string(name[0])
-		path := filepath.Join(recipesDir, letter, name+".toml")
-		data, err := os.ReadFile(path)
-		if err != nil {
-			if os.IsNotExist(err) {
-				return nil, fmt.Errorf(
-					"no local recipe for %q", name)
-			}
-			return nil, fmt.Errorf("read recipe %q: %w", name, err)
-		}
-		rec, err := recipe.Parse(string(data))
-		if err != nil {
-			return nil, err
-		}
-
-		// If recipe has no inline binaries, try the
-		// separate .binaries.toml file.
-		if len(rec.Binary) == 0 {
-			binPath := filepath.Join(
-				recipesDir, letter, name+".binaries.toml")
-			binData, readErr := os.ReadFile(binPath)
-			if readErr == nil {
-				idx, parseErr := recipe.ParseBinaryIndex(
-					string(binData))
-				if parseErr == nil {
-					recipe.MergeBinaries(
-						rec, idx, localGHCRBase)
-				}
-			}
-		}
-
-		return rec, nil
-	}
-}
-
-const localGHCRBase = "kelp/gale-recipes"
-
-// findLocalRecipesDir finds a sibling gale-recipes directory
-// relative to dir. Returns the path to the recipes/ subdirectory.
-func findLocalRecipesDir(dir string) (string, error) {
-	absDir, err := filepath.Abs(dir)
-	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
-	}
-	recipesDir := filepath.Join(filepath.Dir(absDir), "gale-recipes", "recipes")
-	if _, err := os.Stat(recipesDir); err != nil {
-		return "", fmt.Errorf(
-			"no sibling gale-recipes found next to %s", absDir)
-	}
-	return recipesDir, nil
-}
-
 // lockfilePath returns the gale.lock path for a given
 // gale.toml path.
 func lockfilePath(configPath string) string {
