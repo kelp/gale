@@ -189,27 +189,20 @@ stub. Options:
 
 ### cmd/gale/ cleanup
 
-- [ ] **Split context.go** — it's a grab bag of
-  helpers that's grown organically. Group by concern:
-  config resolution, recipe resolution, generation
-  rebuild, install finalization.
-- [ ] **Unify recipe resolution** —
-  `localRecipeResolver`, `recipeFileResolver`,
-  `findLocalRecipesDir`, `detectRecipesRepo` all do
-  variations of the same thing. The detectRecipesRepo
-  bug happened because two functions disagreed on
-  what "recipes dir" means. Consolidate into one
-  clear abstraction.
-- [ ] **syncIfNeeded calls gale as subprocess** —
-  works but fails if gale isn't on PATH. Consider
-  inlining the sync logic or using a shared function.
+- [x] **Split context.go** — recipe resolution moved
+  to `recipes.go`. context.go keeps config, generation,
+  and install finalization helpers.
+- [x] **Unify recipe resolution** — all recipe
+  resolution functions consolidated in `recipes.go`.
+- [x] **syncIfNeeded calls runSync directly** —
+  extracted `runSync()` from sync command. No more
+  subprocess.
 
 ### Attestation testability
 
-- [ ] **Replace Disable/Enable with interface** —
-  attestation.Disable() is test-only API pollution.
-  An interface or function field on Installer would
-  be cleaner.
+- [x] **Verifier interface** — Installer takes a
+  `Verifier` field (nil = skip). Removed Disable/Enable
+  global state.
 
 ### SBOM format
 
@@ -219,10 +212,9 @@ stub. Options:
 
 ### Audit usefulness
 
-- [ ] **Document audit limitations** — `gale audit`
-  will rarely report "reproducible" until builds are
-  deterministic. Be honest about this in help text
-  and docs.
+- [x] **Document audit limitations** — help text and
+  troubleshooting docs explain that mismatches are
+  expected until builds are deterministic.
 
 ## Recipe Linter
 
