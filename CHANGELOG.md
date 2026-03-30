@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `gale create-recipe <repo>` generates recipes using
+  the Anthropic API. Agentic workflow detects build
+  system, computes SHA256, lints, and iterates.
+  Configurable via `[anthropic]` in config.toml.
+  User-extensible prompt via `prompt_file` config.
+
+### Fixed
+
+- Build archives now deterministic: absolute symlink
+  targets within the source tree are relativized, and
+  zstd uses single-threaded encoding for consistent
+  output. Fixes broken symlinks after extraction.
+
 ## v0.6.0 — 2026-03-29
 
 ### Added

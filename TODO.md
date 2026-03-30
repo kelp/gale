@@ -144,23 +144,11 @@
 
 ## Recipe Creation
 
-Recipe creation is handled by Claude Code with a
-skill in gale-recipes. The skill has full context
-(CLAUDE.md, 113+ recipe examples, gale build, gale
-lint, shell access) and produces working recipes in
-~30 seconds with parallel agents. Building a custom
-SDK integration into `gale create-recipe` would
-reimplement a worse version of this.
-
-The current `gale create-recipe` command is a thin
-stub. Options:
-
-- [ ] **Remove it** — document the Claude Code skill
-  workflow instead. Honest about where the value is.
-- [ ] **Keep as simple helper** — just download the
-  tarball, compute SHA256, and output a template
-  TOML with the hash filled in. No AI. Useful even
-  without Claude Code.
+- [x] **`gale create-recipe <repo>`** — agentic
+  workflow using Anthropic SDK. Fetches repo info,
+  detects build system, downloads and hashes source,
+  generates recipe, lints, and iterates. Prompt
+  extensible via `prompt_file` in config.toml.
 
 ### Other AI features (on hold)
 
