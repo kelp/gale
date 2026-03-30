@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `gale completion` generates shell completion
+  scripts for bash, zsh, fish, and powershell.
+- `CMAKE_LIBRARY_PATH` and `CMAKE_INCLUDE_PATH`
+  set in build environment from dependency store
+  paths. Fixes cmake-based recipes failing to find
+  gale-installed dependencies.
+
+### Changed
+
+- Recipe resolution functions consolidated into
+  `cmd/gale/recipes.go`.
+- `syncIfNeeded` calls `runSync` directly instead
+  of shelling out to `gale sync` as a subprocess.
+- Attestation uses `Verifier` interface on Installer
+  instead of global `Disable`/`Enable` state.
+- `gale audit` help text documents that mismatches
+  are expected until builds are deterministic.
+
 ## v0.5.0 — 2026-03-28
 
 ### Added
