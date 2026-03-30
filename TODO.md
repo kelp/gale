@@ -387,10 +387,11 @@ Moved to gale-recipes TODO. Recipe format additions
   preferred, source fallback), adds bin dirs to the
   build PATH. Uses RecipeResolver for lookup.
 - [x] **Build dep library/header paths** — build env
-  injects LIBRARY_PATH, C_INCLUDE_PATH, and
-  PKG_CONFIG_PATH from installed build deps' store
-  paths. Recipes can link against dep libraries
-  without explicit -L/-I flags.
+  injects LIBRARY_PATH, C_INCLUDE_PATH,
+  PKG_CONFIG_PATH, CMAKE_LIBRARY_PATH, and
+  CMAKE_INCLUDE_PATH from installed build deps'
+  store paths. Recipes can link against dep
+  libraries without explicit -L/-I flags.
 
 - [x] **Per-platform build overrides** — `[build.<platform>]`
   sections override `[build]` for specific platforms.
