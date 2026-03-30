@@ -38,14 +38,13 @@ type Repo struct {
 // AppConfig represents ~/.gale/config.toml (app-level settings).
 type AppConfig struct {
 	Repos    []Repo         `toml:"repos"`
-	AI       AIConfig       `toml:"ai"`
+	Anthropic AIConfig      `toml:"anthropic"`
 	Registry RegistryConfig `toml:"registry"`
 }
 
-// AIConfig holds AI provider settings.
+// AIConfig holds Anthropic API settings.
 type AIConfig struct {
-	Provider string `toml:"provider"`
-	APIKey   string `toml:"api_key"`
+	APIKey string `toml:"api_key"`
 }
 
 // RegistryConfig holds registry settings.

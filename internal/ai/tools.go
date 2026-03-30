@@ -18,17 +18,25 @@ import (
 // creation. The caller must call Cleanup after the
 // agent finishes to remove temp files.
 func RecipeTools() ([]Tool, func()) {
-	tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
+	// Downloads go in a temp dir that gets cleaned up.
+	downloadDir, err := os.MkdirTemp("", "gale-download-*")
 	if err != nil {
-		tmpDir = os.TempDir()
+		downloadDir = os.TempDir()
 	}
-	cleanup := func() { os.RemoveAll(tmpDir) }
+
+	// Recipes go in a separate dir that survives cleanup.
+	recipeDir, err := os.MkdirTemp("", "gale-recipe-*")
+	if err != nil {
+		recipeDir = os.TempDir()
+	}
+
+	cleanup := func() { os.RemoveAll(downloadDir) }
 
 	return []Tool{
 		githubInfoTool(),
-		downloadAndHashTool(tmpDir),
+		downloadAndHashTool(downloadDir),
 		readFileTool(),
-		writeRecipeTool(tmpDir),
+		writeRecipeTool(recipeDir),
 		lintRecipeTool(),
 	}, cleanup
 }

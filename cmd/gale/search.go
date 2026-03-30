@@ -49,9 +49,9 @@ func loadAIClient() *ai.Client {
 		return nil
 	}
 
-	if cfg.AI.APIKey == "" {
+	if cfg.Anthropic.APIKey == "" {
 		return nil
 	}
 
-	return ai.NewClient(cfg.AI.APIKey)
+	return ai.NewClient(cfg.Anthropic.APIKey)
 }
