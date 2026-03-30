@@ -70,17 +70,35 @@ Source builds can fail for several reasons:
 
 `gale audit <pkg>` rebuilds a package from source and
 compares the SHA256 against the installed binary. A
-mismatch is normal. Most C and Go builds embed
-timestamps, paths, or build IDs that differ between
-runs.
+mismatch is normal for most packages.
 
-A **match** is a strong signal: the build is
-reproducible and the installed binary matches what the
-source produces.
+A **match** confirms the build is reproducible — the
+installed binary is exactly what the source produces.
 
-A **mismatch** does not indicate tampering. It means
-the build is not yet deterministic. Work on improving
-build determinism is ongoing.
+A **mismatch** does not indicate tampering. These
+sources of non-determinism are not fixable without
+Nix-level build isolation:
+
+- **Mach-O LC_UUID.** macOS clang embeds a unique
+  UUID in every compiled binary.
+- **Libtool .la files.** Contain absolute paths to
+  the build temp directory.
+- **pkg-config .pc files.** Contain absolute paths
+  to the build prefix directory.
+- **ar/ranlib timestamps.** Embedded in `.a` static
+  archives. `ZERO_AR_DATE=1` helps but does not
+  fully solve it on macOS.
+
+These parts of the build output ARE deterministic:
+
+- Archive packaging (zstd compression, tar metadata,
+  symlink targets).
+- Text files, man pages, shell scripts.
+- File sizes and permissions.
+
+`gale audit` currently reads from the project
+lockfile. It does not yet support `-g` for auditing
+globally installed packages.
 
 ### Direnv not activating
 
