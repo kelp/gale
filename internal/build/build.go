@@ -157,7 +157,7 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, deps
 	for i, step := range buildCfg.Steps {
 		out.Step(fmt.Sprintf("[%d/%d] %s",
 			i+1, len(buildCfg.Steps), step))
-		if err := runStep(step, sourceDir, prefixDir, jobs, version, deps); err != nil {
+		if err := runStep(step, sourceDir, prefixDir, jobs, version, buildCfg.System, deps); err != nil {
 			return nil, err
 		}
 	}
@@ -245,10 +245,10 @@ func detectSourceRoot(srcDir string) (string, error) {
 // and JOBS environment variables set. Uses a clean environment
 // with only essential variables to avoid interference from the
 // host environment (e.g., nix coreutils aliases).
-func runStep(step, sourceRoot, prefixDir, jobs, version string, deps *BuildDeps) error {
+func runStep(step, sourceRoot, prefixDir, jobs, version, system string, deps *BuildDeps) error {
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = sourceRoot
-	cmd.Env = buildEnv(prefixDir, jobs, version, deps)
+	cmd.Env = buildEnv(prefixDir, jobs, version, system, deps)
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 
@@ -266,10 +266,26 @@ type BuildDeps struct {
 	StoreDirs []string // root store dirs for lib/include/pkgconfig
 }
 
+// SystemDeps returns implicit build dependencies for
+// a build system. These are added alongside explicit
+// [dependencies.build] entries.
+func SystemDeps(system string) []string {
+	switch system {
+	case "cmake":
+		return []string{"cmake"}
+	case "go":
+		return []string{"go"}
+	case "cargo":
+		return []string{"rust"}
+	default:
+		return nil
+	}
+}
+
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
-func buildEnv(prefixDir, jobs, version string, deps *BuildDeps) []string {
+func buildEnv(prefixDir, jobs, version, system string, deps *BuildDeps) []string {
 	home := os.Getenv("HOME")
 	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
 	if err != nil {
@@ -328,6 +344,13 @@ func buildEnv(prefixDir, jobs, version string, deps *BuildDeps) []string {
 		case "darwin":
 			env = append(env,
 				"DYLD_FALLBACK_LIBRARY_PATH="+libPathStr)
+		}
+
+		// cmake uses semicolons for CMAKE_PREFIX_PATH.
+		if system == "cmake" {
+			env = append(env,
+				"CMAKE_PREFIX_PATH="+strings.Join(
+					deps.StoreDirs, ";"))
 		}
 	}
 

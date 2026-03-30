@@ -816,7 +816,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/pkg"},
 	}
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", deps)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", deps)
 
 	envMap := envToMap(env)
 
@@ -859,7 +859,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 }
 
 func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", nil)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["LD_LIBRARY_PATH"]; ok {
@@ -883,7 +883,7 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 // --- Behavior 11: Platform variables in buildEnv ---
 
 func TestBuildEnvIncludesPlatformVars(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", nil)
 	envMap := envToMap(env)
 
 	if val, ok := envMap["OS"]; !ok || val != runtime.GOOS {
@@ -944,11 +944,82 @@ func TestCheckPlatformCurrentNotInListReturnsError(t *testing.T) {
 // --- Behavior 13: VERSION variable in buildEnv ---
 
 func TestBuildEnvIncludesVersion(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.8.1", nil)
+	env := buildEnv("/tmp/prefix", "4", "1.8.1", "", nil)
 	envMap := envToMap(env)
 
 	if val, ok := envMap["VERSION"]; !ok || val != "1.8.1" {
 		t.Errorf("VERSION = %q, want %q", val, "1.8.1")
+	}
+}
+
+// --- Behavior 14: SystemDeps returns correct deps ---
+
+func TestSystemDepsReturnsCorrectDeps(t *testing.T) {
+	tests := []struct {
+		system string
+		want   []string
+	}{
+		{"cmake", []string{"cmake"}},
+		{"go", []string{"go"}},
+		{"cargo", []string{"rust"}},
+		{"", nil},
+		{"autotools", nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.system, func(t *testing.T) {
+			got := SystemDeps(tt.system)
+			if len(got) != len(tt.want) {
+				t.Fatalf("SystemDeps(%q) = %v, want %v",
+					tt.system, got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Errorf("SystemDeps(%q)[%d] = %q, want %q",
+						tt.system, i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+// --- Behavior 15: CMAKE_PREFIX_PATH in buildEnv ---
+
+func TestBuildEnvCMakePrefixPath(t *testing.T) {
+	deps := &BuildDeps{
+		StoreDirs: []string{"/fake/store/a", "/fake/store/b"},
+	}
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", deps)
+	envMap := envToMap(env)
+
+	val, ok := envMap["CMAKE_PREFIX_PATH"]
+	if !ok {
+		t.Fatal("expected CMAKE_PREFIX_PATH in env")
+	}
+	// cmake uses semicolons as separators.
+	want := "/fake/store/a;/fake/store/b"
+	if val != want {
+		t.Errorf("CMAKE_PREFIX_PATH = %q, want %q", val, want)
+	}
+}
+
+func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
+	deps := &BuildDeps{
+		StoreDirs: []string{"/fake/store/a"},
+	}
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "go", deps)
+	envMap := envToMap(env)
+
+	if _, ok := envMap["CMAKE_PREFIX_PATH"]; ok {
+		t.Error("CMAKE_PREFIX_PATH should not be set for non-cmake systems")
+	}
+}
+
+func TestBuildEnvNoCMakePrefixPathWithoutDeps(t *testing.T) {
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", nil)
+	envMap := envToMap(env)
+
+	if _, ok := envMap["CMAKE_PREFIX_PATH"]; ok {
+		t.Error("CMAKE_PREFIX_PATH should not be set without deps")
 	}
 }
 
