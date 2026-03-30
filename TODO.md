@@ -332,8 +332,11 @@ what the source produces.
 - [x] **`gale audit <pkg>`** — rebuilds from source,
   compares SHA256 against lockfile hash. Reports
   match or mismatch with both hashes.
-- [ ] **Deterministic build investigation** — moved
-  to gale-recipes TODO. Run `gale audit` per recipe.
+- [x] **Deterministic build investigation** — documented
+  in docs/troubleshooting.md. Mach-O LC_UUID, libtool
+  .la paths, pkg-config .pc paths, and ar timestamps
+  prevent full determinism without Nix-level isolation.
+  Archive packaging itself is deterministic.
 
 ### Layer 5: SBOM
 
