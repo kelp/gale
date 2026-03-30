@@ -14,17 +14,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/klauspost/compress/zstd"
 )
-
-func TestMain(m *testing.M) {
-	attestation.Disable()
-	os.Exit(m.Run())
-}
 
 func TestInstallFromSourceCreatesBinary(t *testing.T) {
 	srcTar := createTestSourceTarGz(t)

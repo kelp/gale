@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
@@ -47,6 +48,7 @@ var buildCmd = &cobra.Command{
 			inst := &installer.Installer{
 				Store:    store.NewStore(defaultStoreRoot()),
 				Resolver: resolver,
+				Verifier: attestation.NewVerifier(),
 			}
 
 			depPaths, err := inst.InstallBuildDeps(r)

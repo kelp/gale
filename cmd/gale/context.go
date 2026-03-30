@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
@@ -74,6 +75,7 @@ func newCmdContext(local bool) (*cmdContext, error) {
 	inst := &installer.Installer{
 		Store:    store.NewStore(storeRoot),
 		Resolver: resolver,
+		Verifier: attestation.NewVerifier(),
 	}
 
 	return &cmdContext{

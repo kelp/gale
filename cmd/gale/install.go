@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
@@ -110,6 +111,7 @@ var installCmd = &cobra.Command{
 		inst := &installer.Installer{
 			Store:    store.NewStore(storeRoot),
 			Resolver: resolver,
+			Verifier: attestation.NewVerifier(),
 		}
 
 		out.Info(fmt.Sprintf("Installing %s@%s...",
@@ -255,6 +257,7 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot string, loc
 	inst := &installer.Installer{
 		Store:    store.NewStore(storeRoot),
 		Resolver: depResolver,
+		Verifier: attestation.NewVerifier(),
 	}
 
 	out.Info(fmt.Sprintf("Installing %s from git (%s)...",

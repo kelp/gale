@@ -7,15 +7,14 @@ import (
 )
 
 func TestAvailableWhenGHOnPath(t *testing.T) {
-	// Point at a real binary that exists.
 	orig := lookPath
 	lookPath = func(name string) (string, error) {
 		return "/usr/bin/gh", nil
 	}
 	defer func() { lookPath = orig }()
-	resetAvailable()
 
-	if !Available() {
+	v := &GHVerifier{}
+	if !v.Available() {
 		t.Error("expected Available to return true")
 	}
 }
@@ -26,9 +25,9 @@ func TestAvailableWhenGHMissing(t *testing.T) {
 		return "", &os.PathError{Op: "lookpath", Path: "gh"}
 	}
 	defer func() { lookPath = orig }()
-	resetAvailable()
 
-	if Available() {
+	v := &GHVerifier{}
+	if v.Available() {
 		t.Error("expected Available to return false")
 	}
 }
@@ -40,9 +39,9 @@ func TestVerifyFileSuccess(t *testing.T) {
 		return mock, nil
 	}
 	defer func() { lookPath = orig }()
-	resetAvailable()
 
-	if err := VerifyFile("test.tar.zst", "owner/repo"); err != nil {
+	v := &GHVerifier{}
+	if err := v.VerifyFile("test.tar.zst", "owner/repo"); err != nil {
 		t.Errorf("expected success, got %v", err)
 	}
 }
@@ -54,9 +53,9 @@ func TestVerifyFileFailure(t *testing.T) {
 		return mock, nil
 	}
 	defer func() { lookPath = orig }()
-	resetAvailable()
 
-	err := VerifyFile("test.tar.zst", "owner/repo")
+	v := &GHVerifier{}
+	err := v.VerifyFile("test.tar.zst", "owner/repo")
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -68,29 +67,18 @@ func TestVerifyFileGHNotAvailable(t *testing.T) {
 		return "", &os.PathError{Op: "lookpath", Path: "gh"}
 	}
 	defer func() { lookPath = orig }()
-	resetAvailable()
 
-	err := VerifyFile("test.tar.zst", "owner/repo")
+	v := &GHVerifier{}
+	err := v.VerifyFile("test.tar.zst", "owner/repo")
 	if err == nil {
 		t.Error("expected error when gh not available")
 	}
 }
 
-func TestDisableOverridesAvailable(t *testing.T) {
-	orig := lookPath
-	lookPath = func(name string) (string, error) {
-		return "/usr/bin/gh", nil
-	}
-	defer func() { lookPath = orig }()
-	resetAvailable()
-
-	Disable()
-	if Available() {
-		t.Error("expected Available to return false when disabled")
-	}
-	Enable()
-	if !Available() {
-		t.Error("expected Available to return true after Enable")
+func TestNewVerifierReturnsGHVerifier(t *testing.T) {
+	v := NewVerifier()
+	if _, ok := v.(*GHVerifier); !ok {
+		t.Errorf("NewVerifier() returned %T, want *GHVerifier", v)
 	}
 }
 

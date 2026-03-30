@@ -235,9 +235,10 @@ Key rules:
   `//nolint:gosec` for world-readable files.
 - Use `go:embed` to bake files into the binary
   (see `internal/generation/gale-readme.md`).
-- `internal/attestation/` uses `Disable()`/`Enable()`
-  for tests. Installer tests call `attestation.Disable()`
-  in TestMain to avoid hitting real gh CLI.
+- `internal/attestation/` defines a `Verifier` interface.
+  Installer takes `Verifier` field (nil = skip). Tests
+  pass nil instead of mocking. `VerifyOCI` is a
+  package-level function used only by `gale verify`.
 
 ## Testing Homebrew Formula
 

@@ -14,47 +14,36 @@ const DefaultRepo = "kelp/gale-recipes"
 // Overridden in tests.
 var lookPath = exec.LookPath
 
-var (
-	ghAvailable bool
-	ghOnce      sync.Once
-	disabled    bool
-)
-
-// resetAvailable clears the cached availability check.
-// Used by tests to reset state between runs.
-func resetAvailable() {
-	ghOnce = sync.Once{}
-	disabled = false
+// Verifier checks Sigstore attestations for files.
+type Verifier interface {
+	Available() bool
+	VerifyFile(filePath, repo string) error
 }
 
-// Disable forces Available to return false. Used by
-// tests that don't want attestation verification.
-func Disable() {
-	disabled = true
+// GHVerifier implements Verifier using the gh CLI.
+type GHVerifier struct {
+	once      sync.Once
+	available bool
 }
 
-// Enable re-enables attestation checking after Disable.
-func Enable() {
-	disabled = false
+// NewVerifier returns a Verifier backed by the gh CLI.
+func NewVerifier() Verifier {
+	return &GHVerifier{}
 }
 
-// Available reports whether the gh CLI is on PATH
-// and attestation checking is enabled.
-func Available() bool {
-	if disabled {
-		return false
-	}
-	ghOnce.Do(func() {
+// Available reports whether the gh CLI is on PATH.
+func (v *GHVerifier) Available() bool {
+	v.once.Do(func() {
 		_, err := lookPath("gh")
-		ghAvailable = err == nil
+		v.available = err == nil
 	})
-	return ghAvailable
+	return v.available
 }
 
 // VerifyFile runs gh attestation verify on a local
 // file against the given GitHub repo. Returns nil on
 // success, error with gh output on failure.
-func VerifyFile(filePath, repo string) error {
+func (v *GHVerifier) VerifyFile(filePath, repo string) error {
 	return runVerify(filePath, repo)
 }
 
@@ -65,11 +54,11 @@ func VerifyOCI(ociURI, repo string) error {
 }
 
 func runVerify(subject, repo string) error {
-	if !Available() {
+	ghPath, err := lookPath("gh")
+	if err != nil {
 		return fmt.Errorf("gh CLI not found")
 	}
 
-	ghPath, _ := lookPath("gh")
 	cmd := exec.Command(ghPath, "attestation", "verify",
 		subject, "--repo", repo)
 	out, err := cmd.CombinedOutput()

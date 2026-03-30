@@ -24,6 +24,7 @@ type RecipeResolver func(name string) (*recipe.Recipe, error)
 type Installer struct {
 	Store    *store.Store
 	Resolver RecipeResolver
+	Verifier attestation.Verifier // nil = skip attestation
 }
 
 // InstallResult holds the outcome of an install.
@@ -60,7 +61,7 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	// Try binary first.
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	if bin != nil {
-		if err := installBinary(bin, storeDir); err == nil {
+		if err := installBinary(bin, storeDir, inst.Verifier); err == nil {
 			method = "binary"
 			sha256 = bin.SHA256
 		} else {
@@ -189,7 +190,7 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 	}, nil
 }
 
-func installBinary(bin *recipe.Binary, storeDir string) error {
+func installBinary(bin *recipe.Binary, storeDir string, v attestation.Verifier) error {
 	tmpFile := storeDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)
 
@@ -213,8 +214,8 @@ func installBinary(bin *recipe.Binary, storeDir string) error {
 	}
 
 	// Verify Sigstore attestation for GHCR binaries.
-	if isGHCR(bin.URL) && attestation.Available() {
-		if err := attestation.VerifyFile(
+	if isGHCR(bin.URL) && v != nil && v.Available() {
+		if err := v.VerifyFile(
 			tmpFile, attestation.DefaultRepo); err != nil {
 			return fmt.Errorf("attestation: %w", err)
 		}

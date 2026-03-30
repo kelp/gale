@@ -20,7 +20,8 @@ var verifyCmd = &cobra.Command{
 		name := args[0]
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		if !attestation.Available() {
+		v := attestation.NewVerifier()
+		if !v.Available() {
 			return fmt.Errorf(
 				"gh CLI is required for attestation verification\n" +
 					"  Install: https://cli.github.com")
