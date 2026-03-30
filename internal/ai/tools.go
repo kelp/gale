@@ -15,19 +15,14 @@ import (
 )
 
 // RecipeTools returns the tools available for recipe
-// creation. The caller must call Cleanup after the
-// agent finishes to remove temp files.
-func RecipeTools() ([]Tool, func()) {
+// creation. recipeDir is where recipes are written
+// (letter-bucketed). The caller must call Cleanup
+// after the agent finishes to remove temp downloads.
+func RecipeTools(recipeDir string) ([]Tool, func()) {
 	// Downloads go in a temp dir that gets cleaned up.
 	downloadDir, err := os.MkdirTemp("", "gale-download-*")
 	if err != nil {
 		downloadDir = os.TempDir()
-	}
-
-	// Recipes go in a separate dir that survives cleanup.
-	recipeDir, err := os.MkdirTemp("", "gale-recipe-*")
-	if err != nil {
-		recipeDir = os.TempDir()
 	}
 
 	cleanup := func() { os.RemoveAll(downloadDir) }
@@ -39,15 +34,6 @@ func RecipeTools() ([]Tool, func()) {
 		writeRecipeTool(recipeDir),
 		lintRecipeTool(),
 	}, cleanup
-}
-
-// RecipeTmpDir returns the temp directory used for
-// recipe files, extracted from the tools list.
-// The write_recipe tool stores files here.
-func RecipeTmpDir(tools []Tool) string {
-	// Convention: write_recipe tool stores the dir.
-	// Caller should track this separately.
-	return ""
 }
 
 func githubInfoTool() Tool {

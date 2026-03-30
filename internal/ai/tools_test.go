@@ -141,7 +141,7 @@ func TestReadFileTool(t *testing.T) {
 }
 
 func TestRecipeToolsReturnsToolsAndCleanup(t *testing.T) {
-	tools, cleanup := RecipeTools()
+	tools, cleanup := RecipeTools(t.TempDir())
 	defer cleanup()
 
 	if len(tools) != 5 {
