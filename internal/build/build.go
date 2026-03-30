@@ -108,7 +108,7 @@ func Build(r *recipe.Recipe, outputDir string, deps *BuildDeps) (*BuildResult, e
 	// Extract source.
 	out.Step("Extracting source...")
 	srcDir := filepath.Join(workspace, "src")
-	if err := download.ExtractTarGz(tarballPath, srcDir); err != nil {
+	if err := download.ExtractSource(tarballPath, srcDir); err != nil {
 		return nil, fmt.Errorf("extract source: %w", err)
 	}
 

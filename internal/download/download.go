@@ -3,6 +3,7 @@ package download
 import (
 	"archive/tar"
 	"archive/zip"
+	"compress/bzip2"
 	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/klauspost/compress/zstd"
+	"github.com/ulikunitz/xz"
 )
 
 // Fetch downloads a file from url to destPath.
@@ -299,6 +301,59 @@ func ExtractTarZstd(archivePath, destDir string) error {
 	}
 
 	return nil
+}
+
+// ExtractTarXz extracts a tar.xz file to destDir, preserving
+// relative paths and creating directories as needed.
+func ExtractTarXz(archivePath, destDir string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer f.Close()
+
+	xr, err := xz.NewReader(f)
+	if err != nil {
+		return fmt.Errorf("create xz reader: %w", err)
+	}
+
+	tr := tar.NewReader(xr)
+	return extractTar(tr, destDir)
+}
+
+// ExtractTarBz2 extracts a tar.bz2 file to destDir, preserving
+// relative paths and creating directories as needed.
+func ExtractTarBz2(archivePath, destDir string) error {
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer f.Close()
+
+	br := bzip2.NewReader(f)
+	tr := tar.NewReader(br)
+	return extractTar(tr, destDir)
+}
+
+// ExtractSource extracts a source archive to destDir,
+// detecting the format from the file extension.
+func ExtractSource(archivePath, destDir string) error {
+	switch {
+	case strings.HasSuffix(archivePath, ".tar.gz"),
+		strings.HasSuffix(archivePath, ".tgz"):
+		return ExtractTarGz(archivePath, destDir)
+	case strings.HasSuffix(archivePath, ".tar.xz"):
+		return ExtractTarXz(archivePath, destDir)
+	case strings.HasSuffix(archivePath, ".tar.bz2"):
+		return ExtractTarBz2(archivePath, destDir)
+	case strings.HasSuffix(archivePath, ".tar.zst"):
+		return ExtractTarZstd(archivePath, destDir)
+	case strings.HasSuffix(archivePath, ".zip"):
+		return ExtractZip(archivePath, destDir)
+	default:
+		return fmt.Errorf(
+			"unsupported archive format: %s", archivePath)
+	}
 }
 
 // extractTar reads entries from a tar reader and extracts them
