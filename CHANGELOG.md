@@ -10,6 +10,19 @@
   set in build environment from dependency store
   paths. Fixes cmake-based recipes failing to find
   gale-installed dependencies.
+- `gale pin <pkg>` and `gale unpin <pkg>` for
+  version pinning. `gale update` skips pinned
+  packages. Pin state in `[pinned]` section of
+  gale.toml.
+- `gale remote sync|diff|export <host>` for
+  managing packages on remote machines via SSH.
+  Bootstraps gale on host if not installed.
+- Build system presets: `build.system` auto-adds
+  required build deps (cmake, go, rust). Sets
+  `CMAKE_PREFIX_PATH` for cmake builds.
+- tar.xz and tar.bz2 extraction support via
+  `ExtractSource` dispatcher. Enables 16 recipes
+  using non-gzip tarballs (git, nodejs, curl, etc).
 
 ### Changed
 
