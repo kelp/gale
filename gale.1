@@ -104,6 +104,11 @@ Use a specific recipe file.
 Write to global config.
 .It Fl p , -project
 Write to project config.
+.It Fl -debug
+Build with debug flags
+.Pq Fl O0 Fl g .
+.It Fl -release
+Build with release flags (overrides recipe debug).
 .It Fl -no-color
 Disable colored output.
 .El
@@ -131,8 +136,29 @@ Header directories from dependencies.
 Pkg-config directories from dependencies.
 .It Ev LD_LIBRARY_PATH
 Dynamic linker path (Linux).
+.It Ev CMAKE_LIBRARY_PATH
+CMake library search path from dependencies.
+.It Ev CMAKE_INCLUDE_PATH
+CMake include search path from dependencies.
+.It Ev CMAKE_PREFIX_PATH
+CMake prefix path from dependencies (cmake builds only).
 .It Ev DYLD_FALLBACK_LIBRARY_PATH
 Dynamic linker fallback path (macOS).
+.It Ev CFLAGS
+Compiler flags. Default:
+.Fl O2
+(release) or
+.Fl O0 Fl g
+(debug).
+.It Ev CXXFLAGS
+C++ compiler flags. Same defaults as
+.Ev CFLAGS .
+.It Ev LDFLAGS
+Linker flags. Default:
+.Fl Wl,-S
+(release, strips debug symbols) or empty (debug).
+.It Ev ZERO_AR_DATE
+Always set to 1 for deterministic ar archives.
 .El
 .Sh EXAMPLES
 Install a package:
@@ -173,6 +199,31 @@ jq@1.8.1
 .Bl -tag -width Ds
 .It Ev NO_COLOR
 Disables colored output when set.
+.El
+.Sh CONFIGURATION
+Application settings in
+.Pa ~/.gale/config.toml :
+.Bl -tag -width Ds
+.It Ic [build]
+.Bl -tag -width "debug" -compact
+.It Va debug
+When true, all builds use debug flags.
+Default: false.
+.El
+.It Ic [anthropic]
+.Bl -tag -width "prompt_file" -compact
+.It Va api_key
+Anthropic API key for
+.Cm create-recipe .
+.It Va prompt_file
+Path to a file appended to the recipe creation
+system prompt.
+.El
+.It Ic [registry]
+.Bl -tag -width "url" -compact
+.It Va url
+Override the recipe registry URL.
+.El
 .El
 .Sh FILES
 .Bl -tag -width "~/.gale/config.toml" -compact
