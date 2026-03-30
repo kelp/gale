@@ -1,3 +1,15 @@
 # Binary output
 /gale
 .gale/
+
+# Machine-specific
+gale.lock
+
+# Claude Code
+.claude/
+
+# Build artifacts
+*.tar.zst
+
+# Superpowers specs
+docs/superpowers/
