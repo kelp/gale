@@ -248,37 +248,32 @@ func TestParseAppConfigSecondRepo(t *testing.T) {
 
 // --- Behavior 4: Parse config.toml with AI settings ---
 
-const appConfigWithAI = `
-[ai]
-provider = "anthropic"
+const appConfigWithAnthropic = `
+[anthropic]
 api_key = "sk-ant-test123"
+prompt_file = "~/.gale/recipe-prompt.md"
 `
 
-func TestParseAppConfigAIProvider(t *testing.T) {
-	cfg, err := ParseAppConfig(appConfigWithAI)
+func TestParseAppConfigAnthropicAPIKey(t *testing.T) {
+	cfg, err := ParseAppConfig(appConfigWithAnthropic)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if cfg.AI.Provider != "anthropic" {
-		t.Errorf("AI.Provider = %q, want %q",
-			cfg.AI.Provider, "anthropic")
+	if cfg.Anthropic.APIKey != "sk-ant-test123" {
+		t.Errorf("Anthropic.APIKey = %q, want %q",
+			cfg.Anthropic.APIKey, "sk-ant-test123")
 	}
 }
 
-func TestParseAppConfigAIAPIKey(t *testing.T) {
-	cfg, err := ParseAppConfig(appConfigWithAI)
+func TestParseAppConfigAnthropicPromptFile(t *testing.T) {
+	cfg, err := ParseAppConfig(appConfigWithAnthropic)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if cfg.AI.APIKey != "sk-ant-test123" {
-		t.Errorf("AI.APIKey = %q, want %q",
-			cfg.AI.APIKey, "sk-ant-test123")
+	if cfg.Anthropic.PromptFile != "~/.gale/recipe-prompt.md" {
+		t.Errorf("Anthropic.PromptFile = %q, want %q",
+			cfg.Anthropic.PromptFile,
+			"~/.gale/recipe-prompt.md")
 	}
 }
 
