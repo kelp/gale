@@ -73,10 +73,20 @@ var updateCmd = &cobra.Command{
 						"%s not in gale.toml, skipping", name))
 					continue
 				}
+				if cfg.Pinned[name] {
+					out.Info(fmt.Sprintf(
+						"skipping %s (pinned)", name))
+					continue
+				}
 				targets[name] = target{current, ver}
 			}
 		} else {
 			for name, ver := range cfg.Packages {
+				if cfg.Pinned[name] {
+					out.Info(fmt.Sprintf(
+						"skipping %s (pinned)", name))
+					continue
+				}
 				targets[name] = target{ver, ""}
 			}
 		}

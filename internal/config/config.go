@@ -24,6 +24,7 @@ var ErrPackageNotFound = errors.New("package not found")
 type GaleConfig struct {
 	Packages map[string]string `toml:"packages"`
 	Vars     map[string]string `toml:"vars"`
+	Pinned   map[string]bool   `toml:"pinned,omitempty"`
 }
 
 // Repo represents a recipe repository entry in config.toml.
@@ -180,6 +181,43 @@ func RemovePackage(path string, name string) error {
 		return ErrPackageNotFound
 	}
 	delete(cfg.Packages, name)
+
+	return WriteGaleConfig(path, cfg)
+}
+
+// PinPackage marks a package as pinned in the gale.toml at path.
+func PinPackage(path string, name string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading gale config: %w", err)
+	}
+
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		return err
+	}
+
+	if cfg.Pinned == nil {
+		cfg.Pinned = make(map[string]bool)
+	}
+	cfg.Pinned[name] = true
+
+	return WriteGaleConfig(path, cfg)
+}
+
+// UnpinPackage removes a pin from the gale.toml at path.
+func UnpinPackage(path string, name string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading gale config: %w", err)
+	}
+
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		return err
+	}
+
+	delete(cfg.Pinned, name)
 
 	return WriteGaleConfig(path, cfg)
 }

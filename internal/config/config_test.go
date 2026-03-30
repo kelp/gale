@@ -681,3 +681,156 @@ func TestParseAppConfigRegistryURLEmpty(t *testing.T) {
 			cfg.Registry.URL)
 	}
 }
+
+// --- Behavior: Pin package in gale.toml ---
+
+func TestPinPackageAddsPinnedSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+
+	initial := "[packages]\njq = \"1.7.1\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("failed to write initial gale.toml: %v", err)
+	}
+
+	if err := PinPackage(path, "jq"); err != nil {
+		t.Fatalf("PinPackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseGaleConfig error: %v", err)
+	}
+
+	if !cfg.Pinned["jq"] {
+		t.Error("expected jq to be pinned")
+	}
+}
+
+func TestPinPackagePreservesExisting(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+
+	initial := "[packages]\njq = \"1.7.1\"\nripgrep = \"14.0\"\n\n[vars]\nFOO = \"bar\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("failed to write initial gale.toml: %v", err)
+	}
+
+	if err := PinPackage(path, "jq"); err != nil {
+		t.Fatalf("PinPackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseGaleConfig error: %v", err)
+	}
+
+	if cfg.Packages["jq"] != "1.7.1" {
+		t.Errorf("Packages[jq] = %q, want %q",
+			cfg.Packages["jq"], "1.7.1")
+	}
+	if cfg.Packages["ripgrep"] != "14.0" {
+		t.Errorf("Packages[ripgrep] = %q, want %q",
+			cfg.Packages["ripgrep"], "14.0")
+	}
+	if cfg.Vars["FOO"] != "bar" {
+		t.Errorf("Vars[FOO] = %q, want %q",
+			cfg.Vars["FOO"], "bar")
+	}
+}
+
+// --- Behavior: Unpin package from gale.toml ---
+
+func TestUnpinPackageRemovesPin(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+
+	initial := "[packages]\njq = \"1.7.1\"\n\n[pinned]\njq = true\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("failed to write initial gale.toml: %v", err)
+	}
+
+	if err := UnpinPackage(path, "jq"); err != nil {
+		t.Fatalf("UnpinPackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseGaleConfig error: %v", err)
+	}
+
+	if cfg.Pinned["jq"] {
+		t.Error("expected jq to be unpinned")
+	}
+}
+
+func TestUnpinPackageNonexistentIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+
+	initial := "[packages]\njq = \"1.7.1\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("failed to write initial gale.toml: %v", err)
+	}
+
+	// Unpinning something that isn't pinned should not error.
+	if err := UnpinPackage(path, "jq"); err != nil {
+		t.Fatalf("UnpinPackage error: %v", err)
+	}
+}
+
+// --- Behavior: Parse gale.toml with pinned section ---
+
+const galeWithPinned = `
+[packages]
+jq = "1.7.1"
+ripgrep = "14.0"
+
+[pinned]
+jq = true
+`
+
+func TestParseGaleConfigPinnedNotNil(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithPinned)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pinned == nil {
+		t.Fatal("expected non-nil Pinned map")
+	}
+}
+
+func TestParseGaleConfigPinnedValue(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithPinned)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.Pinned["jq"] {
+		t.Error("expected Pinned[jq] to be true")
+	}
+}
+
+func TestParseGaleConfigUnpinnedPackage(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithPinned)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Pinned["ripgrep"] {
+		t.Error("expected Pinned[ripgrep] to be false")
+	}
+}
