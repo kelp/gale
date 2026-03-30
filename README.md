@@ -179,15 +179,21 @@ steps = [
 ## Optional Dependencies
 
 **[gh](https://cli.github.com/)** — GitHub CLI.
-Used by `gale verify` and `gale audit` for Sigstore
-attestation verification. If not installed, gale
-skips attestation checks during install. `gale doctor`
-reports its availability.
+Used for Sigstore attestation verification during
+binary installs, `gale verify`, and `gale audit`.
+Without it, gale skips attestation checks and
+installs proceed normally. `gale doctor` reports
+its availability.
 
-**Anthropic API key** — used by `gale create-recipe`
-for AI-powered recipe generation. Configure in
-`~/.gale/config.toml` under `[anthropic]`. Not needed
-for any other gale functionality.
+**ssh / scp** — used by `gale remote` commands to
+sync packages to remote machines. Standard on macOS
+and Linux. Respects `~/.ssh/config` for host aliases
+and key configuration.
+
+**[Anthropic API key](https://console.anthropic.com/)** —
+used by `gale create-recipe` for AI-powered recipe
+generation. Configure in `~/.gale/config.toml` under
+`[anthropic]`. Not needed for any other functionality.
 
 ## Development
 
