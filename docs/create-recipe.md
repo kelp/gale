@@ -23,6 +23,18 @@ gale create-recipe jqlang/jq
 Accepts `owner/repo`, `github.com/owner/repo`, or
 a full HTTPS URL.
 
+## Output
+
+When run inside a gale-recipes directory, the recipe
+is written directly to `recipes/<letter>/<name>.toml`.
+Otherwise the recipe is printed to stdout.
+
+Use `-o <dir>` to specify an output directory:
+
+```sh
+gale create-recipe jqlang/jq -o ~/code/gale-recipes/recipes
+```
+
 ## What it does
 
 The agent calls tools in a loop:
@@ -38,17 +50,22 @@ The agent calls tools in a loop:
 5. Runs `gale lint` on the recipe to validate.
 6. Fixes any lint errors and rewrites.
 
-The output is a recipe file in a temp directory.
-Copy it to your gale-recipes repo to use it.
-
 ## Example
 
+From inside gale-recipes:
+
 ```
+$ cd ~/code/gale-recipes
 $ gale create-recipe casey/just
 --> Creating recipe for casey/just...
   > Downloaded - 1.48.1.tar.gz 735.1 KB in 0.6s
-==> Recipe created
-/tmp/gale-recipe-xxx/j/just.toml
+==> Recipe written to recipes/j/just.toml
+```
+
+From anywhere else, the recipe prints to stdout:
+
+```
+$ gale create-recipe casey/just > just.toml
 ```
 
 The generated recipe:
