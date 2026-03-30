@@ -80,10 +80,7 @@ func syncIfNeeded() {
 	if err != nil || !stale {
 		return
 	}
-	cmd := exec.Command("gale", "sync")
-	cmd.Stdout = os.Stderr
-	cmd.Stderr = os.Stderr
-	_ = cmd.Run()
+	_ = runSync(false)
 }
 
 // prependPATH returns the current environment with binDir
