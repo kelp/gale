@@ -891,6 +891,69 @@ func TestCreateTarZstdPreservesExecutability(t *testing.T) {
 	}
 }
 
+func TestCreateTarZstdDeterministic(t *testing.T) {
+	sourceDir := t.TempDir()
+
+	// Create files.
+	binDir := filepath.Join(sourceDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "tool"),
+		[]byte("#!/bin/sh\necho hello"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a symlink with an absolute path within the tree.
+	// This simulates what make install does with ln -s -f.
+	absTarget := filepath.Join(binDir, "tool")
+	if err := os.Symlink(absTarget,
+		filepath.Join(binDir, "tool-alias")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create two archives and compare hashes.
+	archive1 := filepath.Join(t.TempDir(), "a1.tar.zst")
+	archive2 := filepath.Join(t.TempDir(), "a2.tar.zst")
+
+	if err := CreateTarZstd(sourceDir, archive1); err != nil {
+		t.Fatalf("first archive: %v", err)
+	}
+	if err := CreateTarZstd(sourceDir, archive2); err != nil {
+		t.Fatalf("second archive: %v", err)
+	}
+
+	hash1, err := HashFile(archive1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hash2, err := HashFile(archive2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hash1 != hash2 {
+		t.Errorf("archives differ: %s vs %s", hash1, hash2)
+	}
+
+	// Extract and verify symlink target is relative.
+	destDir := t.TempDir()
+	if err := ExtractTarZstd(archive1, destDir); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+
+	link := filepath.Join(destDir, "bin", "tool-alias")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if filepath.IsAbs(target) {
+		t.Errorf(
+			"symlink target should be relative, got %q",
+			target)
+	}
+}
+
 // --- FetchWithAuth tests ---
 
 func TestFetchWithAuthSendsAuthHeader(t *testing.T) {

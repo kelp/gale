@@ -443,7 +443,7 @@ func CreateTarZstd(sourceDir, archivePath string) error {
 	}
 	defer f.Close()
 
-	zw, err := zstd.NewWriter(f)
+	zw, err := zstd.NewWriter(f, zstd.WithEncoderConcurrency(1))
 	if err != nil {
 		return fmt.Errorf("create zstd writer: %w", err)
 	}
@@ -480,10 +480,29 @@ func CreateTarZstd(sourceDir, archivePath string) error {
 			if err != nil {
 				return fmt.Errorf("readlink %s: %w", rel, err)
 			}
+
+			// Convert absolute symlink targets within the
+			// source tree to relative paths. Absolute paths
+			// from make install (e.g., ln -s -f /tmp/build/
+			// prefix/bin/tool bin/alias) break after
+			// extraction and make archives non-deterministic.
+			if filepath.IsAbs(target) {
+				absSource, _ := filepath.Abs(sourceDir)
+				if strings.HasPrefix(target, absSource+string(os.PathSeparator)) {
+					// Target is inside the source tree.
+					// Make it relative to the symlink's dir.
+					linkDir := filepath.Dir(path)
+					relTarget, relErr := filepath.Rel(linkDir, target)
+					if relErr == nil {
+						target = relTarget
+					}
+				}
+			}
+
 			hdr := &tar.Header{
 				Typeflag: tar.TypeSymlink,
 				Name:     rel,
-				Linkname: target,
+				Linkname: filepath.ToSlash(target),
 				Mode:     int64(linfo.Mode()),
 			}
 			return tw.WriteHeader(hdr)
