@@ -314,10 +314,13 @@ func buildEnv(prefixDir, jobs, version string, deps *BuildDeps) []string {
 				filepath.Join(d, "lib", "pkgconfig"))
 		}
 		libPathStr := strings.Join(libPaths, ":")
+		incPathStr := strings.Join(incPaths, ":")
 		env = append(env,
 			"LIBRARY_PATH="+libPathStr,
-			"C_INCLUDE_PATH="+strings.Join(incPaths, ":"),
-			"PKG_CONFIG_PATH="+strings.Join(pcPaths, ":"))
+			"C_INCLUDE_PATH="+incPathStr,
+			"PKG_CONFIG_PATH="+strings.Join(pcPaths, ":"),
+			"CMAKE_LIBRARY_PATH="+libPathStr,
+			"CMAKE_INCLUDE_PATH="+incPathStr)
 
 		switch runtime.GOOS {
 		case "linux":

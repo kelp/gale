@@ -21,7 +21,7 @@ installed binary. Most builds are not yet deterministic — mismatches
 are expected due to timestamps, embedded paths, and build IDs. A match
 confirms the build is reproducible. A mismatch does not indicate
 tampering.`,
-	Args:  cobra.ExactArgs(1),
+	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))

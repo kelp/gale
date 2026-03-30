@@ -825,6 +825,14 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 		t.Error("expected LIBRARY_PATH in env")
 	}
 
+	// Should have cmake search paths.
+	if _, ok := envMap["CMAKE_LIBRARY_PATH"]; !ok {
+		t.Error("expected CMAKE_LIBRARY_PATH in env")
+	}
+	if _, ok := envMap["CMAKE_INCLUDE_PATH"]; !ok {
+		t.Error("expected CMAKE_INCLUDE_PATH in env")
+	}
+
 	// Platform-specific dynamic linker path.
 	switch runtime.GOOS {
 	case "linux":
@@ -861,6 +869,14 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 		t.Error(
 			"DYLD_FALLBACK_LIBRARY_PATH should not be set " +
 				"without deps")
+	}
+	if _, ok := envMap["CMAKE_LIBRARY_PATH"]; ok {
+		t.Error(
+			"CMAKE_LIBRARY_PATH should not be set without deps")
+	}
+	if _, ok := envMap["CMAKE_INCLUDE_PATH"]; ok {
+		t.Error(
+			"CMAKE_INCLUDE_PATH should not be set without deps")
 	}
 }
 
