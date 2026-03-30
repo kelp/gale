@@ -427,20 +427,6 @@ func installFromRecipeFile(recipePath, configPath, galeDir, storeRoot string, ou
 	return nil
 }
 
-// recipeFileResolver returns a RecipeResolver that looks for
-// recipes in the same repo as the given recipe file. Assumes
-// letter-bucketed layout: recipes/<letter>/<name>.toml.
-func recipeFileResolver(recipePath string) installer.RecipeResolver {
-	absPath, err := filepath.Abs(recipePath)
-	if err != nil {
-		return nil
-	}
-	// recipePath is like .../recipes/j/jq.toml
-	// We want the directory containing "recipes/".
-	dir := filepath.Dir(filepath.Dir(filepath.Dir(absPath)))
-	return localRecipeResolver(filepath.Join(dir, "recipes"))
-}
-
 // parsePackageArg splits "name@version" into name and version.
 func parsePackageArg(arg string) (string, string) {
 	if i := strings.LastIndex(arg, "@"); i > 0 {
