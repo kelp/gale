@@ -393,6 +393,17 @@ Moved to gale-recipes TODO. Recipe format additions
   store paths. Recipes can link against dep
   libraries without explicit -L/-I flags.
 
+- [ ] **Build system presets** — make `build.system`
+  smarter. When `system = "cmake"`, auto-add cmake
+  to build deps, set `CMAKE_PREFIX_PATH` from dep
+  store dirs, default steps to cmake configure/build/
+  install. When `system = "autotools"`, default to
+  configure/make/make install with standard flags.
+  When `system = "go"`, default to mkdir + go build.
+  Recipe author can still override steps. Inspired
+  by OpenBSD ports modules but without the framework
+  complexity.
+
 - [x] **Per-platform build overrides** — `[build.<platform>]`
   sections override `[build]` for specific platforms.
   Used by Go and Rust recipes for platform-specific
