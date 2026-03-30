@@ -16,7 +16,11 @@ import (
 var auditCmd = &cobra.Command{
 	Use:   "audit <package>",
 	Short: "Verify a package builds reproducibly",
-	Long:  "Rebuild a package from source and compare the SHA256 against the installed binary. Detects whether CI and local builds produce the same artifact.",
+	Long: `Rebuild a package from source and compare the SHA256 against the
+installed binary. Most builds are not yet deterministic — mismatches
+are expected due to timestamps, embedded paths, and build IDs. A match
+confirms the build is reproducible. A mismatch does not indicate
+tampering.`,
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]

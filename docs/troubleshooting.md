@@ -66,6 +66,22 @@ Source builds can fail for several reasons:
   specific platforms. Check the recipe for platform
   constraints.
 
+### Audit reports a mismatch
+
+`gale audit <pkg>` rebuilds a package from source and
+compares the SHA256 against the installed binary. A
+mismatch is normal. Most C and Go builds embed
+timestamps, paths, or build IDs that differ between
+runs.
+
+A **match** is a strong signal: the build is
+reproducible and the installed binary matches what the
+source produces.
+
+A **mismatch** does not indicate tampering. It means
+the build is not yet deterministic. Work on improving
+build determinism is ongoing.
+
 ### Direnv not activating
 
 Verify the gale hook is in your direnvrc:
