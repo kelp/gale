@@ -9,6 +9,19 @@
   system, computes SHA256, lints, and iterates.
   Configurable via `[anthropic]` in config.toml.
   User-extensible prompt via `prompt_file` config.
+- Default compiler flags: `-O2` CFLAGS/CXXFLAGS and
+  `-Wl,-S` LDFLAGS in release mode (default).
+  Debug mode (`--debug`, recipe `build.debug`, or
+  config `[build] debug`): `-O0 -g`, no stripping.
+  User-set flags are never overridden.
+- `ZERO_AR_DATE=1` always set for deterministic
+  ar archives.
+- `--debug` and `--release` flags on `gale build`
+  and `gale install`.
+- Configuration reference: `docs/configuration.md`
+  covers all gale.toml and config.toml sections.
+- Man page: CONFIGURATION section, cmake/compiler
+  env vars, debug/release flags.
 
 ### Fixed
 
