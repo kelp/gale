@@ -272,6 +272,33 @@ type DepPaths struct {
 }
 
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
+	// Merge implicit system deps with explicit build deps
+	// without mutating the recipe.
+	sysDeps := build.SystemDeps(r.Build.System)
+	if len(sysDeps) > 0 {
+		explicit := make(map[string]bool)
+		for _, d := range r.Dependencies.Build {
+			explicit[d] = true
+		}
+		merged := append([]string{},
+			r.Dependencies.Build...)
+		for _, d := range sysDeps {
+			if !explicit[d] {
+				merged = append(merged, d)
+			}
+		}
+		r = &recipe.Recipe{
+			Package: r.Package,
+			Source:  r.Source,
+			Build:   r.Build,
+			Binary:  r.Binary,
+			Dependencies: recipe.Dependencies{
+				Build:   merged,
+				Runtime: r.Dependencies.Runtime,
+			},
+		}
+	}
+
 	seen := make(map[string]bool)
 	return inst.installDepsInner(r, seen)
 }
