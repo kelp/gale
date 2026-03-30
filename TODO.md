@@ -442,11 +442,12 @@ pure `[binary.<platform>]` with no `[build]` block.
   OpenSSL. CI build in progress.
 - [x] **Zig** — recipe in gale-recipes.
 - [x] **Node.js** — recipe in gale-recipes.
-- [ ] **Design decisions** — how do these interact with
-  system-installed versions? Should gale prefer its own
-  Go/Rust over the host's? How do per-project envs
-  pick a specific version? Relationship with rustup's
-  own version management.
+- [x] **Design decisions** — PATH ordering resolves
+  conflicts with system-installed versions. Gale's
+  project environments override global via direnv.
+  Rustup coexists: use gale's Rust for build deps,
+  rustup for Rust development. Documented in
+  docs/project-environments.md.
 
 ## Developer Workflow
 

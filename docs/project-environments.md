@@ -207,6 +207,28 @@ gale sync
 They get the same tool versions. No "works on my
 machine" problems.
 
+## Language toolchains
+
+Gale installs compilers (Go, Rust, Zig, Node.js)
+the same way it installs any tool. Pin a version
+in gale.toml, sync, and the compiler is on PATH.
+Per-project pinning works via direnv — Go 1.24
+globally, Go 1.26.1 in a specific project.
+
+**Rustup coexistence.** Gale's Rust recipe installs
+a stable `rustc` and `cargo`. This is enough to
+build Rust-based tools (ripgrep, bat, starship) and
+for casual Rust development. For heavy Rust work —
+nightly, beta, `rust-toolchain.toml`, cross-compilation
+targets, components — use rustup instead. The two
+coexist if you put rustup's `~/.cargo/bin` before
+gale on your global PATH. In project environments,
+gale's pinned version takes priority via direnv.
+
+**General rule.** Whatever is first on PATH wins.
+Gale's project environments always override global
+tools within the project directory.
+
 ## CI integration
 
 CI environments typically lack direnv. Use
