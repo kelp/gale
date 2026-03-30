@@ -24,9 +24,9 @@ The agent fetches repo metadata, downloads the source tarball,
 detects the build system, generates a recipe, lints it, and
 iterates until the recipe is valid.
 
-By default, writes to recipes/<letter>/<name>.toml if run from
-inside a gale-recipes directory. Otherwise writes to a temp dir.
-Use -o <path> to specify a directory, or -o - for stdout.`,
+When run inside a gale-recipes directory, writes to
+recipes/<letter>/<name>.toml. Otherwise prints the recipe
+to stdout. Use -o <dir> to specify an output directory.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repo := normalizeRepo(args[0])
@@ -45,12 +45,17 @@ Use -o <path> to specify a directory, or -o - for stdout.`,
 			promptFile = cfg.Anthropic.PromptFile
 		}
 
-		// Resolve output directory.
-		recipeDir := resolveRecipeOutputDir(createRecipeOutput)
+		// Always build in a temp dir (agent needs files
+		// for lint). Move or print after success.
+		tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
+		if err != nil {
+			return fmt.Errorf("create temp dir: %w", err)
+		}
+		defer os.RemoveAll(tmpDir)
 
 		out.Info(fmt.Sprintf("Creating recipe for %s...", repo))
 
-		tools, cleanup := ai.RecipeTools(recipeDir)
+		tools, cleanup := ai.RecipeTools(tmpDir)
 		defer cleanup()
 
 		result, err := client.RunAgent(
@@ -60,7 +65,8 @@ Use -o <path> to specify a directory, or -o - for stdout.`,
 					"Use the tools to fetch repo info, download the source "+
 					"tarball, compute its SHA256, detect the build system, "+
 					"write the recipe, and lint it. "+
-					"When done, respond with the path to the recipe file.",
+					"When done, respond with ONLY the path to the recipe "+
+					"file, nothing else.",
 				repo),
 			tools,
 			10,
@@ -69,8 +75,31 @@ Use -o <path> to specify a directory, or -o - for stdout.`,
 			return fmt.Errorf("recipe generation: %w", err)
 		}
 
-		out.Success("Recipe created")
-		fmt.Fprintln(os.Stderr, result)
+		// Find the generated recipe file in tmpDir.
+		recipePath := findRecipeFile(tmpDir)
+		if recipePath == "" {
+			out.Success("Recipe created")
+			fmt.Fprintln(os.Stderr, result)
+			return nil
+		}
+
+		// Determine output: -o flag, auto-detect, or stdout.
+		outputDir := resolveRecipeOutputDir(createRecipeOutput)
+		if outputDir != "" {
+			destPath, err := moveRecipe(recipePath, outputDir)
+			if err != nil {
+				return fmt.Errorf("writing recipe: %w", err)
+			}
+			out.Success(fmt.Sprintf("Recipe written to %s", destPath))
+		} else {
+			// Print to stdout.
+			data, err := os.ReadFile(recipePath)
+			if err != nil {
+				return fmt.Errorf("reading recipe: %w", err)
+			}
+			fmt.Print(string(data))
+			out.Success("Recipe printed to stdout")
+		}
 		return nil
 	},
 }
@@ -96,7 +125,8 @@ func normalizeRepo(input string) string {
 // resolveRecipeOutputDir determines where to write
 // recipes. If explicit is set, use it. Otherwise
 // detect if we're in a gale-recipes directory and
-// use its recipes/ subdir. Falls back to a temp dir.
+// use its recipes/ subdir. Returns empty string for
+// stdout mode.
 func resolveRecipeOutputDir(explicit string) string {
 	if explicit != "" {
 		return explicit
@@ -105,7 +135,7 @@ func resolveRecipeOutputDir(explicit string) string {
 	// Check if cwd is inside a gale-recipes repo.
 	cwd, err := os.Getwd()
 	if err != nil {
-		return tempRecipeDir()
+		return ""
 	}
 
 	// Walk up looking for a recipes/ directory with
@@ -114,7 +144,6 @@ func resolveRecipeOutputDir(explicit string) string {
 	for {
 		candidate := filepath.Join(dir, "recipes")
 		if info, err := os.Stat(candidate); err == nil && info.IsDir() {
-			// Verify it has letter buckets.
 			if _, err := os.Stat(filepath.Join(candidate, "j")); err == nil {
 				return candidate
 			}
@@ -126,13 +155,48 @@ func resolveRecipeOutputDir(explicit string) string {
 		dir = parent
 	}
 
-	return tempRecipeDir()
+	return ""
 }
 
-func tempRecipeDir() string {
-	dir, err := os.MkdirTemp("", "gale-recipe-*")
+// findRecipeFile finds the first .toml file in a
+// letter-bucketed temp directory.
+func findRecipeFile(dir string) string {
+	var found string
+	_ = filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		if filepath.Ext(path) == ".toml" {
+			found = path
+			return filepath.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+// moveRecipe copies a recipe file to the output dir,
+// preserving letter-bucketed naming.
+func moveRecipe(src, outputDir string) (string, error) {
+	data, err := os.ReadFile(src)
 	if err != nil {
-		return os.TempDir()
+		return "", err
 	}
-	return dir
+
+	base := filepath.Base(src)
+	name := strings.TrimSuffix(base, ".toml")
+	letter := string(name[0])
+	destDir := filepath.Join(outputDir, letter)
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return "", err
+	}
+
+	dest := filepath.Join(destDir, base)
+	if err := os.WriteFile(dest, data, 0o644); err != nil { //nolint:gosec
+		return "", err
+	}
+	return dest, nil
 }
