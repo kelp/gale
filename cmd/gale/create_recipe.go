@@ -8,6 +8,7 @@ import (
 
 	"github.com/kelp/gale/internal/ai"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/recipe"
 	"github.com/spf13/cobra"
 )
 
@@ -219,6 +220,14 @@ func runCreateRecipe(
 			return fmt.Errorf("writing recipe: %w", err)
 		}
 		out.Success(fmt.Sprintf("Recipe written to %s", destPath))
+
+		// Validate deps exist locally. The agent may
+		// not have checked every dep with check_recipe.
+		if err := createMissingDeps(
+			destPath, client, promptFile,
+			outputDir, out, depth); err != nil {
+			return err
+		}
 	} else {
 		data, err := os.ReadFile(recipePath)
 		if err != nil {
@@ -228,6 +237,92 @@ func runCreateRecipe(
 		out.Success("Recipe printed to stdout")
 	}
 	return nil
+}
+
+// createMissingDeps reads a recipe file, checks all
+// declared build and runtime deps exist locally, and
+// recursively creates any that are missing.
+func createMissingDeps(
+	recipePath string,
+	client *ai.Client,
+	promptFile string,
+	outputDir string,
+	out *output.Output,
+	depth int,
+) error {
+	data, err := os.ReadFile(recipePath)
+	if err != nil {
+		return fmt.Errorf("reading recipe: %w", err)
+	}
+	r, err := recipe.Parse(string(data))
+	if err != nil {
+		return nil //nolint:nilerr // unparseable recipe — skip dep validation
+	}
+
+	checker := buildRecipeChecker(outputDir)
+	var allDeps []string
+	allDeps = append(allDeps, r.Dependencies.Build...)
+	allDeps = append(allDeps, r.Dependencies.Runtime...)
+
+	for _, dep := range allDeps {
+		if checker(dep) {
+			continue
+		}
+		// Dep is missing — the agent should have reported
+		// it but didn't. Look up the repo from the common
+		// table or skip if unknown.
+		depRepo := knownDepRepo(dep)
+		if depRepo == "" {
+			out.Warn(fmt.Sprintf(
+				"Dependency %q has no recipe and no known "+
+					"GitHub repo — create it manually", dep))
+			continue
+		}
+		if depth >= maxRecipeDepth {
+			return fmt.Errorf(
+				"dependency chain too deep (max %d); "+
+					"create the bottom dependency first:\n"+
+					"  gale create-recipe %s",
+				maxRecipeDepth, depRepo)
+		}
+		out.Info(fmt.Sprintf(
+			"Dependency %q missing, creating from %s...",
+			dep, depRepo))
+		if err := runCreateRecipe(
+			depRepo, client, promptFile,
+			outputDir, out, depth+1); err != nil {
+			return fmt.Errorf("create dependency %s: %w",
+				dep, err)
+		}
+	}
+	return nil
+}
+
+// knownDepRepo returns the GitHub owner/repo for common
+// dependencies. Returns empty string if unknown.
+func knownDepRepo(name string) string {
+	repos := map[string]string{
+		"autoconf":  "autoconf-archive/autoconf-archive",
+		"cmake":     "Kitware/CMake",
+		"curl":      "curl/curl",
+		"libevent":  "libevent/libevent",
+		"libyaml":   "yaml/libyaml",
+		"meson":     "mesonbuild/meson",
+		"ncurses":   "mirror/ncurses",
+		"ninja":     "ninja-build/ninja",
+		"openssl":   "openssl/openssl",
+		"pcre2":     "PCRE2Project/pcre2",
+		"pkgconf":   "pkgconf/pkgconf",
+		"protobuf":  "protocolbuffers/protobuf",
+		"python":    "python/cpython",
+		"readline":  "readline/readline",
+		"ruby":      "ruby/ruby",
+		"sqlite":    "sqlite/sqlite",
+		"xz":        "tukaani-project/xz",
+		"zlib":      "madler/zlib",
+		"zstd":      "facebook/zstd",
+	}
+	return repos[name]
 }
 
 // buildRecipeChecker returns a function that checks
@@ -242,7 +337,7 @@ func buildRecipeChecker(outputDir string) func(string) bool {
 			letter := string(name[0])
 			path := filepath.Join(
 				outputDir, letter, name+".toml")
-			_, err := os.Stat(path)
+			_, err := os.Stat(path) //nolint:gosec // G703 — name from recipe deps, not user input
 			return err == nil
 		}
 	}
