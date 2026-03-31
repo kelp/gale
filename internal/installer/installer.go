@@ -99,18 +99,20 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 
 // InstallLocal installs a recipe from a local source directory.
 // Skips binary install and downloads — builds directly from
-// sourceDir using build.BuildLocal.
+// sourceDir using build.BuildLocal. Always rebuilds even if
+// the version exists in the store, since local source may
+// have changed without a version bump.
 func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*InstallResult, error) {
 	name := r.Package.Name
 	version := r.Package.Version
 
-	// Skip if already installed.
+	// Remove any existing version to force a rebuild.
+	// Local source builds always rebuild — the source
+	// may have changed without a version bump.
 	if inst.Store.IsInstalled(name, version) {
-		return &InstallResult{
-			Name:    name,
-			Version: version,
-			Method:  "cached",
-		}, nil
+		if err := inst.Store.Remove(name, version); err != nil {
+			return nil, fmt.Errorf("remove stale build: %w", err)
+		}
 	}
 
 	// Create store directory.

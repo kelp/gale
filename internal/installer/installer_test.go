@@ -606,12 +606,13 @@ func TestInstallBinaryBadHashFallsBackToSource(t *testing.T) {
 	}
 }
 
-// --- InstallLocal cached ---
+// --- InstallLocal always rebuilds ---
 
-func TestInstallLocalCachedReturnsEarly(t *testing.T) {
+func TestInstallLocalRebuildsWhenAlreadyInstalled(t *testing.T) {
 	storeRoot := t.TempDir()
 	s := store.NewStore(storeRoot)
 
+	// Pre-install version 1.0.
 	dir, err := s.Create("localpkg", "1.0")
 	if err != nil {
 		t.Fatalf("create store dir: %v", err)
@@ -620,24 +621,32 @@ func TestInstallLocalCachedReturnsEarly(t *testing.T) {
 		t.Fatalf("create bin: %v", err)
 	}
 
+	// Create a local source directory.
+	srcDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(srcDir, "README"),
+		[]byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	inst := &Installer{Store: s}
 
 	r := &recipe.Recipe{
 		Package: recipe.Package{Name: "localpkg", Version: "1.0"},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin && echo '#!/bin/sh' > $PREFIX/bin/localpkg && chmod +x $PREFIX/bin/localpkg",
+			},
+		},
 	}
 
-	result, err := inst.InstallLocal(r, "/nonexistent/should/not/be/used")
+	result, err := inst.InstallLocal(r, srcDir)
 	if err != nil {
 		t.Fatalf("InstallLocal: %v", err)
 	}
-	if result.Method != "cached" {
-		t.Errorf("Method = %q, want %q", result.Method, "cached")
-	}
-	if result.Name != "localpkg" {
-		t.Errorf("Name = %q, want %q", result.Name, "localpkg")
-	}
-	if result.Version != "1.0" {
-		t.Errorf("Version = %q, want %q", result.Version, "1.0")
+	// Should rebuild, not return cached.
+	if result.Method != "source" {
+		t.Errorf("Method = %q, want %q", result.Method, "source")
 	}
 }
 
