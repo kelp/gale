@@ -31,6 +31,19 @@ func TestParseMissingDepWhitespace(t *testing.T) {
 	}
 }
 
+func TestParseMissingDepWithPreamble(t *testing.T) {
+	response := "Since meson doesn't exist as a recipe, " +
+		"I need to report:\n\n" +
+		"MISSING_DEP meson mesonbuild/meson\n"
+	name, repo, ok := parseMissingDep(response)
+	if !ok {
+		t.Fatal("expected ok=true for preamble response")
+	}
+	if name != "meson" || repo != "mesonbuild/meson" {
+		t.Errorf("got name=%q repo=%q", name, repo)
+	}
+}
+
 func TestParseMissingDepWrongFormat(t *testing.T) {
 	_, _, ok := parseMissingDep("some other response")
 	if ok {

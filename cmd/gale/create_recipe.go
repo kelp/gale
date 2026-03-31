@@ -216,9 +216,9 @@ func runCreateRecipe(
 	// Find the generated recipe file in tmpDir.
 	recipePath := findRecipeFile(tmpDir)
 	if recipePath == "" {
-		out.Success("Recipe created")
-		fmt.Fprintln(os.Stderr, result)
-		return nil
+		return fmt.Errorf(
+			"agent did not produce a recipe file:\n%s",
+			result)
 	}
 
 	if outputDir != "" {
@@ -357,20 +357,22 @@ func buildRecipeChecker(outputDir string) func(string) bool {
 	}
 }
 
-// parseMissingDep parses a MISSING_DEP response from the
-// agent. Format: "MISSING_DEP <name> <owner/repo>".
-// Returns the dep name, GitHub repo, and whether the
-// response matched.
+// parseMissingDep finds a MISSING_DEP line anywhere in the
+// agent response. The agent sometimes adds explanatory text
+// before the MISSING_DEP line.
+// Format: "MISSING_DEP <name> <owner/repo>".
 func parseMissingDep(s string) (name, repo string, ok bool) {
-	s = strings.TrimSpace(s)
-	if !strings.HasPrefix(s, "MISSING_DEP ") {
-		return "", "", false
+	for _, line := range strings.Split(s, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "MISSING_DEP ") {
+			continue
+		}
+		parts := strings.Fields(line)
+		if len(parts) >= 3 {
+			return parts[1], parts[2], true
+		}
 	}
-	parts := strings.Fields(s)
-	if len(parts) != 3 {
-		return "", "", false
-	}
-	return parts[1], parts[2], true
+	return "", "", false
 }
 
 // moveRecipe copies a recipe file to the output dir,
