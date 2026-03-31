@@ -228,13 +228,10 @@ func runCreateRecipe(
 		}
 		out.Success(fmt.Sprintf("Recipe written to %s", destPath))
 
-		// Validate deps exist locally. The agent may
-		// not have checked every dep with check_recipe.
-		if err := createMissingDeps(
-			destPath, client, promptFile,
-			outputDir, out, depth, maxDepth); err != nil {
-			return err
-		}
+		// Warn about deps the agent missed and recipes
+		// that may need manual review.
+		warnMissingDeps(destPath, outputDir, out)
+		warnNoRelease(destPath, out)
 	} else {
 		data, err := os.ReadFile(recipePath)
 		if err != nil {
@@ -246,25 +243,22 @@ func runCreateRecipe(
 	return nil
 }
 
-// createMissingDeps reads a recipe file, checks all
-// declared build and runtime deps exist locally, and
-// recursively creates any that are missing.
-func createMissingDeps(
+// warnMissingDeps reads a recipe file and warns about
+// any declared deps that don't have local recipes. The
+// agent should have caught these via check_recipe and
+// MISSING_DEP, but this is the safety net.
+func warnMissingDeps(
 	recipePath string,
-	client *ai.Client,
-	promptFile string,
 	outputDir string,
 	out *output.Output,
-	depth int,
-	maxDepth int,
-) error {
+) {
 	data, err := os.ReadFile(recipePath)
 	if err != nil {
-		return fmt.Errorf("reading recipe: %w", err)
+		return
 	}
 	r, err := recipe.Parse(string(data))
 	if err != nil {
-		return nil //nolint:nilerr // unparseable recipe — skip dep validation
+		return
 	}
 
 	checker := buildRecipeChecker(outputDir)
@@ -273,64 +267,35 @@ func createMissingDeps(
 	allDeps = append(allDeps, r.Dependencies.Runtime...)
 
 	for _, dep := range allDeps {
-		if checker(dep) {
-			continue
-		}
-		// Dep is missing — the agent should have reported
-		// it but didn't. Look up the repo from the common
-		// table or skip if unknown.
-		depRepo := knownDepRepo(dep)
-		if depRepo == "" {
+		if !checker(dep) {
 			out.Warn(fmt.Sprintf(
-				"Dependency %q has no recipe and no known "+
-					"GitHub repo — create it manually", dep))
-			continue
-		}
-		if depth >= maxDepth {
-			return fmt.Errorf(
-				"dependency chain reached max depth (%d)\n"+
-					"Create the bottom dependency first:\n\n"+
-					"  gale create-recipe %s\n\n"+
-					"Or increase the limit with --max-depth %d",
-				maxDepth, depRepo, maxDepth+2)
-		}
-		out.Info(fmt.Sprintf(
-			"Dependency %q missing, creating from %s...",
-			dep, depRepo))
-		if err := runCreateRecipe(
-			depRepo, client, promptFile,
-			outputDir, out, depth+1, maxDepth); err != nil {
-			return fmt.Errorf("create dependency %s: %w",
-				dep, err)
+				"Dependency %q has no recipe — "+
+					"create it with: gale create-recipe <repo>",
+				dep))
 		}
 	}
-	return nil
 }
 
-// knownDepRepo returns the GitHub owner/repo for common
-// dependencies. Returns empty string if unknown.
-func knownDepRepo(name string) string {
-	repos := map[string]string{
-		"autoconf":  "autoconf-archive/autoconf-archive",
-		"cmake":     "Kitware/CMake",
-		"curl":      "curl/curl",
-		"libevent":  "libevent/libevent",
-		"libyaml":   "yaml/libyaml",
-		"meson":     "mesonbuild/meson",
-		"ncurses":   "mirror/ncurses",
-		"ninja":     "ninja-build/ninja",
-		"openssl":   "openssl/openssl",
-		"pcre2":     "PCRE2Project/pcre2",
-		"pkgconf":   "pkgconf/pkgconf",
-		"protobuf":  "protocolbuffers/protobuf",
-		"python":    "python/cpython",
-		"readline":  "readline/readline",
-		"ruby":      "ruby/ruby",
-		"xz":        "tukaani-project/xz",
-		"zlib":      "madler/zlib",
-		"zstd":      "facebook/zstd",
+// warnNoRelease checks if a recipe's source URL points
+// at a branch archive (no releases), which often produces
+// imperfect recipes that need manual review.
+func warnNoRelease(recipePath string, out *output.Output) {
+	data, err := os.ReadFile(recipePath)
+	if err != nil {
+		return
 	}
-	return repos[name]
+	r, err := recipe.Parse(string(data))
+	if err != nil {
+		return
+	}
+	url := r.Source.URL
+	if strings.Contains(url, "/heads/master") ||
+		strings.Contains(url, "/heads/main") {
+		out.Warn(fmt.Sprintf(
+			"Recipe for %s uses a branch archive (no release "+
+				"found) — may need manual review",
+			r.Package.Name))
+	}
 }
 
 // buildRecipeChecker returns a function that checks
