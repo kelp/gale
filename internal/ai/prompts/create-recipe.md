@@ -45,6 +45,17 @@ steps = [
   "make install",
 ]
 ```
+Autotools notes:
+- There is no recipe called "autotools". The individual
+  tools are `autoconf`, `automake`, and `libtool`.
+- GitHub archive tarballs do NOT include a pre-generated
+  `configure` script — they need `autoreconf -fi` and
+  the autotools deps.
+- Release tarballs (from releases/download/) DO include
+  `configure`. Prefer release tarballs when available to
+  avoid autotools deps entirely.
+- If using a GitHub archive tarball, add the autoreconf
+  step and list autoconf, automake, libtool as build deps.
 
 **Go**:
 ```
@@ -72,6 +83,17 @@ steps = [
 ```
 The --path flag is required — without it cargo fetches from crates.io.
 
+**Cargo workspace**: If the root Cargo.toml has `[workspace]`
+without `[package]`, it's a virtual manifest. Find the
+binary crate subdirectory (read Cargo.toml to find
+`[workspace] members`) and use `--path <subdir>` instead
+of `--path .`. For example, if the binary is in `sd-cli/`:
+```
+steps = [
+  "cargo install --path sd-cli --root ${PREFIX}",
+]
+```
+
 **CMake**:
 ```
 [dependencies]
@@ -86,12 +108,36 @@ steps = [
 ]
 ```
 
+## Build system detection
+
+Read the repo's top-level files to detect the build system.
+Check in this order — use the FIRST match:
+
+1. `go.mod` → Go
+2. `Cargo.toml` → Cargo (check for workspace vs package)
+3. `CMakeLists.txt` → CMake
+4. `configure.ac` or `configure.in` → Autotools
+5. `Makefile` or `GNUmakefile` → Plain make
+6. `meson.build` → Meson
+
+Do NOT assume autotools just because a project is C/C++.
+Many C projects use cmake. Read the actual build files.
+
+If a project has both `configure.ac` and `CMakeLists.txt`,
+prefer cmake — it's more portable and doesn't require
+autotools to be installed.
+
+Check for dependencies by reading the build files:
+- CMakeLists.txt `find_package(OpenSSL)` → needs openssl
+- configure.ac `PKG_CHECK_MODULES` → check what it needs
+
 ## Workflow
 
 1. Call github_info to get repo metadata (description, license, latest release).
-2. Call read_file to check for build system files: configure.ac, CMakeLists.txt, Cargo.toml, go.mod, Makefile, meson.build.
+2. Call read_file to check for build system files (see detection order above). Read the build file contents to understand dependencies.
 3. Call download_and_hash with the source tarball URL to get the real SHA256.
-   - Prefer archive/refs/tags/TAG.tar.gz URLs over releases/download URLs for GitHub repos.
+   - For autotools projects, prefer release tarballs (releases/download/) over archive tarballs (archive/refs/tags/) since release tarballs ship a pre-generated configure script.
+   - For all other build systems, prefer archive/refs/tags/ URLs.
    - Strip the leading "v" from tag names when constructing the version field.
 4. Call write_recipe with the generated TOML.
 5. Call lint_recipe to validate. Fix any errors and rewrite.
