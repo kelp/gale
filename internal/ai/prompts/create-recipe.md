@@ -238,13 +238,25 @@ respond with ONLY:
 
     MISSING_DEP <name> <owner/repo>
 
-where `<name>` is the dependency name and `<owner/repo>`
-is its GitHub repository. Do NOT write the recipe — stop
-immediately so the dependency can be created first.
+where `<name>` is the dependency package name (e.g.,
+"meson") and `<owner/repo>` is the DEPENDENCY's GitHub
+repository (e.g., "mesonbuild/meson"). This is NOT the
+repository you were asked to create a recipe for — it
+is the missing dependency's own upstream repo.
+
+Do NOT write the recipe — stop immediately so the
+dependency can be created first.
 
 Check ALL dependencies, including build system tools
 like meson, cmake, etc. If `check_recipe` says it
 exists, it exists. If it doesn't, report it.
+
+Common dependency repositories:
+- meson → mesonbuild/meson
+- ninja → ninja-build/ninja
+- openssl → openssl/openssl
+- python → python/cpython
+- cmake → Kitware/CMake
 
 ## Workflow
 
