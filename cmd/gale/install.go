@@ -309,6 +309,13 @@ func installFromLocalSource(name, recipePath, sourceDir, configPath, galeDir, st
 		Resolver: recipeFileResolver(resolvedRecipe),
 	}
 
+	// Skip if the same version is already installed.
+	if inst.Store.IsInstalled(r.Package.Name, version) {
+		out.Success(fmt.Sprintf(
+			"%s@%s is up to date", r.Package.Name, version))
+		return nil
+	}
+
 	out.Info(fmt.Sprintf("Installing %s@%s from local source...",
 		r.Package.Name, r.Package.Version))
 
