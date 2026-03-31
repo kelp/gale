@@ -125,7 +125,7 @@ func findRecipeFile(dir string) string {
 }
 
 // maxRecipeDepth limits recursive dependency creation.
-const maxRecipeDepth = 3
+const maxRecipeDepth = 6
 
 // runCreateRecipe runs the recipe creation agent and
 // handles recursive dependency resolution. If the agent
@@ -139,19 +139,19 @@ func runCreateRecipe(
 	out *output.Output,
 	depth int,
 ) error {
-	if depth > maxRecipeDepth {
-		return fmt.Errorf(
-			"dependency chain too deep (max %d)",
-			maxRecipeDepth)
-	}
-
 	tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	out.Info(fmt.Sprintf("Creating recipe for %s...", repo))
+	if depth == 0 {
+		out.Info(fmt.Sprintf("Creating recipe for %s...", repo))
+	} else {
+		out.Info(fmt.Sprintf(
+			"Creating dependency recipe for %s (depth %d/%d)...",
+			repo, depth, maxRecipeDepth))
+	}
 
 	checker := buildRecipeChecker(outputDir)
 	tools, cleanup := ai.RecipeTools(tmpDir, checker)
@@ -182,6 +182,13 @@ func runCreateRecipe(
 				"dependency %q not found; use -o to specify "+
 					"an output directory for recursive creation",
 				name)
+		}
+		if depth >= maxRecipeDepth {
+			return fmt.Errorf(
+				"dependency chain too deep (max %d); "+
+					"create the bottom dependency first:\n"+
+					"  gale create-recipe %s",
+				maxRecipeDepth, depRepo)
 		}
 		out.Info(fmt.Sprintf(
 			"Dependency %q not found, creating from %s...",
