@@ -20,67 +20,76 @@ var removeCmd = &cobra.Command{
 
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		galeDir, err := galeConfigDir()
-		if err != nil {
-			return err
-		}
-
 		storeRoot := defaultStoreRoot()
 		st := store.NewStore(storeRoot)
 
-		// Find installed versions of this package.
-		pkgs, err := st.List()
-		if err != nil {
-			return fmt.Errorf("listing packages: %w", err)
-		}
-
-		var removed bool
-		for _, pkg := range pkgs {
-			if pkg.Name != name {
-				continue
-			}
-
-			if err := st.Remove(pkg.Name, pkg.Version); err != nil {
-				return fmt.Errorf("removing from store: %w", err)
-			}
-
-			out.Info(fmt.Sprintf("Removed %s@%s from store",
-				pkg.Name, pkg.Version))
-			removed = true
-		}
-
-		if !removed {
-			return fmt.Errorf("%s is not installed", name)
-		}
-
-		// Remove from gale.toml (best effort).
+		// Find the config that declares this package.
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting working dir: %w", err)
 		}
 
-		configPath, err := config.FindGaleConfig(cwd)
-		if err == nil {
-			if err := config.RemovePackage(
-				configPath, name); err == nil {
-				out.Info(fmt.Sprintf(
-					"Removed %s from %s", name, configPath))
+		// Check project config first, then global.
+		var configPath string
+		var version string
+		if projPath, err := config.FindGaleConfig(cwd); err == nil {
+			data, _ := os.ReadFile(projPath)
+			if cfg, err := config.ParseGaleConfig(
+				string(data)); err == nil {
+				if v, ok := cfg.Packages[name]; ok {
+					configPath = projPath
+					version = v
+				}
+			}
+		}
+		if configPath == "" {
+			globalDir, err := galeConfigDir()
+			if err != nil {
+				return err
+			}
+			globalPath := filepath.Join(
+				globalDir, "gale.toml")
+			data, _ := os.ReadFile(globalPath)
+			if cfg, err := config.ParseGaleConfig(
+				string(data)); err == nil {
+				if v, ok := cfg.Packages[name]; ok {
+					configPath = globalPath
+					version = v
+				}
 			}
 		}
 
-		// Also try global config.
-		globalConfig := filepath.Join(galeDir, "gale.toml")
-		if globalConfig != configPath {
-			if err := config.RemovePackage(
-				globalConfig, name); err == nil {
-				out.Info(fmt.Sprintf(
-					"Removed %s from %s", name, globalConfig))
-			}
+		if configPath == "" {
+			return fmt.Errorf(
+				"%s is not in any gale.toml", name)
 		}
 
-		// Rebuild generation (removed pkg vanishes).
+		// Remove only the declared version from the store.
+		if st.IsInstalled(name, version) {
+			if err := st.Remove(name, version); err != nil {
+				return fmt.Errorf("removing from store: %w",
+					err)
+			}
+			out.Info(fmt.Sprintf("Removed %s@%s from store",
+				name, version))
+		}
+
+		// Remove from config.
+		if err := config.RemovePackage(
+			configPath, name); err != nil {
+			return fmt.Errorf("removing from config: %w",
+				err)
+		}
+		out.Info(fmt.Sprintf(
+			"Removed %s from %s", name, configPath))
+
+		// Rebuild the generation for this scope.
+		galeDir, err := galeDirForConfig(configPath)
+		if err != nil {
+			return err
+		}
 		if err := rebuildGeneration(galeDir, storeRoot,
-			globalConfig); err != nil {
+			configPath); err != nil {
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 

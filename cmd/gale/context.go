@@ -46,15 +46,10 @@ func newCmdContext(local bool) (*cmdContext, error) {
 		galePath = filepath.Join(globalDir, "gale.toml")
 	}
 
-	// Resolve galeDir: project .gale/ or global ~/.gale/.
-	galeDir, err := galeConfigDir()
+	// Resolve galeDir from configPath.
+	galeDir, err := galeDirForConfig(galePath)
 	if err != nil {
 		return nil, err
-	}
-	configDir := filepath.Dir(galePath)
-	globalDir, _ := galeConfigDir()
-	if configDir != globalDir {
-		galeDir = filepath.Join(configDir, ".gale")
 	}
 
 	// Set up resolver.

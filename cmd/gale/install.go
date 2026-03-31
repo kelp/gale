@@ -51,7 +51,7 @@ var installCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		galeDir, err := galeConfigDir()
+		galeDir, err := galeDirForConfig(configPath)
 		if err != nil {
 			return err
 		}
