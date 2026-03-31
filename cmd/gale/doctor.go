@@ -170,14 +170,14 @@ var doctorCmd = &cobra.Command{
 		}
 
 		// 9. Orphaned versions.
-		referenced := map[string]string{}
+		referenced := map[string]bool{}
 		mergeConfig(globalConfig, referenced)
 		if projPath, err := config.FindGaleConfig(cwd); err == nil {
 			mergeConfig(projPath, referenced)
 		}
 		var orphaned int
 		for _, pkg := range installed {
-			if referenced[pkg.Name] != pkg.Version {
+			if !referenced[pkg.Name+"@"+pkg.Version] {
 				orphaned++
 			}
 		}

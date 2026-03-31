@@ -20,8 +20,10 @@ var gcCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		// Collect referenced versions from all configs.
-		referenced := map[string]string{}
+		// Collect ALL referenced name@version pairs from
+		// every config. A package may have different
+		// versions in global vs project — keep both.
+		referenced := map[string]bool{}
 
 		// Global config.
 		globalDir, err := galeConfigDir()
@@ -33,8 +35,10 @@ var gcCmd = &cobra.Command{
 
 		// Project config.
 		cwd, err := os.Getwd()
+		var projPath string
 		if err == nil {
-			if projPath, err := config.FindGaleConfig(cwd); err == nil {
+			projPath, _ = config.FindGaleConfig(cwd)
+			if projPath != "" {
 				mergeConfig(projPath, referenced)
 			}
 		}
@@ -50,11 +54,8 @@ var gcCmd = &cobra.Command{
 		// Find unreferenced versions.
 		var removed int
 		for _, pkg := range installed {
-			if referenced[pkg.Name] == pkg.Version {
-				continue
-			}
-			// Never remove gale itself.
-			if pkg.Name == "gale" {
+			key := pkg.Name + "@" + pkg.Version
+			if referenced[key] {
 				continue
 			}
 
@@ -85,15 +86,26 @@ var gcCmd = &cobra.Command{
 			return nil
 		}
 
-		// Rebuild generation after cleanup.
-		galeDir, err := galeConfigDir()
-		if err != nil {
-			return err
+		// Rebuild generation for the current scope.
+		// If in a project, rebuild the project generation.
+		// Always rebuild the global generation too.
+		if projPath != "" {
+			projRoot := filepath.Dir(projPath)
+			projGaleDir := filepath.Join(projRoot, ".gale")
+			if err := rebuildGeneration(projGaleDir,
+				storeRoot, projPath); err != nil {
+				return fmt.Errorf(
+					"rebuild project generation: %w", err)
+			}
 		}
-		configPath := filepath.Join(galeDir, "gale.toml")
-		if err := rebuildGeneration(galeDir, storeRoot,
-			configPath); err != nil {
-			return fmt.Errorf("rebuild generation: %w", err)
+		if globalDir != "" {
+			globalConfig := filepath.Join(
+				globalDir, "gale.toml")
+			if err := rebuildGeneration(globalDir,
+				storeRoot, globalConfig); err != nil {
+				return fmt.Errorf(
+					"rebuild global generation: %w", err)
+			}
 		}
 
 		out.Success(fmt.Sprintf(
@@ -102,9 +114,9 @@ var gcCmd = &cobra.Command{
 	},
 }
 
-// mergeConfig reads a gale.toml and merges its packages
-// into the referenced map. Silently skips on errors.
-func mergeConfig(path string, referenced map[string]string) {
+// mergeConfig reads a gale.toml and adds its packages
+// to the referenced set. Silently skips on errors.
+func mergeConfig(path string, referenced map[string]bool) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
@@ -114,7 +126,7 @@ func mergeConfig(path string, referenced map[string]string) {
 		return
 	}
 	for name, version := range cfg.Packages {
-		referenced[name] = version
+		referenced[name+"@"+version] = true
 	}
 }
 
