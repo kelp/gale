@@ -1,4 +1,4 @@
-.Dd March 28, 2026
+.Dd March 30, 2026
 .Dt GALE 1
 .Os
 .Sh NAME
@@ -10,203 +10,419 @@
 .Op Ar args ...
 .Sh DESCRIPTION
 .Nm
-installs packages into versioned, isolated directories.
-Each version has its own store path.
-Projects pin dependencies in
-.Pa gale.toml ;
-a lockfile records SHA256 hashes.
-Prebuilt binaries are preferred; source builds are
-the fallback.
+is a package manager for developer CLI tools that
+replaces Homebrew, Nix, and home-manager.
+It installs packages into versioned, isolated store
+directories and manages environment activation through
+atomic generation snapshots.
+.Pp
+Packages are declared in
+.Pa gale.toml .
+Prebuilt binaries from GHCR are preferred; source
+builds are the automatic fallback.
+Every package can be built from source \(em binaries
+are a cache, not a requirement.
+.Pp
+.Nm
+supports both global packages
+.Pq installed to Pa ~/.gale
+and per-project environments
+.Pq via direnv integration .
 .Sh COMMANDS
 .Ss Package Management
 .Bl -tag -width Ds
 .It Cm install Ar pkg Ns Op @ Ns Ar ver
 Install a package.
+Downloads a prebuilt binary if available, otherwise
+builds from source.
+Use
+.Ar pkg@ver
+to install a specific version.
+.Pp
+.Dl $ gale install jq
+.Dl $ gale install go@1.26.1
 .It Cm remove Ar pkg
-Remove a package.
+Remove a package from the store and
+.Pa gale.toml .
+.Pp
+.Dl $ gale remove htop
 .It Cm add Ar pkg Ns Op @ Ns Ar ver ...
-Add to
+Add one or more packages to
 .Pa gale.toml
 without installing.
+Useful for declaring dependencies before running
+.Cm sync .
+.Pp
+.Dl $ gale add ripgrep fd bat
 .It Cm sync
-Install packages at pinned versions.
+Install all packages declared in
+.Pa gale.toml
+at their pinned versions.
+Typically invoked automatically by direnv.
+.Pp
+.Dl $ gale sync
 .It Cm update Op Ar pkg Ns Op @ Ns Ar ver ...
-Update to latest or specified version.
+Update packages to the latest version, or to a specific
+version with
+.Ar pkg@ver .
+Skips pinned packages unless explicitly named.
+.Pp
+.Dl $ gale update
+.Dl $ gale update jq@1.8.1
 .It Cm list
-List packages in
+List packages declared in
+.Pa gale.toml
+with their versions.
+.Pp
+.Dl $ gale list
+.It Cm gc Op Fl -dry-run
+Remove unused versions from the package store.
+Keeps only the versions referenced by
 .Pa gale.toml .
-.It Cm gc
-Remove unused versions from the store.
+.Pp
+.Dl $ gale gc --dry-run
+.Dl $ gale gc
+.It Cm pin Ar pkg
+Pin a package to its current version.
+Pinned packages are skipped by
+.Cm update
+unless explicitly named.
+.Pp
+.Dl $ gale pin go
+.It Cm unpin Ar pkg
+Remove the pin on a package, allowing
+.Cm update
+to upgrade it again.
+.Pp
+.Dl $ gale unpin go
 .El
 .Ss Inspection
 .Bl -tag -width Ds
 .It Cm which Ar binary
-Show which package provides a binary.
+Show which installed package provides a binary and
+print its full path.
+.Pp
+.Dl $ gale which jq
+.Dl jq@1.8.1
+.Dl /Users/you/.gale/pkg/jq/1.8.1/bin/jq
 .It Cm outdated
-Show packages with newer versions.
+Show packages that have newer versions available in
+the registry.
+.Pp
+.Dl $ gale outdated
+.Dl jq 1.7.1 -> 1.8.1
 .It Cm diff
 Show what
 .Cm sync
-would change.
+would change: packages to install, update, or remove.
+.Pp
+.Dl $ gale diff
 .It Cm doctor
-Check for problems.
+Check the gale installation for common problems:
+PATH configuration, store integrity, stale generations.
+.Pp
+.Dl $ gale doctor
 .It Cm search Ar query
-Search by name or description.
+Search for packages by name or description.
+.Pp
+.Dl $ gale search json
 .El
 .Ss Project Environment
 .Bl -tag -width Ds
-.It Cm env
-Print
-.Ev PATH
-export.
 .It Cm init
-Create
+Create a
 .Pa gale.toml
 and
-.Pa .envrc .
+.Pa .envrc
+in the current directory, setting up direnv integration.
+.Pp
+.Dl $ gale init
+.It Cm env Op Fl -vars-only
+Print shell export commands to activate the environment.
+Use
+.Fl -vars-only
+to print only
+.Ic [vars]
+exports from
+.Pa gale.toml .
+.Pp
+.Dl $ eval "$(gale env)"
 .It Cm shell
-Open a shell with the project environment.
-.It Cm run Ar cmd
+Open an interactive shell with the project environment
+activated.
+.Pp
+.Dl $ gale shell
+.It Cm run Ar cmd Op Ar args ...
 Run a command in the project environment.
+Syncs packages if
+.Pa gale.toml
+has changed.
+.Pp
+.Dl $ gale run go test ./...
 .It Cm hook direnv
-Print
+Print the
 .Fn use_gale
-for direnvrc.
+shell function for
+.Pa ~/.config/direnv/direnvrc .
+.Pp
+.Dl $ gale hook direnv >> ~/.config/direnv/direnvrc
 .El
 .Ss Recipe Development
 .Bl -tag -width Ds
-.It Cm build Ar recipe.toml
-Build from source.
+.It Cm build Ar recipe.toml Op Fl -debug
+Build a package from a local recipe file.
+Produces a
+.Pa .tar.zst
+archive.
+Use
+.Fl -debug
+for unoptimized builds with debug symbols.
+.Pp
+.Dl $ gale build recipes/j/jq.toml
 .It Cm lint Ar recipe.toml ...
-Validate recipe files.
+Validate one or more recipe files for errors and
+warnings.
+.Pp
+.Dl $ gale lint recipes/j/jq.toml
 .It Cm create-recipe Ar repo Op Fl o Ar dir
-Generate a recipe from a GitHub repo using AI.
+Generate a recipe from a GitHub repository using AI.
 Accepts
-.Ar owner/repo
+.Ar owner/repo ,
+.Ar github.com/owner/repo ,
 or a full URL.
-Writes to
-.Pa recipes/<letter>/<name>.toml
-when run inside a gale-recipes directory.
+.Pp
+Automatically detects build systems, computes source
+SHA256, and validates with lint.
+Missing dependencies are created recursively (up to
+6 levels deep).
+.Pp
+When run inside a gale-recipes directory, writes
+recipes to
+.Pa recipes/<letter>/<name>.toml .
 Otherwise prints to stdout.
 Use
 .Fl o
 to specify an output directory.
+.Pp
 Requires an Anthropic API key in
 .Pa ~/.gale/config.toml .
+.Pp
+.Dl $ gale create-recipe jqlang/jq
+.Dl $ gale create-recipe -o recipes/ benhoyt/inih
 .It Cm import homebrew Ar name
-Import a Homebrew formula.
+Generate a recipe from a Homebrew formula as a starting
+point.
+.Pp
+.Dl $ gale import homebrew jq
+.El
+.Ss Supply Chain Security
+.Bl -tag -width Ds
+.It Cm audit Ar pkg
+Rebuild a package from source and compare its SHA256
+against the installed binary.
+Verifies reproducibility.
+.Pp
+.Dl $ gale audit jq
+.It Cm verify Ar pkg
+Check the Sigstore attestation for an installed
+package's prebuilt binary.
+.Pp
+.Dl $ gale verify jq
+.It Cm sbom Op Ar pkg Op Fl -json
+Show a software bill of materials for installed
+packages.
+Use
+.Fl -json
+for machine-readable output.
+.Pp
+.Dl $ gale sbom
+.Dl $ gale sbom jq --json
+.El
+.Ss Remote Management
+.Bl -tag -width Ds
+.It Cm remote sync Ar host
+Sync local
+.Pa gale.toml
+to a remote machine via SSH.
+Bootstraps gale on the host if not installed.
+.Pp
+.Dl $ gale remote sync dev-server
+.It Cm remote diff Ar host
+Compare local and remote package lists.
+.Pp
+.Dl $ gale remote diff dev-server
+.It Cm remote export Ar host
+Copy local
+.Pa gale.toml
+to a remote host and run sync.
+.Pp
+.Dl $ gale remote export staging
+.El
+.Ss Repository Management
+.Bl -tag -width Ds
+.It Cm repo add Ar url
+Add a recipe repository.
+.It Cm repo remove Ar name
+Remove a recipe repository.
+.It Cm repo list
+List configured recipe repositories.
+.It Cm repo create Ar name
+Create a new recipe repository.
+.El
+.Ss Shell Completion
+.Bl -tag -width Ds
+.It Cm completion bash | zsh | fish | powershell
+Generate a shell completion script.
+.Pp
+.Dl $ gale completion zsh > ~/.zfunc/_gale
 .El
 .Sh FLAGS
 .Bl -tag -width Ds
 .It Fl -local
-Resolve recipes from sibling
-.Pa gale-recipes .
+Resolve recipes from a sibling
+.Pa ../gale-recipes/
+directory instead of the registry.
+Useful for recipe development.
 .It Fl -source Ar dir
-Build from a local source directory.
+Build a package from a local source directory instead
+of downloading the tarball.
+Version is derived from the git hash.
 .It Fl -git
-Build from git HEAD.
+Clone the source repository and build from HEAD.
 .It Fl -recipe Ar file
-Use a specific recipe file.
+Use a specific local recipe file for installation.
 .It Fl g , -global
-Write to global config.
+Write package declarations to the global
+.Pa ~/.gale/gale.toml
+(default when no project
+.Pa gale.toml
+exists).
 .It Fl p , -project
-Write to project config.
+Write package declarations to the project
+.Pa gale.toml .
 .It Fl -debug
-Build with debug flags
-.Pq Fl O0 Fl g .
+Build with debug flags:
+.Fl O0 Fl g ,
+no symbol stripping.
 .It Fl -release
-Build with release flags (overrides recipe debug).
+Build with release flags, overriding any debug setting
+in the recipe or config.
 .It Fl -no-color
 Disable colored output.
+Same as setting
+.Ev NO_COLOR .
+.It Fl -dry-run
+Preview what would change without making modifications
+.Pq Cm gc .
+.It Fl -json
+Output in JSON format
+.Pq Cm sbom .
+.It Fl -vars-only
+Print only
+.Ic [vars]
+exports
+.Pq Cm env .
 .El
 .Sh BUILD ENVIRONMENT
-Build steps run in a clean shell with these variables:
+Build steps run in a clean shell with only essential
+tools on PATH.
+The following variables are set:
 .Pp
 .Bl -tag -width "DYLD_FALLBACK_LIBRARY_PATH" -compact
 .It Ev PREFIX
-Install destination.
+Install destination directory.
 .It Ev VERSION
 Package version from the recipe.
 .It Ev JOBS
-CPU count.
+CPU count for parallel builds.
 .It Ev OS
-Operating system.
+Operating system
+.Pq Li darwin , Li linux .
 .It Ev ARCH
-Architecture.
+Architecture
+.Pq Li arm64 , Li amd64 .
 .It Ev PLATFORM
-.Ev OS Ns - Ns Ev ARCH .
+.Ev OS Ns - Ns Ev ARCH
+.Pq e.g. Li darwin-arm64 .
+.El
+.Pp
+When build dependencies are installed, additional
+paths are set:
+.Pp
+.Bl -tag -width "DYLD_FALLBACK_LIBRARY_PATH" -compact
 .It Ev LIBRARY_PATH
 Library directories from dependencies.
 .It Ev C_INCLUDE_PATH
 Header directories from dependencies.
 .It Ev PKG_CONFIG_PATH
 Pkg-config directories from dependencies.
-.It Ev LD_LIBRARY_PATH
-Dynamic linker path (Linux).
 .It Ev CMAKE_LIBRARY_PATH
-CMake library search path from dependencies.
+CMake library search path.
 .It Ev CMAKE_INCLUDE_PATH
-CMake include search path from dependencies.
+CMake include search path.
 .It Ev CMAKE_PREFIX_PATH
-CMake prefix path from dependencies (cmake builds only).
+CMake prefix path (cmake builds only, semicolon-separated).
+.It Ev LD_LIBRARY_PATH
+Dynamic linker path (Linux only).
 .It Ev DYLD_FALLBACK_LIBRARY_PATH
-Dynamic linker fallback path (macOS).
-.It Ev CFLAGS
-Compiler flags. Default:
-.Fl O2
-(release) or
-.Fl O0 Fl g
-(debug).
-.It Ev CXXFLAGS
-C++ compiler flags. Same defaults as
-.Ev CFLAGS .
-.It Ev LDFLAGS
-Linker flags. Default:
-.Fl Wl,-S
-(release, strips debug symbols) or empty (debug).
-.It Ev ZERO_AR_DATE
-Always set to 1 for deterministic ar archives.
+Dynamic linker fallback path (macOS only).
 .El
+.Pp
+Compiler flags default to
+.Fl O2
+for release builds and
+.Fl O0 Fl g
+for debug builds.
+User-set
+.Ev CFLAGS ,
+.Ev CXXFLAGS ,
+and
+.Ev LDFLAGS
+are never overridden.
 .Sh EXAMPLES
-Install a package:
+Install packages and set up a project:
 .Bd -literal -offset indent
-$ gale install jq
-.Ed
-.Pp
-Pin a specific version:
-.Bd -literal -offset indent
-$ gale install jq@1.7.1
-.Ed
-.Pp
-Set up a project:
-.Bd -literal -offset indent
+$ gale install ripgrep bat fd
+$ cd myproject
 $ gale init
-$ echo 'go = "1.26.1"' >> gale.toml
+$ gale add go@1.26.1 golangci-lint
 $ gale sync
 .Ed
 .Pp
-Check what needs updating:
+Update everything except pinned packages:
 .Bd -literal -offset indent
-$ gale outdated
-jq 1.7.1 \(-> 1.8.1
+$ gale pin go
+$ gale update
+$ gale unpin go
 .Ed
 .Pp
-Build a recipe from source:
+Use direnv for automatic project environments:
 .Bd -literal -offset indent
+$ gale hook direnv >> ~/.config/direnv/direnvrc
+$ cd myproject
+$ gale init
+$ direnv allow
+.Ed
+.Pp
+Build and test a recipe:
+.Bd -literal -offset indent
+$ gale create-recipe jqlang/jq
 $ gale build recipes/j/jq.toml
+$ gale install jq --recipe recipes/j/jq.toml
 .Ed
 .Pp
-Find which package provides a binary:
+Manage packages on a remote server:
 .Bd -literal -offset indent
-$ gale which jq
-jq@1.8.1
-/Users/you/.gale/pkg/jq/1.8.1/bin/jq
+$ gale remote diff prod-server
+$ gale remote sync prod-server
 .Ed
-.Sh ENVIRONMENT
-.Bl -tag -width Ds
-.It Ev NO_COLOR
-Disables colored output when set.
-.El
+.Pp
+Audit supply chain integrity:
+.Bd -literal -offset indent
+$ gale audit jq
+$ gale verify jq
+$ gale sbom --json
+.Ed
 .Sh CONFIGURATION
 Application settings in
 .Pa ~/.gale/config.toml :
@@ -232,24 +448,48 @@ system prompt.
 Override the recipe registry URL.
 .El
 .El
+.Pp
+Package declarations in
+.Pa gale.toml :
+.Bd -literal -offset indent
+[packages]
+jq = "1.8.1"
+go = "1.26.1"
+
+[pinned]
+go = true
+
+[vars]
+GOPATH = "${HOME}/go"
+.Ed
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev NO_COLOR
+Disables colored output when set.
+.El
 .Sh FILES
 .Bl -tag -width "~/.gale/config.toml" -compact
 .It Pa ~/.gale/gale.toml
 Global package declarations.
 .It Pa ~/.gale/config.toml
-Application settings.
+Application settings (API keys, registry URL).
 .It Pa ~/.gale/pkg/
 Package store.
+One directory per package per version.
 .It Pa ~/.gale/current/
-Active generation symlink.
+Symlink to the active generation directory.
+Add
+.Pa ~/.gale/current/bin
+to PATH.
 .It Pa gale.toml
 Project package declarations.
 .It Pa gale.lock
-Lockfile.
+Lockfile with SHA256 hashes for reproducibility.
 .El
 .Sh EXIT STATUS
 .Ex -std
 .Sh SEE ALSO
+.Xr brew 1 ,
 .Xr direnv 1
 .Sh AUTHORS
 .An Travis Cole Aq Mt kelp@plek.org
