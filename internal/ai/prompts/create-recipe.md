@@ -232,9 +232,9 @@ the corresponding cmake flag. For example, libssh2 needs
 ## Dependency verification
 
 After detecting dependencies, call `check_recipe` for
-each build and runtime dependency to verify it has a gale
-recipe. If any dependency returns `exists: false`, respond
-with ONLY:
+every build and runtime dependency to verify it has a
+gale recipe. If any dependency returns `exists: false`,
+respond with ONLY:
 
     MISSING_DEP <name> <owner/repo>
 
@@ -242,9 +242,9 @@ where `<name>` is the dependency name and `<owner/repo>`
 is its GitHub repository. Do NOT write the recipe — stop
 immediately so the dependency can be created first.
 
-Only check library/tool dependencies, not build system
-tools (go, rust, cmake, zig, python, ruby) — those are
-always available.
+Check ALL dependencies, including build system tools
+like meson, cmake, etc. If `check_recipe` says it
+exists, it exists. If it doesn't, report it.
 
 ## Workflow
 
