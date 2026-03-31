@@ -161,6 +161,11 @@ Python notes:
   during the build (gale manages deps separately).
 - For older projects with only `setup.py`:
   `python setup.py install --prefix=${PREFIX}`
+- When building CPython itself (python/cpython), ALWAYS
+  use `--with-ensurepip=install` so pip is available for
+  downstream packages. Also use `--enable-optimizations`
+  and `--with-lto` for performance. Add openssl, sqlite,
+  xz, zlib, and ncurses as build/runtime deps.
 
 **Ruby** (CLI tools):
 ```
