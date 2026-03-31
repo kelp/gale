@@ -12,7 +12,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var createRecipeOutput string
+var (
+	createRecipeOutput   string
+	createRecipeMaxDepth int
+)
 
 var createRecipeCmd = &cobra.Command{
 	Use:   "create-recipe <repo>",
@@ -46,8 +49,10 @@ to stdout. Use -o <dir> to specify an output directory.`,
 		}
 
 		outputDir := resolveRecipeOutputDir(createRecipeOutput)
+		maxDepth := createRecipeMaxDepth
 		return runCreateRecipe(
-			repo, client, promptFile, outputDir, out, 0)
+			repo, client, promptFile, outputDir, out,
+			0, maxDepth)
 	},
 }
 
@@ -55,6 +60,9 @@ func init() {
 	createRecipeCmd.Flags().StringVarP(&createRecipeOutput,
 		"output", "o", "",
 		"Output directory for recipe (default: auto-detect)")
+	createRecipeCmd.Flags().IntVar(&createRecipeMaxDepth,
+		"max-depth", 6,
+		"Maximum dependency recursion depth")
 	rootCmd.AddCommand(createRecipeCmd)
 }
 
@@ -125,9 +133,6 @@ func findRecipeFile(dir string) string {
 	return found
 }
 
-// maxRecipeDepth limits recursive dependency creation.
-const maxRecipeDepth = 6
-
 // runCreateRecipe runs the recipe creation agent and
 // handles recursive dependency resolution. If the agent
 // reports a missing dependency, the dep is created first
@@ -139,6 +144,7 @@ func runCreateRecipe(
 	outputDir string,
 	out *output.Output,
 	depth int,
+	maxDepth int,
 ) error {
 	tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
 	if err != nil {
@@ -151,7 +157,7 @@ func runCreateRecipe(
 	} else {
 		out.Info(fmt.Sprintf(
 			"Creating dependency recipe for %s (depth %d/%d)...",
-			repo, depth, maxRecipeDepth))
+			repo, depth, maxDepth))
 	}
 
 	checker := buildRecipeChecker(outputDir)
@@ -184,26 +190,27 @@ func runCreateRecipe(
 					"an output directory for recursive creation",
 				name)
 		}
-		if depth >= maxRecipeDepth {
+		if depth >= maxDepth {
 			return fmt.Errorf(
-				"dependency chain too deep (max %d); "+
-					"create the bottom dependency first:\n"+
-					"  gale create-recipe %s",
-				maxRecipeDepth, depRepo)
+				"dependency chain reached max depth (%d)\n"+
+					"Create the bottom dependency first:\n\n"+
+					"  gale create-recipe %s\n\n"+
+					"Or increase the limit with --max-depth %d",
+				maxDepth, depRepo, maxDepth+2)
 		}
 		out.Info(fmt.Sprintf(
 			"Dependency %q not found, creating from %s...",
 			name, depRepo))
 		if err := runCreateRecipe(
 			depRepo, client, promptFile,
-			outputDir, out, depth+1); err != nil {
+			outputDir, out, depth+1, maxDepth); err != nil {
 			return fmt.Errorf("create dependency %s: %w",
 				name, err)
 		}
 		// Retry the original recipe at the same depth.
 		return runCreateRecipe(
 			repo, client, promptFile,
-			outputDir, out, depth)
+			outputDir, out, depth, maxDepth)
 	}
 
 	// Find the generated recipe file in tmpDir.
@@ -225,7 +232,7 @@ func runCreateRecipe(
 		// not have checked every dep with check_recipe.
 		if err := createMissingDeps(
 			destPath, client, promptFile,
-			outputDir, out, depth); err != nil {
+			outputDir, out, depth, maxDepth); err != nil {
 			return err
 		}
 	} else {
@@ -249,6 +256,7 @@ func createMissingDeps(
 	outputDir string,
 	out *output.Output,
 	depth int,
+	maxDepth int,
 ) error {
 	data, err := os.ReadFile(recipePath)
 	if err != nil {
@@ -278,19 +286,20 @@ func createMissingDeps(
 					"GitHub repo — create it manually", dep))
 			continue
 		}
-		if depth >= maxRecipeDepth {
+		if depth >= maxDepth {
 			return fmt.Errorf(
-				"dependency chain too deep (max %d); "+
-					"create the bottom dependency first:\n"+
-					"  gale create-recipe %s",
-				maxRecipeDepth, depRepo)
+				"dependency chain reached max depth (%d)\n"+
+					"Create the bottom dependency first:\n\n"+
+					"  gale create-recipe %s\n\n"+
+					"Or increase the limit with --max-depth %d",
+				maxDepth, depRepo, maxDepth+2)
 		}
 		out.Info(fmt.Sprintf(
 			"Dependency %q missing, creating from %s...",
 			dep, depRepo))
 		if err := runCreateRecipe(
 			depRepo, client, promptFile,
-			outputDir, out, depth+1); err != nil {
+			outputDir, out, depth+1, maxDepth); err != nil {
 			return fmt.Errorf("create dependency %s: %w",
 				dep, err)
 		}
