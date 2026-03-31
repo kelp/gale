@@ -152,6 +152,20 @@ func Lint(data, filePath string) []Issue {
 		}
 	}
 
+	// Warning: autoreconf requires the full autotools
+	// chain including m4. Release tarballs avoid this.
+	if len(steps) > 0 {
+		for _, s := range steps {
+			if containsCommand(s, "autoreconf") {
+				addWarn(
+					"autoreconf requires autoconf, automake, " +
+						"libtool, and m4; prefer a release tarball " +
+						"with pre-generated configure")
+				break
+			}
+		}
+	}
+
 	// Warning: missing build deps implied by build steps.
 	if len(steps) > 0 {
 		checkBuildDeps(steps, r.Dependencies.Build, addWarn)

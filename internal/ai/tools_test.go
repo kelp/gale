@@ -140,6 +140,31 @@ func TestReadFileTool(t *testing.T) {
 	}
 }
 
+func TestIsSourceAsset(t *testing.T) {
+	tests := []struct {
+		name string
+		want bool
+	}{
+		{"htop-3.4.1.tar.xz", true},
+		{"jq-1.8.1.tar.gz", true},
+		{"fish-4.0.tar.bz2", true},
+		{"tool-1.0.tgz", true},
+		{"htop-3.4.1.tar.xz.sha256", false},
+		{"htop-3.4.1.tar.xz.asc", false},
+		{"tool-linux-amd64", false},
+		{"tool-1.0.zip", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isSourceAsset(tt.name)
+			if got != tt.want {
+				t.Errorf("isSourceAsset(%q) = %v, want %v",
+					tt.name, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestListFilesTool(t *testing.T) {
 	// Mock GitHub API response for contents endpoint.
 	srv := httptest.NewServer(http.HandlerFunc(

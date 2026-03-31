@@ -448,6 +448,63 @@ steps = [
 	}
 }
 
+// --- Warning: autoreconf usage ---
+
+func TestLintAutoreconfWarning(t *testing.T) {
+	data := `
+[package]
+name = "htop"
+version = "3.4.1"
+description = "Interactive process viewer"
+license = "GPL-2.0"
+homepage = "https://htop.dev"
+[source]
+repo = "htop-dev/htop"
+url = "https://github.com/htop-dev/htop/archive/refs/tags/3.4.1.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[dependencies]
+build = ["autoconf", "automake", "libtool"]
+[build]
+steps = [
+  "autoreconf -fi",
+  "./configure --prefix=${PREFIX}",
+  "make -j${JOBS}",
+  "make install",
+]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "autoreconf") {
+		t.Errorf("expected warning about autoreconf, got %v",
+			issues)
+	}
+}
+
+func TestLintNoAutoreconfWarningWithReleaseTarball(t *testing.T) {
+	data := `
+[package]
+name = "jq"
+version = "1.8.1"
+description = "Lightweight JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+[source]
+repo = "jqlang/jq"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-1.8.1.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = [
+  "./configure --prefix=${PREFIX}",
+  "make -j${JOBS}",
+  "make install",
+]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "autoreconf") {
+		t.Errorf("should not warn when no autoreconf, got %v",
+			issues)
+	}
+}
+
 // --- Warning: invalid platform strings ---
 
 func TestLintValidPlatformNoWarning(t *testing.T) {

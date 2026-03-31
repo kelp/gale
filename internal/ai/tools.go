@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go"
@@ -315,6 +316,20 @@ func lintRecipeTool() Tool {
 	}
 }
 
+// isSourceAsset returns true if the filename looks like
+// a source tarball (not a binary, checksum, or sig file).
+func isSourceAsset(name string) bool {
+	lower := strings.ToLower(name)
+	for _, ext := range []string{
+		".tar.gz", ".tar.xz", ".tar.bz2", ".tgz",
+	} {
+		if strings.HasSuffix(lower, ext) {
+			return true
+		}
+	}
+	return false
+}
+
 // fetchGitHubInfo queries the GitHub API for repo
 // metadata and latest release.
 func fetchGitHubInfo(repo string) (string, error) {
@@ -366,10 +381,26 @@ func fetchGitHubInfo(repo string) (string, error) {
 		var releaseData struct {
 			TagName    string `json:"tag_name"`
 			TarballURL string `json:"tarball_url"`
+			Assets     []struct {
+				Name               string `json:"name"`
+				BrowserDownloadURL string `json:"browser_download_url"`
+			} `json:"assets"`
 		}
 		if err := json.NewDecoder(releaseResp.Body).Decode(&releaseData); err == nil {
 			info["latest_tag"] = releaseData.TagName
 			info["tarball_url"] = releaseData.TarballURL
+
+			// Include release asset URLs. These are the
+			// actual release tarballs (with pre-generated
+			// configure for autotools projects), unlike
+			// tarball_url which is a GitHub archive.
+			for _, a := range releaseData.Assets {
+				if isSourceAsset(a.Name) {
+					info["release_asset_url"] = a.BrowserDownloadURL
+					info["release_asset_name"] = a.Name
+					break
+				}
+			}
 		}
 	}
 

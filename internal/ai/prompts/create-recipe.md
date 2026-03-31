@@ -46,16 +46,18 @@ steps = [
 ]
 ```
 Autotools notes:
+- ALWAYS use release tarballs for autotools projects when
+  a release exists. Release tarballs ship a pre-generated
+  `configure` script, so the recipe needs NO autotools
+  build dependencies — just ./configure, make, make install.
+- GitHub archive tarballs do NOT include `configure` and
+  need `autoreconf -fi`, which requires autoconf, automake,
+  libtool, AND m4. This is a deep dependency chain that is
+  hard to satisfy. Avoid it by using release tarballs.
+- Only use archive tarballs + autoreconf as a last resort
+  when no release tarball exists.
 - There is no recipe called "autotools". The individual
   tools are `autoconf`, `automake`, and `libtool`.
-- GitHub archive tarballs do NOT include a pre-generated
-  `configure` script — they need `autoreconf -fi` and
-  the autotools deps.
-- Release tarballs (from releases/download/) DO include
-  `configure`. Prefer release tarballs when available to
-  avoid autotools deps entirely.
-- If using a GitHub archive tarball, add the autoreconf
-  step and list autoconf, automake, libtool as build deps.
 
 **Go**:
 ```
@@ -130,20 +132,37 @@ If a project has both `configure.ac` and `CMakeLists.txt`,
 prefer cmake — it's more portable and doesn't require
 autotools to be installed.
 
-Check for dependencies by reading the build files:
-- CMakeLists.txt `find_package(X)` → needs that package
-  as a build dependency (e.g., `find_package(OpenSSL)`
-  means add "openssl" to build deps)
-- configure.ac `PKG_CHECK_MODULES` → check what it needs
-- CMake options like `-DCRYPTO_BACKEND=OpenSSL` — read
-  the CMakeLists.txt to find required options
+## Dependency detection
+
+After detecting the build system, read the build files
+to discover required library dependencies.
+
+**CMake** — search for `find_package()` calls. These
+may appear in subdirectory CMakeLists.txt files, not
+just the root. If the root has `add_subdirectory(src)`,
+also read `src/CMakeLists.txt`.
+
+Common cmake find_package → gale recipe mappings:
+- `find_package(OpenSSL)` → add "openssl" to build deps
+- `find_package(CURL)` → add "curl" to build deps
+- `find_package(Protobuf)` → add "protobuf" to build deps
+- `find_package(LibEvent)` → add "libevent" to build deps
+- `find_package(PkgConfig)` → add "pkgconf" to build deps
+
+When cmake requires a specific backend or feature, add
+the corresponding cmake flag. For example, libssh2 needs
+`-DCRYPTO_BACKEND=OpenSSL` and openssl as a build dep.
+
+**Autotools** — check `configure.ac` for:
+- `PKG_CHECK_MODULES` → check what packages it needs
+- `AC_CHECK_LIB` → library dependency
 
 ## Workflow
 
 1. Call github_info to get repo metadata (description, license, latest release).
-2. Call list_files to see what build system files exist. Then call read_file on the matching build file to understand build steps and dependencies.
+2. Call list_files to see what build system files exist. Then call read_file on the matching build file to understand build steps and dependencies. For cmake projects with `add_subdirectory()`, also read the subdirectory CMakeLists.txt to find `find_package()` dependencies.
 3. Call download_and_hash with the source tarball URL to get the real SHA256.
-   - For autotools projects, prefer release tarballs (releases/download/) over archive tarballs (archive/refs/tags/) since release tarballs ship a pre-generated configure script.
+   - For autotools projects, ALWAYS use the `release_asset_url` from github_info if available — these release tarballs include a pre-generated configure script, eliminating the entire autotools dependency chain. Only fall back to archive/refs/tags/ if no release asset exists.
    - For all other build systems, prefer archive/refs/tags/ URLs.
    - Strip the leading "v" from tag names when constructing the version field.
 4. Call write_recipe with the generated TOML.

@@ -31,6 +31,16 @@
 - `create-recipe` max iterations increased from 10
   to 15, with prompt guidance to fix all lint errors
   in a single rewrite and stop looping on warnings.
+- `create-recipe` now returns release asset URLs from
+  `github_info`, so autotools projects use release
+  tarballs (with pre-generated configure) instead of
+  archive tarballs that require autoreconf + m4.
+- `create-recipe` prompt detects cmake library deps
+  by following `add_subdirectory()` into subdirectory
+  CMakeLists.txt files for `find_package()` calls.
+- Lint warns when build steps use `autoreconf`,
+  suggesting a release tarball to avoid the autotools
+  dependency chain (autoconf → m4).
 
 ### Fixed
 
