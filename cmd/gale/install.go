@@ -205,7 +205,26 @@ func isStdinTTY() bool {
 }
 
 func installFromGit(name, recipePath, configPath, galeDir, storeRoot string, local bool, out *output.Output) error {
-	// Resolve recipe from registry, local, or --recipe flag.
+	// Build resolver for recipe lookup and dep resolution.
+	var resolver installer.RecipeResolver
+	switch {
+	case recipePath != "":
+		resolver = recipeFileResolver(recipePath)
+	case local:
+		cwd, err := os.Getwd()
+		if err != nil {
+			return fmt.Errorf("getting working dir: %w", err)
+		}
+		recipesDir, err := findLocalRecipesDir(cwd)
+		if err != nil {
+			return err
+		}
+		resolver = localRecipeResolver(recipesDir)
+	default:
+		resolver = newRegistry().FetchRecipe
+	}
+
+	// Resolve recipe.
 	var r *recipe.Recipe
 	if recipePath != "" {
 		data, err := os.ReadFile(recipePath)
@@ -218,20 +237,6 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot string, loc
 		}
 		r = parsed
 	} else {
-		var resolver installer.RecipeResolver
-		if local {
-			cwd, err := os.Getwd()
-			if err != nil {
-				return fmt.Errorf("getting working dir: %w", err)
-			}
-			recipesDir, err := findLocalRecipesDir(cwd)
-			if err != nil {
-				return err
-			}
-			resolver = localRecipeResolver(recipesDir)
-		} else {
-			resolver = newRegistry().FetchRecipe
-		}
 		fetched, err := resolver(name)
 		if err != nil {
 			return fmt.Errorf("fetching recipe: %w", err)
@@ -244,19 +249,9 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot string, loc
 			"recipe for %s has no source.repo — cannot build from git", name)
 	}
 
-	// Use the same resolver for build dep resolution.
-	var depResolver installer.RecipeResolver
-	if local {
-		cwd, _ := os.Getwd()
-		recipesDir, _ := findLocalRecipesDir(cwd)
-		depResolver = localRecipeResolver(recipesDir)
-	} else {
-		depResolver = newRegistry().FetchRecipe
-	}
-
 	inst := &installer.Installer{
 		Store:    store.NewStore(storeRoot),
-		Resolver: depResolver,
+		Resolver: resolver,
 		Verifier: attestation.NewVerifier(),
 	}
 

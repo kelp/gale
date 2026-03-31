@@ -207,9 +207,14 @@ func lockfilePath(configPath string) string {
 // writeConfigAndLock adds a package to gale.toml and
 // updates gale.lock. Does not rebuild the generation —
 // callers handle that (once per command, not per package).
+// When sha256 is empty (cached install), the lockfile
+// entry is preserved to avoid overwriting a valid hash.
 func writeConfigAndLock(configPath, name, version, sha256 string) error {
 	if err := config.AddPackage(configPath, name, version); err != nil {
 		return fmt.Errorf("adding to config: %w", err)
+	}
+	if sha256 == "" {
+		return nil // cached — keep existing lockfile hash
 	}
 	return updateLockfile(
 		lockfilePath(configPath), name, version, sha256)
