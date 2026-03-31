@@ -251,12 +251,30 @@ Check ALL dependencies, including build system tools
 like meson, cmake, etc. If `check_recipe` says it
 exists, it exists. If it doesn't, report it.
 
-Common dependency repositories:
+Common dependency GitHub repositories:
+- autoconf → autoconf-archive/autoconf-archive
+- cmake → Kitware/CMake
+- curl → curl/curl
+- libevent → libevent/libevent
+- libyaml → yaml/libyaml
 - meson → mesonbuild/meson
+- ncurses → mirror/ncurses
 - ninja → ninja-build/ninja
 - openssl → openssl/openssl
+- pcre2 → PCRE2Project/pcre2
+- pkgconf → pkgconf/pkgconf
+- protobuf → protocolbuffers/protobuf
 - python → python/cpython
-- cmake → Kitware/CMake
+- readline → readline/readline
+- ruby → ruby/ruby
+- sqlite → sqlite/sqlite
+- xz → tukaani-project/xz
+- zlib → madler/zlib
+- zstd → facebook/zstd
+
+The owner/repo for a dependency is NOT the same owner
+as the package you are creating. Look up the dependency
+by its own project name.
 
 ## Workflow
 
