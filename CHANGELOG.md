@@ -23,6 +23,10 @@
 - Man page: CONFIGURATION section, cmake/compiler
   env vars, debug/release flags.
 
+- Build system support for meson, zig, python, and
+  ruby in `create-recipe` prompt, lint dep checks,
+  and `SystemDeps` auto-resolution.
+
 ### Changed
 
 - `create-recipe` agent uses `list_files` tool to

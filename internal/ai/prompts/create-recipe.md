@@ -110,6 +110,75 @@ steps = [
 ]
 ```
 
+**Meson**:
+```
+[build]
+system = "meson"
+steps = [
+  "meson setup build --prefix=${PREFIX}",
+  "meson compile -C build",
+  "meson install -C build",
+]
+```
+Meson notes:
+- Meson generates ninja build files. The host must have
+  both `meson` and `ninja` available.
+- Use `meson setup` (not `meson configure`).
+
+**Zig**:
+```
+[dependencies]
+build = ["zig"]
+
+[build]
+system = "zig"
+steps = [
+  "zig build -Doptimize=ReleaseSafe --prefix ${PREFIX}",
+]
+```
+Zig notes:
+- The `--prefix` flag (space, not `=`) sets the install
+  directory.
+- `-Doptimize=ReleaseSafe` is preferred for CLI tools.
+- Check `build.zig.zon` for the project name if unsure
+  what binary gets produced.
+
+**Python** (CLI tools):
+```
+[dependencies]
+build = ["python"]
+
+[build]
+system = "python"
+steps = [
+  "pip install --prefix=${PREFIX} --no-deps .",
+]
+```
+Python notes:
+- Use `pip install --prefix` for modern Python projects
+  with `pyproject.toml`.
+- Add `--no-deps` to avoid pulling Python dependencies
+  during the build (gale manages deps separately).
+- For older projects with only `setup.py`:
+  `python setup.py install --prefix=${PREFIX}`
+
+**Ruby** (CLI tools):
+```
+[dependencies]
+build = ["ruby"]
+
+[build]
+system = "ruby"
+steps = [
+  "gem build *.gemspec",
+  "gem install --install-dir ${PREFIX}/lib/ruby/gems --bindir ${PREFIX}/bin *.gem",
+]
+```
+Ruby notes:
+- Detect by looking for a `.gemspec` file.
+- Use `--install-dir` and `--bindir` to control where
+  gems and executables are placed under ${PREFIX}.
+
 ## Build system detection
 
 First call `list_files` to see the repo's top-level files.
@@ -120,10 +189,13 @@ Check in this order — use the FIRST match:
 
 1. `go.mod` → Go
 2. `Cargo.toml` → Cargo (check for workspace vs package)
-3. `CMakeLists.txt` → CMake
-4. `configure.ac` or `configure.in` → Autotools
-5. `Makefile` or `GNUmakefile` → Plain make
-6. `meson.build` → Meson
+3. `build.zig` → Zig
+4. `CMakeLists.txt` → CMake
+5. `meson.build` → Meson
+6. `configure.ac` or `configure.in` → Autotools
+7. `pyproject.toml` or `setup.py` → Python
+8. `*.gemspec` → Ruby
+9. `Makefile` or `GNUmakefile` → Plain make
 
 Do NOT assume autotools just because a project is C/C++.
 Many C projects use cmake. Read the actual build files.
@@ -176,4 +248,4 @@ the corresponding cmake flag. For example, libssh2 needs
 - Set released_at to today's date in YYYY-MM-DD format.
 - Prefer static linking for CLI tools.
 - List build dependencies in [dependencies.build].
-- The build.system field should match the build system: "go", "cargo", "cmake", "autotools", or omit for plain make.
+- The build.system field should match the build system: "go", "cargo", "cmake", "meson", "zig", "python", "ruby", "autotools", or omit for plain make.

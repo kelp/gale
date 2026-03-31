@@ -1039,8 +1039,12 @@ func TestSystemDepsReturnsCorrectDeps(t *testing.T) {
 		{"cmake", []string{"cmake"}},
 		{"go", []string{"go"}},
 		{"cargo", []string{"rust"}},
+		{"zig", []string{"zig"}},
+		{"python", []string{"python"}},
+		{"ruby", []string{"ruby"}},
 		{"", nil},
 		{"autotools", nil},
+		{"meson", nil},
 	}
 	for _, tt := range tests {
 		t.Run(tt.system, func(t *testing.T) {

@@ -279,6 +279,12 @@ func SystemDeps(system string) []string {
 		return []string{"go"}
 	case "cargo":
 		return []string{"rust"}
+	case "zig":
+		return []string{"zig"}
+	case "python":
+		return []string{"python"}
+	case "ruby":
+		return []string{"ruby"}
 	default:
 		return nil
 	}
@@ -414,7 +420,7 @@ func buildPath(home, toolsDir string) string {
 	// If a tool lives in a well-known base directory, no
 	// symlink is needed. Otherwise, symlink just that binary
 	// into toolsDir to avoid pulling in the whole directory.
-	tools := []string{"go", "cargo", "rustc", "cmake", "autoconf", "automake", "libtool"}
+	tools := []string{"go", "cargo", "rustc", "cmake", "autoconf", "automake", "libtool", "meson", "ninja", "zig", "python3", "pip3", "ruby", "gem"}
 	baseSet := map[string]bool{}
 	for _, d := range base {
 		baseSet[d] = true

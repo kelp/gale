@@ -243,6 +243,9 @@ var depPatterns = []depPattern{
 	{substrs: []string{"go build", "go install"}, dep: "go"},
 	{substrs: []string{"cargo build", "cargo install"}, dep: "rust"},
 	{substrs: []string{"cmake"}, dep: "cmake"},
+	{substrs: []string{"zig build"}, dep: "zig"},
+	{substrs: []string{"pip install", "python setup.py"}, dep: "python"},
+	{substrs: []string{"meson setup", "meson compile"}, dep: "meson"},
 	{substrs: []string{"pkg-config", "pkgconf"}, dep: "pkgconf"},
 	// gnumake is handled separately due to ./configure exception
 }

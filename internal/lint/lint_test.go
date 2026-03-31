@@ -505,6 +505,82 @@ steps = [
 	}
 }
 
+// --- Warning: missing zig build dep ---
+
+func TestLintZigBuildMissingZigDep(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["zig build -Doptimize=ReleaseSafe --prefix ${PREFIX}"]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "zig") {
+		t.Errorf("expected warning about missing zig dep, got %v",
+			issues)
+	}
+}
+
+// --- Warning: missing python build dep ---
+
+func TestLintPipInstallMissingPythonDep(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = ["pip install --prefix=${PREFIX} --no-deps ."]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "python") {
+		t.Errorf("expected warning about missing python dep, got %v",
+			issues)
+	}
+}
+
+// --- Warning: missing meson build dep ---
+
+func TestLintMesonMissingMesonDep(t *testing.T) {
+	data := `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = [
+  "meson setup build --prefix=${PREFIX}",
+  "meson compile -C build",
+  "meson install -C build",
+]
+`
+	issues := Lint(data, "")
+	if !hasWarning(issues, "meson") {
+		t.Errorf("expected warning about missing meson dep, got %v",
+			issues)
+	}
+}
+
 // --- Warning: invalid platform strings ---
 
 func TestLintValidPlatformNoWarning(t *testing.T) {
