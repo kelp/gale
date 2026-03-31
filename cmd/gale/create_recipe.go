@@ -39,68 +39,14 @@ to stdout. Use -o <dir> to specify an output directory.`,
 					"~/.gale/config.toml")
 		}
 
-		// Load prompt extension from config.
 		var promptFile string
 		if cfg, err := loadAppConfig(); err == nil {
 			promptFile = cfg.Anthropic.PromptFile
 		}
 
-		// Always build in a temp dir (agent needs files
-		// for lint). Move or print after success.
-		tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
-		if err != nil {
-			return fmt.Errorf("create temp dir: %w", err)
-		}
-		defer os.RemoveAll(tmpDir)
-
-		out.Info(fmt.Sprintf("Creating recipe for %s...", repo))
-
-		tools, cleanup := ai.RecipeTools(tmpDir)
-		defer cleanup()
-
-		result, err := client.RunAgent(
-			ai.RecipePrompt(promptFile),
-			fmt.Sprintf(
-				"Create a gale recipe for the GitHub repository %s. "+
-					"Use the tools to fetch repo info, list files to detect the "+
-					"build system, download the source tarball, compute its SHA256, "+
-					"write the recipe, and lint it. "+
-					"When done, respond with ONLY the path to the recipe "+
-					"file, nothing else.",
-				repo),
-			tools,
-			15,
-		)
-		if err != nil {
-			return fmt.Errorf("recipe generation: %w", err)
-		}
-
-		// Find the generated recipe file in tmpDir.
-		recipePath := findRecipeFile(tmpDir)
-		if recipePath == "" {
-			out.Success("Recipe created")
-			fmt.Fprintln(os.Stderr, result)
-			return nil
-		}
-
-		// Determine output: -o flag, auto-detect, or stdout.
 		outputDir := resolveRecipeOutputDir(createRecipeOutput)
-		if outputDir != "" {
-			destPath, err := moveRecipe(recipePath, outputDir)
-			if err != nil {
-				return fmt.Errorf("writing recipe: %w", err)
-			}
-			out.Success(fmt.Sprintf("Recipe written to %s", destPath))
-		} else {
-			// Print to stdout.
-			data, err := os.ReadFile(recipePath)
-			if err != nil {
-				return fmt.Errorf("reading recipe: %w", err)
-			}
-			fmt.Print(string(data))
-			out.Success("Recipe printed to stdout")
-		}
-		return nil
+		return runCreateRecipe(
+			repo, client, promptFile, outputDir, out, 0)
 	},
 }
 
@@ -176,6 +122,143 @@ func findRecipeFile(dir string) string {
 		return nil
 	})
 	return found
+}
+
+// maxRecipeDepth limits recursive dependency creation.
+const maxRecipeDepth = 3
+
+// runCreateRecipe runs the recipe creation agent and
+// handles recursive dependency resolution. If the agent
+// reports a missing dependency, the dep is created first
+// and the original recipe is retried.
+func runCreateRecipe(
+	repo string,
+	client *ai.Client,
+	promptFile string,
+	outputDir string,
+	out *output.Output,
+	depth int,
+) error {
+	if depth > maxRecipeDepth {
+		return fmt.Errorf(
+			"dependency chain too deep (max %d)",
+			maxRecipeDepth)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
+	if err != nil {
+		return fmt.Errorf("create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	out.Info(fmt.Sprintf("Creating recipe for %s...", repo))
+
+	checker := buildRecipeChecker(outputDir)
+	tools, cleanup := ai.RecipeTools(tmpDir, checker)
+	defer cleanup()
+
+	result, err := client.RunAgent(
+		ai.RecipePrompt(promptFile),
+		fmt.Sprintf(
+			"Create a gale recipe for the GitHub repository %s. "+
+				"Use the tools to fetch repo info, list files to detect the "+
+				"build system, check that dependencies have recipes, "+
+				"download the source tarball, compute its SHA256, "+
+				"write the recipe, and lint it. "+
+				"When done, respond with ONLY the path to the recipe "+
+				"file, nothing else.",
+			repo),
+		tools,
+		15,
+	)
+	if err != nil {
+		return fmt.Errorf("recipe generation: %w", err)
+	}
+
+	// Check for missing dependency signal.
+	if name, depRepo, ok := parseMissingDep(result); ok {
+		if outputDir == "" {
+			return fmt.Errorf(
+				"dependency %q not found; use -o to specify "+
+					"an output directory for recursive creation",
+				name)
+		}
+		out.Info(fmt.Sprintf(
+			"Dependency %q not found, creating from %s...",
+			name, depRepo))
+		if err := runCreateRecipe(
+			depRepo, client, promptFile,
+			outputDir, out, depth+1); err != nil {
+			return fmt.Errorf("create dependency %s: %w",
+				name, err)
+		}
+		// Retry the original recipe.
+		return runCreateRecipe(
+			repo, client, promptFile,
+			outputDir, out, depth+1)
+	}
+
+	// Find the generated recipe file in tmpDir.
+	recipePath := findRecipeFile(tmpDir)
+	if recipePath == "" {
+		out.Success("Recipe created")
+		fmt.Fprintln(os.Stderr, result)
+		return nil
+	}
+
+	if outputDir != "" {
+		destPath, err := moveRecipe(recipePath, outputDir)
+		if err != nil {
+			return fmt.Errorf("writing recipe: %w", err)
+		}
+		out.Success(fmt.Sprintf("Recipe written to %s", destPath))
+	} else {
+		data, err := os.ReadFile(recipePath)
+		if err != nil {
+			return fmt.Errorf("reading recipe: %w", err)
+		}
+		fmt.Print(string(data))
+		out.Success("Recipe printed to stdout")
+	}
+	return nil
+}
+
+// buildRecipeChecker returns a function that checks
+// whether a gale recipe exists for a package name.
+// Checks local output dir first (for deps created
+// during recursion), then falls back to the registry.
+func buildRecipeChecker(outputDir string) func(string) bool {
+	reg := newRegistry()
+	return func(name string) bool {
+		// Check local output dir first.
+		if outputDir != "" {
+			letter := string(name[0])
+			path := filepath.Join(
+				outputDir, letter, name+".toml")
+			if _, err := os.Stat(path); err == nil {
+				return true
+			}
+		}
+		// Fall back to registry.
+		_, err := reg.FetchRecipe(name)
+		return err == nil
+	}
+}
+
+// parseMissingDep parses a MISSING_DEP response from the
+// agent. Format: "MISSING_DEP <name> <owner/repo>".
+// Returns the dep name, GitHub repo, and whether the
+// response matched.
+func parseMissingDep(s string) (name, repo string, ok bool) {
+	s = strings.TrimSpace(s)
+	if !strings.HasPrefix(s, "MISSING_DEP ") {
+		return "", "", false
+	}
+	parts := strings.Fields(s)
+	if len(parts) != 3 {
+		return "", "", false
+	}
+	return parts[1], parts[2], true
 }
 
 // moveRecipe copies a recipe file to the output dir,

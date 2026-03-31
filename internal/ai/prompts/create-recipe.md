@@ -229,17 +229,35 @@ the corresponding cmake flag. For example, libssh2 needs
 - `PKG_CHECK_MODULES` → check what packages it needs
 - `AC_CHECK_LIB` → library dependency
 
+## Dependency verification
+
+After detecting dependencies, call `check_recipe` for
+each build and runtime dependency to verify it has a gale
+recipe. If any dependency returns `exists: false`, respond
+with ONLY:
+
+    MISSING_DEP <name> <owner/repo>
+
+where `<name>` is the dependency name and `<owner/repo>`
+is its GitHub repository. Do NOT write the recipe — stop
+immediately so the dependency can be created first.
+
+Only check library/tool dependencies, not build system
+tools (go, rust, cmake, zig, python, ruby) — those are
+always available.
+
 ## Workflow
 
 1. Call github_info to get repo metadata (description, license, latest release).
 2. Call list_files to see what build system files exist. Then call read_file on the matching build file to understand build steps and dependencies. For cmake projects with `add_subdirectory()`, also read the subdirectory CMakeLists.txt to find `find_package()` dependencies.
-3. Call download_and_hash with the source tarball URL to get the real SHA256.
+3. Call check_recipe for each library dependency detected in step 2. If any is missing, respond with `MISSING_DEP <name> <owner/repo>` and stop.
+4. Call download_and_hash with the source tarball URL to get the real SHA256.
    - For autotools projects, ALWAYS use the `release_asset_url` from github_info if available — these release tarballs include a pre-generated configure script, eliminating the entire autotools dependency chain. Only fall back to archive/refs/tags/ if no release asset exists.
    - For all other build systems, prefer archive/refs/tags/ URLs.
    - Strip the leading "v" from tag names when constructing the version field.
-4. Call write_recipe with the generated TOML.
-5. Call lint_recipe to validate. Fix ALL errors in a single rewrite. Do not loop more than twice on lint — if only warnings remain, the recipe is good enough.
-6. Respond with ONLY the recipe file path.
+5. Call write_recipe with the generated TOML.
+6. Call lint_recipe to validate. Fix ALL errors in a single rewrite. Do not loop more than twice on lint — if only warnings remain, the recipe is good enough.
+7. Respond with ONLY the recipe file path.
 
 ## Rules
 

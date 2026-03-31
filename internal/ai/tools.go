@@ -19,7 +19,7 @@ import (
 // creation. recipeDir is where recipes are written
 // (letter-bucketed). The caller must call Cleanup
 // after the agent finishes to remove temp downloads.
-func RecipeTools(recipeDir string) ([]Tool, func()) {
+func RecipeTools(recipeDir string, checkRecipe func(string) bool) ([]Tool, func()) {
 	// Downloads go in a temp dir that gets cleaned up.
 	downloadDir, err := os.MkdirTemp("", "gale-download-*")
 	if err != nil {
@@ -33,6 +33,7 @@ func RecipeTools(recipeDir string) ([]Tool, func()) {
 		downloadAndHashTool(downloadDir),
 		readFileTool(),
 		listFilesTool(),
+		checkRecipeTool(checkRecipe),
 		writeRecipeTool(recipeDir),
 		lintRecipeTool(),
 	}, cleanup
@@ -228,6 +229,37 @@ func listFilesTool() Tool {
 			}
 
 			result, _ := json.Marshal(simplified)
+			return string(result), nil
+		},
+	}
+}
+
+func checkRecipeTool(exists func(string) bool) Tool {
+	return Tool{
+		Param: anthropic.ToolParam{
+			Name:        "check_recipe",
+			Description: anthropic.String("Check if a gale recipe exists for a package. Use after detecting build dependencies to verify each one is available."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Package name to check (e.g., openssl)",
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Handler: func(input json.RawMessage) (string, error) {
+			var args struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(input, &args); err != nil {
+				return "", fmt.Errorf("parse input: %w", err)
+			}
+
+			result, _ := json.Marshal(map[string]bool{
+				"exists": exists(args.Name),
+			})
 			return string(result), nil
 		},
 	}

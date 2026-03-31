@@ -194,12 +194,65 @@ func TestListFilesTool(t *testing.T) {
 	}
 }
 
+func TestCheckRecipeToolExists(t *testing.T) {
+	checker := func(name string) bool {
+		return name == "openssl"
+	}
+	tool := checkRecipeTool(checker)
+
+	input, _ := json.Marshal(map[string]string{
+		"name": "openssl",
+	})
+
+	result, err := tool.Handler(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var out struct {
+		Exists bool `json:"exists"`
+	}
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if !out.Exists {
+		t.Error("expected exists=true for openssl")
+	}
+}
+
+func TestCheckRecipeToolNotFound(t *testing.T) {
+	checker := func(name string) bool {
+		return false
+	}
+	tool := checkRecipeTool(checker)
+
+	input, _ := json.Marshal(map[string]string{
+		"name": "nonexistent",
+	})
+
+	result, err := tool.Handler(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	var out struct {
+		Exists bool `json:"exists"`
+	}
+	if err := json.Unmarshal([]byte(result), &out); err != nil {
+		t.Fatalf("parse result: %v", err)
+	}
+	if out.Exists {
+		t.Error("expected exists=false for nonexistent")
+	}
+}
+
 func TestRecipeToolsReturnsToolsAndCleanup(t *testing.T) {
-	tools, cleanup := RecipeTools(t.TempDir())
+	checker := func(string) bool { return false }
+	tools, cleanup := RecipeTools(t.TempDir(), checker)
 	defer cleanup()
 
-	if len(tools) != 6 {
-		t.Errorf("expected 6 tools, got %d", len(tools))
+	if len(tools) != 7 {
+		t.Errorf("expected 7 tools, got %d", len(tools))
 	}
 
 	names := make(map[string]bool)
@@ -212,6 +265,7 @@ func TestRecipeToolsReturnsToolsAndCleanup(t *testing.T) {
 		"download_and_hash",
 		"read_file",
 		"list_files",
+		"check_recipe",
 		"write_recipe",
 		"lint_recipe",
 	}

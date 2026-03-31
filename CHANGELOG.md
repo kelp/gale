@@ -26,6 +26,11 @@
 - Build system support for meson, zig, python, and
   ruby in `create-recipe` prompt, lint dep checks,
   and `SystemDeps` auto-resolution.
+- Recursive dependency resolution in `create-recipe`.
+  Agent verifies each dependency has a gale recipe via
+  `check_recipe` tool. Missing deps are created
+  automatically before retrying the original recipe.
+  Recursion capped at depth 3.
 
 ### Changed
 
