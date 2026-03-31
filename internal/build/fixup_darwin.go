@@ -42,6 +42,13 @@ func isMachO(path string) bool {
 	return false
 }
 
+// isObjectFile returns true if the path ends with .o —
+// a relocatable object file that cannot have its install
+// names changed by install_name_tool.
+func isObjectFile(path string) bool {
+	return strings.HasSuffix(path, ".o")
+}
+
 // FixupBinaries rewrites dynamic library paths in all
 // binaries and shared libraries under prefixDir so they
 // use @rpath instead of absolute build-time paths.
@@ -58,7 +65,7 @@ func FixupBinaries(prefixDir string) error {
 				if err != nil || info.IsDir() {
 					return nil //nolint:nilerr // skip unreadable files
 				}
-				if isMachO(path) {
+				if isMachO(path) && !isObjectFile(path) {
 					files = append(files, path)
 				}
 				return nil

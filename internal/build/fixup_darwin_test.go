@@ -219,6 +219,32 @@ func TestFixupBinariesSetsDylibID(t *testing.T) {
 	}
 }
 
+func TestFixupBinariesSkipsObjectFiles(t *testing.T) {
+	dir := t.TempDir()
+	libDir := filepath.Join(dir, "lib")
+	subDir := filepath.Join(libDir, "python3.13", "config")
+	os.MkdirAll(subDir, 0o755)
+
+	// Create a .o file by compiling without linking.
+	src := filepath.Join(dir, "obj.c")
+	if err := os.WriteFile(src,
+		[]byte("int objfunc(void) { return 1; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	objPath := filepath.Join(subDir, "python.o")
+	cmd := exec.Command("cc", "-c", "-o", objPath, src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -c failed: %v\n%s", err, out)
+	}
+
+	// FixupBinaries should not error on .o files.
+	if err := FixupBinaries(dir); err != nil {
+		t.Fatalf("FixupBinaries should skip .o files: %v",
+			err)
+	}
+}
+
 // otoolOutput runs otool -L and otool -l on a binary and
 // returns the combined output.
 func otoolOutput(t *testing.T, path string) string {
