@@ -1227,6 +1227,96 @@ func TestBuildSuccessWithTarXzSource(t *testing.T) {
 	}
 }
 
+// --- Behavior 19: fixupShebangs rewrites build-prefix shebangs ---
+
+func TestFixupShebangsRewritesPrefixShebang(t *testing.T) {
+	prefixDir := t.TempDir()
+	binDir := filepath.Join(prefixDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Script with a shebang pointing into the prefix.
+	script := filepath.Join(binDir, "pip")
+	content := "#!" + prefixDir + "/bin/python3.13\nimport sys\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fixupShebangs(prefixDir); err != nil {
+		t.Fatalf("fixupShebangs: %v", err)
+	}
+
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := strings.SplitN(string(data), "\n", 2)
+	if got[0] != "#!/usr/bin/env python3.13" {
+		t.Errorf("shebang = %q, want %q",
+			got[0], "#!/usr/bin/env python3.13")
+	}
+	// Body preserved.
+	if got[1] != "import sys\n" {
+		t.Errorf("body = %q, want %q", got[1], "import sys\n")
+	}
+}
+
+func TestFixupShebangsSkipsNonPrefixShebang(t *testing.T) {
+	prefixDir := t.TempDir()
+	binDir := filepath.Join(prefixDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Script with a system shebang — should not be changed.
+	script := filepath.Join(binDir, "tool")
+	content := "#!/usr/bin/env bash\necho hello\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fixupShebangs(prefixDir); err != nil {
+		t.Fatalf("fixupShebangs: %v", err)
+	}
+
+	data, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Errorf("content changed: %q", string(data))
+	}
+}
+
+func TestFixupShebangsSkipsBinaries(t *testing.T) {
+	prefixDir := t.TempDir()
+	binDir := filepath.Join(prefixDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Binary file — should not be touched.
+	binary := filepath.Join(binDir, "hello")
+	content := []byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0}
+	if err := os.WriteFile(binary, content, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := fixupShebangs(prefixDir); err != nil {
+		t.Fatalf("fixupShebangs: %v", err)
+	}
+
+	data, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.EqualFold(string(data), string(content)) {
+		t.Error("binary content was modified")
+	}
+}
+
 // envToMap converts a []string env slice to a map.
 func envToMap(env []string) map[string]string {
 	m := make(map[string]string, len(env))

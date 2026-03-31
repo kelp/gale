@@ -169,6 +169,10 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		return nil, fmt.Errorf("fixup binaries: %w", err)
 	}
 
+	if err := fixupShebangs(prefixDir); err != nil {
+		return nil, fmt.Errorf("fixup shebangs: %w", err)
+	}
+
 	archiveName := fmt.Sprintf("%s-%s.tar.zst", r.Package.Name, r.Package.Version)
 	archivePath := filepath.Join(outputDir, archiveName)
 	if err := download.CreateTarZstd(prefixDir, archivePath); err != nil {
@@ -469,6 +473,66 @@ func touchAll(dir string) error {
 		_ = os.Chtimes(path, now, now) //nolint:gosec // G122 — best-effort timestamp reset, race is acceptable
 		return nil
 	})
+}
+
+// fixupShebangs rewrites shebangs in scripts under
+// prefixDir/bin/ that reference the build prefix. Replaces
+// them with #!/usr/bin/env <interpreter> so scripts work
+// after the prefix is moved to the store.
+func fixupShebangs(prefixDir string) error {
+	binDir := filepath.Join(prefixDir, "bin")
+	if _, err := os.Stat(binDir); os.IsNotExist(err) {
+		return nil // no bin/ directory
+	} else if err != nil {
+		return fmt.Errorf("stat bin dir: %w", err)
+	}
+
+	entries, err := os.ReadDir(binDir)
+	if err != nil {
+		return fmt.Errorf("read bin dir: %w", err)
+	}
+
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		path := filepath.Join(binDir, e.Name())
+		data, err := os.ReadFile(path)
+		if err != nil {
+			continue // skip unreadable
+		}
+		if len(data) < 2 || data[0] != '#' || data[1] != '!' {
+			continue // not a script
+		}
+
+		// Find end of shebang line.
+		newline := strings.IndexByte(string(data), '\n')
+		if newline < 0 {
+			continue
+		}
+		shebang := string(data[:newline])
+
+		// Only fix shebangs that reference the build prefix.
+		if !strings.Contains(shebang, prefixDir) {
+			continue
+		}
+
+		// Extract the interpreter basename.
+		interp := filepath.Base(strings.TrimPrefix(shebang, "#!"))
+		interp = strings.TrimSpace(interp)
+
+		newShebang := "#!/usr/bin/env " + interp
+		newData := []byte(newShebang + string(data[newline:]))
+
+		info, _ := e.Info()
+		mode := info.Mode()
+		if err := os.WriteFile(path, newData, mode); err != nil { //nolint:gosec
+			return fmt.Errorf("rewrite shebang %s: %w",
+				e.Name(), err)
+		}
+	}
+
+	return nil
 }
 
 // TmpDir returns the path to ~/.gale/tmp/, creating it
