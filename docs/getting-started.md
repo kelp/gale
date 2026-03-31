@@ -67,6 +67,34 @@ Sync reads the manifest and installs any missing
 packages at their pinned versions. It is idempotent.
 Run it as many times as you like.
 
+## The Store and Garbage Collection
+
+Gale keeps every installed version in the store at
+`~/.gale/pkg/`. When you update a package, the old
+version stays until you clean up:
+
+```sh
+gale gc
+```
+
+Garbage collection removes any version not referenced
+by a `gale.toml` (global or project). It is safe to
+run at any time.
+
+Build dependencies — packages installed temporarily to
+compile another package from source — are not declared
+in `gale.toml`. This means `gale gc` removes them. The
+next build that needs them will reinstall them
+automatically.
+
+If a build dependency is something you use directly
+(like Go for a Go project), add it to `gale.toml` so
+gc keeps it:
+
+```sh
+gale install go
+```
+
 ## Verify Setup
 
 ```sh
