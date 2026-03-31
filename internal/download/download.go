@@ -22,6 +22,13 @@ import (
 // Intermediate directories are created as needed.
 // On HTTP error or failure, the destination file is removed.
 func Fetch(url, destPath string) error {
+	return FetchNamed(url, destPath, "")
+}
+
+// FetchNamed downloads a file with an explicit display
+// name for progress output. If name is empty, the URL
+// basename is used.
+func FetchNamed(url, destPath, displayName string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
@@ -36,14 +43,22 @@ func Fetch(url, destPath string) error {
 		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 
-	// Use URL filename for progress display.
-	name := filepath.Base(url)
+	name := displayName
+	if name == "" {
+		name = filepath.Base(url)
+	}
 	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
 }
 
 // FetchWithAuth downloads a file from url to destPath with a
 // bearer token in the Authorization header.
 func FetchWithAuth(url, destPath, bearerToken string) error {
+	return FetchWithAuthNamed(url, destPath, bearerToken, "")
+}
+
+// FetchWithAuthNamed downloads with auth and an explicit
+// display name for progress output.
+func FetchWithAuthNamed(url, destPath, bearerToken, displayName string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
@@ -64,7 +79,10 @@ func FetchWithAuth(url, destPath, bearerToken string) error {
 		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
 	}
 
-	name := filepath.Base(url)
+	name := displayName
+	if name == "" {
+		name = filepath.Base(url)
+	}
 	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
 }
 
@@ -138,12 +156,17 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 			ProgressPrefix, pw.name,
 			formatBytes(pw.written), formatBytes(int64(speed)))
 	}
-	// Pad to clear previous longer lines, then \r to
-	// park cursor at column 0.
-	for len(line) < 70 {
+	// Truncate to 80 columns to prevent line wrapping
+	// (which breaks \r carriage return).
+	const maxWidth = 80
+	if len(line) > maxWidth {
+		line = line[:maxWidth]
+	}
+	// Pad to clear previous longer lines.
+	for len(line) < maxWidth {
 		line += " "
 	}
-	fmt.Fprintf(os.Stderr, "\r%s\r", line)
+	fmt.Fprintf(os.Stderr, "\r%s", line)
 
 	return n, nil
 }

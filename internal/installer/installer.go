@@ -61,7 +61,7 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	// Try binary first.
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	if bin != nil {
-		if err := installBinary(bin, storeDir, inst.Verifier); err == nil {
+		if err := installBinary(bin, storeDir, name, version, inst.Verifier); err == nil {
 			method = "binary"
 			sha256 = bin.SHA256
 		} else {
@@ -192,9 +192,11 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 	}, nil
 }
 
-func installBinary(bin *recipe.Binary, storeDir string, v attestation.Verifier) error {
+func installBinary(bin *recipe.Binary, storeDir, name, version string, v attestation.Verifier) error {
 	tmpFile := storeDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)
+
+	displayName := fmt.Sprintf("%s-%s.tar.zst", name, version)
 
 	if isGHCR(bin.URL) {
 		repo := repoFromURL(bin.URL)
@@ -202,11 +204,11 @@ func installBinary(bin *recipe.Binary, storeDir string, v attestation.Verifier) 
 		if err != nil {
 			return fmt.Errorf("ghcr auth: %w", err)
 		}
-		if err := download.FetchWithAuth(bin.URL, tmpFile, token); err != nil {
+		if err := download.FetchWithAuthNamed(bin.URL, tmpFile, token, displayName); err != nil {
 			return fmt.Errorf("fetch binary: %w", err)
 		}
 	} else {
-		if err := download.Fetch(bin.URL, tmpFile); err != nil {
+		if err := download.FetchNamed(bin.URL, tmpFile, displayName); err != nil {
 			return fmt.Errorf("fetch binary: %w", err)
 		}
 	}
