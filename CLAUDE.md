@@ -208,6 +208,9 @@ Key rules:
 - Format with gofumpt, lint with golangci-lint
 - Check `context.go` for shared helpers before
   writing new CLI code
+- Commits MUST be signed. Never use `--no-gpg-sign`
+  or `commit.gpgsign=false`. If signing fails, stop
+  and wait for instructions.
 
 ## Gotchas
 
