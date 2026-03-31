@@ -272,7 +272,6 @@ Common dependency GitHub repositories:
 - python → python/cpython
 - readline → readline/readline
 - ruby → ruby/ruby
-- sqlite → sqlite/sqlite
 - xz → tukaani-project/xz
 - zlib → madler/zlib
 - zstd → facebook/zstd
