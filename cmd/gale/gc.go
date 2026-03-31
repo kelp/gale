@@ -53,6 +53,10 @@ var gcCmd = &cobra.Command{
 			if referenced[pkg.Name] == pkg.Version {
 				continue
 			}
+			// Never remove gale itself.
+			if pkg.Name == "gale" {
+				continue
+			}
 
 			if gcDryRun {
 				out.Info(fmt.Sprintf(
