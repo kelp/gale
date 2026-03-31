@@ -232,21 +232,22 @@ func runCreateRecipe(
 
 // buildRecipeChecker returns a function that checks
 // whether a gale recipe exists for a package name.
-// Checks local output dir first (for deps created
-// during recursion), then falls back to the registry.
+// When outputDir is set (running in a recipes repo),
+// only checks locally — the registry may have recipes
+// that aren't available for local builds. When no
+// outputDir is set (stdout mode), checks the registry.
 func buildRecipeChecker(outputDir string) func(string) bool {
-	reg := newRegistry()
-	return func(name string) bool {
-		// Check local output dir first.
-		if outputDir != "" {
+	if outputDir != "" {
+		return func(name string) bool {
 			letter := string(name[0])
 			path := filepath.Join(
 				outputDir, letter, name+".toml")
-			if _, err := os.Stat(path); err == nil {
-				return true
-			}
+			_, err := os.Stat(path)
+			return err == nil
 		}
-		// Fall back to registry.
+	}
+	reg := newRegistry()
+	return func(name string) bool {
 		_, err := reg.FetchRecipe(name)
 		return err == nil
 	}
