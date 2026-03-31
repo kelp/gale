@@ -73,7 +73,9 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 	defer os.RemoveAll(workspace)
 
 	// Fetch source tarball (check cache first).
-	tarballPath := filepath.Join(workspace, "source.tar.gz")
+	// Preserve the archive extension so ExtractSource
+	// can detect the correct format.
+	tarballPath := filepath.Join(workspace, "source"+sourceExtension(r.Source.URL))
 	cached := false
 	if cacheDir := sourceCache(); cacheDir != "" {
 		cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
@@ -489,6 +491,26 @@ func sourceCache() string {
 		return ""
 	}
 	return dir
+}
+
+// sourceExtension extracts the archive extension from a URL.
+// Handles compound extensions like .tar.gz and .tar.xz.
+// Falls back to .tar.gz for unrecognized formats.
+func sourceExtension(url string) string {
+	base := filepath.Base(url)
+	for _, ext := range []string{
+		".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst",
+	} {
+		if strings.HasSuffix(base, ext) {
+			return ext
+		}
+	}
+	for _, ext := range []string{".tgz", ".zip"} {
+		if strings.HasSuffix(base, ext) {
+			return ext
+		}
+	}
+	return ".tar.gz"
 }
 
 // copyFile copies src to dst.

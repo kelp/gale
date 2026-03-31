@@ -31,6 +31,7 @@ func RecipeTools(recipeDir string) ([]Tool, func()) {
 		githubInfoTool(),
 		downloadAndHashTool(downloadDir),
 		readFileTool(),
+		listFilesTool(),
 		writeRecipeTool(recipeDir),
 		lintRecipeTool(),
 	}, cleanup
@@ -161,6 +162,72 @@ func readFileTool() Tool {
 			}
 
 			return string(data), nil
+		},
+	}
+}
+
+func listFilesTool() Tool {
+	return Tool{
+		Param: anthropic.ToolParam{
+			Name:        "list_files",
+			Description: anthropic.String("List top-level files and directories in a GitHub repository. Returns names and types (file/dir). Use before read_file to discover which build system files exist."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{
+					"repo": map[string]any{
+						"type":        "string",
+						"description": "GitHub repo in owner/repo format",
+					},
+				},
+				Required: []string{"repo"},
+			},
+		},
+		Handler: func(input json.RawMessage) (string, error) {
+			var args struct {
+				Repo string `json:"repo"`
+			}
+			if err := json.Unmarshal(input, &args); err != nil {
+				return "", fmt.Errorf("parse input: %w", err)
+			}
+
+			url := fmt.Sprintf(
+				"https://api.github.com/repos/%s/contents/",
+				args.Repo)
+
+			client := &http.Client{Timeout: 15 * time.Second}
+			resp, err := client.Get(url) //nolint:gosec
+			if err != nil {
+				return "", fmt.Errorf("fetch: %w", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode != http.StatusOK {
+				return "", fmt.Errorf("GitHub API: HTTP %d",
+					resp.StatusCode)
+			}
+
+			var entries []struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			}
+			if err := json.NewDecoder(resp.Body).Decode(&entries); err != nil {
+				return "", fmt.Errorf("parse response: %w", err)
+			}
+
+			// Return just names and types.
+			type entry struct {
+				Name string `json:"name"`
+				Type string `json:"type"`
+			}
+			simplified := make([]entry, len(entries))
+			for i, e := range entries {
+				simplified[i] = entry{
+					Name: e.Name,
+					Type: e.Type,
+				}
+			}
+
+			result, _ := json.Marshal(simplified)
+			return string(result), nil
 		},
 	}
 }

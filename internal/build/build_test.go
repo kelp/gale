@@ -17,6 +17,7 @@ import (
 
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/ulikunitz/xz"
 )
 
 // --- Behavior 1: Successful build ---
@@ -538,6 +539,82 @@ func createSourceTarGz(t *testing.T, files map[string]string) (string, string) {
 	f.Close()
 
 	// Compute SHA256 of the archive.
+	data, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("failed to read archive: %v", err)
+	}
+	h := sha256.Sum256(data)
+	hash := fmt.Sprintf("%x", h)
+
+	return archivePath, hash
+}
+
+func createSourceTarXz(t *testing.T, files map[string]string) (string, string) {
+	t.Helper()
+
+	archivePath := filepath.Join(t.TempDir(), "source.tar.xz")
+
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatalf("failed to create archive file: %v", err)
+	}
+	defer f.Close()
+
+	xw, err := xz.NewWriter(f)
+	if err != nil {
+		t.Fatalf("failed to create xz writer: %v", err)
+	}
+	defer xw.Close()
+
+	tw := tar.NewWriter(xw)
+	defer tw.Close()
+
+	names := make([]string, 0, len(files))
+	for name := range files {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	dirs := make(map[string]bool)
+	for _, name := range names {
+		if dir := filepath.Dir(name); dir != "." {
+			parts := strings.Split(
+				filepath.ToSlash(dir), "/")
+			for i := range parts {
+				d := strings.Join(parts[:i+1], "/") + "/"
+				if !dirs[d] {
+					dirs[d] = true
+					dhdr := &tar.Header{
+						Typeflag: tar.TypeDir,
+						Name:     d,
+						Mode:     0o755,
+					}
+					if err := tw.WriteHeader(dhdr); err != nil {
+						t.Fatalf("failed to write dir header: %v",
+							err)
+					}
+				}
+			}
+		}
+
+		content := files[name]
+		hdr := &tar.Header{
+			Name: name,
+			Mode: 0o644,
+			Size: int64(len(content)),
+		}
+		if err := tw.WriteHeader(hdr); err != nil {
+			t.Fatalf("failed to write tar header: %v", err)
+		}
+		if _, err := tw.Write([]byte(content)); err != nil {
+			t.Fatalf("failed to write tar content: %v", err)
+		}
+	}
+
+	tw.Close()
+	xw.Close()
+	f.Close()
+
 	data, err := os.ReadFile(archivePath)
 	if err != nil {
 		t.Fatalf("failed to read archive: %v", err)
@@ -1080,6 +1157,69 @@ func TestBuildEnvUserCFLAGSNotOverridden(t *testing.T) {
 	if val := envMap["CFLAGS"]; val != "-march=native" {
 		t.Errorf("CFLAGS = %q, want user-set %q",
 			val, "-march=native")
+	}
+}
+
+// --- Behavior 17: sourceExtension extracts archive suffix ---
+
+func TestSourceExtensionExtractsCorrectSuffix(t *testing.T) {
+	tests := []struct {
+		url  string
+		want string
+	}{
+		{"https://github.com/foo/bar/archive/refs/tags/v1.0.tar.gz", ".tar.gz"},
+		{"https://github.com/foo/bar/releases/download/v1.0/bar-1.0.tar.xz", ".tar.xz"},
+		{"https://github.com/foo/bar/releases/download/v1.0/bar-1.0.tar.bz2", ".tar.bz2"},
+		{"https://github.com/foo/bar/archive/refs/tags/v1.0.tar.zst", ".tar.zst"},
+		{"https://github.com/foo/bar/releases/download/v1.0/bar-1.0.tgz", ".tgz"},
+		{"https://github.com/foo/bar/releases/download/v1.0/bar-1.0.zip", ".zip"},
+		{"https://example.com/unknown-format.dat", ".tar.gz"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.want, func(t *testing.T) {
+			got := sourceExtension(tt.url)
+			if got != tt.want {
+				t.Errorf("sourceExtension(%q) = %q, want %q",
+					tt.url, got, tt.want)
+			}
+		})
+	}
+}
+
+// --- Behavior 18: Build handles .tar.xz sources ---
+
+func TestBuildSuccessWithTarXzSource(t *testing.T) {
+	tarball, hash := createSourceTarXz(t, map[string]string{
+		"testpkg-1.0/README": "hello",
+	})
+	srv := serveFile(t, tarball)
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:    "testpkg",
+			Version: "1.0",
+		},
+		Source: recipe.Source{
+			URL:    srv.URL + "/testpkg-1.0.tar.xz",
+			SHA256: hash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin && echo '#!/bin/sh' > $PREFIX/bin/hello && chmod +x $PREFIX/bin/hello",
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	result, err := Build(r, outputDir, false, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.Archive == "" {
+		t.Error("expected Archive path to be set")
 	}
 }
 

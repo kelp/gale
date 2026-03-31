@@ -62,14 +62,14 @@ to stdout. Use -o <dir> to specify an output directory.`,
 			ai.RecipePrompt(promptFile),
 			fmt.Sprintf(
 				"Create a gale recipe for the GitHub repository %s. "+
-					"Use the tools to fetch repo info, download the source "+
-					"tarball, compute its SHA256, detect the build system, "+
+					"Use the tools to fetch repo info, list files to detect the "+
+					"build system, download the source tarball, compute its SHA256, "+
 					"write the recipe, and lint it. "+
 					"When done, respond with ONLY the path to the recipe "+
 					"file, nothing else.",
 				repo),
 			tools,
-			10,
+			15,
 		)
 		if err != nil {
 			return fmt.Errorf("recipe generation: %w", err)

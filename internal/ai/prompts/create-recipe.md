@@ -110,7 +110,10 @@ steps = [
 
 ## Build system detection
 
-Read the repo's top-level files to detect the build system.
+First call `list_files` to see the repo's top-level files.
+Then call `read_file` to read the matching build file.
+This avoids wasting calls reading files that don't exist.
+
 Check in this order — use the FIRST match:
 
 1. `go.mod` → Go
@@ -128,20 +131,24 @@ prefer cmake — it's more portable and doesn't require
 autotools to be installed.
 
 Check for dependencies by reading the build files:
-- CMakeLists.txt `find_package(OpenSSL)` → needs openssl
+- CMakeLists.txt `find_package(X)` → needs that package
+  as a build dependency (e.g., `find_package(OpenSSL)`
+  means add "openssl" to build deps)
 - configure.ac `PKG_CHECK_MODULES` → check what it needs
+- CMake options like `-DCRYPTO_BACKEND=OpenSSL` — read
+  the CMakeLists.txt to find required options
 
 ## Workflow
 
 1. Call github_info to get repo metadata (description, license, latest release).
-2. Call read_file to check for build system files (see detection order above). Read the build file contents to understand dependencies.
+2. Call list_files to see what build system files exist. Then call read_file on the matching build file to understand build steps and dependencies.
 3. Call download_and_hash with the source tarball URL to get the real SHA256.
    - For autotools projects, prefer release tarballs (releases/download/) over archive tarballs (archive/refs/tags/) since release tarballs ship a pre-generated configure script.
    - For all other build systems, prefer archive/refs/tags/ URLs.
    - Strip the leading "v" from tag names when constructing the version field.
 4. Call write_recipe with the generated TOML.
-5. Call lint_recipe to validate. Fix any errors and rewrite.
-6. Respond with the recipe file path.
+5. Call lint_recipe to validate. Fix ALL errors in a single rewrite. Do not loop more than twice on lint — if only warnings remain, the recipe is good enough.
+6. Respond with ONLY the recipe file path.
 
 ## Rules
 

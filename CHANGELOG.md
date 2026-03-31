@@ -23,12 +23,25 @@
 - Man page: CONFIGURATION section, cmake/compiler
   env vars, debug/release flags.
 
+### Changed
+
+- `create-recipe` agent uses `list_files` tool to
+  discover build system files in one call instead of
+  guessing with multiple `read_file` attempts.
+- `create-recipe` max iterations increased from 10
+  to 15, with prompt guidance to fix all lint errors
+  in a single rewrite and stop looping on warnings.
+
 ### Fixed
 
 - Build archives now deterministic: absolute symlink
   targets within the source tree are relativized, and
   zstd uses single-threaded encoding for consistent
   output. Fixes broken symlinks after extraction.
+- Source builds with .tar.xz archives now work.
+  `Build()` hardcoded the download filename as
+  `source.tar.gz`, routing all archives through gzip
+  regardless of actual format.
 
 ## v0.6.0 — 2026-03-29
 
