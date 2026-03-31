@@ -200,10 +200,10 @@ func runCreateRecipe(
 			return fmt.Errorf("create dependency %s: %w",
 				name, err)
 		}
-		// Retry the original recipe.
+		// Retry the original recipe at the same depth.
 		return runCreateRecipe(
 			repo, client, promptFile,
-			outputDir, out, depth+1)
+			outputDir, out, depth)
 	}
 
 	// Find the generated recipe file in tmpDir.
