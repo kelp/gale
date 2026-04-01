@@ -280,10 +280,35 @@ The owner/repo for a dependency is NOT the same owner
 as the package you are creating. Look up the dependency
 by its own project name.
 
+## Homebrew formula reference
+
+After detecting the build system and dependencies, call
+`homebrew_formula` with the package name to see how
+Homebrew builds it. The formula is raw Ruby source —
+read it to understand:
+
+- Configure flags (especially for autotools and cmake)
+- Dependency declarations (depends_on lines)
+- Build steps (the install method)
+- Patches or workarounds for build issues
+
+This is especially valuable for:
+- **Autotools projects** with complex ./configure flags
+- **CMake projects** with non-obvious -D options
+- **Libraries** with optional features to enable/disable
+
+If homebrew_formula returns a "not found" error, the
+package may not be in Homebrew. This is not an error —
+continue without it.
+
+Do NOT copy Homebrew's SHA256 or version — always use
+download_and_hash for the real hash and github_info
+for the latest version.
+
 ## Workflow
 
 1. Call github_info to get repo metadata (description, license, latest release).
-2. Call list_files to see what build system files exist. Then call read_file on the matching build file to understand build steps and dependencies. For cmake projects with `add_subdirectory()`, also read the subdirectory CMakeLists.txt to find `find_package()` dependencies.
+2. Call list_files to see what build system files exist. Then call read_file on the matching build file to understand build steps and dependencies. For cmake projects with `add_subdirectory()`, also read the subdirectory CMakeLists.txt to find `find_package()` dependencies. Then call homebrew_formula to see how Homebrew builds the package — use its configure flags and dependency handling as reference.
 3. Call check_recipe for each library dependency detected in step 2. If any is missing, respond with `MISSING_DEP <name> <owner/repo>` and stop.
 4. Call download_and_hash with the source tarball URL to get the real SHA256.
    - For autotools projects, ALWAYS use the `release_asset_url` from github_info if available — these release tarballs include a pre-generated configure script, eliminating the entire autotools dependency chain. Only fall back to archive/refs/tags/ if no release asset exists.

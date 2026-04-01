@@ -221,23 +221,6 @@ a matching binary first. If one exists, it downloads
 the prebuilt archive from GHCR. If not, it falls back
 to building from source using the recipe.
 
-## Starting from Homebrew
-
-Import an existing Homebrew formula as a starting
-point:
-
-```sh
-gale import homebrew jq
-```
-
-This generates a recipe TOML file with the package
-metadata and source URL filled in. The output is a
-starting point -- review and edit before using it.
-
-The heuristic parser may produce warnings. Check the
-generated build steps against the upstream build
-instructions.
-
 ## Validating a Recipe
 
 Lint a recipe file for errors:

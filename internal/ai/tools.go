@@ -34,6 +34,7 @@ func RecipeTools(recipeDir string, checkRecipe func(string) bool) ([]Tool, func(
 		readFileTool(),
 		listFilesTool(),
 		checkRecipeTool(checkRecipe),
+		homebrewFormulaTool(),
 		writeRecipeTool(recipeDir),
 		lintRecipeTool(),
 	}, cleanup
@@ -261,6 +262,70 @@ func checkRecipeTool(exists func(string) bool) Tool {
 				"exists": exists(args.Name),
 			})
 			return string(result), nil
+		},
+	}
+}
+
+func homebrewFormulaTool() Tool {
+	return homebrewFormulaToolWithURL(
+		"https://raw.githubusercontent.com/Homebrew/homebrew-core/master")
+}
+
+func homebrewFormulaToolWithURL(baseURL string) Tool {
+	return Tool{
+		Param: anthropic.ToolParam{
+			Name:        "homebrew_formula",
+			Description: anthropic.String("Fetch a Homebrew formula (raw Ruby source) for a package. Use to understand configure flags, dependencies, and build steps."),
+			InputSchema: anthropic.ToolInputSchemaParam{
+				Properties: map[string]any{
+					"name": map[string]any{
+						"type":        "string",
+						"description": "Package name (e.g., jq, ripgrep)",
+					},
+				},
+				Required: []string{"name"},
+			},
+		},
+		Handler: func(input json.RawMessage) (string, error) {
+			var args struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(input, &args); err != nil {
+				return "", fmt.Errorf("parse input: %w", err)
+			}
+
+			if args.Name == "" {
+				return "", fmt.Errorf("name is required")
+			}
+
+			letter := string(args.Name[0])
+			url := fmt.Sprintf("%s/Formula/%s/%s.rb",
+				baseURL, letter, args.Name)
+
+			client := &http.Client{Timeout: 15 * time.Second}
+			resp, err := client.Get(url) //nolint:gosec
+			if err != nil {
+				return "", fmt.Errorf("fetch: %w", err)
+			}
+			defer resp.Body.Close()
+
+			if resp.StatusCode == http.StatusNotFound {
+				return "", fmt.Errorf(
+					"formula not found: %s (not in Homebrew)",
+					args.Name)
+			}
+			if resp.StatusCode != http.StatusOK {
+				return "", fmt.Errorf("HTTP %d", resp.StatusCode)
+			}
+
+			// Limit to 20KB.
+			data, err := io.ReadAll(
+				io.LimitReader(resp.Body, 20480))
+			if err != nil {
+				return "", fmt.Errorf("read: %w", err)
+			}
+
+			return string(data), nil
 		},
 	}
 }

@@ -251,8 +251,8 @@ func TestRecipeToolsReturnsToolsAndCleanup(t *testing.T) {
 	tools, cleanup := RecipeTools(t.TempDir(), checker)
 	defer cleanup()
 
-	if len(tools) != 7 {
-		t.Errorf("expected 7 tools, got %d", len(tools))
+	if len(tools) != 8 {
+		t.Errorf("expected 8 tools, got %d", len(tools))
 	}
 
 	names := make(map[string]bool)
@@ -266,6 +266,7 @@ func TestRecipeToolsReturnsToolsAndCleanup(t *testing.T) {
 		"read_file",
 		"list_files",
 		"check_recipe",
+		"homebrew_formula",
 		"write_recipe",
 		"lint_recipe",
 	}
@@ -273,5 +274,76 @@ func TestRecipeToolsReturnsToolsAndCleanup(t *testing.T) {
 		if !names[name] {
 			t.Errorf("missing tool: %s", name)
 		}
+	}
+}
+
+func TestHomebrewFormulaToolSuccess(t *testing.T) {
+	formula := `class Jq < Formula
+  desc "Lightweight command-line JSON processor"
+  homepage "https://jqlang.github.io/jq/"
+  url "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
+  sha256 "abc123"
+  license "MIT"
+
+  depends_on "oniguruma"
+
+  def install
+    system "./configure", "--disable-docs", *std_configure_args
+    system "make", "install"
+  end
+end
+`
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/Formula/j/jq.rb" {
+				w.Write([]byte(formula))
+			} else {
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	tool := homebrewFormulaToolWithURL(srv.URL)
+
+	input, _ := json.Marshal(map[string]string{
+		"name": "jq",
+	})
+
+	result, err := tool.Handler(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(result, "class Jq < Formula") {
+		t.Errorf("expected formula class, got: %s", result)
+	}
+	if !strings.Contains(result, "depends_on") {
+		t.Errorf("expected depends_on, got: %s", result)
+	}
+}
+
+func TestHomebrewFormulaToolNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		}))
+	defer srv.Close()
+
+	tool := homebrewFormulaToolWithURL(srv.URL)
+
+	input, _ := json.Marshal(map[string]string{
+		"name": "nonexistent-pkg",
+	})
+
+	_, err := tool.Handler(input)
+	if err == nil {
+		t.Fatal("expected error for 404, got nil")
+	}
+	if !strings.Contains(err.Error(), "formula not found") {
+		t.Errorf("expected 'formula not found' error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "nonexistent-pkg") {
+		t.Errorf("expected package name in error, got: %v", err)
 	}
 }

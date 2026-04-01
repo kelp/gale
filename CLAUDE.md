@@ -46,7 +46,6 @@ internal/lockfile/     gale.lock read/write
 internal/repo/         recipe repository management
 internal/trust/        ed25519 signing and verification
 internal/ai/           Anthropic SDK integration
-internal/homebrew/     Homebrew formula file parser
 internal/lint/         recipe TOML validation
 internal/attestation/  Sigstore attestation via gh CLI
 internal/gitutil/      git clone, ls-remote, URL expansion
@@ -90,7 +89,6 @@ gale lint <recipe.toml>   Validate recipe files
 gale search <query>       Search for packages
 gale shell                Open shell with project environment
 gale run <cmd>            Run command in project environment
-gale import homebrew <n>  Import Homebrew formula as recipe
 gale audit <pkg>         Rebuild and compare SHA256
 gale verify <pkg>        Check Sigstore attestation
 gale sbom [pkg]          Software bill of materials
