@@ -376,15 +376,39 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 
 	// Default compiler flags. User-set values take
 	// precedence — only set if not already in the
-	// environment.
+	// environment. Include dep paths in CPPFLAGS and
+	// LDFLAGS so autotools configure scripts find them.
+	var depCPPFLAGS, depLDFLAGS string
+	if deps != nil && len(deps.StoreDirs) > 0 {
+		var cppParts, ldParts []string
+		for _, d := range deps.StoreDirs {
+			incDir := filepath.Join(d, "include")
+			libDir := filepath.Join(d, "lib")
+			if _, err := os.Stat(incDir); err == nil {
+				cppParts = append(cppParts, "-I"+incDir)
+			}
+			if _, err := os.Stat(libDir); err == nil {
+				ldParts = append(ldParts, "-L"+libDir)
+			}
+		}
+		depCPPFLAGS = strings.Join(cppParts, " ")
+		depLDFLAGS = strings.Join(ldParts, " ")
+	}
 	if debug {
 		setDefault(&env, "CFLAGS", "-O0 -g")
 		setDefault(&env, "CXXFLAGS", "-O0 -g")
-		setDefault(&env, "LDFLAGS", "")
+		setDefault(&env, "LDFLAGS", depLDFLAGS)
 	} else {
 		setDefault(&env, "CFLAGS", "-O2")
 		setDefault(&env, "CXXFLAGS", "-O2")
-		setDefault(&env, "LDFLAGS", "-Wl,-S")
+		ldflags := "-Wl,-S"
+		if depLDFLAGS != "" {
+			ldflags = depLDFLAGS + " " + ldflags
+		}
+		setDefault(&env, "LDFLAGS", ldflags)
+	}
+	if depCPPFLAGS != "" {
+		setDefault(&env, "CPPFLAGS", depCPPFLAGS)
 	}
 
 	// Deterministic ar timestamps.
