@@ -4,6 +4,30 @@
 
 ### Added
 
+- Build env exposes `DEP_<NAME>` env vars for each dep
+  store directory. Recipes reference as `${DEP_READLINE}`,
+  `${DEP_OPENSSL}`, etc. Uppercased, hyphens become
+  underscores.
+- Dep `-I`/`-L` flags added to CPPFLAGS/LDFLAGS so
+  autotools configure scripts find dep headers and
+  libraries. On macOS, `-Wl,-rpath` is also added so
+  linked binaries resolve dep dylibs at runtime.
+- `FixupPkgConfig` rewrites `.pc` files to use relative
+  `${pcfiledir}/../..` paths. Runs on both source builds
+  and binary installs. Fixes stale CI build paths in
+  pkg-config files.
+- PYTHONPATH auto-discovery: build env scans dep store
+  dirs for `lib/python*/site-packages/` and adds them
+  to PYTHONPATH. Fixes meson and other Python-based
+  build tools finding their modules.
+
+### Fixed
+
+- `NamedDirs` not passed through when constructing
+  `BuildDeps` in `gale build` and `gale audit`.
+
+### Previously added
+
 - `gale create-recipe <repo>` generates recipes using
   the Anthropic API. Agentic workflow detects build
   system, computes SHA256, lints, and iterates.

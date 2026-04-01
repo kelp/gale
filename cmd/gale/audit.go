@@ -70,6 +70,7 @@ tampering.`,
 			deps = &build.BuildDeps{
 				BinDirs:   depPaths.BinDirs,
 				StoreDirs: depPaths.StoreDirs,
+				NamedDirs: depPaths.NamedDirs,
 			}
 		}
 

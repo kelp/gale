@@ -229,6 +229,12 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, v attesta
 		return fmt.Errorf("extract binary: %w", err)
 	}
 
+	// Rewrite .pc files so pkg-config resolves from
+	// the store dir, not the original build prefix.
+	if err := build.FixupPkgConfig(storeDir); err != nil {
+		return fmt.Errorf("fixup pkg-config: %w", err)
+	}
+
 	return nil
 }
 
@@ -271,8 +277,9 @@ func repoFromURL(rawURL string) string {
 // DepPaths holds the resolved paths from installed build
 // dependencies.
 type DepPaths struct {
-	BinDirs   []string // bin/ directories for PATH
-	StoreDirs []string // root store directories for each dep
+	BinDirs   []string          // bin/ directories for PATH
+	StoreDirs []string          // root store directories for each dep
+	NamedDirs map[string]string // dep name → store directory
 }
 
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
@@ -346,6 +353,10 @@ func (inst *Installer) installDepsInner(
 		storeDir := filepath.Join(inst.Store.Root,
 			dep, depRecipe.Package.Version)
 		result.StoreDirs = append(result.StoreDirs, storeDir)
+		if result.NamedDirs == nil {
+			result.NamedDirs = make(map[string]string)
+		}
+		result.NamedDirs[dep] = storeDir
 
 		binDir := filepath.Join(storeDir, "bin")
 		if _, err := os.Stat(binDir); err == nil {
@@ -403,6 +414,7 @@ func depsToBuildDeps(deps *DepPaths) *build.BuildDeps {
 	return &build.BuildDeps{
 		BinDirs:   deps.BinDirs,
 		StoreDirs: deps.StoreDirs,
+		NamedDirs: deps.NamedDirs,
 	}
 }
 

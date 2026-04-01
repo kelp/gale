@@ -169,6 +169,10 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		return nil, fmt.Errorf("fixup binaries: %w", err)
 	}
 
+	if err := FixupPkgConfig(prefixDir); err != nil {
+		return nil, fmt.Errorf("fixup pkg-config: %w", err)
+	}
+
 	if err := fixupShebangs(prefixDir); err != nil {
 		return nil, fmt.Errorf("fixup shebangs: %w", err)
 	}
@@ -268,8 +272,9 @@ func runStep(step, sourceRoot, prefixDir, jobs, version, system string, debug bo
 // BuildDeps holds paths from installed build dependencies,
 // used to construct the build environment.
 type BuildDeps struct {
-	BinDirs   []string // bin/ dirs for PATH
-	StoreDirs []string // root store dirs for lib/include/pkgconfig
+	BinDirs   []string          // bin/ dirs for PATH
+	StoreDirs []string          // root store dirs for lib/include/pkgconfig
+	NamedDirs map[string]string // dep name → store directory
 }
 
 // SystemDeps returns implicit build dependencies for
@@ -364,6 +369,29 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 				"CMAKE_PREFIX_PATH="+strings.Join(
 					deps.StoreDirs, ";"))
 		}
+
+		// Discover Python site-packages dirs for PYTHONPATH.
+		var pyPaths []string
+		for _, d := range deps.StoreDirs {
+			matches, _ := filepath.Glob(
+				filepath.Join(d, "lib", "python*", "site-packages"))
+			pyPaths = append(pyPaths, matches...)
+		}
+		if len(pyPaths) > 0 {
+			env = append(env,
+				"PYTHONPATH="+strings.Join(pyPaths, ":"))
+		}
+	}
+
+	// Per-dep env vars: DEP_<NAME>=<store_dir>.
+	// Uppercased, hyphens become underscores. Recipes
+	// reference as ${DEP_READLINE}, ${DEP_OPENSSL}, etc.
+	if deps != nil {
+		for name, dir := range deps.NamedDirs {
+			key := "DEP_" + strings.ToUpper(
+				strings.ReplaceAll(name, "-", "_"))
+			env = append(env, key+"="+dir)
+		}
 	}
 
 	// Pass through compiler if set.
@@ -389,6 +417,10 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 			}
 			if _, err := os.Stat(libDir); err == nil {
 				ldParts = append(ldParts, "-L"+libDir)
+				if runtime.GOOS == "darwin" {
+					ldParts = append(ldParts,
+						"-Wl,-rpath,"+libDir)
+				}
 			}
 		}
 		depCPPFLAGS = strings.Join(cppParts, " ")
