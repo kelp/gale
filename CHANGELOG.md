@@ -21,6 +21,19 @@
   to PYTHONPATH. Fixes meson and other Python-based
   build tools finding their modules.
 
+### Changed
+
+- `create-recipe` agent now consults Homebrew formulas
+  via `homebrew_formula` tool for configure flags and
+  dependency handling. Raw Ruby source returned for the
+  AI to interpret — no regex parsing.
+
+### Removed
+
+- `gale import homebrew` command and the Ruby formula
+  parser (`internal/homebrew/`). Superseded by the
+  `homebrew_formula` tool in `create-recipe`.
+
 ### Fixed
 
 - `NamedDirs` not passed through when constructing

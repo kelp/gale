@@ -480,3 +480,16 @@ pure `[binary.<platform>]` with no `[build]` block.
   nodejs→node). Both files can coexist for mixed
   teams.
 
+
+# Testing
+
+- [ ] Integration testing suite that tests all flags
+  and functionality. Every CLI permutation, end to end.
+  Tests many possible recipe builds of all types.
+
+# Build Infrastructure
+
+- [ ] Fix gale-installed git rpath issue (libpcre2
+  not found at runtime due to missing LC_RPATH)
+- [ ] Rebuild all GHCR binaries with pkg-config fixup
+  so prebuilt packages have correct .pc files
