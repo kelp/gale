@@ -53,26 +53,22 @@ func isObjectFile(path string) bool {
 // binaries and shared libraries under prefixDir so they
 // use @rpath instead of absolute build-time paths.
 func FixupBinaries(prefixDir string) error {
-	// Scan bin/ and lib/ for Mach-O files.
+	// Walk the entire prefix tree for Mach-O files.
+	// Some packages install binaries outside bin/ and
+	// lib/ (e.g., git uses libexec/git-core/).
 	var files []string
-	for _, subdir := range []string{"bin", "lib"} {
-		dir := filepath.Join(prefixDir, subdir)
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		err := filepath.Walk(dir,
-			func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil //nolint:nilerr // skip unreadable files
-				}
-				if isMachO(path) && !isObjectFile(path) {
-					files = append(files, path)
-				}
-				return nil
-			})
-		if err != nil {
-			return fmt.Errorf("scan %s: %w", subdir, err)
-		}
+	err := filepath.Walk(prefixDir,
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil //nolint:nilerr // skip unreadable files
+			}
+			if isMachO(path) && !isObjectFile(path) {
+				files = append(files, path)
+			}
+			return nil
+		})
+	if err != nil {
+		return fmt.Errorf("scan prefix: %w", err)
 	}
 
 	if len(files) == 0 {
@@ -145,24 +141,18 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		return nil
 	}
 
-	// Scan bin/ and lib/ for Mach-O files.
+	// Walk the entire prefix tree for Mach-O files.
 	var files []string
-	for _, subdir := range []string{"bin", "lib"} {
-		dir := filepath.Join(prefixDir, subdir)
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		_ = filepath.Walk(dir,
-			func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil //nolint:nilerr
-				}
-				if isMachO(path) && !isObjectFile(path) {
-					files = append(files, path)
-				}
-				return nil
-			})
-	}
+	_ = filepath.Walk(prefixDir,
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil //nolint:nilerr
+			}
+			if isMachO(path) && !isObjectFile(path) {
+				files = append(files, path)
+			}
+			return nil
+		})
 
 	if len(files) == 0 {
 		return nil
