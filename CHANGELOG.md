@@ -20,6 +20,14 @@
   dirs for `lib/python*/site-packages/` and adds them
   to PYTHONPATH. Fixes meson and other Python-based
   build tools finding their modules.
+- `AddDepRpaths` adds LC_RPATH entries to binaries for
+  dep store lib dirs. Scans Mach-O binaries for @rpath
+  references, finds the dep containing each library,
+  and adds the rpath via install_name_tool. Skips
+  gracefully when header space is insufficient.
+- `-Wl,-headerpad_max_install_names` added to LDFLAGS
+  on macOS so install_name_tool can modify headers
+  post-build.
 
 ### Changed
 
