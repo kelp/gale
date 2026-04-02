@@ -214,12 +214,22 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 			if existing[dir] {
 				continue
 			}
-			if err := run("install_name_tool",
-				"-add_rpath", dir, file); err != nil {
-				// Not enough header space — the binary
-				// should already have the rpath from
-				// link-time LDFLAGS. Skip silently.
-				continue
+			err := run("install_name_tool",
+				"-add_rpath", dir, file)
+			if err != nil {
+				// Header too small — strip signature to
+				// free space, then retry.
+				_ = run("codesign", "--remove-signature",
+					file)
+				if retryErr := run("install_name_tool",
+					"-add_rpath", dir, file); retryErr != nil {
+					fmt.Fprintf(os.Stderr,
+						"warning: cannot add rpath %s to %s: "+
+							"not enough header space (link with "+
+							"-Wl,-headerpad_max_install_names)\n",
+						dir, filepath.Base(file))
+					continue
+				}
 			}
 			changed = true
 		}
