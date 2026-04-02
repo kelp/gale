@@ -447,7 +447,49 @@ func TestBuildWithEmptyPackageMapCreatesCurrentSymlink(t *testing.T) {
 	}
 }
 
-// --- Behavior 8: Build symlinks lib, man, include ---
+// --- Behavior 8: Build symlinks root-level files ---
+
+func TestBuildSymlinksRootLevelFiles(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	// Create a package with root-level files (like Go's
+	// go.env and VERSION).
+	pkgDir := filepath.Join(storeRoot, "go", "1.26.1")
+	if err := os.MkdirAll(
+		filepath.Join(pkgDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(pkgDir, "bin", "go"),
+		[]byte("fake"), 0o755)
+	os.WriteFile(filepath.Join(pkgDir, "go.env"),
+		[]byte("GOPROXY=https://proxy.golang.org,direct\n"),
+		0o644)
+	os.WriteFile(filepath.Join(pkgDir, "VERSION"),
+		[]byte("go1.26.1"), 0o644)
+
+	pkgs := map[string]string{"go": "1.26.1"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	// Root-level files should be symlinked into the
+	// generation directory.
+	for _, name := range []string{"go.env", "VERSION"} {
+		path := filepath.Join(galeDir, "current", name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			t.Errorf("root file %q not symlinked: %v",
+				name, err)
+			continue
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("expected %q to be a symlink", path)
+		}
+	}
+}
+
+// --- Behavior 9: Build symlinks lib, man, include ---
 
 func TestBuildSymlinksLibDir(t *testing.T) {
 	galeDir := t.TempDir()

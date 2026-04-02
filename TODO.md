@@ -489,7 +489,12 @@ pure `[binary.<platform>]` with no `[build]` block.
 
 # Build Infrastructure
 
-- [ ] Fix gale-installed git rpath issue (libpcre2
-  not found at runtime due to missing LC_RPATH)
+- [x] Fix gale-installed git rpath issue — AddDepRpaths
+  adds LC_RPATH entries for dep store lib dirs,
+  headerpad enables post-build rpath additions,
+  FixupBinaries scans entire prefix tree
+- [x] pkg-config fixup — FixupPkgConfig rewrites .pc
+  files to relative ${pcfiledir} paths on both source
+  builds and binary installs
 - [ ] Rebuild all GHCR binaries with pkg-config fixup
   so prebuilt packages have correct .pc files

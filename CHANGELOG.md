@@ -28,8 +28,24 @@
 - `-Wl,-headerpad_max_install_names` added to LDFLAGS
   on macOS so install_name_tool can modify headers
   post-build.
+- Generation dynamically scans package store dirs and
+  symlinks all subdirectories (bin, lib, libexec,
+  share, etc.) instead of a hardcoded list. Fixes
+  packages like git whose helpers live in libexec/.
+- Generation symlinks root-level files from packages
+  (e.g., `go.env`, `VERSION`). Fixes Go's GOROOT
+  discovery when running through the generation
+  symlink — `GOPROXY` and other defaults now resolve.
 
 ### Changed
+
+- `FixupBinaries` walks the entire prefix tree for
+  Mach-O files instead of only scanning bin/ and lib/.
+  Catches binaries in libexec/ and other non-standard
+  directories.
+- `AddDepRpaths` warns to stderr when an rpath cannot
+  be added due to insufficient Mach-O header space,
+  instead of failing silently.
 
 - `create-recipe` agent now consults Homebrew formulas
   via `homebrew_formula` tool for configure flags and

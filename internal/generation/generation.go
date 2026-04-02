@@ -48,17 +48,30 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 			return fmt.Errorf("read store %s: %w", name, err)
 		}
 		for _, e := range entries {
-			if !e.IsDir() {
+			if e.IsDir() {
+				srcDir := filepath.Join(pkgDir, e.Name())
+				dstDir := filepath.Join(genDir, e.Name())
+				if err := os.MkdirAll(dstDir, 0o755); err != nil {
+					cleanup()
+					return fmt.Errorf(
+						"create gen %s dir: %w", e.Name(), err)
+				}
+				if err := symlinkDir(srcDir, dstDir); err != nil {
+					cleanup()
+					return fmt.Errorf(
+						"symlink %s/%s: %w", name, e.Name(), err)
+				}
 				continue
 			}
-			srcDir := filepath.Join(pkgDir, e.Name())
-			dstDir := filepath.Join(genDir, e.Name())
-			if err := os.MkdirAll(dstDir, 0o755); err != nil {
-				cleanup()
-				return fmt.Errorf(
-					"create gen %s dir: %w", e.Name(), err)
+
+			// Symlink root-level files (e.g., go.env).
+			// Skip if already present from another package.
+			src := filepath.Join(pkgDir, e.Name())
+			dst := filepath.Join(genDir, e.Name())
+			if _, err := os.Lstat(dst); err == nil {
+				continue
 			}
-			if err := symlinkDir(srcDir, dstDir); err != nil {
+			if err := os.Symlink(src, dst); err != nil {
 				cleanup()
 				return fmt.Errorf(
 					"symlink %s/%s: %w", name, e.Name(), err)
