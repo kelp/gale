@@ -26,14 +26,11 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	genDir := filepath.Join(
 		galeDir, "gen", strconv.Itoa(next))
 
-	// Create subdirectories for all artifact types.
-	subdirs := []string{"bin", "lib", "man", "include"}
-	for _, sub := range subdirs {
-		if err := os.MkdirAll(
-			filepath.Join(genDir, sub), 0o755); err != nil {
-			return fmt.Errorf(
-				"create generation %s dir: %w", sub, err)
-		}
+	// Always create bin/ — it's the minimum required
+	// directory (user adds it to PATH).
+	if err := os.MkdirAll(
+		filepath.Join(genDir, "bin"), 0o755); err != nil {
+		return fmt.Errorf("create generation dir: %w", err)
 	}
 
 	// Clean up the new generation directory on any
@@ -41,16 +38,30 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	cleanup := func() { os.RemoveAll(genDir) }
 
 	// Symlink contents from each package's store entry
-	// into the generation directory.
+	// into the generation directory. Scan every
+	// subdirectory in the package — don't hardcode names.
 	for name, version := range pkgs {
 		pkgDir := filepath.Join(storeRoot, name, version)
-		for _, sub := range subdirs {
-			srcDir := filepath.Join(pkgDir, sub)
-			dstDir := filepath.Join(genDir, sub)
+		entries, err := os.ReadDir(pkgDir)
+		if err != nil {
+			cleanup()
+			return fmt.Errorf("read store %s: %w", name, err)
+		}
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			srcDir := filepath.Join(pkgDir, e.Name())
+			dstDir := filepath.Join(genDir, e.Name())
+			if err := os.MkdirAll(dstDir, 0o755); err != nil {
+				cleanup()
+				return fmt.Errorf(
+					"create gen %s dir: %w", e.Name(), err)
+			}
 			if err := symlinkDir(srcDir, dstDir); err != nil {
 				cleanup()
 				return fmt.Errorf(
-					"symlink %s/%s: %w", name, sub, err)
+					"symlink %s/%s: %w", name, e.Name(), err)
 			}
 		}
 	}
