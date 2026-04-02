@@ -1116,8 +1116,9 @@ func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
 	if val := envMap["CXXFLAGS"]; val != "-O2" {
 		t.Errorf("CXXFLAGS = %q, want %q", val, "-O2")
 	}
-	if val := envMap["LDFLAGS"]; val != "-Wl,-S" {
-		t.Errorf("LDFLAGS = %q, want %q", val, "-Wl,-S")
+	ldflags := envMap["LDFLAGS"]
+	if !strings.Contains(ldflags, "-Wl,-S") {
+		t.Errorf("LDFLAGS = %q, want -Wl,-S", ldflags)
 	}
 }
 
@@ -1131,8 +1132,9 @@ func TestBuildEnvDebugFlags(t *testing.T) {
 	if val := envMap["CXXFLAGS"]; val != "-O0 -g" {
 		t.Errorf("CXXFLAGS = %q, want %q", val, "-O0 -g")
 	}
-	if val, ok := envMap["LDFLAGS"]; ok && val != "" {
-		t.Errorf("LDFLAGS should be empty in debug, got %q", val)
+	ldflags := envMap["LDFLAGS"]
+	if strings.Contains(ldflags, "-Wl,-S") {
+		t.Errorf("LDFLAGS should not contain -Wl,-S in debug, got %q", ldflags)
 	}
 }
 

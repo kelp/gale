@@ -245,6 +245,133 @@ func TestFixupBinariesSkipsObjectFiles(t *testing.T) {
 	}
 }
 
+// --- Behavior 6: AddDepRpaths adds LC_RPATH for dep libs ---
+
+func TestAddDepRpathsAddsRpathForDepLib(t *testing.T) {
+	// Create a "dep" store dir with a dylib using @rpath
+	// install name, then a package that links it. After
+	// AddDepRpaths, the binary should have LC_RPATH
+	// pointing to the dep's lib dir.
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	os.MkdirAll(depLib, 0o755)
+
+	// Build a dylib in the dep store dir.
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void) { return 7; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylibPath := filepath.Join(depLib, "libdep.dylib")
+	cmd := exec.Command("cc", "-shared",
+		"-install_name", "@rpath/libdep.dylib",
+		"-o", dylibPath, libSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	// Build a binary in a separate "package" prefix that
+	// links the dep dylib.
+	pkgDir := t.TempDir()
+	binDir := filepath.Join(pkgDir, "bin")
+	os.MkdirAll(binDir, 0o755)
+
+	mainSrc := filepath.Join(pkgDir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int dep_func(void);\nint main() { return dep_func(); }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "app")
+	cmd = exec.Command("cc", "-o", binPath, mainSrc,
+		"-L"+depLib, "-ldep",
+		"-Wl,-headerpad_max_install_names")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// Verify the binary references @rpath/libdep.dylib.
+	before := otoolOutput(t, binPath)
+	if !strings.Contains(before, "@rpath/libdep.dylib") {
+		t.Skipf("binary doesn't reference @rpath, test setup issue: %s", before)
+	}
+
+	// Before: no LC_RPATH pointing to depLib.
+	if strings.Contains(before, depLib) {
+		t.Skipf("binary already has dep rpath: %s", before)
+	}
+
+	// Run AddDepRpaths.
+	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+		t.Fatalf("AddDepRpaths error: %v", err)
+	}
+
+	// After: should have LC_RPATH for the dep lib dir.
+	after := otoolOutput(t, binPath)
+	if !strings.Contains(after, depLib) {
+		t.Errorf("expected LC_RPATH %s in:\n%s", depLib, after)
+	}
+}
+
+func TestAddDepRpathsSkipsOwnLibs(t *testing.T) {
+	// Libs in the package's own lib/ dir should not get
+	// an LC_RPATH entry — FixupBinaries already handles
+	// those with @executable_path/../lib.
+	dir := t.TempDir()
+	libDir := filepath.Join(dir, "lib")
+	binDir := filepath.Join(dir, "bin")
+	os.MkdirAll(libDir, 0o755)
+	os.MkdirAll(binDir, 0o755)
+
+	// Build a dylib in the package's own lib/.
+	libSrc := filepath.Join(dir, "own.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int own_func(void) { return 1; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("cc", "-shared",
+		"-install_name", "@rpath/libown.dylib",
+		"-o", filepath.Join(libDir, "libown.dylib"), libSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	// Build a binary linking it.
+	mainSrc := filepath.Join(dir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int own_func(void);\nint main() { return own_func(); }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "app")
+	cmd = exec.Command("cc", "-o", binPath, mainSrc,
+		"-L"+libDir, "-lown")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// Run with no dep dirs — should not add any rpaths.
+	if err := AddDepRpaths(dir, nil); err != nil {
+		t.Fatalf("AddDepRpaths error: %v", err)
+	}
+
+	after := otoolOutput(t, binPath)
+	// Should NOT have an absolute rpath to libDir.
+	if strings.Contains(after, "path "+libDir) {
+		t.Errorf("should not add rpath for own lib dir:\n%s", after)
+	}
+}
+
+func TestAddDepRpathsNoDeps(t *testing.T) {
+	// No dep dirs — should be a no-op.
+	dir := t.TempDir()
+	if err := AddDepRpaths(dir, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
 // otoolOutput runs otool -L and otool -l on a binary and
 // returns the combined output.
 func otoolOutput(t *testing.T, path string) string {

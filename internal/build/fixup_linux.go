@@ -84,3 +84,10 @@ func FixupBinaries(prefixDir string) error {
 
 	return nil
 }
+
+// AddDepRpaths is a no-op on Linux. ELF rpath is set to
+// $ORIGIN/../lib by FixupBinaries, and LD_LIBRARY_PATH
+// handles dep discovery at build time.
+func AddDepRpaths(_ string, _ []string) error {
+	return nil
+}

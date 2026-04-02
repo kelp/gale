@@ -169,6 +169,16 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		return nil, fmt.Errorf("fixup binaries: %w", err)
 	}
 
+	// Add rpath entries for dependency store dirs so
+	// binaries can find dep dylibs at runtime.
+	var depStoreDirs []string
+	if deps != nil {
+		depStoreDirs = deps.StoreDirs
+	}
+	if err := AddDepRpaths(prefixDir, depStoreDirs); err != nil {
+		return nil, fmt.Errorf("add dep rpaths: %w", err)
+	}
+
 	if err := FixupPkgConfig(prefixDir); err != nil {
 		return nil, fmt.Errorf("fixup pkg-config: %w", err)
 	}
@@ -426,10 +436,16 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 		depCPPFLAGS = strings.Join(cppParts, " ")
 		depLDFLAGS = strings.Join(ldParts, " ")
 	}
+	// On macOS, always add headerpad so install_name_tool
+	// can add LC_RPATH entries post-build.
+	headerpad := ""
+	if runtime.GOOS == "darwin" {
+		headerpad = " -Wl,-headerpad_max_install_names"
+	}
 	if debug {
 		setDefault(&env, "CFLAGS", "-O0 -g")
 		setDefault(&env, "CXXFLAGS", "-O0 -g")
-		setDefault(&env, "LDFLAGS", depLDFLAGS)
+		setDefault(&env, "LDFLAGS", depLDFLAGS+headerpad)
 	} else {
 		setDefault(&env, "CFLAGS", "-O2")
 		setDefault(&env, "CXXFLAGS", "-O2")
@@ -437,7 +453,7 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 		if depLDFLAGS != "" {
 			ldflags = depLDFLAGS + " " + ldflags
 		}
-		setDefault(&env, "LDFLAGS", ldflags)
+		setDefault(&env, "LDFLAGS", ldflags+headerpad)
 	}
 	if depCPPFLAGS != "" {
 		setDefault(&env, "CPPFLAGS", depCPPFLAGS)

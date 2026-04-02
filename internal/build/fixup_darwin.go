@@ -133,6 +133,146 @@ func FixupBinaries(prefixDir string) error {
 	return nil
 }
 
+// AddDepRpaths scans Mach-O binaries under prefixDir for
+// @rpath/ references to libraries in dep store dirs and
+// adds LC_RPATH entries so they resolve at runtime.
+//
+// FixupBinaries already adds @executable_path/../lib for
+// the package's own libs. This handles EXTERNAL deps whose
+// dylibs live in other store directories.
+func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
+	if len(depStoreDirs) == 0 {
+		return nil
+	}
+
+	// Scan bin/ and lib/ for Mach-O files.
+	var files []string
+	for _, subdir := range []string{"bin", "lib"} {
+		dir := filepath.Join(prefixDir, subdir)
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		_ = filepath.Walk(dir,
+			func(path string, info os.FileInfo, err error) error {
+				if err != nil || info.IsDir() {
+					return nil //nolint:nilerr
+				}
+				if isMachO(path) && !isObjectFile(path) {
+					files = append(files, path)
+				}
+				return nil
+			})
+	}
+
+	if len(files) == 0 {
+		return nil
+	}
+
+	// Build a map: library basename → dep lib dir.
+	// e.g. "libpcre2-8.dylib" → "~/.gale/pkg/pcre2/10.44/lib"
+	libDirMap := make(map[string]string)
+	for _, storeDir := range depStoreDirs {
+		libDir := filepath.Join(storeDir, "lib")
+		entries, err := os.ReadDir(libDir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if strings.HasSuffix(e.Name(), ".dylib") {
+				libDirMap[e.Name()] = libDir
+			}
+		}
+	}
+
+	ownLib := filepath.Join(prefixDir, "lib")
+
+	for _, file := range files {
+		deps, err := otoolDeps(file)
+		if err != nil {
+			continue
+		}
+
+		// Collect unique dep lib dirs needed by this
+		// binary.
+		needed := make(map[string]bool)
+		for _, dep := range deps {
+			if !strings.HasPrefix(dep, "@rpath/") {
+				continue
+			}
+			libName := strings.TrimPrefix(dep, "@rpath/")
+
+			// Skip libs in the package's own lib dir.
+			if _, err := os.Stat(
+				filepath.Join(ownLib, libName)); err == nil {
+				continue
+			}
+
+			if dir, ok := libDirMap[libName]; ok {
+				needed[dir] = true
+			}
+		}
+
+		if len(needed) == 0 {
+			continue
+		}
+
+		// Get existing rpaths to avoid duplicates.
+		existing := existingRpaths(file)
+
+		changed := false
+		for dir := range needed {
+			if existing[dir] {
+				continue
+			}
+			if err := run("install_name_tool",
+				"-add_rpath", dir, file); err != nil {
+				return fmt.Errorf(
+					"add rpath %s to %s: %w",
+					dir, filepath.Base(file), err)
+			}
+			changed = true
+		}
+
+		if changed {
+			_ = run("codesign", "--force", "--sign",
+				"-", file)
+		}
+	}
+
+	return nil
+}
+
+// existingRpaths returns the set of LC_RPATH entries
+// already present in a Mach-O binary.
+func existingRpaths(path string) map[string]bool {
+	cmd := exec.Command("otool", "-l", path)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil
+	}
+
+	rpaths := make(map[string]bool)
+	lines := strings.Split(string(out), "\n")
+	for i, line := range lines {
+		if strings.Contains(line, "cmd LC_RPATH") {
+			// The path is two lines after "cmd LC_RPATH":
+			//   cmd LC_RPATH
+			//   cmdsize ...
+			//   path /some/path (offset ...)
+			if i+2 < len(lines) {
+				pline := strings.TrimSpace(lines[i+2])
+				if strings.HasPrefix(pline, "path ") {
+					p := strings.TrimPrefix(pline, "path ")
+					if idx := strings.Index(p, " ("); idx > 0 {
+						rpaths[p[:idx]] = true
+					}
+				}
+			}
+		}
+	}
+	return rpaths
+}
+
 // otoolDeps returns the list of dynamic library paths
 // referenced by a Mach-O file.
 func otoolDeps(path string) ([]string, error) {
