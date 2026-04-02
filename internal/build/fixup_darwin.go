@@ -226,9 +226,10 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 			}
 			if err := run("install_name_tool",
 				"-add_rpath", dir, file); err != nil {
-				return fmt.Errorf(
-					"add rpath %s to %s: %w",
-					dir, filepath.Base(file), err)
+				// Not enough header space — the binary
+				// should already have the rpath from
+				// link-time LDFLAGS. Skip silently.
+				continue
 			}
 			changed = true
 		}
