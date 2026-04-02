@@ -22,9 +22,10 @@ type RecipeResolver func(name string) (*recipe.Recipe, error)
 
 // Installer installs packages into the store.
 type Installer struct {
-	Store    *store.Store
-	Resolver RecipeResolver
-	Verifier attestation.Verifier // nil = skip attestation
+	Store      *store.Store
+	Resolver   RecipeResolver
+	Verifier   attestation.Verifier // nil = skip attestation
+	SourceOnly bool                 // skip binary, build from source
 }
 
 // InstallResult holds the outcome of an install.
@@ -58,9 +59,9 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	method := "source"
 	var sha256 string
 
-	// Try binary first.
+	// Try binary first (unless source-only mode).
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	if bin != nil {
+	if bin != nil && !inst.SourceOnly {
 		if err := installBinary(bin, storeDir, name, version, inst.Verifier); err == nil {
 			method = "binary"
 			sha256 = bin.SHA256

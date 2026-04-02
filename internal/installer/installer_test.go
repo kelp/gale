@@ -905,6 +905,66 @@ func TestRepoFromURL(t *testing.T) {
 	}
 }
 
+// --- SourceOnly skips binary and builds from source ---
+
+func TestInstallSourceOnlySkipsBinary(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	srcHash := hashFile(t, srcTar)
+
+	binaryRequested := false
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/binary.tar.zst" {
+				binaryRequested = true
+				http.Error(w, "should not be called",
+					http.StatusInternalServerError)
+				return
+			}
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store:      store.NewStore(storeRoot),
+		SourceOnly: true,
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "pkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: srcHash,
+		},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s",
+				runtime.GOOS, runtime.GOARCH): {
+				URL:    srv.URL + "/binary.tar.zst",
+				SHA256: "deadbeef",
+			},
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh' > $PREFIX/bin/pkg",
+				"chmod +x $PREFIX/bin/pkg",
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != "source" {
+		t.Errorf("Method = %q, want %q",
+			result.Method, "source")
+	}
+	if binaryRequested {
+		t.Error("binary endpoint was called despite SourceOnly")
+	}
+}
+
 // --- Install with no binary section builds from source ---
 
 func TestInstallNoBinarySectionBuildsSource(t *testing.T) {

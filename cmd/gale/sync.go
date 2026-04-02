@@ -9,25 +9,32 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var syncLocal bool
+var (
+	syncLocal  bool
+	syncSource bool
+)
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
 	Short: "Install all packages in gale.toml",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSync(syncLocal)
+		return runSync(syncLocal, syncSource)
 	},
 }
 
 // runSync performs the sync operation: resolves recipes,
 // installs missing packages, and rebuilds the generation.
-func runSync(local bool) error {
+func runSync(local, sourceOnly bool) error {
 	out := output.New(os.Stderr, !noColor)
 
 	ctx, err := newCmdContext(local)
 	if err != nil {
 		return err
+	}
+
+	if sourceOnly {
+		ctx.Installer.SourceOnly = true
 	}
 
 	cfg, err := ctx.LoadConfig()
@@ -120,5 +127,7 @@ func runSync(local bool) error {
 func init() {
 	syncCmd.Flags().BoolVar(&syncLocal, "local", false,
 		"Resolve recipes from sibling gale-recipes directory")
+	syncCmd.Flags().BoolVar(&syncSource, "source", false,
+		"Build all packages from source (skip prebuilt binaries)")
 	rootCmd.AddCommand(syncCmd)
 }
