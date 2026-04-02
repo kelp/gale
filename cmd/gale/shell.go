@@ -80,7 +80,7 @@ func syncIfNeeded() {
 	if err != nil || !stale {
 		return
 	}
-	_ = runSync(false, false)
+	_ = runSync(false, false, false)
 }
 
 // prependPATH returns the current environment with binDir

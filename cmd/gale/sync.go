@@ -10,8 +10,10 @@ import (
 )
 
 var (
-	syncLocal  bool
-	syncSource bool
+	syncLocal   bool
+	syncSource  bool
+	syncGlobal  bool
+	syncProject bool
 )
 
 var syncCmd = &cobra.Command{
@@ -19,18 +21,36 @@ var syncCmd = &cobra.Command{
 	Short: "Install all packages in gale.toml",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSync(syncLocal, syncSource)
+		if syncGlobal && syncProject {
+			return fmt.Errorf(
+				"cannot use both --global and --project")
+		}
+		return runSync(syncLocal, syncSource, syncGlobal)
 	},
 }
 
 // runSync performs the sync operation: resolves recipes,
 // installs missing packages, and rebuilds the generation.
-func runSync(local, sourceOnly bool) error {
+func runSync(local, sourceOnly, global bool) error {
 	out := output.New(os.Stderr, !noColor)
 
 	ctx, err := newCmdContext(local)
 	if err != nil {
 		return err
+	}
+
+	// Override scope when -g is set.
+	if global {
+		galePath, pathErr := resolveConfigPath(true)
+		if pathErr != nil {
+			return pathErr
+		}
+		galeDir, dirErr := galeDirForConfig(galePath)
+		if dirErr != nil {
+			return dirErr
+		}
+		ctx.GalePath = galePath
+		ctx.GaleDir = galeDir
 	}
 
 	if sourceOnly {
@@ -125,6 +145,10 @@ func runSync(local, sourceOnly bool) error {
 }
 
 func init() {
+	syncCmd.Flags().BoolVarP(&syncGlobal, "global", "g",
+		false, "Sync global packages")
+	syncCmd.Flags().BoolVarP(&syncProject, "project", "p",
+		false, "Sync project packages")
 	syncCmd.Flags().BoolVar(&syncLocal, "local", false,
 		"Resolve recipes from sibling gale-recipes directory")
 	syncCmd.Flags().BoolVar(&syncSource, "source", false,
