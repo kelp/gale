@@ -89,8 +89,12 @@ func colorHelp(cmd *cobra.Command, args []string) {
 	}
 }
 
-// noColor is the persistent flag bound in root.go init().
-var noColor bool
+// Persistent flags bound in root.go init().
+var (
+	noColor bool
+	verbose bool
+	dryRun  bool
+)
 
 // applyNoColor disables fatih/color output when the
 // --no-color flag is set.

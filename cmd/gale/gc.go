@@ -11,8 +11,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var gcDryRun bool
-
 var gcCmd = &cobra.Command{
 	Use:   "gc",
 	Short: "Remove unused package versions from the store",
@@ -59,7 +57,7 @@ var gcCmd = &cobra.Command{
 				continue
 			}
 
-			if gcDryRun {
+			if dryRun {
 				out.Info(fmt.Sprintf(
 					"Would remove %s@%s", pkg.Name, pkg.Version))
 			} else {
@@ -80,7 +78,7 @@ var gcCmd = &cobra.Command{
 			return nil
 		}
 
-		if gcDryRun {
+		if dryRun {
 			out.Info(fmt.Sprintf(
 				"%d version(s) would be removed", removed))
 			return nil
@@ -131,7 +129,5 @@ func mergeConfig(path string, referenced map[string]bool) {
 }
 
 func init() {
-	gcCmd.Flags().BoolVar(&gcDryRun, "dry-run", false,
-		"Show what would be removed without removing")
 	rootCmd.AddCommand(gcCmd)
 }

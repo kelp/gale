@@ -26,6 +26,10 @@ Projects get isolated environments, activated automatically on cd.`,
 func init() {
 	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color",
 		false, "Disable colored output")
+	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose",
+		"v", false, "Verbose output")
+	rootCmd.PersistentFlags().BoolVarP(&dryRun, "dry-run",
+		"n", false, "Show what would happen without doing it")
 	rootCmd.SetHelpFunc(colorHelp)
 }
 
