@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
@@ -199,8 +200,12 @@ func newRegistry() *registry.Registry {
 }
 
 // lockfilePath returns the gale.lock path for a given
-// gale.toml path.
+// gale.toml path. Panics if configPath does not end with
+// ".toml" — this indicates a programming error.
 func lockfilePath(configPath string) string {
+	if !strings.HasSuffix(configPath, ".toml") {
+		panic("lockfilePath: configPath must end with .toml, got " + configPath)
+	}
 	return configPath[:len(configPath)-len(".toml")] + ".lock"
 }
 
@@ -208,16 +213,26 @@ func lockfilePath(configPath string) string {
 // updates gale.lock. Does not rebuild the generation —
 // callers handle that (once per command, not per package).
 // When sha256 is empty (cached install), the lockfile
-// entry is preserved to avoid overwriting a valid hash.
+// entry is still updated with the new version so stale
+// hashes from a previous version are not retained.
 func writeConfigAndLock(configPath, name, version, sha256 string) error {
 	if err := config.AddPackage(configPath, name, version); err != nil {
 		return fmt.Errorf("adding to config: %w", err)
 	}
+	lp := lockfilePath(configPath)
 	if sha256 == "" {
-		return nil // cached — keep existing lockfile hash
+		// Cached install: preserve existing hash only if
+		// the lockfile version matches.
+		lf, err := lockfile.Read(lp)
+		if err != nil {
+			return err
+		}
+		if existing, ok := lf.Packages[name]; ok &&
+			existing.Version == version {
+			return nil // same version, keep existing hash
+		}
 	}
-	return updateLockfile(
-		lockfilePath(configPath), name, version, sha256)
+	return updateLockfile(lp, name, version, sha256)
 }
 
 // finalizeInstall adds a package to gale.toml, updates
