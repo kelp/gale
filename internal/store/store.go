@@ -38,13 +38,14 @@ func (s *Store) Create(name, version string) (string, error) {
 }
 
 // IsInstalled checks if a package version exists in the store.
+// Returns false for empty directories left by failed installs.
 func (s *Store) IsInstalled(name, version string) bool {
 	dir := filepath.Join(s.Root, name, version)
-	info, err := os.Stat(dir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
 	}
-	return info.IsDir()
+	return len(entries) > 0
 }
 
 // List returns all installed packages in the store.

@@ -65,7 +65,8 @@ func TestIsInstalledReturnsTrueWhenExists(t *testing.T) {
 	s := NewStore(root)
 
 	dir := filepath.Join(root, "jq", "1.7.1")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(
+		filepath.Join(dir, "bin"), 0o755); err != nil {
 		t.Fatalf("failed to create directory: %v", err)
 	}
 
@@ -308,5 +309,64 @@ func TestRemoveKeepsParentWhenOtherVersionsExist(t *testing.T) {
 	otherDir := filepath.Join(root, "jq", "1.8.0")
 	if _, err := os.Stat(otherDir); err != nil {
 		t.Errorf("other version directory should still exist: %v", err)
+	}
+}
+
+// --- Behavior 5: Empty directories not considered installed ---
+
+func TestIsInstalledEmptyDirReturnsFalse(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	// Create an empty directory (simulates a failed install).
+	dir := filepath.Join(root, "jq", "1.7")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if s.IsInstalled("jq", "1.7") {
+		t.Error("IsInstalled returned true for empty directory")
+	}
+}
+
+// --- Behavior 6: Failed install allows retry ---
+
+func TestCreateThenFailedInstallAllowsRetry(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	// Simulate: Create succeeds, but install fails before
+	// writing any content.
+	dir, err := s.Create("jq", "1.7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = dir
+
+	// The empty directory should not be considered installed.
+	if s.IsInstalled("jq", "1.7") {
+		t.Error("empty store dir should not be considered installed")
+	}
+
+	// A retry should be able to Create again (idempotent).
+	dir2, err := s.Create("jq", "1.7")
+	if err != nil {
+		t.Fatalf("retry Create failed: %v", err)
+	}
+
+	// Write content to simulate a successful install.
+	binDir := filepath.Join(dir2, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(binDir, "jq"),
+		[]byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Now it should be considered installed.
+	if !s.IsInstalled("jq", "1.7") {
+		t.Error("store dir with content should be installed")
 	}
 }

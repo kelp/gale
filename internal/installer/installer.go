@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"syscall"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
@@ -40,6 +41,14 @@ type InstallResult struct {
 func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	name := r.Package.Name
 	version := r.Package.Version
+
+	// Acquire a file lock to prevent concurrent installs
+	// of the same package version from corrupting the store.
+	unlock, err := lockPackage(inst.Store.Root, name, version)
+	if err != nil {
+		return nil, fmt.Errorf("lock package: %w", err)
+	}
+	defer unlock()
 
 	// Skip if already installed.
 	if inst.Store.IsInstalled(name, version) {
@@ -239,21 +248,15 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, v attesta
 	return nil
 }
 
-// isGHCR returns true if the URL points to a GHCR blob
-// endpoint. Matches both ghcr.io host and the /v2/.../blobs/
-// path pattern used by OCI registries.
+// isGHCR returns true if the URL host is ghcr.io. Only
+// ghcr.io receives bearer tokens — never send credentials
+// to arbitrary hosts based on path patterns alone.
 func isGHCR(rawURL string) bool {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return false
 	}
-	if u.Host == "ghcr.io" {
-		return true
-	}
-	// Also match OCI blob URL pattern for any host (enables
-	// testing with httptest servers).
-	return strings.HasPrefix(u.Path, "/v2/") &&
-		strings.Contains(u.Path, "/blobs/")
+	return u.Host == "ghcr.io"
 }
 
 // repoFromURL extracts the repository path from a GHCR blob
@@ -299,20 +302,51 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
 				merged = append(merged, d)
 			}
 		}
-		r = &recipe.Recipe{
-			Package: r.Package,
-			Source:  r.Source,
-			Build:   r.Build,
-			Binary:  r.Binary,
-			Dependencies: recipe.Dependencies{
-				Build:   merged,
-				Runtime: r.Dependencies.Runtime,
-			},
-		}
+		r = copyRecipeForDeps(r, merged)
 	}
 
 	seen := make(map[string]bool)
 	return inst.installDepsInner(r, seen)
+}
+
+// copyRecipeForDeps creates a shallow copy of a Recipe with
+// deep-copied Build.Platform and Binary maps, and the given
+// merged build deps. This prevents map aliasing between the
+// copy and the original.
+func copyRecipeForDeps(r *recipe.Recipe, mergedBuildDeps []string) *recipe.Recipe {
+	var platformCopy map[string]recipe.PlatformBuild
+	if r.Build.Platform != nil {
+		platformCopy = make(
+			map[string]recipe.PlatformBuild, len(r.Build.Platform))
+		for k, v := range r.Build.Platform {
+			platformCopy[k] = v
+		}
+	}
+
+	var binaryCopy map[string]recipe.Binary
+	if r.Binary != nil {
+		binaryCopy = make(
+			map[string]recipe.Binary, len(r.Binary))
+		for k, v := range r.Binary {
+			binaryCopy[k] = v
+		}
+	}
+
+	return &recipe.Recipe{
+		Package: r.Package,
+		Source:  r.Source,
+		Build: recipe.Build{
+			System:   r.Build.System,
+			Steps:    r.Build.Steps,
+			Debug:    r.Build.Debug,
+			Platform: platformCopy,
+		},
+		Binary: binaryCopy,
+		Dependencies: recipe.Dependencies{
+			Build:   mergedBuildDeps,
+			Runtime: r.Dependencies.Runtime,
+		},
+	}
 }
 
 // installDepsInner recursively installs build and runtime
@@ -433,4 +467,34 @@ func extractBuild(result *build.BuildResult, storeDir string) error {
 		return fmt.Errorf("extract build output: %w", err)
 	}
 	return nil
+}
+
+// lockPackage acquires an exclusive file lock for a package
+// version. Returns an unlock function that releases the lock
+// and removes the lock file. The lock serializes concurrent
+// install attempts for the same package version.
+func lockPackage(storeRoot, name, version string) (func(), error) {
+	// Ensure the package directory exists for the lock file.
+	pkgDir := filepath.Join(storeRoot, name)
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create lock dir: %w", err)
+	}
+
+	lockPath := filepath.Join(pkgDir, version+".lock")
+	f, err := os.OpenFile(
+		lockPath, os.O_CREATE|os.O_RDWR, 0o644) //nolint:gosec
+	if err != nil {
+		return nil, fmt.Errorf("open lock file: %w", err)
+	}
+
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil { //nolint:gosec
+		f.Close()
+		return nil, fmt.Errorf("acquire lock: %w", err)
+	}
+
+	return func() {
+		syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck,gosec
+		f.Close()
+		os.Remove(lockPath)
+	}, nil
 }

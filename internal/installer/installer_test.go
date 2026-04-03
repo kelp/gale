@@ -189,9 +189,9 @@ func TestInstallUpgradeMovesSymlink(t *testing.T) {
 	}
 }
 
-func TestInstallBinaryFromGHCR(t *testing.T) {
+func TestInstallBinaryFromURL(t *testing.T) {
 	// Create a tar.zst with bin/testpkg.
-	binContent := "#!/bin/sh\necho ghcr-binary"
+	binContent := "#!/bin/sh\necho from-binary"
 	tarzst := createTestTarZstd(t, "bin/testpkg", binContent)
 	hash := hashFile(t, tarzst)
 	blobData, err := os.ReadFile(tarzst)
@@ -199,24 +199,12 @@ func TestInstallBinaryFromGHCR(t *testing.T) {
 		t.Fatalf("read tar.zst: %v", err)
 	}
 
-	// Use env var for auth (skips token exchange).
-	t.Setenv("GALE_GITHUB_TOKEN", "test-ghcr-token")
-
-	// Mock GHCR blob endpoint — requires auth header.
-	var gotAuth string
-	srv := httptest.NewTLSServer(http.HandlerFunc(
+	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			gotAuth = r.Header.Get("Authorization")
-			if gotAuth != "Bearer test-ghcr-token" {
-				http.Error(w, "unauthorized",
-					http.StatusUnauthorized)
-				return
-			}
 			w.Write(blobData)
 		}))
 	defer srv.Close()
 
-	// Use the TLS test server's client so certs are trusted.
 	restore := download.SetHTTPClient(srv.Client())
 	defer restore()
 
@@ -225,14 +213,7 @@ func TestInstallBinaryFromGHCR(t *testing.T) {
 		Store: store.NewStore(storeRoot),
 	}
 
-	// URL must contain ghcr.io to trigger auth path.
-	// We use the test server but embed ghcr.io in the
-	// host via a redirect, or we adjust isGHCR. Simplest:
-	// use the test server URL directly and make isGHCR
-	// also match /v2/.../blobs/ paths.
-	blobURL := fmt.Sprintf(
-		"%s/v2/kelp/gale-recipes/testpkg/blobs/sha256:%s",
-		srv.URL, hash)
+	blobURL := fmt.Sprintf("%s/testpkg-1.0.tar.zst", srv.URL)
 
 	r := &recipe.Recipe{
 		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
@@ -839,7 +820,7 @@ func TestIsGHCR(t *testing.T) {
 		{
 			name: "OCI blob pattern on other host",
 			url:  "http://localhost:8080/v2/owner/repo/blobs/sha256:abc",
-			want: true,
+			want: false,
 		},
 		{
 			name: "plain HTTP URL",
@@ -1011,5 +992,210 @@ func TestInstallNoBinarySectionBuildsSource(t *testing.T) {
 	}
 	if result.SHA256 == "" {
 		t.Error("SHA256 should be populated after source build")
+	}
+}
+
+// --- BUG-2: Map aliasing in InstallBuildDeps recipe copy ---
+
+func TestInstallBuildDepsDeepCopiesMaps(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	// Pre-populate cmake in the store so Install returns
+	// "cached" without trying to download/build.
+	cmakeBin := filepath.Join(storeRoot, "cmake", "1.0", "bin")
+	if err := os.MkdirAll(cmakeBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(cmakeBin, "cmake"),
+		[]byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			return &recipe.Recipe{
+				Package: recipe.Package{
+					Name:    name,
+					Version: "1.0",
+				},
+			}, nil
+		},
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:    "myapp",
+			Version: "2.0",
+		},
+		Build: recipe.Build{
+			System: "cmake",
+			Steps:  []string{"cmake ..", "make"},
+			Platform: map[string]recipe.PlatformBuild{
+				"darwin-arm64": {Steps: []string{"make"}},
+			},
+		},
+		Binary: map[string]recipe.Binary{
+			"darwin-arm64": {
+				URL:    "https://example.com/foo.tar.zst",
+				SHA256: "abc123",
+			},
+		},
+		Dependencies: recipe.Dependencies{
+			Build: []string{},
+		},
+	}
+
+	_, err := inst.InstallBuildDeps(r)
+	if err != nil {
+		t.Fatalf("InstallBuildDeps: %v", err)
+	}
+
+	// Test the copy function directly: mutations to the
+	// copy must not affect the original.
+	copied := copyRecipeForDeps(r, r.Dependencies.Build)
+	copied.Build.Platform["linux-amd64"] = recipe.PlatformBuild{
+		Steps: []string{"new"},
+	}
+	copied.Binary["linux-amd64"] = recipe.Binary{
+		URL: "https://example.com/new.tar.zst",
+	}
+
+	if len(r.Build.Platform) != 1 {
+		t.Errorf("original Build.Platform mutated: got %d entries, want 1",
+			len(r.Build.Platform))
+	}
+	if len(r.Binary) != 1 {
+		t.Errorf("original Binary mutated: got %d entries, want 1",
+			len(r.Binary))
+	}
+}
+
+// --- BUG-1: File-based locking for concurrent Install ---
+
+func TestLockPackageSerializesConcurrentAccess(t *testing.T) {
+	storeRoot := t.TempDir()
+
+	// Acquire a lock on a package.
+	unlock, err := lockPackage(storeRoot, "jq", "1.7")
+	if err != nil {
+		t.Fatalf("lockPackage: %v", err)
+	}
+
+	// Try to acquire the same lock in a goroutine.
+	done := make(chan struct{})
+	go func() {
+		unlock2, err := lockPackage(storeRoot, "jq", "1.7")
+		if err != nil {
+			t.Errorf("second lockPackage: %v", err)
+			close(done)
+			return
+		}
+		unlock2()
+		close(done)
+	}()
+
+	// The goroutine should be blocked.
+	select {
+	case <-done:
+		t.Fatal("second lock acquired before first was released")
+	default:
+	}
+
+	unlock()
+	<-done
+}
+
+func TestLockPackageDifferentPackagesNotBlocked(t *testing.T) {
+	storeRoot := t.TempDir()
+
+	unlock1, err := lockPackage(storeRoot, "jq", "1.7")
+	if err != nil {
+		t.Fatalf("lockPackage jq: %v", err)
+	}
+	defer unlock1()
+
+	unlock2, err := lockPackage(storeRoot, "fd", "9.0")
+	if err != nil {
+		t.Fatalf("lockPackage fd: %v", err)
+	}
+	defer unlock2()
+}
+
+func TestLockPackageCleansUpLockFile(t *testing.T) {
+	storeRoot := t.TempDir()
+
+	unlock, err := lockPackage(storeRoot, "jq", "1.7")
+	if err != nil {
+		t.Fatalf("lockPackage: %v", err)
+	}
+
+	lockPath := filepath.Join(storeRoot, "jq", "1.7.lock")
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Fatalf("lock file should exist while held: %v", err)
+	}
+
+	unlock()
+
+	if _, err := os.Stat(lockPath); err == nil {
+		t.Error("lock file should be removed after unlock")
+	}
+}
+
+// --- Reassigned supply-chain BUG-3: isGHCR credential leak ---
+
+func TestIsGHCRRejectsNonGHCRHosts(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{
+			name: "ghcr.io host",
+			url:  "https://ghcr.io/v2/owner/repo/blobs/sha256:abc",
+			want: true,
+		},
+		{
+			name: "evil host with GHCR path pattern",
+			url:  "https://evil.com/v2/owner/repo/blobs/sha256:abc",
+			want: false,
+		},
+		{
+			name: "subdomain of ghcr.io",
+			url:  "https://sub.ghcr.io/v2/owner/repo/blobs/sha256:abc",
+			want: false,
+		},
+		{
+			name: "evil host pretending to be ghcr.io",
+			url:  "https://notghcr.io/v2/owner/repo/blobs/sha256:abc",
+			want: false,
+		},
+		{
+			name: "ghcr.io non-v2 path",
+			url:  "https://ghcr.io/some/other/path",
+			want: true,
+		},
+		{
+			name: "empty url",
+			url:  "",
+			want: false,
+		},
+		{
+			name: "localhost with v2 blobs",
+			url:  "https://localhost/v2/owner/repo/blobs/sha256:abc",
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := isGHCR(tt.url)
+			if got != tt.want {
+				t.Errorf("isGHCR(%q) = %v, want %v",
+					tt.url, got, tt.want)
+			}
+		})
 	}
 }
