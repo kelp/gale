@@ -216,7 +216,7 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot, recipesFla
 	var resolver installer.RecipeResolver
 	switch {
 	case recipePath != "":
-		resolver = recipeFileResolver(recipePath)
+		resolver = resolverForRecipe(recipePath)
 	case recipesFlag != "":
 		cwd, err := os.Getwd()
 		if err != nil {
@@ -315,10 +315,7 @@ func installFromLocalSource(name, recipePath, sourceDir, configPath, galeDir, st
 	}
 	r.Package.Version = version
 
-	inst := &installer.Installer{
-		Store:    store.NewStore(storeRoot),
-		Resolver: recipeFileResolver(resolvedRecipe),
-	}
+	inst := newInstallerForLocalSource(resolvedRecipe, storeRoot)
 
 	// Skip build if the same version is already in the
 	// store, but still finalize (add to config + rebuild
@@ -371,9 +368,11 @@ func gitDevVersion(dir string) (string, error) {
 
 // formatDevVersion converts git describe output to semver.
 //
-//	"v0.2.0"            → "0.2.0"
-//	"v0.2.0-7-g5395b8f" → "0.2.0-dev.7+5395b8f"
-//	"5395b8f"           → "0.0.0-dev+5395b8f"
+//	"v0.2.0"                → "0.2.0"
+//	"v0.2.0-7-g5395b8f"     → "0.2.0-dev.7+5395b8f"
+//	"v1.0.0-rc1"            → "1.0.0-rc1"
+//	"v1.0.0-rc1-3-gabcdef0" → "1.0.0-rc1-dev.3+abcdef0"
+//	"5395b8f"               → "0.0.0-dev+5395b8f"
 func formatDevVersion(describe string) string {
 	// No tags: bare hash.
 	if !strings.Contains(describe, ".") {
@@ -383,16 +382,34 @@ func formatDevVersion(describe string) string {
 	// Strip leading "v".
 	describe = strings.TrimPrefix(describe, "v")
 
-	// Exactly on a tag: "0.2.0".
-	parts := strings.SplitN(describe, "-", 3)
-	if len(parts) == 1 {
+	// When ahead of a tag, git describe appends -<N>-g<hex>.
+	// Parse from the right to handle pre-release tags like
+	// "1.0.0-rc1-3-gabcdef0".
+	lastDash := strings.LastIndex(describe, "-")
+	if lastDash < 0 {
+		// Exactly on a tag: "0.2.0".
 		return describe
 	}
 
-	// Ahead of tag: "0.2.0-7-g5395b8f".
-	// parts[0]="0.2.0", parts[1]="7", parts[2]="g5395b8f"
-	hash := strings.TrimPrefix(parts[2], "g")
-	return parts[0] + "-dev." + parts[1] + "+" + hash
+	suffix := describe[lastDash+1:]
+	if !strings.HasPrefix(suffix, "g") {
+		// No -g<hash> suffix — on a pre-release tag like
+		// "1.0.0-rc1".
+		return describe
+	}
+
+	// Find the commit count before the hash.
+	rest := describe[:lastDash]
+	countDash := strings.LastIndex(rest, "-")
+	if countDash < 0 {
+		// Malformed — treat as tag.
+		return describe
+	}
+
+	tag := rest[:countDash]
+	count := rest[countDash+1:]
+	hash := strings.TrimPrefix(suffix, "g")
+	return tag + "-dev." + count + "+" + hash
 }
 
 // resolveRecipePath finds the recipe TOML file. If recipePath
@@ -414,6 +431,37 @@ func resolveRecipePath(name, recipePath, sourceDir string) (string, error) {
 		"no recipe found for %q — use --recipe to specify a recipe file", name)
 }
 
+// resolverForRecipe returns a RecipeResolver for the given
+// recipe file path. If the recipe is inside a letter-bucketed
+// recipes repo, uses recipeFileResolver for local dep
+// resolution. Otherwise falls back to the registry.
+func resolverForRecipe(recipePath string) installer.RecipeResolver {
+	if detectRecipesRepo(recipePath) != "" {
+		return recipeFileResolver(recipePath)
+	}
+	return newRegistry().FetchRecipe
+}
+
+// newInstallerForRecipeFile constructs an Installer for
+// installing from a recipe file.
+func newInstallerForRecipeFile(recipePath, storeRoot string) *installer.Installer {
+	return &installer.Installer{
+		Store:    store.NewStore(storeRoot),
+		Resolver: resolverForRecipe(recipePath),
+		Verifier: attestation.NewVerifier(),
+	}
+}
+
+// newInstallerForLocalSource constructs an Installer for
+// building from a local source directory.
+func newInstallerForLocalSource(recipePath, storeRoot string) *installer.Installer {
+	return &installer.Installer{
+		Store:    store.NewStore(storeRoot),
+		Resolver: resolverForRecipe(recipePath),
+		Verifier: attestation.NewVerifier(),
+	}
+}
+
 func installFromRecipeFile(recipePath, configPath, galeDir, storeRoot string, out *output.Output) error {
 	data, err := os.ReadFile(recipePath)
 	if err != nil {
@@ -425,10 +473,7 @@ func installFromRecipeFile(recipePath, configPath, galeDir, storeRoot string, ou
 		return fmt.Errorf("parsing recipe: %w", err)
 	}
 
-	inst := &installer.Installer{
-		Store:    store.NewStore(storeRoot),
-		Resolver: recipeFileResolver(recipePath),
-	}
+	inst := newInstallerForRecipeFile(recipePath, storeRoot)
 
 	out.Info(fmt.Sprintf("Installing %s@%s...",
 		r.Package.Name, r.Package.Version))
