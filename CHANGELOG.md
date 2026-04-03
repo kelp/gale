@@ -2,12 +2,42 @@
 
 ## Unreleased
 
+### Breaking Changes
+
+- `--local` flag renamed to `--recipes [path]` on
+  install, add, update, sync, outdated. Accepts an
+  optional path argument; defaults to sibling
+  `../gale-recipes/` when used bare.
+- `--source <path>` renamed to `--path <dir>` on
+  install and update (follows cargo convention).
+- `--source` (bool) renamed to `--build` on sync.
+- `gale diff` removed. Use `gale sync --dry-run`.
+- Scope defaults to project when `gale.toml` exists
+  in the directory tree. Previously prompted
+  interactively. Use `-g` to override to global.
+
 ### Added
 
-- `--source` flag on `gale sync` builds all packages
-  from source, skipping prebuilt binaries.
-- `-g`/`--global` and `-p`/`--project` scope flags on
-  `gale sync` for explicit scope selection.
+- `--verbose`/`-v` global flag for verbose output.
+- `--dry-run`/`-n` global flag on all mutating
+  commands: install, remove, sync, update, gc.
+- `--build` flag on install and update to build from
+  source, skipping prebuilt binaries.
+- `--git` flag on sync to clone and build all
+  packages from git.
+- `-g`/`--global` and `-p`/`--project` scope flags
+  on remove (previously only on install, add, sync).
+- `gale info <pkg>` shows package metadata: version,
+  store path, scope, config path, pin status. Falls
+  back to registry for uninstalled packages.
+- `gale generations` lists all generations with
+  active marker.
+- `gale generations diff [N] [M]` compares packages
+  between two generations.
+- `gale generations rollback [N]` switches to a
+  previous generation via atomic symlink swap.
+- Generations are now retained after build instead
+  of deleted. `gale gc` cleans up old generations.
 
 ### Fixed
 
