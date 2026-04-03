@@ -25,6 +25,7 @@ var (
 	installRecipe  string
 	installPath    string
 	installGit     bool
+	installBuild   bool
 )
 
 var installCmd = &cobra.Command{
@@ -113,9 +114,10 @@ var installCmd = &cobra.Command{
 		}
 
 		inst := &installer.Installer{
-			Store:    store.NewStore(storeRoot),
-			Resolver: resolver,
-			Verifier: attestation.NewVerifier(),
+			Store:      store.NewStore(storeRoot),
+			Resolver:   resolver,
+			Verifier:   attestation.NewVerifier(),
+			SourceOnly: installBuild,
 		}
 
 		out.Info(fmt.Sprintf("Installing %s@%s...",
@@ -151,6 +153,8 @@ func init() {
 		"Build from a local source directory")
 	installCmd.Flags().BoolVar(&installGit, "git", false,
 		"Clone and build from git repository")
+	installCmd.Flags().BoolVar(&installBuild, "build", false,
+		"Build from source (skip prebuilt binary)")
 	rootCmd.AddCommand(installCmd)
 }
 

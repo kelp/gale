@@ -14,6 +14,7 @@ var (
 	updatePath    string
 	updateGit     bool
 	updateRecipe  string
+	updateBuild   bool
 )
 
 var updateCmd = &cobra.Command{
@@ -33,6 +34,10 @@ var updateCmd = &cobra.Command{
 		ctx, err := newCmdContext(updateRecipes)
 		if err != nil {
 			return err
+		}
+
+		if updateBuild {
+			ctx.Installer.SourceOnly = true
 		}
 
 		// --path: rebuild from local source directory.
@@ -214,5 +219,7 @@ func init() {
 		"Update from git repository HEAD")
 	updateCmd.Flags().StringVar(&updateRecipe, "recipe", "",
 		"Use a specific recipe TOML file")
+	updateCmd.Flags().BoolVar(&updateBuild, "build", false,
+		"Build from source (skip prebuilt binary)")
 	rootCmd.AddCommand(updateCmd)
 }
