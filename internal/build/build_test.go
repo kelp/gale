@@ -893,7 +893,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/pkg"},
 	}
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, deps)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, deps)
 
 	envMap := envToMap(env)
 
@@ -936,7 +936,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 }
 
 func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["LD_LIBRARY_PATH"]; ok {
@@ -960,7 +960,7 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 // --- Behavior 11: Platform variables in buildEnv ---
 
 func TestBuildEnvIncludesPlatformVars(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
 	envMap := envToMap(env)
 
 	if val, ok := envMap["OS"]; !ok || val != runtime.GOOS {
@@ -1021,7 +1021,7 @@ func TestCheckPlatformCurrentNotInListReturnsError(t *testing.T) {
 // --- Behavior 13: VERSION variable in buildEnv ---
 
 func TestBuildEnvIncludesVersion(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.8.1", "", false, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.8.1", "", false, nil)
 	envMap := envToMap(env)
 
 	if val, ok := envMap["VERSION"]; !ok || val != "1.8.1" {
@@ -1069,7 +1069,7 @@ func TestBuildEnvCMakePrefixPath(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/a", "/fake/store/b"},
 	}
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", false, deps)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", false, deps)
 	envMap := envToMap(env)
 
 	val, ok := envMap["CMAKE_PREFIX_PATH"]
@@ -1087,7 +1087,7 @@ func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/a"},
 	}
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "go", false, deps)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "go", false, deps)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["CMAKE_PREFIX_PATH"]; ok {
@@ -1096,7 +1096,7 @@ func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
 }
 
 func TestBuildEnvNoCMakePrefixPathWithoutDeps(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", false, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", false, nil)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["CMAKE_PREFIX_PATH"]; ok {
@@ -1107,7 +1107,7 @@ func TestBuildEnvNoCMakePrefixPathWithoutDeps(t *testing.T) {
 // --- Behavior 16: Compiler flags in buildEnv ---
 
 func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
 	envMap := envToMap(env)
 
 	if val := envMap["CFLAGS"]; val != "-O2" {
@@ -1123,7 +1123,7 @@ func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
 }
 
 func TestBuildEnvDebugFlags(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", true, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", true, nil)
 	envMap := envToMap(env)
 
 	if val := envMap["CFLAGS"]; val != "-O0 -g" {
@@ -1140,14 +1140,14 @@ func TestBuildEnvDebugFlags(t *testing.T) {
 
 func TestBuildEnvZeroARDateAlwaysSet(t *testing.T) {
 	// Release mode.
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
 	envMap := envToMap(env)
 	if envMap["ZERO_AR_DATE"] != "1" {
 		t.Error("ZERO_AR_DATE not set in release mode")
 	}
 
 	// Debug mode.
-	env = buildEnv("/tmp/prefix", "4", "1.0.0", "", true, nil)
+	env, _ = buildEnv("/tmp/prefix", "4", "1.0.0", "", true, nil)
 	envMap = envToMap(env)
 	if envMap["ZERO_AR_DATE"] != "1" {
 		t.Error("ZERO_AR_DATE not set in debug mode")
@@ -1157,7 +1157,7 @@ func TestBuildEnvZeroARDateAlwaysSet(t *testing.T) {
 func TestBuildEnvUserCFLAGSNotOverridden(t *testing.T) {
 	t.Setenv("CFLAGS", "-march=native")
 
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
 	envMap := envToMap(env)
 
 	if val := envMap["CFLAGS"]; val != "-march=native" {
@@ -1178,7 +1178,7 @@ func TestBuildEnvExportsDepCPPFLAGSAndDepLDFLAGS(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{depDir},
 	}
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, deps)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, deps)
 	envMap := envToMap(env)
 
 	// DEP_CPPFLAGS should contain -I for dep include dir.
@@ -1205,7 +1205,7 @@ func TestBuildEnvExportsDepCPPFLAGSAndDepLDFLAGS(t *testing.T) {
 }
 
 func TestBuildEnvNoDepFlagsWithoutDeps(t *testing.T) {
-	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
 	envMap := envToMap(env)
 
 	if _, ok := envMap["DEP_CPPFLAGS"]; ok {
@@ -1366,6 +1366,178 @@ func TestFixupShebangsSkipsBinaries(t *testing.T) {
 	}
 	if !strings.EqualFold(string(data), string(content)) {
 		t.Error("binary content was modified")
+	}
+}
+
+// --- BUG-2: buildEnv propagates MkdirTemp failure ---
+
+func TestBuildEnvReturnsNilOnTmpDirFailure(t *testing.T) {
+	// When MkdirTemp fails (e.g., TmpDir returns empty
+	// string pointing to a non-writable location), buildEnv
+	// should return nil env instead of falling back to a
+	// shared fixed path.
+	//
+	// We can't easily simulate MkdirTemp failure in a unit
+	// test without mocking, but we can verify the fixed
+	// fallback path is no longer used by checking that
+	// buildEnv never produces a PATH containing a
+	// non-unique "gale-tools" dir (without random suffix).
+	env, cleanup := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	defer cleanup()
+
+	if env == nil {
+		// MkdirTemp actually failed in test env — that's
+		// fine, the important thing is no shared fallback.
+		return
+	}
+
+	envMap := envToMap(env)
+	pathVal := envMap["PATH"]
+	toolsDir := strings.SplitN(pathVal, ":", 2)[0]
+
+	// The toolsDir should contain a random suffix from
+	// MkdirTemp, not the fixed "gale-tools" name.
+	if filepath.Base(toolsDir) == "gale-tools" {
+		t.Error("toolsDir uses fixed shared name; " +
+			"expected unique MkdirTemp path")
+	}
+}
+
+// --- BUG-3: setDefault checks env slice, not os.Getenv ---
+
+func TestSetDefaultUsesEnvSliceNotHostEnv(t *testing.T) {
+	// If the key exists in the env slice, setDefault
+	// should keep the slice value. It should NOT read
+	// os.Getenv to decide.
+
+	// Ensure the host has no CFLAGS set.
+	t.Setenv("CFLAGS", "")
+
+	// Pre-populate the env slice with a CFLAGS entry.
+	env := []string{"CFLAGS=-Ofoo"}
+
+	// setDefault should see CFLAGS already in the slice
+	// and not append a duplicate.
+	setDefault(&env, "CFLAGS", "-O2")
+
+	// Count CFLAGS entries.
+	count := 0
+	for _, e := range env {
+		if strings.HasPrefix(e, "CFLAGS=") {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected 1 CFLAGS entry, got %d: %v",
+			count, env)
+	}
+
+	// The value should be the original, not the default.
+	envMap := envToMap(env)
+	if envMap["CFLAGS"] != "-Ofoo" {
+		t.Errorf("CFLAGS = %q, want %q",
+			envMap["CFLAGS"], "-Ofoo")
+	}
+}
+
+func TestSetDefaultAppendsWhenKeyMissing(t *testing.T) {
+	// When the key is absent from both the env slice and
+	// host env, setDefault should append the default.
+	t.Setenv("MYFLAG", "")
+
+	var env []string
+	setDefault(&env, "MYFLAG", "default-val")
+
+	envMap := envToMap(env)
+	if envMap["MYFLAG"] != "default-val" {
+		t.Errorf("MYFLAG = %q, want %q",
+			envMap["MYFLAG"], "default-val")
+	}
+}
+
+// --- BUG-4: detectSourceRoot with stray file at root ---
+
+func TestDetectSourceRootDescendsWithStrayFile(t *testing.T) {
+	// A tarball root with one directory and a stray file
+	// (e.g., .gitattributes) should still descend into
+	// the single directory.
+	srcDir := t.TempDir()
+	subDir := filepath.Join(srcDir, "pkg-1.0")
+	if err := os.Mkdir(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Stray file at root level.
+	stray := filepath.Join(srcDir, ".gitattributes")
+	if err := os.WriteFile(stray, []byte("* text=auto\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := detectSourceRoot(srcDir)
+	if err != nil {
+		t.Fatalf("detectSourceRoot: %v", err)
+	}
+
+	if got != subDir {
+		t.Errorf("detectSourceRoot = %q, want %q", got, subDir)
+	}
+}
+
+// --- BUG-6: copyFile preserves source permissions ---
+
+func TestCopyFilePreservesPermissions(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	src := filepath.Join(srcDir, "script.sh")
+	dst := filepath.Join(dstDir, "script.sh")
+
+	// Create source file with executable permissions.
+	if err := os.WriteFile(src, []byte("#!/bin/sh\necho hi\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := copyFile(src, dst); err != nil {
+		t.Fatalf("copyFile: %v", err)
+	}
+
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dstInfo, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if srcInfo.Mode() != dstInfo.Mode() {
+		t.Errorf("dst mode = %v, want %v (same as src)",
+			dstInfo.Mode(), srcInfo.Mode())
+	}
+}
+
+// --- BUG-1: buildEnv cleanup removes tools dir ---
+
+func TestBuildEnvCleanupRemovesToolsDir(t *testing.T) {
+	env, cleanup := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	if cleanup == nil {
+		t.Fatal("expected non-nil cleanup function")
+	}
+
+	// Extract toolsDir from PATH — it's the first entry.
+	envMap := envToMap(env)
+	pathVal := envMap["PATH"]
+	toolsDir := strings.SplitN(pathVal, ":", 2)[0]
+
+	// Verify the tools dir exists before cleanup.
+	if _, err := os.Stat(toolsDir); err != nil {
+		t.Fatalf("tools dir should exist before cleanup: %v", err)
+	}
+
+	cleanup()
+
+	// After cleanup, the tools dir should be gone.
+	if _, err := os.Stat(toolsDir); !os.IsNotExist(err) {
+		t.Errorf("tools dir should be removed after cleanup, got err: %v", err)
 	}
 }
 
