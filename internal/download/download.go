@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,23 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 )
+
+// httpClient is used for all HTTP requests to ensure
+// timeouts are enforced. 5 minutes is generous enough
+// for large downloads.
+var httpClient = &http.Client{
+	Timeout: 5 * time.Minute,
+}
+
+// SetHTTPClient replaces the package-level HTTP client.
+// Intended for tests that need a custom TLS configuration
+// (e.g., httptest.NewTLSServer). Returns a function that
+// restores the original client.
+func SetHTTPClient(c *http.Client) func() {
+	saved := httpClient
+	httpClient = c
+	return func() { httpClient = saved }
+}
 
 // Fetch downloads a file from url to destPath.
 // Intermediate directories are created as needed.
@@ -33,7 +51,7 @@ func FetchNamed(url, destPath, displayName string) error {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
 
-	resp, err := http.Get(url)
+	resp, err := httpClient.Get(url) //nolint:gosec // G107 — URL is caller-provided
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", url, err)
 	}
@@ -58,30 +76,40 @@ func FetchWithAuth(url, destPath, bearerToken string) error {
 
 // FetchWithAuthNamed downloads with auth and an explicit
 // display name for progress output.
-func FetchWithAuthNamed(url, destPath, bearerToken, displayName string) error {
+func FetchWithAuthNamed(rawURL, destPath, bearerToken, displayName string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse URL: %w", err)
+	}
+	if u.Scheme != "https" {
+		return fmt.Errorf(
+			"refusing to send bearer token over %s (https required)",
+			u.Scheme)
+	}
+
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+bearerToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
-		return fmt.Errorf("fetch %s: %w", url, err)
+		return fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
+		return fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
 	}
 
 	name := displayName
 	if name == "" {
-		name = filepath.Base(url)
+		name = filepath.Base(rawURL)
 	}
 	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
 }
@@ -417,6 +445,19 @@ func extractTar(tr *tar.Reader, destDir string) error {
 					hdr.Name, err)
 			}
 		case tar.TypeSymlink:
+			// Validate symlink target stays within destDir.
+			var resolved string
+			if filepath.IsAbs(hdr.Linkname) {
+				resolved = filepath.Clean(hdr.Linkname)
+			} else {
+				resolved = filepath.Join(filepath.Dir(target), hdr.Linkname) //nolint:gosec // G305 — validated below
+				resolved = filepath.Clean(resolved)
+			}
+			if !strings.HasPrefix(resolved, cleanDest) {
+				return fmt.Errorf("illegal symlink target in archive: %s -> %s",
+					hdr.Name, hdr.Linkname)
+			}
+
 			if err := os.MkdirAll(
 				filepath.Dir(target), 0o755); err != nil {
 				return fmt.Errorf(
@@ -553,14 +594,8 @@ func CreateTarZstd(sourceDir, archivePath string) error {
 			return fmt.Errorf("write file header %s: %w", rel, err)
 		}
 
-		src, err := os.Open(path) //nolint:gosec // G122 — Walk callback, race is acceptable for archive creation
-		if err != nil {
-			return fmt.Errorf("open source file %s: %w", rel, err)
-		}
-		defer src.Close()
-
-		if _, err := io.Copy(tw, src); err != nil {
-			return fmt.Errorf("write file content %s: %w", rel, err)
+		if err := copyFileToTar(tw, path, rel); err != nil {
+			return err
 		}
 
 		return nil
@@ -580,6 +615,23 @@ func CreateTarZstd(sourceDir, archivePath string) error {
 		return fmt.Errorf("close archive file: %w", err)
 	}
 
+	return nil
+}
+
+// copyFileToTar opens a file, copies it into a tar writer,
+// and closes the file immediately. This avoids deferring
+// Close inside a filepath.Walk callback, which would leak
+// file descriptors until the outer function returns.
+func copyFileToTar(tw *tar.Writer, path, rel string) error {
+	src, err := os.Open(path) //nolint:gosec // G304 — path comes from Walk
+	if err != nil {
+		return fmt.Errorf("open source file %s: %w", rel, err)
+	}
+	defer src.Close()
+
+	if _, err := io.Copy(tw, src); err != nil {
+		return fmt.Errorf("write file content %s: %w", rel, err)
+	}
 	return nil
 }
 

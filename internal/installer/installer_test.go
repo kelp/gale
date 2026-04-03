@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/klauspost/compress/zstd"
@@ -203,7 +204,7 @@ func TestInstallBinaryFromGHCR(t *testing.T) {
 
 	// Mock GHCR blob endpoint — requires auth header.
 	var gotAuth string
-	srv := httptest.NewServer(http.HandlerFunc(
+	srv := httptest.NewTLSServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
 			if gotAuth != "Bearer test-ghcr-token" {
@@ -214,6 +215,10 @@ func TestInstallBinaryFromGHCR(t *testing.T) {
 			w.Write(blobData)
 		}))
 	defer srv.Close()
+
+	// Use the TLS test server's client so certs are trusted.
+	restore := download.SetHTTPClient(srv.Client())
+	defer restore()
 
 	storeRoot := t.TempDir()
 	inst := &Installer{
