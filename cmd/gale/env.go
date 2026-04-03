@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/spf13/cobra"
@@ -53,7 +54,8 @@ var envCmd = &cobra.Command{
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
-			fmt.Fprintf(out, "export %s=%q\n", k, cfg.Vars[k])
+			fmt.Fprintf(out, "export %s='%s'\n",
+				k, shellEscape(cfg.Vars[k]))
 		}
 
 		return nil
@@ -84,4 +86,12 @@ func resolveGaleDir() (string, error) {
 
 	// Fall back to global.
 	return galeConfigDir()
+}
+
+// shellEscape escapes a string for use inside single
+// quotes in a POSIX shell. Embedded single quotes are
+// replaced with the '\” idiom (end quote, escaped
+// literal quote, re-open quote).
+func shellEscape(s string) string {
+	return strings.ReplaceAll(s, "'", "'\\''")
 }
