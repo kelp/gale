@@ -49,6 +49,13 @@ func isObjectFile(path string) bool {
 	return strings.HasSuffix(path, ".o")
 }
 
+// isDSYMBundle returns true if the path is inside a
+// .dSYM debug symbol bundle. These contain Mach-O
+// DWARF data that install_name_tool cannot modify.
+func isDSYMBundle(path string) bool {
+	return strings.Contains(path, ".dSYM/")
+}
+
 // FixupBinaries rewrites dynamic library paths in all
 // binaries and shared libraries under prefixDir so they
 // use @rpath instead of absolute build-time paths.
@@ -62,7 +69,7 @@ func FixupBinaries(prefixDir string) error {
 			if err != nil || info.IsDir() {
 				return nil //nolint:nilerr // skip unreadable files
 			}
-			if isMachO(path) && !isObjectFile(path) {
+			if isMachO(path) && !isObjectFile(path) && !isDSYMBundle(path) {
 				files = append(files, path)
 			}
 			return nil
@@ -148,7 +155,7 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 			if err != nil || info.IsDir() {
 				return nil //nolint:nilerr
 			}
-			if isMachO(path) && !isObjectFile(path) {
+			if isMachO(path) && !isObjectFile(path) && !isDSYMBundle(path) {
 				files = append(files, path)
 			}
 			return nil

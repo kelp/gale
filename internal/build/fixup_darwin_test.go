@@ -245,6 +245,48 @@ func TestFixupBinariesSkipsObjectFiles(t *testing.T) {
 	}
 }
 
+func TestFixupBinariesSkipsDSYMBundles(t *testing.T) {
+	dir := t.TempDir()
+	libDir := filepath.Join(dir, "lib")
+	os.MkdirAll(libDir, 0o755)
+
+	// Create a dylib with debug info in lib/.
+	src := filepath.Join(dir, "lib.c")
+	if err := os.WriteFile(src,
+		[]byte("int libfunc(void) { return 1; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	libPath := filepath.Join(libDir, "libtest.dylib")
+	cmd := exec.Command("cc", "-shared", "-g",
+		"-install_name", "/tmp/fake/lib/libtest.dylib",
+		"-o", libPath, src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared -g failed: %v\n%s", err, out)
+	}
+
+	// Generate a real .dSYM bundle with dsymutil. The
+	// DWARF file inside has Mach-O magic bytes but
+	// install_name_tool cannot modify it.
+	cmd = exec.Command("dsymutil", libPath)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("dsymutil failed: %v\n%s", err, out)
+	}
+
+	// Verify the .dSYM bundle was created.
+	dsymDWARF := filepath.Join(libDir,
+		"libtest.dylib.dSYM", "Contents", "Resources",
+		"DWARF", "libtest.dylib")
+	if _, err := os.Stat(dsymDWARF); err != nil {
+		t.Skipf(".dSYM bundle not created: %v", err)
+	}
+
+	// FixupBinaries must not error on the .dSYM file.
+	if err := FixupBinaries(dir); err != nil {
+		t.Fatalf("FixupBinaries should skip .dSYM: %v", err)
+	}
+}
+
 // --- Behavior 6: AddDepRpaths adds LC_RPATH for dep libs ---
 
 func TestAddDepRpathsAddsRpathForDepLib(t *testing.T) {
