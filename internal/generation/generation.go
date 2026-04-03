@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 )
 
@@ -37,10 +38,19 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	// subsequent error so we don't leave orphaned dirs.
 	cleanup := func() { os.RemoveAll(genDir) }
 
+	// Sort package names for deterministic conflict
+	// resolution: first package alphabetically wins.
+	names := make([]string, 0, len(pkgs))
+	for name := range pkgs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
 	// Symlink contents from each package's store entry
 	// into the generation directory. Scan every
 	// subdirectory in the package — don't hardcode names.
-	for name, version := range pkgs {
+	for _, name := range names {
+		version := pkgs[name]
 		pkgDir := filepath.Join(storeRoot, name, version)
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
@@ -80,9 +90,12 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	}
 
 	// Atomic swap: create a temporary symlink then rename.
+	// Use a PID-scoped temp name to avoid races with
+	// concurrent processes.
 	relTarget := filepath.Join(
 		"gen", strconv.Itoa(next))
-	tmpLink := filepath.Join(galeDir, "current-new")
+	tmpLink := filepath.Join(galeDir,
+		fmt.Sprintf("current-new.%d", os.Getpid()))
 	if err := os.Remove(tmpLink); err != nil && !errors.Is(err, os.ErrNotExist) {
 		cleanup()
 		return fmt.Errorf("remove stale temp link: %w", err)
@@ -92,6 +105,7 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 		return fmt.Errorf("create temp current symlink: %w", err)
 	}
 	if err := os.Rename(tmpLink, filepath.Join(galeDir, "current")); err != nil {
+		os.Remove(tmpLink)
 		cleanup()
 		return fmt.Errorf("atomic swap current symlink: %w", err)
 	}

@@ -3,6 +3,7 @@ package generation
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -588,5 +589,111 @@ func TestBuildSymlinksManSubdirs(t *testing.T) {
 	}
 	if info.Mode()&os.ModeSymlink == 0 {
 		t.Errorf("expected symlink at %q", genMan)
+	}
+}
+
+// --- Behavior 10: Deterministic symlink conflict resolution ---
+
+func TestBuildDeterministicSymlinkOrder(t *testing.T) {
+	// Two packages provide the same binary "tool". With
+	// sorted iteration, "alpha" (first alphabetically)
+	// should always win.
+	for i := 0; i < 20; i++ {
+		galeDir := t.TempDir()
+		storeRoot := t.TempDir()
+
+		for _, name := range []string{"alpha", "beta"} {
+			binDir := filepath.Join(
+				storeRoot, name, "1.0", "bin")
+			if err := os.MkdirAll(binDir, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(
+				filepath.Join(binDir, "tool"),
+				[]byte(name), 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		pkgs := map[string]string{
+			"alpha": "1.0",
+			"beta":  "1.0",
+		}
+
+		if err := Build(pkgs, galeDir, storeRoot); err != nil {
+			t.Fatal(err)
+		}
+
+		toolLink := filepath.Join(
+			galeDir, "current", "bin", "tool")
+		target, err := os.Readlink(toolLink)
+		if err != nil {
+			t.Fatalf("iteration %d: readlink: %v", i, err)
+		}
+
+		if !strings.Contains(target, "alpha") {
+			t.Fatalf(
+				"iteration %d: expected alpha to win "+
+					"conflict, got target %s", i, target)
+		}
+	}
+}
+
+// --- Behavior 11: Unique temp-link path for concurrent builds ---
+
+func TestBuildDoesNotClobberConcurrentTempLink(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	// Simulate another process's temp link already
+	// existing. Build must not remove it.
+	otherTmp := filepath.Join(galeDir, "current-new")
+	if err := os.Symlink("gen/999", otherTmp); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgs := map[string]string{"jq": "1.8.1"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	// The other process's temp link should still exist.
+	if _, err := os.Lstat(otherTmp); err != nil {
+		t.Errorf("Build clobbered another process's temp link: %v", err)
+	}
+}
+
+// --- Behavior 12: Rollback uses unique temp-link path ---
+
+func TestRollbackDoesNotClobberConcurrentTempLink(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+	createStoreEntry(t, storeRoot, "fd", "10.4.2", []string{"fd"})
+
+	if err := Build(map[string]string{"jq": "1.8.1"},
+		galeDir, storeRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := Build(map[string]string{"jq": "1.8.1", "fd": "10.4.2"},
+		galeDir, storeRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate another process's temp link.
+	otherTmp := filepath.Join(galeDir, "current-new")
+	if err := os.Symlink("gen/999", otherTmp); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Rollback(galeDir, 1); err != nil {
+		t.Fatalf("Rollback error: %v", err)
+	}
+
+	if _, err := os.Lstat(otherTmp); err != nil {
+		t.Errorf("Rollback clobbered another process's temp link: %v", err)
 	}
 }
