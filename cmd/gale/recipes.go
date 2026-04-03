@@ -17,6 +17,9 @@ const localGHCRBase = "kelp/gale-recipes"
 // layout: <recipesDir>/<letter>/<name>.toml.
 func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 	return func(name string) (*recipe.Recipe, error) {
+		if name == "" {
+			return nil, fmt.Errorf("empty package name")
+		}
 		letter := string(name[0])
 		path := filepath.Join(recipesDir, letter, name+".toml")
 		data, err := os.ReadFile(path)
@@ -119,7 +122,9 @@ func detectRecipesRepo(recipePath string) string {
 func recipeFileResolver(recipePath string) installer.RecipeResolver {
 	absPath, err := filepath.Abs(recipePath)
 	if err != nil {
-		return nil
+		return func(_ string) (*recipe.Recipe, error) {
+			return nil, fmt.Errorf("resolve recipe path: %w", err)
+		}
 	}
 	// recipePath is like .../recipes/j/jq.toml
 	// We want the directory containing "recipes/".

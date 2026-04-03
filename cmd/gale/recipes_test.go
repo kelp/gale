@@ -79,6 +79,28 @@ func TestFindLocalRecipesDirAutoDetect(t *testing.T) {
 	}
 }
 
+func TestRecipeFileResolverNeverReturnsNil(t *testing.T) {
+	// recipeFileResolver must never return nil, even for
+	// paths that can't be resolved. It should return a
+	// resolver that produces an error instead.
+	resolver := recipeFileResolver("")
+	if resolver == nil {
+		t.Fatal("recipeFileResolver returned nil")
+	}
+	_, err := resolver("jq")
+	if err == nil {
+		t.Error("expected error from resolver with invalid path")
+	}
+}
+
+func TestLocalRecipeResolverEmptyName(t *testing.T) {
+	resolver := localRecipeResolver(t.TempDir())
+	_, err := resolver("")
+	if err == nil {
+		t.Fatal("expected error for empty package name")
+	}
+}
+
 func TestDetectRecipesRepoWithMultiCharBucket(t *testing.T) {
 	// Letter bucket must be single character.
 	path := "/home/user/code/gale-recipes/recipes/jq/jq.toml"
