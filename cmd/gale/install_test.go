@@ -1,10 +1,8 @@
 package main
 
 import (
-	"io"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -168,48 +166,30 @@ func TestResolveScope(t *testing.T) {
 		global     bool
 		project    bool
 		cwd        string
-		isTTY      bool
-		input      string
 		wantGlobal bool
 	}{
 		{
 			"-g flag forces global",
-			true, false, tmp, false, "", true,
+			true, false, tmp, true,
 		},
 		{
 			"-p flag forces project",
-			false, true, tmp, false, "", false,
+			false, true, tmp, false,
 		},
 		{
 			"no flags no gale.toml defaults global",
-			false, false, t.TempDir(), false, "", true,
+			false, false, t.TempDir(), true,
 		},
 		{
-			"no flags with gale.toml non-TTY defaults global",
-			false, false, tmp, false, "", true,
-		},
-		{
-			"TTY prompt answer g means global",
-			false, false, tmp, true, "g\n", true,
-		},
-		{
-			"TTY prompt answer p means project",
-			false, false, tmp, true, "p\n", false,
-		},
-		{
-			"TTY prompt empty defaults global",
-			false, false, tmp, true, "\n", true,
+			"no flags with gale.toml defaults project",
+			false, false, tmp, false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			var reader io.Reader
-			if tt.input != "" {
-				reader = strings.NewReader(tt.input)
-			}
 			got := resolveScope(tt.global, tt.project,
-				tt.cwd, tt.isTTY, reader)
+				tt.cwd)
 			if got != tt.wantGlobal {
 				t.Errorf("resolveScope() = %v, want %v",
 					got, tt.wantGlobal)

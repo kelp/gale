@@ -1,9 +1,7 @@
 package main
 
 import (
-	"bufio"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -46,8 +44,13 @@ var installCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("getting working dir: %w", err)
 		}
-		useGlobal := resolveScope(installGlobal, installProject,
-			cwd, isStdinTTY(), os.Stdin)
+		useGlobal := resolveScope(installGlobal, installProject, cwd)
+		if !useGlobal {
+			if _, err := config.FindGaleConfig(cwd); err != nil {
+				return fmt.Errorf(
+					"no project found — run 'gale init' first")
+			}
+		}
 		configPath, err := resolveConfigPath(useGlobal)
 		if err != nil {
 			return err
@@ -169,48 +172,22 @@ func validateInstallFlags(global, project bool) error {
 }
 
 // resolveScope determines whether to use global config.
-// Returns true for global, false for project. When no flag is
-// set and a project gale.toml exists, prompts via reader if
-// isTTY is true, otherwise defaults to global.
-func resolveScope(global, project bool, cwd string, isTTY bool, reader io.Reader) bool {
+// Returns true for global, false for project. When no
+// flag is set, defaults to project if gale.toml exists
+// in the directory tree, otherwise global.
+func resolveScope(global, project bool, cwd string) bool {
 	if global {
 		return true
 	}
 	if project {
 		return false
 	}
-
-	// Check if a project gale.toml exists.
+	// Auto-detect: project config exists → project scope.
 	_, err := config.FindGaleConfig(cwd)
 	if err != nil {
-		// No project config found — use global.
-		return true
+		return true // no project config → global
 	}
-
-	// Project config exists. Prompt if TTY.
-	if !isTTY {
-		return true
-	}
-
-	fmt.Fprintf(os.Stderr,
-		"gale.toml found — install globally or to project? [g/p] ")
-	scanner := bufio.NewScanner(reader)
-	if scanner.Scan() {
-		answer := strings.TrimSpace(strings.ToLower(scanner.Text()))
-		if answer == "p" {
-			return false
-		}
-	}
-	return true
-}
-
-// isStdinTTY returns true if stdin is a terminal.
-func isStdinTTY() bool {
-	fi, err := os.Stdin.Stat()
-	if err != nil {
-		return false
-	}
-	return fi.Mode()&os.ModeCharDevice != 0
+	return false // project config found → project scope
 }
 
 func installFromGit(name, recipePath, configPath, galeDir, storeRoot, recipesFlag string, out *output.Output) error {

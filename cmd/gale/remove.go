@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/output"
@@ -11,11 +10,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	removeGlobal  bool
+	removeProject bool
+)
+
 var removeCmd = &cobra.Command{
 	Use:   "remove <package>",
 	Short: "Remove a package",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if removeGlobal && removeProject {
+			return fmt.Errorf(
+				"cannot use both --global and --project")
+		}
+
 		name := args[0]
 
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
@@ -23,45 +32,32 @@ var removeCmd = &cobra.Command{
 		storeRoot := defaultStoreRoot()
 		st := store.NewStore(storeRoot)
 
-		// Find the config that declares this package.
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting working dir: %w", err)
 		}
 
-		// Check project config first, then global.
-		var configPath string
-		var version string
-		if projPath, err := config.FindGaleConfig(cwd); err == nil {
-			data, _ := os.ReadFile(projPath)
-			if cfg, err := config.ParseGaleConfig(
-				string(data)); err == nil {
-				if v, ok := cfg.Packages[name]; ok {
-					configPath = projPath
-					version = v
-				}
-			}
+		useGlobal := resolveScope(removeGlobal, removeProject, cwd)
+		configPath, err := resolveConfigPath(useGlobal)
+		if err != nil {
+			return err
 		}
-		if configPath == "" {
-			globalDir, err := galeConfigDir()
-			if err != nil {
-				return err
-			}
-			globalPath := filepath.Join(
-				globalDir, "gale.toml")
-			data, _ := os.ReadFile(globalPath)
-			if cfg, err := config.ParseGaleConfig(
-				string(data)); err == nil {
+
+		// Look up the package in the resolved config.
+		var version string
+		data, readErr := os.ReadFile(configPath)
+		if readErr == nil {
+			if cfg, parseErr := config.ParseGaleConfig(
+				string(data)); parseErr == nil {
 				if v, ok := cfg.Packages[name]; ok {
-					configPath = globalPath
 					version = v
 				}
 			}
 		}
 
-		if configPath == "" {
+		if version == "" {
 			return fmt.Errorf(
-				"%s is not in any gale.toml", name)
+				"%s is not in %s", name, configPath)
 		}
 
 		// Remove only the declared version from the store.
@@ -99,5 +95,9 @@ var removeCmd = &cobra.Command{
 }
 
 func init() {
+	removeCmd.Flags().BoolVarP(&removeGlobal, "global", "g",
+		false, "Remove from global config")
+	removeCmd.Flags().BoolVarP(&removeProject, "project", "p",
+		false, "Remove from project config")
 	rootCmd.AddCommand(removeCmd)
 }

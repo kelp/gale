@@ -78,6 +78,42 @@ func TestRebuildGenerationProjectDoesNotTouchGlobal(t *testing.T) {
 	}
 }
 
+func TestResolveScopeDefaultsToProjectWhenConfigExists(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(filepath.Join(dir, "gale.toml"), []byte("[packages]\n"), 0o644)
+	result := resolveScope(false, false, dir)
+	if result {
+		t.Error("expected project scope when gale.toml exists")
+	}
+}
+
+func TestResolveScopeDefaultsToGlobalWhenNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	result := resolveScope(false, false, dir)
+	if !result {
+		t.Error("expected global scope when no gale.toml")
+	}
+}
+
+func TestRemoveHasScopeFlags(t *testing.T) {
+	gFlag := removeCmd.Flags().Lookup("global")
+	if gFlag == nil {
+		t.Fatal("remove: --global flag not found")
+	}
+	if gFlag.Shorthand != "g" {
+		t.Errorf("remove: --global shorthand = %q, want %q",
+			gFlag.Shorthand, "g")
+	}
+	pFlag := removeCmd.Flags().Lookup("project")
+	if pFlag == nil {
+		t.Fatal("remove: --project flag not found")
+	}
+	if pFlag.Shorthand != "p" {
+		t.Errorf("remove: --project shorthand = %q, want %q",
+			pFlag.Shorthand, "p")
+	}
+}
+
 // TestRebuildGenerationGlobalDoesNotTouchProject is the
 // inverse: rebuilding global doesn't affect an existing
 // project generation.

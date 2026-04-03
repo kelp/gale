@@ -251,8 +251,7 @@ func addToConfig(name, version string, global, project bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("getting working dir: %w", err)
 	}
-	useGlobal := resolveScope(global, project,
-		cwd, isStdinTTY(), os.Stdin)
+	useGlobal := resolveScope(global, project, cwd)
 	configPath, err := resolveConfigPath(useGlobal)
 	if err != nil {
 		return "", err
