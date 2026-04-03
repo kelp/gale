@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.1 — 2026-04-03
+
+### Fixed
+
+- `install --path` now adds the package to gale.toml
+  and rebuilds the generation when the version is
+  already in the store. Previously it returned early,
+  leaving the package unlinked.
+- `gale info` now shows the actual error when a
+  registry fetch fails instead of always reporting
+  "not found".
+- `just bootstrap` installs gale globally (`-g`)
+  instead of to project scope.
+
 ## v0.8.0 — 2026-04-02
 
 ### Breaking Changes
