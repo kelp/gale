@@ -20,10 +20,10 @@ Three common reasons:
 Build and install a package from source on disk:
 
 ```sh
-gale install myproject --source .
+gale install myproject --path .
 ```
 
-The `--source` flag accepts any directory path. Gale
+The `--path` flag accepts any directory path. Gale
 reads the recipe (from the registry or a `--recipe`
 file), builds in `~/.gale/tmp/`, and installs the
 result to the store.
@@ -31,7 +31,7 @@ result to the store.
 Combine with `--recipe` to use a local recipe file:
 
 ```sh
-gale install myproject --source ./src --recipe myproject.toml
+gale install myproject --path ./src --recipe myproject.toml
 ```
 
 ### Version Numbering
@@ -97,11 +97,11 @@ gale build --git recipes/j/jq.toml
 ### Resolve Dependencies Locally
 
 When working in the gale-recipes repository, use
-`--local` to resolve build dependencies from the
-sibling directory instead of the registry:
+`--recipes` to resolve build dependencies from a
+local directory instead of the registry:
 
 ```sh
-gale build --local recipes/f/fd.toml
+gale build --recipes recipes/f/fd.toml
 ```
 
 If the recipe path is inside a `recipes/` directory,

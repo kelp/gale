@@ -204,7 +204,7 @@ git clone https://github.com/kelp/gale
 git clone https://github.com/kelp/gale-recipes
 cd gale
 just bootstrap
-gale sync --local
+gale sync --recipes
 direnv allow
 ```
 
