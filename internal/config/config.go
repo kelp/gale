@@ -192,6 +192,7 @@ func RemovePackage(path string, name string) error {
 }
 
 // PinPackage marks a package as pinned in the gale.toml at path.
+// Returns ErrPackageNotFound if the package is not in [packages].
 func PinPackage(path string, name string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -201,6 +202,10 @@ func PinPackage(path string, name string) error {
 	cfg, err := ParseGaleConfig(string(data))
 	if err != nil {
 		return err
+	}
+
+	if _, ok := cfg.Packages[name]; !ok {
+		return ErrPackageNotFound
 	}
 
 	if cfg.Pinned == nil {
