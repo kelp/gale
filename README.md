@@ -111,12 +111,13 @@ gale remove <pkg>         Remove a package
 gale sync                 Install at pinned versions
 gale update [pkg...]      Update to latest
 gale list                 List packages in manifest
+gale info <pkg>           Show package metadata
 gale outdated             Show available updates
-gale diff                 Preview what sync would do
 gale search <query>       Search by name or description
 gale which <binary>       Find which package owns it
 gale doctor               Diagnose setup issues
-gale gc                   Clean unused versions
+gale gc                   Clean unused versions + gens
+gale generations          List and manage generations
 gale init                 Set up a project
 gale env                  Print PATH and vars for shell
 gale shell                Open shell with project env
