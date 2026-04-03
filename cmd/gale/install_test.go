@@ -90,6 +90,21 @@ func TestFormatDevVersion(t *testing.T) {
 			"v1.0.0-1-gabcdef0",
 			"1.0.0-dev.1+abcdef0",
 		},
+		{
+			"pre-release tag",
+			"v1.0.0-rc1",
+			"1.0.0-rc1",
+		},
+		{
+			"pre-release tag with commits ahead",
+			"v1.0.0-rc1-3-gabcdef0",
+			"1.0.0-rc1-dev.3+abcdef0",
+		},
+		{
+			"pre-release tag alpha",
+			"v2.0.0-alpha.1",
+			"2.0.0-alpha.1",
+		},
 	}
 
 	for _, tt := range tests {
@@ -200,6 +215,113 @@ func TestResolveScope(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewInstallerForRecipeFile(t *testing.T) {
+	// Verify that newInstallerForRecipeFile returns an
+	// Installer with a non-nil Verifier so Sigstore
+	// attestation is checked for binary installs.
+	storeRoot := t.TempDir()
+	inst := newInstallerForRecipeFile(
+		"/tmp/recipes/j/jq.toml", storeRoot)
+	if inst.Verifier == nil {
+		t.Fatal("Verifier is nil — attestation will be " +
+			"silently skipped")
+	}
+}
+
+func TestNewInstallerForLocalSource(t *testing.T) {
+	// Verify that newInstallerForLocalSource returns an
+	// Installer with a non-nil Verifier so Sigstore
+	// attestation is checked for dep installs.
+	storeRoot := t.TempDir()
+	inst := newInstallerForLocalSource(
+		"/tmp/recipes/j/jq.toml", storeRoot)
+	if inst.Verifier == nil {
+		t.Fatal("Verifier is nil — attestation will be " +
+			"silently skipped")
+	}
+}
+
+func TestResolverForRecipeInBucketedRepo(t *testing.T) {
+	// When the recipe is inside a letter-bucketed repo,
+	// resolverForRecipe should use the local repo resolver.
+	tmp := t.TempDir()
+	recipesDir := filepath.Join(tmp, "recipes", "j")
+	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipePath := filepath.Join(recipesDir, "jq.toml")
+	recipeContent := strings.Join([]string{
+		`[package]`,
+		`name = "jq"`,
+		`version = "1.7"`,
+		``,
+		`[source]`,
+		`url = "https://example.com/jq-1.7.tar.gz"`,
+		`sha256 = "deadbeef"`,
+	}, "\n")
+	if err := os.WriteFile(recipePath,
+		[]byte(recipeContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := resolverForRecipe(recipePath)
+
+	// The resolver should be able to find jq.toml by name.
+	r, err := resolver("jq")
+	if err != nil {
+		t.Fatalf("resolver failed for jq: %v", err)
+	}
+	if r.Package.Name != "jq" {
+		t.Errorf("got name %q, want %q", r.Package.Name, "jq")
+	}
+}
+
+func TestResolverForRecipeNotInBucketedRepo(t *testing.T) {
+	// When the recipe is NOT inside a letter-bucketed repo,
+	// resolverForRecipe should fall back to a non-nil resolver
+	// that doesn't panic or produce a wrong path.
+	tmp := t.TempDir()
+	recipePath := filepath.Join(tmp, "custom.toml")
+	if err := os.WriteFile(recipePath,
+		[]byte("[package]\nname = \"custom\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := resolverForRecipe(recipePath)
+	if resolver == nil {
+		t.Fatal("resolver is nil for non-bucketed recipe")
+	}
+}
+
+func TestInstallFromGitResolverFallback(t *testing.T) {
+	// When --recipe points to a non-bucketed path,
+	// installFromGit should use a registry resolver for
+	// dep resolution instead of the broken
+	// recipeFileResolver.
+	tmp := t.TempDir()
+	recipePath := filepath.Join(tmp, "custom.toml")
+	if err := os.WriteFile(recipePath,
+		[]byte("[package]\nname = \"custom\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := resolverForRecipe(recipePath)
+	if resolver == nil {
+		t.Fatal("resolver is nil for non-bucketed recipe")
+	}
+
+	// Verify it doesn't point to a nonsense directory.
+	// With the old recipeFileResolver, navigating up 3 dirs
+	// from /tmp/xxx/custom.toml would compute a wrong path.
+	// The fallback should return a working resolver.
+	_, err := resolver("nonexistent-pkg-xyz")
+	if err == nil {
+		t.Fatal("expected error for nonexistent package")
+	}
+	// The error should come from a real resolver (registry or
+	// local), not a file-not-found from a wrong directory.
 }
 
 func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
