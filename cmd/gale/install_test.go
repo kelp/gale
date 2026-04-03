@@ -2,9 +2,13 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -195,5 +199,94 @@ func TestResolveScope(t *testing.T) {
 					got, tt.wantGlobal)
 			}
 		})
+	}
+}
+
+func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
+	tmp := t.TempDir()
+
+	// Create a git repo as the "source dir" so
+	// gitDevVersion returns a stable version.
+	srcDir := filepath.Join(tmp, "src")
+	if err := os.MkdirAll(srcDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"commit", "--allow-empty", "-m", "init"},
+		{"tag", "v1.0.0"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = srcDir
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v",
+				args, string(out), err)
+		}
+	}
+
+	// Create a recipe in a sibling gale-recipes dir.
+	recipesDir := filepath.Join(tmp, "gale-recipes",
+		"recipes", "t")
+	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipePath := filepath.Join(recipesDir, "testpkg.toml")
+	recipeTOML := strings.Join([]string{
+		`[package]`,
+		`name = "testpkg"`,
+		`version = "1.0.0"`,
+		``,
+		`[build]`,
+		`steps = ["true"]`,
+	}, "\n")
+	if err := os.WriteFile(recipePath, []byte(recipeTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-populate the store so IsInstalled returns true.
+	storeRoot := filepath.Join(tmp, "store")
+	pkgDir := filepath.Join(storeRoot, "testpkg", "1.0.0",
+		"bin")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(pkgDir, "testpkg"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a gale dir and empty gale.toml.
+	galeDir := filepath.Join(tmp, "gale-home")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(galeDir, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := output.New(os.Stderr, false)
+	err := installFromLocalSource("testpkg", recipePath,
+		srcDir, configPath, galeDir, storeRoot, out)
+	if err != nil {
+		t.Fatalf("installFromLocalSource: %v", err)
+	}
+
+	// Verify the package was added to gale.toml.
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Packages["testpkg"]; !ok {
+		t.Error("testpkg not added to gale.toml — " +
+			"finalize was skipped")
 	}
 }

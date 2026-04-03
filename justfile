@@ -47,7 +47,7 @@ install:
 
 # Bootstrap gale (first-time: build with go, then self-install)
 bootstrap: build
-    ./gale install --path . gale
+    ./gale install --path . -g gale
 
 # Tag a release (formats, runs checks first)
 tag version: fmt check

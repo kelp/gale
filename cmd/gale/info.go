@@ -49,7 +49,7 @@ var infoCmd = &cobra.Command{
 		reg := newRegistry()
 		r, err := reg.FetchRecipe(name)
 		if err != nil {
-			return fmt.Errorf("%s: not found", name)
+			return fmt.Errorf("%s: %w", name, err)
 		}
 
 		fmt.Printf("Name:    %s\n", r.Package.Name)
