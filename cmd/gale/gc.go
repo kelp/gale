@@ -52,7 +52,7 @@ var gcCmd = &cobra.Command{
 		}
 
 		// Find unreferenced versions.
-		var removed int
+		var removedPkgs int
 		for _, pkg := range installed {
 			key := pkg.Name + "@" + pkg.Version
 			if referenced[key] {
@@ -72,29 +72,32 @@ var gcCmd = &cobra.Command{
 				out.Success(fmt.Sprintf(
 					"Removed %s@%s", pkg.Name, pkg.Version))
 			}
-			removed++
+			removedPkgs++
 		}
 
 		// Clean up old generations.
+		var removedGens int
 		if globalDir != "" {
-			removed += cleanOldGenerations(
+			removedGens += cleanOldGenerations(
 				globalDir, dryRun)
 		}
 		if projPath != "" {
 			projGaleDir := filepath.Join(
 				filepath.Dir(projPath), ".gale")
-			removed += cleanOldGenerations(
+			removedGens += cleanOldGenerations(
 				projGaleDir, dryRun)
 		}
 
-		if removed == 0 {
+		if removedPkgs == 0 && removedGens == 0 {
 			out.Success("Nothing to clean up.")
 			return nil
 		}
 
 		if dryRun {
 			out.Info(fmt.Sprintf(
-				"%d version(s) would be removed", removed))
+				"%d version(s) and %d generation(s) "+
+					"would be removed",
+				removedPkgs, removedGens))
 			return nil
 		}
 
@@ -121,7 +124,8 @@ var gcCmd = &cobra.Command{
 		}
 
 		out.Success(fmt.Sprintf(
-			"Removed %d version(s)", removed))
+			"Removed %d version(s) and %d generation(s)",
+			removedPkgs, removedGens))
 		return nil
 	},
 }

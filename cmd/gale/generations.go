@@ -147,6 +147,10 @@ var genRollbackCmd = &cobra.Command{
 				return fmt.Errorf(
 					"invalid generation number: %w", err)
 			}
+			if target <= 0 {
+				return fmt.Errorf(
+					"generation number must be positive")
+			}
 		}
 
 		if dryRun {
