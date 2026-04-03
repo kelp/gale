@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"sort"
 
 	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
@@ -101,8 +102,16 @@ var updateCmd = &cobra.Command{
 			return nil
 		}
 
+		// Sort target names for deterministic order.
+		targetNames := make([]string, 0, len(targets))
+		for name := range targets {
+			targetNames = append(targetNames, name)
+		}
+		targetNames = sortedTargetKeys(targetNames)
+
 		var updated int
-		for name, t := range targets {
+		for _, name := range targetNames {
+			t := targets[name]
 			var newVersion string
 
 			if t.pinned != "" {
@@ -205,7 +214,8 @@ func updateFromGit(name string, ctx *cmdContext, out *output.Output) error {
 		return err
 	}
 
-	if cfg.Packages[name] == remoteHash {
+	installed := cfg.Packages[name]
+	if isGitHash(installed) && installed == remoteHash {
 		out.Success(fmt.Sprintf(
 			"%s@%s is up to date", name, remoteHash))
 		return nil
@@ -216,6 +226,34 @@ func updateFromGit(name string, ctx *cmdContext, out *output.Output) error {
 	return installFromGit(name, updateRecipe,
 		ctx.GalePath, ctx.GaleDir, ctx.StoreRoot,
 		updateRecipes, out)
+}
+
+// isGitHash returns true if s looks like a git short hash
+// (7+ hex characters with no dots or non-hex characters).
+// This distinguishes git hashes from semver versions like
+// "1.7.1" when comparing installed vs remote versions.
+func isGitHash(s string) bool {
+	if len(s) < 7 {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') &&
+			(c < 'a' || c > 'f') &&
+			(c < 'A' || c > 'F') {
+			return false
+		}
+	}
+	return true
+}
+
+// sortedTargetKeys returns a sorted copy of the input
+// slice. Used to ensure deterministic iteration order
+// over update targets.
+func sortedTargetKeys(keys []string) []string {
+	sorted := make([]string, len(keys))
+	copy(sorted, keys)
+	sort.Strings(sorted)
+	return sorted
 }
 
 func init() {

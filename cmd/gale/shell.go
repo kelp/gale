@@ -102,7 +102,7 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 	if !stale {
 		return
 	}
-	if err := runSync("", false, false); err != nil {
+	if err := runSync("", false, false, false); err != nil {
 		out.Warn(fmt.Sprintf("sync failed: %v", err))
 	}
 }

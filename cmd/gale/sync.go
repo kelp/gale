@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -26,13 +28,14 @@ var syncCmd = &cobra.Command{
 			return fmt.Errorf(
 				"cannot use both --global and --project")
 		}
-		return runSync(syncRecipes, syncBuild, syncGlobal)
+		return runSync(syncRecipes, syncBuild, syncGlobal,
+			syncProject)
 	},
 }
 
 // runSync performs the sync operation: resolves recipes,
 // installs missing packages, and rebuilds the generation.
-func runSync(recipesPath string, buildOnly, global bool) error {
+func runSync(recipesPath string, buildOnly, global, project bool) error {
 	out := output.New(os.Stderr, !noColor)
 
 	ctx, err := newCmdContext(recipesPath)
@@ -40,9 +43,9 @@ func runSync(recipesPath string, buildOnly, global bool) error {
 		return err
 	}
 
-	// Override scope when -g is set.
-	if global {
-		galePath, pathErr := resolveConfigPath(true)
+	// Override scope when -g or -p is set.
+	if global || project {
+		galePath, pathErr := resolveConfigPath(global)
 		if pathErr != nil {
 			return pathErr
 		}
@@ -124,7 +127,8 @@ func runSync(recipesPath string, buildOnly, global bool) error {
 		locked, hasLock := lf.Packages[name]
 		if hasLock && locked.SHA256 != "" &&
 			result.SHA256 != "" &&
-			locked.SHA256 != result.SHA256 {
+			evictOnSHA256Mismatch(
+				ctx.Installer.Store, result, locked.SHA256) {
 			out.Warn(fmt.Sprintf(
 				"%s@%s SHA256 mismatch "+
 					"(lock: %s..., got: %s...)",
@@ -158,6 +162,18 @@ func runSync(recipesPath string, buildOnly, global bool) error {
 		installed,
 		len(cfg.Packages)-installed))
 	return nil
+}
+
+// evictOnSHA256Mismatch removes a package from the store
+// when the installed SHA256 does not match the locked hash.
+// Returns true if a mismatch was detected and the package
+// was removed.
+func evictOnSHA256Mismatch(s *store.Store, result *installer.InstallResult, lockedSHA string) bool {
+	if lockedSHA == result.SHA256 {
+		return false
+	}
+	_ = s.Remove(result.Name, result.Version)
+	return true
 }
 
 func init() {
