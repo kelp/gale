@@ -60,6 +60,12 @@ var removeCmd = &cobra.Command{
 				"%s is not in %s", name, configPath)
 		}
 
+		if dryRun {
+			out.Info(fmt.Sprintf(
+				"remove %s@%s", name, version))
+			return nil
+		}
+
 		// Remove only the declared version from the store.
 		if st.IsInstalled(name, version) {
 			if err := st.Remove(name, version); err != nil {

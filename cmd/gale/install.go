@@ -63,18 +63,33 @@ var installCmd = &cobra.Command{
 
 		// If --path flag is provided, build from local source.
 		if installPath != "" {
+			if dryRun {
+				out.Info(fmt.Sprintf(
+					"install %s (from source)", name))
+				return nil
+			}
 			return installFromLocalSource(name, installRecipe,
 				installPath, configPath, galeDir, storeRoot, out)
 		}
 
 		// If --git flag is provided, clone and build from git.
 		if installGit {
+			if dryRun {
+				out.Info(fmt.Sprintf(
+					"install %s (from git)", name))
+				return nil
+			}
 			return installFromGit(name, installRecipe,
 				configPath, galeDir, storeRoot, installRecipes, out)
 		}
 
 		// If --recipe flag is provided, install from recipe file.
 		if installRecipe != "" {
+			if dryRun {
+				out.Info(fmt.Sprintf(
+					"install %s (from recipe)", name))
+				return nil
+			}
 			return installFromRecipeFile(installRecipe,
 				configPath, galeDir, storeRoot, out)
 		}
@@ -114,6 +129,12 @@ var installCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("fetching recipe: %w", err)
 			}
+		}
+
+		if dryRun {
+			out.Info(fmt.Sprintf("install %s@%s",
+				r.Package.Name, r.Package.Version))
+			return nil
 		}
 
 		inst := &installer.Installer{

@@ -78,8 +78,21 @@ func runSync(recipesPath string, buildOnly, global bool) error {
 	for name, version := range cfg.Packages {
 		// Check store first — pinned version present?
 		if ctx.Installer.Store.IsInstalled(name, version) {
+			if dryRun {
+				out.Info(fmt.Sprintf(
+					"skip %s@%s (up to date)",
+					name, version))
+			} else {
+				out.Info(fmt.Sprintf(
+					"%s@%s up to date", name, version))
+			}
+			continue
+		}
+
+		if dryRun {
 			out.Info(fmt.Sprintf(
-				"%s@%s up to date", name, version))
+				"install %s@%s", name, version))
+			installed++
 			continue
 		}
 
@@ -126,9 +139,11 @@ func runSync(recipesPath string, buildOnly, global bool) error {
 		installed++
 	}
 
-	if err := rebuildGeneration(ctx.GaleDir,
-		ctx.StoreRoot, ctx.GalePath); err != nil {
-		return fmt.Errorf("rebuild generation: %w", err)
+	if !dryRun {
+		if err := rebuildGeneration(ctx.GaleDir,
+			ctx.StoreRoot, ctx.GalePath); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
+		}
 	}
 
 	if failed > 0 {

@@ -134,6 +134,13 @@ var updateCmd = &cobra.Command{
 				continue
 			}
 
+			if dryRun {
+				out.Info(fmt.Sprintf("update %s %s → %s",
+					name, t.current, r.Package.Version))
+				updated++
+				continue
+			}
+
 			out.Info(fmt.Sprintf("Updating %s %s → %s...",
 				name, t.current, r.Package.Version))
 
@@ -156,9 +163,11 @@ var updateCmd = &cobra.Command{
 			updated++
 		}
 
-		if err := rebuildGeneration(ctx.GaleDir,
-			ctx.StoreRoot, ctx.GalePath); err != nil {
-			return fmt.Errorf("rebuild generation: %w", err)
+		if !dryRun {
+			if err := rebuildGeneration(ctx.GaleDir,
+				ctx.StoreRoot, ctx.GalePath); err != nil {
+				return fmt.Errorf("rebuild generation: %w", err)
+			}
 		}
 
 		if updated == 0 {
