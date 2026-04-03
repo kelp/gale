@@ -1,4 +1,4 @@
-.Dd March 30, 2026
+.Dd April 2, 2026
 .Dt GALE 1
 .Os
 .Sh NAME
@@ -75,10 +75,12 @@ List packages declared in
 with their versions.
 .Pp
 .Dl $ gale list
-.It Cm gc Op Fl -dry-run
-Remove unused versions from the package store.
-Keeps only the versions referenced by
-.Pa gale.toml .
+.It Cm gc
+Remove unused package versions from the store and
+old generations.
+Keeps only versions referenced by
+.Pa gale.toml
+and the current generation.
 .Pp
 .Dl $ gale gc --dry-run
 .Dl $ gale gc
@@ -98,6 +100,12 @@ to upgrade it again.
 .El
 .Ss Inspection
 .Bl -tag -width Ds
+.It Cm info Ar pkg
+Show package metadata: version, store path, scope,
+config path, and pin status.
+For uninstalled packages, shows registry information.
+.Pp
+.Dl $ gale info jq
 .It Cm which Ar binary
 Show which installed package provides a binary and
 print its full path.
@@ -111,12 +119,6 @@ the registry.
 .Pp
 .Dl $ gale outdated
 .Dl jq 1.7.1 -> 1.8.1
-.It Cm diff
-Show what
-.Cm sync
-would change: packages to install, update, or remove.
-.Pp
-.Dl $ gale diff
 .It Cm doctor
 Check the gale installation for common problems:
 PATH configuration, store integrity, stale generations.
@@ -126,6 +128,28 @@ PATH configuration, store integrity, stale generations.
 Search for packages by name or description.
 .Pp
 .Dl $ gale search json
+.El
+.Ss Generation Management
+.Bl -tag -width Ds
+.It Cm generations
+List all generations, marking the active one.
+.Pp
+.Dl $ gale generations
+.It Cm generations diff Op Ar from Op Ar to
+Show packages added and removed between two
+generations.
+Defaults to comparing the current generation with
+the previous one.
+.Pp
+.Dl $ gale generations diff
+.Dl $ gale generations diff 3 5
+.It Cm generations rollback Op Ar N
+Switch to a previous generation.
+Defaults to the previous generation (current \- 1).
+Atomic symlink swap, same as install/sync.
+.Pp
+.Dl $ gale generations rollback
+.Dl $ gale generations rollback 3
 .El
 .Ss Project Environment
 .Bl -tag -width Ds
@@ -272,29 +296,55 @@ Generate a shell completion script.
 .Dl $ gale completion zsh > ~/.zfunc/_gale
 .El
 .Sh FLAGS
+.Ss Global Flags
 .Bl -tag -width Ds
-.It Fl -local
-Resolve recipes from a sibling
-.Pa ../gale-recipes/
-directory instead of the registry.
-Useful for recipe development.
-.It Fl -source Ar dir
-Build a package from a local source directory instead
-of downloading the tarball.
-Version is derived from the git hash.
+.It Fl v , -verbose
+Verbose output.
+.It Fl n , -dry-run
+Show what would happen without making changes.
+Applies to all mutating commands:
+.Cm install , remove , sync , update , gc .
+.It Fl -no-color
+Disable colored output.
+Same as setting
+.Ev NO_COLOR .
+.El
+.Ss Scope Flags
+.Bl -tag -width Ds
+.It Fl g , -global
+Target the global
+.Pa ~/.gale/gale.toml .
+.It Fl p , -project
+Target the project
+.Pa gale.toml .
+.Pp
+When neither flag is set, defaults to project scope
+if a
+.Pa gale.toml
+exists in the directory tree, otherwise global.
+Applies to
+.Cm install , add , remove , sync , update .
+.El
+.Ss Source Strategy Flags
+.Bl -tag -width Ds
+.It Fl -path Ar dir
+Build from a local source directory.
+Version is derived from git describe.
+.It Fl -build
+Build from source, skipping prebuilt binaries.
 .It Fl -git
 Clone the source repository and build from HEAD.
 .It Fl -recipe Ar file
-Use a specific local recipe file for installation.
-.It Fl g , -global
-Write package declarations to the global
-.Pa ~/.gale/gale.toml
-(default when no project
-.Pa gale.toml
-exists).
-.It Fl p , -project
-Write package declarations to the project
-.Pa gale.toml .
+Use a specific local recipe file.
+.It Fl -recipes Op Ar path
+Resolve recipes from a local directory instead of
+the registry.
+Defaults to sibling
+.Pa ../gale-recipes/
+when used without argument.
+.El
+.Ss Build Flags
+.Bl -tag -width Ds
 .It Fl -debug
 Build with debug flags:
 .Fl O0 Fl g ,
@@ -302,13 +352,9 @@ no symbol stripping.
 .It Fl -release
 Build with release flags, overriding any debug setting
 in the recipe or config.
-.It Fl -no-color
-Disable colored output.
-Same as setting
-.Ev NO_COLOR .
-.It Fl -dry-run
-Preview what would change without making modifications
-.Pq Cm gc .
+.El
+.Ss Output Flags
+.Bl -tag -width Ds
 .It Fl -json
 Output in JSON format
 .Pq Cm sbom .
