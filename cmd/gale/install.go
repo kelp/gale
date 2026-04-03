@@ -23,7 +23,7 @@ var (
 	installProject bool
 	installRecipes string
 	installRecipe  string
-	installSource  string
+	installPath    string
 	installGit     bool
 )
 
@@ -57,10 +57,10 @@ var installCmd = &cobra.Command{
 		}
 		storeRoot := defaultStoreRoot()
 
-		// If --source flag is provided, build from local source.
-		if installSource != "" {
+		// If --path flag is provided, build from local source.
+		if installPath != "" {
 			return installFromLocalSource(name, installRecipe,
-				installSource, configPath, galeDir, storeRoot, out)
+				installPath, configPath, galeDir, storeRoot, out)
 		}
 
 		// If --git flag is provided, clone and build from git.
@@ -147,7 +147,7 @@ func init() {
 	installCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	installCmd.Flags().StringVar(&installRecipe, "recipe", "",
 		"Install from a recipe TOML file")
-	installCmd.Flags().StringVar(&installSource, "source", "",
+	installCmd.Flags().StringVar(&installPath, "path", "",
 		"Build from a local source directory")
 	installCmd.Flags().BoolVar(&installGit, "git", false,
 		"Clone and build from git repository")

@@ -11,7 +11,7 @@ import (
 
 var (
 	updateRecipes string
-	updateSource  string
+	updatePath    string
 	updateGit     bool
 	updateRecipe  string
 )
@@ -22,10 +22,10 @@ var updateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		// --source requires exactly one package name.
-		if updateSource != "" && len(args) != 1 {
+		// --path requires exactly one package name.
+		if updatePath != "" && len(args) != 1 {
 			return fmt.Errorf(
-				"--source requires exactly one package name")
+				"--path requires exactly one package name")
 		}
 
 		// Resolve context for config path. All branches
@@ -35,10 +35,10 @@ var updateCmd = &cobra.Command{
 			return err
 		}
 
-		// --source: rebuild from local source directory.
-		if updateSource != "" {
+		// --path: rebuild from local source directory.
+		if updatePath != "" {
 			return installFromLocalSource(
-				args[0], updateRecipe, updateSource,
+				args[0], updateRecipe, updatePath,
 				ctx.GalePath, ctx.GaleDir, ctx.StoreRoot, out)
 		}
 
@@ -208,7 +208,7 @@ func init() {
 	updateCmd.Flags().StringVar(&updateRecipes, "recipes", "",
 		"Use local recipes directory (default: ../gale-recipes/)")
 	updateCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
-	updateCmd.Flags().StringVar(&updateSource, "source", "",
+	updateCmd.Flags().StringVar(&updatePath, "path", "",
 		"Rebuild from a local source directory")
 	updateCmd.Flags().BoolVar(&updateGit, "git", false,
 		"Update from git repository HEAD")

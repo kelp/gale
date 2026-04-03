@@ -135,6 +135,26 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 	}
 }
 
+func TestPathFlagReplacesSource(t *testing.T) {
+	cmds := map[string]*cobra.Command{
+		"install": installCmd,
+		"update":  updateCmd,
+	}
+
+	for name, cmd := range cmds {
+		t.Run(name, func(t *testing.T) {
+			if cmd.Flags().Lookup("path") == nil {
+				t.Errorf("%s: --path flag not found", name)
+			}
+			if cmd.Flags().Lookup("source") != nil {
+				t.Errorf(
+					"%s: --source flag should not exist",
+					name)
+			}
+		})
+	}
+}
+
 func TestResolveScope(t *testing.T) {
 	// Create a temp dir with a gale.toml for project detection.
 	tmp := t.TempDir()
