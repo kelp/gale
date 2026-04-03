@@ -628,8 +628,8 @@ func TestSetupCachedRepoWithLetterDirsSkipsEmptyKey(t *testing.T) {
 	cacheRoot := t.TempDir()
 	// An empty key should be skipped, not panic.
 	setupCachedRepoWithLetterDirs(t, cacheRoot, "core", map[string]string{
-		"":         "[package]\nname = \"empty\"\n",
-		"jq.toml":  "[package]\nname = \"jq\"\n",
+		"":        "[package]\nname = \"empty\"\n",
+		"jq.toml": "[package]\nname = \"jq\"\n",
 	})
 
 	// Verify the valid recipe was still written.

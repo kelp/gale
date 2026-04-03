@@ -832,7 +832,6 @@ func TestParseGaleConfigUnpinnedPackage(t *testing.T) {
 	}
 }
 
-<<<<<<< HEAD
 // --- Behavior: Write and read AppConfig ---
 
 func TestWriteAppConfigRoundTrip(t *testing.T) {

@@ -25,19 +25,19 @@ func TestIsGitHash(t *testing.T) {
 		input string
 		want  bool
 	}{
-		{"abc1234", true},       // 7-char hex = git short hash
-		{"abcdef0", true},       // 7-char hex
-		{"1234567", true},       // all digits, still valid hex
-		{"1.7.1", false},        // semver
-		{"0.3.0", false},        // semver
-		{"v2.0.0", false},       // tagged version
-		{"abc123", false},       // too short (6 chars)
-		{"abcdefgh", false},     // 8 chars but not hex
-		{"abc1234z", false},     // non-hex char
-		{"abcdef01234", true},   // longer hex hash
-		{"abc12345678", true},   // 11-char hex
-		{"", false},             // empty
-		{"abc", false},          // too short
+		{"abc1234", true},     // 7-char hex = git short hash
+		{"abcdef0", true},     // 7-char hex
+		{"1234567", true},     // all digits, still valid hex
+		{"1.7.1", false},      // semver
+		{"0.3.0", false},      // semver
+		{"v2.0.0", false},     // tagged version
+		{"abc123", false},     // too short (6 chars)
+		{"abcdefgh", false},   // 8 chars but not hex
+		{"abc1234z", false},   // non-hex char
+		{"abcdef01234", true}, // longer hex hash
+		{"abc12345678", true}, // 11-char hex
+		{"", false},           // empty
+		{"abc", false},        // too short
 	}
 
 	for _, tt := range tests {

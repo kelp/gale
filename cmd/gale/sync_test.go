@@ -85,7 +85,14 @@ func TestSyncSHA256MismatchEvictsFromStore(t *testing.T) {
 func TestSyncSHA256MatchDoesNotEvict(t *testing.T) {
 	storeRoot := t.TempDir()
 	s := store.NewStore(storeRoot)
-	if _, err := s.Create("testpkg", "1.0.0"); err != nil {
+	pkgDir, err := s.Create("testpkg", "1.0.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Add a file so IsInstalled reports true (empty dirs
+	// are treated as failed installs).
+	if err := os.WriteFile(filepath.Join(pkgDir, "marker"),
+		[]byte("ok"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

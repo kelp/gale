@@ -307,14 +307,20 @@ func TestParseVersionIndexAcceptsValidCommitHashes(t *testing.T) {
 		input  string
 		commit string
 	}{
-		{"7-char short hash",
-			"1.0.0 abc1234\n", "abc1234"},
-		{"40-char full hash",
+		{
+			"7-char short hash",
+			"1.0.0 abc1234\n", "abc1234",
+		},
+		{
+			"40-char full hash",
 			"1.0.0 abc1234def5678901234567890abcdef12345678\n",
-			"abc1234def5678901234567890abcdef12345678"},
-		{"20-char hash",
+			"abc1234def5678901234567890abcdef12345678",
+		},
+		{
+			"20-char hash",
 			"1.0.0 0123456789abcdef0123\n",
-			"0123456789abcdef0123"},
+			"0123456789abcdef0123",
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -341,7 +347,7 @@ func TestFetchRecipeVersion(t *testing.T) {
 
 	srv := httptest.NewServer(signedHandler(
 		map[string]string{
-			"/recipes/j/jq.versions":                versionsBody,
+			"/recipes/j/jq.versions":            versionsBody,
 			"/" + commit + "/recipes/j/jq.toml": validTOML,
 		}))
 	defer srv.Close()
@@ -516,7 +522,6 @@ func TestFetchBinariesNetworkErrorLogsWarning(t *testing.T) {
 			fmt.Sprintf(format, args...))
 	}
 	idx, err := reg.fetchBinaries("jq")
-
 	// Should return (nil, nil) for graceful fallback.
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
