@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/kelp/gale/internal/ai"
@@ -11,6 +12,10 @@ import (
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/spf13/cobra"
 )
+
+// validRepoPattern matches a GitHub owner/repo string.
+var validRepoPattern = regexp.MustCompile(
+	`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
 
 var (
 	createRecipeOutput   string
@@ -52,7 +57,7 @@ to stdout. Use -o <dir> to specify an output directory.`,
 		maxDepth := createRecipeMaxDepth
 		return runCreateRecipe(
 			repo, client, promptFile, outputDir, out,
-			0, maxDepth)
+			0, maxDepth, nil)
 	},
 }
 
@@ -145,7 +150,12 @@ func runCreateRecipe(
 	out *output.Output,
 	depth int,
 	maxDepth int,
+	seen map[string]bool,
 ) error {
+	if seen == nil {
+		seen = make(map[string]bool)
+	}
+
 	tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
@@ -198,19 +208,22 @@ func runCreateRecipe(
 					"Or increase the limit with --max-depth %d",
 				maxDepth, depRepo, maxDepth+2)
 		}
+		if err := checkDepCycle(name, depRepo, seen); err != nil {
+			return err
+		}
 		out.Info(fmt.Sprintf(
 			"Dependency %q not found, creating from %s...",
 			name, depRepo))
 		if err := runCreateRecipe(
 			depRepo, client, promptFile,
-			outputDir, out, depth+1, maxDepth); err != nil {
+			outputDir, out, depth+1, maxDepth, seen); err != nil {
 			return fmt.Errorf("create dependency %s: %w",
 				name, err)
 		}
 		// Retry the original recipe at the same depth.
 		return runCreateRecipe(
 			repo, client, promptFile,
-			outputDir, out, depth, maxDepth)
+			outputDir, out, depth, maxDepth, seen)
 	}
 
 	// Find the generated recipe file in tmpDir.
@@ -307,6 +320,9 @@ func warnNoRelease(recipePath string, out *output.Output) {
 func buildRecipeChecker(outputDir string) func(string) bool {
 	if outputDir != "" {
 		return func(name string) bool {
+			if name == "" {
+				return false
+			}
 			letter := string(name[0])
 			path := filepath.Join(
 				outputDir, letter, name+".toml")
@@ -321,6 +337,19 @@ func buildRecipeChecker(outputDir string) func(string) bool {
 	}
 }
 
+// checkDepCycle returns an error if depRepo has already
+// been visited in this dependency chain, indicating a
+// cycle. Otherwise it adds depRepo to the seen set.
+func checkDepCycle(name, depRepo string, seen map[string]bool) error {
+	if seen[depRepo] {
+		return fmt.Errorf(
+			"dependency cycle detected: %s (%s) already visited",
+			name, depRepo)
+	}
+	seen[depRepo] = true
+	return nil
+}
+
 // parseMissingDep finds a MISSING_DEP line anywhere in the
 // agent response. The agent sometimes adds explanatory text
 // before the MISSING_DEP line.
@@ -332,7 +361,7 @@ func parseMissingDep(s string) (name, repo string, ok bool) {
 			continue
 		}
 		parts := strings.Fields(line)
-		if len(parts) >= 3 {
+		if len(parts) >= 3 && validRepoPattern.MatchString(parts[2]) {
 			return parts[1], parts[2], true
 		}
 	}
@@ -349,6 +378,9 @@ func moveRecipe(src, outputDir string) (string, error) {
 
 	base := filepath.Base(src)
 	name := strings.TrimSuffix(base, ".toml")
+	if name == "" {
+		return "", fmt.Errorf("empty package name in %s", src)
+	}
 	letter := string(name[0])
 	destDir := filepath.Join(outputDir, letter)
 	if err := os.MkdirAll(destDir, 0o755); err != nil {

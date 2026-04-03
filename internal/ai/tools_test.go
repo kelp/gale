@@ -46,6 +46,59 @@ func TestDownloadAndHashTool(t *testing.T) {
 	}
 }
 
+func TestDownloadAndHashToolUniqueFilenames(t *testing.T) {
+	// Two different URLs that produce the same
+	// filepath.Base() should not collide.
+	callCount := 0
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			callCount++
+			// Each request gets different content.
+			if strings.Contains(r.URL.Path, "alpha") {
+				w.Write([]byte("content-alpha"))
+			} else {
+				w.Write([]byte("content-beta"))
+			}
+		}))
+	defer srv.Close()
+
+	tmpDir := t.TempDir()
+	tool := downloadAndHashTool(tmpDir)
+
+	// Both URLs have the same base name.
+	url1 := srv.URL + "/alpha/v1.0.0.tar.gz"
+	url2 := srv.URL + "/beta/v1.0.0.tar.gz"
+
+	input1, _ := json.Marshal(map[string]string{"url": url1})
+	result1, err := tool.Handler(input1)
+	if err != nil {
+		t.Fatalf("download 1: %v", err)
+	}
+
+	input2, _ := json.Marshal(map[string]string{"url": url2})
+	result2, err := tool.Handler(input2)
+	if err != nil {
+		t.Fatalf("download 2: %v", err)
+	}
+
+	var out1, out2 struct {
+		SHA256 string `json:"sha256"`
+		Path   string `json:"path"`
+	}
+	json.Unmarshal([]byte(result1), &out1)
+	json.Unmarshal([]byte(result2), &out2)
+
+	// Different content must produce different hashes.
+	if out1.SHA256 == out2.SHA256 {
+		t.Error("expected different SHA256 for different URLs")
+	}
+
+	// Files must be at different paths.
+	if out1.Path == out2.Path {
+		t.Error("expected different file paths for different URLs")
+	}
+}
+
 func TestWriteRecipeTool(t *testing.T) {
 	tmpDir := t.TempDir()
 	tool := writeRecipeTool(tmpDir)
@@ -96,7 +149,7 @@ name = "test"
 		t.Fatal(err)
 	}
 
-	tool := lintRecipeTool()
+	tool := lintRecipeTool(tmpDir)
 	input, _ := json.Marshal(map[string]string{
 		"path": path,
 	})
@@ -109,6 +162,51 @@ name = "test"
 	// Should have errors for missing version, url, sha256, etc.
 	if !strings.Contains(result, "error") {
 		t.Errorf("expected lint errors, got: %s", result)
+	}
+}
+
+func TestLintRecipeToolPathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+
+	// Create a file outside tmpDir.
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "secret.toml")
+	err := os.WriteFile(outsidePath, []byte(`
+[package]
+name = "secret"
+`), 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tool := lintRecipeTool(tmpDir)
+
+	// Try to read a file outside the allowed directory.
+	input, _ := json.Marshal(map[string]string{
+		"path": outsidePath,
+	})
+
+	_, err = tool.Handler(input)
+	if err == nil {
+		t.Fatal("expected error for path outside tmpDir")
+	}
+	if !strings.Contains(err.Error(), "outside") {
+		t.Errorf("expected 'outside' in error, got: %v", err)
+	}
+}
+
+func TestLintRecipeToolDotDotTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	tool := lintRecipeTool(tmpDir)
+
+	// Use ../../../etc/passwd style path.
+	input, _ := json.Marshal(map[string]string{
+		"path": filepath.Join(tmpDir, "..", "..", "etc", "passwd"),
+	})
+
+	_, err := tool.Handler(input)
+	if err == nil {
+		t.Fatal("expected error for traversal path")
 	}
 }
 
@@ -320,6 +418,24 @@ end
 	}
 	if !strings.Contains(result, "depends_on") {
 		t.Errorf("expected depends_on, got: %s", result)
+	}
+}
+
+func TestWriteRecipeToolEmptyName(t *testing.T) {
+	tmpDir := t.TempDir()
+	tool := writeRecipeTool(tmpDir)
+
+	input, _ := json.Marshal(map[string]string{
+		"name":    "",
+		"content": "[package]\nname = \"\"\n",
+	})
+
+	_, err := tool.Handler(input)
+	if err == nil {
+		t.Fatal("expected error for empty name")
+	}
+	if !strings.Contains(err.Error(), "name is required") {
+		t.Errorf("expected 'name is required' error, got: %v", err)
 	}
 }
 
