@@ -108,6 +108,46 @@ func TestResolveWhich(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects store path missing bin segment", func(t *testing.T) {
+		tmp := t.TempDir()
+		storeRoot := filepath.Join(tmp, "pkg")
+		galeDir := tmp
+
+		// Create a malformed store entry without bin/
+		// segment: pkg/jq/1.8.1/jq (missing bin/).
+		badDir := filepath.Join(storeRoot, "jq", "1.8.1")
+		if err := os.MkdirAll(badDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		binPath := filepath.Join(badDir, "jq")
+		if err := os.WriteFile(
+			binPath, []byte("fake"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		// Create generation pointing to the bad path.
+		genBinDir := filepath.Join(
+			galeDir, "gen", "1", "bin")
+		if err := os.MkdirAll(genBinDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(binPath,
+			filepath.Join(genBinDir, "jq")); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(
+			filepath.Join(galeDir, "gen", "1"),
+			filepath.Join(galeDir, "current")); err != nil {
+			t.Fatal(err)
+		}
+
+		_, _, _, err := resolveWhich(
+			"jq", galeDir, storeRoot)
+		if err == nil {
+			t.Fatal("expected error for path missing bin/ segment")
+		}
+	})
+
 	t.Run("git hash version", func(t *testing.T) {
 		tmp := t.TempDir()
 		storeRoot := filepath.Join(tmp, "pkg")

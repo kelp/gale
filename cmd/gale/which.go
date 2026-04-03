@@ -71,8 +71,9 @@ func resolveWhich(binary, galeDir, storeRoot string) (string, string, string, er
 	}
 
 	// rel is "<name>/<version>/bin/<binary>"
-	parts := strings.SplitN(rel, string(os.PathSeparator), 3)
-	if len(parts) < 2 {
+	sep := string(os.PathSeparator)
+	parts := strings.SplitN(rel, sep, 4)
+	if len(parts) < 4 || parts[2] != "bin" {
 		return "", "", "", fmt.Errorf(
 			"unexpected store path for %s", binary)
 	}

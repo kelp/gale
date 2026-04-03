@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"text/tabwriter"
@@ -34,11 +35,16 @@ var sbomCmd = &cobra.Command{
 	Long:  "List installed packages with source, version, license, and install method.",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		configPath, err := resolveConfigPath(false)
+		cwd, err := os.Getwd()
 		if err != nil {
-			return fmt.Errorf("finding config: %w", err)
+			return fmt.Errorf("getting working dir: %w", err)
 		}
-		data, err := os.ReadFile(configPath)
+		globalDir, err := galeConfigDir()
+		if err != nil {
+			return fmt.Errorf("finding config dir: %w", err)
+		}
+		data, configPath, err := resolveSbomConfig(
+			cwd, globalDir)
 		if err != nil {
 			return fmt.Errorf("reading config: %w", err)
 		}
@@ -144,6 +150,26 @@ func shortenURL(rawURL string) string {
 		return rawURL
 	}
 	return u.Host
+}
+
+// resolveSbomConfig reads gale.toml, trying the project
+// config first (found by walking up from cwd), then
+// falling back to the global config in globalDir.
+func resolveSbomConfig(cwd, globalDir string) ([]byte, string, error) {
+	path, err := config.FindGaleConfig(cwd)
+	if err == nil {
+		data, readErr := os.ReadFile(path)
+		if readErr == nil {
+			return data, path, nil
+		}
+	}
+
+	globalPath := filepath.Join(globalDir, "gale.toml")
+	data, err := os.ReadFile(globalPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("reading config: %w", err)
+	}
+	return data, globalPath, nil
 }
 
 func init() {
