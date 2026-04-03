@@ -66,17 +66,9 @@ var removeCmd = &cobra.Command{
 			return nil
 		}
 
-		// Remove only the declared version from the store.
-		if st.IsInstalled(name, version) {
-			if err := st.Remove(name, version); err != nil {
-				return fmt.Errorf("removing from store: %w",
-					err)
-			}
-			out.Info(fmt.Sprintf("Removed %s@%s from store",
-				name, version))
-		}
-
-		// Remove from config.
+		// Update config first so a failed write does not
+		// leave the store missing but config still listing
+		// the package.
 		if err := config.RemovePackage(
 			configPath, name); err != nil {
 			return fmt.Errorf("removing from config: %w",
@@ -84,6 +76,19 @@ var removeCmd = &cobra.Command{
 		}
 		out.Info(fmt.Sprintf(
 			"Removed %s from %s", name, configPath))
+
+		// Remove the declared version from the store.
+		if st.IsInstalled(name, version) {
+			if err := st.Remove(name, version); err != nil {
+				return fmt.Errorf("removing from store: %w",
+					err)
+			}
+			out.Info(fmt.Sprintf("Removed %s@%s from store",
+				name, version))
+		} else {
+			out.Warn(fmt.Sprintf(
+				"%s@%s not found in store", name, version))
+		}
 
 		// Rebuild the generation for this scope.
 		galeDir, err := galeDirForConfig(configPath)
