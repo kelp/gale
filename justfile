@@ -43,11 +43,11 @@ check: test lint fmt-check
 
 # Install gale from local source using gale itself
 install:
-    gale update --source . gale
+    gale update --path . gale
 
 # Bootstrap gale (first-time: build with go, then self-install)
 bootstrap: build
-    ./gale install --source . gale
+    ./gale install --path . gale
 
 # Tag a release (formats, runs checks first)
 tag version: fmt check
