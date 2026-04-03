@@ -233,9 +233,9 @@ func TestBuildUpdatesCurrentSymlinkOnSecondBuild(t *testing.T) {
 	}
 }
 
-// --- Behavior 3: Build cleans up previous generation ---
+// --- Behavior 3: Build retains previous generations ---
 
-func TestBuildRemovesPreviousGeneration(t *testing.T) {
+func TestBuildRetainsPreviousGenerationSinglePackage(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 
@@ -252,18 +252,53 @@ func TestBuildRemovesPreviousGeneration(t *testing.T) {
 		t.Fatalf("generation 1 should exist after first build: %v", err)
 	}
 
-	// Second build creates generation 2 and removes generation 1.
+	// Second build creates generation 2; generation 1 is retained.
 	if err := Build(pkgs, galeDir, storeRoot); err != nil {
 		t.Fatalf("second Build error: %v", err)
 	}
 
-	if _, err := os.Stat(gen1Dir); !os.IsNotExist(err) {
-		t.Errorf("generation 1 directory should be removed after second build")
+	if _, err := os.Stat(gen1Dir); err != nil {
+		t.Errorf("generation 1 should be retained: %v", err)
 	}
 
 	gen2Dir := filepath.Join(galeDir, "gen", "2")
 	if _, err := os.Stat(gen2Dir); err != nil {
 		t.Errorf("generation 2 should exist: %v", err)
+	}
+}
+
+// --- Behavior 3b: Build retains previous generations ---
+
+func TestBuildRetainsPreviousGeneration(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.7.1", []string{"jq"})
+	createStoreEntry(t, storeRoot, "fd", "9.0", []string{"fd"})
+
+	// Build gen 1.
+	if err := Build(map[string]string{"jq": "1.7.1"}, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build gen 1: %v", err)
+	}
+
+	// Build gen 2.
+	if err := Build(map[string]string{"jq": "1.7.1", "fd": "9.0"}, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build gen 2: %v", err)
+	}
+
+	// Gen 1 should still exist.
+	gen1Dir := filepath.Join(galeDir, "gen", "1")
+	if _, err := os.Stat(gen1Dir); err != nil {
+		t.Errorf("gen 1 was deleted but should be retained: %v", err)
+	}
+
+	// Current should be gen 2.
+	cur, err := Current(galeDir)
+	if err != nil {
+		t.Fatalf("Current: %v", err)
+	}
+	if cur != 2 {
+		t.Errorf("expected current=2, got %d", cur)
 	}
 }
 

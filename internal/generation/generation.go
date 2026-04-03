@@ -12,9 +12,9 @@ import (
 //go:embed gale-readme.md
 var galeReadme []byte
 
-// Build creates a new generation from the package map,
-// atomically swaps the current symlink, and cleans up
-// the previous generation.
+// Build creates a new generation from the package map
+// and atomically swaps the current symlink. Previous
+// generations are retained for history and rollback.
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	prev, err := Current(galeDir)
 	if err != nil {
@@ -94,16 +94,6 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	if err := os.Rename(tmpLink, filepath.Join(galeDir, "current")); err != nil {
 		cleanup()
 		return fmt.Errorf("atomic swap current symlink: %w", err)
-	}
-
-	// Clean up previous generation.
-	if prev > 0 {
-		prevDir := filepath.Join(
-			galeDir, "gen", strconv.Itoa(prev))
-		if err := os.RemoveAll(prevDir); err != nil {
-			return fmt.Errorf(
-				"remove previous generation: %w", err)
-		}
 	}
 
 	// Write README (best effort, world-readable).
