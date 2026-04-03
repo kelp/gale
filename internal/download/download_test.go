@@ -20,6 +20,14 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
+// --- Behavior 0: HTTP client has timeout ---
+
+func TestHTTPClientHasTimeout(t *testing.T) {
+	if httpClient.Timeout == 0 {
+		t.Fatal("httpClient.Timeout must be non-zero")
+	}
+}
+
 // --- Behavior 1: Download file from URL ---
 
 func TestFetchWritesFileToDestPath(t *testing.T) {
@@ -422,6 +430,115 @@ func TestExtractTarGzHandlesHardLinks(t *testing.T) {
 	}
 }
 
+func TestExtractTarGzRejectsSymlinkTraversalRelative(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "evil.tar.gz")
+	destDir := t.TempDir()
+
+	// Build a tar.gz with a symlink whose target escapes destDir.
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "escape",
+		Linkname: "../../etc/passwd",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	err = ExtractTarGz(archive, destDir)
+	if err == nil {
+		t.Fatal("expected error for symlink traversal")
+	}
+	if !strings.Contains(err.Error(), "illegal symlink") {
+		t.Errorf("error = %q, want it to contain 'illegal symlink'",
+			err.Error())
+	}
+}
+
+func TestExtractTarGzRejectsSymlinkTraversalAbsolute(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "evil.tar.gz")
+	destDir := t.TempDir()
+
+	// Build a tar.gz with a symlink pointing to an absolute path
+	// outside destDir.
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "escape",
+		Linkname: "/etc/passwd",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	err = ExtractTarGz(archive, destDir)
+	if err == nil {
+		t.Fatal("expected error for absolute symlink traversal")
+	}
+	if !strings.Contains(err.Error(), "illegal symlink") {
+		t.Errorf("error = %q, want it to contain 'illegal symlink'",
+			err.Error())
+	}
+}
+
+func TestExtractTarGzAllowsSymlinkWithinDestDir(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "good.tar.gz")
+	destDir := t.TempDir()
+
+	// Build a tar.gz with a valid symlink inside destDir.
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	content := "target content"
+	tw.WriteHeader(&tar.Header{
+		Name: "target.txt",
+		Mode: 0o644,
+		Size: int64(len(content)),
+	})
+	tw.Write([]byte(content))
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "link.txt",
+		Linkname: "target.txt",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	err = ExtractTarGz(archive, destDir)
+	if err != nil {
+		t.Fatalf("unexpected error for valid symlink: %v", err)
+	}
+
+	got, err := os.ReadFile(filepath.Join(destDir, "link.txt"))
+	if err != nil {
+		t.Fatalf("read symlink: %v", err)
+	}
+	if string(got) != content {
+		t.Errorf("symlink content = %q, want %q", got, content)
+	}
+}
+
 func TestExtractZipRejectsPathTraversal(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "evil.zip")
 	destDir := t.TempDir()
@@ -803,6 +920,51 @@ func TestCreateTarZstdNoWrapperDirectory(t *testing.T) {
 	}
 }
 
+// --- Behavior: CreateTarZstd does not leak file descriptors ---
+
+func TestCreateTarZstdClosesFilesEagerly(t *testing.T) {
+	sourceDir := t.TempDir()
+
+	// Create many files. Without eager closing, file
+	// descriptors accumulate in the Walk callback's
+	// deferred closures until the outer function returns,
+	// which can exhaust the fd limit on systems with
+	// low soft limits.
+	const fileCount = 500
+	for i := 0; i < fileCount; i++ {
+		name := fmt.Sprintf("file_%04d.txt", i)
+		path := filepath.Join(sourceDir, name)
+		if err := os.WriteFile(
+			path, []byte("data"), 0o644); err != nil {
+			t.Fatalf("write file %d: %v", i, err)
+		}
+	}
+
+	archivePath := filepath.Join(t.TempDir(), "many.tar.zst")
+	if err := CreateTarZstd(sourceDir, archivePath); err != nil {
+		t.Fatalf("CreateTarZstd with %d files: %v",
+			fileCount, err)
+	}
+
+	// Verify round-trip: extract and check file count.
+	destDir := filepath.Join(t.TempDir(), "extracted")
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		t.Fatalf("create dest dir: %v", err)
+	}
+	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+
+	entries, err := os.ReadDir(destDir)
+	if err != nil {
+		t.Fatalf("read dir: %v", err)
+	}
+	if len(entries) != fileCount {
+		t.Errorf("extracted %d files, want %d",
+			len(entries), fileCount)
+	}
+}
+
 // --- Security: tar.zst path traversal rejection ---
 
 func TestExtractTarZstdRejectsPathTraversal(t *testing.T) {
@@ -958,12 +1120,15 @@ func TestCreateTarZstdDeterministic(t *testing.T) {
 
 func TestFetchWithAuthSendsAuthHeader(t *testing.T) {
 	var gotAuth string
-	srv := httptest.NewServer(http.HandlerFunc(
+	srv := httptest.NewTLSServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
 			fmt.Fprint(w, "content")
 		}))
 	defer srv.Close()
+
+	restore := SetHTTPClient(srv.Client())
+	defer restore()
 
 	dest := filepath.Join(t.TempDir(), "out.bin")
 	err := FetchWithAuth(srv.URL+"/blob", dest, "my-token-123")
@@ -978,11 +1143,14 @@ func TestFetchWithAuthSendsAuthHeader(t *testing.T) {
 
 func TestFetchWithAuthWritesFile(t *testing.T) {
 	want := "binary-content-here"
-	srv := httptest.NewServer(http.HandlerFunc(
+	srv := httptest.NewTLSServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, want)
 		}))
 	defer srv.Close()
+
+	restore := SetHTTPClient(srv.Client())
+	defer restore()
 
 	dest := filepath.Join(t.TempDir(), "out.bin")
 	err := FetchWithAuth(srv.URL+"/blob", dest, "tok")
@@ -995,6 +1163,19 @@ func TestFetchWithAuthWritesFile(t *testing.T) {
 	}
 	if string(got) != want {
 		t.Errorf("file content = %q, want %q", got, want)
+	}
+}
+
+func TestFetchWithAuthRejectsPlainHTTP(t *testing.T) {
+	dest := filepath.Join(t.TempDir(), "out.bin")
+	err := FetchWithAuth(
+		"http://example.com/blob", dest, "my-token")
+	if err == nil {
+		t.Fatal("expected error for plain HTTP with bearer token")
+	}
+	if !strings.Contains(err.Error(), "https") {
+		t.Errorf("error = %q, want it to mention https",
+			err.Error())
 	}
 }
 
