@@ -4,8 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
@@ -73,6 +75,18 @@ var gcCmd = &cobra.Command{
 			removed++
 		}
 
+		// Clean up old generations.
+		if globalDir != "" {
+			removed += cleanOldGenerations(
+				globalDir, dryRun)
+		}
+		if projPath != "" {
+			projGaleDir := filepath.Join(
+				filepath.Dir(projPath), ".gale")
+			removed += cleanOldGenerations(
+				projGaleDir, dryRun)
+		}
+
 		if removed == 0 {
 			out.Success("Nothing to clean up.")
 			return nil
@@ -126,6 +140,45 @@ func mergeConfig(path string, referenced map[string]bool) {
 	for name, version := range cfg.Packages {
 		referenced[name+"@"+version] = true
 	}
+}
+
+// cleanOldGenerations removes all generation directories
+// except the current one. Returns the count of generations
+// removed (or flagged in dry-run mode).
+func cleanOldGenerations(galeDir string, dry bool) int {
+	out := output.New(os.Stderr, !noColor)
+	genRoot := filepath.Join(galeDir, "gen")
+	entries, err := os.ReadDir(genRoot)
+	if err != nil {
+		return 0
+	}
+	curGen, _ := generation.Current(galeDir)
+	var removed int
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		n, err := strconv.Atoi(e.Name())
+		if err != nil || n == curGen {
+			continue
+		}
+		genPath := filepath.Join(genRoot, e.Name())
+		if dry {
+			out.Info(fmt.Sprintf(
+				"Would remove generation %d", n))
+		} else {
+			if err := os.RemoveAll(genPath); err != nil {
+				out.Warn(fmt.Sprintf(
+					"Failed to remove generation %d: %v",
+					n, err))
+				continue
+			}
+			out.Success(fmt.Sprintf(
+				"Removed generation %d", n))
+		}
+		removed++
+	}
+	return removed
 }
 
 func init() {
