@@ -609,6 +609,9 @@ func setupCachedRepoWithLetterDirs(
 ) {
 	t.Helper()
 	for fname, content := range recipes {
+		if len(fname) == 0 {
+			continue
+		}
 		letter := string(fname[0])
 		dir := filepath.Join(cacheRoot, name, "recipes", letter)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -618,6 +621,23 @@ func setupCachedRepoWithLetterDirs(
 		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
 			t.Fatalf("failed to write %s: %v", fname, err)
 		}
+	}
+}
+
+func TestSetupCachedRepoWithLetterDirsSkipsEmptyKey(t *testing.T) {
+	cacheRoot := t.TempDir()
+	// An empty key should be skipped, not panic.
+	setupCachedRepoWithLetterDirs(t, cacheRoot, "core", map[string]string{
+		"":         "[package]\nname = \"empty\"\n",
+		"jq.toml":  "[package]\nname = \"jq\"\n",
+	})
+
+	// Verify the valid recipe was still written.
+	jqPath := filepath.Join(
+		cacheRoot, "core", "recipes", "j", "jq.toml",
+	)
+	if _, err := os.Stat(jqPath); err != nil {
+		t.Errorf("expected jq.toml to exist: %v", err)
 	}
 }
 

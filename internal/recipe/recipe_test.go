@@ -735,6 +735,81 @@ func TestParseVerifyField(t *testing.T) {
 	}
 }
 
+// --- Behavior: typo'd build keys rejected ---
+
+const recipeWithTypoKey = `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[build]
+steps = ["make install"]
+
+[build.stteps]
+steps = ["echo oops"]
+`
+
+func TestParseTypodBuildKeyReturnsError(t *testing.T) {
+	_, err := Parse(recipeWithTypoKey)
+	if err == nil {
+		t.Fatal("expected error for typo'd build key 'stteps'")
+	}
+	if !strings.Contains(err.Error(), "stteps") {
+		t.Errorf("error %q should mention 'stteps'", err)
+	}
+}
+
+func TestParseValidPlatformKeyAccepted(t *testing.T) {
+	r, err := Parse(recipeWithPlatformBuild)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Build.Platform) != 2 {
+		t.Errorf("Platform count = %d, want 2",
+			len(r.Build.Platform))
+	}
+}
+
+// --- Behavior: build debug flag ---
+
+const recipeWithDebug = `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[build]
+debug = true
+steps = ["make install"]
+`
+
+func TestParseBuildDebugTrue(t *testing.T) {
+	r, err := Parse(recipeWithDebug)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !r.Build.Debug {
+		t.Error("Build.Debug = false, want true")
+	}
+}
+
+func TestParseBuildDebugDefaultFalse(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Build.Debug {
+		t.Error("Build.Debug = true, want false")
+	}
+}
+
 func TestParseVerifyEmptyByDefault(t *testing.T) {
 	r, err := Parse(validRecipe)
 	if err != nil {

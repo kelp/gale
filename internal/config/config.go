@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+	"golang.org/x/sys/unix"
 )
 
 // ErrGaleConfigNotFound is returned when gale.toml cannot be
@@ -142,78 +143,106 @@ func WriteGaleConfig(path string, cfg *GaleConfig) error {
 	return nil
 }
 
+// withFileLock acquires an exclusive file lock on a .lock
+// sibling of path, runs fn, and releases the lock. This
+// serializes concurrent read-modify-write operations.
+func withFileLock(path string, fn func() error) error {
+	lockPath := path + ".lock"
+	//nolint:gosec // Lock file is world-readable.
+	f, err := os.OpenFile(lockPath,
+		os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		return fmt.Errorf("opening lock file: %w", err)
+	}
+	defer f.Close()
+
+	fd := int(f.Fd()) //nolint:gosec // fd fits in int on all supported platforms.
+	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
+		return fmt.Errorf("acquiring file lock: %w", err)
+	}
+	defer unix.Flock(fd, unix.LOCK_UN) //nolint:errcheck
+
+	return fn()
+}
+
 // AddPackage adds or updates a package in the gale.toml at path.
 // If the file does not exist, it bootstraps an empty config.
 func AddPackage(path string, name, version string) error {
-	var cfg *GaleConfig
+	return withFileLock(path, func() error {
+		var cfg *GaleConfig
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("reading gale config: %w", err)
-		}
-		cfg = &GaleConfig{}
-	} else {
-		cfg, err = ParseGaleConfig(string(data))
+		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("reading gale config: %w", err)
+			}
+			cfg = &GaleConfig{}
+		} else {
+			cfg, err = ParseGaleConfig(string(data))
+			if err != nil {
+				return err
+			}
 		}
-	}
 
-	if cfg.Packages == nil {
-		cfg.Packages = make(map[string]string)
-	}
-	cfg.Packages[name] = version
+		if cfg.Packages == nil {
+			cfg.Packages = make(map[string]string)
+		}
+		cfg.Packages[name] = version
 
-	return WriteGaleConfig(path, cfg)
+		return WriteGaleConfig(path, cfg)
+	})
 }
 
 // RemovePackage removes a package from the gale.toml at path.
 func RemovePackage(path string, name string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading gale config: %w", err)
-	}
+	return withFileLock(path, func() error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading gale config: %w", err)
+		}
 
-	cfg, err := ParseGaleConfig(string(data))
-	if err != nil {
-		return err
-	}
+		cfg, err := ParseGaleConfig(string(data))
+		if err != nil {
+			return err
+		}
 
-	if cfg.Packages == nil {
-		return ErrPackageNotFound
-	}
-	if _, exists := cfg.Packages[name]; !exists {
-		return ErrPackageNotFound
-	}
-	delete(cfg.Packages, name)
+		if cfg.Packages == nil {
+			return ErrPackageNotFound
+		}
+		if _, exists := cfg.Packages[name]; !exists {
+			return ErrPackageNotFound
+		}
+		delete(cfg.Packages, name)
 
-	return WriteGaleConfig(path, cfg)
+		return WriteGaleConfig(path, cfg)
+	})
 }
 
 // PinPackage marks a package as pinned in the gale.toml at path.
 // Returns ErrPackageNotFound if the package is not in [packages].
 func PinPackage(path string, name string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading gale config: %w", err)
-	}
+	return withFileLock(path, func() error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading gale config: %w", err)
+		}
 
-	cfg, err := ParseGaleConfig(string(data))
-	if err != nil {
-		return err
-	}
+		cfg, err := ParseGaleConfig(string(data))
+		if err != nil {
+			return err
+		}
 
-	if _, ok := cfg.Packages[name]; !ok {
-		return ErrPackageNotFound
-	}
+		if _, ok := cfg.Packages[name]; !ok {
+			return ErrPackageNotFound
+		}
 
-	if cfg.Pinned == nil {
-		cfg.Pinned = make(map[string]bool)
-	}
-	cfg.Pinned[name] = true
+		if cfg.Pinned == nil {
+			cfg.Pinned = make(map[string]bool)
+		}
+		cfg.Pinned[name] = true
 
-	return WriteGaleConfig(path, cfg)
+		return WriteGaleConfig(path, cfg)
+	})
 }
 
 // WriteAppConfig writes an AppConfig to the given path atomically.
@@ -314,17 +343,19 @@ func RemoveRepo(path string, name string) error {
 
 // UnpinPackage removes a pin from the gale.toml at path.
 func UnpinPackage(path string, name string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading gale config: %w", err)
-	}
+	return withFileLock(path, func() error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading gale config: %w", err)
+		}
 
-	cfg, err := ParseGaleConfig(string(data))
-	if err != nil {
-		return err
-	}
+		cfg, err := ParseGaleConfig(string(data))
+		if err != nil {
+			return err
+		}
 
-	delete(cfg.Pinned, name)
+		delete(cfg.Pinned, name)
 
-	return WriteGaleConfig(path, cfg)
+		return WriteGaleConfig(path, cfg)
+	})
 }

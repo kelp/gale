@@ -86,7 +86,7 @@ func IsStale(
 	galeTOMLPath, lockPath string,
 	tomlPackages map[string]string,
 ) (bool, error) {
-	lockInfo, err := os.Stat(lockPath)
+	_, err := os.Stat(lockPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return true, nil
@@ -94,15 +94,12 @@ func IsStale(
 		return false, fmt.Errorf("stat lock file: %w", err)
 	}
 
-	tomlInfo, err := os.Stat(galeTOMLPath)
-	if err != nil {
+	if _, err := os.Stat(galeTOMLPath); err != nil {
 		return false, fmt.Errorf("stat gale.toml: %w", err)
 	}
 
-	if tomlInfo.ModTime().After(lockInfo.ModTime()) {
-		return true, nil
-	}
-
+	// Always compare package content rather than relying
+	// on mtime, which can be misleading under clock skew.
 	lf, err := Read(lockPath)
 	if err != nil {
 		return false, fmt.Errorf("reading lock file: %w", err)
