@@ -1,6 +1,8 @@
 package ai
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -36,7 +38,7 @@ func RecipeTools(recipeDir string, checkRecipe func(string) bool) ([]Tool, func(
 		checkRecipeTool(checkRecipe),
 		homebrewFormulaTool(),
 		writeRecipeTool(recipeDir),
-		lintRecipeTool(),
+		lintRecipeTool(recipeDir),
 	}, cleanup
 }
 
@@ -90,9 +92,13 @@ func downloadAndHashTool(tmpDir string) Tool {
 				return "", fmt.Errorf("parse input: %w", err)
 			}
 
-			// Extract filename from URL.
-			name := filepath.Base(args.URL)
-			destPath := filepath.Join(tmpDir, name)
+			// Include a hash prefix from the URL to avoid
+			// filename collisions (e.g., two repos both
+			// releasing v1.0.0.tar.gz).
+			baseName := filepath.Base(args.URL)
+			h := sha256.Sum256([]byte(args.URL))
+			prefix := hex.EncodeToString(h[:4])
+			destPath := filepath.Join(tmpDir, prefix+"-"+baseName)
 
 			if err := download.Fetch(args.URL, destPath); err != nil {
 				return "", fmt.Errorf("download: %w", err)
@@ -358,6 +364,10 @@ func writeRecipeTool(tmpDir string) Tool {
 				return "", fmt.Errorf("parse input: %w", err)
 			}
 
+			if args.Name == "" {
+				return "", fmt.Errorf("name is required")
+			}
+
 			letter := string(args.Name[0])
 			dir := filepath.Join(tmpDir, letter)
 			if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -377,7 +387,7 @@ func writeRecipeTool(tmpDir string) Tool {
 	}
 }
 
-func lintRecipeTool() Tool {
+func lintRecipeTool(allowedDir string) Tool {
 	return Tool{
 		Param: anthropic.ToolParam{
 			Name:        "lint_recipe",
@@ -400,12 +410,25 @@ func lintRecipeTool() Tool {
 				return "", fmt.Errorf("parse input: %w", err)
 			}
 
-			data, err := os.ReadFile(args.Path)
+			absPath, err := filepath.Abs(args.Path)
+			if err != nil {
+				return "", fmt.Errorf("resolve path: %w", err)
+			}
+			cleanPath := filepath.Clean(absPath)
+			cleanDir := filepath.Clean(allowedDir)
+			if !strings.HasPrefix(cleanPath, cleanDir+string(filepath.Separator)) &&
+				cleanPath != cleanDir {
+				return "", fmt.Errorf(
+					"path %q is outside allowed directory",
+					args.Path)
+			}
+
+			data, err := os.ReadFile(cleanPath)
 			if err != nil {
 				return "", fmt.Errorf("read recipe: %w", err)
 			}
 
-			issues := lint.Lint(string(data), args.Path)
+			issues := lint.Lint(string(data), cleanPath)
 
 			result, _ := json.Marshal(issues)
 			return string(result), nil

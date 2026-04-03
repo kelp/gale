@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -65,6 +66,53 @@ func TestParseMissingDepEmpty(t *testing.T) {
 	}
 }
 
+func TestParseMissingDepValidatesRepo(t *testing.T) {
+	tests := []struct {
+		input string
+		ok    bool
+		desc  string
+	}{
+		{
+			"MISSING_DEP openssl openssl/openssl",
+			true, "valid owner/repo",
+		},
+		{
+			"MISSING_DEP foo ../../etc/passwd",
+			false, "path traversal",
+		},
+		{
+			"MISSING_DEP foo owner/repo; rm -rf /",
+			false, "command injection",
+		},
+		{
+			"MISSING_DEP foo https://evil.com/payload",
+			false, "URL instead of owner/repo",
+		},
+		{
+			"MISSING_DEP foo owner/repo/extra",
+			false, "too many slashes",
+		},
+		{
+			"MISSING_DEP foo /repo",
+			false, "missing owner",
+		},
+		{
+			"MISSING_DEP foo owner/",
+			false, "missing repo name",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.desc, func(t *testing.T) {
+			_, _, ok := parseMissingDep(tt.input)
+			if ok != tt.ok {
+				t.Errorf("parseMissingDep(%q) ok = %v, want %v",
+					tt.input, ok, tt.ok)
+			}
+		})
+	}
+}
+
 func TestBuildRecipeCheckerLocalFound(t *testing.T) {
 	dir := t.TempDir()
 	letter := filepath.Join(dir, "o")
@@ -88,5 +136,55 @@ func TestBuildRecipeCheckerLocalNotFound(t *testing.T) {
 	// "zzzznotreal" won't exist locally or in registry.
 	if checker("zzzznotreal") {
 		t.Error("expected false for nonexistent recipe")
+	}
+}
+
+func TestBuildRecipeCheckerEmptyName(t *testing.T) {
+	dir := t.TempDir()
+	checker := buildRecipeChecker(dir)
+	// Empty name must not panic.
+	if checker("") {
+		t.Error("expected false for empty name")
+	}
+}
+
+func TestCheckDepCycleDetected(t *testing.T) {
+	seen := map[string]bool{
+		"openssl/openssl": true,
+	}
+	err := checkDepCycle("openssl", "openssl/openssl", seen)
+	if err == nil {
+		t.Fatal("expected error for cycle")
+	}
+	if !strings.Contains(err.Error(), "cycle") {
+		t.Errorf("error should mention cycle, got: %v", err)
+	}
+}
+
+func TestCheckDepCycleNotDetected(t *testing.T) {
+	seen := map[string]bool{
+		"zlib/zlib": true,
+	}
+	err := checkDepCycle("openssl", "openssl/openssl", seen)
+	if err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+	// After the check, the dep should be added to seen.
+	if !seen["openssl/openssl"] {
+		t.Error("expected depRepo added to seen set")
+	}
+}
+
+func TestMoveRecipeEmptyName(t *testing.T) {
+	dir := t.TempDir()
+	// Create a file with no base name before the .toml
+	// extension: ".toml" → name becomes empty string.
+	src := filepath.Join(dir, ".toml")
+	if err := os.WriteFile(src, []byte("test"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, err := moveRecipe(src, dir)
+	if err == nil {
+		t.Fatal("expected error for empty package name")
 	}
 }
