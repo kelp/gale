@@ -254,7 +254,7 @@ func detectSourceRoot(srcDir string) (string, error) {
 		}
 	}
 
-	if len(dirs) == 1 && len(entries) == 1 {
+	if len(dirs) == 1 {
 		return filepath.Join(srcDir, dirs[0].Name()), nil
 	}
 
@@ -266,9 +266,12 @@ func detectSourceRoot(srcDir string) (string, error) {
 // with only essential variables to avoid interference from the
 // host environment (e.g., nix coreutils aliases).
 func runStep(step, sourceRoot, prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) error {
+	env, cleanup := buildEnv(prefixDir, jobs, version, system, debug, deps)
+	defer cleanup()
+
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = sourceRoot
-	cmd.Env = buildEnv(prefixDir, jobs, version, system, debug, deps)
+	cmd.Env = env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
 
@@ -312,13 +315,13 @@ func SystemDeps(system string) []string {
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
-func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) []string {
+func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) ([]string, func()) {
 	home := os.Getenv("HOME")
 	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
 	if err != nil {
-		toolsDir = filepath.Join(os.TempDir(), "gale-tools")
-		_ = os.MkdirAll(toolsDir, 0o755)
+		return nil, func() {}
 	}
+	cleanup := func() { os.RemoveAll(toolsDir) }
 	path := buildPath(home, toolsDir)
 	if deps != nil && len(deps.BinDirs) > 0 {
 		path = strings.Join(deps.BinDirs, ":") + ":" + path
@@ -473,14 +476,20 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 	// Deterministic ar timestamps.
 	env = append(env, "ZERO_AR_DATE=1")
 
-	return env
+	return env, cleanup
 }
 
 // setDefault appends key=val to env only if key is not
-// already set in the host environment.
+// already present in the env slice or the host environment.
 func setDefault(env *[]string, key, val string) {
-	if os.Getenv(key) != "" {
-		*env = append(*env, key+"="+os.Getenv(key))
+	prefix := key + "="
+	for _, e := range *env {
+		if strings.HasPrefix(e, prefix) {
+			return
+		}
+	}
+	if hostVal := os.Getenv(key); hostVal != "" {
+		*env = append(*env, key+"="+hostVal)
 		return
 	}
 	*env = append(*env, key+"="+val)
@@ -666,13 +675,18 @@ func sourceExtension(url string) string {
 	return ".tar.gz"
 }
 
-// copyFile copies src to dst.
+// copyFile copies src to dst, preserving file permissions.
 func copyFile(src, dst string) error {
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
 	defer in.Close()
+
+	srcInfo, err := in.Stat()
+	if err != nil {
+		return err
+	}
 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -686,6 +700,11 @@ func copyFile(src, dst string) error {
 	if _, err := io.Copy(out, in); err != nil {
 		out.Close()
 		os.Remove(dst)
+		return err
+	}
+
+	if err := out.Chmod(srcInfo.Mode()); err != nil {
+		out.Close()
 		return err
 	}
 

@@ -101,19 +101,21 @@ func FixupBinaries(prefixDir string) error {
 		// prefix (build-time paths).
 		var changed bool
 		deps, err := otoolDeps(file)
-		if err == nil {
-			for _, dep := range deps {
-				if !strings.HasPrefix(dep, prefixDir) {
-					continue
-				}
-				base := filepath.Base(dep)
-				if err := run("install_name_tool", "-change",
-					dep, "@rpath/"+base, file); err != nil {
-					return fmt.Errorf(
-						"change %s in %s: %w", dep, file, err)
-				}
-				changed = true
+		if err != nil {
+			return fmt.Errorf("otool deps %s: %w",
+				filepath.Base(file), err)
+		}
+		for _, dep := range deps {
+			if !strings.HasPrefix(dep, prefixDir) {
+				continue
 			}
+			base := filepath.Base(dep)
+			if err := run("install_name_tool", "-change",
+				dep, "@rpath/"+base, file); err != nil {
+				return fmt.Errorf(
+					"change %s in %s: %w", dep, file, err)
+			}
+			changed = true
 		}
 
 		// Add rpath entries so binaries/dylibs can find
