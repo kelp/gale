@@ -137,7 +137,7 @@ binary. Requires the `gh` CLI.
 ### Preview sync changes
 
 ```sh
-gale diff
+gale sync --dry-run
 ```
 
 Shows what `gale sync` would add, remove, or change

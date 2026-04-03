@@ -168,17 +168,17 @@ could also use this to exclude jobs.
 If `platforms` is absent, the recipe builds on all
 platforms (current behavior, no change needed).
 
-## 7. Auto-Detect --local from Context
+## 7. Auto-Detect --recipes from Context
 
 **Problem**: Running `gale build recipes/j/jq.toml`
 in the gale-recipes directory fails to resolve build
 deps because gale doesn't know to look at the sibling
-recipes. You have to remember `--local`.
+recipes. You have to remember `--recipes`.
 
 **Proposed behavior**: If the recipe file path is
 inside a directory that looks like a recipes repo
 (has `recipes/<letter>/<name>.toml` structure), gale
-automatically resolves deps locally. The `--local`
+automatically resolves deps locally. The `--recipes`
 flag becomes a way to force it when auto-detection
 doesn't apply.
 

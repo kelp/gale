@@ -37,7 +37,7 @@ Before running sync on a modified manifest, preview
 what would change:
 
 ```sh
-gale diff
+gale sync --dry-run
 ```
 
 Shows packages that would be added, removed, or

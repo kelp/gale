@@ -83,8 +83,8 @@ fetch needs to return both files. Options:
 The `.binaries` file is small (two lines per platform),
 so the extra fetch is negligible.
 
-For `--local` resolution, gale reads both files from the
-sibling recipes directory.
+For `--recipes` resolution, gale reads both files from
+the local recipes directory.
 
 ### CI Workflow Changes
 
