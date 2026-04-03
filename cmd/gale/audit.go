@@ -23,12 +23,15 @@ tampering.`,
 		name := args[0]
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		// Get installed version and hash from lockfile.
-		configPath, err := resolveConfigPath(false)
+		// Resolve context first so lockfile uses the same
+		// config path as the installer.
+		ctx, err := newCmdContext("")
 		if err != nil {
-			return fmt.Errorf("finding config: %w", err)
+			return fmt.Errorf("creating context: %w", err)
 		}
-		lf, err := lockfile.Read(lockfilePath(configPath))
+
+		// Get installed version and hash from lockfile.
+		lf, err := lockfile.Read(lockfilePath(ctx.GalePath))
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
@@ -40,12 +43,6 @@ tampering.`,
 		if pkg.SHA256 == "" {
 			return fmt.Errorf(
 				"%s has no SHA256 in lockfile — reinstall it", name)
-		}
-
-		// Resolve recipe at the pinned version.
-		ctx, err := newCmdContext("")
-		if err != nil {
-			return fmt.Errorf("creating context: %w", err)
 		}
 		r, err := resolveVersionedRecipe(ctx, name, pkg.Version)
 		if err != nil {

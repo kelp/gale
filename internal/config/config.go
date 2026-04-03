@@ -211,6 +211,102 @@ func PinPackage(path string, name string) error {
 	return WriteGaleConfig(path, cfg)
 }
 
+// WriteAppConfig writes an AppConfig to the given path atomically.
+func WriteAppConfig(path string, cfg *AppConfig) error {
+	var buf bytes.Buffer
+	enc := toml.NewEncoder(&buf)
+	if err := enc.Encode(cfg); err != nil {
+		return fmt.Errorf("encoding app config: %w", err)
+	}
+
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("creating config dir: %w", err)
+	}
+
+	tmp, err := os.CreateTemp(dir, ".config.toml.*")
+	if err != nil {
+		return fmt.Errorf("creating temp file: %w", err)
+	}
+	tmpName := tmp.Name()
+
+	if _, err := tmp.Write(buf.Bytes()); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("writing temp file: %w", err)
+	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("syncing temp file: %w", err)
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("closing temp file: %w", err)
+	}
+	if err := os.Rename(tmpName, path); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("renaming temp file: %w", err)
+	}
+	return nil
+}
+
+// AddRepo adds a repository to the config.toml at path.
+// Creates the file if it does not exist.
+func AddRepo(path string, repo Repo) error {
+	var cfg *AppConfig
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("reading app config: %w", err)
+		}
+		cfg = &AppConfig{}
+	} else {
+		cfg, err = ParseAppConfig(string(data))
+		if err != nil {
+			return err
+		}
+	}
+
+	cfg.Repos = append(cfg.Repos, repo)
+	return WriteAppConfig(path, cfg)
+}
+
+// ErrRepoNotFound is returned when a repo to remove does
+// not exist in the config.
+var ErrRepoNotFound = errors.New("repo not found")
+
+// RemoveRepo removes a repository by name from config.toml.
+func RemoveRepo(path string, name string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("reading app config: %w", err)
+	}
+
+	cfg, err := ParseAppConfig(string(data))
+	if err != nil {
+		return err
+	}
+
+	found := false
+	filtered := cfg.Repos[:0]
+	for _, r := range cfg.Repos {
+		if r.Name == name {
+			found = true
+			continue
+		}
+		filtered = append(filtered, r)
+	}
+
+	if !found {
+		return ErrRepoNotFound
+	}
+
+	cfg.Repos = filtered
+	return WriteAppConfig(path, cfg)
+}
+
 // UnpinPackage removes a pin from the gale.toml at path.
 func UnpinPackage(path string, name string) error {
 	data, err := os.ReadFile(path)

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"sort"
+	"strings"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/output"
@@ -57,6 +58,9 @@ version mismatches.`,
 // runRemoteSync checks for gale on the host, bootstraps if
 // needed, uploads gale.toml, and runs gale sync.
 func runRemoteSync(host string) error {
+	if err := validateHost(host); err != nil {
+		return err
+	}
 	out := output.New(os.Stderr, !noColor)
 
 	configPath, err := resolveConfigPath(false)
@@ -83,6 +87,9 @@ func runRemoteSync(host string) error {
 // runRemoteExport uploads gale.toml and runs sync without
 // checking whether gale is installed.
 func runRemoteExport(host string) error {
+	if err := validateHost(host); err != nil {
+		return err
+	}
 	out := output.New(os.Stderr, !noColor)
 
 	configPath, err := resolveConfigPath(false)
@@ -97,7 +104,7 @@ func runRemoteExport(host string) error {
 // runs gale sync.
 func uploadAndSync(out *output.Output, configPath, host string) error {
 	out.Info(fmt.Sprintf("Uploading gale.toml to %s...", host))
-	scp := exec.Command("scp", configPath,
+	scp := exec.Command("scp", "--", configPath,
 		host+":~/.gale/gale.toml")
 	scp.Stdin = os.Stdin
 	scp.Stderr = os.Stderr
@@ -119,12 +126,33 @@ func uploadAndSync(out *output.Output, configPath, host string) error {
 // bootstrapRemote installs gale on a remote host via the
 // install script.
 func bootstrapRemote(host string) error {
-	return sshCmd(host, "sh", "-c",
-		"curl -fsSL https://raw.githubusercontent.com/kelp/gale/main/scripts/install.sh | sh").Run()
+	return bootstrapCmd(host).Run()
+}
+
+// bootstrapCommit pins the install script URL to a specific
+// commit to avoid fetching potentially tampered code from a
+// mutable branch reference.
+const bootstrapCommit = "8a9a3bcf604cfad84121f3b1e7897fb0fc170861"
+
+// bootstrapCmd builds the SSH command for bootstrapping gale
+// on a remote host. Downloads the install script to a temp
+// file before executing (no curl-pipe-to-sh).
+func bootstrapCmd(host string) *exec.Cmd {
+	url := "https://raw.githubusercontent.com/kelp/gale/" +
+		bootstrapCommit + "/scripts/install.sh"
+	script := "set -e; " +
+		"t=$(mktemp); " +
+		"curl -fsSL " + url + " -o \"$t\"; " +
+		"sh \"$t\"; " +
+		"rm -f \"$t\""
+	return sshCmd(host, "sh", "-c", script)
 }
 
 // runRemoteDiff compares local and remote gale.toml packages.
 func runRemoteDiff(host string) error {
+	if err := validateHost(host); err != nil {
+		return err
+	}
 	out := output.New(os.Stderr, !noColor)
 
 	configPath, err := resolveConfigPath(false)
@@ -205,11 +233,25 @@ func runRemoteDiff(host string) error {
 	return nil
 }
 
+// validateHost checks that host is safe to pass to SSH/SCP.
+// Rejects empty strings and hosts starting with "-" to
+// prevent option injection.
+func validateHost(host string) error {
+	if host == "" {
+		return fmt.Errorf("host must not be empty")
+	}
+	if strings.HasPrefix(host, "-") {
+		return fmt.Errorf("invalid host %q: must not start with -", host)
+	}
+	return nil
+}
+
 // sshCmd creates an exec.Command for ssh with stdio
-// connected for interactive use.
+// connected for interactive use. Uses "--" before the host
+// to prevent option injection.
 func sshCmd(host string, args ...string) *exec.Cmd {
-	cmd := exec.Command("ssh",
-		append([]string{host}, args...)...)
+	sshArgs := append([]string{"--", host}, args...)
+	cmd := exec.Command("ssh", sshArgs...)
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
