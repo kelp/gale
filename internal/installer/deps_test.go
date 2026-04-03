@@ -224,6 +224,48 @@ func TestInstallBuildDepsEmpty(t *testing.T) {
 	}
 }
 
+func TestInstallBuildDepsTransitiveNamedDirs(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	// A depends on B, B depends on C.
+	preInstall(t, s, "b", "1.0")
+	preInstall(t, s, "c", "1.0")
+
+	recipes := map[string]*recipe.Recipe{
+		"b": makeRecipe("b", "1.0", []string{"c"}, nil),
+		"c": makeRecipe("c", "1.0", nil, nil),
+	}
+
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if r, ok := recipes[name]; ok {
+				return r, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	a := makeRecipe("a", "1.0", []string{"b"}, nil)
+	deps, err := inst.InstallBuildDeps(a)
+	if err != nil {
+		t.Fatalf("InstallBuildDeps: %v", err)
+	}
+
+	// Both B and C should appear in NamedDirs.
+	wantB := filepath.Join(storeRoot, "b", "1.0")
+	wantC := filepath.Join(storeRoot, "c", "1.0")
+	if deps.NamedDirs["b"] != wantB {
+		t.Errorf("NamedDirs[b] = %q, want %q",
+			deps.NamedDirs["b"], wantB)
+	}
+	if deps.NamedDirs["c"] != wantC {
+		t.Errorf("NamedDirs[c] = %q, want %q",
+			deps.NamedDirs["c"], wantC)
+	}
+}
+
 func contains(ss []string, s string) bool {
 	for _, v := range ss {
 		if v == s {

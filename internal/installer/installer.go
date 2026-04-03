@@ -374,6 +374,14 @@ func (inst *Installer) installDepsInner(
 			result.BinDirs, transitive.BinDirs...)
 		result.StoreDirs = append(
 			result.StoreDirs, transitive.StoreDirs...)
+		for k, v := range transitive.NamedDirs {
+			if result.NamedDirs == nil {
+				result.NamedDirs = make(map[string]string)
+			}
+			if _, exists := result.NamedDirs[k]; !exists {
+				result.NamedDirs[k] = v
+			}
+		}
 	}
 	return &result, nil
 }

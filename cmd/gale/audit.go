@@ -4,12 +4,9 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
-	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -55,18 +52,14 @@ tampering.`,
 			return fmt.Errorf("resolving recipe: %w", err)
 		}
 
-		// Install build dependencies.
+		// Install dependencies (build, runtime, and implicit
+		// system deps).
+		depPaths, err := ctx.Installer.InstallBuildDeps(r)
+		if err != nil {
+			return fmt.Errorf("install build deps: %w", err)
+		}
 		var deps *build.BuildDeps
-		if len(r.Dependencies.Build) > 0 {
-			inst := &installer.Installer{
-				Store:    store.NewStore(defaultStoreRoot()),
-				Resolver: ctx.Resolver,
-				Verifier: attestation.NewVerifier(),
-			}
-			depPaths, err := inst.InstallBuildDeps(r)
-			if err != nil {
-				return fmt.Errorf("install build deps: %w", err)
-			}
+		if len(depPaths.BinDirs) > 0 || len(depPaths.StoreDirs) > 0 {
 			deps = &build.BuildDeps{
 				BinDirs:   depPaths.BinDirs,
 				StoreDirs: depPaths.StoreDirs,

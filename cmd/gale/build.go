@@ -38,27 +38,28 @@ var buildCmd = &cobra.Command{
 			return fmt.Errorf("parsing recipe: %w", err)
 		}
 
-		// Resolve and install build dependencies.
+		// Resolve and install dependencies (build, runtime,
+		// and implicit system deps).
+		var resolver installer.RecipeResolver
+		if recipesDir := detectRecipesRepo(recipePath); recipesDir != "" {
+			resolver = localRecipeResolver(recipesDir)
+		} else {
+			reg := newRegistry()
+			resolver = reg.FetchRecipe
+		}
+
+		inst := &installer.Installer{
+			Store:    store.NewStore(defaultStoreRoot()),
+			Resolver: resolver,
+			Verifier: attestation.NewVerifier(),
+		}
+
+		depPaths, err := inst.InstallBuildDeps(r)
+		if err != nil {
+			return fmt.Errorf("install build deps: %w", err)
+		}
 		var deps *build.BuildDeps
-		if len(r.Dependencies.Build) > 0 {
-			var resolver installer.RecipeResolver
-			if recipesDir := detectRecipesRepo(recipePath); recipesDir != "" {
-				resolver = localRecipeResolver(recipesDir)
-			} else {
-				reg := newRegistry()
-				resolver = reg.FetchRecipe
-			}
-
-			inst := &installer.Installer{
-				Store:    store.NewStore(defaultStoreRoot()),
-				Resolver: resolver,
-				Verifier: attestation.NewVerifier(),
-			}
-
-			depPaths, err := inst.InstallBuildDeps(r)
-			if err != nil {
-				return fmt.Errorf("install build deps: %w", err)
-			}
+		if len(depPaths.BinDirs) > 0 || len(depPaths.StoreDirs) > 0 {
 			deps = &build.BuildDeps{
 				BinDirs:   depPaths.BinDirs,
 				StoreDirs: depPaths.StoreDirs,
