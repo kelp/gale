@@ -2,6 +2,7 @@ package recipe
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -126,7 +127,11 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 		Dependencies: raw.Dependencies,
 	}
 
-	r.Build = parseBuild(raw.Build)
+	b, err := parseBuild(raw.Build)
+	if err != nil {
+		return nil, err
+	}
+	r.Build = b
 
 	if r.Package.Name == "" {
 		return nil, fmt.Errorf("missing required field: package.name")
@@ -145,12 +150,30 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 	return r, nil
 }
 
+// validPlatformKey checks whether a key looks like a
+// valid GOOS-GOARCH platform string (two hyphen-separated
+// lowercase-alphanumeric parts).
+func validPlatformKey(key string) bool {
+	parts := strings.SplitN(key, "-", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return false
+	}
+	for _, p := range parts {
+		for _, c := range p {
+			if (c < 'a' || c > 'z') && (c < '0' || c > '9') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // parseBuild extracts Build and per-platform overrides
 // from the raw TOML map.
-func parseBuild(raw map[string]interface{}) Build {
+func parseBuild(raw map[string]interface{}) (Build, error) {
 	b := Build{}
 	if raw == nil {
-		return b
+		return b, nil
 	}
 
 	// Extract top-level steps.
@@ -171,14 +194,27 @@ func parseBuild(raw map[string]interface{}) Build {
 		}
 	}
 
+	// Extract debug.
+	if dbg, ok := raw["debug"]; ok {
+		if d, ok := dbg.(bool); ok {
+			b.Debug = d
+		}
+	}
+
 	// Extract per-platform overrides (sub-tables).
 	for key, val := range raw {
-		if key == "steps" || key == "system" {
+		if key == "steps" || key == "system" || key == "debug" {
 			continue
 		}
 		sub, ok := val.(map[string]interface{})
 		if !ok {
 			continue
+		}
+		if !validPlatformKey(key) {
+			return Build{}, fmt.Errorf(
+				"unrecognized build key %q: expected platform in os-arch format",
+				key,
+			)
 		}
 		pb := PlatformBuild{}
 		if steps, ok := sub["steps"]; ok {
@@ -196,5 +232,5 @@ func parseBuild(raw map[string]interface{}) Build {
 		b.Platform[key] = pb
 	}
 
-	return b
+	return b, nil
 }

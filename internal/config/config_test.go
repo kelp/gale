@@ -2,8 +2,10 @@ package config
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 )
 
@@ -827,5 +829,52 @@ func TestParseGaleConfigUnpinnedPackage(t *testing.T) {
 	}
 	if cfg.Pinned["ripgrep"] {
 		t.Error("expected Pinned[ripgrep] to be false")
+	}
+}
+
+// --- Behavior: Concurrent config writes are serialized ---
+
+func TestConcurrentAddPackageNoLostWrites(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+
+	// Start with an empty config.
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatalf("failed to write initial gale.toml: %v", err)
+	}
+
+	const n = 10
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			name := fmt.Sprintf("pkg%d", idx)
+			errs[idx] = AddPackage(path, name, "1.0.0")
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("AddPackage(pkg%d) error: %v", i, err)
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseGaleConfig error: %v", err)
+	}
+
+	if len(cfg.Packages) != n {
+		t.Errorf("Packages count = %d, want %d: "+
+			"concurrent writes lost data", len(cfg.Packages), n)
 	}
 }

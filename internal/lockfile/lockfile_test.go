@@ -206,7 +206,7 @@ func TestIsStaleInSync(t *testing.T) {
 	}
 }
 
-func TestIsStaleTOMLNewer(t *testing.T) {
+func TestIsStaleTOMLNewerContentMatches(t *testing.T) {
 	dir := t.TempDir()
 	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
@@ -226,12 +226,43 @@ func TestIsStaleTOMLNewer(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Even though toml is newer by mtime, content matches
+	// so the lock is not stale.
 	stale, err := IsStale(tomlPath, lockPath, pkgs)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if stale {
+		t.Error("not stale when content matches")
+	}
+}
+
+func TestIsStaleTOMLNewerContentDiffers(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "gale.toml")
+	lockPath := filepath.Join(dir, "gale.lock")
+
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.7.1"},
+	})
+
+	past := time.Now().Add(-10 * time.Second)
+	if err := os.Chtimes(lockPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.8.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	stale, err := IsStale(tomlPath, lockPath,
+		map[string]string{"jq": "1.8.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !stale {
-		t.Error("expected stale when toml is newer")
+		t.Error("expected stale when content differs")
 	}
 }
 
@@ -631,6 +662,111 @@ func TestIsStalePackageMissingFromLock(t *testing.T) {
 	}
 	if !stale {
 		t.Error("expected stale when pkg missing from lock")
+	}
+}
+
+// --- Behavior: clock skew safety ---
+
+func TestIsStaleClockSkewContentDiffers(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "gale.toml")
+	lockPath := filepath.Join(dir, "gale.lock")
+
+	// Write lock with jq 1.7.1.
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.7.1"},
+	})
+
+	// Write toml file.
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.8.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate clock skew: toml appears older than lock.
+	past := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(tomlPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// Despite mtime saying lock is newer, content shows
+	// version 1.8.0 vs 1.7.1. Must detect staleness.
+	stale, err := IsStale(tomlPath, lockPath,
+		map[string]string{"jq": "1.8.0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stale {
+		t.Error("IsStale = false, want true: " +
+			"content differs despite favorable mtime")
+	}
+}
+
+func TestIsStaleNewerMtimeContentMatches(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "gale.toml")
+	lockPath := filepath.Join(dir, "gale.lock")
+
+	// Write lock with jq 1.7.1.
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.7.1"},
+	})
+
+	// Push lock mtime into the past.
+	past := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(lockPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write toml file (now, so it's newer than lock).
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Toml is newer by mtime, but content matches.
+	// Should NOT be stale since packages are identical.
+	stale, err := IsStale(tomlPath, lockPath,
+		map[string]string{"jq": "1.7.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale {
+		t.Error("IsStale = true, want false: " +
+			"toml newer by mtime but content matches")
+	}
+}
+
+func TestIsStaleClockSkewContentMatches(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "gale.toml")
+	lockPath := filepath.Join(dir, "gale.lock")
+
+	// Write lock with jq 1.7.1.
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.7.1"},
+	})
+
+	// Write toml file.
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate clock skew: toml appears older than lock.
+	past := time.Now().Add(-1 * time.Hour)
+	if err := os.Chtimes(tomlPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// Content matches, so not stale despite clock skew.
+	stale, err := IsStale(tomlPath, lockPath,
+		map[string]string{"jq": "1.7.1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stale {
+		t.Error("IsStale = true, want false: content matches")
 	}
 }
 
