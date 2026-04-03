@@ -1,5 +1,27 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Build environment now exports `DEP_CPPFLAGS` and
+  `DEP_LDFLAGS` with dependency include/library paths.
+  Recipes that override `CPPFLAGS` inline can use
+  `${DEP_CPPFLAGS}` to preserve dep paths.
+
+### Fixed
+
+- `gale build` and `gale audit` now resolve all
+  dependency types (build, runtime, and implicit system
+  deps). Previously only explicit build deps triggered
+  resolution, so recipes with only runtime deps were
+  built without their dependencies.
+- Transitive dependency `DEP_*` environment variables
+  are now available during builds. Previously only
+  direct deps appeared in `NamedDirs`, so `DEP_*` vars
+  for indirect deps were missing from the build
+  environment.
+
 ## v0.8.1 — 2026-04-03
 
 ### Fixed

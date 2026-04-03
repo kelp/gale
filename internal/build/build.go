@@ -436,6 +436,17 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 		depCPPFLAGS = strings.Join(cppParts, " ")
 		depLDFLAGS = strings.Join(ldParts, " ")
 	}
+	// Export dep flags as DEP_CPPFLAGS / DEP_LDFLAGS so
+	// recipes that override CPPFLAGS inline can still
+	// reference the dep include/lib paths:
+	//   CPPFLAGS="${DEP_CPPFLAGS} -DFEATURE=1" ./configure
+	if depCPPFLAGS != "" {
+		env = append(env, "DEP_CPPFLAGS="+depCPPFLAGS)
+	}
+	if depLDFLAGS != "" {
+		env = append(env, "DEP_LDFLAGS="+depLDFLAGS)
+	}
+
 	// On macOS, always add headerpad so install_name_tool
 	// can add LC_RPATH entries post-build.
 	headerpad := ""

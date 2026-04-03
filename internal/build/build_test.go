@@ -1166,6 +1166,56 @@ func TestBuildEnvUserCFLAGSNotOverridden(t *testing.T) {
 	}
 }
 
+func TestBuildEnvExportsDepCPPFLAGSAndDepLDFLAGS(t *testing.T) {
+	depDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(depDir, "include"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(depDir, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	deps := &BuildDeps{
+		StoreDirs: []string{depDir},
+	}
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, deps)
+	envMap := envToMap(env)
+
+	// DEP_CPPFLAGS should contain -I for dep include dir.
+	depCPP, ok := envMap["DEP_CPPFLAGS"]
+	if !ok {
+		t.Fatal("expected DEP_CPPFLAGS in env")
+	}
+	wantInc := "-I" + filepath.Join(depDir, "include")
+	if !strings.Contains(depCPP, wantInc) {
+		t.Errorf("DEP_CPPFLAGS = %q, want to contain %q",
+			depCPP, wantInc)
+	}
+
+	// DEP_LDFLAGS should contain -L for dep lib dir.
+	depLD, ok := envMap["DEP_LDFLAGS"]
+	if !ok {
+		t.Fatal("expected DEP_LDFLAGS in env")
+	}
+	wantLib := "-L" + filepath.Join(depDir, "lib")
+	if !strings.Contains(depLD, wantLib) {
+		t.Errorf("DEP_LDFLAGS = %q, want to contain %q",
+			depLD, wantLib)
+	}
+}
+
+func TestBuildEnvNoDepFlagsWithoutDeps(t *testing.T) {
+	env := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	envMap := envToMap(env)
+
+	if _, ok := envMap["DEP_CPPFLAGS"]; ok {
+		t.Error("DEP_CPPFLAGS should not be set without deps")
+	}
+	if _, ok := envMap["DEP_LDFLAGS"]; ok {
+		t.Error("DEP_LDFLAGS should not be set without deps")
+	}
+}
+
 // --- Behavior 17: sourceExtension extracts archive suffix ---
 
 func TestSourceExtensionExtractsCorrectSuffix(t *testing.T) {
