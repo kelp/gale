@@ -38,8 +38,10 @@ var lintCmd = &cobra.Command{
 			for _, issue := range issues {
 				switch issue.Level {
 				case "error":
-					out.Warn(fmt.Sprintf(
-						"%s: %s", path, issue.Message))
+					lintIssueOutput(out, lint.Issue{
+						Level:   issue.Level,
+						Message: fmt.Sprintf("%s: %s", path, issue.Message),
+					})
 					hasErrors = true
 				case "warning":
 					out.Info(fmt.Sprintf(
@@ -53,6 +55,11 @@ var lintCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// lintIssueOutput outputs an error-level lint issue.
+func lintIssueOutput(out *output.Output, issue lint.Issue) {
+	out.Error(issue.Message)
 }
 
 func init() {

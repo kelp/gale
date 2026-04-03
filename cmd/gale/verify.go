@@ -27,12 +27,15 @@ var verifyCmd = &cobra.Command{
 					"  Install: https://cli.github.com")
 		}
 
-		// Find the lockfile to get the version.
-		configPath, err := resolveConfigPath(false)
+		// Resolve context first so lockfile uses the same
+		// config path the installer would use.
+		ctx, err := newCmdContext("")
 		if err != nil {
-			return fmt.Errorf("finding config: %w", err)
+			return fmt.Errorf("creating context: %w", err)
 		}
-		lf, err := lockfile.Read(lockfilePath(configPath))
+
+		// Find the lockfile to get the version.
+		lf, err := lockfile.Read(lockfilePath(ctx.GalePath))
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}

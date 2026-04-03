@@ -829,3 +829,162 @@ func TestParseGaleConfigUnpinnedPackage(t *testing.T) {
 		t.Error("expected Pinned[ripgrep] to be false")
 	}
 }
+
+// --- Behavior: Write and read AppConfig ---
+
+func TestWriteAppConfigRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	cfg := &AppConfig{
+		Repos: []Repo{
+			{Name: "core", URL: "https://example.com/recipes", Priority: 1},
+		},
+	}
+
+	if err := WriteAppConfig(path, cfg); err != nil {
+		t.Fatalf("WriteAppConfig error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	parsed, err := ParseAppConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseAppConfig error: %v", err)
+	}
+
+	if len(parsed.Repos) != 1 {
+		t.Fatalf("Repos length = %d, want 1", len(parsed.Repos))
+	}
+	if parsed.Repos[0].Name != "core" {
+		t.Errorf("Repos[0].Name = %q, want %q",
+			parsed.Repos[0].Name, "core")
+	}
+}
+
+// --- Behavior: Add repo to config.toml ---
+
+func TestAddRepoToEmptyConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	err := AddRepo(path, Repo{
+		Name: "core",
+		URL:  "https://example.com/recipes",
+	})
+	if err != nil {
+		t.Fatalf("AddRepo error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	cfg, err := ParseAppConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseAppConfig error: %v", err)
+	}
+
+	if len(cfg.Repos) != 1 {
+		t.Fatalf("Repos length = %d, want 1", len(cfg.Repos))
+	}
+	if cfg.Repos[0].Name != "core" {
+		t.Errorf("Repos[0].Name = %q, want %q",
+			cfg.Repos[0].Name, "core")
+	}
+	if cfg.Repos[0].URL != "https://example.com/recipes" {
+		t.Errorf("Repos[0].URL = %q, want %q",
+			cfg.Repos[0].URL, "https://example.com/recipes")
+	}
+}
+
+func TestAddRepoToExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	initial := "[[repos]]\nname = \"core\"\nurl = \"https://example.com/core\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("writing initial: %v", err)
+	}
+
+	err := AddRepo(path, Repo{
+		Name: "community",
+		URL:  "https://example.com/community",
+	})
+	if err != nil {
+		t.Fatalf("AddRepo error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading file: %v", err)
+	}
+
+	cfg, err := ParseAppConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseAppConfig error: %v", err)
+	}
+
+	if len(cfg.Repos) != 2 {
+		t.Fatalf("Repos length = %d, want 2", len(cfg.Repos))
+	}
+	if cfg.Repos[1].Name != "community" {
+		t.Errorf("Repos[1].Name = %q, want %q",
+			cfg.Repos[1].Name, "community")
+	}
+}
+
+// --- Behavior: Remove repo from config.toml ---
+
+func TestRemoveRepoFromConfig(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	initial := "[[repos]]\nname = \"core\"\nurl = \"https://example.com/core\"\n\n" +
+		"[[repos]]\nname = \"community\"\nurl = \"https://example.com/community\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("writing initial: %v", err)
+	}
+
+	err := RemoveRepo(path, "core")
+	if err != nil {
+		t.Fatalf("RemoveRepo error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading file: %v", err)
+	}
+
+	cfg, err := ParseAppConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseAppConfig error: %v", err)
+	}
+
+	if len(cfg.Repos) != 1 {
+		t.Fatalf("Repos length = %d, want 1", len(cfg.Repos))
+	}
+	if cfg.Repos[0].Name != "community" {
+		t.Errorf("Repos[0].Name = %q, want %q",
+			cfg.Repos[0].Name, "community")
+	}
+}
+
+func TestRemoveRepoNotFound(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	initial := "[[repos]]\nname = \"core\"\nurl = \"https://example.com/core\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("writing initial: %v", err)
+	}
+
+	err := RemoveRepo(path, "nonexistent")
+	if err == nil {
+		t.Fatal("expected error when removing nonexistent repo")
+	}
+}

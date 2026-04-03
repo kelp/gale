@@ -42,6 +42,11 @@ var repoAddCmd = &cobra.Command{
 			return fmt.Errorf("cloning repo: %w", err)
 		}
 
+		configPath := filepath.Join(galeDir, "config.toml")
+		if err := addRepoToConfig(configPath, name, url); err != nil {
+			return fmt.Errorf("persisting repo config: %w", err)
+		}
+
 		out.Success(fmt.Sprintf("Added repo %s from %s", name, url))
 		return nil
 	},
@@ -58,6 +63,11 @@ var repoRemoveCmd = &cobra.Command{
 		galeDir, err := galeConfigDir()
 		if err != nil {
 			return err
+		}
+
+		configPath := filepath.Join(galeDir, "config.toml")
+		if err := removeRepoFromConfig(configPath, name); err != nil {
+			return fmt.Errorf("updating config: %w", err)
 		}
 
 		cacheDir := filepath.Join(galeDir, "repos", name)
@@ -143,6 +153,19 @@ var repoInitCmd = &cobra.Command{
 		out.Warn("Keep keys.json private — do not commit it")
 		return nil
 	},
+}
+
+// addRepoToConfig persists a repo entry to config.toml.
+func addRepoToConfig(configPath, name, url string) error {
+	return config.AddRepo(configPath, config.Repo{
+		Name: name,
+		URL:  url,
+	})
+}
+
+// removeRepoFromConfig removes a repo entry from config.toml.
+func removeRepoFromConfig(configPath, name string) error {
+	return config.RemoveRepo(configPath, name)
 }
 
 func init() {
