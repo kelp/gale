@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var diffLocal bool
+var diffRecipes string
 
 var diffCmd = &cobra.Command{
 	Use:   "diff",
@@ -17,7 +17,7 @@ var diffCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		ctx, err := newCmdContext(diffLocal)
+		ctx, err := newCmdContext(diffRecipes)
 		if err != nil {
 			return err
 		}
@@ -73,7 +73,8 @@ var diffCmd = &cobra.Command{
 }
 
 func init() {
-	diffCmd.Flags().BoolVar(&diffLocal, "local", false,
-		"Resolve recipes from sibling gale-recipes directory")
+	diffCmd.Flags().StringVar(&diffRecipes, "recipes", "",
+		"Use local recipes directory (default: ../gale-recipes/)")
+	diffCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	rootCmd.AddCommand(diffCmd)
 }

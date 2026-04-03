@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var outdatedLocal bool
+var outdatedRecipes string
 
 // outdatedItem represents a package with a newer version.
 type outdatedItem struct {
@@ -24,7 +24,7 @@ var outdatedCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		ctx, err := newCmdContext(outdatedLocal)
+		ctx, err := newCmdContext(outdatedRecipes)
 		if err != nil {
 			return err
 		}
@@ -81,7 +81,8 @@ func formatOutdated(items []outdatedItem) []string {
 }
 
 func init() {
-	outdatedCmd.Flags().BoolVar(&outdatedLocal, "local", false,
-		"Resolve recipes from sibling gale-recipes directory")
+	outdatedCmd.Flags().StringVar(&outdatedRecipes, "recipes", "",
+		"Use local recipes directory (default: ../gale-recipes/)")
+	outdatedCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	rootCmd.AddCommand(outdatedCmd)
 }

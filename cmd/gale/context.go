@@ -24,13 +24,14 @@ type cmdContext struct {
 	StoreRoot string
 	Resolver  installer.RecipeResolver
 	Installer *installer.Installer
-	Registry  *registry.Registry // nil when --local
+	Registry  *registry.Registry // nil when --recipes
 }
 
 // newCmdContext resolves the config, store, and installer.
-// If local is true, recipes are resolved from a sibling
-// gale-recipes directory.
-func newCmdContext(local bool) (*cmdContext, error) {
+// When recipesPath is non-empty, recipes are resolved locally:
+// "auto" uses sibling gale-recipes/ detection, any other value
+// is used as an explicit path.
+func newCmdContext(recipesPath string) (*cmdContext, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("getting working dir: %w", err)
@@ -56,8 +57,12 @@ func newCmdContext(local bool) (*cmdContext, error) {
 	storeRoot := defaultStoreRoot()
 	var resolver installer.RecipeResolver
 	var reg *registry.Registry
-	if local {
-		recipesDir, dirErr := findLocalRecipesDir(cwd)
+	if recipesPath != "" {
+		override := ""
+		if recipesPath != "auto" {
+			override = recipesPath
+		}
+		recipesDir, dirErr := findLocalRecipesDir(cwd, override)
 		if dirErr != nil {
 			return nil, dirErr
 		}
@@ -271,7 +276,7 @@ func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Reci
 	}
 
 	// Try versioned registry fetch (not available in
-	// --local mode).
+	// --recipes mode).
 	if ctx.Registry != nil {
 		pinned, vErr := ctx.Registry.FetchRecipeVersion(
 			name, version)

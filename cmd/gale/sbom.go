@@ -65,7 +65,7 @@ var sbomCmd = &cobra.Command{
 		}
 
 		// Resolve recipes for metadata.
-		ctx, err := newCmdContext(false)
+		ctx, err := newCmdContext("")
 		if err != nil {
 			return fmt.Errorf("creating context: %w", err)
 		}

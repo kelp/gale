@@ -11,7 +11,7 @@ import (
 var (
 	addGlobal  bool
 	addProject bool
-	addLocal   bool
+	addRecipes string
 )
 
 var addCmd = &cobra.Command{
@@ -32,8 +32,12 @@ var addCmd = &cobra.Command{
 		}
 
 		var resolver func(string) (string, error)
-		if addLocal {
-			recipesDir, dirErr := findLocalRecipesDir(cwd)
+		if addRecipes != "" {
+			override := ""
+			if addRecipes != "auto" {
+				override = addRecipes
+			}
+			recipesDir, dirErr := findLocalRecipesDir(cwd, override)
 			if dirErr != nil {
 				return dirErr
 			}
@@ -88,7 +92,8 @@ func init() {
 		false, "Add to global config")
 	addCmd.Flags().BoolVarP(&addProject, "project", "p",
 		false, "Add to project config")
-	addCmd.Flags().BoolVar(&addLocal, "local", false,
-		"Resolve recipes from sibling gale-recipes directory")
+	addCmd.Flags().StringVar(&addRecipes, "recipes", "",
+		"Use local recipes directory (default: ../gale-recipes/)")
+	addCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	rootCmd.AddCommand(addCmd)
 }

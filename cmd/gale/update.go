@@ -10,10 +10,10 @@ import (
 )
 
 var (
-	updateLocal  bool
-	updateSource string
-	updateGit    bool
-	updateRecipe string
+	updateRecipes string
+	updateSource  string
+	updateGit     bool
+	updateRecipe  string
 )
 
 var updateCmd = &cobra.Command{
@@ -30,7 +30,7 @@ var updateCmd = &cobra.Command{
 
 		// Resolve context for config path. All branches
 		// use ctx.GalePath for config writes.
-		ctx, err := newCmdContext(updateLocal)
+		ctx, err := newCmdContext(updateRecipes)
 		if err != nil {
 			return err
 		}
@@ -201,12 +201,13 @@ func updateFromGit(name string, ctx *cmdContext, out *output.Output) error {
 		name, remoteHash))
 	return installFromGit(name, updateRecipe,
 		ctx.GalePath, ctx.GaleDir, ctx.StoreRoot,
-		updateLocal, out)
+		updateRecipes, out)
 }
 
 func init() {
-	updateCmd.Flags().BoolVar(&updateLocal, "local", false,
-		"Resolve recipes from sibling gale-recipes directory")
+	updateCmd.Flags().StringVar(&updateRecipes, "recipes", "",
+		"Use local recipes directory (default: ../gale-recipes/)")
+	updateCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	updateCmd.Flags().StringVar(&updateSource, "source", "",
 		"Rebuild from a local source directory")
 	updateCmd.Flags().BoolVar(&updateGit, "git", false,

@@ -10,7 +10,7 @@ import (
 )
 
 var (
-	syncLocal   bool
+	syncRecipes string
 	syncSource  bool
 	syncGlobal  bool
 	syncProject bool
@@ -25,16 +25,16 @@ var syncCmd = &cobra.Command{
 			return fmt.Errorf(
 				"cannot use both --global and --project")
 		}
-		return runSync(syncLocal, syncSource, syncGlobal)
+		return runSync(syncRecipes, syncSource, syncGlobal)
 	},
 }
 
 // runSync performs the sync operation: resolves recipes,
 // installs missing packages, and rebuilds the generation.
-func runSync(local, sourceOnly, global bool) error {
+func runSync(recipesPath string, sourceOnly, global bool) error {
 	out := output.New(os.Stderr, !noColor)
 
-	ctx, err := newCmdContext(local)
+	ctx, err := newCmdContext(recipesPath)
 	if err != nil {
 		return err
 	}
@@ -149,8 +149,9 @@ func init() {
 		false, "Sync global packages")
 	syncCmd.Flags().BoolVarP(&syncProject, "project", "p",
 		false, "Sync project packages")
-	syncCmd.Flags().BoolVar(&syncLocal, "local", false,
-		"Resolve recipes from sibling gale-recipes directory")
+	syncCmd.Flags().StringVar(&syncRecipes, "recipes", "",
+		"Use local recipes directory (default: ../gale-recipes/)")
+	syncCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	syncCmd.Flags().BoolVar(&syncSource, "source", false,
 		"Build all packages from source (skip prebuilt binaries)")
 	rootCmd.AddCommand(syncCmd)

@@ -21,7 +21,7 @@ import (
 var (
 	installGlobal  bool
 	installProject bool
-	installLocal   bool
+	installRecipes string
 	installRecipe  string
 	installSource  string
 	installGit     bool
@@ -66,7 +66,7 @@ var installCmd = &cobra.Command{
 		// If --git flag is provided, clone and build from git.
 		if installGit {
 			return installFromGit(name, installRecipe,
-				configPath, galeDir, storeRoot, installLocal, out)
+				configPath, galeDir, storeRoot, installRecipes, out)
 		}
 
 		// If --recipe flag is provided, install from recipe file.
@@ -77,8 +77,12 @@ var installCmd = &cobra.Command{
 
 		// Fetch recipe from registry or local recipes.
 		var resolver installer.RecipeResolver
-		if installLocal {
-			recipesDir, dirErr := findLocalRecipesDir(cwd)
+		if installRecipes != "" {
+			override := ""
+			if installRecipes != "auto" {
+				override = installRecipes
+			}
+			recipesDir, dirErr := findLocalRecipesDir(cwd, override)
 			if dirErr != nil {
 				return dirErr
 			}
@@ -90,7 +94,7 @@ var installCmd = &cobra.Command{
 		out.Info(fmt.Sprintf("Fetching recipe for %s...", name))
 
 		var r *recipe.Recipe
-		if version != "" && version != "latest" && !installLocal {
+		if version != "" && version != "latest" && installRecipes == "" {
 			// Specific version requested — fetch from
 			// versioned registry index.
 			reg := newRegistry()
@@ -138,8 +142,9 @@ func init() {
 		false, "Install to global config")
 	installCmd.Flags().BoolVarP(&installProject, "project", "p",
 		false, "Install to project config")
-	installCmd.Flags().BoolVar(&installLocal, "local", false,
-		"Resolve recipes from sibling gale-recipes directory")
+	installCmd.Flags().StringVar(&installRecipes, "recipes", "",
+		"Use local recipes directory (default: ../gale-recipes/)")
+	installCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	installCmd.Flags().StringVar(&installRecipe, "recipe", "",
 		"Install from a recipe TOML file")
 	installCmd.Flags().StringVar(&installSource, "source", "",
@@ -204,18 +209,22 @@ func isStdinTTY() bool {
 	return fi.Mode()&os.ModeCharDevice != 0
 }
 
-func installFromGit(name, recipePath, configPath, galeDir, storeRoot string, local bool, out *output.Output) error {
+func installFromGit(name, recipePath, configPath, galeDir, storeRoot, recipesFlag string, out *output.Output) error {
 	// Build resolver for recipe lookup and dep resolution.
 	var resolver installer.RecipeResolver
 	switch {
 	case recipePath != "":
 		resolver = recipeFileResolver(recipePath)
-	case local:
+	case recipesFlag != "":
 		cwd, err := os.Getwd()
 		if err != nil {
 			return fmt.Errorf("getting working dir: %w", err)
 		}
-		recipesDir, err := findLocalRecipesDir(cwd)
+		override := ""
+		if recipesFlag != "auto" {
+			override = recipesFlag
+		}
+		recipesDir, err := findLocalRecipesDir(cwd, override)
 		if err != nil {
 			return err
 		}

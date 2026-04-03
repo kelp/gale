@@ -46,7 +46,7 @@ tampering.`,
 		}
 
 		// Resolve recipe at the pinned version.
-		ctx, err := newCmdContext(false)
+		ctx, err := newCmdContext("")
 		if err != nil {
 			return fmt.Errorf("creating context: %w", err)
 		}

@@ -52,9 +52,25 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 	}
 }
 
-// findLocalRecipesDir finds a sibling gale-recipes directory
-// relative to dir. Returns the path to the recipes/ subdirectory.
-func findLocalRecipesDir(dir string) (string, error) {
+// findLocalRecipesDir locates a local recipes directory.
+// When override is non-empty, it resolves that path directly
+// (using its recipes/ subdirectory if present). When override
+// is empty, it looks for a sibling gale-recipes directory
+// relative to dir.
+func findLocalRecipesDir(dir, override string) (string, error) {
+	if override != "" {
+		absOverride, err := filepath.Abs(override)
+		if err != nil {
+			return "", fmt.Errorf("resolve path: %w", err)
+		}
+		// If override contains a recipes/ subdir, use that.
+		sub := filepath.Join(absOverride, "recipes")
+		if _, err := os.Stat(sub); err == nil {
+			return sub, nil
+		}
+		return absOverride, nil
+	}
+
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
 		return "", fmt.Errorf("resolve path: %w", err)
