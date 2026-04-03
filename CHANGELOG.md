@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `--source` flag on `gale sync` builds all packages
+  from source, skipping prebuilt binaries.
+- `-g`/`--global` and `-p`/`--project` scope flags on
+  `gale sync` for explicit scope selection.
+
+### Fixed
+
+- `FixupBinaries` and `AddDepRpaths` skip files inside
+  `.dSYM` debug symbol bundles. These contain Mach-O
+  DWARF data that install_name_tool cannot modify.
+  Fixes ruby and other packages that emit dSYM bundles
+  during build.
+
 ## v0.7.0 — 2026-04-01
 
 ### Added
