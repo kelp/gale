@@ -79,7 +79,8 @@ gale add <pkg> [pkg...]   Add to gale.toml without installing
 gale sync                 Install all packages in gale.toml
 gale update [pkg...]      Update packages to latest version
 gale list                 List packages in gale.toml
-gale gc                   Remove unused versions from store
+gale info <pkg>           Show package information
+gale gc                   Remove unused versions + generations
 gale doctor               Diagnose setup issues
 gale env                  Print export PATH for current scope
 gale init                 Bootstrap project (gale.toml, .envrc)
@@ -92,21 +93,30 @@ gale run <cmd>            Run command in project environment
 gale audit <pkg>         Rebuild and compare SHA256
 gale verify <pkg>        Check Sigstore attestation
 gale sbom [pkg]          Software bill of materials
+gale generations          List and manage generations
 ```
 
 ### Key Flags
 
-- `--local` (sync, update): resolve recipes from
-  sibling `../gale-recipes/` directory. `gale build`
+- `--recipes [path]` (install, add, update, sync,
+  outdated): resolve recipes from local directory.
+  Defaults to sibling `../gale-recipes/`. `gale build`
   auto-detects when the recipe is inside a recipes
   repo and resolves deps locally.
-- `--source <dir>` (install, update): build from a
+- `--path <dir>` (install, update): build from a
   local source directory, version from git hash
-- `--git` (install, update, build): clone repo and
-  build from HEAD instead of downloading tarball
-- `--recipe <file>` (install): use a local recipe file
+- `--build` (install, update, sync): build from
+  source, skip prebuilt binaries
+- `--git` (install, update, sync, build): clone repo
+  and build from HEAD instead of downloading tarball
+- `--recipe <file>` (install, update): use a local
+  recipe file
+- `-g/--global`, `-p/--project` (install, add,
+  remove, sync, update): scope override. Defaults
+  to project if gale.toml exists, else global.
+- `-v/--verbose` (global): verbose output
+- `-n/--dry-run` (global): show what would happen
 - `--no-color` (global): disable colored output
-- `--dry-run` (gc): preview without removing
 - `--json` (sbom): machine-readable JSON output
 - `--vars-only` (env): print only [vars] exports
 
