@@ -24,6 +24,64 @@ url = "https://example.com/testpkg-1.0.0.tar.gz"
 sha256 = "abc123def456"
 `
 
+// testKeyPair is a shared keypair for tests that need
+// signed recipes but aren't testing verification itself.
+var testKeyPair *trust.KeyPair
+
+func init() {
+	kp, err := trust.GenerateKeyPair()
+	if err != nil {
+		panic("generate test keypair: " + err.Error())
+	}
+	testKeyPair = kp
+}
+
+// signedHandler returns an http.HandlerFunc that serves
+// recipes and their signatures for the given files map.
+// Keys are URL paths (e.g., "/recipes/t/testpkg.toml"),
+// values are file contents. Signature endpoints (*.sig)
+// are auto-generated using the test keypair.
+func signedHandler(files map[string]string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.Path
+
+		// Check for .sig request.
+		if strings.HasSuffix(path, ".sig") {
+			base := strings.TrimSuffix(path, ".sig")
+			content, ok := files[base]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			sig, err := trust.Sign(
+				[]byte(content), testKeyPair.PrivateKey)
+			if err != nil {
+				http.Error(w, err.Error(),
+					http.StatusInternalServerError)
+				return
+			}
+			fmt.Fprint(w, sig)
+			return
+		}
+
+		content, ok := files[path]
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		fmt.Fprint(w, content)
+	}
+}
+
+// testRegistry returns a Registry configured with the test
+// keypair's public key and the given base URL.
+func testRegistry(baseURL string) *Registry {
+	return &Registry{
+		BaseURL:   baseURL,
+		publicKey: testKeyPair.PublicKey,
+	}
+}
+
 // --- Behavior 1: FetchRecipe constructs correct URL ---
 
 func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
@@ -54,7 +112,7 @@ func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
 				}))
 			defer srv.Close()
 
-			reg := &Registry{BaseURL: srv.URL}
+			reg := testRegistry(srv.URL)
 			_, _ = reg.FetchRecipe(tt.pkg)
 
 			mu.Lock()
@@ -71,13 +129,13 @@ func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
 // --- Behavior 2: FetchRecipe downloads and parses recipe ---
 
 func TestFetchRecipeParsesValidTOML(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, validTOML)
+	srv := httptest.NewServer(signedHandler(
+		map[string]string{
+			"/recipes/t/testpkg.toml": validTOML,
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	rec, err := reg.FetchRecipe("testpkg")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -105,7 +163,7 @@ func TestFetchRecipeErrorsOn404(t *testing.T) {
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	_, err := reg.FetchRecipe("nonexistent")
 	if err == nil {
 		t.Fatal("expected error for 404 response")
@@ -115,13 +173,14 @@ func TestFetchRecipeErrorsOn404(t *testing.T) {
 // --- Behavior 4: FetchRecipe returns error for malformed TOML ---
 
 func TestFetchRecipeErrorsOnMalformedTOML(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, "this is not valid toml [[[")
+	malformed := "this is not valid toml [[["
+	srv := httptest.NewServer(signedHandler(
+		map[string]string{
+			"/recipes/b/badpkg.toml": malformed,
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	_, err := reg.FetchRecipe("badpkg")
 	if err == nil {
 		t.Fatal("expected error for malformed TOML")
@@ -144,16 +203,19 @@ func TestFetchRecipeUsesCustomBaseURL(t *testing.T) {
 	var mu sync.Mutex
 	var called bool
 
+	inner := signedHandler(map[string]string{
+		"/recipes/t/testpkg.toml": validTOML,
+	})
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			mu.Lock()
 			called = true
 			mu.Unlock()
-			fmt.Fprint(w, validTOML)
+			inner.ServeHTTP(w, r)
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	rec, err := reg.FetchRecipe("testpkg")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -196,7 +258,7 @@ func TestParseVersionIndex(t *testing.T) {
 }
 
 func TestParseVersionIndexSkipsBlanks(t *testing.T) {
-	input := "1.0.0 aaaa\n\n  \n2.0.0 bbbb\n"
+	input := "1.0.0 aaaaaaa\n\n  \n2.0.0 bbbbbbb\n"
 	idx, err := parseVersionIndex(input)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -214,6 +276,60 @@ func TestParseVersionIndexErrorsOnBadLine(t *testing.T) {
 	}
 }
 
+func TestParseVersionIndexRejectsInvalidCommitHash(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+	}{
+		{"path traversal", "1.0.0 ../../etc/passwd\n"},
+		{"non-hex characters", "1.0.0 xyz123ghijkl\n"},
+		{"too short", "1.0.0 abc12\n"},
+		{"too long", "1.0.0 " +
+			"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\n"},
+		{"uppercase hex", "1.0.0 ABC1234DEF5678901234567890ABCDEF12345678\n"},
+		{"special characters", "1.0.0 abc123/def456\n"},
+		{"empty hash", "1.0.0 \n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseVersionIndex(tt.input)
+			if err == nil {
+				t.Fatalf("expected error for %s commit hash",
+					tt.name)
+			}
+		})
+	}
+}
+
+func TestParseVersionIndexAcceptsValidCommitHashes(t *testing.T) {
+	tests := []struct {
+		name   string
+		input  string
+		commit string
+	}{
+		{"7-char short hash",
+			"1.0.0 abc1234\n", "abc1234"},
+		{"40-char full hash",
+			"1.0.0 abc1234def5678901234567890abcdef12345678\n",
+			"abc1234def5678901234567890abcdef12345678"},
+		{"20-char hash",
+			"1.0.0 0123456789abcdef0123\n",
+			"0123456789abcdef0123"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			idx, err := parseVersionIndex(tt.input)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if idx["1.0.0"] != tt.commit {
+				t.Errorf("commit = %q, want %q",
+					idx["1.0.0"], tt.commit)
+			}
+		})
+	}
+}
+
 // --- Behavior 8: FetchRecipeVersion fetches pinned version ---
 
 func TestFetchRecipeVersion(t *testing.T) {
@@ -223,20 +339,14 @@ func TestFetchRecipeVersion(t *testing.T) {
 	versionsBody := "1.7.1 " + commit + "\n" +
 		"1.8.1 9876543210abcdef9876543210abcdef98765432\n"
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.versions":
-				fmt.Fprint(w, versionsBody)
-			case "/" + commit + "/recipes/j/jq.toml":
-				fmt.Fprint(w, validTOML)
-			default:
-				http.NotFound(w, r)
-			}
+	srv := httptest.NewServer(signedHandler(
+		map[string]string{
+			"/recipes/j/jq.versions":                versionsBody,
+			"/" + commit + "/recipes/j/jq.toml": validTOML,
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	rec, err := reg.FetchRecipeVersion("jq", "1.7.1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -248,7 +358,7 @@ func TestFetchRecipeVersion(t *testing.T) {
 }
 
 func TestFetchRecipeVersionNotFound(t *testing.T) {
-	versionsBody := "1.8.1 abc123\n"
+	versionsBody := "1.8.1 abc1234\n"
 
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -256,7 +366,7 @@ func TestFetchRecipeVersionNotFound(t *testing.T) {
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
 	if err == nil {
 		t.Fatal("expected error for version not in index")
@@ -320,7 +430,7 @@ func TestFetchRecipeErrorsOnConnectionFailure(t *testing.T) {
 	addr := srv.URL
 	srv.Close()
 
-	reg := &Registry{BaseURL: addr}
+	reg := testRegistry(addr)
 	_, err := reg.FetchRecipe("jq")
 	if err == nil {
 		t.Fatal("expected error for connection failure")
@@ -351,20 +461,14 @@ sha256 = "a903b0ca428c174e611ad78ee6508fefeab7a8b2eb60e55b554280679b2c07c6"
 `
 
 func TestFetchRecipeMergesBinariesToml(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.toml":
-				fmt.Fprint(w, recipeNoBinaries)
-			case "/recipes/j/jq.binaries.toml":
-				fmt.Fprint(w, binariesToml)
-			default:
-				http.NotFound(w, r)
-			}
+	srv := httptest.NewServer(signedHandler(
+		map[string]string{
+			"/recipes/j/jq.toml":          recipeNoBinaries,
+			"/recipes/j/jq.binaries.toml": binariesToml,
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	rec, err := reg.FetchRecipe("jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -379,18 +483,13 @@ func TestFetchRecipeMergesBinariesToml(t *testing.T) {
 }
 
 func TestFetchRecipeBinaries404NoError(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.toml":
-				fmt.Fprint(w, recipeNoBinaries)
-			default:
-				http.NotFound(w, r)
-			}
+	srv := httptest.NewServer(signedHandler(
+		map[string]string{
+			"/recipes/j/jq.toml": recipeNoBinaries,
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	rec, err := reg.FetchRecipe("jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -401,27 +500,68 @@ func TestFetchRecipeBinaries404NoError(t *testing.T) {
 	}
 }
 
+func TestFetchBinariesNetworkErrorLogsWarning(t *testing.T) {
+	// Start a server and close it to cause a connection
+	// error when fetching .binaries.toml.
+	binSrv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {}))
+	brokenAddr := binSrv.URL
+	binSrv.Close()
+
+	// Capture the warning via the warnf hook.
+	var warnings []string
+	reg := &Registry{BaseURL: brokenAddr}
+	reg.warnf = func(format string, args ...any) {
+		warnings = append(warnings,
+			fmt.Sprintf(format, args...))
+	}
+	idx, err := reg.fetchBinaries("jq")
+
+	// Should return (nil, nil) for graceful fallback.
+	if err != nil {
+		t.Fatalf("expected nil error, got: %v", err)
+	}
+	if idx != nil {
+		t.Fatal("expected nil index on network error")
+	}
+
+	// A warning must be emitted.
+	if len(warnings) == 0 {
+		t.Fatal("expected a warning for network error, got none")
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "binaries") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("warning does not mention binaries: %v",
+			warnings)
+	}
+}
+
 func TestFetchRecipeInlineBinariesSkipsFetch(t *testing.T) {
 	var binariesFetched bool
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.toml":
-				fmt.Fprint(w, validTOML+`
+
+	inlineRecipe := validTOML + `
 [binary.darwin-arm64]
 url = "https://example.com/jq-darwin"
 sha256 = "inline123"
-`)
-			case "/recipes/j/jq.binaries.toml":
+`
+	inner := signedHandler(map[string]string{
+		"/recipes/j/jq.toml": inlineRecipe,
+	})
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/recipes/j/jq.binaries.toml" {
 				binariesFetched = true
-				fmt.Fprint(w, binariesToml)
-			default:
-				http.NotFound(w, r)
 			}
+			inner.ServeHTTP(w, r)
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	rec, err := reg.FetchRecipe("jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -601,7 +741,7 @@ func TestFetchRecipeVersionBadIndex(t *testing.T) {
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error for malformed version index")
@@ -626,7 +766,7 @@ func TestFetchRecipeVersionRecipeFetchFails(t *testing.T) {
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
 	if err == nil {
 		t.Fatal("expected error when recipe at commit returns 404")
@@ -642,7 +782,7 @@ func TestFetchRecipeVersionIndex404(t *testing.T) {
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error when .versions returns 404")
@@ -660,20 +800,14 @@ func TestFetchRecipeBinariesStaleVersion(t *testing.T) {
 sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 `
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.toml":
-				fmt.Fprint(w, recipeNoBinaries) // version 1.8.1
-			case "/recipes/j/jq.binaries.toml":
-				fmt.Fprint(w, staleBinaries) // version 1.7.0
-			default:
-				http.NotFound(w, r)
-			}
+	srv := httptest.NewServer(signedHandler(
+		map[string]string{
+			"/recipes/j/jq.toml":          recipeNoBinaries,
+			"/recipes/j/jq.binaries.toml": staleBinaries,
 		}))
 	defer srv.Close()
 
-	reg := &Registry{BaseURL: srv.URL}
+	reg := testRegistry(srv.URL)
 	rec, err := reg.FetchRecipe("jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -879,7 +1013,7 @@ func TestFetchRecipeVerifiesSignature(t *testing.T) {
 
 	reg := &Registry{
 		BaseURL:   srv.URL,
-		PublicKey: kp.PublicKey,
+		publicKey: kp.PublicKey,
 	}
 	rec, err := reg.FetchRecipe("testpkg")
 	if err != nil {
@@ -915,7 +1049,7 @@ func TestFetchRecipeRejectsBadSignature(t *testing.T) {
 
 	reg := &Registry{
 		BaseURL:   srv.URL,
-		PublicKey: kp2.PublicKey,
+		publicKey: kp2.PublicKey,
 	}
 	_, err := reg.FetchRecipe("testpkg")
 	if err == nil {
@@ -941,7 +1075,7 @@ func TestFetchRecipeRejectsMissingSignature(t *testing.T) {
 
 	reg := &Registry{
 		BaseURL:   srv.URL,
-		PublicKey: kp.PublicKey,
+		publicKey: kp.PublicKey,
 	}
 	_, err := reg.FetchRecipe("testpkg")
 	if err == nil {
@@ -949,23 +1083,38 @@ func TestFetchRecipeRejectsMissingSignature(t *testing.T) {
 	}
 }
 
-// --- Behavior 30: Empty PublicKey skips verification ---
+// --- Behavior 30: verifyRecipe errors when publicKey is empty ---
 
-func TestFetchRecipeNoPublicKeySkipsVerification(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, validTOML)
-		}))
-	defer srv.Close()
-
-	reg := &Registry{BaseURL: srv.URL}
-	rec, err := reg.FetchRecipe("testpkg")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+func TestVerifyRecipeErrorsWhenPublicKeyEmpty(t *testing.T) {
+	reg := &Registry{BaseURL: "https://example.com"}
+	err := reg.verifyRecipe([]byte("data"), "https://example.com/r.toml")
+	if err == nil {
+		t.Fatal("expected error when publicKey is empty")
 	}
-	if rec.Package.Name != "testpkg" {
-		t.Errorf("Name = %q, want %q",
-			rec.Package.Name, "testpkg")
+}
+
+// --- Behavior 36: New always sets publicKey ---
+
+func TestNewSetsPublicKey(t *testing.T) {
+	reg := New()
+	if reg.publicKey == "" {
+		t.Fatal("New() should set publicKey")
+	}
+}
+
+func TestNewWithURLSetsPublicKey(t *testing.T) {
+	reg := NewWithURL("https://example.com")
+	if reg.publicKey == "" {
+		t.Fatal("NewWithURL() should set publicKey")
+	}
+}
+
+func TestNewWithKeySetsPublicKey(t *testing.T) {
+	kp, _ := trust.GenerateKeyPair()
+	reg := NewWithKey("https://example.com", kp.PublicKey)
+	if reg.publicKey != kp.PublicKey {
+		t.Errorf("publicKey = %q, want %q",
+			reg.publicKey, kp.PublicKey)
 	}
 }
 
@@ -999,7 +1148,7 @@ func TestFetchRecipeVerifiesBinariesSignature(t *testing.T) {
 
 	reg := &Registry{
 		BaseURL:   srv.URL,
-		PublicKey: kp.PublicKey,
+		publicKey: kp.PublicKey,
 	}
 	rec, err := reg.FetchRecipe("jq")
 	if err != nil {
@@ -1041,7 +1190,7 @@ func TestFetchRecipeRejectsBadBinariesSignature(t *testing.T) {
 
 	reg := &Registry{
 		BaseURL:   srv.URL,
-		PublicKey: kp1.PublicKey,
+		publicKey: kp1.PublicKey,
 	}
 	_, err := reg.FetchRecipe("jq")
 	if err == nil {
@@ -1077,7 +1226,7 @@ func TestFetchRecipeVersionVerifiesSignature(t *testing.T) {
 
 	reg := &Registry{
 		BaseURL:   srv.URL,
-		PublicKey: kp.PublicKey,
+		publicKey: kp.PublicKey,
 	}
 	rec, err := reg.FetchRecipeVersion("jq", "1.7.1")
 	if err != nil {
@@ -1118,7 +1267,7 @@ func TestFetchRecipeVersionRejectsBadSignature(t *testing.T) {
 
 	reg := &Registry{
 		BaseURL:   srv.URL,
-		PublicKey: kp2.PublicKey,
+		publicKey: kp2.PublicKey,
 	}
 	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
 	if err == nil {
@@ -1159,7 +1308,7 @@ func TestFetchRecipeEndToEndSignatureFlow(t *testing.T) {
 
 	reg := &Registry{
 		BaseURL:   srv.URL,
-		PublicKey: kp.PublicKey,
+		publicKey: kp.PublicKey,
 	}
 
 	rec, err := reg.FetchRecipe("jq")
@@ -1200,7 +1349,7 @@ func TestFetchRecipeEndToEndSignatureFlow(t *testing.T) {
 
 	reg2 := &Registry{
 		BaseURL:   srv2.URL,
-		PublicKey: kp.PublicKey,
+		publicKey: kp.PublicKey,
 	}
 	_, err = reg2.FetchRecipe("jq")
 	if err == nil {

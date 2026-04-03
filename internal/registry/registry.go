@@ -4,12 +4,17 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/trust"
 )
+
+// validCommitHash matches a lowercase hex string 7-40 chars long.
+var validCommitHash = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
 const DefaultURL = "https://raw.githubusercontent.com/" +
 	"kelp/gale-recipes/main"
@@ -20,7 +25,11 @@ const defaultGHCRBase = "kelp/gale-recipes"
 // registry using letter-bucketed paths.
 type Registry struct {
 	BaseURL   string
-	PublicKey string // ed25519 public key (base64); empty = skip verification
+	publicKey string // ed25519 public key (base64)
+
+	// warnf logs a warning. Defaults to fmt.Fprintf(os.Stderr, ...).
+	// Override in tests to capture output.
+	warnf func(format string, args ...any)
 }
 
 // New returns a Registry configured with DefaultURL and
@@ -28,7 +37,7 @@ type Registry struct {
 func New() *Registry {
 	return &Registry{
 		BaseURL:   DefaultURL,
-		PublicKey: trust.RecipePublicKey(),
+		publicKey: trust.RecipePublicKey(),
 	}
 }
 
@@ -41,8 +50,32 @@ func NewWithURL(url string) *Registry {
 	}
 	return &Registry{
 		BaseURL:   url,
-		PublicKey: trust.RecipePublicKey(),
+		publicKey: trust.RecipePublicKey(),
 	}
+}
+
+// NewWithKey returns a Registry with the given base URL
+// and public key. If url is empty, DefaultURL is used.
+func NewWithKey(url, publicKey string) *Registry {
+	if url == "" {
+		url = DefaultURL
+	}
+	return &Registry{
+		BaseURL:   url,
+		publicKey: publicKey,
+	}
+}
+
+// warn logs a warning via the configured warnf function,
+// defaulting to stderr.
+func (r *Registry) warn(format string, args ...any) {
+	f := r.warnf
+	if f == nil {
+		f = func(format string, args ...any) {
+			fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+		}
+	}
+	f(format, args...)
 }
 
 // FetchRecipe downloads and parses the recipe for the named
@@ -188,6 +221,7 @@ func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
+		r.warn("fetch binaries %s: %v", name, err)
 		return nil, nil //nolint:nilerr // network error is not fatal
 	}
 	defer resp.Body.Close()
@@ -248,18 +282,18 @@ func (r *Registry) fetchSignature(url string) (string, error) {
 	return strings.TrimSpace(string(body)), nil
 }
 
-// verifyRecipe checks the recipe signature if a public key is
-// configured. Returns nil when PublicKey is empty (verification
-// disabled).
+// verifyRecipe checks the recipe signature using the
+// configured public key. Returns an error if no public key
+// is configured.
 func (r *Registry) verifyRecipe(data []byte, recipeURL string) error {
-	if r.PublicKey == "" {
-		return nil
+	if r.publicKey == "" {
+		return fmt.Errorf("signature verification: no public key configured")
 	}
 	sig, err := r.fetchSignature(recipeURL)
 	if err != nil {
 		return fmt.Errorf("signature verification: %w", err)
 	}
-	ok, err := trust.Verify(data, sig, r.PublicKey)
+	ok, err := trust.Verify(data, sig, r.publicKey)
 	if err != nil {
 		return fmt.Errorf("signature verification: %w", err)
 	}
@@ -282,6 +316,10 @@ func parseVersionIndex(data string) (map[string]string, error) {
 		if len(parts) != 2 {
 			return nil, fmt.Errorf(
 				"malformed version line: %q", line)
+		}
+		if !validCommitHash.MatchString(parts[1]) {
+			return nil, fmt.Errorf(
+				"invalid commit hash: %q", parts[1])
 		}
 		idx[parts[0]] = parts[1]
 	}

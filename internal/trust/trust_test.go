@@ -265,12 +265,14 @@ func TestVerifyCorruptedSignature(t *testing.T) {
 	data := []byte("hello world")
 
 	// A corrupted signature: not valid base64.
+	// Contract: malformed signature returns (false, nil).
 	ok, err := Verify(data, "not-valid-base64!!!", kp.PublicKey)
-	// Either err != nil or ok == false is acceptable.
+	if err != nil {
+		t.Errorf("expected nil error for malformed signature, got: %v", err)
+	}
 	if ok {
 		t.Error("Verify = true with corrupted signature, want false")
 	}
-	_ = err
 }
 
 func TestVerifyWrongLengthSignature(t *testing.T) {
@@ -283,12 +285,14 @@ func TestVerifyWrongLengthSignature(t *testing.T) {
 	// Valid base64 but wrong length for an ed25519 signature.
 	shortSig := base64.StdEncoding.EncodeToString([]byte("short"))
 
+	// Contract: wrong-length signature returns (false, nil).
 	ok, err := Verify(data, shortSig, kp.PublicKey)
-	// Either err != nil or ok == false is acceptable.
+	if err != nil {
+		t.Errorf("expected nil error for wrong-length signature, got: %v", err)
+	}
 	if ok {
 		t.Error("Verify = true with wrong-length signature, want false")
 	}
-	_ = err
 }
 
 func TestVerifyInvalidPublicKey(t *testing.T) {
