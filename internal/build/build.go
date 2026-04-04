@@ -187,6 +187,13 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		return nil, fmt.Errorf("fixup shebangs: %w", err)
 	}
 
+	// Replace hardcoded build prefix in text files with a
+	// placeholder. At install time, RestorePrefixPlaceholder
+	// replaces it with the actual store path.
+	if err := ReplacePrefixInTextFiles(prefixDir, PrefixPlaceholder); err != nil {
+		return nil, fmt.Errorf("fixup text prefix paths: %w", err)
+	}
+
 	archiveName := fmt.Sprintf("%s-%s.tar.zst", r.Package.Name, r.Package.Version)
 	archivePath := filepath.Join(outputDir, archiveName)
 	if err := download.CreateTarZstd(prefixDir, archivePath); err != nil {
@@ -625,6 +632,108 @@ func fixupShebangs(prefixDir string) error {
 	}
 
 	return nil
+}
+
+// PrefixPlaceholder is embedded in text files during build
+// to replace the build-time temp prefix. At install time,
+// RestorePrefixPlaceholder replaces it with the actual store
+// path. This avoids hardcoded temp paths in scripts.
+const PrefixPlaceholder = "@@GALE_PREFIX@@"
+
+// ReplacePrefixInTextFiles walks prefixDir and replaces all
+// occurrences of buildPrefix in text files with replacement.
+// Binary files (those containing null bytes in the first 512
+// bytes) are skipped. Directories scanned: bin, sbin,
+// libexec, share, etc, lib (for .la files and scripts).
+func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
+	dirs := []string{
+		"bin", "sbin", "libexec", "share", "etc", "lib",
+	}
+	for _, d := range dirs {
+		dir := filepath.Join(prefixDir, d)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			continue
+		}
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — build output is trusted, not user-controlled
+			if err != nil || info.IsDir() {
+				return err
+			}
+			// Skip large files (> 10MB) — unlikely to be
+			// text config/scripts.
+			if info.Size() > 10*1024*1024 {
+				return nil
+			}
+			data, readErr := os.ReadFile(path) //nolint:gosec // G122 — build/store output is trusted
+			if readErr != nil {
+				return nil //nolint:nilerr // skip unreadable files
+			}
+			if !isTextContent(data) {
+				return nil
+			}
+			if !strings.Contains(string(data), prefixDir) {
+				return nil
+			}
+			newData := strings.ReplaceAll(
+				string(data), prefixDir, replacement)
+			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
+		})
+		if err != nil {
+			return fmt.Errorf("fixup text files in %s: %w", d, err)
+		}
+	}
+	return nil
+}
+
+// RestorePrefixPlaceholder replaces PrefixPlaceholder with
+// storeDir in all text files under storeDir. Called after
+// extracting a build archive into the package store.
+func RestorePrefixPlaceholder(storeDir string) error {
+	dirs := []string{
+		"bin", "sbin", "libexec", "share", "etc", "lib",
+	}
+	for _, d := range dirs {
+		dir := filepath.Join(storeDir, d)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			continue
+		}
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — store content is trusted
+			if err != nil || info.IsDir() {
+				return err
+			}
+			if info.Size() > 10*1024*1024 {
+				return nil
+			}
+			data, readErr := os.ReadFile(path) //nolint:gosec // G122 — build/store output is trusted
+			if readErr != nil {
+				return nil //nolint:nilerr // skip unreadable files
+			}
+			if !strings.Contains(string(data), PrefixPlaceholder) {
+				return nil
+			}
+			newData := strings.ReplaceAll(
+				string(data), PrefixPlaceholder, storeDir)
+			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
+		})
+		if err != nil {
+			return fmt.Errorf("restore prefix in %s: %w", d, err)
+		}
+	}
+	return nil
+}
+
+// isTextContent returns true if data appears to be text
+// (no null bytes in the first 512 bytes).
+func isTextContent(data []byte) bool {
+	n := len(data)
+	if n > 512 {
+		n = 512
+	}
+	for i := 0; i < n; i++ {
+		if data[i] == 0 {
+			return false
+		}
+	}
+	return n > 0
 }
 
 // TmpDir returns the path to ~/.gale/tmp/, creating it

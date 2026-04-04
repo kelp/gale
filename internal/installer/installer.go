@@ -476,10 +476,14 @@ func depsToBuildDeps(deps *DepPaths) *build.BuildDeps {
 	}
 }
 
-// extractBuild extracts a build archive into the store dir.
+// extractBuild extracts a build archive into the store dir
+// and restores prefix placeholders to the actual store path.
 func extractBuild(result *build.BuildResult, storeDir string) error {
 	if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
 		return fmt.Errorf("extract build output: %w", err)
+	}
+	if err := build.RestorePrefixPlaceholder(storeDir); err != nil {
+		return fmt.Errorf("restore prefix paths: %w", err)
 	}
 	return nil
 }

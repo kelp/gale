@@ -1550,3 +1550,102 @@ func envToMap(env []string) map[string]string {
 	}
 	return m
 }
+
+// --- Prefix path rewriting in text files ---
+
+func TestReplacePrefixInTextFiles(t *testing.T) {
+	prefixDir := t.TempDir()
+
+	// Create a script with hardcoded build prefix.
+	binDir := filepath.Join(prefixDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(binDir, "autoconf")
+	content := fmt.Sprintf(`#!/usr/bin/perl
+my $pkgdatadir = '%s/share/autoconf';
+my $autom4te = '%s/bin/autom4te';
+`, prefixDir, prefixDir)
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a binary file that should NOT be modified.
+	binFile := filepath.Join(binDir, "real-binary")
+	binData := []byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0}
+	if err := os.WriteFile(binFile, binData, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a share/ text file with the prefix.
+	shareDir := filepath.Join(prefixDir, "share", "autoconf")
+	if err := os.MkdirAll(shareDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dataFile := filepath.Join(shareDir, "autom4te.cfg")
+	dataCfg := fmt.Sprintf("datadir = %s/share/autoconf\n", prefixDir)
+	if err := os.WriteFile(dataFile, []byte(dataCfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Replace the build prefix with a placeholder.
+	if err := ReplacePrefixInTextFiles(prefixDir, PrefixPlaceholder); err != nil {
+		t.Fatalf("ReplacePrefixInTextFiles: %v", err)
+	}
+
+	// Script should have placeholder, not the original prefix.
+	got, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(got), prefixDir) {
+		t.Errorf("script still contains build prefix:\n%s", got)
+	}
+	if !strings.Contains(string(got), PrefixPlaceholder) {
+		t.Errorf("script should contain placeholder:\n%s", got)
+	}
+
+	// Binary should be unchanged.
+	gotBin, _ := os.ReadFile(binFile)
+	if string(gotBin) != string(binData) {
+		t.Error("binary file was modified")
+	}
+
+	// Share file should have placeholder.
+	gotCfg, _ := os.ReadFile(dataFile)
+	if strings.Contains(string(gotCfg), prefixDir) {
+		t.Errorf("share file still contains build prefix:\n%s", gotCfg)
+	}
+	if !strings.Contains(string(gotCfg), PrefixPlaceholder) {
+		t.Errorf("share file should contain placeholder:\n%s", gotCfg)
+	}
+}
+
+func TestRestorePrefixPlaceholder(t *testing.T) {
+	storeDir := t.TempDir()
+
+	binDir := filepath.Join(storeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(binDir, "tool")
+	content := fmt.Sprintf("#!/usr/bin/perl\nmy $dir = '%s/share';\n",
+		PrefixPlaceholder)
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestorePrefixPlaceholder(storeDir); err != nil {
+		t.Fatalf("RestorePrefixPlaceholder: %v", err)
+	}
+
+	got, _ := os.ReadFile(script)
+	if strings.Contains(string(got), PrefixPlaceholder) {
+		t.Errorf("script still contains placeholder:\n%s", got)
+	}
+	if !strings.Contains(string(got), storeDir) {
+		t.Errorf("script should contain store dir %q:\n%s",
+			storeDir, got)
+	}
+}
