@@ -13,3 +13,7 @@ gale.lock
 
 # Superpowers specs
 docs/superpowers/
+
+# Pi artifacts
+.pi/
+.pi-lens/
