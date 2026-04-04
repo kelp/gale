@@ -1,5 +1,135 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `gale build` accepts `--recipes [path]` for local
+  recipe resolution, matching install, sync, update,
+  add, and outdated.
+
+### Fixed
+
+- **Security:** SSH and SCP option injection via
+  `gale remote` host argument. Hosts starting with `-`
+  are now rejected and `--` is inserted before host args.
+- **Security:** `gale remote sync` bootstrap pinned to a
+  specific commit instead of piping `curl | sh` from
+  `main`.
+- **Security:** Symlink path-traversal bypass in tar
+  extraction. Symlink destinations are now validated
+  against the extraction directory.
+- **Security:** GHCR bearer token leaked to non-GHCR
+  hosts matching OCI path patterns. `isGHCR` now checks
+  the URL host, not just the path.
+- **Security:** Bearer tokens no longer sent over plain
+  HTTP. `FetchWithAuth` requires HTTPS.
+- **Security:** `install --recipe` and `install --path`
+  now verify Sigstore attestation on GHCR binaries.
+  Previously these paths constructed the installer
+  without a Verifier.
+- **Security:** AI recipe tool `lint_recipe` validated
+  against path traversal. Agent-supplied paths must be
+  within the temp directory.
+- **Security:** Registry commit hashes validated as hex
+  before URL construction.
+- **Security:** Direct `Registry` struct construction no
+  longer bypasses signature verification. `PublicKey` is
+  now unexported.
+- `prependPATH` now replaces the existing PATH entry
+  instead of appending a duplicate. Previously `gale
+  shell` and `gale run` failed to expose project
+  binaries.
+- `syncIfNeeded` warns on sync failure instead of
+  silently swallowing errors.
+- `gale shell --project` now syncs against the target
+  project instead of cwd. Nested subdirectories are
+  resolved to the project root via `gale.toml` or
+  `.tool-versions`.
+- `gale sync` SHA256 mismatch now evicts the package
+  from the store before generation rebuild.
+- `gale sync --project` flag is now honored (was
+  silently ignored).
+- `gale update --git` no longer rebuilds unconditionally
+  when the installed version is semver.
+- `gale update` iterates packages in deterministic
+  sorted order.
+- Lockfile updated even when install returns a cached
+  result.
+- `gale remove` updates config before deleting from
+  store (was reversed, no rollback on config failure).
+- `gale remove` warns when the package is not in the
+  store.
+- `gale gc` summary separates package version count from
+  generation directory count.
+- `gale generations rollback` rejects zero and negative
+  generation numbers.
+- `gale env` uses POSIX shell quoting instead of Go `%q`
+  for variable exports.
+- `gale sbom` falls back to global config when no
+  project config exists.
+- `gale outdated` uses semver comparison; registry
+  regressions no longer reported as outdated.
+- `gale audit` and `gale verify` use consistent scope
+  for lockfile and installer context.
+- `gale lint` displays errors with error-level output
+  instead of warning-level.
+- `gale repo add` and `gale repo remove` now persist
+  changes to `config.toml`.
+- `gale which` validates full store path structure
+  including `bin/` segment.
+- `gale pin` verifies the package exists before writing
+  the pinned entry.
+- `formatDevVersion` handles pre-release tags without
+  panicking.
+- `recipeFileResolver` returns an error instead of nil
+  on `filepath.Abs` failure.
+- `lockfilePath` validates the `.toml` suffix before
+  slicing.
+- Empty package names return errors instead of panicking
+  across recipe resolution, AI tools, and install paths.
+- AI recipe creation detects dependency cycles via a
+  visited set.
+- AI download tool uses unique filenames to prevent
+  SHA256 collisions.
+- AI `parseMissingDep` validates GitHub repo format.
+- Build temp tool directories cleaned up after each step
+  instead of leaking.
+- `setDefault` in build env checks the env slice instead
+  of host `os.Getenv`, preventing host flag leakage.
+- `detectSourceRoot` ignores non-directory files at
+  tarball root.
+- Darwin `FixupBinaries` returns an error when `otool`
+  fails instead of silently skipping.
+- `copyFile` preserves source file permissions.
+- HTTP clients use a 5-minute timeout instead of hanging
+  indefinitely.
+- File descriptor leak in `CreateTarZstd` walk callback
+  fixed.
+- Concurrent installs serialized via per-package file
+  lock. Lock files persist to prevent inode-split race.
+- `InstallLocal` builds into a staging directory and
+  swaps atomically, preserving the active version during
+  rebuild.
+- `generation.Build` iterates packages in sorted order
+  for deterministic symlink conflict resolution.
+- `generation.Build` and `Rollback` use PID-scoped temp
+  link paths to prevent concurrent swap corruption.
+- `Store.IsInstalled` verifies directory has contents,
+  not just existence.
+- `Store.List` skips in-progress `.build-` staging dirs.
+- `InstallBuildDeps` deep-copies recipe maps to prevent
+  aliasing.
+- Concurrent config writes serialized via file locking.
+- `Build.Debug` field parsed from recipe TOML (was
+  silently discarded).
+- Unrecognized build section keys rejected instead of
+  becoming phantom platform overrides.
+- `lockfile.IsStale` always performs package-content
+  comparison, immune to clock skew.
+- `trust.Verify` test contract pinned to assert specific
+  `(false, nil)` return for malformed signatures.
+
 ## v0.8.2 — 2026-04-03
 
 ### Added
@@ -11,6 +141,10 @@
 
 ### Fixed
 
+- `gale update` no longer downgrades packages when
+  the registry recipe has an older version than what
+  is installed. Uses semver comparison to skip updates
+  where the candidate version is not strictly newer.
 - `gale build` and `gale audit` now resolve all
   dependency types (build, runtime, and implicit system
   deps). Previously only explicit build deps triggered

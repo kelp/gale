@@ -116,32 +116,47 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 	name := r.Package.Name
 	version := r.Package.Version
 
-	// Remove any existing version to force a rebuild.
-	// Local source builds always rebuild — the source
-	// may have changed without a version bump.
-	if inst.Store.IsInstalled(name, version) {
-		if err := inst.Store.Remove(name, version); err != nil {
-			return nil, fmt.Errorf("remove stale build: %w", err)
-		}
+	// Serialize concurrent local installs for the same
+	// package version, matching Install's locking.
+	unlock, err := lockPackage(inst.Store.Root, name, version)
+	if err != nil {
+		return nil, fmt.Errorf("lock package: %w", err)
+	}
+	defer unlock()
+
+	// Build into a temp dir inside <storeRoot>/<name>/ so
+	// the existing store entry and its active symlinks stay
+	// intact until the build succeeds. Same-filesystem
+	// rename is guaranteed since both paths are under the
+	// same parent.
+	storeDir := filepath.Join(inst.Store.Root, name, version)
+	pkgDir := filepath.Join(inst.Store.Root, name)
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create package dir: %w", err)
 	}
 
-	// Create store directory.
-	storeDir, err := inst.Store.Create(name, version)
+	buildDir, err := os.MkdirTemp(pkgDir, ".build-")
 	if err != nil {
-		return nil, fmt.Errorf("create store dir: %w", err)
+		return nil, fmt.Errorf("create build dir: %w", err)
 	}
+	defer os.RemoveAll(buildDir) // clean up on any exit path
 
 	// Resolve and install build deps.
 	depPaths, err := inst.InstallBuildDeps(r)
 	if err != nil {
-		os.RemoveAll(storeDir)
 		return nil, fmt.Errorf("install build deps: %w", err)
 	}
 
-	hash, buildErr := installFromLocalSource(r, sourceDir, storeDir, depPaths)
+	hash, buildErr := installFromLocalSource(r, sourceDir, buildDir, depPaths)
 	if buildErr != nil {
-		os.RemoveAll(storeDir)
 		return nil, fmt.Errorf("build from local source: %w", buildErr)
+	}
+
+	// Build succeeded — swap into place atomically.
+	// The lock ensures no other process touches storeDir.
+	os.RemoveAll(storeDir)
+	if err := os.Rename(buildDir, storeDir); err != nil {
+		return nil, fmt.Errorf("install build output: %w", err)
 	}
 
 	return &InstallResult{
@@ -470,9 +485,10 @@ func extractBuild(result *build.BuildResult, storeDir string) error {
 }
 
 // lockPackage acquires an exclusive file lock for a package
-// version. Returns an unlock function that releases the lock
-// and removes the lock file. The lock serializes concurrent
-// install attempts for the same package version.
+// version. Returns an unlock function that releases the lock.
+// The lock file is kept on disk so all contenders share the
+// same inode — removing it would cause a race where a new
+// arrival creates a separate file and acquires its own lock.
 func lockPackage(storeRoot, name, version string) (func(), error) {
 	// Ensure the package directory exists for the lock file.
 	pkgDir := filepath.Join(storeRoot, name)
@@ -495,6 +511,5 @@ func lockPackage(storeRoot, name, version string) (func(), error) {
 	return func() {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck,gosec
 		f.Close()
-		os.Remove(lockPath)
 	}, nil
 }

@@ -317,18 +317,9 @@ func installFromLocalSource(name, recipePath, sourceDir, configPath, galeDir, st
 
 	inst := newInstallerForLocalSource(resolvedRecipe, storeRoot)
 
-	// Skip build if the same version is already in the
-	// store, but still finalize (add to config + rebuild
-	// generation) so the package is wired up.
-	if inst.Store.IsInstalled(r.Package.Name, version) {
-		if err := finalizeInstall(galeDir, storeRoot,
-			configPath, r.Package.Name, version, ""); err != nil {
-			return err
-		}
-		out.Success(fmt.Sprintf(
-			"%s@%s is up to date", r.Package.Name, version))
-		return nil
-	}
+	// Always rebuild local source — the source tree may have
+	// changed without a version bump. Do not short-circuit
+	// on IsInstalled for local builds.
 
 	out.Info(fmt.Sprintf("Installing %s@%s from local source...",
 		r.Package.Name, r.Package.Version))

@@ -21,13 +21,18 @@ var shellCmd = &cobra.Command{
 	Short: "Open a shell with the project environment",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		syncIfNeeded(os.Stderr, shellProject)
+		projectDir := shellProject
+		if projectDir != "" {
+			projectDir = resolveProjectRoot(projectDir)
+		}
+
+		syncIfNeeded(os.Stderr, projectDir)
 
 		var galeDir string
 		var err error
-		if shellProject != "" {
-			// Explicit project dir — use its .gale/.
-			galeDir = filepath.Join(shellProject, ".gale")
+		if projectDir != "" {
+			// Resolved project root — use its .gale/.
+			galeDir = filepath.Join(projectDir, ".gale")
 		} else {
 			galeDir, err = resolveGaleDir()
 			if err != nil {
@@ -102,7 +107,10 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 	if !stale {
 		return
 	}
-	if err := runSync("", false, false, false); err != nil {
+	// Pass the discovered project root (not the raw
+	// input) so runSync targets the correct directory.
+	projectRoot := filepath.Dir(configPath)
+	if err := runSync("", false, false, false, projectRoot); err != nil {
 		out.Warn(fmt.Sprintf("sync failed: %v", err))
 	}
 }
@@ -123,4 +131,19 @@ func prependPATH(binDir string) []string {
 		}
 	}
 	return result
+}
+
+// resolveProjectRoot walks up from dir to find the
+// canonical project root. Checks for gale.toml first,
+// then .tool-versions. Returns the directory containing
+// whichever is found, or dir as-is if neither exists
+// (the project may already have .gale/ from a prior sync).
+func resolveProjectRoot(dir string) string {
+	if cp, err := config.FindGaleConfig(dir); err == nil {
+		return filepath.Dir(cp)
+	}
+	if tv := config.FindToolVersions(dir); tv != "" {
+		return filepath.Dir(tv)
+	}
+	return dir
 }

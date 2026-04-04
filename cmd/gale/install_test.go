@@ -337,6 +337,7 @@ func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
 		{"init"},
 		{"config", "user.email", "test@test.com"},
 		{"config", "user.name", "Test"},
+		{"config", "commit.gpgsign", "false"},
 		{"commit", "--allow-empty", "-m", "init"},
 		{"tag", "v1.0.0"},
 	} {

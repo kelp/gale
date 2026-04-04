@@ -142,7 +142,7 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 	// This call verifies the function signature accepts
 	// the project parameter. Before the fix, this would
 	// fail to compile with "too many arguments".
-	err = runSync("", false, false, true)
+	err = runSync("", false, false, true, "")
 	// The sync itself may fail (no store, etc.) but the
 	// important thing is that the function accepts 4 args
 	// and the project flag reaches config resolution.

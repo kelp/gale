@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // ErrNotInstalled is returned when removing a package that does not exist.
@@ -72,6 +73,11 @@ func (s *Store) List() ([]InstalledPackage, error) {
 		}
 		for _, versionEntry := range versionEntries {
 			if !versionEntry.IsDir() {
+				continue
+			}
+			// Skip in-progress build temp dirs from
+			// InstallLocal (same-filesystem staging).
+			if strings.HasPrefix(versionEntry.Name(), ".build-") {
 				continue
 			}
 			pkgs = append(pkgs, InstalledPackage{

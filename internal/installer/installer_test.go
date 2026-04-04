@@ -1124,7 +1124,7 @@ func TestLockPackageDifferentPackagesNotBlocked(t *testing.T) {
 	defer unlock2()
 }
 
-func TestLockPackageCleansUpLockFile(t *testing.T) {
+func TestLockPackagePersistsAfterUnlock(t *testing.T) {
 	storeRoot := t.TempDir()
 
 	unlock, err := lockPackage(storeRoot, "jq", "1.7")
@@ -1139,8 +1139,10 @@ func TestLockPackageCleansUpLockFile(t *testing.T) {
 
 	unlock()
 
-	if _, err := os.Stat(lockPath); err == nil {
-		t.Error("lock file should be removed after unlock")
+	// Lock file must persist so all contenders share the
+	// same inode. Removing it causes an inode-split race.
+	if _, err := os.Stat(lockPath); err != nil {
+		t.Error("lock file should persist after unlock")
 	}
 }
 

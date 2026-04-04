@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
@@ -29,13 +30,15 @@ var syncCmd = &cobra.Command{
 				"cannot use both --global and --project")
 		}
 		return runSync(syncRecipes, syncBuild, syncGlobal,
-			syncProject)
+			syncProject, "")
 	},
 }
 
 // runSync performs the sync operation: resolves recipes,
 // installs missing packages, and rebuilds the generation.
-func runSync(recipesPath string, buildOnly, global, project bool) error {
+// When projectDir is non-empty, sync targets that specific
+// project directory regardless of cwd or scope flags.
+func runSync(recipesPath string, buildOnly, global, project bool, projectDir string) error {
 	out := output.New(os.Stderr, !noColor)
 
 	ctx, err := newCmdContext(recipesPath)
@@ -43,8 +46,14 @@ func runSync(recipesPath string, buildOnly, global, project bool) error {
 		return err
 	}
 
-	// Override scope when -g or -p is set.
-	if global || project {
+	// Explicit project directory takes precedence over
+	// scope flags. Used by syncIfNeeded when shell/run
+	// are invoked with --project.
+	if projectDir != "" {
+		ctx.GalePath = filepath.Join(projectDir, "gale.toml")
+		ctx.GaleDir = filepath.Join(projectDir, ".gale")
+	} else if global || project {
+		// Override scope when -g or -p is set.
 		galePath, pathErr := resolveConfigPath(global)
 		if pathErr != nil {
 			return pathErr

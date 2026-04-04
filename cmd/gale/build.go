@@ -17,6 +17,7 @@ var (
 	buildGit     bool
 	buildDebug   bool
 	buildRelease bool
+	buildRecipes string
 )
 
 var buildCmd = &cobra.Command{
@@ -39,9 +40,24 @@ var buildCmd = &cobra.Command{
 		}
 
 		// Resolve and install dependencies (build, runtime,
-		// and implicit system deps).
+		// and implicit system deps). --recipes flag takes
+		// precedence, then auto-detect from recipe path.
 		var resolver installer.RecipeResolver
-		if recipesDir := detectRecipesRepo(recipePath); recipesDir != "" {
+		if buildRecipes != "" {
+			cwd, cwdErr := os.Getwd()
+			if cwdErr != nil {
+				return fmt.Errorf("getting working dir: %w", cwdErr)
+			}
+			override := ""
+			if buildRecipes != "auto" {
+				override = buildRecipes
+			}
+			recipesDir, dirErr := findLocalRecipesDir(cwd, override)
+			if dirErr != nil {
+				return fmt.Errorf("resolving recipes dir: %w", dirErr)
+			}
+			resolver = localRecipeResolver(recipesDir)
+		} else if recipesDir := detectRecipesRepo(recipePath); recipesDir != "" {
 			resolver = localRecipeResolver(recipesDir)
 		} else {
 			reg := newRegistry()
@@ -111,5 +127,8 @@ func init() {
 		"Build with debug flags (-O0 -g)")
 	buildCmd.Flags().BoolVar(&buildRelease, "release", false,
 		"Build with release flags (overrides recipe debug)")
+	buildCmd.Flags().StringVar(&buildRecipes, "recipes", "",
+		"Use local recipes directory (default: ../gale-recipes/)")
+	buildCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	rootCmd.AddCommand(buildCmd)
 }
