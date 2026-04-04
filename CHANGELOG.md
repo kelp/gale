@@ -10,6 +10,11 @@
 
 ### Fixed
 
+- Post-build fixup rewrites hardcoded build prefix paths
+  in text files (Perl, Python, shell scripts, config).
+  Replaces temp prefix with `@@GALE_PREFIX@@` placeholder
+  at build time, restores to store path at install time.
+  Fixes autoconf, automake, and other autotools packages.
 - **Security:** SSH and SCP option injection via
   `gale remote` host argument. Hosts starting with `-`
   are now rejected and `--` is inserted before host args.
