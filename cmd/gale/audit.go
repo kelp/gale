@@ -55,17 +55,9 @@ tampering.`,
 
 		// Install dependencies (build, runtime, and implicit
 		// system deps).
-		depPaths, err := ctx.Installer.InstallBuildDeps(r)
+		deps, err := ctx.Installer.InstallBuildDeps(r)
 		if err != nil {
 			return fmt.Errorf("install build deps: %w", err)
-		}
-		var deps *build.BuildDeps
-		if len(depPaths.BinDirs) > 0 || len(depPaths.StoreDirs) > 0 {
-			deps = &build.BuildDeps{
-				BinDirs:   depPaths.BinDirs,
-				StoreDirs: depPaths.StoreDirs,
-				NamedDirs: depPaths.NamedDirs,
-			}
 		}
 
 		// Rebuild from source.

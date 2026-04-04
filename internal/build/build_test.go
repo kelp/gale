@@ -894,7 +894,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/pkg"},
 	}
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, deps)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: deps})
 
 	envMap := envToMap(env)
 
@@ -937,7 +937,7 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 }
 
 func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
 	if _, ok := envMap["LD_LIBRARY_PATH"]; ok {
@@ -961,7 +961,7 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 // --- Behavior 11: Platform variables in buildEnv ---
 
 func TestBuildEnvIncludesPlatformVars(t *testing.T) {
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
 	if val, ok := envMap["OS"]; !ok || val != runtime.GOOS {
@@ -1022,7 +1022,7 @@ func TestCheckPlatformCurrentNotInListReturnsError(t *testing.T) {
 // --- Behavior 13: VERSION variable in buildEnv ---
 
 func TestBuildEnvIncludesVersion(t *testing.T) {
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.8.1", "", false, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.8.1", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
 	if val, ok := envMap["VERSION"]; !ok || val != "1.8.1" {
@@ -1070,7 +1070,7 @@ func TestBuildEnvCMakePrefixPath(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/a", "/fake/store/b"},
 	}
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", false, deps)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "cmake", Debug: false, Deps: deps})
 	envMap := envToMap(env)
 
 	val, ok := envMap["CMAKE_PREFIX_PATH"]
@@ -1088,7 +1088,7 @@ func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/a"},
 	}
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "go", false, deps)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "go", Debug: false, Deps: deps})
 	envMap := envToMap(env)
 
 	if _, ok := envMap["CMAKE_PREFIX_PATH"]; ok {
@@ -1097,7 +1097,7 @@ func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
 }
 
 func TestBuildEnvNoCMakePrefixPathWithoutDeps(t *testing.T) {
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "cmake", false, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "cmake", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
 	if _, ok := envMap["CMAKE_PREFIX_PATH"]; ok {
@@ -1108,7 +1108,7 @@ func TestBuildEnvNoCMakePrefixPathWithoutDeps(t *testing.T) {
 // --- Behavior 16: Compiler flags in buildEnv ---
 
 func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
 	if val := envMap["CFLAGS"]; val != "-O2" {
@@ -1124,7 +1124,7 @@ func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
 }
 
 func TestBuildEnvDebugFlags(t *testing.T) {
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", true, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: true, Deps: nil})
 	envMap := envToMap(env)
 
 	if val := envMap["CFLAGS"]; val != "-O0 -g" {
@@ -1141,14 +1141,14 @@ func TestBuildEnvDebugFlags(t *testing.T) {
 
 func TestBuildEnvZeroARDateAlwaysSet(t *testing.T) {
 	// Release mode.
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 	if envMap["ZERO_AR_DATE"] != "1" {
 		t.Error("ZERO_AR_DATE not set in release mode")
 	}
 
 	// Debug mode.
-	env, _, _ = buildEnv("/tmp/prefix", "4", "1.0.0", "", true, nil)
+	env, _, _ = buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: true, Deps: nil})
 	envMap = envToMap(env)
 	if envMap["ZERO_AR_DATE"] != "1" {
 		t.Error("ZERO_AR_DATE not set in debug mode")
@@ -1158,7 +1158,7 @@ func TestBuildEnvZeroARDateAlwaysSet(t *testing.T) {
 func TestBuildEnvUserCFLAGSNotOverridden(t *testing.T) {
 	t.Setenv("CFLAGS", "-march=native")
 
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
 	if val := envMap["CFLAGS"]; val != "-march=native" {
@@ -1179,7 +1179,7 @@ func TestBuildEnvExportsDepCPPFLAGSAndDepLDFLAGS(t *testing.T) {
 	deps := &BuildDeps{
 		StoreDirs: []string{depDir},
 	}
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, deps)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: deps})
 	envMap := envToMap(env)
 
 	// DEP_CPPFLAGS should contain -I for dep include dir.
@@ -1206,7 +1206,7 @@ func TestBuildEnvExportsDepCPPFLAGSAndDepLDFLAGS(t *testing.T) {
 }
 
 func TestBuildEnvNoDepFlagsWithoutDeps(t *testing.T) {
-	env, _, _ := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
 	if _, ok := envMap["DEP_CPPFLAGS"]; ok {
@@ -1214,6 +1214,189 @@ func TestBuildEnvNoDepFlagsWithoutDeps(t *testing.T) {
 	}
 	if _, ok := envMap["DEP_LDFLAGS"]; ok {
 		t.Error("DEP_LDFLAGS should not be set without deps")
+	}
+}
+
+// --- BuildContext helper methods ---
+
+func TestBaseEnvContainsRequiredVars(t *testing.T) {
+	bc := &BuildContext{
+		PrefixDir: "/test/prefix",
+		Jobs:      "8",
+		Version:   "2.0.0",
+	}
+	env := bc.baseEnv("/home/test", "/usr/bin:/bin", "/tmp")
+	m := envToMap(env)
+
+	expect := map[string]string{
+		"PREFIX":   "/test/prefix",
+		"VERSION":  "2.0.0",
+		"JOBS":     "8",
+		"HOME":     "/home/test",
+		"TMPDIR":   "/tmp",
+		"LANG":     "en_US.UTF-8",
+		"PATH":     "/usr/bin:/bin",
+		"OS":       runtime.GOOS,
+		"ARCH":     runtime.GOARCH,
+		"PLATFORM": runtime.GOOS + "-" + runtime.GOARCH,
+	}
+	for k, want := range expect {
+		if got, ok := m[k]; !ok {
+			t.Errorf("missing %s", k)
+		} else if got != want {
+			t.Errorf("%s = %q, want %q", k, got, want)
+		}
+	}
+}
+
+func TestDepSearchPathsComputesPaths(t *testing.T) {
+	bc := &BuildContext{
+		System: "cmake",
+		Deps: &BuildDeps{
+			StoreDirs: []string{"/store/a/1.0", "/store/b/2.0"},
+		},
+	}
+	libPath, incPath, pcPath, cmakePath := bc.depSearchPaths()
+
+	wantLib := "/store/a/1.0/lib:/store/b/2.0/lib"
+	if libPath != wantLib {
+		t.Errorf("libPath = %q, want %q", libPath, wantLib)
+	}
+	wantInc := "/store/a/1.0/include:/store/b/2.0/include"
+	if incPath != wantInc {
+		t.Errorf("incPath = %q, want %q", incPath, wantInc)
+	}
+	wantPC := "/store/a/1.0/lib/pkgconfig:/store/b/2.0/lib/pkgconfig"
+	if pcPath != wantPC {
+		t.Errorf("pcPath = %q, want %q", pcPath, wantPC)
+	}
+	wantCmake := "/store/a/1.0;/store/b/2.0"
+	if cmakePath != wantCmake {
+		t.Errorf("cmakePath = %q, want %q", cmakePath, wantCmake)
+	}
+}
+
+func TestDepSearchPathsNoDeps(t *testing.T) {
+	bc := &BuildContext{}
+	libPath, incPath, pcPath, cmakePath := bc.depSearchPaths()
+	if libPath != "" || incPath != "" || pcPath != "" || cmakePath != "" {
+		t.Errorf("expected all empty, got lib=%q inc=%q pc=%q cmake=%q",
+			libPath, incPath, pcPath, cmakePath)
+	}
+}
+
+func TestDepSearchPathsNoCMakeWithoutSystem(t *testing.T) {
+	bc := &BuildContext{
+		System: "go",
+		Deps: &BuildDeps{
+			StoreDirs: []string{"/store/a/1.0"},
+		},
+	}
+	_, _, _, cmakePath := bc.depSearchPaths()
+	if cmakePath != "" {
+		t.Errorf("cmakePath = %q, want empty for non-cmake system", cmakePath)
+	}
+}
+
+func TestPerDepEnvGeneratesDepVars(t *testing.T) {
+	bc := &BuildContext{
+		Deps: &BuildDeps{
+			NamedDirs: map[string]string{
+				"openssl": "/store/openssl/3.0",
+				"lib-foo": "/store/lib-foo/1.0",
+			},
+		},
+	}
+	env, _, _ := bc.perDepEnv()
+	m := envToMap(env)
+
+	if m["DEP_OPENSSL"] != "/store/openssl/3.0" {
+		t.Errorf("DEP_OPENSSL = %q, want %q", m["DEP_OPENSSL"], "/store/openssl/3.0")
+	}
+	if m["DEP_LIB_FOO"] != "/store/lib-foo/1.0" {
+		t.Errorf("DEP_LIB_FOO = %q, want %q", m["DEP_LIB_FOO"], "/store/lib-foo/1.0")
+	}
+}
+
+func TestPerDepEnvNoDeps(t *testing.T) {
+	bc := &BuildContext{}
+	env, cppflags, ldflags := bc.perDepEnv()
+	if len(env) != 0 {
+		t.Errorf("expected no env vars, got %d", len(env))
+	}
+	if cppflags != "" || ldflags != "" {
+		t.Errorf("expected empty flags, got cpp=%q ld=%q", cppflags, ldflags)
+	}
+}
+
+func TestPerDepEnvComputesDepFlags(t *testing.T) {
+	// Create temp dirs with include/ and lib/ so os.Stat succeeds.
+	storeDir := t.TempDir()
+	os.MkdirAll(filepath.Join(storeDir, "include"), 0o755)
+	os.MkdirAll(filepath.Join(storeDir, "lib"), 0o755)
+
+	bc := &BuildContext{
+		Deps: &BuildDeps{
+			StoreDirs: []string{storeDir},
+			NamedDirs: map[string]string{"test": storeDir},
+		},
+	}
+	env, cppflags, ldflags := bc.perDepEnv()
+	m := envToMap(env)
+
+	if m["DEP_CPPFLAGS"] == "" {
+		t.Error("expected DEP_CPPFLAGS to be set")
+	}
+	if m["DEP_LDFLAGS"] == "" {
+		t.Error("expected DEP_LDFLAGS to be set")
+	}
+	if cppflags == "" {
+		t.Error("expected non-empty cppflags")
+	}
+	if ldflags == "" {
+		t.Error("expected non-empty ldflags")
+	}
+}
+
+func TestCompilerFlagsRelease(t *testing.T) {
+	bc := &BuildContext{Debug: false}
+	flags := bc.compilerFlags("", "")
+	m := envToMap(flags)
+
+	if m["CFLAGS"] != "-O2" {
+		t.Errorf("CFLAGS = %q, want -O2", m["CFLAGS"])
+	}
+	if m["CXXFLAGS"] != "-O2" {
+		t.Errorf("CXXFLAGS = %q, want -O2", m["CXXFLAGS"])
+	}
+	if !strings.Contains(m["LDFLAGS"], "-Wl,-S") {
+		t.Errorf("LDFLAGS = %q, want to contain -Wl,-S", m["LDFLAGS"])
+	}
+}
+
+func TestCompilerFlagsDebug(t *testing.T) {
+	bc := &BuildContext{Debug: true}
+	flags := bc.compilerFlags("", "")
+	m := envToMap(flags)
+
+	if m["CFLAGS"] != "-O0 -g" {
+		t.Errorf("CFLAGS = %q, want '-O0 -g'", m["CFLAGS"])
+	}
+	if m["CXXFLAGS"] != "-O0 -g" {
+		t.Errorf("CXXFLAGS = %q, want '-O0 -g'", m["CXXFLAGS"])
+	}
+}
+
+func TestCompilerFlagsWithDepFlags(t *testing.T) {
+	bc := &BuildContext{Debug: false}
+	flags := bc.compilerFlags("-I/foo/include", "-L/foo/lib")
+	m := envToMap(flags)
+
+	if m["CPPFLAGS"] != "-I/foo/include" {
+		t.Errorf("CPPFLAGS = %q, want '-I/foo/include'", m["CPPFLAGS"])
+	}
+	if !strings.Contains(m["LDFLAGS"], "-L/foo/lib") {
+		t.Errorf("LDFLAGS = %q, want to contain -L/foo/lib", m["LDFLAGS"])
 	}
 }
 
@@ -1383,7 +1566,7 @@ func TestBuildEnvReturnsNilOnTmpDirFailure(t *testing.T) {
 	// fallback path is no longer used by checking that
 	// buildEnv never produces a PATH containing a
 	// non-unique "gale-tools" dir (without random suffix).
-	env, cleanup, err := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, cleanup, err := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	if cleanup != nil {
 		defer cleanup()
 	}
@@ -1525,7 +1708,7 @@ func TestCopyFilePreservesPermissions(t *testing.T) {
 // --- BUG-1: buildEnv cleanup removes tools dir ---
 
 func TestBuildEnvCleanupRemovesToolsDir(t *testing.T) {
-	env, cleanup, err := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, cleanup, err := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	if err != nil {
 		t.Fatalf("buildEnv error: %v", err)
 	}
@@ -1685,7 +1868,7 @@ func TestBuildEnvReturnsErrorOnTmpDirFailure(t *testing.T) {
 
 	os.Setenv("HOME", fakeHome)
 
-	env, cleanup, err := buildEnv("/tmp/prefix", "4", "1.0.0", "", false, nil)
+	env, cleanup, err := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	if err == nil {
 		t.Fatal("expected error when MkdirTemp fails")
 	}

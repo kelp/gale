@@ -17,3 +17,5 @@ docs/superpowers/
 # Pi artifacts
 .pi/
 .pi-lens/
+gale.test
+gale.toml.lock

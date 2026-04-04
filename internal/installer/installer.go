@@ -185,7 +185,7 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	buildResult, hash, err := build.BuildGit(r, tmpDir, r.Build.Debug, depsToBuildDeps(depPaths))
+	buildResult, hash, err := build.BuildGit(r, tmpDir, r.Build.Debug, depPaths)
 	if err != nil {
 		return nil, fmt.Errorf("git build: %w", err)
 	}
@@ -293,15 +293,7 @@ func repoFromURL(rawURL string) string {
 
 // InstallBuildDeps installs build dependencies and returns
 // their bin directory paths.
-// DepPaths holds the resolved paths from installed build
-// dependencies.
-type DepPaths struct {
-	BinDirs   []string          // bin/ directories for PATH
-	StoreDirs []string          // root store directories for each dep
-	NamedDirs map[string]string // dep name → store directory
-}
-
-func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*DepPaths, error) {
+func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
 	// Merge implicit system deps with explicit build deps
 	// without mutating the recipe.
 	sysDeps := build.SystemDeps(r.Build.System)
@@ -370,15 +362,15 @@ func copyRecipeForDeps(r *recipe.Recipe, mergedBuildDeps []string) *recipe.Recip
 func (inst *Installer) installDepsInner(
 	r *recipe.Recipe,
 	seen map[string]bool,
-) (*DepPaths, error) {
+) (*build.BuildDeps, error) {
 	allDeps := append([]string{}, r.Dependencies.Build...)
 	allDeps = append(allDeps, r.Dependencies.Runtime...)
 
 	if len(allDeps) == 0 || inst.Resolver == nil {
-		return &DepPaths{}, nil
+		return &build.BuildDeps{}, nil
 	}
 
-	var result DepPaths
+	var result build.BuildDeps
 	for _, dep := range allDeps {
 		if seen[dep] {
 			continue
@@ -435,45 +427,32 @@ func (inst *Installer) installDepsInner(
 	return &result, nil
 }
 
-func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *DepPaths) (string, error) {
+func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *build.BuildDeps) (string, error) {
 	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := build.BuildLocal(r, sourceDir, tmpDir, r.Build.Debug, depsToBuildDeps(deps))
+	result, err := build.BuildLocal(r, sourceDir, tmpDir, r.Build.Debug, deps)
 	if err != nil {
 		return "", err
 	}
 	return result.SHA256, extractBuild(result, storeDir)
 }
 
-func installFromSource(r *recipe.Recipe, storeDir string, deps *DepPaths) (string, error) {
+func installFromSource(r *recipe.Recipe, storeDir string, deps *build.BuildDeps) (string, error) {
 	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := build.Build(r, tmpDir, r.Build.Debug, depsToBuildDeps(deps))
+	result, err := build.Build(r, tmpDir, r.Build.Debug, deps)
 	if err != nil {
 		return "", err
 	}
 	return result.SHA256, extractBuild(result, storeDir)
-}
-
-// depsToBuildDeps converts installer DepPaths to build
-// BuildDeps. Returns nil if deps is nil.
-func depsToBuildDeps(deps *DepPaths) *build.BuildDeps {
-	if deps == nil {
-		return nil
-	}
-	return &build.BuildDeps{
-		BinDirs:   deps.BinDirs,
-		StoreDirs: deps.StoreDirs,
-		NamedDirs: deps.NamedDirs,
-	}
 }
 
 // extractBuild extracts a build archive into the store dir

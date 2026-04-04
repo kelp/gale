@@ -153,13 +153,20 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		return nil, fmt.Errorf("create prefix directory: %w", err)
 	}
 
-	jobs := strconv.Itoa(runtime.NumCPU())
 	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
-	version := r.Package.Version
+	bc := &BuildContext{
+		PrefixDir: prefixDir,
+		SourceDir: sourceDir,
+		Jobs:      strconv.Itoa(runtime.NumCPU()),
+		Version:   r.Package.Version,
+		System:    buildCfg.System,
+		Debug:     debug,
+		Deps:      deps,
+	}
 	for i, step := range buildCfg.Steps {
 		out.Step(fmt.Sprintf("[%d/%d] %s",
 			i+1, len(buildCfg.Steps), step))
-		if err := runStep(step, sourceDir, prefixDir, jobs, version, buildCfg.System, debug, deps); err != nil {
+		if err := runStep(bc, step); err != nil {
 			return nil, err
 		}
 	}
@@ -272,15 +279,15 @@ func detectSourceRoot(srcDir string) (string, error) {
 // and JOBS environment variables set. Uses a clean environment
 // with only essential variables to avoid interference from the
 // host environment (e.g., nix coreutils aliases).
-func runStep(step, sourceRoot, prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) error {
-	env, cleanup, err := buildEnv(prefixDir, jobs, version, system, debug, deps)
+func runStep(bc *BuildContext, step string) error {
+	env, cleanup, err := buildEnv(bc)
 	if err != nil {
 		return fmt.Errorf("build environment: %w", err)
 	}
 	defer cleanup()
 
 	cmd := exec.Command("sh", "-c", step)
-	cmd.Dir = sourceRoot
+	cmd.Dir = bc.SourceDir
 	cmd.Env = env
 	cmd.Stdout = os.Stderr
 	cmd.Stderr = os.Stderr
@@ -298,6 +305,18 @@ type BuildDeps struct {
 	BinDirs   []string          // bin/ dirs for PATH
 	StoreDirs []string          // root store dirs for lib/include/pkgconfig
 	NamedDirs map[string]string // dep name → store directory
+}
+
+// BuildContext holds parameters passed through build steps
+// and environment construction.
+type BuildContext struct {
+	PrefixDir string
+	SourceDir string
+	Jobs      string
+	Version   string
+	System    string
+	Debug     bool
+	Deps      *BuildDeps
 }
 
 // SystemDeps returns implicit build dependencies for
@@ -322,100 +341,27 @@ func SystemDeps(system string) []string {
 	}
 }
 
-// buildEnv constructs a minimal, clean environment for build steps.
-// Resolves build tool locations from the host PATH so nix-installed
-// compilers work, without pulling in the full nix coreutils.
-func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) ([]string, func(), error) {
-	home := os.Getenv("HOME")
-	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
-	if err != nil {
-		return nil, nil, fmt.Errorf("create tools directory: %w", err)
-	}
-	cleanup := func() { os.RemoveAll(toolsDir) }
-	path := buildPath(home, toolsDir)
-	if deps != nil && len(deps.BinDirs) > 0 {
-		path = strings.Join(deps.BinDirs, ":") + ":" + path
-	}
-	tmpdir := os.Getenv("TMPDIR")
-	if tmpdir == "" {
-		tmpdir = "/tmp"
-	}
-	env := []string{
-		"PREFIX=" + prefixDir,
-		"VERSION=" + version,
-		"JOBS=" + jobs,
+// baseEnv returns the core environment variables: PREFIX,
+// VERSION, JOBS, HOME, TMPDIR, LANG, PATH, OS, ARCH, PLATFORM.
+func (bc *BuildContext) baseEnv(home, path, tmpdir string) []string {
+	return []string{
+		"PREFIX=" + bc.PrefixDir,
+		"VERSION=" + bc.Version,
+		"JOBS=" + bc.Jobs,
 		"PATH=" + path,
 		"HOME=" + home,
 		"TMPDIR=" + tmpdir,
 		"LANG=en_US.UTF-8",
+		"OS=" + runtime.GOOS,
+		"ARCH=" + runtime.GOARCH,
+		"PLATFORM=" + runtime.GOOS + "-" + runtime.GOARCH,
 	}
+}
 
-	// Platform variables for use in build steps.
-	env = append(env,
-		"OS="+runtime.GOOS,
-		"ARCH="+runtime.GOARCH,
-		"PLATFORM="+runtime.GOOS+"-"+runtime.GOARCH,
-	)
-
-	// Build library/include/pkgconfig paths from dep
-	// store directories.
-	if deps != nil && len(deps.StoreDirs) > 0 {
-		var libPaths, incPaths, pcPaths []string
-		for _, d := range deps.StoreDirs {
-			libPaths = append(libPaths,
-				filepath.Join(d, "lib"))
-			incPaths = append(incPaths,
-				filepath.Join(d, "include"))
-			pcPaths = append(pcPaths,
-				filepath.Join(d, "lib", "pkgconfig"))
-		}
-		libPathStr := strings.Join(libPaths, ":")
-		incPathStr := strings.Join(incPaths, ":")
-		env = append(env,
-			"LIBRARY_PATH="+libPathStr,
-			"C_INCLUDE_PATH="+incPathStr,
-			"PKG_CONFIG_PATH="+strings.Join(pcPaths, ":"),
-			"CMAKE_LIBRARY_PATH="+libPathStr,
-			"CMAKE_INCLUDE_PATH="+incPathStr)
-
-		switch runtime.GOOS {
-		case "linux":
-			env = append(env, "LD_LIBRARY_PATH="+libPathStr)
-		case "darwin":
-			env = append(env,
-				"DYLD_FALLBACK_LIBRARY_PATH="+libPathStr)
-		}
-
-		// cmake uses semicolons for CMAKE_PREFIX_PATH.
-		if system == "cmake" {
-			env = append(env,
-				"CMAKE_PREFIX_PATH="+strings.Join(
-					deps.StoreDirs, ";"))
-		}
-
-		// Discover Python site-packages dirs for PYTHONPATH.
-		var pyPaths []string
-		for _, d := range deps.StoreDirs {
-			matches, _ := filepath.Glob(
-				filepath.Join(d, "lib", "python*", "site-packages"))
-			pyPaths = append(pyPaths, matches...)
-		}
-		if len(pyPaths) > 0 {
-			env = append(env,
-				"PYTHONPATH="+strings.Join(pyPaths, ":"))
-		}
-	}
-
-	// Per-dep env vars: DEP_<NAME>=<store_dir>.
-	// Uppercased, hyphens become underscores. Recipes
-	// reference as ${DEP_READLINE}, ${DEP_OPENSSL}, etc.
-	if deps != nil {
-		for name, dir := range deps.NamedDirs {
-			key := "DEP_" + strings.ToUpper(
-				strings.ReplaceAll(name, "-", "_"))
-			env = append(env, key+"="+dir)
-		}
-	}
+// compilerFlags generates CFLAGS, CXXFLAGS, LDFLAGS, CPPFLAGS,
+// CC, CXX pass-through, and ZERO_AR_DATE.
+func (bc *BuildContext) compilerFlags(depCPPFLAGS, depLDFLAGS string) []string {
+	var env []string
 
 	// Pass through compiler if set.
 	if cc := os.Getenv("CC"); cc != "" {
@@ -425,48 +371,13 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 		env = append(env, "CXX="+cxx)
 	}
 
-	// Default compiler flags. User-set values take
-	// precedence — only set if not already in the
-	// environment. Include dep paths in CPPFLAGS and
-	// LDFLAGS so autotools configure scripts find them.
-	var depCPPFLAGS, depLDFLAGS string
-	if deps != nil && len(deps.StoreDirs) > 0 {
-		var cppParts, ldParts []string
-		for _, d := range deps.StoreDirs {
-			incDir := filepath.Join(d, "include")
-			libDir := filepath.Join(d, "lib")
-			if _, err := os.Stat(incDir); err == nil {
-				cppParts = append(cppParts, "-I"+incDir)
-			}
-			if _, err := os.Stat(libDir); err == nil {
-				ldParts = append(ldParts, "-L"+libDir)
-				if runtime.GOOS == "darwin" {
-					ldParts = append(ldParts,
-						"-Wl,-rpath,"+libDir)
-				}
-			}
-		}
-		depCPPFLAGS = strings.Join(cppParts, " ")
-		depLDFLAGS = strings.Join(ldParts, " ")
-	}
-	// Export dep flags as DEP_CPPFLAGS / DEP_LDFLAGS so
-	// recipes that override CPPFLAGS inline can still
-	// reference the dep include/lib paths:
-	//   CPPFLAGS="${DEP_CPPFLAGS} -DFEATURE=1" ./configure
-	if depCPPFLAGS != "" {
-		env = append(env, "DEP_CPPFLAGS="+depCPPFLAGS)
-	}
-	if depLDFLAGS != "" {
-		env = append(env, "DEP_LDFLAGS="+depLDFLAGS)
-	}
-
 	// On macOS, always add headerpad so install_name_tool
 	// can add LC_RPATH entries post-build.
 	headerpad := ""
 	if runtime.GOOS == "darwin" {
 		headerpad = " -Wl,-headerpad_max_install_names"
 	}
-	if debug {
+	if bc.Debug {
 		setDefault(&env, "CFLAGS", "-O0 -g")
 		setDefault(&env, "CXXFLAGS", "-O0 -g")
 		setDefault(&env, "LDFLAGS", depLDFLAGS+headerpad)
@@ -485,6 +396,144 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 
 	// Deterministic ar timestamps.
 	env = append(env, "ZERO_AR_DATE=1")
+
+	return env
+}
+
+// perDepEnv generates per-dependency environment variables:
+// DEP_<NAME>=<path>, PYTHONPATH, DEP_CPPFLAGS, DEP_LDFLAGS.
+// Returns the env slice and the raw depCPPFLAGS/depLDFLAGS
+// strings for use by compilerFlags.
+func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS string) {
+	deps := bc.Deps
+	if deps == nil {
+		return nil, "", ""
+	}
+
+	// DEP_<NAME>=<store_dir>.
+	for name, dir := range deps.NamedDirs {
+		key := "DEP_" + strings.ToUpper(
+			strings.ReplaceAll(name, "-", "_"))
+		env = append(env, key+"="+dir)
+	}
+
+	// Discover Python site-packages for PYTHONPATH.
+	var pyPaths []string
+	for _, d := range deps.StoreDirs {
+		matches, _ := filepath.Glob(
+			filepath.Join(d, "lib", "python*", "site-packages"))
+		pyPaths = append(pyPaths, matches...)
+	}
+	if len(pyPaths) > 0 {
+		env = append(env,
+			"PYTHONPATH="+strings.Join(pyPaths, ":"))
+	}
+
+	// Compute DEP_CPPFLAGS / DEP_LDFLAGS from dep include/lib.
+	if len(deps.StoreDirs) > 0 {
+		var cppParts, ldParts []string
+		for _, d := range deps.StoreDirs {
+			incDir := filepath.Join(d, "include")
+			libDir := filepath.Join(d, "lib")
+			if _, err := os.Stat(incDir); err == nil {
+				cppParts = append(cppParts, "-I"+incDir)
+			}
+			if _, err := os.Stat(libDir); err == nil {
+				ldParts = append(ldParts, "-L"+libDir)
+				if runtime.GOOS == "darwin" {
+					ldParts = append(ldParts,
+						"-Wl,-rpath,"+libDir)
+				}
+			}
+		}
+		depCPPFLAGS = strings.Join(cppParts, " ")
+		depLDFLAGS = strings.Join(ldParts, " ")
+	}
+	if depCPPFLAGS != "" {
+		env = append(env, "DEP_CPPFLAGS="+depCPPFLAGS)
+	}
+	if depLDFLAGS != "" {
+		env = append(env, "DEP_LDFLAGS="+depLDFLAGS)
+	}
+
+	return env, depCPPFLAGS, depLDFLAGS
+}
+
+// depSearchPaths computes library, include, pkg-config, and
+// cmake prefix paths from dependency store directories.
+func (bc *BuildContext) depSearchPaths() (libPath, incPath, pcPath, cmakePath string) {
+	deps := bc.Deps
+	if deps == nil || len(deps.StoreDirs) == 0 {
+		return "", "", "", ""
+	}
+	var libPaths, incPaths, pcPaths []string
+	for _, d := range deps.StoreDirs {
+		libPaths = append(libPaths, filepath.Join(d, "lib"))
+		incPaths = append(incPaths, filepath.Join(d, "include"))
+		pcPaths = append(pcPaths, filepath.Join(d, "lib", "pkgconfig"))
+	}
+	libPath = strings.Join(libPaths, ":")
+	incPath = strings.Join(incPaths, ":")
+	pcPath = strings.Join(pcPaths, ":")
+	if bc.System == "cmake" {
+		cmakePath = strings.Join(deps.StoreDirs, ";")
+	}
+	return libPath, incPath, pcPath, cmakePath
+}
+
+// buildEnv constructs a minimal, clean environment for build steps.
+// Resolves build tool locations from the host PATH so nix-installed
+// compilers work, without pulling in the full nix coreutils.
+func buildEnv(bc *BuildContext) ([]string, func(), error) {
+	deps := bc.Deps
+	home := os.Getenv("HOME")
+	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
+	if err != nil {
+		return nil, nil, fmt.Errorf("create tools directory: %w", err)
+	}
+	cleanup := func() { os.RemoveAll(toolsDir) }
+	path := buildPath(home, toolsDir)
+	if deps != nil && len(deps.BinDirs) > 0 {
+		path = strings.Join(deps.BinDirs, ":") + ":" + path
+	}
+	tmpdir := os.Getenv("TMPDIR")
+	if tmpdir == "" {
+		tmpdir = "/tmp"
+	}
+	env := bc.baseEnv(home, path, tmpdir)
+
+	// Dependency search paths.
+	libPathStr, incPathStr, pcPathStr, cmakePrefix := bc.depSearchPaths()
+	if libPathStr != "" {
+		env = append(env,
+			"LIBRARY_PATH="+libPathStr,
+			"C_INCLUDE_PATH="+incPathStr,
+			"PKG_CONFIG_PATH="+pcPathStr,
+			"CMAKE_LIBRARY_PATH="+libPathStr,
+			"CMAKE_INCLUDE_PATH="+incPathStr)
+
+		switch runtime.GOOS {
+		case "linux":
+			env = append(env, "LD_LIBRARY_PATH="+libPathStr)
+		case "darwin":
+			env = append(env,
+				"DYLD_FALLBACK_LIBRARY_PATH="+libPathStr)
+		}
+
+		if cmakePrefix != "" {
+			env = append(env,
+				"CMAKE_PREFIX_PATH="+cmakePrefix)
+		}
+
+	}
+
+	// Per-dep env vars and dep compiler flags.
+	perDep, depCPPFLAGS, depLDFLAGS := bc.perDepEnv()
+	env = append(env, perDep...)
+
+	// Compiler flags (CC/CXX pass-through, CFLAGS, LDFLAGS,
+	// CPPFLAGS, ZERO_AR_DATE).
+	env = append(env, bc.compilerFlags(depCPPFLAGS, depLDFLAGS)...)
 
 	return env, cleanup, nil
 }

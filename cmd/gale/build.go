@@ -70,17 +70,9 @@ var buildCmd = &cobra.Command{
 			Verifier: attestation.NewVerifier(),
 		}
 
-		depPaths, err := inst.InstallBuildDeps(r)
+		deps, err := inst.InstallBuildDeps(r)
 		if err != nil {
 			return fmt.Errorf("install build deps: %w", err)
-		}
-		var deps *build.BuildDeps
-		if len(depPaths.BinDirs) > 0 || len(depPaths.StoreDirs) > 0 {
-			deps = &build.BuildDeps{
-				BinDirs:   depPaths.BinDirs,
-				StoreDirs: depPaths.StoreDirs,
-				NamedDirs: depPaths.NamedDirs,
-			}
 		}
 
 		outputDir, err := os.Getwd()

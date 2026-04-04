@@ -726,41 +726,6 @@ func TestInstallResultSHA256Populated(t *testing.T) {
 	}
 }
 
-// --- depsToBuildDeps ---
-
-func TestDepsToBuildDepsNil(t *testing.T) {
-	got := depsToBuildDeps(nil)
-	if got != nil {
-		t.Errorf("depsToBuildDeps(nil) = %v, want nil", got)
-	}
-}
-
-func TestDepsToBuildDepsPopulated(t *testing.T) {
-	deps := &DepPaths{
-		BinDirs:   []string{"/store/a/1.0/bin", "/store/b/2.0/bin"},
-		StoreDirs: []string{"/store/a/1.0", "/store/b/2.0"},
-	}
-	got := depsToBuildDeps(deps)
-	if got == nil {
-		t.Fatal("depsToBuildDeps returned nil for non-nil input")
-	}
-	if len(got.BinDirs) != 2 {
-		t.Errorf("BinDirs len = %d, want 2", len(got.BinDirs))
-	}
-	if got.BinDirs[0] != "/store/a/1.0/bin" {
-		t.Errorf("BinDirs[0] = %q, want %q",
-			got.BinDirs[0], "/store/a/1.0/bin")
-	}
-	if len(got.StoreDirs) != 2 {
-		t.Errorf("StoreDirs len = %d, want 2",
-			len(got.StoreDirs))
-	}
-	if got.StoreDirs[1] != "/store/b/2.0" {
-		t.Errorf("StoreDirs[1] = %q, want %q",
-			got.StoreDirs[1], "/store/b/2.0")
-	}
-}
-
 // --- extractBuild ---
 
 func TestExtractBuildExtractsArchive(t *testing.T) {
