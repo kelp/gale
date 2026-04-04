@@ -158,22 +158,5 @@ func Rollback(galeDir string, target int) error {
 			target, err)
 	}
 
-	// Atomic swap: temp symlink + rename (same as Build).
-	// Use a PID-scoped temp name to avoid races with
-	// concurrent processes.
-	relTarget := filepath.Join("gen", strconv.Itoa(target))
-	tmpLink := filepath.Join(galeDir,
-		fmt.Sprintf("current-new.%d", os.Getpid()))
-	if err := os.Remove(tmpLink); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove stale temp link: %w", err)
-	}
-	if err := os.Symlink(relTarget, tmpLink); err != nil {
-		return fmt.Errorf("create temp current symlink: %w", err)
-	}
-	if err := os.Rename(tmpLink, filepath.Join(galeDir, "current")); err != nil {
-		os.Remove(tmpLink)
-		return fmt.Errorf("atomic swap current symlink: %w", err)
-	}
-
-	return nil
+	return swapCurrentSymlink(galeDir, target)
 }

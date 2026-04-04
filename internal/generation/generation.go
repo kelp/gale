@@ -90,24 +90,9 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	}
 
 	// Atomic swap: create a temporary symlink then rename.
-	// Use a PID-scoped temp name to avoid races with
-	// concurrent processes.
-	relTarget := filepath.Join(
-		"gen", strconv.Itoa(next))
-	tmpLink := filepath.Join(galeDir,
-		fmt.Sprintf("current-new.%d", os.Getpid()))
-	if err := os.Remove(tmpLink); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := swapCurrentSymlink(galeDir, next); err != nil {
 		cleanup()
-		return fmt.Errorf("remove stale temp link: %w", err)
-	}
-	if err := os.Symlink(relTarget, tmpLink); err != nil {
-		cleanup()
-		return fmt.Errorf("create temp current symlink: %w", err)
-	}
-	if err := os.Rename(tmpLink, filepath.Join(galeDir, "current")); err != nil {
-		os.Remove(tmpLink)
-		cleanup()
-		return fmt.Errorf("atomic swap current symlink: %w", err)
+		return err
 	}
 
 	// Write README (best effort, world-readable).
@@ -148,6 +133,27 @@ func Next(galeDir string) (int, error) {
 		return 0, err
 	}
 	return cur + 1, nil
+}
+
+// swapCurrentSymlink atomically points the current symlink
+// at the given generation number. Uses a PID-scoped temp
+// name to avoid races with concurrent processes.
+func swapCurrentSymlink(galeDir string, genNum int) error {
+	relTarget := filepath.Join("gen", strconv.Itoa(genNum))
+	currentPath := filepath.Join(galeDir, "current")
+	tmpLink := filepath.Join(galeDir,
+		fmt.Sprintf("current-new.%d", os.Getpid()))
+	if err := os.Remove(tmpLink); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove stale temp link: %w", err)
+	}
+	if err := os.Symlink(relTarget, tmpLink); err != nil {
+		return fmt.Errorf("create temp current symlink: %w", err)
+	}
+	if err := os.Rename(tmpLink, currentPath); err != nil {
+		os.Remove(tmpLink)
+		return fmt.Errorf("atomic swap current symlink: %w", err)
+	}
+	return nil
 }
 
 // symlinkDir creates symlinks in dstDir for every file

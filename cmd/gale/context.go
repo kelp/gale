@@ -8,6 +8,7 @@ import (
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
@@ -249,17 +250,20 @@ func finalizeInstall(galeDir, storeRoot, configPath, name, version, sha256 strin
 }
 
 // updateLockfile reads the lockfile, updates one package
-// entry, and writes it back.
+// entry, and writes it back. The file lock serializes
+// concurrent read-modify-write operations.
 func updateLockfile(lockPath, name, version, sha256 string) error {
-	lf, err := lockfile.Read(lockPath)
-	if err != nil {
-		return err
-	}
-	lf.Packages[name] = lockfile.LockedPackage{
-		Version: version,
-		SHA256:  sha256,
-	}
-	return lockfile.Write(lockPath, lf)
+	return filelock.With(lockPath+".lock", func() error {
+		lf, err := lockfile.Read(lockPath)
+		if err != nil {
+			return err
+		}
+		lf.Packages[name] = lockfile.LockedPackage{
+			Version: version,
+			SHA256:  sha256,
+		}
+		return lockfile.Write(lockPath, lf)
+	})
 }
 
 // removeLockEntry removes a package entry from the lockfile.

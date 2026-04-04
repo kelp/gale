@@ -5,9 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/kelp/gale/internal/atomicfile"
 )
 
 // LockedPackage represents a pinned package in the lockfile.
@@ -51,32 +52,7 @@ func Write(path string, lf *LockFile) error {
 	if err := enc.Encode(lf); err != nil {
 		return fmt.Errorf("encoding lock file: %w", err)
 	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".gale.lock.*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("syncing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("renaming temp file: %w", err)
-	}
-	return nil
+	return atomicfile.Write(path, buf.Bytes())
 }
 
 // IsStale checks if the lock file is stale relative to

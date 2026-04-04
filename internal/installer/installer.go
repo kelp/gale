@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"syscall"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
@@ -473,26 +473,6 @@ func extractBuild(result *build.BuildResult, storeDir string) error {
 // same inode — removing it would cause a race where a new
 // arrival creates a separate file and acquires its own lock.
 func lockPackage(storeRoot, name, version string) (func(), error) {
-	// Ensure the package directory exists for the lock file.
-	pkgDir := filepath.Join(storeRoot, name)
-	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create lock dir: %w", err)
-	}
-
-	lockPath := filepath.Join(pkgDir, version+".lock")
-	f, err := os.OpenFile(
-		lockPath, os.O_CREATE|os.O_RDWR, 0o644) //nolint:gosec
-	if err != nil {
-		return nil, fmt.Errorf("open lock file: %w", err)
-	}
-
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil { //nolint:gosec
-		f.Close()
-		return nil, fmt.Errorf("acquire lock: %w", err)
-	}
-
-	return func() {
-		syscall.Flock(int(f.Fd()), syscall.LOCK_UN) //nolint:errcheck,gosec
-		f.Close()
-	}, nil
+	lockPath := filepath.Join(storeRoot, name, version+".lock")
+	return filelock.Acquire(lockPath)
 }

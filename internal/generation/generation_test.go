@@ -665,7 +665,78 @@ func TestBuildDoesNotClobberConcurrentTempLink(t *testing.T) {
 	}
 }
 
-// --- Behavior 12: Rollback uses unique temp-link path ---
+// --- Behavior 12: swapCurrentSymlink helper ---
+
+func TestSwapCurrentSymlink(t *testing.T) {
+	galeDir := t.TempDir()
+
+	// Create gen/1 directory.
+	gen1 := filepath.Join(galeDir, "gen", "1")
+	if err := os.MkdirAll(gen1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Swap to gen 1.
+	if err := swapCurrentSymlink(galeDir, 1); err != nil {
+		t.Fatalf("swapCurrentSymlink(1): %v", err)
+	}
+
+	// current should be a relative symlink to gen/1.
+	currentPath := filepath.Join(galeDir, "current")
+	target, err := os.Readlink(currentPath)
+	if err != nil {
+		t.Fatalf("readlink current: %v", err)
+	}
+	if target != filepath.Join("gen", "1") {
+		t.Errorf("current = %q, want %q", target,
+			filepath.Join("gen", "1"))
+	}
+
+	// Create gen/2 and swap again.
+	gen2 := filepath.Join(galeDir, "gen", "2")
+	if err := os.MkdirAll(gen2, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := swapCurrentSymlink(galeDir, 2); err != nil {
+		t.Fatalf("swapCurrentSymlink(2): %v", err)
+	}
+
+	target, err = os.Readlink(currentPath)
+	if err != nil {
+		t.Fatalf("readlink current after swap: %v", err)
+	}
+	if target != filepath.Join("gen", "2") {
+		t.Errorf("current = %q, want %q", target,
+			filepath.Join("gen", "2"))
+	}
+}
+
+func TestSwapCurrentSymlinkPreservesPIDScopedTempName(t *testing.T) {
+	galeDir := t.TempDir()
+
+	gen1 := filepath.Join(galeDir, "gen", "1")
+	if err := os.MkdirAll(gen1, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate another process's temp link (no PID suffix).
+	otherTmp := filepath.Join(galeDir, "current-new")
+	if err := os.Symlink("gen/999", otherTmp); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := swapCurrentSymlink(galeDir, 1); err != nil {
+		t.Fatalf("swapCurrentSymlink: %v", err)
+	}
+
+	// The other process's temp link should still exist.
+	if _, err := os.Lstat(otherTmp); err != nil {
+		t.Errorf("swapCurrentSymlink clobbered another process's temp link: %v", err)
+	}
+}
+
+// --- Behavior 13: Rollback uses unique temp-link path ---
 
 func TestRollbackDoesNotClobberConcurrentTempLink(t *testing.T) {
 	galeDir := t.TempDir()

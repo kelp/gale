@@ -388,9 +388,9 @@ func TestReadNoPackagesSection(t *testing.T) {
 	}
 }
 
-// --- Write: nonexistent parent directory ---
+// --- Write: nonexistent parent directory (created automatically) ---
 
-func TestWriteNonexistentDirErrors(t *testing.T) {
+func TestWriteCreatesParentDir(t *testing.T) {
 	path := filepath.Join(t.TempDir(),
 		"no-such-dir", "gale.lock")
 	lf := &LockFile{
@@ -399,9 +399,17 @@ func TestWriteNonexistentDirErrors(t *testing.T) {
 		},
 	}
 
-	err := Write(path, lf)
-	if err == nil {
-		t.Fatal("expected error for nonexistent dir")
+	if err := Write(path, lf); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	got, err := Read(path)
+	if err != nil {
+		t.Fatalf("reading back: %v", err)
+	}
+	if got.Packages["jq"].Version != "1.7.1" {
+		t.Errorf("got version %q, want 1.7.1",
+			got.Packages["jq"].Version)
 	}
 }
 

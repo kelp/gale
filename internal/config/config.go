@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 
 	"github.com/BurntSushi/toml"
-	"golang.org/x/sys/unix"
+
+	"github.com/kelp/gale/internal/atomicfile"
+	"github.com/kelp/gale/internal/filelock"
 )
 
 // ErrGaleConfigNotFound is returned when gale.toml cannot be
@@ -115,54 +117,14 @@ func WriteGaleConfig(path string, cfg *GaleConfig) error {
 	if err := enc.Encode(cfg); err != nil {
 		return fmt.Errorf("encoding gale config: %w", err)
 	}
-
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".gale.toml.*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("syncing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("renaming temp file: %w", err)
-	}
-	return nil
+	return atomicfile.Write(path, buf.Bytes())
 }
 
 // withFileLock acquires an exclusive file lock on a .lock
 // sibling of path, runs fn, and releases the lock. This
 // serializes concurrent read-modify-write operations.
 func withFileLock(path string, fn func() error) error {
-	lockPath := path + ".lock"
-	//nolint:gosec // Lock file is world-readable.
-	f, err := os.OpenFile(lockPath,
-		os.O_CREATE|os.O_RDWR, 0o644)
-	if err != nil {
-		return fmt.Errorf("opening lock file: %w", err)
-	}
-	defer f.Close()
-
-	fd := int(f.Fd()) //nolint:gosec // fd fits in int on all supported platforms.
-	if err := unix.Flock(fd, unix.LOCK_EX); err != nil {
-		return fmt.Errorf("acquiring file lock: %w", err)
-	}
-	defer unix.Flock(fd, unix.LOCK_UN) //nolint:errcheck
-
-	return fn()
+	return filelock.With(path+".lock", fn)
 }
 
 // AddPackage adds or updates a package in the gale.toml at path.
@@ -252,37 +214,7 @@ func WriteAppConfig(path string, cfg *AppConfig) error {
 	if err := enc.Encode(cfg); err != nil {
 		return fmt.Errorf("encoding app config: %w", err)
 	}
-
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return fmt.Errorf("creating config dir: %w", err)
-	}
-
-	tmp, err := os.CreateTemp(dir, ".config.toml.*")
-	if err != nil {
-		return fmt.Errorf("creating temp file: %w", err)
-	}
-	tmpName := tmp.Name()
-
-	if _, err := tmp.Write(buf.Bytes()); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("writing temp file: %w", err)
-	}
-	if err := tmp.Sync(); err != nil {
-		tmp.Close()
-		os.Remove(tmpName)
-		return fmt.Errorf("syncing temp file: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("closing temp file: %w", err)
-	}
-	if err := os.Rename(tmpName, path); err != nil {
-		os.Remove(tmpName)
-		return fmt.Errorf("renaming temp file: %w", err)
-	}
-	return nil
+	return atomicfile.Write(path, buf.Bytes())
 }
 
 // AddRepo adds a repository to the config.toml at path.
