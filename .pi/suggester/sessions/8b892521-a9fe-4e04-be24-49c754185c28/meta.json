@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "sessionId": "8b892521-a9fe-4e04-be24-49c754185c28",
+  "sessionFile": "/Users/tcole/.pi/agent/sessions/--Users-tcole-code-gale--/2026-04-04T03-07-29-620Z_8b892521-a9fe-4e04-be24-49c754185c28.jsonl",
+  "cwd": "/Users/tcole/code/gale",
+  "ignoreLegacyPiSessionEntries": true,
+  "legacyMigration": {
+    "performedAt": "2026-04-04T03:07:36.673Z",
+    "importedLegacyEntries": false,
+    "legacyStateEntryCount": 0,
+    "legacyUsageEntryCount": 0,
+    "note": "Legacy suggester-state/suggester-usage pi session entries were imported once into extension-owned storage and are ignored afterwards."
+  }
+}

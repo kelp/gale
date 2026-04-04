@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kelp/gale/internal/lockfile"
 )
 
 // TestRemoveConfigBeforeStore verifies that the config
@@ -75,6 +77,59 @@ func TestRemoveConfigBeforeStore(t *testing.T) {
 // TestRemoveWarnsWhenPackageNotInStore verifies that
 // removing a package that is in the config but not in
 // the store emits a warning instead of silently no-oping.
+func TestRemoveDeletesLockfileEntry(t *testing.T) {
+	projDir := t.TempDir()
+	configPath := filepath.Join(projDir, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  testpkg = \"1.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a lockfile with the package entry.
+	lockPath := filepath.Join(projDir, "gale.lock")
+	lf := lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"testpkg": {Version: "1.0", SHA256: "abc123"},
+		},
+	}
+	if err := lockfile.Write(lockPath, &lf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a generation so rebuild succeeds.
+	galeDir := filepath.Join(projDir, ".gale")
+	genDir := filepath.Join(galeDir, "gen", "1", "bin")
+	if err := os.MkdirAll(genDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	removeProject = true
+	t.Cleanup(func() { removeProject = false })
+
+	if err := removeCmd.RunE(removeCmd, []string{"testpkg"}); err != nil {
+		t.Fatalf("remove command failed: %v", err)
+	}
+
+	// Verify the lockfile entry is deleted.
+	lf2, err := lockfile.Read(lockPath)
+	if err != nil {
+		t.Fatalf("reading lockfile after remove: %v", err)
+	}
+	if _, ok := lf2.Packages["testpkg"]; ok {
+		t.Error("testpkg should be removed from lockfile")
+	}
+}
+
 func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 	// Set up a project directory with config listing
 	// a package, a store without that package, and

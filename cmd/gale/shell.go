@@ -97,7 +97,12 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 			"sync: parsing config: %v", err))
 		return
 	}
-	lp := lockfilePath(configPath)
+	lp, lpErr := lockfilePath(configPath)
+	if lpErr != nil {
+		out.Warn(fmt.Sprintf(
+			"sync: lockfile path: %v", lpErr))
+		return
+	}
 	stale, err := lockfile.IsStale(configPath, lp, cfg.Packages)
 	if err != nil {
 		out.Warn(fmt.Sprintf(

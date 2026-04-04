@@ -273,7 +273,10 @@ func detectSourceRoot(srcDir string) (string, error) {
 // with only essential variables to avoid interference from the
 // host environment (e.g., nix coreutils aliases).
 func runStep(step, sourceRoot, prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) error {
-	env, cleanup := buildEnv(prefixDir, jobs, version, system, debug, deps)
+	env, cleanup, err := buildEnv(prefixDir, jobs, version, system, debug, deps)
+	if err != nil {
+		return fmt.Errorf("build environment: %w", err)
+	}
 	defer cleanup()
 
 	cmd := exec.Command("sh", "-c", step)
@@ -283,7 +286,7 @@ func runStep(step, sourceRoot, prefixDir, jobs, version, system string, debug bo
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("build step %q failed: %s", step, err)
+		return fmt.Errorf("build step %q failed: %w", step, err)
 	}
 
 	return nil
@@ -322,11 +325,11 @@ func SystemDeps(system string) []string {
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
-func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) ([]string, func()) {
+func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDeps) ([]string, func(), error) {
 	home := os.Getenv("HOME")
 	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
 	if err != nil {
-		return nil, func() {}
+		return nil, nil, fmt.Errorf("create tools directory: %w", err)
 	}
 	cleanup := func() { os.RemoveAll(toolsDir) }
 	path := buildPath(home, toolsDir)
@@ -483,7 +486,7 @@ func buildEnv(prefixDir, jobs, version, system string, debug bool, deps *BuildDe
 	// Deterministic ar timestamps.
 	env = append(env, "ZERO_AR_DATE=1")
 
-	return env, cleanup
+	return env, cleanup, nil
 }
 
 // setDefault appends key=val to env only if key is not

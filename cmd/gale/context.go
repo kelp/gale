@@ -200,13 +200,13 @@ func newRegistry() *registry.Registry {
 }
 
 // lockfilePath returns the gale.lock path for a given
-// gale.toml path. Panics if configPath does not end with
-// ".toml" — this indicates a programming error.
-func lockfilePath(configPath string) string {
+// gale.toml path. Returns an error if configPath does not
+// end with ".toml".
+func lockfilePath(configPath string) (string, error) {
 	if !strings.HasSuffix(configPath, ".toml") {
-		panic("lockfilePath: configPath must end with .toml, got " + configPath)
+		return "", fmt.Errorf("config path must end with .toml, got %s", configPath)
 	}
-	return configPath[:len(configPath)-len(".toml")] + ".lock"
+	return configPath[:len(configPath)-len(".toml")] + ".lock", nil
 }
 
 // writeConfigAndLock adds a package to gale.toml and
@@ -219,7 +219,10 @@ func writeConfigAndLock(configPath, name, version, sha256 string) error {
 	if err := config.AddPackage(configPath, name, version); err != nil {
 		return fmt.Errorf("adding to config: %w", err)
 	}
-	lp := lockfilePath(configPath)
+	lp, err := lockfilePath(configPath)
+	if err != nil {
+		return err
+	}
 	if sha256 == "" {
 		// Cached install: preserve existing hash only if
 		// the lockfile version matches.
@@ -257,6 +260,20 @@ func updateLockfile(lockPath, name, version, sha256 string) error {
 		SHA256:  sha256,
 	}
 	return lockfile.Write(lockPath, lf)
+}
+
+// removeLockEntry removes a package entry from the lockfile.
+func removeLockEntry(configPath, name string) error {
+	lp, err := lockfilePath(configPath)
+	if err != nil {
+		return err
+	}
+	lf, err := lockfile.Read(lp)
+	if err != nil {
+		return err
+	}
+	delete(lf.Packages, name)
+	return lockfile.Write(lp, lf)
 }
 
 // addToConfig resolves scope and writes a package version

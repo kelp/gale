@@ -1,0 +1,31 @@
+{
+  "stateVersion": 9,
+  "lastSuggestion": {
+    "text": "yes, compact checklist please",
+    "shownAt": "2026-04-04T02:59:48.131Z",
+    "turnId": "258c4b29",
+    "sourceLeafId": "258c4b29",
+    "variantName": "default",
+    "strategy": "compact",
+    "requestedStrategy": "compact"
+  },
+  "steeringHistory": [
+    {
+      "turnId": "8b479061",
+      "suggestedPrompt": "hello",
+      "actualUserPrompt": "what does /model-switcher do?",
+      "classification": "changed_course",
+      "similarity": 0.11764705882352941,
+      "timestamp": "2026-04-04T02:51:53.639Z"
+    },
+    {
+      "turnId": "54cd0f5a",
+      "suggestedPrompt": "Yes.",
+      "actualUserPrompt": "it's a custom extension probably",
+      "classification": "changed_course",
+      "similarity": 0.05555555555555555,
+      "timestamp": "2026-04-04T02:52:52.744Z"
+    }
+  ],
+  "turnsSinceLastStalenessCheck": 5
+}

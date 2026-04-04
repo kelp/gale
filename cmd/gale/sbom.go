@@ -53,7 +53,11 @@ var sbomCmd = &cobra.Command{
 			return fmt.Errorf("parsing config: %w", err)
 		}
 
-		lf, err := lockfile.Read(lockfilePath(configPath))
+		lp, lpErr := lockfilePath(configPath)
+		if lpErr != nil {
+			return lpErr
+		}
+		lf, err := lockfile.Read(lp)
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}

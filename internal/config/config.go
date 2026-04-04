@@ -288,23 +288,25 @@ func WriteAppConfig(path string, cfg *AppConfig) error {
 // AddRepo adds a repository to the config.toml at path.
 // Creates the file if it does not exist.
 func AddRepo(path string, repo Repo) error {
-	var cfg *AppConfig
+	return withFileLock(path, func() error {
+		var cfg *AppConfig
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("reading app config: %w", err)
-		}
-		cfg = &AppConfig{}
-	} else {
-		cfg, err = ParseAppConfig(string(data))
+		data, err := os.ReadFile(path)
 		if err != nil {
-			return err
+			if !errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("reading app config: %w", err)
+			}
+			cfg = &AppConfig{}
+		} else {
+			cfg, err = ParseAppConfig(string(data))
+			if err != nil {
+				return err
+			}
 		}
-	}
 
-	cfg.Repos = append(cfg.Repos, repo)
-	return WriteAppConfig(path, cfg)
+		cfg.Repos = append(cfg.Repos, repo)
+		return WriteAppConfig(path, cfg)
+	})
 }
 
 // ErrRepoNotFound is returned when a repo to remove does
@@ -313,32 +315,34 @@ var ErrRepoNotFound = errors.New("repo not found")
 
 // RemoveRepo removes a repository by name from config.toml.
 func RemoveRepo(path string, name string) error {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("reading app config: %w", err)
-	}
-
-	cfg, err := ParseAppConfig(string(data))
-	if err != nil {
-		return err
-	}
-
-	found := false
-	filtered := cfg.Repos[:0]
-	for _, r := range cfg.Repos {
-		if r.Name == name {
-			found = true
-			continue
+	return withFileLock(path, func() error {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("reading app config: %w", err)
 		}
-		filtered = append(filtered, r)
-	}
 
-	if !found {
-		return ErrRepoNotFound
-	}
+		cfg, err := ParseAppConfig(string(data))
+		if err != nil {
+			return err
+		}
 
-	cfg.Repos = filtered
-	return WriteAppConfig(path, cfg)
+		found := false
+		filtered := cfg.Repos[:0]
+		for _, r := range cfg.Repos {
+			if r.Name == name {
+				found = true
+				continue
+			}
+			filtered = append(filtered, r)
+		}
+
+		if !found {
+			return ErrRepoNotFound
+		}
+
+		cfg.Repos = filtered
+		return WriteAppConfig(path, cfg)
+	})
 }
 
 // UnpinPackage removes a pin from the gale.toml at path.

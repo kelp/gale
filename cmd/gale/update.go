@@ -111,6 +111,13 @@ var updateCmd = &cobra.Command{
 		targetNames = sortedTargetKeys(targetNames)
 
 		var updated int
+		defer func() {
+			if updated > 0 && !dryRun {
+				if err := rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath); err != nil {
+					out.Warn(fmt.Sprintf("rebuild generation: %v", err))
+				}
+			}
+		}()
 		for _, name := range targetNames {
 			t := targets[name]
 			var newVersion string
@@ -172,13 +179,6 @@ var updateCmd = &cobra.Command{
 
 			reportResult(out, result, "Updated", "built from source")
 			updated++
-		}
-
-		if !dryRun {
-			if err := rebuildGeneration(ctx.GaleDir,
-				ctx.StoreRoot, ctx.GalePath); err != nil {
-				return fmt.Errorf("rebuild generation: %w", err)
-			}
 		}
 
 		if updated == 0 {

@@ -1,0 +1,116 @@
+{
+  "seedVersion": 3,
+  "generatedAt": "2026-04-04T02:44:48.114Z",
+  "sourceCommit": "cf41a6493b72e0693eae4172175d779ef9d0e63b",
+  "generatorVersion": "2026-03-11.2",
+  "seederPromptVersion": "2026-03-11.2",
+  "suggestionPromptVersion": "2026-03-11.1",
+  "configFingerprint": "sha256:1c8240f0803f32e5bd8896c2fabd508516dbefbc88d624d285ba5069a7cccf1a",
+  "projectIntentSummary": "Gale is a macOS-first package manager for developer CLI tools, written in Go. Its goal is to replace Homebrew, Nix, and home-manager with a single tool that handles both global packages and per-project environments. It combines Homebrew's simplicity with Nix's declarative model — users define their tools in a `gale.toml` manifest, and `gale sync` converges to the correct state. Packages are installed into an immutable store (`~/.gale/pkg/`), and environments are managed through atomic generation snapshots — numbered directories of symlinks into the store. A single `current` symlink swap updates the entire environment (bin, lib, man) without partial states or broken PATH. The project uses a two-repo architecture: this repo contains the CLI tool, while `gale-recipes` contains TOML recipe files. Recipes define how to build packages from source; prebuilt binaries cached in GHCR are an optimization, not a substitute. The install flow fetches a recipe from the registry, tries a prebuilt binary from GHCR first, and falls back to building from source. Per-project environments integrate with direnv — `gale init` creates `.envrc`, and entering a directory automatically syncs packages and adjusts PATH. Gale also supports AI-powered recipe generation via the Anthropic API, Sigstore attestation verification, remote machine syncing, and compatibility with `.tool-versions` files from asdf/mise.",
+  "objectivesSummary": "1. Replace Homebrew, Nix, and home-manager with one unified tool for developer CLI package management.\n2. Provide declarative, manifest-driven package management where `gale.toml` is the source of truth and `gale sync` always converges to the correct state.\n3. Support both global packages (`~/.gale/`) and per-project environments (`.gale/` in project dirs) using the same generation model.\n4. Ensure atomic environment updates via symlink swap — no partial states or broken PATH.\n5. Build everything from source with prebuilt binaries as a cache optimization only.\n6. Integrate seamlessly with direnv for automatic per-project environment activation.\n7. Provide a comprehensive CLI covering install, remove, sync, update, build, lint, search, audit, verify, SBOM, remote sync, and more.\n8. Support recipe-driven package definitions in TOML format with a separate recipes repository.\n9. Enable AI-powered recipe generation from GitHub repositories via Anthropic API.\n10. Prefer static linking for all CLI tools for simplicity and portability.",
+  "constraintsSummary": "1. macOS-first design (though Linux amd64 is also supported in CI builds).\n2. Written in Go; requires Go 1.21+ for bootstrapping.\n3. Two-repo architecture: CLI tool in this repo, recipes in `gale-recipes` — recipes fetched on demand from GitHub raw URLs without git clone.\n4. Prebuilt binaries are only acceptable for compiler bootstraps (Go, Rust); all other packages must be buildable from source.\n5. Commits MUST be signed — never use `--no-gpg-sign` or `commit.gpgsign=false`.\n6. Format with gofumpt (not gofmt), lint with golangci-lint.\n7. TDD: write the failing test first.\n8. New commands MUST reuse existing helpers from `cmd/gale/context.go` — no duplicated logic.\n9. Error wrapping must use noun-phrase context: `fmt.Errorf(\"context: %w\", err)`.\n10. Source builds run in a clean shell with minimal PATH to avoid interference from nix coreutils or other non-standard tools.\n11. Build tools resolved via `exec.LookPath` and symlinked individually into temp dirs to isolate only the needed binary.\n12. Optional dependencies (gh CLI, ssh/scp, Anthropic API key) are gracefully degraded — gale works without them.",
+  "principlesGuidelinesSummary": "**Core Principles:**\n- Everything from source — GHCR binaries are a cache, not a substitute.\n- Prebuilt binaries only for compiler bootstraps.\n- Declarative over imperative — gale.toml → generation, always convergent.\n- One tool replaces Homebrew + Nix + home-manager + direnv+flakes.\n- Static linking preferred for all CLI tools.\n\n**Code Conventions:**\n- Idiomatic Go with gofumpt formatting and golangci-lint.\n- TDD: write the failing test before the fix.\n- Table-driven tests with `t.Run` subtests; use `t.TempDir()` for filesystem ops.\n- Error wrapping with noun-phrase context, not failure description.\n- One responsibility per package, no circular imports, no panics in library code.\n- `cmd/gale/` is flat: one file per command, shared helpers in `context.go` and `paths.go`.\n- `internal/` packages export only what other packages need — small API surface.\n- Check existing helpers before writing new code.\n\n**Writing Style (Strunk & White):**\n- Omit needless words, active voice, definite assertions.\n- Short sentences, one idea per sentence.\n- Comments explain why, not what.\n- Commit messages: imperative mood, 50-char first line, no emojis.\n\n**Naming:**\n- Industry-standard terms: Store, Generation, Recipe.\n- Short names in small scopes, descriptive in larger/exported contexts.",
+  "implementationStatusSummary": "Gale appears to be a mature, actively developed project with a comprehensive feature set already implemented. The CLI supports 25+ commands including install, remove, sync, update, build, lint, search, audit, verify, SBOM, remote sync, shell, run, generations management, and AI-powered recipe creation. The internal architecture is well-structured across ~15 packages covering store management, generation handling, build orchestration, download/verification, GHCR integration, registry access, recipe parsing, config management, direnv hooks, lockfiles, trust/signing, attestation, and AI integration. The recipes repository has over 120 recipes. The project has CI, a justfile for task automation, golangci-lint configuration, changelog, man page, and install script. The presence of `.tar.zst` files in the root suggests packages being built/tested locally.",
+  "topObjectives": [
+    "Replace Homebrew, Nix, and home-manager with one unified developer CLI package manager",
+    "Declarative manifest-driven package management with atomic generation-based environment switching",
+    "Build everything from source with prebuilt binaries as cache optimization only",
+    "Per-project environments with direnv integration for automatic activation",
+    "macOS-first, simple, predictable — Homebrew's ease with Nix's guarantees"
+  ],
+  "constraints": [
+    "macOS-first, Go 1.21+, two-repo architecture (CLI + recipes)",
+    "Prebuilt binaries only for compiler bootstraps; everything else must build from source",
+    "Commits must be signed; format with gofumpt; lint with golangci-lint",
+    "TDD: write failing test first; new commands must reuse helpers from context.go",
+    "Source builds use clean shell with minimal PATH to avoid tool interference",
+    "Static linking preferred for all CLI tools"
+  ],
+  "keyFiles": [
+    {
+      "path": "CLAUDE.md",
+      "hash": "sha256:f69ba91f617757b71cd9d9d5fb625055121ad74ec8fa9cc3f4890d5af4096b83",
+      "whyImportant": "Primary guidance document: project overview, layout, key concepts, CLI commands, conventions, code reuse patterns, and development workflow",
+      "category": "principles_guidelines"
+    },
+    {
+      "path": "docs/dev/design.md",
+      "hash": "sha256:ad46eb39d284e07266ac9647b88d4199b4757a40c8526d712185a4714dad0f74",
+      "whyImportant": "Core design document: architecture rationale, principles (everything from source, declarative over imperative), directory layout, generation model, atomic swap, static linking philosophy, two-repo architecture",
+      "category": "vision"
+    },
+    {
+      "path": "docs/dev/style-guide.md",
+      "hash": "sha256:b49db2e227a009d8b54350b259df5478715a281b48ec0a1060b0b3f5181e5377",
+      "whyImportant": "Comprehensive style guide covering writing, documentation, code conventions, error handling, testing, naming, package organization, and shared helpers",
+      "category": "principles_guidelines"
+    },
+    {
+      "path": "README.md",
+      "hash": "sha256:8792868cc6e7e0fb0ab17d5d7b99fd2f3de14aaca559434a67451c614a0d790a",
+      "whyImportant": "Public-facing project description: why Gale exists, installation, getting started, commands, recipe format, project environments",
+      "category": "vision"
+    },
+    {
+      "path": "cmd/gale/context.go",
+      "hash": "sha256:27e7ea68593cbd7c6772cf70f7d90b39ed151aee938d846e08f877c0bba0d88b",
+      "whyImportant": "Central shared CLI helpers — all new commands must reuse these; config resolution, registry, resolver, generation rebuild, result reporting",
+      "category": "architecture"
+    },
+    {
+      "path": "go.mod",
+      "hash": "sha256:b97fd71ef9b9ae749ec4eadb2ed9e499f89fe12e76edc64e7a3018c8d4d29cb1",
+      "whyImportant": "Go module definition and dependency declarations",
+      "category": "other"
+    },
+    {
+      "path": "gale.toml",
+      "hash": "sha256:9143838752b66be859594e6a853117981f014df119b9cbd6e6884917484d310c",
+      "whyImportant": "Project's own package manifest — dogfooding the tool",
+      "category": "other"
+    },
+    {
+      "path": "justfile",
+      "hash": "sha256:03edb03d0abe3ba0f722f55766a4631fc6b15846cdf06e890f3ca8eb276909ea",
+      "whyImportant": "Build, test, lint, and release task automation",
+      "category": "other"
+    }
+  ],
+  "categoryFindings": {
+    "vision": {
+      "found": true,
+      "rationale": "The README.md provides the public vision (replace Homebrew and Nix with one simple declarative tool), and docs/dev/design.md provides deep architectural vision including principles, terminology, directory layout rationale, and philosophy around static linking and source builds.",
+      "files": [
+        "README.md",
+        "docs/dev/design.md"
+      ]
+    },
+    "architecture": {
+      "found": true,
+      "rationale": "docs/dev/design.md covers the full architecture: store/generation/current model, atomic swap mechanism, global vs project environments, install flow, build environment isolation, two-repo architecture, and bootstrap process. CLAUDE.md provides the project layout mapping internal packages to responsibilities.",
+      "files": [
+        "docs/dev/design.md",
+        "CLAUDE.md"
+      ]
+    },
+    "principles_guidelines": {
+      "found": true,
+      "rationale": "Three complementary sources: CLAUDE.md defines coding conventions, code reuse requirements, and development workflow. docs/dev/style-guide.md provides comprehensive style rules for writing, documentation, code, testing, error handling, and naming. docs/dev/design.md states core principles (everything from source, declarative over imperative, one tool, static linking).",
+      "files": [
+        "CLAUDE.md",
+        "docs/dev/style-guide.md",
+        "docs/dev/design.md"
+      ]
+    }
+  },
+  "openQuestions": [
+    "What is the current version of Gale and what's on the near-term roadmap? (TODO.md and CHANGELOG.md not examined)",
+    "How many of the 25+ CLI commands have full test coverage?",
+    "What is the Linux support status beyond CI recipe builds?",
+    "Are there plans for Windows support?",
+    "What is the relationship between the .pi and .pi-lens directories and the project's development workflow?"
+  ],
+  "reseedNotes": "This is a well-documented Go project with clear vision, architecture, and coding guidelines spread across CLAUDE.md, docs/dev/design.md, docs/dev/style-guide.md, and README.md. Additional docs may exist in docs/ (user-facing guides) and docs/dev/ (build improvements). The TODO.md and CHANGELOG.md were not read but may contain roadmap and version history. The .pi and .pi-lens directories may contain additional project intelligence metadata.",
+  "lastReseedReason": "initial_missing",
+  "lastChangedFiles": []
+}

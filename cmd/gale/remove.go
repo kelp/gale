@@ -77,6 +77,26 @@ var removeCmd = &cobra.Command{
 		out.Info(fmt.Sprintf(
 			"Removed %s from %s", name, configPath))
 
+		// Remove from lockfile. Warn on error but continue
+		// since the main operation (config + store) succeeded.
+		if err := removeLockEntry(configPath, name); err != nil {
+			out.Warn(fmt.Sprintf(
+				"Failed to update lockfile: %v", err))
+		}
+
+		// Rebuild the generation for this scope. Do this
+		// before removing from the store so the generation
+		// is updated with the new config (package removed)
+		// before we delete the package from the store.
+		galeDir, err := galeDirForConfig(configPath)
+		if err != nil {
+			return err
+		}
+		if err := rebuildGeneration(galeDir, storeRoot,
+			configPath); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
+		}
+
 		// Remove the declared version from the store.
 		if st.IsInstalled(name, version) {
 			if err := st.Remove(name, version); err != nil {
@@ -88,16 +108,6 @@ var removeCmd = &cobra.Command{
 		} else {
 			out.Warn(fmt.Sprintf(
 				"%s@%s not found in store", name, version))
-		}
-
-		// Rebuild the generation for this scope.
-		galeDir, err := galeDirForConfig(configPath)
-		if err != nil {
-			return err
-		}
-		if err := rebuildGeneration(galeDir, storeRoot,
-			configPath); err != nil {
-			return fmt.Errorf("rebuild generation: %w", err)
 		}
 
 		out.Success(fmt.Sprintf("Removed %s", name))

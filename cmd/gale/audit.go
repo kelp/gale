@@ -31,7 +31,11 @@ tampering.`,
 		}
 
 		// Get installed version and hash from lockfile.
-		lf, err := lockfile.Read(lockfilePath(ctx.GalePath))
+		lp, lpErr := lockfilePath(ctx.GalePath)
+		if lpErr != nil {
+			return lpErr
+		}
+		lf, err := lockfile.Read(lp)
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}

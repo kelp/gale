@@ -15,7 +15,6 @@ import (
 var (
 	syncRecipes string
 	syncBuild   bool
-	syncGit     bool
 	syncGlobal  bool
 	syncProject bool
 )
@@ -81,7 +80,11 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	}
 
 	// Read lockfile for SHA256 verification.
-	lf, err := lockfile.Read(lockfilePath(ctx.GalePath))
+	lp, err := lockfilePath(ctx.GalePath)
+	if err != nil {
+		return err
+	}
+	lf, err := lockfile.Read(lp)
 	if err != nil {
 		return fmt.Errorf("reading lockfile: %w", err)
 	}
@@ -149,6 +152,15 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		}
 
 		reportResult(out, result, "Installed", "built from source")
+
+		// Update lockfile with the SHA256 from install.
+		if result.SHA256 != "" {
+			lp, lpErr := lockfilePath(ctx.GalePath)
+			if lpErr == nil {
+				_ = updateLockfile(lp, name, version, result.SHA256)
+			}
+		}
+
 		installed++
 	}
 
@@ -195,7 +207,5 @@ func init() {
 	syncCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	syncCmd.Flags().BoolVar(&syncBuild, "build", false,
 		"Build all packages from source (skip prebuilt binaries)")
-	syncCmd.Flags().BoolVar(&syncGit, "git", false,
-		"Clone and build all packages from git")
 	rootCmd.AddCommand(syncCmd)
 }

@@ -10,40 +10,35 @@ import (
 )
 
 func TestLockfilePathWithTomlSuffix(t *testing.T) {
-	got := lockfilePath("/home/user/.gale/gale.toml")
+	got, err := lockfilePath("/home/user/.gale/gale.toml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	want := "/home/user/.gale/gale.lock"
 	if got != want {
 		t.Errorf("lockfilePath() = %q, want %q", got, want)
 	}
 }
 
-func TestLockfilePathWithoutTomlSuffixPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for path without .toml suffix")
-		}
-		msg, ok := r.(string)
-		if !ok {
-			t.Fatalf("expected string panic, got %T: %v", r, r)
-		}
-		if !strings.Contains(msg, ".toml") {
-			t.Errorf("panic message %q should mention .toml", msg)
-		}
-	}()
-
-	lockfilePath("/home/user/.gale/gale.conf")
+func TestLockfilePathReturnsErrorForNonToml(t *testing.T) {
+	_, err := lockfilePath("/home/user/.gale/gale.conf")
+	if err == nil {
+		t.Fatal("expected error for path without .toml suffix")
+	}
+	if !strings.Contains(err.Error(), ".toml") {
+		t.Errorf("error message %q should mention .toml", err)
+	}
 }
 
-func TestLockfilePathShortPathPanics(t *testing.T) {
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("expected panic for short path")
-		}
-	}()
-
-	lockfilePath("abc")
+func TestLockfilePathReturnsCorrectPath(t *testing.T) {
+	got, err := lockfilePath("/tmp/gale.toml")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "/tmp/gale.lock"
+	if got != want {
+		t.Errorf("lockfilePath() = %q, want %q", got, want)
+	}
 }
 
 func TestWriteConfigAndLockUpdatesLockfileOnCachedInstall(t *testing.T) {

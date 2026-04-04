@@ -1037,3 +1037,53 @@ func TestConcurrentAddPackageNoLostWrites(t *testing.T) {
 			"concurrent writes lost data", len(cfg.Packages), n)
 	}
 }
+
+// --- BUG FIX 3: AddRepo/RemoveRepo missing file locking ---
+
+func TestAddRepoConcurrentNoDataLoss(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.toml")
+
+	// Start with an empty config.
+	if err := os.WriteFile(path, []byte(""), 0o644); err != nil {
+		t.Fatalf("failed to write initial config.toml: %v", err)
+	}
+
+	const n = 10
+	var wg sync.WaitGroup
+	errs := make([]error, n)
+
+	for i := range n {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			repo := Repo{
+				Name: fmt.Sprintf("repo%d", idx),
+				URL:  fmt.Sprintf("https://example.com/repo%d", idx),
+			}
+			errs[idx] = AddRepo(path, repo)
+		}(i)
+	}
+	wg.Wait()
+
+	for i, err := range errs {
+		if err != nil {
+			t.Fatalf("AddRepo(repo%d) error: %v", i, err)
+		}
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file: %v", err)
+	}
+
+	cfg, err := ParseAppConfig(string(data))
+	if err != nil {
+		t.Fatalf("ParseAppConfig error: %v", err)
+	}
+
+	if len(cfg.Repos) != n {
+		t.Errorf("Repos count = %d, want %d: "+
+			"concurrent writes lost data", len(cfg.Repos), n)
+	}
+}
