@@ -8,6 +8,7 @@ import (
 	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
+	"golang.org/x/mod/semver"
 )
 
 var (
@@ -125,7 +126,8 @@ var updateCmd = &cobra.Command{
 						"Skipping %s: %v", name, err))
 					continue
 				}
-				if r.Package.Version == t.current {
+				if !isNewerVersion(
+					r.Package.Version, t.current) {
 					out.Info(fmt.Sprintf(
 						"%s@%s is up to date",
 						name, t.current))
@@ -244,6 +246,20 @@ func isGitHash(s string) bool {
 		}
 	}
 	return true
+}
+
+// isNewerVersion reports whether candidate is strictly
+// newer than current using semver comparison. Returns
+// true if either version is not valid semver (cannot
+// compare, so allow the update to proceed).
+func isNewerVersion(candidate, current string) bool {
+	// golang.org/x/mod/semver requires a "v" prefix.
+	cv := "v" + current
+	nv := "v" + candidate
+	if !semver.IsValid(cv) || !semver.IsValid(nv) {
+		return true
+	}
+	return semver.Compare(nv, cv) > 0
 }
 
 // sortedTargetKeys returns a sorted copy of the input

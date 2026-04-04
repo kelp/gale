@@ -52,6 +52,57 @@ func TestIsGitHash(t *testing.T) {
 	}
 }
 
+func TestIsNewerVersion(t *testing.T) {
+	tests := []struct {
+		current   string
+		candidate string
+		want      bool
+	}{
+		// Clear upgrades.
+		{"0.2.0", "0.8.1", true},
+		{"1.0.0", "1.0.1", true},
+		{"1.0.0", "2.0.0", true},
+
+		// Downgrades — must return false.
+		{"0.8.1", "0.2.0", false},
+		{"2.0.0", "1.0.0", false},
+		{"1.0.1", "1.0.0", false},
+
+		// Same version — no update needed.
+		{"0.8.1", "0.8.1", false},
+
+		// Dev/pre-release to stable release is an upgrade.
+		{"0.8.1-dev.2+47a65de", "0.8.1", true},
+		{"0.8.1-dev.2", "0.8.1", true},
+
+		// Stable to dev of same version is a downgrade.
+		{"0.8.1", "0.8.1-dev.2", false},
+
+		// Dev of higher version beats stable of lower.
+		{"0.8.1", "0.9.0-dev.1", true},
+
+		// Dev of lower version is a downgrade.
+		{"0.8.2-dev.1", "0.8.1", false},
+
+		// Non-semver (git hashes, etc.) — proceed with
+		// update since we can't compare.
+		{"abc1234", "0.8.1", true},
+		{"0.8.1", "abc1234", true},
+		{"abc1234", "def5678", true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.current+"→"+tt.candidate, func(t *testing.T) {
+			got := isNewerVersion(tt.candidate, tt.current)
+			if got != tt.want {
+				t.Errorf(
+					"isNewerVersion(%q, %q) = %v, want %v",
+					tt.candidate, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUpdateGitSkipsWhenVersionIsSemver(t *testing.T) {
 	// A semver version like "1.7.1" should never match a
 	// 7-char git hash like "abc1234". The up-to-date
