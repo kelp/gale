@@ -80,21 +80,9 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 
 	// Set up resolver.
 	storeRoot := defaultStoreRoot()
-	var resolver installer.RecipeResolver
-	var reg *registry.Registry
-	if recipesPath != "" {
-		override := ""
-		if recipesPath != "auto" {
-			override = recipesPath
-		}
-		recipesDir, dirErr := findLocalRecipesDir(cwd, override)
-		if dirErr != nil {
-			return nil, dirErr
-		}
-		resolver = localRecipeResolver(recipesDir)
-	} else {
-		reg = newRegistry()
-		resolver = reg.FetchRecipe
+	resolver, reg, resolveErr := resolveRecipeResolver(recipesPath, cwd)
+	if resolveErr != nil {
+		return nil, resolveErr
 	}
 
 	inst := &installer.Installer{

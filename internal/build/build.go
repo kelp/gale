@@ -161,6 +161,7 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		Version:   r.Package.Version,
 		System:    buildCfg.System,
 		Debug:     debug,
+		Env:       buildCfg.Env,
 		Deps:      deps,
 	}
 	for i, step := range buildCfg.Steps {
@@ -316,6 +317,7 @@ type BuildContext struct {
 	Version   string
 	System    string
 	Debug     bool
+	Env       map[string]string // extra env vars from recipe [build] env
 	Deps      *BuildDeps
 }
 
@@ -534,6 +536,15 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	// Compiler flags (CC/CXX pass-through, CFLAGS, LDFLAGS,
 	// CPPFLAGS, ZERO_AR_DATE).
 	env = append(env, bc.compilerFlags(depCPPFLAGS, depLDFLAGS)...)
+
+	// Recipe-defined env vars (from [build] env = {...}).
+	// Expand ${PREFIX}, ${VERSION}, ${JOBS} placeholders.
+	for k, v := range bc.Env {
+		v = strings.ReplaceAll(v, "${PREFIX}", bc.PrefixDir)
+		v = strings.ReplaceAll(v, "${VERSION}", bc.Version)
+		v = strings.ReplaceAll(v, "${JOBS}", bc.Jobs)
+		env = append(env, k+"="+v)
+	}
 
 	return env, cleanup, nil
 }

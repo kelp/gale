@@ -193,13 +193,9 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 	// Resolve recipe.
 	var r *recipe.Recipe
 	if recipePath != "" {
-		data, err := os.ReadFile(recipePath)
+		parsed, err := loadRecipeFile(recipePath, true)
 		if err != nil {
-			return fmt.Errorf("reading recipe: %w", err)
-		}
-		parsed, err := recipe.ParseLocal(string(data))
-		if err != nil {
-			return fmt.Errorf("parsing recipe: %w", err)
+			return err
 		}
 		r = parsed
 	} else {
@@ -252,14 +248,9 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 		return err
 	}
 
-	data, err := os.ReadFile(resolvedRecipe)
+	r, err := loadRecipeFile(resolvedRecipe, true)
 	if err != nil {
-		return fmt.Errorf("reading recipe: %w", err)
-	}
-
-	r, err := recipe.ParseLocal(string(data))
-	if err != nil {
-		return fmt.Errorf("parsing recipe: %w", err)
+		return err
 	}
 
 	// Override version with semver dev version from git.
@@ -398,14 +389,9 @@ func newInstallerForRecipe(recipePath, storeRoot string) *installer.Installer {
 }
 
 func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Output) error {
-	data, err := os.ReadFile(recipePath)
+	r, err := loadRecipeFile(recipePath, false)
 	if err != nil {
-		return fmt.Errorf("reading recipe: %w", err)
-	}
-
-	r, err := recipe.Parse(string(data))
-	if err != nil {
-		return fmt.Errorf("parsing recipe: %w", err)
+		return err
 	}
 
 	inst := newInstallerForRecipe(recipePath, ctx.StoreRoot)

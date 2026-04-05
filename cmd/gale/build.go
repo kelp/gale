@@ -8,7 +8,6 @@ import (
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -29,39 +28,28 @@ var buildCmd = &cobra.Command{
 		recipePath := args[0]
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		data, err := os.ReadFile(recipePath)
+		r, err := loadRecipeFile(recipePath, false)
 		if err != nil {
-			return fmt.Errorf("reading recipe: %w", err)
-		}
-
-		r, err := recipe.Parse(string(data))
-		if err != nil {
-			return fmt.Errorf("parsing recipe: %w", err)
+			return err
 		}
 
 		// Resolve and install dependencies (build, runtime,
 		// and implicit system deps). --recipes flag takes
 		// precedence, then auto-detect from recipe path.
-		var resolver installer.RecipeResolver
-		if buildRecipes != "" {
-			cwd, cwdErr := os.Getwd()
-			if cwdErr != nil {
-				return fmt.Errorf("getting working dir: %w", cwdErr)
+		cwd, cwdErr := os.Getwd()
+		if cwdErr != nil {
+			return fmt.Errorf("getting working dir: %w", cwdErr)
+		}
+		resolver, _, resolveErr := resolveRecipeResolver(buildRecipes, cwd)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		// When no --recipes flag, check if the recipe file
+		// itself is inside a recipes repo.
+		if buildRecipes == "" {
+			if recipesDir := detectRecipesRepo(recipePath); recipesDir != "" {
+				resolver = localRecipeResolver(recipesDir)
 			}
-			override := ""
-			if buildRecipes != "auto" {
-				override = buildRecipes
-			}
-			recipesDir, dirErr := findLocalRecipesDir(cwd, override)
-			if dirErr != nil {
-				return fmt.Errorf("resolving recipes dir: %w", dirErr)
-			}
-			resolver = localRecipeResolver(recipesDir)
-		} else if recipesDir := detectRecipesRepo(recipePath); recipesDir != "" {
-			resolver = localRecipeResolver(recipesDir)
-		} else {
-			reg := newRegistry()
-			resolver = reg.FetchRecipe
 		}
 
 		inst := &installer.Installer{

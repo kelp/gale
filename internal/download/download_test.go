@@ -539,6 +539,152 @@ func TestExtractTarGzAllowsSymlinkWithinDestDir(t *testing.T) {
 	}
 }
 
+// --- Security: safe absolute symlink allowlist ---
+
+func TestExtractTarGzAllowsSymlinkToDevNull(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "devnull.tar.gz")
+	destDir := t.TempDir()
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	content := "regular file"
+	tw.WriteHeader(&tar.Header{
+		Name: "file.txt",
+		Mode: 0o644,
+		Size: int64(len(content)),
+	})
+	tw.Write([]byte(content))
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "null",
+		Linkname: "/dev/null",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	err = ExtractTarGz(archive, destDir)
+	if err != nil {
+		t.Fatalf("unexpected error for /dev/null symlink: %v", err)
+	}
+}
+
+func TestExtractTarGzSymlinkToDevNullCreatesCorrectSymlink(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "devnull.tar.gz")
+	destDir := t.TempDir()
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	content := "regular file"
+	tw.WriteHeader(&tar.Header{
+		Name: "file.txt",
+		Mode: 0o644,
+		Size: int64(len(content)),
+	})
+	tw.Write([]byte(content))
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "null",
+		Linkname: "/dev/null",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	if err = ExtractTarGz(archive, destDir); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	linkPath := filepath.Join(destDir, "null")
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("symlink not created: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected symlink, got %v", info.Mode())
+	}
+
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != "/dev/null" {
+		t.Errorf("symlink target = %q, want %q", target, "/dev/null")
+	}
+}
+
+func TestExtractTarGzRejectsSymlinkToEtcPasswd(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "evil.tar.gz")
+	destDir := t.TempDir()
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "passwd",
+		Linkname: "/etc/passwd",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	err = ExtractTarGz(archive, destDir)
+	if err == nil {
+		t.Fatal("expected error for /etc/passwd symlink")
+	}
+	if !strings.Contains(err.Error(), "illegal symlink target") {
+		t.Errorf("error = %q, want it to contain 'illegal symlink target'",
+			err.Error())
+	}
+}
+
+func TestExtractTarGzAllowsSymlinkToDevZero(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "devzero.tar.gz")
+	destDir := t.TempDir()
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "zero",
+		Linkname: "/dev/zero",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	err = ExtractTarGz(archive, destDir)
+	if err != nil {
+		t.Fatalf("unexpected error for /dev/zero symlink: %v", err)
+	}
+}
+
 func TestExtractZipRejectsPathTraversal(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "evil.zip")
 	destDir := t.TempDir()

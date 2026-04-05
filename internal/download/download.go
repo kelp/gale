@@ -407,6 +407,17 @@ func ExtractSource(archivePath, destDir string) error {
 	}
 }
 
+// safeAbsSymlinkTargets is the allowlist of absolute symlink
+// targets that are safe to create even though they point outside
+// the extraction directory. These are well-known device nodes
+// used by many projects as test fixtures.
+var safeAbsSymlinkTargets = map[string]bool{
+	"/dev/null":    true,
+	"/dev/zero":    true,
+	"/dev/urandom": true,
+	"/dev/random":  true,
+}
+
 // extractTar reads entries from a tar reader and extracts them
 // to destDir. Validates paths to prevent directory traversal.
 func extractTar(tr *tar.Reader, destDir string) error {
@@ -445,7 +456,8 @@ func extractTar(tr *tar.Reader, destDir string) error {
 					hdr.Name, err)
 			}
 		case tar.TypeSymlink:
-			// Validate symlink target stays within destDir.
+			// Validate symlink target stays within destDir,
+			// or is an explicitly allowed safe absolute target.
 			var resolved string
 			if filepath.IsAbs(hdr.Linkname) {
 				resolved = filepath.Clean(hdr.Linkname)
@@ -453,7 +465,7 @@ func extractTar(tr *tar.Reader, destDir string) error {
 				resolved = filepath.Join(filepath.Dir(target), hdr.Linkname) //nolint:gosec // G305 — validated below
 				resolved = filepath.Clean(resolved)
 			}
-			if !strings.HasPrefix(resolved, cleanDest) {
+			if !strings.HasPrefix(resolved, cleanDest) && !safeAbsSymlinkTargets[resolved] {
 				return fmt.Errorf("illegal symlink target in archive: %s -> %s",
 					hdr.Name, hdr.Linkname)
 			}

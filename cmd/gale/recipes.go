@@ -9,9 +9,45 @@ import (
 
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/registry"
 )
 
 const localGHCRBase = "kelp/gale-recipes"
+
+// loadRecipeFile reads and parses a recipe TOML file.
+// When local is true, uses ParseLocal (skips binary
+// section validation). Otherwise uses Parse.
+func loadRecipeFile(path string, local bool) (*recipe.Recipe, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading recipe %s: %w", path, err)
+	}
+	if local {
+		return recipe.ParseLocal(string(data))
+	}
+	return recipe.Parse(string(data))
+}
+
+// resolveRecipeResolver constructs a RecipeResolver from
+// the --recipes flag value and working directory. When
+// recipesFlag is non-empty, returns a local resolver.
+// Otherwise returns a registry-based resolver. The returned
+// registry is nil when using local recipes.
+func resolveRecipeResolver(recipesFlag, cwd string) (installer.RecipeResolver, *registry.Registry, error) {
+	if recipesFlag != "" {
+		override := ""
+		if recipesFlag != "auto" {
+			override = recipesFlag
+		}
+		recipesDir, err := findLocalRecipesDir(cwd, override)
+		if err != nil {
+			return nil, nil, err
+		}
+		return localRecipeResolver(recipesDir), nil, nil
+	}
+	reg := newRegistry()
+	return reg.FetchRecipe, reg, nil
+}
 
 // localRecipeResolver returns a RecipeResolver that reads
 // recipes from a local recipes directory using letter-bucketed

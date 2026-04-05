@@ -31,33 +31,16 @@ var addCmd = &cobra.Command{
 			return fmt.Errorf("getting working dir: %w", err)
 		}
 
-		var resolver func(string) (string, error)
-		if addRecipes != "" {
-			override := ""
-			if addRecipes != "auto" {
-				override = addRecipes
+		recipeRes, _, resolveErr := resolveRecipeResolver(addRecipes, cwd)
+		if resolveErr != nil {
+			return resolveErr
+		}
+		resolver := func(name string) (string, error) {
+			r, err := recipeRes(name)
+			if err != nil {
+				return "", err
 			}
-			recipesDir, dirErr := findLocalRecipesDir(cwd, override)
-			if dirErr != nil {
-				return dirErr
-			}
-			localRes := localRecipeResolver(recipesDir)
-			resolver = func(name string) (string, error) {
-				r, err := localRes(name)
-				if err != nil {
-					return "", err
-				}
-				return r.Package.Version, nil
-			}
-		} else {
-			reg := newRegistry()
-			resolver = func(name string) (string, error) {
-				r, err := reg.FetchRecipe(name)
-				if err != nil {
-					return "", err
-				}
-				return r.Package.Version, nil
-			}
+			return r.Package.Version, nil
 		}
 
 		for _, arg := range args {

@@ -820,3 +820,89 @@ func TestParseVerifyEmptyByDefault(t *testing.T) {
 			r.Package.Verify)
 	}
 }
+
+// --- Behavior: build env key ---
+
+const recipeWithBuildEnv = `
+[package]
+name = "helix"
+version = "25.1"
+
+[source]
+url = "https://example.com/helix.tar.gz"
+sha256 = "abc123"
+
+[build]
+env = { HELIX_DEFAULT_RUNTIME = "${PREFIX}/lib/helix/runtime" }
+steps = ["cargo install --path helix-term --locked --root $PREFIX"]
+`
+
+func TestParseBuildEnvDoesNotError(t *testing.T) {
+	_, err := Parse(recipeWithBuildEnv)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestParseBuildEnvContainsKeyValue(t *testing.T) {
+	r, err := Parse(recipeWithBuildEnv)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Build.Env == nil {
+		t.Fatal("expected Build.Env to be non-nil")
+	}
+	want := "${PREFIX}/lib/helix/runtime"
+	if got := r.Build.Env["HELIX_DEFAULT_RUNTIME"]; got != want {
+		t.Errorf("Build.Env[HELIX_DEFAULT_RUNTIME] = %q, want %q",
+			got, want)
+	}
+}
+
+func TestBuildForPlatformPropagatesEnv(t *testing.T) {
+	r, err := Parse(recipeWithBuildEnv)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := r.BuildForPlatform("darwin", "arm64")
+	if b.Env == nil {
+		t.Fatal("expected BuildForPlatform to propagate Env")
+	}
+	want := "${PREFIX}/lib/helix/runtime"
+	if got := b.Env["HELIX_DEFAULT_RUNTIME"]; got != want {
+		t.Errorf("Env[HELIX_DEFAULT_RUNTIME] = %q, want %q",
+			got, want)
+	}
+}
+
+const recipeWithPlatformEnvOverride = `
+[package]
+name = "helix"
+version = "25.1"
+
+[source]
+url = "https://example.com/helix.tar.gz"
+sha256 = "abc123"
+
+[build]
+env = { FOO = "default" }
+steps = ["echo default"]
+
+[build.darwin-arm64]
+env = { FOO = "darwin" }
+steps = ["echo darwin"]
+`
+
+func TestBuildForPlatformUsesPerPlatformEnvOverride(t *testing.T) {
+	r, err := Parse(recipeWithPlatformEnvOverride)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := r.BuildForPlatform("darwin", "arm64")
+	if b.Env == nil {
+		t.Fatal("expected Env to be set for platform override")
+	}
+	if got := b.Env["FOO"]; got != "darwin" {
+		t.Errorf("Env[FOO] = %q, want %q", got, "darwin")
+	}
+}

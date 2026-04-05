@@ -65,24 +65,32 @@ type Build struct {
 	System   string
 	Steps    []string
 	Debug    bool                     `toml:"debug,omitempty"`
+	Env      map[string]string
 	Platform map[string]PlatformBuild `toml:"-"`
 }
 
 // PlatformBuild holds per-platform build overrides.
 type PlatformBuild struct {
 	Steps []string
+	Env   map[string]string
 }
 
 // BuildForPlatform returns the build config for the given
 // platform. If a per-platform override exists, it is
 // returned. Otherwise the default Build is returned.
+// Per-platform Env overrides the default Env when present.
 func (r *Recipe) BuildForPlatform(goos, goarch string) Build {
 	key := goos + "-" + goarch
 	if r.Build.Platform != nil {
 		if pb, ok := r.Build.Platform[key]; ok {
+			env := r.Build.Env
+			if pb.Env != nil {
+				env = pb.Env
+			}
 			return Build{
 				System: r.Build.System,
 				Steps:  pb.Steps,
+				Env:    env,
 			}
 		}
 	}
@@ -201,9 +209,21 @@ func parseBuild(raw map[string]interface{}) (Build, error) {
 		}
 	}
 
+	// Extract top-level env.
+	if envRaw, ok := raw["env"]; ok {
+		if m, ok := envRaw.(map[string]interface{}); ok {
+			b.Env = make(map[string]string, len(m))
+			for k, v := range m {
+				if s, ok := v.(string); ok {
+					b.Env[k] = s
+				}
+			}
+		}
+	}
+
 	// Extract per-platform overrides (sub-tables).
 	for key, val := range raw {
-		if key == "steps" || key == "system" || key == "debug" {
+		if key == "steps" || key == "system" || key == "debug" || key == "env" {
 			continue
 		}
 		sub, ok := val.(map[string]interface{})
@@ -222,6 +242,16 @@ func parseBuild(raw map[string]interface{}) (Build, error) {
 				for _, v := range arr {
 					if s, ok := v.(string); ok {
 						pb.Steps = append(pb.Steps, s)
+					}
+				}
+			}
+		}
+		if envRaw, ok := sub["env"]; ok {
+			if m, ok := envRaw.(map[string]interface{}); ok {
+				pb.Env = make(map[string]string, len(m))
+				for k, v := range m {
+					if s, ok := v.(string); ok {
+						pb.Env[k] = s
 					}
 				}
 			}
