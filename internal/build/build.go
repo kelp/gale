@@ -442,10 +442,17 @@ func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS strin
 			}
 			if _, err := os.Stat(libDir); err == nil {
 				ldParts = append(ldParts, "-L"+libDir)
-				if runtime.GOOS == "darwin" {
-					ldParts = append(ldParts,
-						"-Wl,-rpath,"+libDir)
-				}
+				// Do not inject -Wl,-rpath here on darwin.
+				// Runtime rpath for dep libs is added
+				// post-build by AddDepRpaths via
+				// install_name_tool. Reasons:
+				// 1. Ruby's configure validates LDFLAGS and
+				//    rejects -Wl,-rpath entries.
+				// 2. libtool and cmake strip or rewrite
+				//    -Wl,-rpath during relink/install,
+				//    making link-time injection unreliable.
+				// AddDepRpaths is the single source of truth
+				// for dep rpaths on darwin.
 			}
 		}
 		depCPPFLAGS = strings.Join(cppParts, " ")
@@ -463,6 +470,11 @@ func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS strin
 
 // depSearchPaths computes library, include, pkg-config, and
 // cmake prefix paths from dependency store directories.
+//
+// Only existing directories are included. Stale or
+// nonexistent paths would trigger linker warnings
+// ("search path ... not found") that break configure
+// scripts with strict LDFLAGS validation (e.g. Ruby).
 func (bc *BuildContext) depSearchPaths() (libPath, incPath, pcPath, cmakePath string) {
 	deps := bc.Deps
 	if deps == nil || len(deps.StoreDirs) == 0 {
@@ -470,13 +482,27 @@ func (bc *BuildContext) depSearchPaths() (libPath, incPath, pcPath, cmakePath st
 	}
 	var libPaths, incPaths, pcPaths []string
 	for _, d := range deps.StoreDirs {
-		libPaths = append(libPaths, filepath.Join(d, "lib"))
-		incPaths = append(incPaths, filepath.Join(d, "include"))
-		pcPaths = append(pcPaths, filepath.Join(d, "lib", "pkgconfig"))
+		libDir := filepath.Join(d, "lib")
+		incDir := filepath.Join(d, "include")
+		pcDir := filepath.Join(d, "lib", "pkgconfig")
+		if _, err := os.Stat(libDir); err == nil {
+			libPaths = append(libPaths, libDir)
+		}
+		if _, err := os.Stat(incDir); err == nil {
+			incPaths = append(incPaths, incDir)
+		}
+		if _, err := os.Stat(pcDir); err == nil {
+			pcPaths = append(pcPaths, pcDir)
+		}
 	}
 	libPath = strings.Join(libPaths, ":")
 	incPath = strings.Join(incPaths, ":")
 	pcPath = strings.Join(pcPaths, ":")
+	// cmakePath is intentionally not filtered: CMAKE_PREFIX_PATH
+	// entries are prefixes, not subdirectories. CMake walks
+	// each prefix looking for lib/cmake/<pkg>, share/cmake/<pkg>,
+	// etc. and tolerates missing subdirs silently. The store
+	// dirs themselves always exist.
 	if bc.System == "cmake" {
 		cmakePath = strings.Join(deps.StoreDirs, ";")
 	}
@@ -504,16 +530,16 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	}
 	env := bc.baseEnv(home, path, tmpdir)
 
-	// Dependency search paths.
+	// Dependency search paths. Each guard is independent
+	// because depSearchPaths filters nonexistent subdirs:
+	// a header-only dep (no lib/) still needs incPath, and
+	// a bin-only dep (no lib/ or include/) still needs
+	// CMAKE_PREFIX_PATH if system=cmake.
 	libPathStr, incPathStr, pcPathStr, cmakePrefix := bc.depSearchPaths()
 	if libPathStr != "" {
 		env = append(env,
 			"LIBRARY_PATH="+libPathStr,
-			"C_INCLUDE_PATH="+incPathStr,
-			"PKG_CONFIG_PATH="+pcPathStr,
-			"CMAKE_LIBRARY_PATH="+libPathStr,
-			"CMAKE_INCLUDE_PATH="+incPathStr)
-
+			"CMAKE_LIBRARY_PATH="+libPathStr)
 		switch runtime.GOOS {
 		case "linux":
 			env = append(env, "LD_LIBRARY_PATH="+libPathStr)
@@ -521,12 +547,17 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 			env = append(env,
 				"DYLD_FALLBACK_LIBRARY_PATH="+libPathStr)
 		}
-
-		if cmakePrefix != "" {
-			env = append(env,
-				"CMAKE_PREFIX_PATH="+cmakePrefix)
-		}
-
+	}
+	if incPathStr != "" {
+		env = append(env,
+			"C_INCLUDE_PATH="+incPathStr,
+			"CMAKE_INCLUDE_PATH="+incPathStr)
+	}
+	if pcPathStr != "" {
+		env = append(env, "PKG_CONFIG_PATH="+pcPathStr)
+	}
+	if cmakePrefix != "" {
+		env = append(env, "CMAKE_PREFIX_PATH="+cmakePrefix)
 	}
 
 	// Per-dep env vars and dep compiler flags.

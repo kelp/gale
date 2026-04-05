@@ -891,8 +891,11 @@ func TestResolveToolsCreatesSymlinks(t *testing.T) {
 // --- Behavior 10: Dynamic linker paths in buildEnv ---
 
 func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
+	storeDir := t.TempDir()
+	os.MkdirAll(filepath.Join(storeDir, "lib"), 0o755)
+	os.MkdirAll(filepath.Join(storeDir, "include"), 0o755)
 	deps := &BuildDeps{
-		StoreDirs: []string{"/fake/store/pkg"},
+		StoreDirs: []string{storeDir},
 	}
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: deps})
 
@@ -1064,11 +1067,77 @@ func TestSystemDepsReturnsCorrectDeps(t *testing.T) {
 	}
 }
 
+func TestBuildEnvHeaderOnlyDepStillSetsIncludePath(t *testing.T) {
+	// A dep that ships only include/ (header-only library)
+	// alongside a bin-only dep (e.g. cmake, no lib/) must
+	// still produce C_INCLUDE_PATH / CMAKE_INCLUDE_PATH.
+	// Regression: earlier revision gated ALL search-path
+	// env vars on libPathStr != "", which silently dropped
+	// include paths when no dep had a lib/ dir.
+	headerOnly := t.TempDir()
+	os.MkdirAll(filepath.Join(headerOnly, "include"), 0o755)
+
+	binOnly := t.TempDir()
+	os.MkdirAll(filepath.Join(binOnly, "bin"), 0o755)
+
+	deps := &BuildDeps{
+		StoreDirs: []string{headerOnly, binOnly},
+	}
+	env, _, _ := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+		System:    "",
+		Deps:      deps,
+	})
+	envMap := envToMap(env)
+
+	if val, ok := envMap["C_INCLUDE_PATH"]; !ok || val == "" {
+		t.Error("expected C_INCLUDE_PATH to be set for header-only dep")
+	}
+	if val, ok := envMap["CMAKE_INCLUDE_PATH"]; !ok || val == "" {
+		t.Error("expected CMAKE_INCLUDE_PATH to be set for header-only dep")
+	}
+	if _, ok := envMap["LIBRARY_PATH"]; ok {
+		t.Error("LIBRARY_PATH should not be set when no dep has lib/")
+	}
+}
+
+func TestBuildEnvBinOnlyDepStillSetsCMakePrefixPath(t *testing.T) {
+	// A cmake-system build with a bin-only dep must still
+	// receive CMAKE_PREFIX_PATH, even though the dep has no
+	// lib/ or include/ subdirs. Regression against the same
+	// over-aggressive libPathStr gating.
+	binOnly := t.TempDir()
+	os.MkdirAll(filepath.Join(binOnly, "bin"), 0o755)
+
+	deps := &BuildDeps{
+		StoreDirs: []string{binOnly},
+	}
+	env, _, _ := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+		System:    "cmake",
+		Deps:      deps,
+	})
+	envMap := envToMap(env)
+
+	if val, ok := envMap["CMAKE_PREFIX_PATH"]; !ok || val == "" {
+		t.Error("expected CMAKE_PREFIX_PATH to be set for bin-only dep under cmake system")
+	}
+}
+
 // --- Behavior 15: CMAKE_PREFIX_PATH in buildEnv ---
 
 func TestBuildEnvCMakePrefixPath(t *testing.T) {
+	storeA := t.TempDir()
+	storeB := t.TempDir()
+	for _, d := range []string{storeA, storeB} {
+		os.MkdirAll(filepath.Join(d, "lib"), 0o755)
+	}
 	deps := &BuildDeps{
-		StoreDirs: []string{"/fake/store/a", "/fake/store/b"},
+		StoreDirs: []string{storeA, storeB},
 	}
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "cmake", Debug: false, Deps: deps})
 	envMap := envToMap(env)
@@ -1078,7 +1147,7 @@ func TestBuildEnvCMakePrefixPath(t *testing.T) {
 		t.Fatal("expected CMAKE_PREFIX_PATH in env")
 	}
 	// cmake uses semicolons as separators.
-	want := "/fake/store/a;/fake/store/b"
+	want := storeA + ";" + storeB
 	if val != want {
 		t.Errorf("CMAKE_PREFIX_PATH = %q, want %q", val, want)
 	}
@@ -1250,29 +1319,72 @@ func TestBaseEnvContainsRequiredVars(t *testing.T) {
 }
 
 func TestDepSearchPathsComputesPaths(t *testing.T) {
+	// Use real temp dirs with lib/include/pkgconfig so
+	// the existence checks pass.
+	storeA := t.TempDir()
+	storeB := t.TempDir()
+	for _, d := range []string{storeA, storeB} {
+		os.MkdirAll(filepath.Join(d, "lib", "pkgconfig"), 0o755)
+		os.MkdirAll(filepath.Join(d, "include"), 0o755)
+	}
+
 	bc := &BuildContext{
 		System: "cmake",
 		Deps: &BuildDeps{
-			StoreDirs: []string{"/store/a/1.0", "/store/b/2.0"},
+			StoreDirs: []string{storeA, storeB},
 		},
 	}
 	libPath, incPath, pcPath, cmakePath := bc.depSearchPaths()
 
-	wantLib := "/store/a/1.0/lib:/store/b/2.0/lib"
+	wantLib := filepath.Join(storeA, "lib") + ":" + filepath.Join(storeB, "lib")
 	if libPath != wantLib {
 		t.Errorf("libPath = %q, want %q", libPath, wantLib)
 	}
-	wantInc := "/store/a/1.0/include:/store/b/2.0/include"
+	wantInc := filepath.Join(storeA, "include") + ":" + filepath.Join(storeB, "include")
 	if incPath != wantInc {
 		t.Errorf("incPath = %q, want %q", incPath, wantInc)
 	}
-	wantPC := "/store/a/1.0/lib/pkgconfig:/store/b/2.0/lib/pkgconfig"
+	wantPC := filepath.Join(storeA, "lib", "pkgconfig") + ":" + filepath.Join(storeB, "lib", "pkgconfig")
 	if pcPath != wantPC {
 		t.Errorf("pcPath = %q, want %q", pcPath, wantPC)
 	}
-	wantCmake := "/store/a/1.0;/store/b/2.0"
+	wantCmake := storeA + ";" + storeB
 	if cmakePath != wantCmake {
 		t.Errorf("cmakePath = %q, want %q", cmakePath, wantCmake)
+	}
+}
+
+func TestDepSearchPathsSkipsNonexistentLibDir(t *testing.T) {
+	// A dep with no lib/ dir (e.g. cmake, which installs
+	// only to share/) must not contribute a bogus lib path
+	// to LIBRARY_PATH. clang warns on missing search paths
+	// and that stderr output breaks configure scripts with
+	// strict LDFLAGS validation (Ruby).
+	depWithLib := t.TempDir()
+	os.MkdirAll(filepath.Join(depWithLib, "lib"), 0o755)
+	os.MkdirAll(filepath.Join(depWithLib, "include"), 0o755)
+
+	depWithoutLib := t.TempDir()
+	os.MkdirAll(filepath.Join(depWithoutLib, "share"), 0o755)
+
+	bc := &BuildContext{
+		Deps: &BuildDeps{
+			StoreDirs: []string{depWithLib, depWithoutLib},
+		},
+	}
+	libPath, incPath, _, _ := bc.depSearchPaths()
+
+	if strings.Contains(libPath, depWithoutLib) {
+		t.Errorf("libPath must not contain dep %q with no lib/ dir, got %q",
+			depWithoutLib, libPath)
+	}
+	if !strings.Contains(libPath, depWithLib) {
+		t.Errorf("libPath should contain dep %q with real lib/ dir, got %q",
+			depWithLib, libPath)
+	}
+	if strings.Contains(incPath, depWithoutLib) {
+		t.Errorf("incPath must not contain dep %q with no include/ dir, got %q",
+			depWithoutLib, incPath)
 	}
 }
 
@@ -1355,6 +1467,30 @@ func TestPerDepEnvComputesDepFlags(t *testing.T) {
 	}
 	if ldflags == "" {
 		t.Error("expected non-empty ldflags")
+	}
+}
+
+func TestPerDepEnvDoesNotInjectRpathOnDarwin(t *testing.T) {
+	// Rpath is added post-build by AddDepRpaths via
+	// install_name_tool. Putting -Wl,-rpath in LDFLAGS
+	// breaks configure scripts that validate LDFLAGS
+	// (e.g. Ruby) and creates duplicate LC_RPATH entries.
+	storeDir := t.TempDir()
+	os.MkdirAll(filepath.Join(storeDir, "include"), 0o755)
+	os.MkdirAll(filepath.Join(storeDir, "lib"), 0o755)
+
+	bc := &BuildContext{
+		Deps: &BuildDeps{
+			StoreDirs: []string{storeDir},
+		},
+	}
+	_, _, ldflags := bc.perDepEnv()
+
+	if strings.Contains(ldflags, "-Wl,-rpath") {
+		t.Errorf("depLDFLAGS must not contain -Wl,-rpath (handled post-build by AddDepRpaths), got %q", ldflags)
+	}
+	if !strings.Contains(ldflags, "-L"+filepath.Join(storeDir, "lib")) {
+		t.Errorf("depLDFLAGS should still contain -L for dep lib dir, got %q", ldflags)
 	}
 }
 

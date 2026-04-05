@@ -1,5 +1,5 @@
 [packages]
-  gale = "0.10.0"
+  gale = "0.10.0-dev.2+c89d0ef"
   go = "1.26.1"
   gofumpt = "0.9.2"
   golangci-lint = "2.11.4"

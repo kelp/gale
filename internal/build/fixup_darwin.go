@@ -145,6 +145,24 @@ func FixupBinaries(prefixDir string) error {
 // FixupBinaries already adds @executable_path/../lib for
 // the package's own libs. This handles EXTERNAL deps whose
 // dylibs live in other store directories.
+//
+// # Invariant
+//
+// This function is the single source of truth for dep
+// rpaths on darwin. Link-time -Wl,-rpath injection was
+// removed because (a) Ruby's configure rejects it in
+// LDFLAGS sanity checks and (b) libtool/cmake strip or
+// rewrite -Wl,-rpath unreliably, making it dead code in
+// most cases.
+//
+// For this to work, every dep dylib in a gale store
+// directory MUST have an @rpath/-style install name.
+// FixupBinaries enforces this for source-built packages;
+// gale-recipes CI enforces it for prebuilt GHCR artifacts
+// by running the same pipeline. A binary that references
+// a dep dylib via an absolute path or a @loader_path/
+// reference will not have an rpath added by this function
+// and will fail at runtime.
 func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 	if len(depStoreDirs) == 0 {
 		return nil
@@ -196,6 +214,18 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		needed := make(map[string]bool)
 		for _, dep := range deps {
 			if !strings.HasPrefix(dep, "@rpath/") {
+				// Warn on non-@rpath dep references
+				// that point outside system locations.
+				// This usually means a dep dylib was
+				// built without FixupBinaries, which
+				// violates the invariant above.
+				if isSuspiciousDepRef(dep, depStoreDirs) {
+					fmt.Fprintf(os.Stderr,
+						"warning: %s references %s with a"+
+							" non-@rpath install name; rpath"+
+							" cannot be added automatically\n",
+						filepath.Base(file), dep)
+				}
 				continue
 			}
 			libName := strings.TrimPrefix(dep, "@rpath/")
@@ -304,6 +334,34 @@ func otoolDeps(path string) ([]string, error) {
 		}
 	}
 	return deps, nil
+}
+
+// isSuspiciousDepRef reports whether a LC_LOAD_DYLIB entry
+// looks like it should have been an @rpath/ reference to a
+// gale dep dylib. Returns true when the reference is an
+// absolute path into one of the dep store dirs — which
+// means a dep dylib was shipped without its install name
+// being rewritten to @rpath/, violating the invariant
+// documented on AddDepRpaths.
+//
+// Returns false for @loader_path/, @executable_path/,
+// system paths (/usr/lib, /System/), and absolute paths
+// outside the store (user-installed libraries that gale
+// doesn't manage).
+func isSuspiciousDepRef(ref string, depStoreDirs []string) bool {
+	if strings.HasPrefix(ref, "@") {
+		return false
+	}
+	if strings.HasPrefix(ref, "/usr/lib/") ||
+		strings.HasPrefix(ref, "/System/") {
+		return false
+	}
+	for _, storeDir := range depStoreDirs {
+		if strings.HasPrefix(ref, storeDir+string(filepath.Separator)) {
+			return true
+		}
+	}
+	return false
 }
 
 // run executes a command and returns any error.

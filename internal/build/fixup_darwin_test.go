@@ -414,6 +414,45 @@ func TestAddDepRpathsNoDeps(t *testing.T) {
 	}
 }
 
+// --- isSuspiciousDepRef diagnostic ---
+
+func TestIsSuspiciousDepRefDetectsAbsolutePathInStore(t *testing.T) {
+	storeDir := "/Users/tcole/.gale/pkg/openssl/3.5.4"
+	ref := "/Users/tcole/.gale/pkg/openssl/3.5.4/lib/libssl.dylib"
+	if !isSuspiciousDepRef(ref, []string{storeDir}) {
+		t.Errorf("expected %q to be flagged as suspicious", ref)
+	}
+}
+
+func TestIsSuspiciousDepRefIgnoresRpathStyle(t *testing.T) {
+	if isSuspiciousDepRef("@rpath/libfoo.dylib", []string{"/store"}) {
+		t.Error("@rpath/ refs are not suspicious")
+	}
+	if isSuspiciousDepRef("@loader_path/libfoo.dylib", []string{"/store"}) {
+		t.Error("@loader_path/ refs are not suspicious")
+	}
+	if isSuspiciousDepRef("@executable_path/libfoo.dylib", []string{"/store"}) {
+		t.Error("@executable_path/ refs are not suspicious")
+	}
+}
+
+func TestIsSuspiciousDepRefIgnoresSystemPaths(t *testing.T) {
+	if isSuspiciousDepRef("/usr/lib/libSystem.B.dylib", []string{"/store"}) {
+		t.Error("/usr/lib/ refs are not suspicious")
+	}
+	if isSuspiciousDepRef("/System/Library/Frameworks/Foundation.framework/Foundation", []string{"/store"}) {
+		t.Error("/System/ refs are not suspicious")
+	}
+}
+
+func TestIsSuspiciousDepRefIgnoresUnmanagedAbsolutePaths(t *testing.T) {
+	// A lib outside the store dirs gale knows about is
+	// not our problem — don't warn.
+	if isSuspiciousDepRef("/opt/homebrew/lib/libfoo.dylib", []string{"/Users/tcole/.gale/pkg/openssl/3.5.4"}) {
+		t.Error("unmanaged absolute refs are not suspicious")
+	}
+}
+
 // --- BUG-5: otoolDeps error is not silently swallowed ---
 
 func TestOtoolDepsErrorReturnedByFixupBinaries(t *testing.T) {
