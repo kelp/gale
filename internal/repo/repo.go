@@ -1,6 +1,7 @@
 package repo
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -94,7 +95,7 @@ func listRecipes(repo RepoConfig) ([]SearchResult, error) {
 	recipesDir := filepath.Join(repo.CacheDir, "recipes")
 	entries, err := os.ReadDir(recipesDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("reading recipes for %s: %w",

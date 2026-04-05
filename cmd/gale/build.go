@@ -72,7 +72,7 @@ var buildCmd = &cobra.Command{
 
 		deps, err := inst.InstallBuildDeps(r)
 		if err != nil {
-			return fmt.Errorf("install build deps: %w", err)
+			return fmt.Errorf("installing build deps: %w", err)
 		}
 
 		outputDir, err := os.Getwd()

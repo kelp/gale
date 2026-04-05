@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -69,7 +70,7 @@ func appendToGitignore(dir, line string) error { //nolint:unparam // line is a p
 	path := filepath.Join(dir, ".gitignore")
 
 	data, err := os.ReadFile(path)
-	if err != nil && !os.IsNotExist(err) {
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 

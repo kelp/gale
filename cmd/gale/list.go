@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,7 +32,7 @@ var listCmd = &cobra.Command{
 
 		data, err := os.ReadFile(configPath)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, os.ErrNotExist) {
 				fmt.Println("No packages installed.")
 				return nil
 			}

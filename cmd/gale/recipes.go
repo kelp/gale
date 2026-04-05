@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -24,11 +25,11 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 		path := filepath.Join(recipesDir, letter, name+".toml")
 		data, err := os.ReadFile(path)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, os.ErrNotExist) {
 				return nil, fmt.Errorf(
 					"no local recipe for %q", name)
 			}
-			return nil, fmt.Errorf("read recipe %q: %w", name, err)
+			return nil, fmt.Errorf("reading recipe %q: %w", name, err)
 		}
 		rec, err := recipe.Parse(string(data))
 		if err != nil {
@@ -64,7 +65,7 @@ func findLocalRecipesDir(dir, override string) (string, error) {
 	if override != "" {
 		absOverride, err := filepath.Abs(override)
 		if err != nil {
-			return "", fmt.Errorf("resolve path: %w", err)
+			return "", fmt.Errorf("resolving path: %w", err)
 		}
 		// If override contains a recipes/ subdir, use that.
 		sub := filepath.Join(absOverride, "recipes")
@@ -76,7 +77,7 @@ func findLocalRecipesDir(dir, override string) (string, error) {
 
 	absDir, err := filepath.Abs(dir)
 	if err != nil {
-		return "", fmt.Errorf("resolve path: %w", err)
+		return "", fmt.Errorf("resolving path: %w", err)
 	}
 	recipesDir := filepath.Join(filepath.Dir(absDir), "gale-recipes", "recipes")
 	if _, err := os.Stat(recipesDir); err != nil {
@@ -123,7 +124,7 @@ func recipeFileResolver(recipePath string) installer.RecipeResolver {
 	absPath, err := filepath.Abs(recipePath)
 	if err != nil {
 		return func(_ string) (*recipe.Recipe, error) {
-			return nil, fmt.Errorf("resolve recipe path: %w", err)
+			return nil, fmt.Errorf("resolving recipe path: %w", err)
 		}
 	}
 	// recipePath is like .../recipes/j/jq.toml

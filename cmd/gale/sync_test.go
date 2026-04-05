@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/installer"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -63,7 +64,8 @@ func TestSyncSHA256MismatchEvictsFromStore(t *testing.T) {
 	}
 	lockedSHA := "bbbb2222bbbb2222bbbb2222bbbb2222"
 
-	evicted := evictOnSHA256Mismatch(s, result, lockedSHA)
+	out := output.New(os.Stderr, false)
+	evicted := evictOnSHA256Mismatch(s, result, lockedSHA, out)
 	if !evicted {
 		t.Fatal("expected eviction on SHA256 mismatch")
 	}
@@ -97,7 +99,8 @@ func TestSyncSHA256MatchDoesNotEvict(t *testing.T) {
 	// Same hash — no mismatch.
 	lockedSHA := "aaaa1111aaaa1111aaaa1111aaaa1111"
 
-	evicted := evictOnSHA256Mismatch(s, result, lockedSHA)
+	out := output.New(os.Stderr, false)
+	evicted := evictOnSHA256Mismatch(s, result, lockedSHA, out)
 	if evicted {
 		t.Error("should not evict when SHA256 matches")
 	}

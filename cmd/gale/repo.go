@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -93,7 +94,7 @@ var repoListCmd = &cobra.Command{
 		configPath := filepath.Join(galeDir, "config.toml")
 		data, err := os.ReadFile(configPath)
 		if err != nil {
-			if os.IsNotExist(err) {
+			if errors.Is(err, os.ErrNotExist) {
 				fmt.Println("No repositories configured.")
 				return nil
 			}

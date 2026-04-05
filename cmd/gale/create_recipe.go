@@ -158,7 +158,7 @@ func runCreateRecipe(
 
 	tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
 	if err != nil {
-		return fmt.Errorf("create temp dir: %w", err)
+		return fmt.Errorf("creating temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
@@ -217,7 +217,7 @@ func runCreateRecipe(
 		if err := runCreateRecipe(
 			depRepo, client, promptFile,
 			outputDir, out, depth+1, maxDepth, seen); err != nil {
-			return fmt.Errorf("create dependency %s: %w",
+			return fmt.Errorf("creating dependency %s: %w",
 				name, err)
 		}
 		// Retry the original recipe at the same depth.

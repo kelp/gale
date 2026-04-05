@@ -299,9 +299,9 @@ func checkDirenvIntegration(ctx *doctorContext) bool {
 func checkOrphans(ctx *doctorContext) bool {
 	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
 	referenced := map[string]bool{}
-	mergeConfig(globalConfig, referenced)
+	mergeConfig(globalConfig, referenced, ctx.out)
 	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
-		mergeConfig(projPath, referenced)
+		mergeConfig(projPath, referenced, ctx.out)
 	}
 	var orphaned int
 	for _, pkg := range ctx.installed {

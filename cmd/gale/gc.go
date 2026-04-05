@@ -29,7 +29,7 @@ var gcCmd = &cobra.Command{
 
 		// Collect all referenced name@version pairs.
 		referenced := collectReferencedPackages(
-			globalDir, projPath)
+			globalDir, projPath, out)
 
 		// Remove unreferenced package versions.
 		storeRoot := defaultStoreRoot()
@@ -136,31 +136,33 @@ func removeUnreferencedVersions(
 
 // collectReferencedPackages merges all name@version
 // pairs from global and project configs into a set.
-// Silently skips missing or invalid configs.
+// Silently skips missing configs but warns on parse errors.
 func collectReferencedPackages(
-	globalDir, projPath string,
+	globalDir, projPath string, out *output.Output,
 ) map[string]bool {
 	referenced := map[string]bool{}
 	if globalDir != "" {
 		mergeConfig(
 			filepath.Join(globalDir, "gale.toml"),
-			referenced)
+			referenced, out)
 	}
 	if projPath != "" {
-		mergeConfig(projPath, referenced)
+		mergeConfig(projPath, referenced, out)
 	}
 	return referenced
 }
 
 // mergeConfig reads a gale.toml and adds its packages
-// to the referenced set. Silently skips on errors.
-func mergeConfig(path string, referenced map[string]bool) {
+// to the referenced set. Silently skips missing files
+// but warns on parse errors.
+func mergeConfig(path string, referenced map[string]bool, out *output.Output) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return
+		return // missing config is fine
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
+		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
 		return
 	}
 	for name, version := range cfg.Packages {

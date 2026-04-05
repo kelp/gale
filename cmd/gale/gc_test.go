@@ -30,7 +30,8 @@ func TestCollectReferencedPackages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ref := collectReferencedPackages(globalDir, projCfg)
+	out := output.New(os.Stderr, false)
+	ref := collectReferencedPackages(globalDir, projCfg, out)
 
 	want := map[string]bool{
 		"jq@1.7":       true,
@@ -59,7 +60,8 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	ref := collectReferencedPackages(globalDir, "")
+	out := output.New(os.Stderr, false)
+	ref := collectReferencedPackages(globalDir, "", out)
 
 	if len(ref) != 1 {
 		t.Fatalf("got %d entries, want 1: %v",

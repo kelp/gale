@@ -1,13 +1,16 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/kelp/gale/internal/attestation"
+	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
@@ -112,6 +115,11 @@ var installCmd = &cobra.Command{
 
 		result, err := ctx.Installer.Install(r)
 		if err != nil {
+			if errors.Is(err, build.ErrUnsupportedPlatform) {
+				out.Warn(fmt.Sprintf("%s does not support %s/%s",
+					r.Package.Name, runtime.GOOS, runtime.GOARCH))
+				return fmt.Errorf("install failed: %w", err)
+			}
 			return fmt.Errorf("install failed: %w", err)
 		}
 
@@ -235,7 +243,7 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	// Resolve source directory to absolute path.
 	absSource, err := filepath.Abs(sourceDir)
 	if err != nil {
-		return fmt.Errorf("resolve source path: %w", err)
+		return fmt.Errorf("resolving source path: %w", err)
 	}
 
 	// Resolve the recipe file.

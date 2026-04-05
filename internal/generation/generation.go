@@ -165,7 +165,7 @@ func swapCurrentSymlink(galeDir string, genNum int) error {
 func symlinkDir(srcDir, dstDir string) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil // package doesn't have this dir
 		}
 		return err

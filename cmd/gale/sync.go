@@ -1,10 +1,13 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
+	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
@@ -129,8 +132,14 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 
 		result, err := ctx.Installer.Install(r)
 		if err != nil {
-			out.Warn(fmt.Sprintf(
-				"Failed to install %s: %v", name, err))
+			if errors.Is(err, build.ErrUnsupportedPlatform) {
+				out.Warn(fmt.Sprintf(
+					"%s does not support %s/%s",
+					name, runtime.GOOS, runtime.GOARCH))
+			} else {
+				out.Warn(fmt.Sprintf(
+					"Failed to install %s: %v", name, err))
+			}
 			failed++
 			continue
 		}
@@ -140,7 +149,7 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		if hasLock && locked.SHA256 != "" &&
 			result.SHA256 != "" &&
 			evictOnSHA256Mismatch(
-				ctx.Installer.Store, result, locked.SHA256) {
+				ctx.Installer.Store, result, locked.SHA256, out) {
 			out.Warn(fmt.Sprintf(
 				"%s@%s SHA256 mismatch "+
 					"(lock: %s..., got: %s...)",
@@ -187,12 +196,16 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 // evictOnSHA256Mismatch removes a package from the store
 // when the installed SHA256 does not match the locked hash.
 // Returns true if a mismatch was detected and the package
-// was removed.
-func evictOnSHA256Mismatch(s *store.Store, result *installer.InstallResult, lockedSHA string) bool {
+// was evicted.
+func evictOnSHA256Mismatch(s *store.Store, result *installer.InstallResult, lockedSHA string, out *output.Output) bool {
 	if lockedSHA == result.SHA256 {
 		return false
 	}
-	_ = s.Remove(result.Name, result.Version)
+	if err := s.Remove(result.Name, result.Version); err != nil {
+		// Log but continue — mismatch detected regardless.
+		out.Warn(fmt.Sprintf("removing %s@%s from store: %v",
+			result.Name, result.Version, err))
+	}
 	return true
 }
 

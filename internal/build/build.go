@@ -632,7 +632,7 @@ func touchAll(dir string) error {
 // after the prefix is moved to the store.
 func fixupShebangs(prefixDir string) error {
 	binDir := filepath.Join(prefixDir, "bin")
-	if _, err := os.Stat(binDir); os.IsNotExist(err) {
+	if _, err := os.Stat(binDir); errors.Is(err, os.ErrNotExist) {
 		return nil // no bin/ directory
 	} else if err != nil {
 		return fmt.Errorf("stat bin dir: %w", err)
@@ -703,7 +703,7 @@ func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
 	}
 	for _, d := range dirs {
 		dir := filepath.Join(prefixDir, d)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — build output is trusted, not user-controlled
@@ -745,7 +745,7 @@ func RestorePrefixPlaceholder(storeDir string) error {
 	}
 	for _, d := range dirs {
 		dir := filepath.Join(storeDir, d)
-		if _, err := os.Stat(dir); os.IsNotExist(err) {
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
 		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — store content is trusted

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -72,7 +73,7 @@ var infoCmd = &cobra.Command{
 func printConfigInfo(name, configPath, scope string) (bool, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return false, nil
 		}
 		return false, fmt.Errorf("reading %s: %w",

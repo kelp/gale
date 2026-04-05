@@ -29,11 +29,20 @@ type Installer struct {
 	SourceOnly bool                 // skip binary, build from source
 }
 
+// InstallMethod represents how a package was installed.
+type InstallMethod string
+
+const (
+	MethodBinary InstallMethod = "binary"
+	MethodSource InstallMethod = "source"
+	MethodCached InstallMethod = "cached"
+)
+
 // InstallResult holds the outcome of an install.
 type InstallResult struct {
 	Name    string
 	Version string
-	Method  string // "binary", "source", or "cached"
+	Method  InstallMethod
 	SHA256  string // hex hash of installed archive
 }
 
@@ -55,7 +64,7 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 		return &InstallResult{
 			Name:    name,
 			Version: version,
-			Method:  "cached",
+			Method:  MethodCached,
 		}, nil
 	}
 
@@ -65,23 +74,26 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
 
-	method := "source"
+	method := MethodSource
 	var sha256 string
 
 	// Try binary first (unless source-only mode).
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	if bin != nil && !inst.SourceOnly {
 		if err := installBinary(bin, storeDir, name, version, inst.Verifier); err == nil {
-			method = "binary"
+			method = MethodBinary
 			sha256 = bin.SHA256
 		} else {
+			// Binary install failed — fall back to source build.
+			// Intentionally silent: binary failures are expected
+			// (e.g. missing GHCR artifact, network issues).
 			// Clean partial download before source fallback.
 			os.RemoveAll(storeDir)
 			_ = os.MkdirAll(storeDir, 0o755) //nolint:gosec
 		}
 	}
 
-	if method != "binary" {
+	if method != MethodBinary {
 		// Resolve and install build deps, collect their
 		// bin dirs for the build PATH.
 		depPaths, err := inst.InstallBuildDeps(r)
@@ -162,7 +174,7 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 	return &InstallResult{
 		Name:    name,
 		Version: version,
-		Method:  "source",
+		Method:  MethodSource,
 		SHA256:  hash,
 	}, nil
 }
@@ -194,7 +206,7 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 		return &InstallResult{
 			Name:    name,
 			Version: hash,
-			Method:  "cached",
+			Method:  MethodCached,
 		}, nil
 	}
 
@@ -206,13 +218,13 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 
 	if err := extractBuild(buildResult, storeDir); err != nil {
 		os.RemoveAll(storeDir)
-		return nil, err
+		return nil, fmt.Errorf("extracting git build: %w", err)
 	}
 
 	return &InstallResult{
 		Name:    name,
 		Version: hash,
-		Method:  "source",
+		Method:  MethodSource,
 		SHA256:  buildResult.SHA256,
 	}, nil
 }
@@ -436,7 +448,7 @@ func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *
 
 	result, err := build.BuildLocal(r, sourceDir, tmpDir, r.Build.Debug, deps)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("building from local source: %w", err)
 	}
 	return result.SHA256, extractBuild(result, storeDir)
 }
@@ -450,7 +462,7 @@ func installFromSource(r *recipe.Recipe, storeDir string, deps *build.BuildDeps)
 
 	result, err := build.Build(r, tmpDir, r.Build.Debug, deps)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("building from source: %w", err)
 	}
 	return result.SHA256, extractBuild(result, storeDir)
 }

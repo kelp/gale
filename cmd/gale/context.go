@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,7 +58,7 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		}
 		galePath, err = resolveConfigPath(useGlobal)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("resolving config path: %w", err)
 		}
 	} else {
 		// Auto-detect: project gale.toml first, then global.
@@ -74,7 +75,7 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 	// Resolve galeDir from configPath.
 	galeDir, err := galeDirForConfig(galePath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("resolving gale dir: %w", err)
 	}
 
 	// Set up resolver.
@@ -118,7 +119,7 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
 	data, err := os.ReadFile(ctx.GalePath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return ctx.loadToolVersionsFallback()
 		}
 		return nil, fmt.Errorf("reading %s: %w", ctx.GalePath, err)
@@ -133,7 +134,7 @@ func (ctx *cmdContext) loadToolVersionsFallback() (*config.GaleConfig, error) {
 	tvPath := filepath.Join(dir, ".tool-versions")
 	data, err := os.ReadFile(tvPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return &config.GaleConfig{
 				Packages: map[string]string{},
 			}, nil
@@ -153,17 +154,17 @@ func (ctx *cmdContext) loadToolVersionsFallback() (*config.GaleConfig, error) {
 func rebuildGeneration(galeDir, storeRoot, configPath string) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			// No config yet — build empty generation.
 			return generation.Build(
 				map[string]string{}, galeDir, storeRoot)
 		}
-		return fmt.Errorf("read config: %w", err)
+		return fmt.Errorf("reading config: %w", err)
 	}
 
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
-		return fmt.Errorf("parse config: %w", err)
+		return fmt.Errorf("parsing config: %w", err)
 	}
 
 	pkgs := cfg.Packages
@@ -178,11 +179,11 @@ func rebuildGeneration(galeDir, storeRoot, configPath string) error {
 func loadAppConfig() (*config.AppConfig, error) {
 	galeDir, err := galeConfigDir()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("finding config dir: %w", err)
 	}
 	data, err := os.ReadFile(filepath.Join(galeDir, "config.toml"))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("reading config.toml: %w", err)
 	}
 	return config.ParseAppConfig(string(data))
 }
@@ -244,14 +245,14 @@ func writeConfigAndLock(configPath, name, version, sha256 string) error {
 	}
 	lp, err := lockfilePath(configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolving lockfile path: %w", err)
 	}
 	if sha256 == "" {
 		// Cached install: preserve existing hash only if
 		// the lockfile version matches.
 		lf, err := lockfile.Read(lp)
 		if err != nil {
-			return err
+			return fmt.Errorf("reading lockfile: %w", err)
 		}
 		if existing, ok := lf.Packages[name]; ok &&
 			existing.Version == version {
@@ -266,7 +267,7 @@ func writeConfigAndLock(configPath, name, version, sha256 string) error {
 func finalizeInstall(galeDir, storeRoot, configPath, name, version, sha256 string) error {
 	if err := writeConfigAndLock(
 		configPath, name, version, sha256); err != nil {
-		return err
+		return fmt.Errorf("writing config and lock: %w", err)
 	}
 	return rebuildGeneration(galeDir, storeRoot, configPath)
 }
@@ -278,7 +279,7 @@ func updateLockfile(lockPath, name, version, sha256 string) error {
 	return filelock.With(lockPath+".lock", func() error {
 		lf, err := lockfile.Read(lockPath)
 		if err != nil {
-			return err
+			return fmt.Errorf("reading lockfile: %w", err)
 		}
 		lf.Packages[name] = lockfile.LockedPackage{
 			Version: version,
@@ -292,11 +293,11 @@ func updateLockfile(lockPath, name, version, sha256 string) error {
 func removeLockEntry(configPath, name string) error {
 	lp, err := lockfilePath(configPath)
 	if err != nil {
-		return err
+		return fmt.Errorf("resolving lockfile path: %w", err)
 	}
 	lf, err := lockfile.Read(lp)
 	if err != nil {
-		return err
+		return fmt.Errorf("reading lockfile: %w", err)
 	}
 	delete(lf.Packages, name)
 	return lockfile.Write(lp, lf)
@@ -312,7 +313,7 @@ func addToConfig(name, version string, global, project bool) (string, error) {
 	useGlobal := resolveScope(global, project, cwd)
 	configPath, err := resolveConfigPath(useGlobal)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("resolving config path: %w", err)
 	}
 	if err := config.AddPackage(configPath, name, version); err != nil {
 		return "", fmt.Errorf("adding %s to config: %w", name, err)
@@ -354,13 +355,13 @@ func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Reci
 // reportResult prints the install/update result message.
 func reportResult(out *output.Output, result *installer.InstallResult, verb, sourceLabel string) {
 	switch result.Method {
-	case "cached":
+	case installer.MethodCached:
 		out.Info(fmt.Sprintf("%s@%s already installed",
 			result.Name, result.Version))
-	case "binary":
+	case installer.MethodBinary:
 		out.Success(fmt.Sprintf("%s %s@%s from binary",
 			verb, result.Name, result.Version))
-	case "source":
+	case installer.MethodSource:
 		out.Success(fmt.Sprintf("%s %s@%s (%s)",
 			verb, result.Name, result.Version, sourceLabel))
 	}

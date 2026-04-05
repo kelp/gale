@@ -1,6 +1,7 @@
 package build
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,7 +16,7 @@ func FixupPkgConfig(prefixDir string) error {
 	pcDir := filepath.Join(prefixDir, "lib", "pkgconfig")
 	entries, err := os.ReadDir(pcDir)
 	if err != nil {
-		if os.IsNotExist(err) {
+		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
 		return err
