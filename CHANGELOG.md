@@ -1,5 +1,86 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `gale remove` now deletes the lockfile entry for the
+  removed package. Previously the stale entry could
+  trigger spurious SHA256 mismatch evictions on
+  reinstall.
+- `gale sync` now writes SHA256 hashes to the lockfile
+  after installing packages. The `add` → `sync`
+  workflow previously produced an empty lockfile.
+- `gale remove` now rebuilds the generation before
+  deleting from the store, preventing dangling symlinks
+  if the rebuild fails.
+- `gale update` defers generation rebuild so it runs
+  even when a config write fails mid-batch.
+- Build environment creation returns an error instead of
+  silently falling back to the unsandboxed parent
+  environment when temp directory creation fails.
+- Build step errors preserve the error chain (`%w`
+  instead of `%s`).
+- `lockfilePath` returns an error instead of panicking
+  on invalid input.
+- `AddRepo`/`RemoveRepo` now use file locking,
+  preventing data loss under concurrent access.
+- `updateLockfile` now acquires a file lock, preventing
+  concurrent `gale install` from losing entries.
+- Lockfile SHA256 mismatch eviction logs a warning when
+  store removal fails instead of silently ignoring it.
+- `gale gc` logs a warning on config parse errors
+  instead of silently treating all packages as
+  unreferenced.
+- `gale install` and `gale sync` show a user-friendly
+  message when a package doesn't support the current
+  platform.
+
+### Changed
+
+- Unified `DepPaths` and `BuildDeps` into a single
+  `build.BuildDeps` type. Removed the redundant
+  converter function.
+- `buildEnv` decomposed into focused helpers on a new
+  `BuildContext` struct: `baseEnv`, `depSearchPaths`,
+  `perDepEnv`, `compilerFlags`.
+- `gale doctor` checks extracted into a registry of
+  individual check functions.
+- `gale lint` validators extracted into a composable
+  rule pipeline.
+- `generation.Build` delegates to `populateGeneration`
+  and `swapCurrentSymlink` helpers.
+- `gale gc` delegates to `collectReferencedPackages`
+  and `removeUnreferencedVersions`.
+- `cmdContext` methods replace free functions, reducing
+  parameter counts (e.g., `finalizeInstall` from 6
+  string args to 3).
+- `newCmdContext` accepts scope flags (`--global`,
+  `--project`), unifying scope resolution across all
+  commands.
+- Shared `resolveRecipeResolver` and `loadRecipeFile`
+  helpers replace 4× and 3× duplicated patterns.
+- `InstallResult.Method` is now a typed `InstallMethod`
+  instead of a bare string.
+- `config.go` split into `gale.go` (package config) and
+  `app.go` (app config) for clarity.
+- Error messages standardized to gerund form.
+- All `os.IsNotExist` calls replaced with
+  `errors.Is(err, os.ErrNotExist)`.
+
+### Added
+
+- `internal/atomicfile` package: crash-safe file writes
+  with temp file + fsync + rename.
+- `internal/filelock` package: unified flock-based file
+  locking using `golang.org/x/sys/unix`.
+
+### Removed
+
+- `syncGit` flag (declared but never used).
+- `syscall.Flock` usage (replaced by `filelock`
+  package using `unix.Flock`).
+
 ## v0.9.0 — 2026-04-03
 
 ### Added
