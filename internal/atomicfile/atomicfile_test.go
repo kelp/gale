@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -104,7 +105,7 @@ func TestWriteCleansUpOnError(t *testing.T) {
 	}
 
 	for _, entry := range entries {
-		if filepath.HasPrefix(entry.Name(), ".gale-tmp-") {
+		if strings.HasPrefix(entry.Name(), ".gale-tmp-") {
 			t.Errorf("temp file not cleaned up: %s", entry.Name())
 		}
 	}

@@ -1918,3 +1918,56 @@ func TestBuildStepErrorPreservesChain(t *testing.T) {
 			err, err)
 	}
 }
+
+func TestBuildEnvIncludesRecipeEnvVars(t *testing.T) {
+	bc := &BuildContext{
+		PrefixDir: "/tmp/prefix",
+		SourceDir: t.TempDir(),
+		Jobs:      "4",
+		Version:   "1.0.0",
+		Env:       map[string]string{"MY_VAR": "hello"},
+	}
+	env, cleanup, err := buildEnv(bc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer cleanup()
+
+	found := false
+	for _, e := range env {
+		if e == "MY_VAR=hello" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("expected MY_VAR=hello in build env")
+	}
+}
+
+func TestBuildEnvExpandsPrefixInRecipeEnvVars(t *testing.T) {
+	bc := &BuildContext{
+		PrefixDir: "/tmp/test-prefix",
+		SourceDir: t.TempDir(),
+		Jobs:      "4",
+		Version:   "2.0.0",
+		Env:       map[string]string{"RUNTIME": "${PREFIX}/lib/runtime"},
+	}
+	env, cleanup, err := buildEnv(bc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	defer cleanup()
+
+	want := "RUNTIME=/tmp/test-prefix/lib/runtime"
+	found := false
+	for _, e := range env {
+		if e == want {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected %q in build env", want)
+	}
+}

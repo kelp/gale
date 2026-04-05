@@ -37,14 +37,14 @@ func Acquire(path string) (unlock func(), err error) {
 	}
 
 	// Acquire exclusive lock
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil {
+	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX); err != nil { //nolint:gosec // fd fits int on all supported platforms
 		f.Close()
 		return nil, fmt.Errorf("filelock: %w", err)
 	}
 
 	// Return unlock function
 	unlock = func() {
-		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN)
+		_ = unix.Flock(int(f.Fd()), unix.LOCK_UN) //nolint:gosec // fd fits int on all supported platforms
 		f.Close()
 	}
 	return unlock, nil
