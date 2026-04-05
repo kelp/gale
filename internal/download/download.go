@@ -434,7 +434,8 @@ func extractTar(tr *tar.Reader, destDir string) error {
 
 		target := filepath.Join(destDir, hdr.Name) //nolint:gosec // G305 — path validated below
 
-		if !strings.HasPrefix(filepath.Clean(target), cleanDest) {
+		cleanTarget := filepath.Clean(target)
+		if cleanTarget != filepath.Clean(destDir) && !strings.HasPrefix(cleanTarget, cleanDest) {
 			return fmt.Errorf("illegal path in archive: %s", hdr.Name)
 		}
 

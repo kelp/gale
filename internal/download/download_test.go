@@ -685,6 +685,50 @@ func TestExtractTarGzAllowsSymlinkToDevZero(t *testing.T) {
 	}
 }
 
+func TestExtractTarGzAllowsBareRootDirEntry(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "root.tar.gz")
+	destDir := t.TempDir()
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	// A bare ./ root entry — common in tarballs.
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeDir,
+		Name:     "./",
+		Mode:     0o755,
+	})
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg,
+		Name:     "./hello.txt",
+		Mode:     0o644,
+		Size:     5,
+	})
+	tw.Write([]byte("hello"))
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	err = ExtractTarGz(archive, destDir)
+	if err != nil {
+		t.Fatalf("unexpected error for bare ./ entry: %v", err)
+	}
+
+	// Verify the file was extracted.
+	data, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
+	if err != nil {
+		t.Fatalf("read extracted file: %v", err)
+	}
+	if string(data) != "hello" {
+		t.Errorf("content = %q, want %q", string(data), "hello")
+	}
+}
+
 func TestExtractZipRejectsPathTraversal(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "evil.zip")
 	destDir := t.TempDir()
