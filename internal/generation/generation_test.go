@@ -736,6 +736,118 @@ func TestSwapCurrentSymlinkPreservesPIDScopedTempName(t *testing.T) {
 	}
 }
 
+// --- Behavior: populateGeneration creates symlinks ---
+
+func TestPopulateGenerationCreatesSymlinks(t *testing.T) {
+	storeRoot := t.TempDir()
+	genDir := t.TempDir()
+
+	// Create bin/ in the gen dir (Build always does this
+	// before calling populateGeneration).
+	if err := os.MkdirAll(
+		filepath.Join(genDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+	createStoreEntry(t, storeRoot, "fd", "10.4.2", []string{"fd"})
+
+	pkgs := map[string]string{
+		"jq": "1.8.1",
+		"fd": "10.4.2",
+	}
+
+	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+		t.Fatalf("populateGeneration error: %v", err)
+	}
+
+	// Verify symlinks exist for each executable.
+	for _, exe := range []string{"jq", "fd"} {
+		linkPath := filepath.Join(genDir, "bin", exe)
+		info, err := os.Lstat(linkPath)
+		if err != nil {
+			t.Errorf("symlink %q does not exist: %v", exe, err)
+			continue
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("expected %q to be a symlink", linkPath)
+		}
+	}
+}
+
+func TestPopulateGenerationAlphabeticalConflictResolution(t *testing.T) {
+	storeRoot := t.TempDir()
+	genDir := t.TempDir()
+
+	if err := os.MkdirAll(
+		filepath.Join(genDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Two packages provide the same binary.
+	for _, name := range []string{"alpha", "beta"} {
+		binDir := filepath.Join(storeRoot, name, "1.0", "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(binDir, "tool"),
+			[]byte(name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
+
+	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+		t.Fatalf("populateGeneration error: %v", err)
+	}
+
+	target, err := os.Readlink(
+		filepath.Join(genDir, "bin", "tool"))
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if !strings.Contains(target, "alpha") {
+		t.Errorf("expected alpha to win conflict, got %s", target)
+	}
+}
+
+func TestPopulateGenerationRootLevelFiles(t *testing.T) {
+	storeRoot := t.TempDir()
+	genDir := t.TempDir()
+
+	if err := os.MkdirAll(
+		filepath.Join(genDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create package with root-level file.
+	pkgDir := filepath.Join(storeRoot, "go", "1.26.1")
+	if err := os.MkdirAll(
+		filepath.Join(pkgDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(pkgDir, "bin", "go"),
+		[]byte("fake"), 0o755)
+	os.WriteFile(filepath.Join(pkgDir, "go.env"),
+		[]byte("GOPROXY=direct\n"), 0o644)
+
+	pkgs := map[string]string{"go": "1.26.1"}
+
+	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+		t.Fatalf("populateGeneration error: %v", err)
+	}
+
+	info, err := os.Lstat(filepath.Join(genDir, "go.env"))
+	if err != nil {
+		t.Fatalf("root file go.env not symlinked: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("expected go.env to be a symlink")
+	}
+}
+
 // --- Behavior 13: Rollback uses unique temp-link path ---
 
 func TestRollbackDoesNotClobberConcurrentTempLink(t *testing.T) {

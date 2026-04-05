@@ -17,6 +17,7 @@ func setupBareRepo(t *testing.T) string {
 	run(t, workDir, "git", "init")
 	run(t, workDir, "git", "config", "user.email", "test@test.com")
 	run(t, workDir, "git", "config", "user.name", "Test")
+	run(t, workDir, "git", "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(
 		filepath.Join(workDir, "README"),
 		[]byte("hello"), 0o644); err != nil {

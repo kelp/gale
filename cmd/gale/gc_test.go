@@ -5,7 +5,140 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/store"
 )
+
+func TestCollectReferencedPackages(t *testing.T) {
+	// Set up a global config dir with two packages.
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg, []byte(
+		"[packages]\njq = \"1.7\"\nfd = \"9.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set up a project config with one overlapping and
+	// one unique package.
+	projDir := t.TempDir()
+	projCfg := filepath.Join(projDir, "gale.toml")
+	if err := os.WriteFile(projCfg, []byte(
+		"[packages]\njq = \"1.6\"\nripgrep = \"14.1\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := collectReferencedPackages(globalDir, projCfg)
+
+	want := map[string]bool{
+		"jq@1.7":       true,
+		"fd@9.0":       true,
+		"jq@1.6":       true,
+		"ripgrep@14.1": true,
+	}
+	if len(ref) != len(want) {
+		t.Fatalf("got %d entries, want %d: %v",
+			len(ref), len(want), ref)
+	}
+	for k := range want {
+		if !ref[k] {
+			t.Errorf("missing %s", k)
+		}
+	}
+}
+
+func TestCollectReferencedPackagesNoProject(t *testing.T) {
+	// Only global config, no project config.
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg, []byte(
+		"[packages]\njq = \"1.7\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	ref := collectReferencedPackages(globalDir, "")
+
+	if len(ref) != 1 {
+		t.Fatalf("got %d entries, want 1: %v",
+			len(ref), ref)
+	}
+	if !ref["jq@1.7"] {
+		t.Error("missing jq@1.7")
+	}
+}
+
+func TestRemoveUnreferencedVersions(t *testing.T) {
+	// Set up a store with three packages.
+	storeRoot := t.TempDir()
+	for _, pkg := range []struct{ name, ver string }{
+		{"jq", "1.7"},
+		{"fd", "9.0"},
+		{"ripgrep", "14.1"},
+	} {
+		dir := filepath.Join(
+			storeRoot, pkg.name, pkg.ver, "bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+
+	// Only jq@1.7 is referenced.
+	referenced := map[string]bool{"jq@1.7": true}
+
+	// Dry run — nothing removed.
+	n := removeUnreferencedVersions(
+		s, referenced, true, out)
+	if n != 2 {
+		t.Errorf("dry-run: want 2 flagged, got %d", n)
+	}
+	// All dirs still exist.
+	installed, _ := s.List()
+	if len(installed) != 3 {
+		t.Errorf("dry-run: want 3 installed, got %d",
+			len(installed))
+	}
+
+	// Real run.
+	n = removeUnreferencedVersions(
+		s, referenced, false, out)
+	if n != 2 {
+		t.Errorf("want 2 removed, got %d", n)
+	}
+	// Only jq@1.7 survives.
+	installed, _ = s.List()
+	if len(installed) != 1 {
+		t.Fatalf("want 1 installed, got %d", len(installed))
+	}
+	if installed[0].Name != "jq" ||
+		installed[0].Version != "1.7" {
+		t.Errorf("want jq@1.7, got %s@%s",
+			installed[0].Name, installed[0].Version)
+	}
+}
+
+func TestRemoveUnreferencedVersionsNoneToRemove(t *testing.T) {
+	storeRoot := t.TempDir()
+	dir := filepath.Join(storeRoot, "jq", "1.7", "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+	referenced := map[string]bool{"jq@1.7": true}
+
+	n := removeUnreferencedVersions(
+		s, referenced, false, out)
+	if n != 0 {
+		t.Errorf("want 0 removed, got %d", n)
+	}
+}
 
 func TestGCCommandExists(t *testing.T) {
 	for _, c := range rootCmd.Commands() {

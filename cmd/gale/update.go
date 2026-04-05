@@ -33,7 +33,7 @@ var updateCmd = &cobra.Command{
 
 		// Resolve context for config path. All branches
 		// use ctx.GalePath for config writes.
-		ctx, err := newCmdContext(updateRecipes)
+		ctx, err := newCmdContext(updateRecipes, false, false)
 		if err != nil {
 			return err
 		}
@@ -44,9 +44,8 @@ var updateCmd = &cobra.Command{
 
 		// --path: rebuild from local source directory.
 		if updatePath != "" {
-			return installFromLocalSource(
-				args[0], updateRecipe, updatePath,
-				ctx.GalePath, ctx.GaleDir, ctx.StoreRoot, out)
+			return installFromLocalSource(ctx,
+				args[0], updateRecipe, updatePath, out)
 		}
 
 		// --git: check remote HEAD, rebuild if changed.
@@ -113,7 +112,7 @@ var updateCmd = &cobra.Command{
 		var updated int
 		defer func() {
 			if updated > 0 && !dryRun {
-				if err := rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath); err != nil {
+				if err := ctx.RebuildGeneration(); err != nil {
 					out.Warn(fmt.Sprintf("rebuild generation: %v", err))
 				}
 			}
@@ -144,8 +143,8 @@ var updateCmd = &cobra.Command{
 			}
 
 			// Fetch the recipe for the target version.
-			r, err := resolveVersionedRecipe(
-				ctx, name, newVersion)
+			r, err := ctx.ResolveVersionedRecipe(
+				name, newVersion)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Skipping %s: %v", name, err))
@@ -170,7 +169,7 @@ var updateCmd = &cobra.Command{
 			}
 
 			// Update gale.toml and lockfile.
-			if err := writeConfigAndLock(ctx.GalePath,
+			if err := ctx.WriteConfigAndLock(
 				name, r.Package.Version,
 				result.SHA256); err != nil {
 				return fmt.Errorf("updating %s: %w",
@@ -225,9 +224,7 @@ func updateFromGit(name string, ctx *cmdContext, out *output.Output) error {
 
 	out.Info(fmt.Sprintf("Updating %s to %s...",
 		name, remoteHash))
-	return installFromGit(name, updateRecipe,
-		ctx.GalePath, ctx.GaleDir, ctx.StoreRoot,
-		updateRecipes, out)
+	return installFromGit(ctx, name, updateRecipe, out)
 }
 
 // isGitHash returns true if s looks like a git short hash

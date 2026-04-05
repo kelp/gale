@@ -38,23 +38,41 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	// subsequent error so we don't leave orphaned dirs.
 	cleanup := func() { os.RemoveAll(genDir) }
 
-	// Sort package names for deterministic conflict
-	// resolution: first package alphabetically wins.
+	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+		cleanup()
+		return err
+	}
+
+	// Atomic swap: create a temporary symlink then rename.
+	if err := swapCurrentSymlink(galeDir, next); err != nil {
+		cleanup()
+		return err
+	}
+
+	// Write README (best effort, world-readable).
+	_ = os.WriteFile(
+		filepath.Join(galeDir, "README.md"),
+		galeReadme, 0o644)
+
+	return nil
+}
+
+// populateGeneration symlinks each package's store
+// contents into genDir. Packages are sorted
+// alphabetically so the first package wins on
+// filename conflicts.
+func populateGeneration(genDir string, pkgs map[string]string, storeRoot string) error {
 	names := make([]string, 0, len(pkgs))
 	for name := range pkgs {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
-	// Symlink contents from each package's store entry
-	// into the generation directory. Scan every
-	// subdirectory in the package — don't hardcode names.
 	for _, name := range names {
 		version := pkgs[name]
 		pkgDir := filepath.Join(storeRoot, name, version)
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
-			cleanup()
 			return fmt.Errorf("read store %s: %w", name, err)
 		}
 		for _, e := range entries {
@@ -62,12 +80,10 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 				srcDir := filepath.Join(pkgDir, e.Name())
 				dstDir := filepath.Join(genDir, e.Name())
 				if err := os.MkdirAll(dstDir, 0o755); err != nil {
-					cleanup()
 					return fmt.Errorf(
 						"create gen %s dir: %w", e.Name(), err)
 				}
 				if err := symlinkDir(srcDir, dstDir); err != nil {
-					cleanup()
 					return fmt.Errorf(
 						"symlink %s/%s: %w", name, e.Name(), err)
 				}
@@ -82,24 +98,11 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 				continue
 			}
 			if err := os.Symlink(src, dst); err != nil {
-				cleanup()
 				return fmt.Errorf(
 					"symlink %s/%s: %w", name, e.Name(), err)
 			}
 		}
 	}
-
-	// Atomic swap: create a temporary symlink then rename.
-	if err := swapCurrentSymlink(galeDir, next); err != nil {
-		cleanup()
-		return err
-	}
-
-	// Write README (best effort, world-readable).
-	_ = os.WriteFile(
-		filepath.Join(galeDir, "README.md"),
-		galeReadme, 0o644)
-
 	return nil
 }
 

@@ -217,25 +217,12 @@ func TestResolveScope(t *testing.T) {
 	}
 }
 
-func TestNewInstallerForRecipeFile(t *testing.T) {
-	// Verify that newInstallerForRecipeFile returns an
+func TestNewInstallerForRecipe(t *testing.T) {
+	// Verify that newInstallerForRecipe returns an
 	// Installer with a non-nil Verifier so Sigstore
 	// attestation is checked for binary installs.
 	storeRoot := t.TempDir()
-	inst := newInstallerForRecipeFile(
-		"/tmp/recipes/j/jq.toml", storeRoot)
-	if inst.Verifier == nil {
-		t.Fatal("Verifier is nil — attestation will be " +
-			"silently skipped")
-	}
-}
-
-func TestNewInstallerForLocalSource(t *testing.T) {
-	// Verify that newInstallerForLocalSource returns an
-	// Installer with a non-nil Verifier so Sigstore
-	// attestation is checked for dep installs.
-	storeRoot := t.TempDir()
-	inst := newInstallerForLocalSource(
+	inst := newInstallerForRecipe(
 		"/tmp/recipes/j/jq.toml", storeRoot)
 	if inst.Verifier == nil {
 		t.Fatal("Verifier is nil — attestation will be " +
@@ -393,8 +380,13 @@ func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
 	}
 
 	out := output.New(os.Stderr, false)
-	err := installFromLocalSource("testpkg", recipePath,
-		srcDir, configPath, galeDir, storeRoot, out)
+	ctx := &cmdContext{
+		GalePath:  configPath,
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+	}
+	err := installFromLocalSource(ctx, "testpkg", recipePath,
+		srcDir, out)
 	if err != nil {
 		t.Fatalf("installFromLocalSource: %v", err)
 	}

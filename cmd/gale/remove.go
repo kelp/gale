@@ -29,35 +29,23 @@ var removeCmd = &cobra.Command{
 
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		storeRoot := defaultStoreRoot()
-		st := store.NewStore(storeRoot)
-
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting working dir: %w", err)
-		}
-
-		useGlobal := resolveScope(removeGlobal, removeProject, cwd)
-		configPath, err := resolveConfigPath(useGlobal)
+		ctx, err := newCmdContext("", removeGlobal, removeProject)
 		if err != nil {
 			return err
 		}
 
+		st := store.NewStore(ctx.StoreRoot)
+
 		// Look up the package in the resolved config.
-		var version string
-		data, readErr := os.ReadFile(configPath)
-		if readErr == nil {
-			if cfg, parseErr := config.ParseGaleConfig(
-				string(data)); parseErr == nil {
-				if v, ok := cfg.Packages[name]; ok {
-					version = v
-				}
-			}
+		cfg, err := ctx.LoadConfig()
+		if err != nil {
+			return err
 		}
 
-		if version == "" {
+		version, ok := cfg.Packages[name]
+		if !ok {
 			return fmt.Errorf(
-				"%s is not in %s", name, configPath)
+				"%s is not in %s", name, ctx.GalePath)
 		}
 
 		if dryRun {
@@ -70,16 +58,16 @@ var removeCmd = &cobra.Command{
 		// leave the store missing but config still listing
 		// the package.
 		if err := config.RemovePackage(
-			configPath, name); err != nil {
+			ctx.GalePath, name); err != nil {
 			return fmt.Errorf("removing from config: %w",
 				err)
 		}
 		out.Info(fmt.Sprintf(
-			"Removed %s from %s", name, configPath))
+			"Removed %s from %s", name, ctx.GalePath))
 
 		// Remove from lockfile. Warn on error but continue
 		// since the main operation (config + store) succeeded.
-		if err := removeLockEntry(configPath, name); err != nil {
+		if err := ctx.RemoveLockEntry(name); err != nil {
 			out.Warn(fmt.Sprintf(
 				"Failed to update lockfile: %v", err))
 		}
@@ -88,12 +76,7 @@ var removeCmd = &cobra.Command{
 		// before removing from the store so the generation
 		// is updated with the new config (package removed)
 		// before we delete the package from the store.
-		galeDir, err := galeDirForConfig(configPath)
-		if err != nil {
-			return err
-		}
-		if err := rebuildGeneration(galeDir, storeRoot,
-			configPath); err != nil {
+		if err := ctx.RebuildGeneration(); err != nil {
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 

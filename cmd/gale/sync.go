@@ -40,7 +40,7 @@ var syncCmd = &cobra.Command{
 func runSync(recipesPath string, buildOnly, global, project bool, projectDir string) error {
 	out := output.New(os.Stderr, !noColor)
 
-	ctx, err := newCmdContext(recipesPath)
+	ctx, err := newCmdContext(recipesPath, false, false)
 	if err != nil {
 		return err
 	}
@@ -112,8 +112,8 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		}
 
 		// Not in store — fetch recipe for pinned version.
-		r, err := resolveVersionedRecipe(
-			ctx, name, version)
+		r, err := ctx.ResolveVersionedRecipe(
+			name, version)
 		if err != nil {
 			out.Warn(fmt.Sprintf(
 				"%s@%s: %v. "+
@@ -165,8 +165,7 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	}
 
 	if !dryRun {
-		if err := rebuildGeneration(ctx.GaleDir,
-			ctx.StoreRoot, ctx.GalePath); err != nil {
+		if err := ctx.RebuildGeneration(); err != nil {
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 	}

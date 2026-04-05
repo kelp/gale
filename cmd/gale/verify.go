@@ -29,7 +29,7 @@ var verifyCmd = &cobra.Command{
 
 		// Resolve context first so lockfile uses the same
 		// config path the installer would use.
-		ctx, err := newCmdContext("")
+		ctx, err := newCmdContext("", false, false)
 		if err != nil {
 			return fmt.Errorf("creating context: %w", err)
 		}

@@ -38,28 +38,11 @@ var installCmd = &cobra.Command{
 		name, version := parsePackageArg(args[0])
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		// Resolve scope and paths up front — all branches
-		// use the same config path.
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting working dir: %w", err)
-		}
-		useGlobal := resolveScope(installGlobal, installProject, cwd)
-		if !useGlobal {
-			if _, err := config.FindGaleConfig(cwd); err != nil {
-				return fmt.Errorf(
-					"no project found — run 'gale init' first")
-			}
-		}
-		configPath, err := resolveConfigPath(useGlobal)
+		// Resolve scope and paths via cmdContext.
+		ctx, err := newCmdContext(installRecipes, installGlobal, installProject)
 		if err != nil {
 			return err
 		}
-		galeDir, err := galeDirForConfig(configPath)
-		if err != nil {
-			return err
-		}
-		storeRoot := defaultStoreRoot()
 
 		// If --path flag is provided, build from local source.
 		if installPath != "" {
@@ -68,8 +51,8 @@ var installCmd = &cobra.Command{
 					"install %s (from source)", name))
 				return nil
 			}
-			return installFromLocalSource(name, installRecipe,
-				installPath, configPath, galeDir, storeRoot, out)
+			return installFromLocalSource(ctx, name, installRecipe,
+				installPath, out)
 		}
 
 		// If --git flag is provided, clone and build from git.
@@ -79,8 +62,7 @@ var installCmd = &cobra.Command{
 					"install %s (from git)", name))
 				return nil
 			}
-			return installFromGit(name, installRecipe,
-				configPath, galeDir, storeRoot, installRecipes, out)
+			return installFromGit(ctx, name, installRecipe, out)
 		}
 
 		// If --recipe flag is provided, install from recipe file.
@@ -90,24 +72,7 @@ var installCmd = &cobra.Command{
 					"install %s (from recipe)", name))
 				return nil
 			}
-			return installFromRecipeFile(installRecipe,
-				configPath, galeDir, storeRoot, out)
-		}
-
-		// Fetch recipe from registry or local recipes.
-		var resolver installer.RecipeResolver
-		if installRecipes != "" {
-			override := ""
-			if installRecipes != "auto" {
-				override = installRecipes
-			}
-			recipesDir, dirErr := findLocalRecipesDir(cwd, override)
-			if dirErr != nil {
-				return dirErr
-			}
-			resolver = localRecipeResolver(recipesDir)
-		} else {
-			resolver = newRegistry().FetchRecipe
+			return installFromRecipeFile(ctx, installRecipe, out)
 		}
 
 		out.Info(fmt.Sprintf("Fetching recipe for %s...", name))
@@ -123,9 +88,10 @@ var installCmd = &cobra.Command{
 					name, version, err)
 			}
 			// Use the registry for dep resolution too.
-			resolver = reg.FetchRecipe
+			ctx.Resolver = reg.FetchRecipe
+			ctx.Installer.Resolver = reg.FetchRecipe
 		} else {
-			r, err = resolver(name)
+			r, err = ctx.Resolver(name)
 			if err != nil {
 				return fmt.Errorf("fetching recipe: %w", err)
 			}
@@ -137,23 +103,20 @@ var installCmd = &cobra.Command{
 			return nil
 		}
 
-		inst := &installer.Installer{
-			Store:      store.NewStore(storeRoot),
-			Resolver:   resolver,
-			Verifier:   attestation.NewVerifier(),
-			SourceOnly: installBuild,
+		if installBuild {
+			ctx.Installer.SourceOnly = true
 		}
 
 		out.Info(fmt.Sprintf("Installing %s@%s...",
 			r.Package.Name, r.Package.Version))
 
-		result, err := inst.Install(r)
+		result, err := ctx.Installer.Install(r)
 		if err != nil {
 			return fmt.Errorf("install failed: %w", err)
 		}
 
-		if err := finalizeInstall(galeDir, storeRoot,
-			configPath, name, r.Package.Version, result.SHA256); err != nil {
+		if err := ctx.FinalizeInstall(
+			name, r.Package.Version, result.SHA256); err != nil {
 			return err
 		}
 
@@ -211,28 +174,12 @@ func resolveScope(global, project bool, cwd string) bool {
 	return false // project config found → project scope
 }
 
-func installFromGit(name, recipePath, configPath, galeDir, storeRoot, recipesFlag string, out *output.Output) error {
-	// Build resolver for recipe lookup and dep resolution.
-	var resolver installer.RecipeResolver
-	switch {
-	case recipePath != "":
+func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output) error {
+	// When --recipe is provided, override resolver for
+	// recipe lookup and dep resolution.
+	resolver := ctx.Resolver
+	if recipePath != "" {
 		resolver = resolverForRecipe(recipePath)
-	case recipesFlag != "":
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting working dir: %w", err)
-		}
-		override := ""
-		if recipesFlag != "auto" {
-			override = recipesFlag
-		}
-		recipesDir, err := findLocalRecipesDir(cwd, override)
-		if err != nil {
-			return err
-		}
-		resolver = localRecipeResolver(recipesDir)
-	default:
-		resolver = newRegistry().FetchRecipe
 	}
 
 	// Resolve recipe.
@@ -261,7 +208,7 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot, recipesFla
 	}
 
 	inst := &installer.Installer{
-		Store:    store.NewStore(storeRoot),
+		Store:    store.NewStore(ctx.StoreRoot),
 		Resolver: resolver,
 		Verifier: attestation.NewVerifier(),
 	}
@@ -274,9 +221,8 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot, recipesFla
 		return fmt.Errorf("install failed: %w", err)
 	}
 
-	if err := finalizeInstall(galeDir, storeRoot,
-		configPath, r.Package.Name, result.Version,
-		result.SHA256); err != nil {
+	if err := ctx.FinalizeInstall(
+		r.Package.Name, result.Version, result.SHA256); err != nil {
 		return err
 	}
 
@@ -285,7 +231,7 @@ func installFromGit(name, recipePath, configPath, galeDir, storeRoot, recipesFla
 	return nil
 }
 
-func installFromLocalSource(name, recipePath, sourceDir, configPath, galeDir, storeRoot string, out *output.Output) error {
+func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string, out *output.Output) error {
 	// Resolve source directory to absolute path.
 	absSource, err := filepath.Abs(sourceDir)
 	if err != nil {
@@ -315,7 +261,7 @@ func installFromLocalSource(name, recipePath, sourceDir, configPath, galeDir, st
 	}
 	r.Package.Version = version
 
-	inst := newInstallerForLocalSource(resolvedRecipe, storeRoot)
+	inst := newInstallerForRecipe(resolvedRecipe, ctx.StoreRoot)
 
 	// Always rebuild local source — the source tree may have
 	// changed without a version bump. Do not short-circuit
@@ -329,9 +275,8 @@ func installFromLocalSource(name, recipePath, sourceDir, configPath, galeDir, st
 		return fmt.Errorf("install failed: %w", err)
 	}
 
-	if err := finalizeInstall(galeDir, storeRoot,
-		configPath, r.Package.Name, r.Package.Version,
-		result.SHA256); err != nil {
+	if err := ctx.FinalizeInstall(
+		r.Package.Name, r.Package.Version, result.SHA256); err != nil {
 		return err
 	}
 
@@ -433,9 +378,10 @@ func resolverForRecipe(recipePath string) installer.RecipeResolver {
 	return newRegistry().FetchRecipe
 }
 
-// newInstallerForRecipeFile constructs an Installer for
-// installing from a recipe file.
-func newInstallerForRecipeFile(recipePath, storeRoot string) *installer.Installer {
+// newInstallerForRecipe constructs an Installer for
+// installing from a recipe file or building from local
+// source.
+func newInstallerForRecipe(recipePath, storeRoot string) *installer.Installer {
 	return &installer.Installer{
 		Store:    store.NewStore(storeRoot),
 		Resolver: resolverForRecipe(recipePath),
@@ -443,17 +389,7 @@ func newInstallerForRecipeFile(recipePath, storeRoot string) *installer.Installe
 	}
 }
 
-// newInstallerForLocalSource constructs an Installer for
-// building from a local source directory.
-func newInstallerForLocalSource(recipePath, storeRoot string) *installer.Installer {
-	return &installer.Installer{
-		Store:    store.NewStore(storeRoot),
-		Resolver: resolverForRecipe(recipePath),
-		Verifier: attestation.NewVerifier(),
-	}
-}
-
-func installFromRecipeFile(recipePath, configPath, galeDir, storeRoot string, out *output.Output) error {
+func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Output) error {
 	data, err := os.ReadFile(recipePath)
 	if err != nil {
 		return fmt.Errorf("reading recipe: %w", err)
@@ -464,7 +400,7 @@ func installFromRecipeFile(recipePath, configPath, galeDir, storeRoot string, ou
 		return fmt.Errorf("parsing recipe: %w", err)
 	}
 
-	inst := newInstallerForRecipeFile(recipePath, storeRoot)
+	inst := newInstallerForRecipe(recipePath, ctx.StoreRoot)
 
 	out.Info(fmt.Sprintf("Installing %s@%s...",
 		r.Package.Name, r.Package.Version))
@@ -474,9 +410,8 @@ func installFromRecipeFile(recipePath, configPath, galeDir, storeRoot string, ou
 		return fmt.Errorf("install failed: %w", err)
 	}
 
-	if err := finalizeInstall(galeDir, storeRoot,
-		configPath, r.Package.Name, r.Package.Version,
-		result.SHA256); err != nil {
+	if err := ctx.FinalizeInstall(
+		r.Package.Name, r.Package.Version, result.SHA256); err != nil {
 		return err
 	}
 

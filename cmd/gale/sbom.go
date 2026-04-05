@@ -75,7 +75,7 @@ var sbomCmd = &cobra.Command{
 		}
 
 		// Resolve recipes for metadata.
-		ctx, err := newCmdContext("")
+		ctx, err := newCmdContext("", false, false)
 		if err != nil {
 			return fmt.Errorf("creating context: %w", err)
 		}
@@ -95,8 +95,8 @@ var sbomCmd = &cobra.Command{
 			}
 
 			// Get recipe metadata.
-			r, err := resolveVersionedRecipe(
-				ctx, name, version)
+			r, err := ctx.ResolveVersionedRecipe(
+				name, version)
 			if err == nil {
 				e.SourceURL = r.Source.URL
 				e.SourceSHA256 = r.Source.SHA256

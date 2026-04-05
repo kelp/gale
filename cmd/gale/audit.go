@@ -25,7 +25,7 @@ tampering.`,
 
 		// Resolve context first so lockfile uses the same
 		// config path as the installer.
-		ctx, err := newCmdContext("")
+		ctx, err := newCmdContext("", false, false)
 		if err != nil {
 			return fmt.Errorf("creating context: %w", err)
 		}
@@ -48,7 +48,7 @@ tampering.`,
 			return fmt.Errorf(
 				"%s has no SHA256 in lockfile — reinstall it", name)
 		}
-		r, err := resolveVersionedRecipe(ctx, name, pkg.Version)
+		r, err := ctx.ResolveVersionedRecipe(name, pkg.Version)
 		if err != nil {
 			return fmt.Errorf("resolving recipe: %w", err)
 		}

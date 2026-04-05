@@ -33,20 +33,42 @@ type cmdContext struct {
 // When recipesPath is non-empty, recipes are resolved locally:
 // "auto" uses sibling gale-recipes/ detection, any other value
 // is used as an explicit path.
-func newCmdContext(recipesPath string) (*cmdContext, error) {
+//
+// Scope flags: when both global and project are false, the
+// current auto-detect behavior is used (project gale.toml
+// first, then global). When global is true, uses the global
+// config path. When project is true, uses the project config
+// path (errors if no project found).
+func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return nil, fmt.Errorf("getting working dir: %w", err)
 	}
 
-	// Find config: project gale.toml first, then global.
-	galePath, err := config.FindGaleConfig(cwd)
-	if err != nil {
-		globalDir, dirErr := galeConfigDir()
-		if dirErr != nil {
-			return nil, dirErr
+	// Resolve config path based on scope flags.
+	var galePath string
+	if global || project {
+		useGlobal := resolveScope(global, project, cwd)
+		if !useGlobal {
+			if _, err := config.FindGaleConfig(cwd); err != nil {
+				return nil, fmt.Errorf(
+					"no project found — run 'gale init' first")
+			}
 		}
-		galePath = filepath.Join(globalDir, "gale.toml")
+		galePath, err = resolveConfigPath(useGlobal)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// Auto-detect: project gale.toml first, then global.
+		galePath, err = config.FindGaleConfig(cwd)
+		if err != nil {
+			globalDir, dirErr := galeConfigDir()
+			if dirErr != nil {
+				return nil, dirErr
+			}
+			galePath = filepath.Join(globalDir, "gale.toml")
+		}
 	}
 
 	// Resolve galeDir from configPath.
@@ -342,4 +364,33 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 		out.Success(fmt.Sprintf("%s %s@%s (%s)",
 			verb, result.Name, result.Version, sourceLabel))
 	}
+}
+
+// FinalizeInstall adds a package to gale.toml, updates
+// gale.lock, and rebuilds the generation.
+func (ctx *cmdContext) FinalizeInstall(name, version, sha256 string) error {
+	return finalizeInstall(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, name, version, sha256)
+}
+
+// WriteConfigAndLock adds a package to gale.toml and
+// updates gale.lock without rebuilding the generation.
+func (ctx *cmdContext) WriteConfigAndLock(name, version, sha256 string) error {
+	return writeConfigAndLock(ctx.GalePath, name, version, sha256)
+}
+
+// RebuildGeneration reads gale.toml and rebuilds the
+// generation symlinks.
+func (ctx *cmdContext) RebuildGeneration() error {
+	return rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath)
+}
+
+// RemoveLockEntry removes a package entry from the lockfile.
+func (ctx *cmdContext) RemoveLockEntry(name string) error {
+	return removeLockEntry(ctx.GalePath, name)
+}
+
+// ResolveVersionedRecipe fetches a recipe for a specific
+// version.
+func (ctx *cmdContext) ResolveVersionedRecipe(name, version string) (*recipe.Recipe, error) {
+	return resolveVersionedRecipe(ctx, name, version)
 }

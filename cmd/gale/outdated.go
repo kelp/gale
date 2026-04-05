@@ -26,7 +26,7 @@ var outdatedCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		ctx, err := newCmdContext(outdatedRecipes)
+		ctx, err := newCmdContext(outdatedRecipes, false, false)
 		if err != nil {
 			return err
 		}

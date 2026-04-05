@@ -46,6 +46,24 @@ type recipe struct {
 
 var hexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
+// lintRule validates one aspect of a parsed recipe.
+type lintRule func(
+	r *recipe, filePath string,
+	addErr func(string), addWarn func(string),
+)
+
+// rules is the ordered list of validators that Lint runs.
+var rules = []lintRule{
+	lintRequiredFields,
+	lintSHA256Format,
+	lintFilePath,
+	lintOptionalFields,
+	lintSourceRepo,
+	lintReleasedAt,
+	lintBuildSteps,
+	lintPlatforms,
+}
+
 // Lint validates a recipe TOML string and returns issues.
 // filePath is used for path-based checks; pass "" to skip.
 func Lint(data, filePath string) []Issue {
@@ -65,7 +83,19 @@ func Lint(data, filePath string) []Issue {
 		issues = append(issues, Issue{"warning", msg})
 	}
 
-	// Required fields.
+	for _, rule := range rules {
+		rule(&r, filePath, addErr, addWarn)
+	}
+
+	return issues
+}
+
+// lintRequiredFields checks name, version, url, sha256,
+// and build steps.
+func lintRequiredFields(
+	r *recipe, _ string,
+	addErr func(string), _ func(string),
+) {
 	if r.Package.Name == "" {
 		addErr("missing required field: package.name")
 	}
@@ -78,14 +108,17 @@ func Lint(data, filePath string) []Issue {
 	if r.Source.SHA256 == "" {
 		addErr("missing required field: source.sha256")
 	}
-
-	// Build steps.
-	steps := extractSteps(r.Build)
-	if len(steps) == 0 {
+	if len(extractSteps(r.Build)) == 0 {
 		addErr("missing required field: build steps")
 	}
+}
 
-	// SHA256 format.
+// lintSHA256Format validates hex format for source and
+// binary SHA256 values.
+func lintSHA256Format(
+	r *recipe, _ string,
+	addErr func(string), _ func(string),
+) {
 	if r.Source.SHA256 != "" && !hexRe.MatchString(r.Source.SHA256) {
 		addErr(fmt.Sprintf(
 			"source.sha256 is not valid 64-char hex: %q",
@@ -98,13 +131,25 @@ func Lint(data, filePath string) []Issue {
 				platform, bin.SHA256))
 		}
 	}
+}
 
-	// File path checks.
+// lintFilePath checks that the file name and letter bucket
+// match the package name.
+func lintFilePath(
+	r *recipe, filePath string,
+	addErr func(string), _ func(string),
+) {
 	if filePath != "" && r.Package.Name != "" {
 		checkFilePath(filePath, r.Package.Name, addErr)
 	}
+}
 
-	// Warnings: optional fields.
+// lintOptionalFields warns about missing description,
+// license, and homepage.
+func lintOptionalFields(
+	r *recipe, _ string,
+	_ func(string), addWarn func(string),
+) {
 	if r.Package.Description == "" {
 		addWarn("missing description")
 	}
@@ -114,6 +159,14 @@ func Lint(data, filePath string) []Issue {
 	if r.Package.Homepage == "" {
 		addWarn("missing homepage")
 	}
+}
+
+// lintSourceRepo checks repo presence, format, and URL
+// mismatch.
+func lintSourceRepo(
+	r *recipe, _ string,
+	_ func(string), addWarn func(string),
+) {
 	if r.Source.Repo == "" {
 		addWarn("missing source.repo (no auto-update)")
 	} else if !isValidRepo(r.Source.Repo) {
@@ -122,12 +175,16 @@ func Lint(data, filePath string) []Issue {
 			r.Source.Repo))
 	}
 
-	// Warning: source URL / repo mismatch.
 	if r.Source.Repo != "" && r.Source.URL != "" {
 		checkRepoURL(r.Source.Repo, r.Source.URL, addWarn)
 	}
+}
 
-	// Warning: released_at format.
+// lintReleasedAt validates the released_at date format.
+func lintReleasedAt(
+	r *recipe, _ string,
+	_ func(string), addWarn func(string),
+) {
 	if r.Source.ReleasedAt != "" {
 		if _, err := time.Parse("2006-01-02",
 			r.Source.ReleasedAt); err != nil {
@@ -136,45 +193,53 @@ func Lint(data, filePath string) []Issue {
 				r.Source.ReleasedAt))
 		}
 	}
+}
 
-	// Warning: no ${PREFIX} in build steps.
-	if len(steps) > 0 {
-		hasPrefix := false
-		for _, s := range steps {
-			if strings.Contains(s, "${PREFIX}") ||
-				strings.Contains(s, "$PREFIX") {
-				hasPrefix = true
-				break
-			}
+// lintBuildSteps checks PREFIX usage, autoreconf, and
+// missing build deps.
+func lintBuildSteps(
+	r *recipe, _ string,
+	_ func(string), addWarn func(string),
+) {
+	steps := extractSteps(r.Build)
+	if len(steps) == 0 {
+		return
+	}
+
+	// No ${PREFIX} usage.
+	hasPrefix := false
+	for _, s := range steps {
+		if strings.Contains(s, "${PREFIX}") ||
+			strings.Contains(s, "$PREFIX") {
+			hasPrefix = true
+			break
 		}
-		if !hasPrefix {
-			addWarn("no build step references ${PREFIX}")
+	}
+	if !hasPrefix {
+		addWarn("no build step references ${PREFIX}")
+	}
+
+	// autoreconf warning.
+	for _, s := range steps {
+		if containsCommand(s, "autoreconf") {
+			addWarn(
+				"autoreconf requires autoconf, automake, " +
+					"libtool, and m4; prefer a release tarball " +
+					"with pre-generated configure")
+			break
 		}
 	}
 
-	// Warning: autoreconf requires the full autotools
-	// chain including m4. Release tarballs avoid this.
-	if len(steps) > 0 {
-		for _, s := range steps {
-			if containsCommand(s, "autoreconf") {
-				addWarn(
-					"autoreconf requires autoconf, automake, " +
-						"libtool, and m4; prefer a release tarball " +
-						"with pre-generated configure")
-				break
-			}
-		}
-	}
+	// Missing build deps.
+	checkBuildDeps(steps, r.Dependencies.Build, addWarn)
+}
 
-	// Warning: missing build deps implied by build steps.
-	if len(steps) > 0 {
-		checkBuildDeps(steps, r.Dependencies.Build, addWarn)
-	}
-
-	// Warning: unrecognized platform strings.
+// lintPlatforms warns about unrecognized platform strings.
+func lintPlatforms(
+	r *recipe, _ string,
+	_ func(string), addWarn func(string),
+) {
 	checkPlatforms(r.Package.Platforms, addWarn)
-
-	return issues
 }
 
 // extractSteps pulls the "steps" array from the raw

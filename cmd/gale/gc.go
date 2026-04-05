@@ -20,60 +20,22 @@ var gcCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
 
-		// Collect ALL referenced name@version pairs from
-		// every config. A package may have different
-		// versions in global vs project — keep both.
-		referenced := map[string]bool{}
-
-		// Global config.
-		globalDir, err := galeConfigDir()
-		if err == nil {
-			mergeConfig(
-				filepath.Join(globalDir, "gale.toml"),
-				referenced)
-		}
-
-		// Project config.
-		cwd, err := os.Getwd()
+		// Resolve config paths.
+		globalDir, _ := galeConfigDir()
 		var projPath string
-		if err == nil {
+		if cwd, err := os.Getwd(); err == nil {
 			projPath, _ = config.FindGaleConfig(cwd)
-			if projPath != "" {
-				mergeConfig(projPath, referenced)
-			}
 		}
 
-		// List all installed versions.
+		// Collect all referenced name@version pairs.
+		referenced := collectReferencedPackages(
+			globalDir, projPath)
+
+		// Remove unreferenced package versions.
 		storeRoot := defaultStoreRoot()
 		s := store.NewStore(storeRoot)
-		installed, err := s.List()
-		if err != nil {
-			return fmt.Errorf("listing store: %w", err)
-		}
-
-		// Find unreferenced versions.
-		var removedPkgs int
-		for _, pkg := range installed {
-			key := pkg.Name + "@" + pkg.Version
-			if referenced[key] {
-				continue
-			}
-
-			if dryRun {
-				out.Info(fmt.Sprintf(
-					"Would remove %s@%s", pkg.Name, pkg.Version))
-			} else {
-				if err := s.Remove(pkg.Name, pkg.Version); err != nil {
-					out.Warn(fmt.Sprintf(
-						"Failed to remove %s@%s: %v",
-						pkg.Name, pkg.Version, err))
-					continue
-				}
-				out.Success(fmt.Sprintf(
-					"Removed %s@%s", pkg.Name, pkg.Version))
-			}
-			removedPkgs++
-		}
+		removedPkgs := removeUnreferencedVersions(
+			s, referenced, dryRun, out)
 
 		// Clean up old generations.
 		var removedGens int
@@ -128,6 +90,66 @@ var gcCmd = &cobra.Command{
 			removedPkgs, removedGens))
 		return nil
 	},
+}
+
+// removeUnreferencedVersions iterates the store and
+// removes any version not in the referenced set.
+// Returns the number of versions removed (or flagged
+// in dry-run mode).
+func removeUnreferencedVersions(
+	s *store.Store,
+	referenced map[string]bool,
+	dry bool,
+	out *output.Output,
+) int {
+	installed, err := s.List()
+	if err != nil {
+		out.Warn(fmt.Sprintf("listing store: %v", err))
+		return 0
+	}
+	var removed int
+	for _, pkg := range installed {
+		key := pkg.Name + "@" + pkg.Version
+		if referenced[key] {
+			continue
+		}
+		if dry {
+			out.Info(fmt.Sprintf(
+				"Would remove %s@%s",
+				pkg.Name, pkg.Version))
+		} else {
+			if err := s.Remove(
+				pkg.Name, pkg.Version); err != nil {
+				out.Warn(fmt.Sprintf(
+					"Failed to remove %s@%s: %v",
+					pkg.Name, pkg.Version, err))
+				continue
+			}
+			out.Success(fmt.Sprintf(
+				"Removed %s@%s",
+				pkg.Name, pkg.Version))
+		}
+		removed++
+	}
+	return removed
+}
+
+// collectReferencedPackages merges all name@version
+// pairs from global and project configs into a set.
+// Silently skips missing or invalid configs.
+func collectReferencedPackages(
+	globalDir, projPath string,
+) map[string]bool {
+	referenced := map[string]bool{}
+	if globalDir != "" {
+		mergeConfig(
+			filepath.Join(globalDir, "gale.toml"),
+			referenced)
+	}
+	if projPath != "" {
+		mergeConfig(projPath, referenced)
+	}
+	return referenced
 }
 
 // mergeConfig reads a gale.toml and adds its packages

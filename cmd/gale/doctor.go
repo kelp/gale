@@ -14,186 +14,67 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// doctorContext holds resolved state shared across checks.
+type doctorContext struct {
+	galeDir    string
+	storeRoot  string
+	cwd        string
+	globalPkgs map[string]string
+	projPkgs   map[string]string
+	installed  []store.InstalledPackage
+	store      *store.Store
+	out        *output.Output
+}
+
+// doctorCheck is a single health check.
+type doctorCheck struct {
+	name string
+	run  func(ctx *doctorContext) bool // true = passed
+}
+
+var doctorChecks = []doctorCheck{
+	{"gale home", checkGaleHome},
+	{"global config", checkGlobalConfig},
+	{"project config", checkProjectConfig},
+	{"store", checkStore},
+	{"packages installed", checkPackagesInstalled},
+	{"generation", checkGeneration},
+	{"symlinks", checkSymlinks},
+	{"PATH", checkPATH},
+	{"direnv", checkDirenvIntegration},
+	{"orphans", checkOrphans},
+	{"gh CLI", checkGhCLI},
+}
+
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check your gale installation for problems",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
-		var failed bool
 
-		// 1. Gale home directory.
 		galeDir, err := galeConfigDir()
 		if err != nil {
 			out.Error("Cannot find home directory")
 			return err
 		}
-		if _, err := os.Stat(galeDir); err != nil {
-			out.Error(
-				"~/.gale/ does not exist\n  Run: gale install <pkg>")
-			failed = true
-		} else {
-			out.Success("Gale home (~/.gale/)")
-		}
 
-		// 2. Global gale.toml.
-		globalConfig := filepath.Join(galeDir, "gale.toml")
-		globalPkgs := map[string]string{}
-		if data, err := os.ReadFile(globalConfig); err != nil {
-			out.Warn("No global gale.toml")
-		} else if cfg, err := config.ParseGaleConfig(string(data)); err != nil {
-			out.Error(fmt.Sprintf(
-				"Global gale.toml parse error: %v", err))
-			failed = true
-		} else {
-			out.Success(fmt.Sprintf(
-				"Global config (%d packages)", len(cfg.Packages)))
-			globalPkgs = cfg.Packages
-		}
-
-		// Project gale.toml.
 		cwd, _ := os.Getwd()
-		projectPkgs := map[string]string{}
-		if projPath, err := config.FindGaleConfig(cwd); err == nil {
-			if data, err := os.ReadFile(projPath); err == nil {
-				if cfg, err := config.ParseGaleConfig(string(data)); err != nil {
-					out.Error(fmt.Sprintf(
-						"Project gale.toml parse error: %v", err))
-					failed = true
-				} else {
-					out.Success(fmt.Sprintf(
-						"Project config (%d packages)", len(cfg.Packages)))
-					projectPkgs = cfg.Packages
-				}
-			}
+
+		ctx := &doctorContext{
+			galeDir:    galeDir,
+			storeRoot:  defaultStoreRoot(),
+			cwd:        cwd,
+			globalPkgs: map[string]string{},
+			projPkgs:   map[string]string{},
+			out:        out,
 		}
 
-		// 3. Store exists.
-		storeRoot := defaultStoreRoot()
-		s := store.NewStore(storeRoot)
-		installed, err := s.List()
-		if err != nil {
-			out.Error(fmt.Sprintf("Store error: %v", err))
-			failed = true
-		} else {
-			out.Success(fmt.Sprintf(
-				"Store (%d versions in %s)", len(installed), storeRoot))
-		}
-
-		// 4. Packages installed.
-		allPkgs := map[string]string{}
-		for k, v := range globalPkgs {
-			allPkgs[k] = v
-		}
-		for k, v := range projectPkgs {
-			allPkgs[k] = v
-		}
-		var missing []string
-		for name, version := range allPkgs {
-			if !s.IsInstalled(name, version) {
-				missing = append(missing, name+"@"+version)
-			}
-		}
-		if len(missing) > 0 {
-			out.Error(fmt.Sprintf(
-				"Missing packages: %s\n  Run: gale sync",
-				strings.Join(missing, ", ")))
-			failed = true
-		} else if len(allPkgs) > 0 {
-			out.Success("All packages installed")
-		}
-
-		// 5. Generation valid.
-		gen, err := generation.Current(galeDir)
-		if err != nil || gen == 0 {
-			out.Error(
-				"No active generation\n  Run: gale sync")
-			failed = true
-		} else {
-			currentLink := filepath.Join(galeDir, "current")
-			target, err := os.Readlink(currentLink)
-			if err != nil {
-				out.Error("current symlink broken")
+		var failed bool
+		for _, check := range doctorChecks {
+			if !check.run(ctx) {
 				failed = true
-			} else {
-				out.Success(fmt.Sprintf(
-					"Generation (current -> %s)", target))
 			}
-		}
-
-		// 6. Symlinks intact.
-		binDir := filepath.Join(galeDir, "current", "bin")
-		if entries, err := os.ReadDir(binDir); err == nil {
-			var broken []string
-			for _, e := range entries {
-				link := filepath.Join(binDir, e.Name())
-				if _, err := os.Stat(link); err != nil {
-					broken = append(broken, e.Name())
-				}
-			}
-			if len(broken) > 0 {
-				out.Error(fmt.Sprintf(
-					"Broken symlinks: %s\n  Run: gale sync",
-					strings.Join(broken, ", ")))
-				failed = true
-			} else {
-				out.Success(fmt.Sprintf(
-					"Symlinks intact (%d binaries)", len(entries)))
-			}
-		}
-
-		// 7. PATH configured.
-		galeBin := filepath.Join(galeDir, "current", "bin")
-		pathDirs := strings.Split(os.Getenv("PATH"), ":")
-		found := false
-		for _, d := range pathDirs {
-			if d == galeBin {
-				found = true
-				break
-			}
-		}
-		if !found {
-			out.Error(fmt.Sprintf(
-				"PATH missing %s\n  Add to shell config: "+
-					"export PATH=\"%s:$PATH\"",
-				galeBin, galeBin))
-			failed = true
-		} else {
-			out.Success(fmt.Sprintf(
-				"PATH includes %s", galeBin))
-		}
-
-		// 8. Direnv integration.
-		if _, err := os.Stat(
-			filepath.Join(cwd, ".envrc")); err == nil {
-			checkDirenv(out, &failed)
-		}
-
-		// 9. Orphaned versions.
-		referenced := map[string]bool{}
-		mergeConfig(globalConfig, referenced)
-		if projPath, err := config.FindGaleConfig(cwd); err == nil {
-			mergeConfig(projPath, referenced)
-		}
-		var orphaned int
-		for _, pkg := range installed {
-			if !referenced[pkg.Name+"@"+pkg.Version] {
-				orphaned++
-			}
-		}
-		if orphaned > 0 {
-			out.Warn(fmt.Sprintf(
-				"%d orphaned version(s) (run gale gc)", orphaned))
-		}
-
-		// 10. gh CLI for attestation verification.
-		if _, err := exec.LookPath("gh"); err != nil {
-			out.Warn("gh CLI not found — attestation " +
-				"verification disabled\n  " +
-				"Install: https://cli.github.com")
-		} else {
-			out.Success(
-				"gh CLI available (attestation verification)")
 		}
 
 		if failed {
@@ -203,7 +84,175 @@ var doctorCmd = &cobra.Command{
 	},
 }
 
-func checkDirenv(out *output.Output, failed *bool) {
+// checkGaleHome verifies ~/.gale/ exists.
+func checkGaleHome(ctx *doctorContext) bool {
+	if _, err := os.Stat(ctx.galeDir); err != nil {
+		ctx.out.Error(
+			"~/.gale/ does not exist\n  Run: gale install <pkg>")
+		return false
+	}
+	ctx.out.Success("Gale home (~/.gale/)")
+	return true
+}
+
+// checkGlobalConfig parses the global gale.toml.
+func checkGlobalConfig(ctx *doctorContext) bool {
+	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
+	data, err := os.ReadFile(globalConfig)
+	if err != nil {
+		ctx.out.Warn("No global gale.toml")
+		return true // warn, not a failure
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		ctx.out.Error(fmt.Sprintf(
+			"Global gale.toml parse error: %v", err))
+		return false
+	}
+	ctx.out.Success(fmt.Sprintf(
+		"Global config (%d packages)", len(cfg.Packages)))
+	ctx.globalPkgs = cfg.Packages
+	return true
+}
+
+// checkProjectConfig parses a project gale.toml if present.
+func checkProjectConfig(ctx *doctorContext) bool {
+	projPath, err := config.FindGaleConfig(ctx.cwd)
+	if err != nil {
+		return true // no project config is fine
+	}
+	data, err := os.ReadFile(projPath)
+	if err != nil {
+		return true
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		ctx.out.Error(fmt.Sprintf(
+			"Project gale.toml parse error: %v", err))
+		return false
+	}
+	ctx.out.Success(fmt.Sprintf(
+		"Project config (%d packages)", len(cfg.Packages)))
+	ctx.projPkgs = cfg.Packages
+	return true
+}
+
+// checkStore verifies the package store is readable.
+func checkStore(ctx *doctorContext) bool {
+	ctx.store = store.NewStore(ctx.storeRoot)
+	installed, err := ctx.store.List()
+	if err != nil {
+		ctx.out.Error(fmt.Sprintf("Store error: %v", err))
+		return false
+	}
+	ctx.installed = installed
+	ctx.out.Success(fmt.Sprintf(
+		"Store (%d versions in %s)", len(installed), ctx.storeRoot))
+	return true
+}
+
+// checkPackagesInstalled verifies all declared packages are
+// present in the store.
+func checkPackagesInstalled(ctx *doctorContext) bool {
+	allPkgs := map[string]string{}
+	for k, v := range ctx.globalPkgs {
+		allPkgs[k] = v
+	}
+	for k, v := range ctx.projPkgs {
+		allPkgs[k] = v
+	}
+	var missing []string
+	for name, version := range allPkgs {
+		if ctx.store != nil && !ctx.store.IsInstalled(name, version) {
+			missing = append(missing, name+"@"+version)
+		}
+	}
+	if len(missing) > 0 {
+		ctx.out.Error(fmt.Sprintf(
+			"Missing packages: %s\n  Run: gale sync",
+			strings.Join(missing, ", ")))
+		return false
+	}
+	if len(allPkgs) > 0 {
+		ctx.out.Success("All packages installed")
+	}
+	return true
+}
+
+// checkGeneration verifies an active generation exists.
+func checkGeneration(ctx *doctorContext) bool {
+	gen, err := generation.Current(ctx.galeDir)
+	if err != nil || gen == 0 {
+		ctx.out.Error(
+			"No active generation\n  Run: gale sync")
+		return false
+	}
+	currentLink := filepath.Join(ctx.galeDir, "current")
+	target, err := os.Readlink(currentLink)
+	if err != nil {
+		ctx.out.Error("current symlink broken")
+		return false
+	}
+	ctx.out.Success(fmt.Sprintf(
+		"Generation (current -> %s)", target))
+	return true
+}
+
+// checkSymlinks verifies no broken symlinks in current/bin.
+func checkSymlinks(ctx *doctorContext) bool {
+	binDir := filepath.Join(ctx.galeDir, "current", "bin")
+	entries, err := os.ReadDir(binDir)
+	if err != nil {
+		return true // no bin dir is handled by other checks
+	}
+	var broken []string
+	for _, e := range entries {
+		link := filepath.Join(binDir, e.Name())
+		if _, err := os.Stat(link); err != nil {
+			broken = append(broken, e.Name())
+		}
+	}
+	if len(broken) > 0 {
+		ctx.out.Error(fmt.Sprintf(
+			"Broken symlinks: %s\n  Run: gale sync",
+			strings.Join(broken, ", ")))
+		return false
+	}
+	ctx.out.Success(fmt.Sprintf(
+		"Symlinks intact (%d binaries)", len(entries)))
+	return true
+}
+
+// checkPATH verifies ~/.gale/current/bin is on PATH.
+func checkPATH(ctx *doctorContext) bool {
+	galeBin := filepath.Join(ctx.galeDir, "current", "bin")
+	pathDirs := strings.Split(os.Getenv("PATH"), ":")
+	found := false
+	for _, d := range pathDirs {
+		if d == galeBin {
+			found = true
+			break
+		}
+	}
+	if !found {
+		ctx.out.Error(fmt.Sprintf(
+			"PATH missing %s\n  Add to shell config: "+
+				"export PATH=\"%s:$PATH\"",
+			galeBin, galeBin))
+		return false
+	}
+	ctx.out.Success(fmt.Sprintf(
+		"PATH includes %s", galeBin))
+	return true
+}
+
+// checkDirenvIntegration checks direnv setup when .envrc exists.
+func checkDirenvIntegration(ctx *doctorContext) bool {
+	if _, err := os.Stat(
+		filepath.Join(ctx.cwd, ".envrc")); err != nil {
+		return true // no .envrc, skip
+	}
+
 	// Check direnv installed.
 	path := os.Getenv("PATH")
 	direnvFound := false
@@ -215,10 +264,9 @@ func checkDirenv(out *output.Output, failed *bool) {
 		}
 	}
 	if !direnvFound {
-		out.Error("direnv not found in PATH\n  " +
+		ctx.out.Error("direnv not found in PATH\n  " +
 			"Run: gale install direnv")
-		*failed = true
-		return
+		return false
 	}
 
 	// Check use_gale is defined.
@@ -227,8 +275,8 @@ func checkDirenv(out *output.Output, failed *bool) {
 	if data, err := os.ReadFile(direnvrc); err == nil {
 		if strings.Contains(string(data), "use_gale") ||
 			strings.Contains(string(data), "gale hook direnv") {
-			out.Success("Direnv integration configured")
-			return
+			ctx.out.Success("Direnv integration configured")
+			return true
 		}
 	}
 	// Also check ~/.direnvrc.
@@ -236,15 +284,49 @@ func checkDirenv(out *output.Output, failed *bool) {
 		filepath.Join(home, ".direnvrc")); err == nil {
 		if strings.Contains(string(data), "use_gale") ||
 			strings.Contains(string(data), "gale hook direnv") {
-			out.Success("Direnv integration configured")
-			return
+			ctx.out.Success("Direnv integration configured")
+			return true
 		}
 	}
 
-	out.Error("use_gale not found in direnvrc\n  " +
+	ctx.out.Error("use_gale not found in direnvrc\n  " +
 		"Run: echo 'eval \"$(gale hook direnv)\"' >> " +
 		direnvrc)
-	*failed = true
+	return false
+}
+
+// checkOrphans reports orphaned package versions.
+func checkOrphans(ctx *doctorContext) bool {
+	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
+	referenced := map[string]bool{}
+	mergeConfig(globalConfig, referenced)
+	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
+		mergeConfig(projPath, referenced)
+	}
+	var orphaned int
+	for _, pkg := range ctx.installed {
+		if !referenced[pkg.Name+"@"+pkg.Version] {
+			orphaned++
+		}
+	}
+	if orphaned > 0 {
+		ctx.out.Warn(fmt.Sprintf(
+			"%d orphaned version(s) (run gale gc)", orphaned))
+	}
+	return true // orphans are a warning, not a failure
+}
+
+// checkGhCLI checks for the gh CLI (attestation verification).
+func checkGhCLI(ctx *doctorContext) bool {
+	if _, err := exec.LookPath("gh"); err != nil {
+		ctx.out.Warn("gh CLI not found — attestation " +
+			"verification disabled\n  " +
+			"Install: https://cli.github.com")
+		return true // warn, not a failure
+	}
+	ctx.out.Success(
+		"gh CLI available (attestation verification)")
+	return true
 }
 
 func init() {

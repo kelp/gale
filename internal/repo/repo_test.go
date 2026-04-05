@@ -35,7 +35,8 @@ func setupBareRepo(t *testing.T, recipes map[string]string) string {
 
 	gitIn(t, work, "add", ".")
 	gitIn(t, work, "-c", "user.name=test",
-		"-c", "user.email=test@test", "commit", "-m", "init")
+		"-c", "user.email=test@test",
+		"-c", "commit.gpgsign=false", "commit", "-m", "init")
 	gitIn(t, work, "push")
 
 	return bare
@@ -176,7 +177,8 @@ func TestFetchPicksUpNewRecipe(t *testing.T) {
 	}
 	gitIn(t, work, "add", ".")
 	gitIn(t, work, "-c", "user.name=test",
-		"-c", "user.email=test@test", "commit", "-m", "add ripgrep")
+		"-c", "user.email=test@test",
+		"-c", "commit.gpgsign=false", "commit", "-m", "add ripgrep")
 	gitIn(t, work, "push")
 
 	// Fetch should pick up the new recipe.
