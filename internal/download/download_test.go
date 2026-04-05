@@ -462,39 +462,6 @@ func TestExtractTarGzRejectsSymlinkTraversalRelative(t *testing.T) {
 	}
 }
 
-func TestExtractTarGzRejectsSymlinkTraversalAbsolute(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "evil.tar.gz")
-	destDir := t.TempDir()
-
-	// Build a tar.gz with a symlink pointing to an absolute path
-	// outside destDir.
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "escape",
-		Linkname: "/etc/passwd",
-	})
-
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	err = ExtractTarGz(archive, destDir)
-	if err == nil {
-		t.Fatal("expected error for absolute symlink traversal")
-	}
-	if !strings.Contains(err.Error(), "illegal symlink") {
-		t.Errorf("error = %q, want it to contain 'illegal symlink'",
-			err.Error())
-	}
-}
-
 func TestExtractTarGzAllowsSymlinkWithinDestDir(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "good.tar.gz")
 	destDir := t.TempDir()
@@ -627,8 +594,11 @@ func TestExtractTarGzSymlinkToDevNullCreatesCorrectSymlink(t *testing.T) {
 	}
 }
 
-func TestExtractTarGzRejectsSymlinkToEtcPasswd(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "evil.tar.gz")
+// TestExtractTarGzAllowsAbsoluteSymlinkToArbitraryPath verifies that
+// an absolute symlink pointing to an arbitrary path outside destDir
+// is extracted as a (potentially dangling) symlink rather than failing.
+func TestExtractTarGzAllowsAbsoluteSymlinkToArbitraryPath(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "arb.tar.gz")
 	destDir := t.TempDir()
 
 	f, err := os.Create(archive)
@@ -640,21 +610,123 @@ func TestExtractTarGzRejectsSymlinkToEtcPasswd(t *testing.T) {
 
 	tw.WriteHeader(&tar.Header{
 		Typeflag: tar.TypeSymlink,
-		Name:     "passwd",
-		Linkname: "/etc/passwd",
+		Name:     "link",
+		Linkname: "/tmp/some/arbitrary/path",
 	})
 
 	tw.Close()
 	gw.Close()
 	f.Close()
 
-	err = ExtractTarGz(archive, destDir)
-	if err == nil {
-		t.Fatal("expected error for /etc/passwd symlink")
+	if err := ExtractTarGz(archive, destDir); err != nil {
+		t.Fatalf("unexpected error for absolute symlink to arbitrary path: %v", err)
 	}
-	if !strings.Contains(err.Error(), "illegal symlink target") {
-		t.Errorf("error = %q, want it to contain 'illegal symlink target'",
-			err.Error())
+
+	// Symlink must exist (even though the target doesn't).
+	linkPath := filepath.Join(destDir, "link")
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("symlink not created: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected symlink, got %v", info.Mode())
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != "/tmp/some/arbitrary/path" {
+		t.Errorf("symlink target = %q, want %q", target, "/tmp/some/arbitrary/path")
+	}
+}
+
+// TestExtractTarGzAllowsAbsoluteSymlinkToDeveloperPath mirrors the helix
+// release case where an upstream developer's local path leaked into the
+// tarball (e.g. runtime/grammars/sources/move/queries -> /Users/someone/...).
+func TestExtractTarGzAllowsAbsoluteSymlinkToDeveloperPath(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "dev.tar.gz")
+	destDir := t.TempDir()
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "queries",
+		Linkname: "/Users/someone/code/project/file",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	if err := ExtractTarGz(archive, destDir); err != nil {
+		t.Fatalf("unexpected error for developer path symlink: %v", err)
+	}
+
+	linkPath := filepath.Join(destDir, "queries")
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("symlink not created: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected symlink, got %v", info.Mode())
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != "/Users/someone/code/project/file" {
+		t.Errorf("symlink target = %q, want %q",
+			target, "/Users/someone/code/project/file")
+	}
+}
+
+// TestExtractTarGzAllowsAbsoluteSymlinkToNonExistent mirrors the helm
+// testdata case: invalid-symlink -> /non/existing/file.
+func TestExtractTarGzAllowsAbsoluteSymlinkToNonExistent(t *testing.T) {
+	archive := filepath.Join(t.TempDir(), "nonex.tar.gz")
+	destDir := t.TempDir()
+
+	f, err := os.Create(archive)
+	if err != nil {
+		t.Fatalf("create archive: %v", err)
+	}
+	gw := gzip.NewWriter(f)
+	tw := tar.NewWriter(gw)
+
+	tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeSymlink,
+		Name:     "invalid-symlink",
+		Linkname: "/non/existing/file",
+	})
+
+	tw.Close()
+	gw.Close()
+	f.Close()
+
+	if err := ExtractTarGz(archive, destDir); err != nil {
+		t.Fatalf("unexpected error for symlink to non-existent path: %v", err)
+	}
+
+	linkPath := filepath.Join(destDir, "invalid-symlink")
+	info, err := os.Lstat(linkPath)
+	if err != nil {
+		t.Fatalf("symlink not created: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("expected symlink, got %v", info.Mode())
+	}
+	target, err := os.Readlink(linkPath)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if target != "/non/existing/file" {
+		t.Errorf("symlink target = %q, want %q", target, "/non/existing/file")
 	}
 }
 

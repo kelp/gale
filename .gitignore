@@ -19,3 +19,4 @@ docs/superpowers/
 .pi-lens/
 gale.test
 gale.toml.lock
+gale.lock.lock
