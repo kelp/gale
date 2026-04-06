@@ -1176,15 +1176,24 @@ func TestBuildEnvNoCMakePrefixPathWithoutDeps(t *testing.T) {
 
 // --- Behavior 16: Compiler flags in buildEnv ---
 
+// wantCFLAGS returns the expected CFLAGS value, appending
+// -fPIC on Linux where it is always injected.
+func wantCFLAGS(base string) string {
+	if runtime.GOOS == "linux" {
+		return base + " -fPIC"
+	}
+	return base
+}
+
 func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
-	if val := envMap["CFLAGS"]; val != "-O2" {
-		t.Errorf("CFLAGS = %q, want %q", val, "-O2")
+	if val := envMap["CFLAGS"]; val != wantCFLAGS("-O2") {
+		t.Errorf("CFLAGS = %q, want %q", val, wantCFLAGS("-O2"))
 	}
-	if val := envMap["CXXFLAGS"]; val != "-O2" {
-		t.Errorf("CXXFLAGS = %q, want %q", val, "-O2")
+	if val := envMap["CXXFLAGS"]; val != wantCFLAGS("-O2") {
+		t.Errorf("CXXFLAGS = %q, want %q", val, wantCFLAGS("-O2"))
 	}
 	ldflags := envMap["LDFLAGS"]
 	if !strings.Contains(ldflags, "-Wl,-S") {
@@ -1222,11 +1231,11 @@ func TestBuildEnvDebugFlags(t *testing.T) {
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: true, Deps: nil})
 	envMap := envToMap(env)
 
-	if val := envMap["CFLAGS"]; val != "-O0 -g" {
-		t.Errorf("CFLAGS = %q, want %q", val, "-O0 -g")
+	if val := envMap["CFLAGS"]; val != wantCFLAGS("-O0 -g") {
+		t.Errorf("CFLAGS = %q, want %q", val, wantCFLAGS("-O0 -g"))
 	}
-	if val := envMap["CXXFLAGS"]; val != "-O0 -g" {
-		t.Errorf("CXXFLAGS = %q, want %q", val, "-O0 -g")
+	if val := envMap["CXXFLAGS"]; val != wantCFLAGS("-O0 -g") {
+		t.Errorf("CXXFLAGS = %q, want %q", val, wantCFLAGS("-O0 -g"))
 	}
 	ldflags := envMap["LDFLAGS"]
 	if strings.Contains(ldflags, "-Wl,-S") {
@@ -1538,11 +1547,11 @@ func TestCompilerFlagsRelease(t *testing.T) {
 	flags := bc.compilerFlags("", "")
 	m := envToMap(flags)
 
-	if m["CFLAGS"] != "-O2" {
-		t.Errorf("CFLAGS = %q, want -O2", m["CFLAGS"])
+	if m["CFLAGS"] != wantCFLAGS("-O2") {
+		t.Errorf("CFLAGS = %q, want %q", m["CFLAGS"], wantCFLAGS("-O2"))
 	}
-	if m["CXXFLAGS"] != "-O2" {
-		t.Errorf("CXXFLAGS = %q, want -O2", m["CXXFLAGS"])
+	if m["CXXFLAGS"] != wantCFLAGS("-O2") {
+		t.Errorf("CXXFLAGS = %q, want %q", m["CXXFLAGS"], wantCFLAGS("-O2"))
 	}
 	if !strings.Contains(m["LDFLAGS"], "-Wl,-S") {
 		t.Errorf("LDFLAGS = %q, want to contain -Wl,-S", m["LDFLAGS"])
@@ -1554,11 +1563,11 @@ func TestCompilerFlagsDebug(t *testing.T) {
 	flags := bc.compilerFlags("", "")
 	m := envToMap(flags)
 
-	if m["CFLAGS"] != "-O0 -g" {
-		t.Errorf("CFLAGS = %q, want '-O0 -g'", m["CFLAGS"])
+	if m["CFLAGS"] != wantCFLAGS("-O0 -g") {
+		t.Errorf("CFLAGS = %q, want %q", m["CFLAGS"], wantCFLAGS("-O0 -g"))
 	}
-	if m["CXXFLAGS"] != "-O0 -g" {
-		t.Errorf("CXXFLAGS = %q, want '-O0 -g'", m["CXXFLAGS"])
+	if m["CXXFLAGS"] != wantCFLAGS("-O0 -g") {
+		t.Errorf("CXXFLAGS = %q, want %q", m["CXXFLAGS"], wantCFLAGS("-O0 -g"))
 	}
 }
 
