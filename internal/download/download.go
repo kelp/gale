@@ -26,6 +26,20 @@ var httpClient = &http.Client{
 	Timeout: 5 * time.Minute,
 }
 
+// mirrors maps URL prefixes to fallback mirror prefixes.
+// When a download fails with an HTTP error, the URL prefix
+// is replaced with each fallback in order until one succeeds.
+var mirrors = map[string][]string{
+	"https://ftpmirror.gnu.org/": {
+		"https://mirrors.kernel.org/gnu/",
+		"https://ftp.gnu.org/pub/gnu/",
+	},
+	"https://ftp.gnu.org/gnu/": {
+		"https://mirrors.kernel.org/gnu/",
+		"https://ftpmirror.gnu.org/",
+	},
+}
+
 // SetHTTPClient replaces the package-level HTTP client.
 // Intended for tests that need a custom TLS configuration
 // (e.g., httptest.NewTLSServer). Returns a function that
@@ -46,24 +60,51 @@ func Fetch(url, destPath string) error {
 // FetchNamed downloads a file with an explicit display
 // name for progress output. If name is empty, the URL
 // basename is used.
-func FetchNamed(url, destPath, displayName string) error {
+func FetchNamed(rawURL, destPath, displayName string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
 
-	resp, err := httpClient.Get(url) //nolint:gosec // G107 — URL is caller-provided
+	err := fetchOnce(rawURL, destPath, displayName)
+	if err == nil {
+		return nil
+	}
+
+	// Try mirror fallbacks.
+	for prefix, fallbacks := range mirrors {
+		if !strings.HasPrefix(rawURL, prefix) {
+			continue
+		}
+		suffix := rawURL[len(prefix):]
+		for _, fb := range fallbacks {
+			alt := fb + suffix
+			fmt.Fprintf(os.Stderr,
+				"  > Mirror fallback: %s\n", alt)
+			if ferr := fetchOnce(
+				alt, destPath, displayName); ferr == nil {
+				return nil
+			}
+		}
+	}
+
+	return err
+}
+
+// fetchOnce performs a single HTTP GET and writes to destPath.
+func fetchOnce(rawURL, destPath, displayName string) error {
+	resp, err := httpClient.Get(rawURL) //nolint:gosec // G107 — URL is caller-provided
 	if err != nil {
-		return fmt.Errorf("fetch %s: %w", url, err)
+		return fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("fetch %s: HTTP %d", url, resp.StatusCode)
+		return fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
 	}
 
 	name := displayName
 	if name == "" {
-		name = filepath.Base(url)
+		name = filepath.Base(rawURL)
 	}
 	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
 }

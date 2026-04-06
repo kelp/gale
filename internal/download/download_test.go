@@ -316,6 +316,54 @@ func TestFetchReturnsErrorOn500(t *testing.T) {
 	}
 }
 
+func TestFetchFallsBackToMirror(t *testing.T) {
+	// Primary server returns 403, fallback mirror succeeds.
+	primary := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+		}))
+	defer primary.Close()
+
+	mirror := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("mirror-data"))
+		}))
+	defer mirror.Close()
+
+	// Register the primary as a mirror source with fallback.
+	oldMirrors := mirrors
+	mirrors = map[string][]string{
+		primary.URL + "/": {mirror.URL + "/"},
+	}
+	defer func() { mirrors = oldMirrors }()
+
+	dest := filepath.Join(t.TempDir(), "output.bin")
+	err := Fetch(primary.URL+"/gnu/make/make-4.4.tar.gz", dest)
+	if err != nil {
+		t.Fatalf("expected fallback to succeed: %v", err)
+	}
+
+	data, _ := os.ReadFile(dest)
+	if string(data) != "mirror-data" {
+		t.Errorf("got %q, want %q", data, "mirror-data")
+	}
+}
+
+func TestFetchNoFallbackForNonMirroredURL(t *testing.T) {
+	// Non-mirrored URL should fail normally, no fallback.
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "forbidden", http.StatusForbidden)
+		}))
+	defer srv.Close()
+
+	dest := filepath.Join(t.TempDir(), "output.bin")
+	err := Fetch(srv.URL+"/some/file.tar.gz", dest)
+	if err == nil {
+		t.Fatal("expected error for 403 with no mirrors")
+	}
+}
+
 func TestFetchReturnsErrorForBadURL(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "output.bin")
 
