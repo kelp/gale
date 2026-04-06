@@ -414,6 +414,103 @@ func TestAddDepRpathsNoDeps(t *testing.T) {
 	}
 }
 
+// --- RelocateStaleRpaths rewrites foreign gale store rpaths ---
+
+func compileWithHeaderpad(t *testing.T, dir, name string) string {
+	t.Helper()
+	src := filepath.Join(dir, name+".c")
+	bin := filepath.Join(dir, name)
+	if err := os.WriteFile(src,
+		[]byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("cc", "-Wl,-headerpad_max_install_names", "-o", bin, src)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Skipf("cc not available: %v\n%s", err, out)
+	}
+	return bin
+}
+
+func TestRelocateStaleRpathsRewritesCIBakedPath(t *testing.T) {
+	// A prebuilt binary built on CI has LC_RPATH entries
+	// pointing at /Users/runner/.gale/pkg/... which don't
+	// exist on the user's machine. RelocateStaleRpaths
+	// should rewrite these to the current store root.
+
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	os.MkdirAll(binDir, 0o755)
+	bin := compileWithHeaderpad(t, binDir, "dummy")
+
+	// Add an LC_RPATH that looks like a CI-baked path.
+	staleRpath := "/Users/runner/.gale/pkg/openssl/3.6.1/lib"
+	if err := exec.Command("install_name_tool",
+		"-add_rpath", staleRpath, bin).Run(); err != nil {
+		t.Fatalf("add stale rpath: %v", err)
+	}
+
+	currentStoreRoot := "/Users/tcole/.gale/pkg"
+	if err := RelocateStaleRpaths(dir, currentStoreRoot); err != nil {
+		t.Fatalf("RelocateStaleRpaths: %v", err)
+	}
+
+	rpaths := existingRpaths(bin)
+	expected := "/Users/tcole/.gale/pkg/openssl/3.6.1/lib"
+	if !rpaths[expected] {
+		t.Errorf("expected rpath %q, got %v", expected, rpaths)
+	}
+	if rpaths[staleRpath] {
+		t.Errorf("stale rpath %q should have been removed", staleRpath)
+	}
+}
+
+func TestRelocateStaleRpathsLeavesValidRpathsAlone(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	os.MkdirAll(binDir, 0o755)
+	bin := compileWithHeaderpad(t, binDir, "dummy")
+
+	// A valid rpath pointing under the current store root.
+	currentStoreRoot := "/Users/tcole/.gale/pkg"
+	validRpath := currentStoreRoot + "/openssl/3.6.1/lib"
+	if err := exec.Command("install_name_tool",
+		"-add_rpath", validRpath, bin).Run(); err != nil {
+		t.Fatalf("add valid rpath: %v", err)
+	}
+
+	if err := RelocateStaleRpaths(dir, currentStoreRoot); err != nil {
+		t.Fatalf("RelocateStaleRpaths: %v", err)
+	}
+
+	rpaths := existingRpaths(bin)
+	if !rpaths[validRpath] {
+		t.Errorf("valid rpath %q should be preserved, got %v", validRpath, rpaths)
+	}
+}
+
+func TestRelocateStaleRpathsIgnoresNonGalePaths(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	os.MkdirAll(binDir, 0o755)
+	bin := compileWithHeaderpad(t, binDir, "dummy")
+
+	systemRpath := "/usr/local/lib"
+	if err := exec.Command("install_name_tool",
+		"-add_rpath", systemRpath, bin).Run(); err != nil {
+		t.Fatalf("add system rpath: %v", err)
+	}
+
+	if err := RelocateStaleRpaths(dir, "/Users/tcole/.gale/pkg"); err != nil {
+		t.Fatalf("RelocateStaleRpaths: %v", err)
+	}
+
+	rpaths := existingRpaths(bin)
+	if !rpaths[systemRpath] {
+		t.Errorf("system rpath %q should be preserved, got %v", systemRpath, rpaths)
+	}
+}
+
 // --- isSuspiciousDepRef diagnostic ---
 
 func TestIsSuspiciousDepRefDetectsAbsolutePathInStore(t *testing.T) {

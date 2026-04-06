@@ -336,6 +336,69 @@ func otoolDeps(path string) ([]string, error) {
 	return deps, nil
 }
 
+// RelocateStaleRpaths walks Mach-O files under prefixDir
+// and rewrites any LC_RPATH entries that look like they
+// reference a foreign gale store root (e.g. CI-baked paths
+// like /Users/runner/.gale/pkg/...) to point at the current
+// store root.
+//
+// This is needed because prebuilt binaries published to
+// GHCR may have been built on CI with the old gale that
+// injected -Wl,-rpath,<libdir> at link time, baking the
+// CI user's HOME path into the Mach-O. Without this fixup,
+// the binary would fail to load its dep dylibs at runtime.
+//
+// An rpath is considered stale if it contains a
+// ".gale/pkg/" path component whose prefix is not the
+// current store root. The prefix is rewritten while the
+// suffix (<pkg>/<version>/lib) is preserved.
+func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
+	var files []string
+	err := filepath.Walk(prefixDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() || !info.Mode().IsRegular() {
+			return nil
+		}
+		if isMachO(path) {
+			files = append(files, path)
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("walk prefix: %w", err)
+	}
+
+	marker := ".gale" + string(filepath.Separator) + "pkg" + string(filepath.Separator)
+	currentStoreRoot = filepath.Clean(currentStoreRoot)
+
+	for _, file := range files {
+		rpaths := existingRpaths(file)
+		for rpath := range rpaths {
+			idx := strings.Index(rpath, marker)
+			if idx < 0 {
+				continue
+			}
+			// Check if this rpath already has the current
+			// store root as its prefix; if so, leave alone.
+			suffix := rpath[idx+len(marker):]
+			newPath := filepath.Join(currentStoreRoot, suffix)
+			if rpath == newPath {
+				continue
+			}
+			if err := run("install_name_tool", "-rpath",
+				rpath, newPath, file); err != nil {
+				return fmt.Errorf("rewrite rpath %s in %s: %w",
+					rpath, file, err)
+			}
+		}
+		// Re-sign after modification.
+		_ = run("codesign", "--force", "--sign", "-", file)
+	}
+	return nil
+}
+
 // isSuspiciousDepRef reports whether a LC_LOAD_DYLIB entry
 // looks like it should have been an @rpath/ reference to a
 // gale dep dylib. Returns true when the reference is an

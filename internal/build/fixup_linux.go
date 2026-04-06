@@ -91,3 +91,11 @@ func FixupBinaries(prefixDir string) error {
 func AddDepRpaths(_ string, _ []string) error {
 	return nil
 }
+
+// RelocateStaleRpaths is a no-op on Linux. ELF DT_RUNPATH
+// on gale Linux binaries uses $ORIGIN-relative paths so
+// there is no absolute store path to rewrite at install
+// time.
+func RelocateStaleRpaths(_, _ string) error {
+	return nil
+}

@@ -272,6 +272,16 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, v attesta
 		return fmt.Errorf("fixup pkg-config: %w", err)
 	}
 
+	// Relocate stale LC_RPATH entries that reference a
+	// foreign gale store root (e.g. CI-baked paths like
+	// /Users/runner/.gale/pkg/...). Only meaningful on
+	// darwin; no-op on Linux where RelocateStaleRpaths
+	// is a stub.
+	storeRoot := filepath.Dir(filepath.Dir(storeDir))
+	if err := build.RelocateStaleRpaths(storeDir, storeRoot); err != nil {
+		return fmt.Errorf("relocate rpaths: %w", err)
+	}
+
 	return nil
 }
 
