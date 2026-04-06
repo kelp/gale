@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.10.5 — 2026-04-06
+
+### Added
+
+- Mirror fallback for GNU source downloads. When
+  ftpmirror.gnu.org returns an HTTP error (often 403
+  from datacenter IPs), automatically tries
+  mirrors.kernel.org and ftp.gnu.org before failing.
+
 ## v0.10.4 — 2026-04-06
 
 ### Fixed
