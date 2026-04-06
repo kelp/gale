@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.10.4 — 2026-04-06
+
+### Fixed
+
+- Linux builds now inject dep library directories into
+  ELF RUNPATH via patchelf. Prebuilt binaries from CI
+  will find shared libraries from deps (openssl, zstd,
+  etc.) at runtime without LD_LIBRARY_PATH.
+- Prebuilt Linux binaries with rpaths from a foreign
+  store prefix are rewritten to the local store root
+  on install.
+
 ## v0.10.3 — 2026-04-06
 
 ### Fixed
