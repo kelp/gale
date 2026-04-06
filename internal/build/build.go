@@ -379,13 +379,19 @@ func (bc *BuildContext) compilerFlags(depCPPFLAGS, depLDFLAGS string) []string {
 	if runtime.GOOS == "darwin" {
 		headerpad = " -Wl,-headerpad_max_install_names"
 	}
+	// On Linux, always compile with -fPIC so static
+	// libraries can be linked into shared objects.
+	fpic := ""
+	if runtime.GOOS == "linux" {
+		fpic = " -fPIC"
+	}
 	if bc.Debug {
-		setDefault(&env, "CFLAGS", "-O0 -g")
-		setDefault(&env, "CXXFLAGS", "-O0 -g")
+		setDefault(&env, "CFLAGS", "-O0 -g"+fpic)
+		setDefault(&env, "CXXFLAGS", "-O0 -g"+fpic)
 		setDefault(&env, "LDFLAGS", depLDFLAGS+headerpad)
 	} else {
-		setDefault(&env, "CFLAGS", "-O2")
-		setDefault(&env, "CXXFLAGS", "-O2")
+		setDefault(&env, "CFLAGS", "-O2"+fpic)
+		setDefault(&env, "CXXFLAGS", "-O2"+fpic)
 		ldflags := "-Wl,-S"
 		if depLDFLAGS != "" {
 			ldflags = depLDFLAGS + " " + ldflags

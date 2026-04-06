@@ -1192,6 +1192,32 @@ func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
 	}
 }
 
+func TestBuildEnvFPICOnLinux(t *testing.T) {
+	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
+	envMap := envToMap(env)
+
+	if runtime.GOOS == "linux" {
+		if !strings.Contains(envMap["CFLAGS"], "-fPIC") {
+			t.Errorf("CFLAGS on linux = %q, want -fPIC", envMap["CFLAGS"])
+		}
+		if !strings.Contains(envMap["CXXFLAGS"], "-fPIC") {
+			t.Errorf("CXXFLAGS on linux = %q, want -fPIC", envMap["CXXFLAGS"])
+		}
+	} else if strings.Contains(envMap["CFLAGS"], "-fPIC") {
+		t.Errorf("CFLAGS on %s = %q, should not contain -fPIC", runtime.GOOS, envMap["CFLAGS"])
+	}
+
+	// Debug mode too.
+	env, _, _ = buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: true, Deps: nil})
+	envMap = envToMap(env)
+
+	if runtime.GOOS == "linux" {
+		if !strings.Contains(envMap["CFLAGS"], "-fPIC") {
+			t.Errorf("CFLAGS debug on linux = %q, want -fPIC", envMap["CFLAGS"])
+		}
+	}
+}
+
 func TestBuildEnvDebugFlags(t *testing.T) {
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: true, Deps: nil})
 	envMap := envToMap(env)
