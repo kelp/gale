@@ -442,17 +442,21 @@ func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS strin
 			}
 			if _, err := os.Stat(libDir); err == nil {
 				ldParts = append(ldParts, "-L"+libDir)
-				// Do not inject -Wl,-rpath here on darwin.
-				// Runtime rpath for dep libs is added
-				// post-build by AddDepRpaths via
-				// install_name_tool. Reasons:
-				// 1. Ruby's configure validates LDFLAGS and
-				//    rejects -Wl,-rpath entries.
-				// 2. libtool and cmake strip or rewrite
-				//    -Wl,-rpath during relink/install,
-				//    making link-time injection unreliable.
-				// AddDepRpaths is the single source of truth
-				// for dep rpaths on darwin.
+				// On darwin, also inject -Wl,-rpath so that
+				// binaries built during make can find dep
+				// dylibs immediately. SIP strips DYLD_* vars
+				// from /bin/sh children, so link-time rpath
+				// is the only reliable mechanism during the
+				// build phase (e.g. Python test-loads _lzma).
+				//
+				// AddDepRpaths still runs post-build as the
+				// authority — it catches cases where build
+				// systems strip link-time rpaths, and
+				// existingRpaths() deduplicates.
+				if runtime.GOOS == "darwin" {
+					ldParts = append(ldParts,
+						"-Wl,-rpath,"+libDir)
+				}
 			}
 		}
 		depCPPFLAGS = strings.Join(cppParts, " ")

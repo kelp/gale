@@ -1468,13 +1468,25 @@ func TestPerDepEnvComputesDepFlags(t *testing.T) {
 	if ldflags == "" {
 		t.Error("expected non-empty ldflags")
 	}
+	if runtime.GOOS != "darwin" && strings.Contains(ldflags, "-Wl,-rpath") {
+		t.Error("non-darwin should not inject -Wl,-rpath")
+	}
 }
 
-func TestPerDepEnvDoesNotInjectRpathOnDarwin(t *testing.T) {
-	// Rpath is added post-build by AddDepRpaths via
-	// install_name_tool. Putting -Wl,-rpath in LDFLAGS
-	// breaks configure scripts that validate LDFLAGS
-	// (e.g. Ruby) and creates duplicate LC_RPATH entries.
+func TestPerDepEnvInjectsRpathOnDarwin(t *testing.T) {
+	// On darwin, -Wl,-rpath is injected at link time so that
+	// binaries built during make can find dep dylibs before
+	// AddDepRpaths runs post-build. SIP strips DYLD_* vars
+	// from /bin/sh children, making link-time rpath the only
+	// reliable mechanism during the build phase.
+	//
+	// AddDepRpaths still runs post-build as the authority
+	// (catches cases where build systems strip link-time
+	// rpaths). existingRpaths deduplication prevents doubles.
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin-only test")
+	}
+
 	storeDir := t.TempDir()
 	os.MkdirAll(filepath.Join(storeDir, "include"), 0o755)
 	os.MkdirAll(filepath.Join(storeDir, "lib"), 0o755)
@@ -1486,11 +1498,12 @@ func TestPerDepEnvDoesNotInjectRpathOnDarwin(t *testing.T) {
 	}
 	_, _, ldflags := bc.perDepEnv()
 
-	if strings.Contains(ldflags, "-Wl,-rpath") {
-		t.Errorf("depLDFLAGS must not contain -Wl,-rpath (handled post-build by AddDepRpaths), got %q", ldflags)
+	libDir := filepath.Join(storeDir, "lib")
+	if !strings.Contains(ldflags, "-L"+libDir) {
+		t.Errorf("depLDFLAGS should contain -L for dep lib dir, got %q", ldflags)
 	}
-	if !strings.Contains(ldflags, "-L"+filepath.Join(storeDir, "lib")) {
-		t.Errorf("depLDFLAGS should still contain -L for dep lib dir, got %q", ldflags)
+	if !strings.Contains(ldflags, "-Wl,-rpath,"+libDir) {
+		t.Errorf("depLDFLAGS should contain -Wl,-rpath for dep lib dir on darwin, got %q", ldflags)
 	}
 }
 

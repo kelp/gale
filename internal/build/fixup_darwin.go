@@ -148,12 +148,13 @@ func FixupBinaries(prefixDir string) error {
 //
 // # Invariant
 //
-// This function is the single source of truth for dep
-// rpaths on darwin. Link-time -Wl,-rpath injection was
-// removed because (a) Ruby's configure rejects it in
-// LDFLAGS sanity checks and (b) libtool/cmake strip or
-// rewrite -Wl,-rpath unreliably, making it dead code in
-// most cases.
+// Link-time -Wl,-rpath injection (perDepEnv) provides
+// rpaths during the build phase so intermediate binaries
+// can find dep dylibs immediately (SIP strips DYLD_*
+// from /bin/sh children). This function runs post-build
+// as the authority — it catches cases where build systems
+// strip or rewrite link-time rpaths, and existingRpaths()
+// deduplicates.
 //
 // For this to work, every dep dylib in a gale store
 // directory MUST have an @rpath/-style install name.
