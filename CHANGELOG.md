@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.10.3 — 2026-04-06
+
+### Fixed
+
+- `gale update` now reinstalls packages that are in the
+  config but missing from the store. Previously it checked
+  the registry version, reported "up to date", and then
+  failed during generation rebuild.
+
 ## v0.10.2 — 2026-04-06
 
 ### Fixed
