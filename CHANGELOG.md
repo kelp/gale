@@ -1,5 +1,44 @@
 # Changelog
 
+## v0.10.1 — 2026-04-05
+
+### Fixed
+
+- Tar extraction now accepts bare root directory entries
+  (`./`) that some upstream archives include. Previously
+  rejected as a path traversal attempt.
+- Tar extraction allows absolute symlink targets instead
+  of rejecting them. Upstream archives (helix, helm)
+  leak developer paths and test fixtures as absolute
+  symlinks. These are created as-is and may be dangling.
+- Darwin build environment no longer injects nonexistent
+  dep subdirectories into search paths. A dep like cmake
+  (no `lib/`) would add a bogus entry to LIBRARY_PATH,
+  causing `ld: warning: search path not found` which
+  broke configure scripts with strict stderr checking
+  (e.g. Ruby's `ac_c_werror_flag=yes`).
+- Darwin link-time `-Wl,-rpath` injection re-enabled for
+  dep lib dirs. SIP strips `DYLD_*` environment variables
+  from `/bin/sh` children, so link-time rpath is the only
+  reliable way for binaries to find dep dylibs during the
+  build phase (e.g. Python test-loading `_lzma` during
+  `make`). `AddDepRpaths` still runs post-build as the
+  authority, and `existingRpaths()` deduplicates.
+- Build environment search-path guards are now
+  independent: `LIBRARY_PATH`, `C_INCLUDE_PATH`,
+  `PKG_CONFIG_PATH`, and `CMAKE_PREFIX_PATH` are each
+  set when any dep provides that directory type.
+  Previously a header-only dep (no `lib/`) could lose
+  `C_INCLUDE_PATH` if no dep had a lib dir.
+- Prebuilt binary install now relocates stale LC_RPATH
+  entries. Binaries published to GHCR from CI have
+  absolute rpaths like `/Users/runner/.gale/pkg/...`
+  baked in. `RelocateStaleRpaths` rewrites any rpath
+  containing `.gale/pkg/` to use the current store root.
+- `isSuspiciousDepRef` diagnostic added to warn when a
+  Mach-O binary references a dep dylib via an absolute
+  store path instead of `@rpath`.
+
 ## v0.10.0 — 2026-04-04
 
 ### Fixed
