@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.10.2 — 2026-04-06
+
+### Fixed
+
+- Linux builds now inject `-fPIC` into default CFLAGS and
+  CXXFLAGS. Static libraries must be position-independent
+  so they can be linked into shared objects (e.g. bzip2
+  and zlib into python's libpython.so).
+
 ## v0.10.1 — 2026-04-05
 
 ### Fixed
