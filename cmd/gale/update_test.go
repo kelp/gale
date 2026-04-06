@@ -103,6 +103,57 @@ func TestIsNewerVersion(t *testing.T) {
 	}
 }
 
+func TestUpdateAction(t *testing.T) {
+	tests := []struct {
+		name      string
+		candidate string
+		current   string
+		inStore   bool
+		wantVer   string
+		wantSkip  bool
+	}{
+		{
+			name:      "same version and in store skips",
+			candidate: "1.0.0", current: "1.0.0",
+			inStore: true, wantVer: "1.0.0", wantSkip: true,
+		},
+		{
+			name:      "same version but missing from store reinstalls",
+			candidate: "1.0.0", current: "1.0.0",
+			inStore: false, wantVer: "1.0.0", wantSkip: false,
+		},
+		{
+			name:      "newer version upgrades",
+			candidate: "2.0.0", current: "1.0.0",
+			inStore: true, wantVer: "2.0.0", wantSkip: false,
+		},
+		{
+			name:      "newer version upgrades even if missing",
+			candidate: "2.0.0", current: "1.0.0",
+			inStore: false, wantVer: "2.0.0", wantSkip: false,
+		},
+		{
+			name:      "older registry version reinstalls current",
+			candidate: "0.9.0", current: "1.0.0",
+			inStore: false, wantVer: "1.0.0", wantSkip: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ver, skip := updateAction(
+				tt.candidate, tt.current, tt.inStore)
+			if ver != tt.wantVer {
+				t.Errorf("version = %q, want %q",
+					ver, tt.wantVer)
+			}
+			if skip != tt.wantSkip {
+				t.Errorf("skip = %v, want %v",
+					skip, tt.wantSkip)
+			}
+		})
+	}
+}
+
 func TestUpdateGitSkipsWhenVersionIsSemver(t *testing.T) {
 	// A semver version like "1.7.1" should never match a
 	// 7-char git hash like "abc1234". The up-to-date

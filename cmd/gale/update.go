@@ -132,14 +132,17 @@ var updateCmd = &cobra.Command{
 						"Skipping %s: %v", name, err))
 					continue
 				}
-				if !isNewerVersion(
-					r.Package.Version, t.current) {
+				ver, skip := updateAction(
+					r.Package.Version, t.current,
+					ctx.Installer.Store.IsInstalled(
+						name, t.current))
+				if skip {
 					out.Info(fmt.Sprintf(
 						"%s@%s is up to date",
 						name, t.current))
 					continue
 				}
-				newVersion = r.Package.Version
+				newVersion = ver
 			}
 
 			// Fetch the recipe for the target version.
@@ -257,6 +260,27 @@ func isNewerVersion(candidate, current string) bool {
 		return true
 	}
 	return semver.Compare(nv, cv) > 0
+}
+
+// updateAction returns the version to install and whether
+// the update should be skipped. When the registry version
+// matches the current version AND the package exists in the
+// store, skip is true. When the store entry is missing,
+// skip is false and version is the current version
+// (reinstall). When the registry is newer, skip is false
+// and version is the new version.
+func updateAction(
+	candidate, current string,
+	inStore bool,
+) (version string, skip bool) {
+	newer := isNewerVersion(candidate, current)
+	if !newer && inStore {
+		return current, true
+	}
+	if newer {
+		return candidate, false
+	}
+	return current, false
 }
 
 // sortedTargetKeys returns a sorted copy of the input
