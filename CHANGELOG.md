@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.11.1 — 2026-04-08
+
+### Added
+
+- Recipes can now declare platform-specific dependency overrides
+  such as `[dependencies.linux-amd64]` and
+  `[dependencies.linux-arm64]`.
+
+### Fixed
+
+- Build dependency resolution now honors platform-specific recipe
+  dependencies. Recipes can require `llvm` only on Linux without
+  forcing the same build dependency on macOS.
+
 ## v0.11.0 — 2026-04-06
 
 ### Added

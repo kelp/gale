@@ -288,7 +288,7 @@ func TestInstallBuildDepsUsesPlatformOverride(t *testing.T) {
 		r.Dependencies.Platform = make(map[string]recipe.PlatformDependencies)
 	}
 	key := runtime.GOOS + "-" + runtime.GOARCH
-	 r.Dependencies.Platform[key] = recipe.PlatformDependencies{
+	r.Dependencies.Platform[key] = recipe.PlatformDependencies{
 		Build: []string{"llvm"},
 	}
 
