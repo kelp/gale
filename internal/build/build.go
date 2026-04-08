@@ -160,6 +160,7 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		Jobs:      strconv.Itoa(runtime.NumCPU()),
 		Version:   r.Package.Version,
 		System:    buildCfg.System,
+		Toolchain: buildCfg.Toolchain,
 		Debug:     debug,
 		Env:       buildCfg.Env,
 		Deps:      deps,
@@ -316,6 +317,7 @@ type BuildContext struct {
 	Jobs      string
 	Version   string
 	System    string
+	Toolchain string
 	Debug     bool
 	Env       map[string]string // extra env vars from recipe [build] env
 	Deps      *BuildDeps
@@ -360,6 +362,82 @@ func (bc *BuildContext) baseEnv(home, path, tmpdir string) []string {
 	}
 }
 
+func joinFlags(parts ...string) string {
+	var out []string
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return strings.Join(out, " ")
+}
+
+func llvmToolchainFlags(goos, llvmDir string) (cppflags, cxxflags, ldflags string) {
+	if goos != "linux" || llvmDir == "" {
+		return "", "", ""
+	}
+
+	includeDir := filepath.Join(llvmDir, "include", "c++", "v1")
+	libDir := filepath.Join(llvmDir, "lib")
+	if _, err := os.Stat(includeDir); err == nil {
+		cppflags = "-isystem " + includeDir
+	}
+	cxxflags = "-stdlib=libc++"
+
+	var ldParts []string
+	if _, err := os.Stat(libDir); err == nil {
+		ldParts = append(ldParts,
+			"-L"+libDir,
+			"-Wl,-rpath,"+libDir,
+		)
+	}
+	ldParts = append(ldParts, "-fuse-ld=lld", "-stdlib=libc++")
+	ldflags = strings.Join(ldParts, " ")
+	return cppflags, cxxflags, ldflags
+}
+
+func (bc *BuildContext) toolchainCompilerFlags(goos string) (cppflags, cxxflags, ldflags string) {
+	if os.Getenv("CXX") != "" || os.Getenv("LD") != "" {
+		return "", "", ""
+	}
+	if bc.Env != nil && (bc.Env["CXX"] != "" || bc.Env["LD"] != "") {
+		return "", "", ""
+	}
+	if bc.Toolchain == "llvm" && bc.Deps != nil && bc.Deps.NamedDirs != nil {
+		return llvmToolchainFlags(goos, bc.Deps.NamedDirs["llvm"])
+	}
+	return "", "", ""
+}
+
+func (bc *BuildContext) toolchainEnv() ([]string, error) {
+	switch bc.Toolchain {
+	case "":
+		return nil, nil
+	case "llvm":
+		if bc.Deps == nil || bc.Deps.NamedDirs == nil {
+			return nil, fmt.Errorf("llvm toolchain requires build dependency llvm")
+		}
+		llvmDir := bc.Deps.NamedDirs["llvm"]
+		if llvmDir == "" {
+			return nil, fmt.Errorf("llvm toolchain requires build dependency llvm")
+		}
+		binDir := filepath.Join(llvmDir, "bin")
+		var env []string
+		setDefault(&env, "CC", filepath.Join(binDir, "clang"))
+		setDefault(&env, "CXX", filepath.Join(binDir, "clang++"))
+		setDefault(&env, "AR", filepath.Join(binDir, "llvm-ar"))
+		setDefault(&env, "NM", filepath.Join(binDir, "llvm-nm"))
+		setDefault(&env, "RANLIB", filepath.Join(binDir, "llvm-ranlib"))
+		if _, err := os.Stat(filepath.Join(binDir, "ld.lld")); err == nil {
+			setDefault(&env, "LD", filepath.Join(binDir, "ld.lld"))
+		}
+		return env, nil
+	default:
+		return nil, fmt.Errorf("unknown toolchain %q", bc.Toolchain)
+	}
+}
+
 // compilerFlags generates CFLAGS, CXXFLAGS, LDFLAGS, CPPFLAGS,
 // CC, CXX pass-through, and ZERO_AR_DATE.
 func (bc *BuildContext) compilerFlags(depCPPFLAGS, depLDFLAGS string) []string {
@@ -373,33 +451,31 @@ func (bc *BuildContext) compilerFlags(depCPPFLAGS, depLDFLAGS string) []string {
 		env = append(env, "CXX="+cxx)
 	}
 
+	toolchainCPPFLAGS, toolchainCXXFLAGS, toolchainLDFLAGS := bc.toolchainCompilerFlags(runtime.GOOS)
+
 	// On macOS, always add headerpad so install_name_tool
 	// can add LC_RPATH entries post-build.
 	headerpad := ""
 	if runtime.GOOS == "darwin" {
-		headerpad = " -Wl,-headerpad_max_install_names"
+		headerpad = "-Wl,-headerpad_max_install_names"
 	}
 	// On Linux, always compile with -fPIC so static
 	// libraries can be linked into shared objects.
 	fpic := ""
 	if runtime.GOOS == "linux" {
-		fpic = " -fPIC"
+		fpic = "-fPIC"
 	}
 	if bc.Debug {
-		setDefault(&env, "CFLAGS", "-O0 -g"+fpic)
-		setDefault(&env, "CXXFLAGS", "-O0 -g"+fpic)
-		setDefault(&env, "LDFLAGS", depLDFLAGS+headerpad)
+		setDefault(&env, "CFLAGS", joinFlags("-O0", "-g", fpic))
+		setDefault(&env, "CXXFLAGS", joinFlags("-O0", "-g", fpic, toolchainCXXFLAGS))
+		setDefault(&env, "LDFLAGS", joinFlags(depLDFLAGS, toolchainLDFLAGS, headerpad))
 	} else {
-		setDefault(&env, "CFLAGS", "-O2"+fpic)
-		setDefault(&env, "CXXFLAGS", "-O2"+fpic)
-		ldflags := "-Wl,-S"
-		if depLDFLAGS != "" {
-			ldflags = depLDFLAGS + " " + ldflags
-		}
-		setDefault(&env, "LDFLAGS", ldflags+headerpad)
+		setDefault(&env, "CFLAGS", joinFlags("-O2", fpic))
+		setDefault(&env, "CXXFLAGS", joinFlags("-O2", fpic, toolchainCXXFLAGS))
+		setDefault(&env, "LDFLAGS", joinFlags(depLDFLAGS, toolchainLDFLAGS, "-Wl,-S", headerpad))
 	}
-	if depCPPFLAGS != "" {
-		setDefault(&env, "CPPFLAGS", depCPPFLAGS)
+	if cppflags := joinFlags(toolchainCPPFLAGS, depCPPFLAGS); cppflags != "" {
+		setDefault(&env, "CPPFLAGS", cppflags)
 	}
 
 	// Deterministic ar timestamps.
@@ -573,6 +649,13 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	// Per-dep env vars and dep compiler flags.
 	perDep, depCPPFLAGS, depLDFLAGS := bc.perDepEnv()
 	env = append(env, perDep...)
+
+	toolchainEnv, err := bc.toolchainEnv()
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	env = append(env, toolchainEnv...)
 
 	// Compiler flags (CC/CXX pass-through, CFLAGS, LDFLAGS,
 	// CPPFLAGS, ZERO_AR_DATE).

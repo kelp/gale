@@ -1584,6 +1584,238 @@ func TestCompilerFlagsWithDepFlags(t *testing.T) {
 	}
 }
 
+func TestBuildEnvLLVMToolchainSetsCompilerDefaults(t *testing.T) {
+	llvmDir := t.TempDir()
+	binDir := filepath.Join(llvmDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"clang", "clang++", "ld.lld", "llvm-ar", "llvm-nm", "llvm-ranlib"} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+		Toolchain: "llvm",
+		Debug:     false,
+		Deps:      &BuildDeps{NamedDirs: map[string]string{"llvm": llvmDir}},
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := envToMap(env)
+	if got := m["CC"]; got != filepath.Join(binDir, "clang") {
+		t.Errorf("CC = %q, want %q", got, filepath.Join(binDir, "clang"))
+	}
+	if got := m["CXX"]; got != filepath.Join(binDir, "clang++") {
+		t.Errorf("CXX = %q, want %q", got, filepath.Join(binDir, "clang++"))
+	}
+	if got := m["AR"]; got != filepath.Join(binDir, "llvm-ar") {
+		t.Errorf("AR = %q, want %q", got, filepath.Join(binDir, "llvm-ar"))
+	}
+	if got := m["NM"]; got != filepath.Join(binDir, "llvm-nm") {
+		t.Errorf("NM = %q, want %q", got, filepath.Join(binDir, "llvm-nm"))
+	}
+	if got := m["RANLIB"]; got != filepath.Join(binDir, "llvm-ranlib") {
+		t.Errorf("RANLIB = %q, want %q", got, filepath.Join(binDir, "llvm-ranlib"))
+	}
+	if got := m["LD"]; got != filepath.Join(binDir, "ld.lld") {
+		t.Errorf("LD = %q, want %q", got, filepath.Join(binDir, "ld.lld"))
+	}
+}
+
+func TestBuildEnvLLVMToolchainMissingDepReturnsError(t *testing.T) {
+	_, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+		Toolchain: "llvm",
+		Debug:     false,
+		Deps:      &BuildDeps{},
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err == nil {
+		t.Fatal("expected error for llvm toolchain without DEP_LLVM")
+	}
+	if !strings.Contains(err.Error(), "llvm") {
+		t.Errorf("error = %q, want mention of llvm", err)
+	}
+}
+
+func TestBuildEnvLLVMToolchainRespectsUserCompilerEnv(t *testing.T) {
+	llvmDir := t.TempDir()
+	binDir := filepath.Join(llvmDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"clang", "clang++", "llvm-ar", "llvm-nm", "llvm-ranlib"} {
+		path := filepath.Join(binDir, name)
+		if err := os.WriteFile(path, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	t.Setenv("CC", "/custom/cc")
+	t.Setenv("CXX", "/custom/cxx")
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+		Toolchain: "llvm",
+		Debug:     false,
+		Deps:      &BuildDeps{NamedDirs: map[string]string{"llvm": llvmDir}},
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	m := envToMap(env)
+	if got := m["CC"]; got != "/custom/cc" {
+		t.Errorf("CC = %q, want %q", got, "/custom/cc")
+	}
+	if got := m["CXX"]; got != "/custom/cxx" {
+		t.Errorf("CXX = %q, want %q", got, "/custom/cxx")
+	}
+}
+
+func TestLLVMToolchainFlagsLinuxAddsLibcxxAndLld(t *testing.T) {
+	llvmDir := t.TempDir()
+	includeDir := filepath.Join(llvmDir, "include", "c++", "v1")
+	libDir := filepath.Join(llvmDir, "lib")
+	if err := os.MkdirAll(includeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cppflags, cxxflags, ldflags := llvmToolchainFlags("linux", llvmDir)
+
+	if !strings.Contains(cppflags, "-isystem "+includeDir) {
+		t.Errorf("CPPFLAGS = %q, want to contain %q", cppflags, "-isystem "+includeDir)
+	}
+	if cxxflags != "-stdlib=libc++" {
+		t.Errorf("CXXFLAGS = %q, want %q", cxxflags, "-stdlib=libc++")
+	}
+	for _, want := range []string{"-fuse-ld=lld", "-stdlib=libc++", "-L" + libDir, "-Wl,-rpath," + libDir} {
+		if !strings.Contains(ldflags, want) {
+			t.Errorf("LDFLAGS = %q, want to contain %q", ldflags, want)
+		}
+	}
+}
+
+func TestLLVMToolchainFlagsLinuxSkipsMissingLibcxxInclude(t *testing.T) {
+	llvmDir := t.TempDir()
+	libDir := filepath.Join(llvmDir, "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cppflags, _, ldflags := llvmToolchainFlags("linux", llvmDir)
+
+	if cppflags != "" {
+		t.Errorf("CPPFLAGS = %q, want empty when libc++ headers are absent", cppflags)
+	}
+	if !strings.Contains(ldflags, "-L"+libDir) {
+		t.Errorf("LDFLAGS = %q, want to contain %q", ldflags, "-L"+libDir)
+	}
+}
+
+func TestCompilerFlagsLLVMToolchainLinuxMergesFlags(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux-only test")
+	}
+
+	llvmDir := t.TempDir()
+	includeDir := filepath.Join(llvmDir, "include", "c++", "v1")
+	libDir := filepath.Join(llvmDir, "lib")
+	if err := os.MkdirAll(includeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	flags := (&BuildContext{
+		Debug:     false,
+		Toolchain: "llvm",
+		Deps:      &BuildDeps{NamedDirs: map[string]string{"llvm": llvmDir}},
+	}).compilerFlags("-I/dep/include", "-L/dep/lib")
+	m := envToMap(flags)
+
+	if got := m["CXXFLAGS"]; !strings.Contains(got, "-stdlib=libc++") {
+		t.Errorf("CXXFLAGS = %q, want to contain -stdlib=libc++", got)
+	}
+	if got := m["CPPFLAGS"]; !strings.Contains(got, "-isystem "+includeDir) || !strings.Contains(got, "-I/dep/include") {
+		t.Errorf("CPPFLAGS = %q, want llvm libc++ include and dep include", got)
+	}
+	for _, want := range []string{"-L/dep/lib", "-L" + libDir, "-Wl,-rpath," + libDir, "-fuse-ld=lld", "-stdlib=libc++", "-Wl,-S"} {
+		if got := m["LDFLAGS"]; !strings.Contains(got, want) {
+			t.Errorf("LDFLAGS = %q, want to contain %q", got, want)
+		}
+	}
+}
+
+func TestToolchainCompilerFlagsSkipsLLVMFlagsWhenCXXOverridden(t *testing.T) {
+	llvmDir := t.TempDir()
+	includeDir := filepath.Join(llvmDir, "include", "c++", "v1")
+	libDir := filepath.Join(llvmDir, "lib")
+	if err := os.MkdirAll(includeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("CXX", "/custom/g++")
+
+	cppflags, cxxflags, ldflags := (&BuildContext{
+		Toolchain: "llvm",
+		Deps:      &BuildDeps{NamedDirs: map[string]string{"llvm": llvmDir}},
+	}).toolchainCompilerFlags("linux")
+
+	if cppflags != "" || cxxflags != "" || ldflags != "" {
+		t.Fatalf("toolchain flags = (%q, %q, %q), want all empty when CXX is overridden", cppflags, cxxflags, ldflags)
+	}
+}
+
+func TestToolchainCompilerFlagsSkipsLLVMFlagsWhenRecipeCXXOverridden(t *testing.T) {
+	llvmDir := t.TempDir()
+	includeDir := filepath.Join(llvmDir, "include", "c++", "v1")
+	libDir := filepath.Join(llvmDir, "lib")
+	if err := os.MkdirAll(includeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	cppflags, cxxflags, ldflags := (&BuildContext{
+		Toolchain: "llvm",
+		Env:       map[string]string{"CXX": "g++"},
+		Deps:      &BuildDeps{NamedDirs: map[string]string{"llvm": llvmDir}},
+	}).toolchainCompilerFlags("linux")
+
+	if cppflags != "" || cxxflags != "" || ldflags != "" {
+		t.Fatalf("toolchain flags = (%q, %q, %q), want all empty when recipe CXX is overridden", cppflags, cxxflags, ldflags)
+	}
+}
+
 // --- Behavior 17: sourceExtension extracts archive suffix ---
 
 func TestSourceExtensionExtractsCorrectSuffix(t *testing.T) {

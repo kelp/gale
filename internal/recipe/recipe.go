@@ -62,17 +62,19 @@ type Source struct {
 
 // Build holds the build system and steps.
 type Build struct {
-	System   string
-	Steps    []string
-	Debug    bool `toml:"debug,omitempty"`
-	Env      map[string]string
-	Platform map[string]PlatformBuild `toml:"-"`
+	System    string
+	Steps     []string
+	Debug     bool `toml:"debug,omitempty"`
+	Env       map[string]string
+	Toolchain string                   `toml:"toolchain,omitempty"`
+	Platform  map[string]PlatformBuild `toml:"-"`
 }
 
 // PlatformBuild holds per-platform build overrides.
 type PlatformBuild struct {
-	Steps []string
-	Env   map[string]string
+	Steps     []string
+	Env       map[string]string
+	Toolchain string `toml:"toolchain,omitempty"`
 }
 
 // BuildForPlatform returns the build config for the given
@@ -87,10 +89,19 @@ func (r *Recipe) BuildForPlatform(goos, goarch string) Build {
 			if pb.Env != nil {
 				env = pb.Env
 			}
+			steps := r.Build.Steps
+			if pb.Steps != nil {
+				steps = pb.Steps
+			}
+			toolchain := r.Build.Toolchain
+			if pb.Toolchain != "" {
+				toolchain = pb.Toolchain
+			}
 			return Build{
-				System: r.Build.System,
-				Steps:  pb.Steps,
-				Env:    env,
+				System:    r.Build.System,
+				Steps:     steps,
+				Env:       env,
+				Toolchain: toolchain,
 			}
 		}
 	}
@@ -221,6 +232,13 @@ func parseBuild(raw map[string]interface{}) (Build, error) {
 		}
 	}
 
+	// Extract top-level toolchain.
+	if toolchain, ok := raw["toolchain"]; ok {
+		if s, ok := toolchain.(string); ok {
+			b.Toolchain = s
+		}
+	}
+
 	// Extract per-platform overrides (sub-tables).
 	for key, val := range raw {
 		if key == "steps" || key == "system" || key == "debug" || key == "env" {
@@ -254,6 +272,11 @@ func parseBuild(raw map[string]interface{}) (Build, error) {
 						pb.Env[k] = s
 					}
 				}
+			}
+		}
+		if toolchain, ok := sub["toolchain"]; ok {
+			if s, ok := toolchain.(string); ok {
+				pb.Toolchain = s
 			}
 		}
 		if b.Platform == nil {

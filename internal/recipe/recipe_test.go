@@ -574,12 +574,17 @@ sha256 = "abc123"
 
 [build]
 steps = ["echo default"]
+toolchain = "gcc"
 
 [build.darwin-arm64]
 steps = ["echo darwin-arm64"]
+toolchain = "llvm"
 
 [build.linux-amd64]
 steps = ["echo linux-amd64"]
+
+[build.linux-arm64]
+toolchain = "llvm"
 `
 
 func TestBuildForPlatformReturnsOverride(t *testing.T) {
@@ -605,6 +610,58 @@ func TestBuildForPlatformFallsBackToDefault(t *testing.T) {
 	if len(b.Steps) != 1 || b.Steps[0] != "echo default" {
 		t.Errorf("steps = %v, want [echo default]",
 			b.Steps)
+	}
+	if b.Toolchain != "gcc" {
+		t.Errorf("toolchain = %q, want gcc", b.Toolchain)
+	}
+}
+
+func TestParseBuildToolchainField(t *testing.T) {
+	r, err := Parse(recipeWithPlatformBuild)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Build.Toolchain != "gcc" {
+		t.Errorf("Build.Toolchain = %q, want gcc", r.Build.Toolchain)
+	}
+}
+
+func TestBuildForPlatformReturnsToolchainOverride(t *testing.T) {
+	r, err := Parse(recipeWithPlatformBuild)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b := r.BuildForPlatform("darwin", "arm64")
+	if b.Toolchain != "llvm" {
+		t.Errorf("toolchain = %q, want llvm", b.Toolchain)
+	}
+}
+
+func TestBuildForPlatformFallsBackToDefaultToolchain(t *testing.T) {
+	r, err := Parse(recipeWithPlatformBuild)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b := r.BuildForPlatform("linux", "amd64")
+	if b.Toolchain != "gcc" {
+		t.Errorf("toolchain = %q, want gcc", b.Toolchain)
+	}
+}
+
+func TestBuildForPlatformToolchainOverrideKeepsDefaultSteps(t *testing.T) {
+	r, err := Parse(recipeWithPlatformBuild)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	b := r.BuildForPlatform("linux", "arm64")
+	if len(b.Steps) != 1 || b.Steps[0] != "echo default" {
+		t.Errorf("steps = %v, want [echo default]", b.Steps)
+	}
+	if b.Toolchain != "llvm" {
+		t.Errorf("toolchain = %q, want llvm", b.Toolchain)
 	}
 }
 
@@ -768,8 +825,8 @@ func TestParseValidPlatformKeyAccepted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if len(r.Build.Platform) != 2 {
-		t.Errorf("Platform count = %d, want 2",
+	if len(r.Build.Platform) != 3 {
+		t.Errorf("Platform count = %d, want 3",
 			len(r.Build.Platform))
 	}
 }

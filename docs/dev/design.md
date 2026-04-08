@@ -29,6 +29,24 @@ requires a Rust compiler. These bootstrap binaries
 are the one exception — a prebuilt binary used only
 during the build, never shipped to users.
 
+**Toolchains are declarative and recipe-owned.**
+If a package needs a specific compiler toolchain,
+the recipe declares it in `[build]`, for example:
+
+```toml
+[build]
+toolchain = "llvm"
+
+[dependencies]
+build = ["llvm"]
+```
+
+Gale activates the installed toolchain generically
+from explicit build dependencies such as `DEP_LLVM`.
+Toolchain versions stay in recipes, not in Gale.
+Explicit env vars remain the escape hatch for local
+experiments and debugging.
+
 **Declarative over imperative.** The state of your
 environment is a function of gale.toml, not a history
 of commands you ran. `gale sync` always converges to
@@ -206,6 +224,14 @@ portable.
 For autotools projects (like jq): `--disable-shared
 --enable-all-static`. Rust and Go produce static
 binaries by default.
+
+When static linking is not practical, recipes should
+use the smallest dynamic surface possible and rely on
+Gale's fixups to make packaged binaries relocatable.
+Modern C++ CLI tools may opt into an explicit LLVM
+build toolchain (`build.toolchain = "llvm"`) so they
+use the packaged compiler, linker, headers, and C++
+runtime instead of whatever happens to be on the host.
 
 ## Two-Repo Architecture
 
