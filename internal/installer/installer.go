@@ -316,23 +316,25 @@ func repoFromURL(rawURL string) string {
 // InstallBuildDeps installs build dependencies and returns
 // their bin directory paths.
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
+	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
+
 	// Merge implicit system deps with explicit build deps
 	// without mutating the recipe.
 	sysDeps := build.SystemDeps(r.Build.System)
 	if len(sysDeps) > 0 {
 		explicit := make(map[string]bool)
-		for _, d := range r.Dependencies.Build {
+		for _, d := range deps.Build {
 			explicit[d] = true
 		}
-		merged := append([]string{},
-			r.Dependencies.Build...)
+		merged := append([]string{}, deps.Build...)
 		for _, d := range sysDeps {
 			if !explicit[d] {
 				merged = append(merged, d)
 			}
 		}
-		r = copyRecipeForDeps(r, merged)
+		deps.Build = merged
 	}
+	r = copyRecipeForDeps(r, deps)
 
 	seen := make(map[string]bool)
 	return inst.installDepsInner(r, seen)
@@ -342,7 +344,7 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, err
 // deep-copied Build.Platform and Binary maps, and the given
 // merged build deps. This prevents map aliasing between the
 // copy and the original.
-func copyRecipeForDeps(r *recipe.Recipe, mergedBuildDeps []string) *recipe.Recipe {
+func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recipe {
 	var platformCopy map[string]recipe.PlatformBuild
 	if r.Build.Platform != nil {
 		platformCopy = make(
@@ -361,19 +363,30 @@ func copyRecipeForDeps(r *recipe.Recipe, mergedBuildDeps []string) *recipe.Recip
 		}
 	}
 
+	var depPlatformCopy map[string]recipe.PlatformDependencies
+	if r.Dependencies.Platform != nil {
+		depPlatformCopy = make(map[string]recipe.PlatformDependencies, len(r.Dependencies.Platform))
+		for k, v := range r.Dependencies.Platform {
+			depPlatformCopy[k] = v
+		}
+	}
+
 	return &recipe.Recipe{
 		Package: r.Package,
 		Source:  r.Source,
 		Build: recipe.Build{
-			System:   r.Build.System,
-			Steps:    r.Build.Steps,
-			Debug:    r.Build.Debug,
-			Platform: platformCopy,
+			System:    r.Build.System,
+			Steps:     r.Build.Steps,
+			Debug:     r.Build.Debug,
+			Env:       r.Build.Env,
+			Toolchain: r.Build.Toolchain,
+			Platform:  platformCopy,
 		},
 		Binary: binaryCopy,
 		Dependencies: recipe.Dependencies{
-			Build:   mergedBuildDeps,
-			Runtime: r.Dependencies.Runtime,
+			Build:    deps.Build,
+			Runtime:  deps.Runtime,
+			Platform: depPlatformCopy,
 		},
 	}
 }
@@ -385,8 +398,9 @@ func (inst *Installer) installDepsInner(
 	r *recipe.Recipe,
 	seen map[string]bool,
 ) (*build.BuildDeps, error) {
-	allDeps := append([]string{}, r.Dependencies.Build...)
-	allDeps = append(allDeps, r.Dependencies.Runtime...)
+	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
+	allDeps := append([]string{}, deps.Build...)
+	allDeps = append(allDeps, deps.Runtime...)
 
 	if len(allDeps) == 0 || inst.Resolver == nil {
 		return &build.BuildDeps{}, nil

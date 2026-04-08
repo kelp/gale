@@ -108,10 +108,17 @@ func (r *Recipe) BuildForPlatform(goos, goarch string) Build {
 	return r.Build
 }
 
-// Dependencies holds build-time and runtime dependency lists.
-type Dependencies struct {
+// PlatformDependencies holds per-platform dependency overrides.
+type PlatformDependencies struct {
 	Build   []string
 	Runtime []string
+}
+
+// Dependencies holds build-time and runtime dependency lists.
+type Dependencies struct {
+	Build    []string
+	Runtime  []string
+	Platform map[string]PlatformDependencies `toml:"-"`
 }
 
 // rawRecipe is used for initial TOML decoding before
@@ -121,7 +128,7 @@ type rawRecipe struct {
 	Source       Source
 	Build        map[string]interface{} `toml:"build"`
 	Binary       map[string]Binary      `toml:"binary"`
-	Dependencies Dependencies
+	Dependencies map[string]interface{} `toml:"dependencies"`
 }
 
 // Parse parses a TOML recipe string and validates all
@@ -139,11 +146,16 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 		return nil, fmt.Errorf("invalid TOML: %w", err)
 	}
 
+	deps, err := parseDependencies(raw.Dependencies)
+	if err != nil {
+		return nil, err
+	}
+
 	r := &Recipe{
 		Package:      raw.Package,
 		Source:       raw.Source,
 		Binary:       raw.Binary,
-		Dependencies: raw.Dependencies,
+		Dependencies: deps,
 	}
 
 	b, err := parseBuild(raw.Build)
@@ -185,6 +197,89 @@ func validPlatformKey(key string) bool {
 		}
 	}
 	return true
+}
+
+// DependenciesForPlatform returns the dependencies for the given
+// platform. Per-platform lists override the default lists when
+// present, otherwise the default lists are used.
+func (r *Recipe) DependenciesForPlatform(goos, goarch string) Dependencies {
+	deps := r.Dependencies
+	key := goos + "-" + goarch
+	if deps.Platform != nil {
+		if pd, ok := deps.Platform[key]; ok {
+			if pd.Build != nil {
+				deps.Build = pd.Build
+			}
+			if pd.Runtime != nil {
+				deps.Runtime = pd.Runtime
+			}
+		}
+	}
+	return deps
+}
+
+func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
+	deps := Dependencies{}
+	if raw == nil {
+		return deps, nil
+	}
+	if buildRaw, ok := raw["build"]; ok {
+		if arr, ok := buildRaw.([]interface{}); ok {
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					deps.Build = append(deps.Build, s)
+				}
+			}
+		}
+	}
+	if runtimeRaw, ok := raw["runtime"]; ok {
+		if arr, ok := runtimeRaw.([]interface{}); ok {
+			for _, v := range arr {
+				if s, ok := v.(string); ok {
+					deps.Runtime = append(deps.Runtime, s)
+				}
+			}
+		}
+	}
+	for key, val := range raw {
+		if key == "build" || key == "runtime" {
+			continue
+		}
+		sub, ok := val.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if !validPlatformKey(key) {
+			return Dependencies{}, fmt.Errorf(
+				"unrecognized dependencies key %q: expected platform in os-arch format",
+				key,
+			)
+		}
+		pd := PlatformDependencies{}
+		if buildRaw, ok := sub["build"]; ok {
+			if arr, ok := buildRaw.([]interface{}); ok {
+				for _, v := range arr {
+					if s, ok := v.(string); ok {
+						pd.Build = append(pd.Build, s)
+					}
+				}
+			}
+		}
+		if runtimeRaw, ok := sub["runtime"]; ok {
+			if arr, ok := runtimeRaw.([]interface{}); ok {
+				for _, v := range arr {
+					if s, ok := v.(string); ok {
+						pd.Runtime = append(pd.Runtime, s)
+					}
+				}
+			}
+		}
+		if deps.Platform == nil {
+			deps.Platform = make(map[string]PlatformDependencies)
+		}
+		deps.Platform[key] = pd
+	}
+	return deps, nil
 }
 
 // parseBuild extracts Build and per-platform overrides

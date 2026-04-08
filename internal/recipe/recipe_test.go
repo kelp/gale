@@ -28,6 +28,9 @@ steps = [
 [dependencies]
 build = ["autoconf", "automake", "libtool"]
 runtime = ["oniguruma"]
+
+[dependencies.linux-amd64]
+build = ["autoconf", "automake", "libtool", "llvm"]
 `
 
 // --- Behavior 1: Parse valid recipe TOML ---
@@ -211,6 +214,70 @@ func TestParseValidRecipeRuntimeDeps(t *testing.T) {
 	if r.Dependencies.Runtime[0] != "oniguruma" {
 		t.Errorf("Dependencies.Runtime[0] = %q, want %q",
 			r.Dependencies.Runtime[0], "oniguruma")
+	}
+}
+
+func TestParseValidRecipePlatformBuildDeps(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r == nil {
+		t.Fatal("expected non-nil recipe")
+	}
+	deps, ok := r.Dependencies.Platform["linux-amd64"]
+	if !ok {
+		t.Fatal("expected linux-amd64 dependency override")
+	}
+	wantBuild := []string{"autoconf", "automake", "libtool", "llvm"}
+	if len(deps.Build) != len(wantBuild) {
+		t.Fatalf("platform Dependencies.Build length = %d, want %d",
+			len(deps.Build), len(wantBuild))
+	}
+	for i, d := range deps.Build {
+		if d != wantBuild[i] {
+			t.Errorf("platform Dependencies.Build[%d] = %q, want %q",
+				i, d, wantBuild[i])
+		}
+	}
+}
+
+func TestDependenciesForPlatformReturnsOverride(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps := r.DependenciesForPlatform("linux", "amd64")
+	wantBuild := []string{"autoconf", "automake", "libtool", "llvm"}
+	if len(deps.Build) != len(wantBuild) {
+		t.Fatalf("Build length = %d, want %d", len(deps.Build), len(wantBuild))
+	}
+	for i, d := range deps.Build {
+		if d != wantBuild[i] {
+			t.Errorf("Build[%d] = %q, want %q", i, d, wantBuild[i])
+		}
+	}
+	if len(deps.Runtime) != 1 || deps.Runtime[0] != "oniguruma" {
+		t.Errorf("Runtime = %v, want [oniguruma]", deps.Runtime)
+	}
+}
+
+func TestDependenciesForPlatformFallsBackToDefault(t *testing.T) {
+	r, err := Parse(validRecipe)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	deps := r.DependenciesForPlatform("darwin", "arm64")
+	wantBuild := []string{"autoconf", "automake", "libtool"}
+	if len(deps.Build) != len(wantBuild) {
+		t.Fatalf("Build length = %d, want %d", len(deps.Build), len(wantBuild))
+	}
+	for i, d := range deps.Build {
+		if d != wantBuild[i] {
+			t.Errorf("Build[%d] = %q, want %q", i, d, wantBuild[i])
+		}
 	}
 }
 

@@ -1020,7 +1020,7 @@ func TestInstallBuildDepsDeepCopiesMaps(t *testing.T) {
 
 	// Test the copy function directly: mutations to the
 	// copy must not affect the original.
-	copied := copyRecipeForDeps(r, r.Dependencies.Build)
+	copied := copyRecipeForDeps(r, r.Dependencies)
 	copied.Build.Platform["linux-amd64"] = recipe.PlatformBuild{
 		Steps: []string{"new"},
 	}

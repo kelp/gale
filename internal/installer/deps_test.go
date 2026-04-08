@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/recipe"
@@ -263,6 +265,46 @@ func TestInstallBuildDepsTransitiveNamedDirs(t *testing.T) {
 	if deps.NamedDirs["c"] != wantC {
 		t.Errorf("NamedDirs[c] = %q, want %q",
 			deps.NamedDirs["c"], wantC)
+	}
+}
+
+func TestInstallBuildDepsUsesPlatformOverride(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+	preInstall(t, s, "llvm", "1.0")
+
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if name == "llvm" {
+				return makeRecipe("llvm", "1.0", nil, nil), nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	r := makeRecipe("mypkg", "1.0", []string{"cmake"}, nil)
+	if r.Dependencies.Platform == nil {
+		r.Dependencies.Platform = make(map[string]recipe.PlatformDependencies)
+	}
+	key := runtime.GOOS + "-" + runtime.GOARCH
+	 r.Dependencies.Platform[key] = recipe.PlatformDependencies{
+		Build: []string{"llvm"},
+	}
+
+	deps, err := inst.InstallBuildDeps(r)
+	if err != nil {
+		t.Fatalf("InstallBuildDeps: %v", err)
+	}
+
+	wantLLVM := filepath.Join(storeRoot, "llvm", "1.0")
+	if !contains(deps.StoreDirs, wantLLVM) {
+		t.Fatalf("StoreDirs = %v, want %q", deps.StoreDirs, wantLLVM)
+	}
+	for _, dir := range deps.StoreDirs {
+		if strings.Contains(dir, filepath.Join(storeRoot, "cmake")) {
+			t.Fatalf("StoreDirs = %v, want platform override to replace default build deps", deps.StoreDirs)
+		}
 	}
 }
 
