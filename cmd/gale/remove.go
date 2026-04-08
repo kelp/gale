@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -27,7 +25,7 @@ var removeCmd = &cobra.Command{
 
 		name := args[0]
 
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		ctx, err := newCmdContext("", removeGlobal, removeProject)
 		if err != nil {

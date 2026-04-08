@@ -2,11 +2,9 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 	"strings"
 
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -24,7 +22,7 @@ var outdatedCmd = &cobra.Command{
 	Short: "Show packages with newer versions available",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		ctx, err := newCmdContext(outdatedRecipes, false, false)
 		if err != nil {

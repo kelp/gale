@@ -39,7 +39,7 @@ var installCmd = &cobra.Command{
 		}
 
 		name, version := parsePackageArg(args[0])
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		// Resolve scope and paths via cmdContext.
 		ctx, err := newCmdContext(installRecipes, installGlobal, installProject)

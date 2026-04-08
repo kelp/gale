@@ -160,6 +160,18 @@ func FetchWithAuthNamed(rawURL, destPath, bearerToken, displayName string) error
 // output style.
 var ProgressPrefix = "  > "
 
+// ProgressEnabled controls whether incremental download
+// progress is printed to stderr.
+var ProgressEnabled = true
+
+// SetProgressEnabled updates ProgressEnabled and returns a
+// restore function for tests and temporary overrides.
+func SetProgressEnabled(enabled bool) func() {
+	saved := ProgressEnabled
+	ProgressEnabled = enabled
+	return func() { ProgressEnabled = saved }
+}
+
 // writeWithProgress copies from reader to a file at destPath,
 // printing download progress to stderr.
 func writeWithProgress(reader io.Reader, total int64, destPath, name string) error {
@@ -200,6 +212,9 @@ type progressWriter struct {
 func (pw *progressWriter) Write(p []byte) (int, error) {
 	n := len(p)
 	pw.written += int64(n)
+	if !ProgressEnabled {
+		return n, nil
+	}
 
 	now := time.Now()
 	if now.Sub(pw.last) < 250*time.Millisecond {
@@ -241,6 +256,9 @@ func (pw *progressWriter) Write(p []byte) (int, error) {
 }
 
 func (pw *progressWriter) finish() {
+	if !ProgressEnabled {
+		return
+	}
 	elapsed := time.Since(pw.start).Seconds()
 	if elapsed == 0 {
 		elapsed = 0.001

@@ -39,7 +39,7 @@ to stdout. Use -o <dir> to specify an output directory.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		repo := normalizeRepo(args[0])
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		client := loadAIClient()
 		if client == nil {

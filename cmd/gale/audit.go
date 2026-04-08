@@ -6,7 +6,6 @@ import (
 
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/lockfile"
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -21,7 +20,7 @@ tampering.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		// Resolve context first so lockfile uses the same
 		// config path as the installer.

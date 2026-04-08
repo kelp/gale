@@ -15,7 +15,7 @@ var lintCmd = &cobra.Command{
 	Short: "Validate recipe files",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		hasErrors := false
 		for _, path := range args {

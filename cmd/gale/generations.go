@@ -2,11 +2,9 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 
 	"github.com/kelp/gale/internal/generation"
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -123,8 +121,7 @@ var genRollbackCmd = &cobra.Command{
 			return err
 		}
 
-		out := output.New(os.Stderr,
-			!cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		cur, err := generation.Current(galeDir)
 		if err != nil {

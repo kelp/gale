@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
 
 	"github.com/kelp/gale/internal/ai"
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -16,7 +14,7 @@ var searchCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		query := args[0]
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		reg := newRegistry()
 		results, err := reg.Search(query)

@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
@@ -370,6 +372,67 @@ func TestFetchReturnsErrorForBadURL(t *testing.T) {
 	err := Fetch("http://127.0.0.1:0/nonexistent", dest)
 	if err == nil {
 		t.Fatal("expected error for connection failure")
+	}
+}
+
+func TestProgressWriterDisabledWriteEmitsNothing(t *testing.T) {
+	restore := SetProgressEnabled(false)
+	defer restore()
+
+	out := captureStderr(t, func() {
+		pw := &progressWriter{
+			total: 1024,
+			start: time.Now().Add(-time.Second),
+			name:  "test.tar.gz",
+		}
+		if _, err := pw.Write([]byte(strings.Repeat("a", 512))); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	})
+
+	if out != "" {
+		t.Errorf("stderr = %q, want empty when progress is disabled", out)
+	}
+}
+
+func TestProgressWriterDisabledFinishEmitsNothing(t *testing.T) {
+	restore := SetProgressEnabled(false)
+	defer restore()
+
+	out := captureStderr(t, func() {
+		pw := &progressWriter{
+			written: 1024,
+			start:   time.Now().Add(-time.Second),
+			name:    "test.tar.gz",
+		}
+		pw.finish()
+	})
+
+	if out != "" {
+		t.Errorf("stderr = %q, want empty when progress is disabled", out)
+	}
+}
+
+func TestProgressWriterEnabledWriteEmitsProgressLine(t *testing.T) {
+	restore := SetProgressEnabled(true)
+	defer restore()
+
+	out := captureStderr(t, func() {
+		pw := &progressWriter{
+			total: 1024,
+			start: time.Now().Add(-time.Second),
+			name:  "test.tar.gz",
+		}
+		if _, err := pw.Write([]byte(strings.Repeat("a", 512))); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, "Downloading - test.tar.gz") {
+		t.Errorf("stderr = %q, want download progress line", out)
+	}
+	if !strings.Contains(out, "\r") {
+		t.Errorf("stderr = %q, want carriage return progress output", out)
 	}
 }
 
@@ -1668,4 +1731,26 @@ func TestExtractSourceRejectsUnknown(t *testing.T) {
 		t.Errorf("error = %q, want it to contain 'unsupported'",
 			err.Error())
 	}
+}
+
+func captureStderr(t *testing.T, fn func()) string {
+	t.Helper()
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	orig := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = orig }()
+
+	fn()
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(buf)
 }

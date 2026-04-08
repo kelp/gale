@@ -5,7 +5,6 @@ import (
 	"os"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -14,8 +13,7 @@ var pinCmd = &cobra.Command{
 	Short: "Pin a package to skip during updates",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := output.New(os.Stderr,
-			!cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 		name := args[0]
 
 		configPath, err := resolveConfigPath(false)
@@ -51,8 +49,7 @@ var unpinCmd = &cobra.Command{
 	Short: "Unpin a package to allow updates",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := output.New(os.Stderr,
-			!cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 		name := args[0]
 
 		configPath, err := resolveConfigPath(false)

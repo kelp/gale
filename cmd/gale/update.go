@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"sort"
 
 	"github.com/kelp/gale/internal/gitutil"
@@ -23,7 +22,7 @@ var updateCmd = &cobra.Command{
 	Use:   "update [package...]",
 	Short: "Update packages to the latest version",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		// --path requires exactly one package name.
 		if updatePath != "" && len(args) != 1 {

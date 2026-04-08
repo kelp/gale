@@ -393,3 +393,53 @@ func TestAllPrefixesAreDistinctWithColor(t *testing.T) {
 		}
 	}
 }
+
+func TestStepCanBeDisabled(t *testing.T) {
+	var buf bytes.Buffer
+	o := NewWithOptions(&buf, Options{Steps: false})
+	o.Step("hidden")
+
+	if got := buf.String(); got != "" {
+		t.Errorf("output = %q, want empty when steps are disabled", got)
+	}
+}
+
+func TestInfoSuppressedInQuietMode(t *testing.T) {
+	var buf bytes.Buffer
+	o := NewWithOptions(&buf, Options{Quiet: true})
+	o.Info("hello")
+
+	if got := buf.String(); got != "" {
+		t.Errorf("output = %q, want empty in quiet mode", got)
+	}
+}
+
+func TestSuccessSuppressedInQuietMode(t *testing.T) {
+	var buf bytes.Buffer
+	o := NewWithOptions(&buf, Options{Quiet: true})
+	o.Success("done")
+
+	if got := buf.String(); got != "" {
+		t.Errorf("output = %q, want empty in quiet mode", got)
+	}
+}
+
+func TestWarnStillPrintsInQuietMode(t *testing.T) {
+	var buf bytes.Buffer
+	o := NewWithOptions(&buf, Options{Quiet: true})
+	o.Warn("careful")
+
+	if got := buf.String(); !strings.Contains(got, "careful") {
+		t.Errorf("output = %q, want warning text in quiet mode", got)
+	}
+}
+
+func TestErrorStillPrintsInQuietMode(t *testing.T) {
+	var buf bytes.Buffer
+	o := NewWithOptions(&buf, Options{Quiet: true})
+	o.Error("failed")
+
+	if got := buf.String(); !strings.Contains(got, "failed") {
+		t.Errorf("output = %q, want error text in quiet mode", got)
+	}
+}

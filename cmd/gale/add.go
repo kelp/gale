@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -23,7 +22,7 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		// Set up resolver for version lookup.
 		cwd, err := os.Getwd()

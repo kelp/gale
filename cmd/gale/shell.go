@@ -10,7 +10,6 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -69,7 +68,7 @@ func init() {
 // is non-empty it is used instead of os.Getwd() to locate
 // gale.toml. Warnings are written to w.
 func syncIfNeeded(w io.Writer, projectDir string) {
-	out := output.New(w, !noColor)
+	out := newOutputForWriter(w)
 
 	dir := projectDir
 	if dir == "" {

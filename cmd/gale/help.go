@@ -91,15 +91,15 @@ func colorHelp(cmd *cobra.Command, args []string) {
 
 // Persistent flags bound in root.go init().
 var (
-	noColor bool
-	verbose bool
-	dryRun  bool
+	noColor     bool
+	verbose     bool
+	dryRun      bool
+	plain       bool
+	quiet       bool
+	errorFormat string
 )
 
-// applyNoColor disables fatih/color output when the
-// --no-color flag is set.
-func applyNoColor() {
-	if noColor {
-		color.NoColor = true
-	}
+// applyColorMode syncs fatih/color with the current output mode.
+func applyColorMode() {
+	color.NoColor = !currentOutputMode().color
 }

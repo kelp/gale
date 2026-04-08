@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/repo"
 	"github.com/kelp/gale/internal/trust"
 	"github.com/spf13/cobra"
@@ -25,7 +24,7 @@ var repoAddCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name, url := args[0], args[1]
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		galeDir, err := galeConfigDir()
 		if err != nil {
@@ -59,7 +58,7 @@ var repoRemoveCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		galeDir, err := galeConfigDir()
 		if err != nil {
@@ -124,7 +123,7 @@ var repoInitCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		if err := os.MkdirAll(name, 0o755); err != nil {
 			return fmt.Errorf("creating directory: %w", err)

@@ -3,7 +3,6 @@ package main
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 
@@ -41,7 +40,7 @@ var syncCmd = &cobra.Command{
 // When projectDir is non-empty, sync targets that specific
 // project directory regardless of cwd or scope flags.
 func runSync(recipesPath string, buildOnly, global, project bool, projectDir string) error {
-	out := output.New(os.Stderr, !noColor)
+	out := newOutput()
 
 	ctx, err := newCmdContext(recipesPath, false, false)
 	if err != nil {

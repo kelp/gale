@@ -51,7 +51,7 @@ var doctorCmd = &cobra.Command{
 	Short: "Check your gale installation for problems",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		galeDir, err := galeConfigDir()
 		if err != nil {

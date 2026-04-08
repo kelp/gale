@@ -61,7 +61,7 @@ func runRemoteSync(host string) error {
 	if err := validateHost(host); err != nil {
 		return err
 	}
-	out := output.New(os.Stderr, !noColor)
+	out := newOutput()
 
 	configPath, err := resolveConfigPath(false)
 	if err != nil {
@@ -90,7 +90,7 @@ func runRemoteExport(host string) error {
 	if err := validateHost(host); err != nil {
 		return err
 	}
-	out := output.New(os.Stderr, !noColor)
+	out := newOutput()
 
 	configPath, err := resolveConfigPath(false)
 	if err != nil {
@@ -153,7 +153,7 @@ func runRemoteDiff(host string) error {
 	if err := validateHost(host); err != nil {
 		return err
 	}
-	out := output.New(os.Stderr, !noColor)
+	out := newOutput()
 
 	configPath, err := resolveConfigPath(false)
 	if err != nil {

@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -16,8 +15,7 @@ var initCmd = &cobra.Command{
 	Short: "Initialize a project for gale",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := output.New(os.Stderr,
-			!cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		cwd, err := os.Getwd()
 		if err != nil {

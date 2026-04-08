@@ -18,7 +18,7 @@ var gcCmd = &cobra.Command{
 	Short: "Remove unused package versions from the store",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		// Resolve config paths.
 		globalDir, _ := galeConfigDir()
@@ -174,7 +174,7 @@ func mergeConfig(path string, referenced map[string]bool, out *output.Output) {
 // except the current one. Returns the count of generations
 // removed (or flagged in dry-run mode).
 func cleanOldGenerations(galeDir string, dry bool) int {
-	out := output.New(os.Stderr, !noColor)
+	out := newOutput()
 	genRoot := filepath.Join(galeDir, "gen")
 	entries, err := os.ReadDir(genRoot)
 	if err != nil {

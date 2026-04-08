@@ -2,12 +2,10 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"runtime"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/lockfile"
-	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -18,7 +16,7 @@ var verifyCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
-		out := output.New(os.Stderr, !cmd.Flags().Changed("no-color"))
+		out := newCmdOutput(cmd)
 
 		v := attestation.NewVerifier()
 		if !v.Available() {
