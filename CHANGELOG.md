@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.10.6 — 2026-04-06
+
+### Added
+
+- Recipes can now declare `build.toolchain`, with optional
+  per-platform overrides such as `build.linux-arm64.toolchain`.
+- Added initial `toolchain = "llvm"` support in the build
+  environment. Gale now requires an explicit `llvm` build dep,
+  activates clang/clang++ and LLVM binutils from `DEP_LLVM`,
+  and on Linux adds libc++/lld defaults needed for modern C++
+  packages.
+- Added low-noise CLI output controls:
+  - `--plain` disables color and progress output
+  - `--quiet` suppresses non-essential status lines
+  - `--error-format=json` emits machine-readable runtime
+    errors on stderr
+
+### Changed
+
+- Non-TTY stderr now defaults to plain, low-noise output.
+- Download progress meters are disabled in plain and quiet
+  modes.
+
+### Fixed
+
+- Runtime command failures no longer print Cobra usage.
+  Invalid flags and argument errors still show usage.
+- `BuildForPlatform()` now preserves default build steps when a
+  platform override sets only `toolchain` or other partial
+  fields.
+
 ## v0.10.5 — 2026-04-06
 
 ### Added
