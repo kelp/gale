@@ -64,6 +64,7 @@ tag version: fmt check
     git commit -m "Release v{{version}}"
     git tag "v{{version}}"
     echo "Tagged v{{version}} — run 'just release {{version}}' to publish"
+    echo "Reminder: bump gale-recipes/recipes/g/gale.toml to v{{version}} after the release is published."
 
 # Push tag and create GitHub release
 release version:
@@ -85,6 +86,7 @@ release version:
       --notes "$NOTES"
     echo "Published https://github.com/kelp/gale/releases/tag/v{{version}}"
     echo "Release workflow will build and attach binaries."
+    echo "Reminder: bump gale-recipes/recipes/g/gale.toml to v{{version}} once the release is live."
 
 # Format git describe as semver (used by build and install)
 _dev-version:
