@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var doctorRepair bool
+
 // doctorContext holds resolved state shared across checks.
 type doctorContext struct {
 	galeDir    string
@@ -68,6 +70,12 @@ var doctorCmd = &cobra.Command{
 			globalPkgs: map[string]string{},
 			projPkgs:   map[string]string{},
 			out:        out,
+		}
+
+		if doctorRepair {
+			if err := repairDoctor(ctx); err != nil {
+				return fmt.Errorf("repair doctor state: %w", err)
+			}
 		}
 
 		var failed bool
@@ -329,6 +337,24 @@ func checkGhCLI(ctx *doctorContext) bool {
 	return true
 }
 
+func repairDoctor(ctx *doctorContext) error {
+	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
+	if err := rebuildGeneration(ctx.galeDir, ctx.storeRoot, globalConfig); err != nil {
+		return fmt.Errorf("rebuild global generation: %w", err)
+	}
+	if projConfig, err := projectConfigPath(ctx.cwd); err == nil {
+		projDir := filepath.Dir(projConfig)
+		projGaleDir := filepath.Join(projDir, ".gale")
+		if err := rebuildGeneration(projGaleDir, ctx.storeRoot, projConfig); err != nil {
+			return fmt.Errorf("rebuild project generation: %w", err)
+		}
+	}
+	ctx.out.Success("Repaired Gale generations")
+	return nil
+}
+
 func init() {
+	doctorCmd.Flags().BoolVar(&doctorRepair, "repair", false,
+		"Repair active generations from current config and store")
 	rootCmd.AddCommand(doctorCmd)
 }

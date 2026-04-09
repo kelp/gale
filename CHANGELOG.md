@@ -20,6 +20,9 @@
 - Generation rebuild and scope auto-detection now honor
   `.tool-versions` projects. Rebuilds no longer create an empty
   generation just because `gale.toml` is absent.
+- `gale doctor --repair` can now rebuild global and project
+  generations from the current config and store, including
+  `.tool-versions` project environments.
 
 ## v0.11.1 — 2026-04-08
 
