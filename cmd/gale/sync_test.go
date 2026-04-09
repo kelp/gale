@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,6 +108,104 @@ func TestSyncSHA256MatchDoesNotEvict(t *testing.T) {
 
 	if !s.IsInstalled("testpkg", "1.0.0") {
 		t.Error("testpkg should remain in store")
+	}
+}
+
+func TestFinishSyncSkipsRebuildWhenSyncFailed(t *testing.T) {
+	called := false
+	err := finishSync(false, 1, func() error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+	if called {
+		t.Fatal("rebuild should not be called when sync had failures")
+	}
+}
+
+func TestFinishSyncReturnsRebuildError(t *testing.T) {
+	errBoom := errors.New("boom")
+	err := finishSync(false, 0, func() error {
+		return errBoom
+	})
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("finishSync error = %v, want %v", err, errBoom)
+	}
+}
+
+func TestFinishSyncSkipsRebuildInDryRun(t *testing.T) {
+	called := false
+	err := finishSync(true, 0, func() error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("finishSync error = %v, want nil", err)
+	}
+	if called {
+		t.Fatal("rebuild should not be called in dry-run mode")
+	}
+}
+
+func TestFinishSyncFailureKeepsCurrent(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+	configPath := filepath.Join(t.TempDir(), "gale.toml")
+
+	s := store.NewStore(storeRoot)
+	for _, pkg := range []string{"oldpkg", "newpkg"} {
+		pkgDir, err := s.Create(pkg, "1.0.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		binDir := filepath.Join(pkgDir, "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(binDir, pkg),
+			[]byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  oldpkg = \"1.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+
+	before, err := filepath.EvalSymlinks(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("eval current before: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "oldpkg")); err != nil {
+		t.Fatalf("oldpkg missing before failed sync: %v", err)
+	}
+
+	err = finishSync(false, 1, func() error {
+		return rebuildGeneration(galeDir, storeRoot, configPath)
+	})
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+
+	after, err := filepath.EvalSymlinks(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("eval current after: %v", err)
+	}
+	if after != before {
+		t.Fatalf("current changed on failed sync: before=%q after=%q", before, after)
+	}
+	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "oldpkg")); err != nil {
+		t.Fatalf("oldpkg missing after failed sync: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "newpkg")); !os.IsNotExist(err) {
+		t.Fatalf("newpkg should not be active after failed sync, err=%v", err)
 	}
 }
 

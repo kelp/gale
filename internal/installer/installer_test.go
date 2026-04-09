@@ -684,6 +684,103 @@ func TestInstallLocalBuildsFromSource(t *testing.T) {
 	}
 }
 
+func TestReplaceStoreDirPreservesExistingOnRenameFailure(t *testing.T) {
+	storeRoot := t.TempDir()
+	storeDir := filepath.Join(storeRoot, "pkg", "1.0")
+	if err := os.MkdirAll(filepath.Join(storeDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldBin := filepath.Join(storeDir, "bin", "pkg")
+	if err := os.WriteFile(oldBin, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	buildDir := filepath.Join(storeRoot, "pkg", ".build-new")
+	if err := os.MkdirAll(filepath.Join(buildDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, "bin", "pkg"), []byte("new"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	origRename := renameDir
+	renameDir = func(oldPath, newPath string) error {
+		if oldPath == buildDir && newPath == storeDir {
+			return fmt.Errorf("boom")
+		}
+		return origRename(oldPath, newPath)
+	}
+	defer func() { renameDir = origRename }()
+
+	err := replaceStoreDir(storeDir, buildDir)
+	if err == nil {
+		t.Fatal("expected replaceStoreDir error")
+	}
+
+	data, err := os.ReadFile(oldBin)
+	if err != nil {
+		t.Fatalf("read old binary after failed replace: %v", err)
+	}
+	if string(data) != "old" {
+		t.Fatalf("old binary content = %q, want %q", string(data), "old")
+	}
+	if _, err := os.Stat(buildDir); err != nil {
+		t.Fatalf("buildDir should remain for inspection after failed replace: %v", err)
+	}
+}
+
+func TestInstallLocalPreservesExistingStoreOnReplaceFailure(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	storeDir, err := s.Create("localpkg", "1.0")
+	if err != nil {
+		t.Fatalf("create store dir: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(storeDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldBin := filepath.Join(storeDir, "bin", "localpkg")
+	if err := os.WriteFile(oldBin, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	srcDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(srcDir, "README"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	inst := &Installer{Store: s}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "localpkg", Version: "1.0"},
+		Build: recipe.Build{Steps: []string{
+			"mkdir -p $PREFIX/bin && echo new > $PREFIX/bin/localpkg && chmod +x $PREFIX/bin/localpkg",
+		}},
+	}
+
+	origRename := renameDir
+	renameDir = func(oldPath, newPath string) error {
+		if strings.Contains(filepath.Base(oldPath), ".build-") && newPath == storeDir {
+			return fmt.Errorf("boom")
+		}
+		return origRename(oldPath, newPath)
+	}
+	defer func() { renameDir = origRename }()
+
+	_, err = inst.InstallLocal(r, srcDir)
+	if err == nil {
+		t.Fatal("expected InstallLocal error")
+	}
+
+	data, err := os.ReadFile(oldBin)
+	if err != nil {
+		t.Fatalf("read old binary after failed InstallLocal: %v", err)
+	}
+	if string(data) != "old" {
+		t.Fatalf("old binary content = %q, want %q", string(data), "old")
+	}
+}
+
 // --- Install SHA256 populated ---
 
 func TestInstallResultSHA256Populated(t *testing.T) {

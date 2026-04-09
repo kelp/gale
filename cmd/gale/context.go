@@ -51,7 +51,7 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 	if global || project {
 		useGlobal := resolveScope(global, project, cwd)
 		if !useGlobal {
-			if _, err := config.FindGaleConfig(cwd); err != nil {
+			if _, err := projectConfigPath(cwd); err != nil {
 				return nil, fmt.Errorf(
 					"no project found — run 'gale init' first")
 			}
@@ -61,8 +61,8 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 			return nil, fmt.Errorf("resolving config path: %w", err)
 		}
 	} else {
-		// Auto-detect: project gale.toml first, then global.
-		galePath, err = config.FindGaleConfig(cwd)
+		// Auto-detect: project config first, then global.
+		galePath, err = projectConfigPath(cwd)
 		if err != nil {
 			globalDir, dirErr := galeConfigDir()
 			if dirErr != nil {
@@ -137,22 +137,12 @@ func (ctx *cmdContext) loadToolVersionsFallback() (*config.GaleConfig, error) {
 	return &config.GaleConfig{Packages: pkgs}, nil
 }
 
-// rebuildGeneration reads gale.toml and rebuilds the
-// generation symlinks.
+// rebuildGeneration reads the effective project/global
+// config and rebuilds the generation symlinks.
 func rebuildGeneration(galeDir, storeRoot, configPath string) error {
-	data, err := os.ReadFile(configPath)
+	cfg, err := loadEffectiveConfig(configPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// No config yet — build empty generation.
-			return generation.Build(
-				map[string]string{}, galeDir, storeRoot)
-		}
-		return fmt.Errorf("reading config: %w", err)
-	}
-
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		return fmt.Errorf("parsing config: %w", err)
+		return err
 	}
 
 	pkgs := cfg.Packages
@@ -161,6 +151,45 @@ func rebuildGeneration(galeDir, storeRoot, configPath string) error {
 	}
 
 	return generation.Build(pkgs, galeDir, storeRoot)
+}
+
+func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			dir := filepath.Dir(configPath)
+			tvPath := filepath.Join(dir, ".tool-versions")
+			data, err := os.ReadFile(tvPath)
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) {
+					return &config.GaleConfig{Packages: map[string]string{}}, nil
+				}
+				return nil, fmt.Errorf("reading .tool-versions: %w", err)
+			}
+			pkgs, err := config.ParseToolVersions(string(data))
+			if err != nil {
+				return nil, fmt.Errorf("parsing .tool-versions: %w", err)
+			}
+			return &config.GaleConfig{Packages: pkgs}, nil
+		}
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("parsing config: %w", err)
+	}
+	return cfg, nil
+}
+
+func projectConfigPath(cwd string) (string, error) {
+	if path, err := config.FindGaleConfig(cwd); err == nil {
+		return path, nil
+	}
+	if tv := config.FindToolVersions(cwd); tv != "" {
+		return filepath.Join(filepath.Dir(tv), "gale.toml"), nil
+	}
+	return "", config.ErrGaleConfigNotFound
 }
 
 // loadAppConfig reads and parses ~/.gale/config.toml.

@@ -172,17 +172,15 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		installed++
 	}
 
-	if !dryRun {
-		if err := ctx.RebuildGeneration(); err != nil {
-			return fmt.Errorf("rebuild generation: %w", err)
+	if err := finishSync(dryRun, failed, ctx.RebuildGeneration); err != nil {
+		if failed > 0 {
+			out.Warn(fmt.Sprintf(
+				"Sync finished with %d error(s)", failed))
 		}
-	}
-
-	if failed > 0 {
-		out.Warn(fmt.Sprintf(
-			"Sync finished with %d error(s)", failed))
-		return fmt.Errorf(
-			"%d package(s) could not be synced", failed)
+		if failed > 0 {
+			return err
+		}
+		return fmt.Errorf("rebuild generation: %w", err)
 	}
 
 	out.Success(fmt.Sprintf(
@@ -196,6 +194,16 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 // when the installed SHA256 does not match the locked hash.
 // Returns true if a mismatch was detected and the package
 // was evicted.
+func finishSync(dryRun bool, failed int, rebuild func() error) error {
+	if dryRun {
+		return nil
+	}
+	if failed > 0 {
+		return fmt.Errorf("%d package(s) could not be synced", failed)
+	}
+	return rebuild()
+}
+
 func evictOnSHA256Mismatch(s *store.Store, result *installer.InstallResult, lockedSHA string, out *output.Output) bool {
 	if lockedSHA == result.SHA256 {
 		return false

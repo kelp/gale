@@ -17,6 +17,8 @@ import (
 	"github.com/kelp/gale/internal/store"
 )
 
+var renameDir = os.Rename
+
 // RecipeResolver finds and parses a recipe by package name.
 // Returns nil if the package has no recipe.
 type RecipeResolver func(name string) (*recipe.Recipe, error)
@@ -166,8 +168,7 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 
 	// Build succeeded — swap into place atomically.
 	// The lock ensures no other process touches storeDir.
-	os.RemoveAll(storeDir)
-	if err := os.Rename(buildDir, storeDir); err != nil {
+	if err := replaceStoreDir(storeDir, buildDir); err != nil {
 		return nil, fmt.Errorf("install build output: %w", err)
 	}
 
@@ -227,6 +228,31 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 		Method:  MethodSource,
 		SHA256:  buildResult.SHA256,
 	}, nil
+}
+
+func replaceStoreDir(storeDir, buildDir string) error {
+	backupDir := storeDir + ".bak"
+	_ = os.RemoveAll(backupDir)
+
+	if _, err := os.Stat(storeDir); err == nil {
+		if err := renameDir(storeDir, backupDir); err != nil {
+			return fmt.Errorf("backup existing store dir: %w", err)
+		}
+	}
+
+	if err := renameDir(buildDir, storeDir); err != nil {
+		if _, statErr := os.Stat(backupDir); statErr == nil {
+			if restoreErr := renameDir(backupDir, storeDir); restoreErr != nil {
+				return fmt.Errorf("replace store dir: %w (restore old store dir: %v)", err, restoreErr)
+			}
+		}
+		return fmt.Errorf("replace store dir: %w", err)
+	}
+
+	if err := os.RemoveAll(backupDir); err != nil {
+		return fmt.Errorf("remove store dir backup: %w", err)
+	}
+	return nil
 }
 
 func installBinary(bin *recipe.Binary, storeDir, name, version string, v attestation.Verifier) error {

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"sort"
 	"testing"
 )
@@ -151,6 +152,44 @@ func TestUpdateAction(t *testing.T) {
 					skip, tt.wantSkip)
 			}
 		})
+	}
+}
+
+func TestFinishUpdateReturnsRebuildError(t *testing.T) {
+	errBoom := errors.New("boom")
+	err := finishUpdate(1, false, func() error {
+		return errBoom
+	})
+	if !errors.Is(err, errBoom) {
+		t.Fatalf("finishUpdate error = %v, want %v", err, errBoom)
+	}
+}
+
+func TestFinishUpdateSkipsRebuildWhenNothingUpdated(t *testing.T) {
+	called := false
+	err := finishUpdate(0, false, func() error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("finishUpdate error = %v, want nil", err)
+	}
+	if called {
+		t.Fatal("rebuild should not be called when nothing updated")
+	}
+}
+
+func TestFinishUpdateSkipsRebuildInDryRun(t *testing.T) {
+	called := false
+	err := finishUpdate(1, true, func() error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("finishUpdate error = %v, want nil", err)
+	}
+	if called {
+		t.Fatal("rebuild should not be called in dry-run mode")
 	}
 }
 

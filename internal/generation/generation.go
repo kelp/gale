@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+
+	"github.com/kelp/gale/internal/filelock"
 )
 
 //go:embed gale-readme.md
@@ -17,44 +19,50 @@ var galeReadme []byte
 // and atomically swaps the current symlink. Previous
 // generations are retained for history and rollback.
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
-	prev, err := Current(galeDir)
-	if err != nil {
-		return fmt.Errorf("read current generation: %w", err)
-	}
+	return filelock.With(generationLockPath(galeDir), func() error {
+		prev, err := Current(galeDir)
+		if err != nil {
+			return fmt.Errorf("read current generation: %w", err)
+		}
 
-	next := prev + 1
+		next := prev + 1
 
-	genDir := filepath.Join(
-		galeDir, "gen", strconv.Itoa(next))
+		genDir := filepath.Join(
+			galeDir, "gen", strconv.Itoa(next))
 
-	// Always create bin/ — it's the minimum required
-	// directory (user adds it to PATH).
-	if err := os.MkdirAll(
-		filepath.Join(genDir, "bin"), 0o755); err != nil {
-		return fmt.Errorf("create generation dir: %w", err)
-	}
+		// Always create bin/ — it's the minimum required
+		// directory (user adds it to PATH).
+		if err := os.MkdirAll(
+			filepath.Join(genDir, "bin"), 0o755); err != nil {
+			return fmt.Errorf("create generation dir: %w", err)
+		}
 
-	// Clean up the new generation directory on any
-	// subsequent error so we don't leave orphaned dirs.
-	cleanup := func() { os.RemoveAll(genDir) }
+		// Clean up the new generation directory on any
+		// subsequent error so we don't leave orphaned dirs.
+		cleanup := func() { os.RemoveAll(genDir) }
 
-	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
-		cleanup()
-		return err
-	}
+		if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+			cleanup()
+			return err
+		}
 
-	// Atomic swap: create a temporary symlink then rename.
-	if err := swapCurrentSymlink(galeDir, next); err != nil {
-		cleanup()
-		return err
-	}
+		// Atomic swap: create a temporary symlink then rename.
+		if err := swapCurrentSymlink(galeDir, next); err != nil {
+			cleanup()
+			return err
+		}
 
-	// Write README (best effort, world-readable).
-	_ = os.WriteFile(
-		filepath.Join(galeDir, "README.md"),
-		galeReadme, 0o644)
+		// Write README (best effort, world-readable).
+		_ = os.WriteFile(
+			filepath.Join(galeDir, "README.md"),
+			galeReadme, 0o644)
 
-	return nil
+		return nil
+	})
+}
+
+func generationLockPath(galeDir string) string {
+	return filepath.Join(galeDir, "generation.lock")
 }
 
 // populateGeneration symlinks each package's store
@@ -73,6 +81,9 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string)
 		pkgDir := filepath.Join(storeRoot, name, version)
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			return fmt.Errorf("read store %s: %w", name, err)
 		}
 		for _, e := range entries {

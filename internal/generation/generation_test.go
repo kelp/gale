@@ -5,6 +5,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/kelp/gale/internal/filelock"
 )
 
 // helper creates a fake store entry with executables.
@@ -129,6 +132,35 @@ func TestBuildLinksMultipleExecutablesFromOnePackage(t *testing.T) {
 		if linfo.Mode()&os.ModeSymlink == 0 {
 			t.Errorf("expected %q to be a symlink", linkPath)
 		}
+	}
+}
+
+func TestBuildSkipsMissingStorePackages(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	pkgs := map[string]string{
+		"jq":     "1.8.1",
+		"awscli": "2.34.19",
+	}
+
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "jq")); err != nil {
+		t.Fatalf("jq symlink missing: %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "aws")); !os.IsNotExist(err) {
+		t.Fatalf("aws symlink should not exist, err=%v", err)
+	}
+
+	currentPath := filepath.Join(galeDir, "current")
+	if _, err := os.Lstat(currentPath); err != nil {
+		t.Fatalf("current symlink does not exist: %v", err)
 	}
 }
 
@@ -640,6 +672,78 @@ func TestBuildDeterministicSymlinkOrder(t *testing.T) {
 }
 
 // --- Behavior 11: Unique temp-link path for concurrent builds ---
+
+func TestBuildWaitsForGenerationLock(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	unlock, err := filelock.Acquire(filepath.Join(galeDir, "generation.lock"))
+	if err != nil {
+		t.Fatalf("Acquire lock: %v", err)
+	}
+	defer unlock()
+
+	done := make(chan error, 1)
+	go func() {
+		done <- Build(map[string]string{"jq": "1.8.1"}, galeDir, storeRoot)
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Build completed while generation lock was held: %v", err)
+	case <-time.After(50 * time.Millisecond):
+		// Good: Build is blocked on the generation lock.
+	}
+
+	unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Build error after lock release: %v", err)
+		}
+	case <-time.After(1 * time.Second):
+		t.Fatal("Build did not complete after generation lock release")
+	}
+}
+
+func TestConcurrentBuildsCreateDistinctGenerations(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+	createStoreEntry(t, storeRoot, "fd", "10.4.2", []string{"fd"})
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- Build(map[string]string{"jq": "1.8.1"}, galeDir, storeRoot)
+	}()
+	go func() {
+		errCh <- Build(map[string]string{"jq": "1.8.1", "fd": "10.4.2"}, galeDir, storeRoot)
+	}()
+
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("concurrent Build error: %v", err)
+		}
+	}
+
+	for _, gen := range []string{"1", "2"} {
+		if _, err := os.Stat(filepath.Join(galeDir, "gen", gen)); err != nil {
+			t.Fatalf("generation %s missing: %v", gen, err)
+		}
+	}
+
+	current, err := os.Readlink(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("read current symlink: %v", err)
+	}
+	if current != filepath.Join("gen", "1") && current != filepath.Join("gen", "2") {
+		t.Fatalf("current symlink = %q, want gen/1 or gen/2", current)
+	}
+}
 
 func TestBuildDoesNotClobberConcurrentTempLink(t *testing.T) {
 	galeDir := t.TempDir()

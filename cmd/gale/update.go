@@ -109,13 +109,6 @@ var updateCmd = &cobra.Command{
 		targetNames = sortedTargetKeys(targetNames)
 
 		var updated int
-		defer func() {
-			if updated > 0 && !dryRun {
-				if err := ctx.RebuildGeneration(); err != nil {
-					out.Warn(fmt.Sprintf("rebuild generation: %v", err))
-				}
-			}
-		}()
 		for _, name := range targetNames {
 			t := targets[name]
 			var newVersion string
@@ -182,6 +175,9 @@ var updateCmd = &cobra.Command{
 			updated++
 		}
 
+		if err := finishUpdate(updated, dryRun, ctx.RebuildGeneration); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
+		}
 		if updated == 0 {
 			out.Success("Everything is up to date.")
 		} else {
@@ -190,6 +186,13 @@ var updateCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+func finishUpdate(updated int, dryRun bool, rebuild func() error) error {
+	if updated == 0 || dryRun {
+		return nil
+	}
+	return rebuild()
 }
 
 // updateFromGit checks if the remote HEAD changed, and

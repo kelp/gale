@@ -203,6 +203,16 @@ func TestResolveScope(t *testing.T) {
 			"no flags with gale.toml defaults project",
 			false, false, tmp, false,
 		},
+		{
+			"no flags with .tool-versions defaults project",
+			false, false, func() string {
+				dir := t.TempDir()
+				if err := os.WriteFile(filepath.Join(dir, ".tool-versions"), []byte("golang 1.26.1\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				return dir
+			}(), false,
+		},
 	}
 
 	for _, tt := range tests {

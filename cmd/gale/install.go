@@ -11,7 +11,6 @@ import (
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
@@ -165,8 +164,8 @@ func validateInstallFlags(global, project bool) error {
 
 // resolveScope determines whether to use global config.
 // Returns true for global, false for project. When no
-// flag is set, defaults to project if gale.toml exists
-// in the directory tree, otherwise global.
+// flag is set, defaults to project if project config
+// exists in the directory tree, otherwise global.
 func resolveScope(global, project bool, cwd string) bool {
 	if global {
 		return true
@@ -175,7 +174,7 @@ func resolveScope(global, project bool, cwd string) bool {
 		return false
 	}
 	// Auto-detect: project config exists → project scope.
-	_, err := config.FindGaleConfig(cwd)
+	_, err := projectConfigPath(cwd)
 	if err != nil {
 		return true // no project config → global
 	}
@@ -437,7 +436,7 @@ func resolveConfigPath(global bool) (string, error) {
 		return "", fmt.Errorf("getting working dir: %w", err)
 	}
 
-	path, err := config.FindGaleConfig(cwd)
+	path, err := projectConfigPath(cwd)
 	if err == nil {
 		return path, nil
 	}

@@ -7,6 +7,19 @@
 - Unsupported recipe platforms now return a clean `unsupported
   platform` error that recipe CI can treat as a skip instead of a
   failed build.
+- Generation rebuild failures during `gale update` and `gale sync`
+  are now fatal instead of warning-only, so Gale no longer reports
+  success while leaving activation stale.
+- Failed or partial syncs no longer advance `current` to an
+  incomplete generation.
+- Generation rebuilds are now serialized with a generation lock so
+  concurrent installs and syncs cannot race on `gen/<N>`.
+- Local source installs now replace existing store entries with a
+  rollback-safe swap instead of deleting the old store dir first.
+  A failed final rename no longer breaks active binaries.
+- Generation rebuild and scope auto-detection now honor
+  `.tool-versions` projects. Rebuilds no longer create an empty
+  generation just because `gale.toml` is absent.
 
 ## v0.11.1 — 2026-04-08
 
