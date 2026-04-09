@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## v0.11.2 — 2026-04-09
+
 ### Fixed
 
 - Unsupported recipe platforms now return a clean `unsupported
