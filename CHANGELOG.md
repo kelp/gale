@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Unsupported recipe platforms now return a clean `unsupported
+  platform` error that recipe CI can treat as a skip instead of a
+  failed build.
+
 ## v0.11.1 — 2026-04-08
 
 ### Added
