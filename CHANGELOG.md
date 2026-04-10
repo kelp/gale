@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+## v0.11.3 — 2026-04-09
+
+### Fixed
+
+- `gale update` now rebuilds the active generation even when a
+  package is already up to date in config and store. This repairs
+  stale activation states like `gale@0.11.2` being installed while
+  `~/.gale/current/bin/gale` still points at `v0.11.1`.
+
 ## v0.11.2 — 2026-04-09
 
 ### Fixed

@@ -175,7 +175,7 @@ var updateCmd = &cobra.Command{
 			updated++
 		}
 
-		if err := finishUpdate(updated, dryRun, ctx.RebuildGeneration); err != nil {
+		if err := finishUpdate(dryRun, ctx.RebuildGeneration); err != nil {
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 		if updated == 0 {
@@ -188,8 +188,8 @@ var updateCmd = &cobra.Command{
 	},
 }
 
-func finishUpdate(updated int, dryRun bool, rebuild func() error) error {
-	if updated == 0 || dryRun {
+func finishUpdate(dryRun bool, rebuild func() error) error {
+	if dryRun {
 		return nil
 	}
 	return rebuild()

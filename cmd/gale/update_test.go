@@ -157,7 +157,7 @@ func TestUpdateAction(t *testing.T) {
 
 func TestFinishUpdateReturnsRebuildError(t *testing.T) {
 	errBoom := errors.New("boom")
-	err := finishUpdate(1, false, func() error {
+	err := finishUpdate(false, func() error {
 		return errBoom
 	})
 	if !errors.Is(err, errBoom) {
@@ -165,23 +165,23 @@ func TestFinishUpdateReturnsRebuildError(t *testing.T) {
 	}
 }
 
-func TestFinishUpdateSkipsRebuildWhenNothingUpdated(t *testing.T) {
+func TestFinishUpdateRebuildsWhenNothingUpdated(t *testing.T) {
 	called := false
-	err := finishUpdate(0, false, func() error {
+	err := finishUpdate(false, func() error {
 		called = true
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("finishUpdate error = %v, want nil", err)
 	}
-	if called {
-		t.Fatal("rebuild should not be called when nothing updated")
+	if !called {
+		t.Fatal("rebuild should be called when nothing updated")
 	}
 }
 
 func TestFinishUpdateSkipsRebuildInDryRun(t *testing.T) {
 	called := false
-	err := finishUpdate(1, true, func() error {
+	err := finishUpdate(true, func() error {
 		called = true
 		return nil
 	})
