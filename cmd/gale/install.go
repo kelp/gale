@@ -123,7 +123,7 @@ var installCmd = &cobra.Command{
 		}
 
 		if err := ctx.FinalizeInstall(
-			name, r.Package.Version, result.SHA256); err != nil {
+			name, r.Package.Full(), result.SHA256); err != nil {
 			return err
 		}
 
@@ -224,8 +224,13 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 		return fmt.Errorf("install failed: %w", err)
 	}
 
+	// Git installs produce a dev version derived from the
+	// repo state; sync it onto the recipe so Full() emits
+	// the matching <version>-<revision> string.
+	r.Package.Version = result.Version
+
 	if err := ctx.FinalizeInstall(
-		r.Package.Name, result.Version, result.SHA256); err != nil {
+		r.Package.Name, r.Package.Full(), result.SHA256); err != nil {
 		return err
 	}
 
@@ -274,7 +279,7 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	}
 
 	if err := ctx.FinalizeInstall(
-		r.Package.Name, r.Package.Version, result.SHA256); err != nil {
+		r.Package.Name, r.Package.Full(), result.SHA256); err != nil {
 		return err
 	}
 
@@ -404,7 +409,7 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 	}
 
 	if err := ctx.FinalizeInstall(
-		r.Package.Name, r.Package.Version, result.SHA256); err != nil {
+		r.Package.Name, r.Package.Full(), result.SHA256); err != nil {
 		return err
 	}
 

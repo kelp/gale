@@ -10,6 +10,7 @@ import (
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
@@ -27,6 +28,9 @@ type doctorContext struct {
 	installed  []store.InstalledPackage
 	store      *store.Store
 	out        *output.Output
+	// cmdCtx is set from the top-level cobra command so
+	// checks can resolve recipes for staleness detection.
+	cmdCtx *cmdContext
 }
 
 // doctorCheck is a single health check.
@@ -44,6 +48,7 @@ var doctorChecks = []doctorCheck{
 	{"generation", checkGeneration},
 	{"symlinks", checkSymlinks},
 	{"lib farm", checkFarm},
+	{"stale installs", checkStaleInstalls},
 	{"PATH", checkPATH},
 	{"direnv", checkDirenvIntegration},
 	{"orphans", checkOrphans},
@@ -65,6 +70,11 @@ var doctorCmd = &cobra.Command{
 
 		cwd, _ := os.Getwd()
 
+		// cmdCtx is best-effort — if it fails (e.g. no
+		// recipes resolver), the stale-installs check
+		// degrades gracefully.
+		cmdCtx, _ := newCmdContext("", false, false)
+
 		ctx := &doctorContext{
 			galeDir:    galeDir,
 			storeRoot:  defaultStoreRoot(),
@@ -72,6 +82,7 @@ var doctorCmd = &cobra.Command{
 			globalPkgs: map[string]string{},
 			projPkgs:   map[string]string{},
 			out:        out,
+			cmdCtx:     cmdCtx,
 		}
 
 		if doctorRepair {
@@ -265,6 +276,63 @@ func checkFarm(ctx *doctorContext) bool {
 	msg += "\n  Run: gale doctor --repair"
 	ctx.out.Error(msg)
 	return false
+}
+
+// checkStaleInstalls reports installed packages whose
+// built-against dep closure no longer matches the current
+// recipes for those deps. A stale install means one of
+// its deps had a revision/version bump since the install
+// happened; the package should be reinstalled to pick up
+// the new dep artifacts.
+func checkStaleInstalls(ctx *doctorContext) bool {
+	if ctx.cmdCtx == nil || ctx.store == nil {
+		// Can't resolve recipes without a cmd context.
+		ctx.out.Success("Stale installs (skipped — no context)")
+		return true
+	}
+	var stale []string
+	for _, pkg := range ctx.installed {
+		storeDir, ok := ctx.store.StorePath(pkg.Name, pkg.Version)
+		if !ok {
+			continue
+		}
+		r, err := ctx.cmdCtx.ResolveVersionedRecipe(
+			pkg.Name, pkg.Version)
+		if err != nil {
+			continue
+		}
+		isStale, err := installer.IsStale(
+			storeDir, r, ctx.cmdCtx.Resolver)
+		if err != nil {
+			continue
+		}
+		if isStale {
+			stale = append(stale, pkg.Name+"@"+pkg.Version)
+		}
+	}
+	if len(stale) == 0 {
+		ctx.out.Success("No stale installs")
+		return true
+	}
+	const maxShown = 5
+	shown := stale
+	if len(shown) > maxShown {
+		shown = shown[:maxShown]
+	}
+	msg := fmt.Sprintf(
+		"Stale installs (%d) — deps changed since built:",
+		len(stale))
+	for _, s := range shown {
+		msg += "\n  " + s
+	}
+	if len(stale) > maxShown {
+		msg += fmt.Sprintf("\n  ... %d more", len(stale)-maxShown)
+	}
+	msg += "\n  Run: gale sync (reinstalls stale packages)"
+	ctx.out.Warn(msg)
+	// Warn, not fail — staleness is common during recipe
+	// development and auto-resolves on next sync.
+	return true
 }
 
 // checkPATH verifies ~/.gale/current/bin is on PATH.

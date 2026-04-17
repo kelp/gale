@@ -95,15 +95,32 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	for name, version := range cfg.Packages {
 		// Check store first — pinned version present?
 		if ctx.Installer.Store.IsInstalled(name, version) {
-			if dryRun {
-				out.Info(fmt.Sprintf(
-					"skip %s@%s (up to date)",
-					name, version))
-			} else {
-				out.Info(fmt.Sprintf(
-					"%s@%s up to date", name, version))
+			// Installed. Check if stale relative to the
+			// current recipes of its declared deps. A
+			// stale install means one of its deps had a
+			// recipe bump; we fall through to reinstall.
+			stale := false
+			if storeDir, ok := ctx.Installer.Store.StorePath(name, version); ok {
+				if r, err := ctx.ResolveVersionedRecipe(name, version); err == nil {
+					if s, err := installer.IsStale(storeDir, r, ctx.Resolver); err == nil {
+						stale = s
+					}
+				}
 			}
-			continue
+			if !stale {
+				if dryRun {
+					out.Info(fmt.Sprintf(
+						"skip %s@%s (up to date)",
+						name, version))
+				} else {
+					out.Info(fmt.Sprintf(
+						"%s@%s up to date", name, version))
+				}
+				continue
+			}
+			out.Info(fmt.Sprintf(
+				"%s@%s stale — deps changed; reinstalling",
+				name, version))
 		}
 
 		if dryRun {

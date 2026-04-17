@@ -92,6 +92,124 @@ func TestVersionNewer(t *testing.T) {
 	}
 }
 
+func TestParseSemver_BareVersionDefaultsRevision1(t *testing.T) {
+	got, ok := parseSemver("1.2.3")
+	if !ok {
+		t.Fatal("parseSemver(\"1.2.3\") returned ok=false, want true")
+	}
+	want := [4]int{1, 2, 3, 1}
+	if got != want {
+		t.Errorf("parseSemver(\"1.2.3\") = %v, want %v", got, want)
+	}
+}
+
+func TestParseSemver_ExplicitRevision(t *testing.T) {
+	got, ok := parseSemver("1.2.3-2")
+	if !ok {
+		t.Fatal("parseSemver(\"1.2.3-2\") returned ok=false, want true")
+	}
+	want := [4]int{1, 2, 3, 2}
+	if got != want {
+		t.Errorf("parseSemver(\"1.2.3-2\") = %v, want %v", got, want)
+	}
+}
+
+func TestParseSemver_LeadingVTrimmed(t *testing.T) {
+	got, ok := parseSemver("v1.2.3-5")
+	if !ok {
+		t.Fatal("parseSemver(\"v1.2.3-5\") returned ok=false, want true")
+	}
+	want := [4]int{1, 2, 3, 5}
+	if got != want {
+		t.Errorf("parseSemver(\"v1.2.3-5\") = %v, want %v", got, want)
+	}
+}
+
+func TestParseSemver_NonNumericSuffixDefaultsRevision1(t *testing.T) {
+	got, ok := parseSemver("1.0.0-rc1")
+	if !ok {
+		t.Fatal("parseSemver(\"1.0.0-rc1\") returned ok=false, want true")
+	}
+	want := [4]int{1, 0, 0, 1}
+	if got != want {
+		t.Errorf("parseSemver(\"1.0.0-rc1\") = %v, want %v", got, want)
+	}
+}
+
+func TestParseSemver_TwoPartsInvalid(t *testing.T) {
+	_, ok := parseSemver("1.2")
+	if ok {
+		t.Error("parseSemver(\"1.2\") returned ok=true, want false")
+	}
+}
+
+func TestParseSemver_NonNumericInvalid(t *testing.T) {
+	_, ok := parseSemver("abc")
+	if ok {
+		t.Error("parseSemver(\"abc\") returned ok=true, want false")
+	}
+}
+
+func TestParseSemver_MultiDigitRevision(t *testing.T) {
+	got, ok := parseSemver("1.2.3-10")
+	if !ok {
+		t.Fatal("parseSemver(\"1.2.3-10\") returned ok=false, want true")
+	}
+	want := [4]int{1, 2, 3, 10}
+	if got != want {
+		t.Errorf("parseSemver(\"1.2.3-10\") = %v, want %v", got, want)
+	}
+}
+
+func TestVersionNewer_RevisionBumpCountsAsOutdated(t *testing.T) {
+	got := versionNewer("1.0.0-2", "1.0.0-1")
+	if !got {
+		t.Error(
+			"versionNewer(\"1.0.0-2\", \"1.0.0-1\") = false, want true")
+	}
+}
+
+// Bare version implies revision 1, so rev-2 must be newer than bare.
+// Stub sets revision=0 for both, so "1.0.0-2" and "1.0.0" compare as
+// equal (both revision=0) and return false — test fails on stub.
+func TestVersionNewer_Revision2NewerThanBare(t *testing.T) {
+	got := versionNewer("1.0.0-2", "1.0.0")
+	if !got {
+		t.Error(
+			"versionNewer(\"1.0.0-2\", \"1.0.0\") = false, want true")
+	}
+}
+
+// Bare version implies revision 1, so rev-3 is newer than bare (rev 1 < 3).
+// Stub sets revision=0 for both so returns false — test fails on stub.
+func TestVersionNewer_Revision3NewerThanBare(t *testing.T) {
+	got := versionNewer("1.0.0-3", "1.0.0")
+	if !got {
+		t.Error(
+			"versionNewer(\"1.0.0-3\", \"1.0.0\") = false, want true")
+	}
+}
+
+// With stub revision=0, "1.0.0-100" and "1.0.0-99" are both (1,0,0,0)
+// and versionNewer returns false. Real impl parses 100 > 99 → true.
+func TestVersionNewer_HigherRevisionIsNewer(t *testing.T) {
+	got := versionNewer("1.0.0-100", "1.0.0-99")
+	if !got {
+		t.Error(
+			"versionNewer(\"1.0.0-100\", \"1.0.0-99\") = false, want true")
+	}
+}
+
+// Stub sets revision=0 for "1.0.0-6", so both sides compare as (1,0,0,0)
+// and returns false. Real impl: 6 > 5 → true. Test fails on stub.
+func TestVersionNewer_HigherRevisionIncrementIsNewer(t *testing.T) {
+	got := versionNewer("1.0.0-6", "1.0.0-5")
+	if !got {
+		t.Error(
+			"versionNewer(\"1.0.0-6\", \"1.0.0-5\") = false, want true")
+	}
+}
+
 func contains(s, substr string) bool {
 	return len(s) >= len(substr) &&
 		findSubstring(s, substr)

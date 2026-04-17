@@ -89,7 +89,7 @@ func versionNewer(registry, current string) bool {
 	if !rOK || !cOK {
 		return false
 	}
-	for i := 0; i < 3; i++ {
+	for i := 0; i < 4; i++ {
 		if rParts[i] > cParts[i] {
 			return true
 		}
@@ -100,27 +100,45 @@ func versionNewer(registry, current string) bool {
 	return false
 }
 
-// parseSemver extracts major, minor, patch from a version
-// string. Strips a leading "v" if present. Returns false
-// if the string is not a valid semver triple.
-func parseSemver(v string) ([3]int, bool) {
+// parseSemver extracts major, minor, patch, and revision
+// from a version string. Strips a leading "v" if present.
+// A numeric suffix after "-" in the patch part becomes the
+// revision (e.g. "1.2.3-2" → revision 2). Bare versions
+// and non-numeric suffixes default to revision 1. Returns
+// false if the string is not a valid semver triple.
+func parseSemver(v string) ([4]int, bool) {
 	v = strings.TrimPrefix(v, "v")
 	parts := strings.SplitN(v, ".", 3)
 	if len(parts) != 3 {
-		return [3]int{}, false
+		return [4]int{}, false
 	}
-	var result [3]int
+	var result [4]int
+	revision := 1
 	for i, p := range parts {
-		// Strip pre-release suffix (e.g. "1-rc1").
-		if dash := strings.IndexByte(p, '-'); dash >= 0 {
-			p = p[:dash]
+		if i == 2 {
+			// Handle revision suffix on patch part only.
+			if dash := strings.IndexByte(p, '-'); dash >= 0 {
+				suffix := p[dash+1:]
+				p = p[:dash]
+				n, err := strconv.Atoi(suffix)
+				if err == nil {
+					revision = n
+				}
+				// Non-numeric suffix: revision stays 1.
+			}
+		} else {
+			// Strip any suffix on major/minor (unusual but safe).
+			if dash := strings.IndexByte(p, '-'); dash >= 0 {
+				p = p[:dash]
+			}
 		}
 		n, err := strconv.Atoi(p)
 		if err != nil {
-			return [3]int{}, false
+			return [4]int{}, false
 		}
 		result[i] = n
 	}
+	result[3] = revision
 	return result, true
 }
 
