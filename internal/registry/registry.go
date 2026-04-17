@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -169,11 +170,12 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 			"parse version index for %s: %w", name, err)
 	}
 
-	commit, ok := idx[version]
+	resolved, ok := pickVersion(idx, version)
 	if !ok {
 		return nil, fmt.Errorf(
 			"%s@%s: version not found in registry", name, version)
 	}
+	commit := idx[resolved]
 
 	// Fetch recipe at the specific commit.
 	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
@@ -301,6 +303,64 @@ func (r *Registry) verifyRecipe(data []byte, recipeURL string) error {
 		return fmt.Errorf("signature verification failed: invalid signature")
 	}
 	return nil
+}
+
+// pickVersion resolves a user-supplied version string against
+// a version→commit index. If requested is already in idx,
+// returns it as-is. Otherwise, if requested has no
+// "-<digits>" revision suffix, scans idx for entries of the
+// form "<requested>-<N>" and returns the one with the
+// highest N. Bare versions in the index are treated as
+// revision 1 for comparison. Returns ("", false) if
+// no match is found.
+func pickVersion(idx map[string]string, requested string) (string, bool) {
+	// 1. Exact match wins immediately.
+	if _, ok := idx[requested]; ok {
+		return requested, true
+	}
+	// 2. If requested already has a -<digits> suffix, no
+	//    fallback — we only bump to latest revision for
+	//    bare base versions.
+	if hasRevisionSuffix(requested) {
+		return "", false
+	}
+	// 3. Scan idx for entries of the form "<requested>-<N>"
+	//    where N is all digits. Pick the highest N.
+	prefix := requested + "-"
+	bestRev := -1
+	bestKey := ""
+	for k := range idx {
+		if !strings.HasPrefix(k, prefix) {
+			continue
+		}
+		suf := k[len(prefix):]
+		n, err := strconv.Atoi(suf)
+		if err != nil || n < 0 {
+			continue
+		}
+		if n > bestRev {
+			bestRev = n
+			bestKey = k
+		}
+	}
+	if bestKey != "" {
+		return bestKey, true
+	}
+	return "", false
+}
+
+// hasRevisionSuffix reports whether v ends with "-<digits>".
+func hasRevisionSuffix(v string) bool {
+	i := strings.LastIndex(v, "-")
+	if i < 0 || i == len(v)-1 {
+		return false
+	}
+	for _, c := range v[i+1:] {
+		if c < '0' || c > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // parseVersionIndex parses a .versions file into a

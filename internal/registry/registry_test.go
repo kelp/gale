@@ -1280,6 +1280,160 @@ func TestFetchRecipeVersionRejectsBadSignature(t *testing.T) {
 	}
 }
 
+// --- pickVersion behaviors ---
+
+// Behavior 1: exact match in index returns the key as-is.
+func TestPickVersionExactMatch(t *testing.T) {
+	idx := map[string]string{"8.19.0-2": "abc"}
+	got, ok := pickVersion(idx, "8.19.0-2")
+	if !ok {
+		t.Fatal("expected ok=true for exact match")
+	}
+	if got != "8.19.0-2" {
+		t.Errorf("got %q, want %q", got, "8.19.0-2")
+	}
+}
+
+// Behavior 2: no revision suffix, multiple revisions present,
+// returns the highest numbered revision.
+func TestPickVersionHighestRevision(t *testing.T) {
+	idx := map[string]string{
+		"8.19.0-1": "abc",
+		"8.19.0-2": "def",
+		"8.19.0-3": "ghi",
+	}
+	got, ok := pickVersion(idx, "8.19.0")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got != "8.19.0-3" {
+		t.Errorf("got %q, want %q", got, "8.19.0-3")
+	}
+}
+
+// Behavior 3: no revision suffix, single revision present,
+// returns that revision.
+func TestPickVersionSingleRevision(t *testing.T) {
+	idx := map[string]string{"8.19.0-1": "abc"}
+	got, ok := pickVersion(idx, "8.19.0")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got != "8.19.0-1" {
+		t.Errorf("got %q, want %q", got, "8.19.0-1")
+	}
+}
+
+// Behavior 4: no revision suffix, only bare version in index
+// (legacy), returns via exact match.
+func TestPickVersionBareVersionExactMatch(t *testing.T) {
+	idx := map[string]string{"8.19.0": "abc"}
+	got, ok := pickVersion(idx, "8.19.0")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got != "8.19.0" {
+		t.Errorf("got %q, want %q", got, "8.19.0")
+	}
+}
+
+// Behavior 5: bare + revisioned mix; exact match wins.
+func TestPickVersionBareAndRevisionedExactMatchWins(t *testing.T) {
+	idx := map[string]string{
+		"8.19.0":   "abc",
+		"8.19.0-2": "def",
+	}
+	got, ok := pickVersion(idx, "8.19.0")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got != "8.19.0" {
+		t.Errorf("got %q, want %q", got, "8.19.0")
+	}
+}
+
+// Behavior 6: no match at all returns ("", false).
+// The index has 8.20.0-1 (matches 8.20.0) but not 8.19.0.
+// Verify 8.20.0 resolves (proving the function runs), then
+// verify 8.19.0 does not.
+func TestPickVersionNoMatch(t *testing.T) {
+	idx := map[string]string{"8.20.0-1": "abc"}
+
+	// Sanity: 8.20.0 must resolve to prove the function works.
+	got, ok := pickVersion(idx, "8.20.0")
+	if !ok || got != "8.20.0-1" {
+		t.Fatalf("expected 8.20.0 → 8.20.0-1, got (%q, %v)",
+			got, ok)
+	}
+
+	// 8.19.0 is absent; must return ("", false).
+	got, ok = pickVersion(idx, "8.19.0")
+	if ok {
+		t.Fatalf("expected ok=false for absent version, got key %q", got)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty string", got)
+	}
+}
+
+// Behavior 7: requested has revision suffix but is absent
+// from index returns ("", false).
+// The index has 8.19.0-1 (not 8.19.0-5).
+// Verify 8.19.0-1 resolves exactly, then verify 8.19.0-5 does not.
+func TestPickVersionRevisionSuffixNotPresent(t *testing.T) {
+	idx := map[string]string{"8.19.0-1": "abc"}
+
+	// Sanity: exact key must resolve.
+	got, ok := pickVersion(idx, "8.19.0-1")
+	if !ok || got != "8.19.0-1" {
+		t.Fatalf("expected 8.19.0-1 → 8.19.0-1, got (%q, %v)",
+			got, ok)
+	}
+
+	// 8.19.0-5 is absent; must return ("", false).
+	got, ok = pickVersion(idx, "8.19.0-5")
+	if ok {
+		t.Fatalf("expected ok=false for absent revision, got key %q", got)
+	}
+	if got != "" {
+		t.Errorf("got %q, want empty string", got)
+	}
+}
+
+// Behavior 8: different base versions are not picked up by
+// prefix scan (8.19.10 is not a revision of 8.19.0).
+func TestPickVersionDifferentBaseVersionsFiltered(t *testing.T) {
+	idx := map[string]string{
+		"8.19.0-1":  "abc",
+		"8.20.0-1":  "def",
+		"8.19.10-1": "ghi",
+	}
+	got, ok := pickVersion(idx, "8.19.0")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got != "8.19.0-1" {
+		t.Errorf("got %q, want %q", got, "8.19.0-1")
+	}
+}
+
+// Behavior 9: multi-digit revision numbers are compared
+// numerically, not lexicographically.
+func TestPickVersionMultiDigitRevisionNumericComparison(t *testing.T) {
+	idx := map[string]string{
+		"8.19.0-9":  "a",
+		"8.19.0-10": "b",
+		"8.19.0-2":  "c",
+	}
+	got, ok := pickVersion(idx, "8.19.0")
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if got != "8.19.0-10" {
+		t.Errorf("got %q, want %q", got, "8.19.0-10")
+	}
+}
+
 // --- Behavior 35: end-to-end signature verification ---
 
 func TestFetchRecipeEndToEndSignatureFlow(t *testing.T) {
