@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Added
+
+- Shared dylib farm at `~/.gale/lib/`. Installs symlink their
+  versioned dylibs (e.g. `libcurl.4.dylib`) into the farm, and
+  new binaries carry an extra rpath to it alongside the existing
+  per-version rpaths. SONAME-preserving dep upgrades become a
+  symlink flip, so dependents keep working without rebuilds.
+  Auto-reconciles on install, remove, sync, and generation swap.
+- `gale doctor` now checks for lib-farm drift (broken symlinks,
+  missing entries for installed versioned dylibs, conflicts with
+  another package). `gale doctor --repair` fixes drift through
+  the existing `rebuildGeneration` path.
+- `gale inspect` subcommand. Walks an installed package's
+  binaries and reports linkage issues: unresolvable `@rpath`
+  references, stale rpath entries, deps referenced but not
+  declared in the recipe, recipe deps unused by any binary, and
+  version skew across a package's own binaries. `--all` scans
+  the whole store; `--json` emits machine-readable output; exit
+  nonzero on findings so CI can gate on it.
+
+### Fixed
+
+- Prebuilt binary installs now call `RestorePrefixPlaceholder`
+  after extraction, so `@@GALE_PREFIX@@` markers baked into text
+  files at build time (scripts, `.la` files) get rewritten to the
+  real store path. Previously only source installs did this.
+- Prebuilt binary installs also rewrite stale foreign `.gale/pkg/`
+  paths embedded in text files (e.g. `curl-config --static-libs`
+  emitting `/Users/runner/.gale/pkg/openssl/...`). Matches the
+  existing Mach-O / ELF rpath relocation but for text.
+
 ## v0.11.3 — 2026-04-09
 
 ### Fixed
