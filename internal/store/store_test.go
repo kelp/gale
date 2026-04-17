@@ -312,6 +312,157 @@ func TestRemoveKeepsParentWhenOtherVersionsExist(t *testing.T) {
 	}
 }
 
+// --- Behavior N: Back-compat fallback for revision-1 suffix ---
+
+// TestIsInstalledExactMatch verifies that a revision-suffixed directory
+// is found directly without needing any fallback.
+func TestIsInstalledExactMatch(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	dir := filepath.Join(root, "curl", "8.19.0-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if !s.IsInstalled("curl", "8.19.0-1") {
+		t.Error("IsInstalled = false, want true for exact-match revision dir")
+	}
+}
+
+// TestIsInstalledFallsBackToBareVersionForRevisionOne verifies that when
+// a caller passes "<version>-1" but only a bare-version directory exists
+// (legacy install), IsInstalled returns true via the fallback path.
+func TestIsInstalledFallsBackToBareVersionForRevisionOne(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	// Only the bare (legacy) directory exists.
+	dir := filepath.Join(root, "curl", "8.19.0")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if !s.IsInstalled("curl", "8.19.0-1") {
+		t.Error("IsInstalled = false, want true — should fall back to bare version dir")
+	}
+}
+
+// TestIsInstalledDoesNotFallBackForRevisionTwo verifies that when the
+// caller passes "<version>-2", no fallback to a bare directory occurs;
+// only revision 1 triggers the fallback.
+func TestIsInstalledDoesNotFallBackForRevisionTwo(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	// Only the bare (legacy) directory exists; no "-2" dir.
+	dir := filepath.Join(root, "curl", "8.19.0")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if s.IsInstalled("curl", "8.19.0-2") {
+		t.Error("IsInstalled = true, want false — revision 2 must not fall back to bare dir")
+	}
+}
+
+// TestRemoveFindsBareVersionWhenPassedRevisionOne verifies that Remove
+// with "<version>-1" succeeds and deletes the bare-version directory
+// when no revision-suffixed directory exists (legacy install).
+func TestRemoveFindsBareVersionWhenPassedRevisionOne(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	bare := filepath.Join(root, "curl", "8.19.0")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(bare, "foo"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if err := s.Remove("curl", "8.19.0-1"); err != nil {
+		t.Fatalf("Remove returned unexpected error: %v", err)
+	}
+
+	if _, err := os.Stat(bare); !os.IsNotExist(err) {
+		t.Error("expected bare version directory to be removed after Remove with -1 suffix")
+	}
+}
+
+// TestRemoveReturnsErrNotInstalledForMissingRevisionTwo verifies that
+// Remove returns ErrNotInstalled when only a bare directory exists but
+// the caller requests revision 2 — which has no fallback.
+func TestRemoveReturnsErrNotInstalledForMissingRevisionTwo(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	// Only bare directory; no "-2" dir.
+	bare := filepath.Join(root, "curl", "8.19.0")
+	if err := os.MkdirAll(bare, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(bare, "foo"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	err := s.Remove("curl", "8.19.0-2")
+	if err == nil {
+		t.Fatal("expected error when removing revision 2 that does not exist")
+	}
+	if !errors.Is(err, ErrNotInstalled) {
+		t.Errorf("error = %v, want ErrNotInstalled", err)
+	}
+}
+
+// TestRemovePrefersExactDirWhenBothExist verifies that when both a
+// revision-suffixed directory and a bare-version directory exist, Remove
+// with the revision-suffixed version removes exactly that directory and
+// leaves the bare directory untouched.
+func TestRemovePrefersExactDirWhenBothExist(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	for _, sub := range []string{"8.19.0", "8.19.0-1"} {
+		dir := filepath.Join(root, "curl", sub)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("setup %s: %v", sub, err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("setup %s: %v", sub, err)
+		}
+	}
+
+	if err := s.Remove("curl", "8.19.0-1"); err != nil {
+		t.Fatalf("Remove returned unexpected error: %v", err)
+	}
+
+	exactDir := filepath.Join(root, "curl", "8.19.0-1")
+	if _, err := os.Stat(exactDir); !os.IsNotExist(err) {
+		t.Error("expected exact revision directory 8.19.0-1 to be removed")
+	}
+
+	bareDir := filepath.Join(root, "curl", "8.19.0")
+	if _, err := os.Stat(bareDir); err != nil {
+		t.Errorf("bare version directory 8.19.0 should still exist: %v", err)
+	}
+}
+
 // --- Behavior 5: Empty directories not considered installed ---
 
 func TestIsInstalledEmptyDirReturnsFalse(t *testing.T) {

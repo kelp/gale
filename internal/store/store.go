@@ -38,10 +38,47 @@ func (s *Store) Create(name, version string) (string, error) {
 	return dir, nil
 }
 
+// StorePath returns the absolute path to the store dir for
+// (name, version) if one exists, with fallback to the bare
+// version dir for "-1" suffixed requests. Returns ("", false)
+// if no directory exists.
+func (s *Store) StorePath(name, version string) (string, bool) {
+	resolved, ok := s.resolveVersion(name, version)
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(s.Root, name, resolved), true
+}
+
+// resolveVersion returns the actual version directory name to use for
+// name+version, along with whether that directory exists. It checks the
+// exact directory first. If the exact directory is absent and version ends
+// with "-1", it falls back to the bare version (suffix stripped).
+func (s *Store) resolveVersion(name, version string) (string, bool) {
+	dir := filepath.Join(s.Root, name, version)
+	if _, err := os.Stat(dir); err == nil {
+		return version, true
+	}
+	if strings.HasSuffix(version, "-1") {
+		bare := strings.TrimSuffix(version, "-1")
+		bareDir := filepath.Join(s.Root, name, bare)
+		if _, err := os.Stat(bareDir); err == nil {
+			return bare, true
+		}
+	}
+	return version, false
+}
+
 // IsInstalled checks if a package version exists in the store.
 // Returns false for empty directories left by failed installs.
+// When version ends with "-1" and the exact directory is absent,
+// falls back to the bare version directory (back-compat).
 func (s *Store) IsInstalled(name, version string) bool {
-	dir := filepath.Join(s.Root, name, version)
+	resolved, ok := s.resolveVersion(name, version)
+	if !ok {
+		return false
+	}
+	dir := filepath.Join(s.Root, name, resolved)
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		return false
@@ -90,8 +127,14 @@ func (s *Store) List() ([]InstalledPackage, error) {
 }
 
 // Remove removes a package version from the store.
+// When version ends with "-1" and the exact directory is absent,
+// falls back to the bare version directory (back-compat).
 func (s *Store) Remove(name, version string) error {
-	dir := filepath.Join(s.Root, name, version)
+	resolved, ok := s.resolveVersion(name, version)
+	if !ok {
+		return fmt.Errorf("remove %s@%s: %w", name, version, ErrNotInstalled)
+	}
+	dir := filepath.Join(s.Root, name, resolved)
 	if _, err := os.Stat(dir); err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove %s@%s: %w",
