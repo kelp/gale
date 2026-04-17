@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kelp/gale/internal/farm"
 )
 
 // Mach-O magic numbers.
@@ -202,6 +204,11 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		}
 	}
 
+	// Derive the shared-lib farm dir from the first dep;
+	// used to also add an rpath to ~/.gale/lib/ so binaries
+	// survive dep upgrades that preserve the SONAME.
+	farmDir := farm.DirFromStoreDir(depStoreDirs[0])
+
 	ownLib := filepath.Join(prefixDir, "lib")
 
 	for _, file := range files {
@@ -240,6 +247,13 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 			if dir, ok := libDirMap[libName]; ok {
 				needed[dir] = true
 			}
+		}
+
+		// Add the farm rpath alongside per-dep rpaths so
+		// binaries can find versioned dylibs via the
+		// stable ~/.gale/lib/ path.
+		if farmDir != "" && len(deps) > 0 {
+			needed[farmDir] = true
 		}
 
 		if len(needed) == 0 {
@@ -371,20 +385,37 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 		return fmt.Errorf("walk prefix: %w", err)
 	}
 
-	marker := ".gale" + string(filepath.Separator) + "pkg" + string(filepath.Separator)
+	sep := string(filepath.Separator)
+	pkgMarker := ".gale" + sep + "pkg" + sep
+	libMarker := ".gale" + sep + "lib"
 	currentStoreRoot = filepath.Clean(currentStoreRoot)
+	// galeDir = parent of <galeDir>/pkg/ — used to compute
+	// the local farm dir for .gale/lib rpath relocation.
+	galeDir := filepath.Dir(currentStoreRoot)
+	currentFarmDir := filepath.Join(galeDir, "lib")
 
 	for _, file := range files {
 		rpaths := existingRpaths(file)
 		for rpath := range rpaths {
-			idx := strings.Index(rpath, marker)
-			if idx < 0 {
+			var newPath string
+			switch {
+			case strings.Contains(rpath, pkgMarker):
+				idx := strings.Index(rpath, pkgMarker)
+				suffix := rpath[idx+len(pkgMarker):]
+				newPath = filepath.Join(currentStoreRoot, suffix)
+			case strings.HasSuffix(rpath, libMarker) ||
+				strings.Contains(rpath, libMarker+sep):
+				// Farm rpath from CI: /Users/runner/.gale/lib
+				// → <local galeDir>/lib. Suffix (if any) past
+				// the marker is preserved.
+				idx := strings.Index(rpath, libMarker)
+				suffix := rpath[idx+len(libMarker):]
+				newPath = currentFarmDir + suffix
+			default:
 				continue
 			}
 			// Check if this rpath already has the current
 			// store root as its prefix; if so, leave alone.
-			suffix := rpath[idx+len(marker):]
-			newPath := filepath.Join(currentStoreRoot, suffix)
 			if rpath == newPath {
 				continue
 			}

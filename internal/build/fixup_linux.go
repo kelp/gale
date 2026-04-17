@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kelp/gale/internal/farm"
 )
 
 // ELF magic bytes.
@@ -112,8 +114,14 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		return nil
 	}
 
-	// Build the rpath string: $ORIGIN/../lib + all dep lib dirs.
+	// Build the rpath string: $ORIGIN/../lib, the shared
+	// lib farm, then all per-dep lib dirs. The farm rpath
+	// gives binaries a stable lookup for versioned dylibs
+	// across dep upgrades that preserve the SONAME.
 	rpathParts := []string{"$ORIGIN/../lib"}
+	if farmDir := farm.DirFromStoreDir(depStoreDirs[0]); farmDir != "" {
+		rpathParts = append(rpathParts, farmDir)
+	}
 	rpathParts = append(rpathParts, depLibDirs...)
 	rpath := strings.Join(rpathParts, ":")
 
@@ -151,7 +159,12 @@ func RelocateStaleRpaths(prefixDir, storeRoot string) error {
 		return nil //nolint:nilerr
 	}
 
-	marker := ".gale/pkg/"
+	const pkgMarker = ".gale/pkg/"
+	const libMarker = ".gale/lib"
+	// galeDir = parent of storeRoot — used to compute
+	// the local farm dir for .gale/lib rpath relocation.
+	galeDir := filepath.Dir(storeRoot)
+	currentFarmDir := filepath.Join(galeDir, "lib")
 
 	for _, subdir := range []string{"bin", "lib"} {
 		dir := filepath.Join(prefixDir, subdir)
@@ -179,19 +192,22 @@ func RelocateStaleRpaths(prefixDir, storeRoot string) error {
 					return nil
 				}
 
-				// Check if any entry has a foreign store.
 				parts := strings.Split(rpath, ":")
 				changed := false
 				for i, p := range parts {
-					idx := strings.Index(p, marker)
-					if idx < 0 {
+					if idx := strings.Index(p, pkgMarker); idx >= 0 {
+						suffix := p[idx+len(pkgMarker):]
+						parts[i] = filepath.Join(storeRoot, suffix)
+						changed = true
 						continue
 					}
-					// Rewrite prefix to local store.
-					suffix := p[idx+len(marker):]
-					parts[i] = filepath.Join(
-						storeRoot, suffix)
-					changed = true
+					if strings.HasSuffix(p, libMarker) ||
+						strings.Contains(p, libMarker+"/") {
+						idx := strings.Index(p, libMarker)
+						suffix := p[idx+len(libMarker):]
+						parts[i] = currentFarmDir + suffix
+						changed = true
+					}
 				}
 				if !changed {
 					return nil

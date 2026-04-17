@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
@@ -42,6 +43,7 @@ var doctorChecks = []doctorCheck{
 	{"packages installed", checkPackagesInstalled},
 	{"generation", checkGeneration},
 	{"symlinks", checkSymlinks},
+	{"lib farm", checkFarm},
 	{"PATH", checkPATH},
 	{"direnv", checkDirenvIntegration},
 	{"orphans", checkOrphans},
@@ -229,6 +231,40 @@ func checkSymlinks(ctx *doctorContext) bool {
 	ctx.out.Success(fmt.Sprintf(
 		"Symlinks intact (%d binaries)", len(entries)))
 	return true
+}
+
+// checkFarm verifies the shared dylib farm at
+// ~/.gale/lib/ is in sync with the store.
+func checkFarm(ctx *doctorContext) bool {
+	farmDir := farm.Dir(ctx.galeDir)
+	issues, err := farm.CheckDrift(ctx.storeRoot, farmDir)
+	if err != nil {
+		ctx.out.Error(fmt.Sprintf("Farm check failed: %v", err))
+		return false
+	}
+	if len(issues) == 0 {
+		ctx.out.Success(fmt.Sprintf(
+			"Lib farm (%s)", farmDir))
+		return true
+	}
+	// Cap the printed list so a very out-of-sync farm
+	// doesn't flood output.
+	const maxShown = 5
+	shown := issues
+	if len(shown) > maxShown {
+		shown = shown[:maxShown]
+	}
+	msg := fmt.Sprintf("Lib farm drift (%d issue(s))", len(issues))
+	for _, i := range shown {
+		msg += "\n  " + i
+	}
+	if len(issues) > maxShown {
+		msg += fmt.Sprintf("\n  ... %d more",
+			len(issues)-maxShown)
+	}
+	msg += "\n  Run: gale doctor --repair"
+	ctx.out.Error(msg)
+	return false
 }
 
 // checkPATH verifies ~/.gale/current/bin is on PATH.

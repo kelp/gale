@@ -2,8 +2,10 @@ package main
 
 import (
 	"fmt"
+	"path/filepath"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -80,9 +82,20 @@ var removeCmd = &cobra.Command{
 
 		// Remove the declared version from the store.
 		if st.IsInstalled(name, version) {
+			storeDir := filepath.Join(ctx.StoreRoot, name, version)
 			if err := st.Remove(name, version); err != nil {
 				return fmt.Errorf("removing from store: %w",
 					err)
+			}
+			// Clean up farm symlinks pointing into the
+			// removed store dir. Best-effort; a failure
+			// here leaves stale symlinks that `gale
+			// inspect` would surface.
+			if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
+				if err := farm.Depopulate(storeDir, farmDir); err != nil {
+					out.Warn(fmt.Sprintf(
+						"farm depopulate: %v", err))
+				}
 			}
 			out.Info(fmt.Sprintf("Removed %s@%s from store",
 				name, version))

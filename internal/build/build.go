@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
@@ -540,6 +541,16 @@ func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS strin
 					ldParts = append(ldParts,
 						"-Wl,-rpath,"+libDir)
 				}
+			}
+		}
+		// Also add the shared-lib farm rpath (~/.gale/lib/).
+		// Versioned dylibs from all installed packages are
+		// symlinked there, so binaries stay functional across
+		// dep upgrades that preserve the SONAME.
+		if runtime.GOOS == "darwin" {
+			if farmDir := farm.DirFromStoreDir(deps.StoreDirs[0]); farmDir != "" {
+				ldParts = append(ldParts,
+					"-Wl,-rpath,"+farmDir)
 			}
 		}
 		depCPPFLAGS = strings.Join(cppParts, " ")

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strconv"
 
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 )
 
@@ -50,6 +51,18 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 		if err := swapCurrentSymlink(galeDir, next); err != nil {
 			cleanup()
 			return err
+		}
+
+		// Rebuild the shared-lib farm to reflect the
+		// packages in this generation. Rollbacks and
+		// removals can drop packages whose dylibs were
+		// farmed; repopulating from the store keeps the
+		// farm honest. Best-effort — a farm error does
+		// not invalidate the generation swap.
+		if err := farm.Repopulate(
+			storeRoot, farm.Dir(galeDir)); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"farm: repopulate after gen swap: %v\n", err)
 		}
 
 		// Write README (best effort, world-readable).

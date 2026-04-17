@@ -11,6 +11,7 @@ import (
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/recipe"
@@ -321,6 +322,16 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, v attesta
 		return fmt.Errorf("relocate rpaths: %w", err)
 	}
 
+	// Populate the shared lib farm with symlinks to this
+	// package's versioned dylibs. Best-effort: warn on
+	// conflict but don't fail the install — conflicts are
+	// a recipe-level issue surfaced by `gale inspect`.
+	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
+		if err := farm.Populate(storeDir, farmDir); err != nil {
+			fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+		}
+	}
+
 	return nil
 }
 
@@ -538,6 +549,11 @@ func extractBuild(result *build.BuildResult, storeDir string) error {
 	}
 	if err := build.RestorePrefixPlaceholder(storeDir); err != nil {
 		return fmt.Errorf("restore prefix paths: %w", err)
+	}
+	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
+		if err := farm.Populate(storeDir, farmDir); err != nil {
+			fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+		}
 	}
 	return nil
 }
