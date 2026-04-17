@@ -2387,3 +2387,100 @@ func TestBuildEnvExpandsPrefixInRecipeEnvVars(t *testing.T) {
 		t.Errorf("expected %q in build env", want)
 	}
 }
+
+// --- RelocateStalePathsInTextFiles ---
+
+func TestRelocateStalePathsInTextFilesRewritesCIPath(t *testing.T) {
+	prefixDir := t.TempDir()
+
+	libDir := filepath.Join(prefixDir, "lib", "pkgconfig")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(prefixDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	pcFile := filepath.Join(libDir, "example.pc")
+	pcContent := "Libs.private: -L/Users/runner/.gale/pkg/openssl/3.6.1/lib -lssl -lcrypto\n"
+	if err := os.WriteFile(pcFile, []byte(pcContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	script := filepath.Join(binDir, "tool")
+	scriptContent := "#!/bin/sh\nLD_FLAGS=/Users/runner/.gale/pkg/curl/8.19.0/lib/libcurl.a\n"
+	if err := os.WriteFile(script, []byte(scriptContent), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RelocateStalePathsInTextFiles(prefixDir, "/local/.gale/pkg"); err != nil {
+		t.Fatalf("RelocateStalePathsInTextFiles: %v", err)
+	}
+
+	gotPc, _ := os.ReadFile(pcFile)
+	if strings.Contains(string(gotPc), "/Users/runner/") {
+		t.Errorf(".pc file still contains CI path:\n%s", gotPc)
+	}
+	if !strings.Contains(string(gotPc), "/local/.gale/pkg/openssl/3.6.1/lib") {
+		t.Errorf(".pc file missing rewritten path:\n%s", gotPc)
+	}
+
+	gotScript, _ := os.ReadFile(script)
+	if strings.Contains(string(gotScript), "/Users/runner/") {
+		t.Errorf("script still contains CI path:\n%s", gotScript)
+	}
+	if !strings.Contains(string(gotScript), "/local/.gale/pkg/curl/8.19.0/lib/libcurl.a") {
+		t.Errorf("script missing rewritten path:\n%s", gotScript)
+	}
+}
+
+func TestRelocateStalePathsInTextFilesLeavesCurrentPathsAlone(t *testing.T) {
+	prefixDir := t.TempDir()
+
+	libDir := filepath.Join(prefixDir, "lib", "pkgconfig")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	pcFile := filepath.Join(libDir, "example.pc")
+	pcContent := "Libs.private: -L/local/.gale/pkg/openssl/3.6.1/lib -lssl\n"
+	if err := os.WriteFile(pcFile, []byte(pcContent), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RelocateStalePathsInTextFiles(prefixDir, "/local/.gale/pkg"); err != nil {
+		t.Fatalf("RelocateStalePathsInTextFiles: %v", err)
+	}
+
+	got, _ := os.ReadFile(pcFile)
+	if string(got) != pcContent {
+		t.Errorf("file was modified but should be unchanged.\ngot:  %q\nwant: %q",
+			string(got), pcContent)
+	}
+}
+
+func TestRelocateStalePathsInTextFilesSkipsBinaryFiles(t *testing.T) {
+	prefixDir := t.TempDir()
+
+	libDir := filepath.Join(prefixDir, "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write a file that looks binary (null bytes) but contains the stale path.
+	binFile := filepath.Join(libDir, "libfoo.a")
+	content := []byte("/Users/runner/.gale/pkg/openssl/3.6.1/lib\x00some binary data\x00\x00")
+	if err := os.WriteFile(binFile, content, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RelocateStalePathsInTextFiles(prefixDir, "/local/.gale/pkg"); err != nil {
+		t.Fatalf("RelocateStalePathsInTextFiles: %v", err)
+	}
+
+	got, _ := os.ReadFile(binFile)
+	if string(got) != string(content) {
+		t.Errorf("binary file was modified but should be unchanged")
+	}
+}

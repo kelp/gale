@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strconv"
 	"strings"
@@ -903,6 +904,67 @@ func RestorePrefixPlaceholder(storeDir string) error {
 		})
 		if err != nil {
 			return fmt.Errorf("restore prefix in %s: %w", d, err)
+		}
+	}
+	return nil
+}
+
+// stalePathRe matches absolute paths containing the .gale/pkg/
+// marker, bounded by common shell/config delimiters.
+var stalePathRe = regexp.MustCompile(`/[^\s"'<>:()|&;,$]*\.gale/pkg/[^\s"'<>:()|&;,$]*`)
+
+// RelocateStalePathsInTextFiles rewrites foreign .gale/pkg/
+// paths embedded in text files under prefixDir so they use
+// currentStoreRoot instead. This fixes CI-baked paths (e.g.
+// /Users/runner/.gale/pkg/...) that appear in scripts and
+// pkg-config files after a binary install.
+// Directories scanned: bin, sbin, libexec, share, etc, lib.
+// Binary files and files larger than 10 MB are skipped.
+func RelocateStalePathsInTextFiles(prefixDir, currentStoreRoot string) error {
+	currentStoreRoot = filepath.Clean(currentStoreRoot)
+	marker := ".gale/pkg/"
+	dirs := []string{
+		"bin", "sbin", "libexec", "share", "etc", "lib",
+	}
+	for _, d := range dirs {
+		dir := filepath.Join(prefixDir, d)
+		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — store content is trusted
+			if err != nil || info.IsDir() {
+				return err
+			}
+			if info.Size() > 10*1024*1024 {
+				return nil
+			}
+			data, readErr := os.ReadFile(path) //nolint:gosec // G122 — build/store output is trusted
+			if readErr != nil {
+				return nil //nolint:nilerr // skip unreadable files
+			}
+			if !isTextContent(data) {
+				return nil
+			}
+			content := string(data)
+			newContent := stalePathRe.ReplaceAllStringFunc(content, func(match string) string {
+				idx := strings.Index(match, marker)
+				if idx < 0 {
+					return match
+				}
+				suffix := match[idx+len(marker):]
+				newPath := filepath.Join(currentStoreRoot, suffix)
+				if match == newPath {
+					return match
+				}
+				return newPath
+			})
+			if newContent == content {
+				return nil
+			}
+			return os.WriteFile(path, []byte(newContent), info.Mode()) //nolint:gosec
+		})
+		if err != nil {
+			return fmt.Errorf("relocate stale paths in %s: %w", d, err)
 		}
 	}
 	return nil
