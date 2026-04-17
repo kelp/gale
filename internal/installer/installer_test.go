@@ -836,7 +836,7 @@ func TestExtractBuildExtractsArchive(t *testing.T) {
 		SHA256:  hash,
 	}
 
-	if err := extractBuild(result, storeDir); err != nil {
+	if err := extractBuild(result, storeDir, nil); err != nil {
 		t.Fatalf("extractBuild: %v", err)
 	}
 
@@ -856,7 +856,7 @@ func TestExtractBuildBadArchiveReturnsError(t *testing.T) {
 		SHA256:  "abc",
 	}
 
-	err := extractBuild(result, storeDir)
+	err := extractBuild(result, storeDir, nil)
 	if err == nil {
 		t.Fatal("expected error for nonexistent archive")
 	}

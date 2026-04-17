@@ -80,10 +80,20 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	method := MethodSource
 	var sha256 string
 
+	// Resolve and install deps first. Needed for source
+	// builds (to supply the build environment) AND for
+	// prebuilt installs (so we can record the dep closure
+	// in .gale-deps.toml for staleness detection).
+	depPaths, err := inst.InstallBuildDeps(r)
+	if err != nil {
+		os.RemoveAll(storeDir)
+		return nil, fmt.Errorf("install build deps: %w", err)
+	}
+
 	// Try binary first (unless source-only mode).
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	if bin != nil && !inst.SourceOnly {
-		if err := installBinary(bin, storeDir, name, version, inst.Verifier); err == nil {
+		if err := installBinary(bin, storeDir, name, version, depPaths, inst.Verifier); err == nil {
 			method = MethodBinary
 			sha256 = bin.SHA256
 		} else {
@@ -97,14 +107,6 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	}
 
 	if method != MethodBinary {
-		// Resolve and install build deps, collect their
-		// bin dirs for the build PATH.
-		depPaths, err := inst.InstallBuildDeps(r)
-		if err != nil {
-			os.RemoveAll(storeDir)
-			return nil, fmt.Errorf("install build deps: %w", err)
-		}
-
 		hash, buildErr := installFromSource(r, storeDir, depPaths)
 		if buildErr != nil {
 			// Clean up failed install.
@@ -218,7 +220,7 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
 
-	if err := extractBuild(buildResult, storeDir); err != nil {
+	if err := extractBuild(buildResult, storeDir, depPaths); err != nil {
 		os.RemoveAll(storeDir)
 		return nil, fmt.Errorf("extracting git build: %w", err)
 	}
@@ -256,7 +258,7 @@ func replaceStoreDir(storeDir, buildDir string) error {
 	return nil
 }
 
-func installBinary(bin *recipe.Binary, storeDir, name, version string, v attestation.Verifier) error {
+func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *build.BuildDeps, v attestation.Verifier) error {
 	tmpFile := storeDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)
 
@@ -329,6 +331,19 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, v attesta
 	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
 		if err := farm.Populate(storeDir, farmDir); err != nil {
 			fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+		}
+	}
+
+	// Record the dep closure the prebuilt expects at
+	// runtime so staleness can be detected when a dep's
+	// recipe changes. Deps reflect locally-resolved
+	// versions rather than the exact versions CI linked
+	// against — a reasonable approximation since
+	// revisions should preserve ABI.
+	if deps != nil {
+		md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
+		if err := WriteDepsMetadata(storeDir, md); err != nil {
+			return fmt.Errorf("write deps metadata: %w", err)
 		}
 	}
 
@@ -524,7 +539,7 @@ func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *
 	if err != nil {
 		return "", fmt.Errorf("building from local source: %w", err)
 	}
-	return result.SHA256, extractBuild(result, storeDir)
+	return result.SHA256, extractBuild(result, storeDir, deps)
 }
 
 func installFromSource(r *recipe.Recipe, storeDir string, deps *build.BuildDeps) (string, error) {
@@ -538,12 +553,14 @@ func installFromSource(r *recipe.Recipe, storeDir string, deps *build.BuildDeps)
 	if err != nil {
 		return "", fmt.Errorf("building from source: %w", err)
 	}
-	return result.SHA256, extractBuild(result, storeDir)
+	return result.SHA256, extractBuild(result, storeDir, deps)
 }
 
 // extractBuild extracts a build archive into the store dir
 // and restores prefix placeholders to the actual store path.
-func extractBuild(result *build.BuildResult, storeDir string) error {
+// If deps is non-nil, writes .gale-deps.toml recording the
+// dep closure the build was linked against.
+func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps) error {
 	if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
 		return fmt.Errorf("extract build output: %w", err)
 	}
@@ -553,6 +570,12 @@ func extractBuild(result *build.BuildResult, storeDir string) error {
 	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
 		if err := farm.Populate(storeDir, farmDir); err != nil {
 			fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+		}
+	}
+	if deps != nil {
+		md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
+		if err := WriteDepsMetadata(storeDir, md); err != nil {
+			return fmt.Errorf("write deps metadata: %w", err)
 		}
 	}
 	return nil
