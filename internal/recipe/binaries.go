@@ -55,6 +55,12 @@ func ParseBinaryIndex(data string) (*BinaryIndex, error) {
 // MergeBinaries populates a recipe's Binary map from a
 // BinaryIndex. If the index is nil or its version doesn't
 // match the recipe version (stale), this is a no-op.
+//
+// Accepted match forms for idx.Version:
+//   - the full "<version>-<revision>" string (new canonical)
+//   - the bare "<version>" (legacy .binaries.toml files
+//     written before the revision system)
+//
 // The GHCR URL is constructed as:
 //
 //	https://ghcr.io/v2/<ghcrBase>/<name>/blobs/sha256:<hash>
@@ -62,7 +68,7 @@ func MergeBinaries(r *Recipe, idx *BinaryIndex, ghcrBase string) {
 	if idx == nil {
 		return
 	}
-	if idx.Version != r.Package.Version {
+	if idx.Version != r.Package.Full() && idx.Version != r.Package.Version {
 		return
 	}
 

@@ -45,6 +45,17 @@ type Package struct {
 	Homepage    string
 	Platforms   []string `toml:"platforms,omitempty"`
 	Verify      string   `toml:"verify,omitempty"`
+	Revision    int      `toml:"revision,omitempty"`
+}
+
+// Full returns the full version string including revision,
+// formatted as "<version>-<revision>". Revision defaults to 1.
+func (p Package) Full() string {
+	rev := p.Revision
+	if rev <= 0 {
+		rev = 1
+	}
+	return fmt.Sprintf("%s-%d", p.Version, rev)
 }
 
 // Source holds the source archive location and checksum.
@@ -116,9 +127,10 @@ type PlatformDependencies struct {
 
 // Dependencies holds build-time and runtime dependency lists.
 type Dependencies struct {
-	Build    []string
-	Runtime  []string
-	Platform map[string]PlatformDependencies `toml:"-"`
+	Build       []string
+	Runtime     []string
+	Constraints map[string]string               `toml:"-"` // name → raw constraint
+	Platform    map[string]PlatformDependencies `toml:"-"`
 }
 
 // rawRecipe is used for initial TOML decoding before
@@ -164,6 +176,12 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 	}
 	r.Build = b
 
+	if r.Package.Revision < 0 {
+		return nil, fmt.Errorf("invalid revision %d: revision must be >= 0", r.Package.Revision)
+	}
+	if r.Package.Revision == 0 {
+		r.Package.Revision = 1
+	}
 	if r.Package.Name == "" {
 		return nil, fmt.Errorf("missing required field: package.name")
 	}
@@ -218,6 +236,40 @@ func (r *Recipe) DependenciesForPlatform(goos, goarch string) Dependencies {
 	return deps
 }
 
+// parseDep extracts a dep name and optional version constraint from a
+// single element in a build/runtime list. The element may be either a
+// bare string or an inline table with at least a "name" key.
+// It returns the name, an optional constraint (empty string means none),
+// and an error if the element is malformed.
+func parseDep(v interface{}) (name, constraint string, err error) {
+	switch val := v.(type) {
+	case string:
+		return val, "", nil
+	case map[string]interface{}:
+		nameRaw, ok := val["name"]
+		if !ok {
+			return "", "", fmt.Errorf("dependency table missing \"name\" field")
+		}
+		nameStr, ok := nameRaw.(string)
+		if !ok {
+			return "", "", fmt.Errorf("dependency table \"name\" must be a string")
+		}
+		if nameStr == "" {
+			return "", "", fmt.Errorf("dependency table \"name\" must not be empty")
+		}
+		var versionStr string
+		if versionRaw, hasVersion := val["version"]; hasVersion {
+			versionStr, ok = versionRaw.(string)
+			if !ok {
+				return "", "", fmt.Errorf("dependency table \"version\" must be a string")
+			}
+		}
+		return nameStr, versionStr, nil
+	default:
+		return "", "", fmt.Errorf("dependency entry must be a string or inline table")
+	}
+}
+
 func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
 	deps := Dependencies{}
 	if raw == nil {
@@ -226,8 +278,16 @@ func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
 	if buildRaw, ok := raw["build"]; ok {
 		if arr, ok := buildRaw.([]interface{}); ok {
 			for _, v := range arr {
-				if s, ok := v.(string); ok {
-					deps.Build = append(deps.Build, s)
+				name, constraint, err := parseDep(v)
+				if err != nil {
+					return Dependencies{}, err
+				}
+				deps.Build = append(deps.Build, name)
+				if constraint != "" {
+					if deps.Constraints == nil {
+						deps.Constraints = make(map[string]string)
+					}
+					deps.Constraints[name] = constraint
 				}
 			}
 		}
@@ -235,8 +295,16 @@ func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
 	if runtimeRaw, ok := raw["runtime"]; ok {
 		if arr, ok := runtimeRaw.([]interface{}); ok {
 			for _, v := range arr {
-				if s, ok := v.(string); ok {
-					deps.Runtime = append(deps.Runtime, s)
+				name, constraint, err := parseDep(v)
+				if err != nil {
+					return Dependencies{}, err
+				}
+				deps.Runtime = append(deps.Runtime, name)
+				if constraint != "" {
+					if deps.Constraints == nil {
+						deps.Constraints = make(map[string]string)
+					}
+					deps.Constraints[name] = constraint
 				}
 			}
 		}
@@ -259,8 +327,16 @@ func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
 		if buildRaw, ok := sub["build"]; ok {
 			if arr, ok := buildRaw.([]interface{}); ok {
 				for _, v := range arr {
-					if s, ok := v.(string); ok {
-						pd.Build = append(pd.Build, s)
+					name, constraint, err := parseDep(v)
+					if err != nil {
+						return Dependencies{}, err
+					}
+					pd.Build = append(pd.Build, name)
+					if constraint != "" {
+						if deps.Constraints == nil {
+							deps.Constraints = make(map[string]string)
+						}
+						deps.Constraints[name] = constraint
 					}
 				}
 			}
@@ -268,8 +344,16 @@ func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
 		if runtimeRaw, ok := sub["runtime"]; ok {
 			if arr, ok := runtimeRaw.([]interface{}); ok {
 				for _, v := range arr {
-					if s, ok := v.(string); ok {
-						pd.Runtime = append(pd.Runtime, s)
+					name, constraint, err := parseDep(v)
+					if err != nil {
+						return Dependencies{}, err
+					}
+					pd.Runtime = append(pd.Runtime, name)
+					if constraint != "" {
+						if deps.Constraints == nil {
+							deps.Constraints = make(map[string]string)
+						}
+						deps.Constraints[name] = constraint
 					}
 				}
 			}

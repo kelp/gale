@@ -1030,3 +1030,378 @@ func TestBuildForPlatformUsesPerPlatformEnvOverride(t *testing.T) {
 		t.Errorf("Env[FOO] = %q, want %q", got, "darwin")
 	}
 }
+
+// --- Behavior: Revision field and Full() method ---
+
+// TestRevisionDefaultsToOneAfterParsing tests that a recipe with no
+// revision key in [package] produces Package.Revision == 1 and
+// Full() == "<version>-1".
+func TestRevisionDefaultsToOneAfterParsing(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "2.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Package.Revision != 1 {
+		t.Errorf("Revision = %d, want 1", r.Package.Revision)
+	}
+	if got := r.Package.Full(); got != "2.0.0-1" {
+		t.Errorf("Full() = %q, want %q", got, "2.0.0-1")
+	}
+}
+
+// TestRevisionExplicitTwoParsesCorrectly tests that TOML with
+// revision = 2 produces Package.Revision == 2 and Full() == "<version>-2".
+func TestRevisionExplicitTwoParsesCorrectly(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "2.0.0"
+revision = 2
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if r.Package.Revision != 2 {
+		t.Errorf("Revision = %d, want 2", r.Package.Revision)
+	}
+	if got := r.Package.Full(); got != "2.0.0-2" {
+		t.Errorf("Full() = %q, want %q", got, "2.0.0-2")
+	}
+}
+
+// TestNegativeRevisionCausesParseError tests that revision = -1 makes
+// Parse return a non-nil error mentioning "revision".
+func TestNegativeRevisionCausesParseError(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+revision = -1
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for negative revision")
+	}
+	if !strings.Contains(strings.ToLower(err.Error()), "revision") {
+		t.Errorf("error %q should mention 'revision'", err)
+	}
+}
+
+// TestFullOnStructLiteralWithZeroRevision tests that Package.Full()
+// on a struct literal with Revision == 0 returns "<version>-1".
+func TestFullOnStructLiteralWithZeroRevision(t *testing.T) {
+	p := Package{Name: "x", Version: "1.0", Revision: 0}
+	if got := p.Full(); got != "1.0-1" {
+		t.Errorf("Full() = %q, want %q", got, "1.0-1")
+	}
+}
+
+// TestFullOnStructLiteralWithRevisionThree tests that Package.Full()
+// on a struct literal with Revision == 3 returns "<version>-3".
+func TestFullOnStructLiteralWithRevisionThree(t *testing.T) {
+	p := Package{Name: "x", Version: "1.0", Revision: 3}
+	if got := p.Full(); got != "1.0-3" {
+		t.Errorf("Full() = %q, want %q", got, "1.0-3")
+	}
+}
+
+// --- Behavior: constraint-table syntax in dependency lists ---
+
+// TestBareRuntimeDepsConstraintsNilOrEmpty tests that a recipe with
+// bare-string runtime deps produces no Constraints entries (behavior 1).
+func TestBareRuntimeDepsConstraintsNilOrEmpty(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+runtime = ["a", "b"]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Dependencies.Runtime) != 2 {
+		t.Fatalf("Runtime length = %d, want 2", len(r.Dependencies.Runtime))
+	}
+	if r.Dependencies.Runtime[0] != "a" || r.Dependencies.Runtime[1] != "b" {
+		t.Errorf("Runtime = %v, want [a b]", r.Dependencies.Runtime)
+	}
+	if len(r.Dependencies.Constraints) != 0 {
+		t.Errorf("Constraints = %v, want nil or empty", r.Dependencies.Constraints)
+	}
+}
+
+// TestBareRuntimeDepsConstraintsNilOrEmptyBuild tests that a recipe with
+// bare-string build deps produces no Constraints entries (behavior 4a).
+func TestBareRuntimeDepsConstraintsNilOrEmptyBuild(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+build = ["a", "b"]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Dependencies.Build) != 2 {
+		t.Fatalf("Build length = %d, want 2", len(r.Dependencies.Build))
+	}
+	if r.Dependencies.Build[0] != "a" || r.Dependencies.Build[1] != "b" {
+		t.Errorf("Build = %v, want [a b]", r.Dependencies.Build)
+	}
+	if len(r.Dependencies.Constraints) != 0 {
+		t.Errorf("Constraints = %v, want nil or empty", r.Dependencies.Constraints)
+	}
+}
+
+// TestTableFormRuntimeExtractsNameAndConstraint tests that a recipe with a
+// single inline-table runtime dep extracts the name into Runtime and stores
+// the version constraint in Constraints (behavior 2).
+func TestTableFormRuntimeExtractsNameAndConstraint(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+runtime = [{name = "expat", version = ">=2.7.5-2"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Dependencies.Runtime) != 1 {
+		t.Fatalf("Runtime length = %d, want 1", len(r.Dependencies.Runtime))
+	}
+	if r.Dependencies.Runtime[0] != "expat" {
+		t.Errorf("Runtime[0] = %q, want %q", r.Dependencies.Runtime[0], "expat")
+	}
+	if r.Dependencies.Constraints == nil {
+		t.Fatal("Constraints is nil, want map containing expat")
+	}
+	if got := r.Dependencies.Constraints["expat"]; got != ">=2.7.5-2" {
+		t.Errorf("Constraints[expat] = %q, want %q", got, ">=2.7.5-2")
+	}
+}
+
+// TestTableFormBuildExtractsNameAndConstraint tests that a recipe with a
+// single inline-table build dep extracts the name into Build and stores the
+// version constraint in Constraints (behavior 4b).
+func TestTableFormBuildExtractsNameAndConstraint(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+build = [{name = "cmake", version = ">=3.26"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Dependencies.Build) != 1 {
+		t.Fatalf("Build length = %d, want 1", len(r.Dependencies.Build))
+	}
+	if r.Dependencies.Build[0] != "cmake" {
+		t.Errorf("Build[0] = %q, want %q", r.Dependencies.Build[0], "cmake")
+	}
+	if r.Dependencies.Constraints == nil {
+		t.Fatal("Constraints is nil, want map containing cmake")
+	}
+	if got := r.Dependencies.Constraints["cmake"]; got != ">=3.26" {
+		t.Errorf("Constraints[cmake] = %q, want %q", got, ">=3.26")
+	}
+}
+
+// TestMixedBareAndTableRuntimeDeps tests that a recipe mixing bare strings
+// and inline-table entries in runtime produces the correct Runtime slice and
+// Constraints map (behavior 3).
+func TestMixedBareAndTableRuntimeDeps(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+runtime = ["curl", {name = "expat", version = ">=2.7.5-2"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Dependencies.Runtime) != 2 {
+		t.Fatalf("Runtime length = %d, want 2", len(r.Dependencies.Runtime))
+	}
+	if r.Dependencies.Runtime[0] != "curl" {
+		t.Errorf("Runtime[0] = %q, want %q", r.Dependencies.Runtime[0], "curl")
+	}
+	if r.Dependencies.Runtime[1] != "expat" {
+		t.Errorf("Runtime[1] = %q, want %q", r.Dependencies.Runtime[1], "expat")
+	}
+	if r.Dependencies.Constraints == nil {
+		t.Fatal("Constraints is nil, want map containing expat")
+	}
+	if got := r.Dependencies.Constraints["expat"]; got != ">=2.7.5-2" {
+		t.Errorf("Constraints[expat] = %q, want %q", got, ">=2.7.5-2")
+	}
+	if _, hasCurl := r.Dependencies.Constraints["curl"]; hasCurl {
+		t.Error("Constraints should not contain bare-string dep 'curl'")
+	}
+}
+
+// TestMixedBareAndTableBuildDeps tests the same mixing behavior for build
+// deps (behavior 4c).
+func TestMixedBareAndTableBuildDeps(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+build = ["autoconf", {name = "cmake", version = ">=3.26"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Dependencies.Build) != 2 {
+		t.Fatalf("Build length = %d, want 2", len(r.Dependencies.Build))
+	}
+	if r.Dependencies.Build[0] != "autoconf" {
+		t.Errorf("Build[0] = %q, want %q", r.Dependencies.Build[0], "autoconf")
+	}
+	if r.Dependencies.Build[1] != "cmake" {
+		t.Errorf("Build[1] = %q, want %q", r.Dependencies.Build[1], "cmake")
+	}
+	if r.Dependencies.Constraints == nil {
+		t.Fatal("Constraints is nil, want map containing cmake")
+	}
+	if got := r.Dependencies.Constraints["cmake"]; got != ">=3.26" {
+		t.Errorf("Constraints[cmake] = %q, want %q", got, ">=3.26")
+	}
+	if _, hasAutoconf := r.Dependencies.Constraints["autoconf"]; hasAutoconf {
+		t.Error("Constraints should not contain bare-string dep 'autoconf'")
+	}
+}
+
+// TestTableDepWithoutNameFieldIsError tests that an inline table missing the
+// required "name" field causes Parse to return an error (behavior 5).
+func TestTableDepWithoutNameFieldIsError(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+runtime = [{version = ">=1.0"}]
+`
+	_, err := Parse(input)
+	if err == nil {
+		t.Fatal("expected error for inline-table dep missing 'name' field")
+	}
+}
+
+// TestTableDepWithNameButNoVersionParsesCleanly tests that an inline-table
+// dep with a name but no version field parses without error and adds the name
+// to the slice (behavior 6).
+func TestTableDepWithNameButNoVersionParsesCleanly(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+runtime = [{name = "bar"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(r.Dependencies.Runtime) != 1 {
+		t.Fatalf("Runtime length = %d, want 1", len(r.Dependencies.Runtime))
+	}
+	if r.Dependencies.Runtime[0] != "bar" {
+		t.Errorf("Runtime[0] = %q, want %q", r.Dependencies.Runtime[0], "bar")
+	}
+}
+
+// TestTableDepWithNameButNoVersionHasNoConstraintEntry tests the companion
+// assertion that a name-only table dep does not populate Constraints (behavior 6).
+func TestTableDepWithNameButNoVersionHasNoConstraintEntry(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+runtime = [{name = "bar"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Constraints should either be nil or not contain "bar".
+	if got, ok := r.Dependencies.Constraints["bar"]; ok && got != "" {
+		t.Errorf("Constraints[bar] = %q, want absent or empty", got)
+	}
+}
