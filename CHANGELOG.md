@@ -4,6 +4,36 @@
 
 ### Added
 
+- Debian-style recipe revisions. Recipes can declare
+  `revision = N` in `[package]`, defaulting to 1. User-facing
+  version becomes `<version>-<revision>` (e.g. `curl@8.19.0-2`).
+  `gale install pkg@<version>` resolves to the latest revision
+  of that version; `gale install pkg@<version>-<revision>` pins
+  exactly. `gale outdated` treats a revision bump as outdated
+  even when the upstream version is identical.
+- Per-install `.gale-deps.toml` written at install time,
+  recording the resolved `(name, version, revision)` closure
+  the binary was linked against. Used by `gale sync` and
+  `gale doctor` to detect dependents that need rebuild when a
+  dep's recipe changes.
+- Automatic dep propagation. `gale sync` now calls `IsStale`
+  on each installed package; any package whose built-against
+  deps no longer match the current recipes is reinstalled.
+- Explicit version-range constraints in dep declarations.
+  Recipes can write
+  `runtime = [{name = "expat", version = ">=2.7.5-2"}]` —
+  installed deps satisfying the constraint are not considered
+  stale. Bare-string deps continue to work (behave as any
+  revision bump invalidates).
+- `gale doctor` now reports stale installs with a hint to
+  run `gale sync`.
+- Store layout includes revisions: new installs write to
+  `~/.gale/pkg/<name>/<version>-<revision>/`. Existing
+  bare-version dirs are still found via back-compat lookup
+  (treated as revision 1).
+- Registry `.versions` index supports multiple revisions per
+  version. `gale install curl@8.19.0` now picks the highest
+  revision in the index.
 - Shared dylib farm at `~/.gale/lib/`. Installs symlink their
   versioned dylibs (e.g. `libcurl.4.dylib`) into the farm, and
   new binaries carry an extra rpath to it alongside the existing
