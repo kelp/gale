@@ -34,9 +34,7 @@ Issue kinds:
   over-declared-dep  recipe declares a runtime dep no binary references
   version-skew       two binaries reference different versions of the same dep`,
 	Args: cobra.MaximumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		return runInspect(cmd, args)
-	},
+	RunE: runInspect,
 }
 
 func init() {
