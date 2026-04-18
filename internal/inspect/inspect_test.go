@@ -14,10 +14,10 @@ import (
 // variety of paths inspect will actually see.
 func TestStoreNameVersion(t *testing.T) {
 	cases := []struct {
-		in            string
-		wantName      string
-		wantVersion   string
-		wantOK        bool
+		in          string
+		wantName    string
+		wantVersion string
+		wantOK      bool
 	}{
 		{
 			in:          "/Users/tcole/.gale/pkg/curl/8.19.0/lib/libcurl.dylib",
