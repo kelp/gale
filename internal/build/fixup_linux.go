@@ -149,6 +149,10 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 	return nil
 }
 
+// EnsureCodeSigned is a no-op on Linux. Exists so platform-
+// neutral callers can invoke it without build-tag shims.
+func EnsureCodeSigned(prefixDir string) error { return nil }
+
 // RelocateStaleRpaths rewrites ELF RUNPATH entries that
 // contain a foreign .gale/pkg/ store prefix to use the
 // local store root. This handles prebuilt binaries from

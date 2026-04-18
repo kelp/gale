@@ -431,6 +431,38 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 	return nil
 }
 
+// EnsureCodeSigned walks Mach-O files under prefixDir and
+// applies an ad-hoc code signature to any that lack one. On
+// Apple Silicon the kernel SIGKILLs unsigned Mach-O binaries
+// on exec, so this guards against CI tarballs that shipped
+// without signatures (or had them stripped in transit).
+//
+// Object files (.o) and files inside .dSYM debug bundles are
+// skipped — they are never executed and install_name_tool
+// cannot modify them either.
+func EnsureCodeSigned(prefixDir string) error {
+	return filepath.Walk(prefixDir,
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil //nolint:nilerr // skip unreadable files
+			}
+			if !isMachO(path) || isObjectFile(path) || isDSYMBundle(path) {
+				return nil
+			}
+			// codesign -v exits 0 on any valid signature
+			// (including ad-hoc) and non-zero otherwise.
+			if exec.Command("codesign", "-v", path).Run() == nil {
+				return nil
+			}
+			if err := run("codesign", "--force", "--sign",
+				"-", path); err != nil {
+				return fmt.Errorf("codesign %s: %w",
+					filepath.Base(path), err)
+			}
+			return nil
+		})
+}
+
 // isSuspiciousDepRef reports whether a LC_LOAD_DYLIB entry
 // looks like it should have been an @rpath/ reference to a
 // gale dep dylib. Returns true when the reference is an

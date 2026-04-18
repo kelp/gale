@@ -550,6 +550,75 @@ func TestIsSuspiciousDepRefIgnoresUnmanagedAbsolutePaths(t *testing.T) {
 	}
 }
 
+// --- EnsureCodeSigned adds ad-hoc signatures to unsigned Mach-Os ---
+
+// isCodeSigned returns true when codesign -v reports the file
+// as having a valid signature (including ad-hoc).
+func isCodeSigned(t *testing.T, path string) bool {
+	t.Helper()
+	return exec.Command("codesign", "-v", path).Run() == nil
+}
+
+func TestEnsureCodeSignedSignsUnsignedBinary(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := compileTinyBinary(t, binDir, "hello")
+
+	// Strip the signature that cc auto-applies so we start
+	// from the unsigned state a CI-delivered tarball might
+	// ship. codesign -v must fail before the fix.
+	if err := exec.Command("codesign", "--remove-signature", bin).Run(); err != nil {
+		t.Fatalf("remove signature: %v", err)
+	}
+	if isCodeSigned(t, bin) {
+		t.Fatal("setup: binary still reports signed after remove-signature")
+	}
+
+	if err := EnsureCodeSigned(dir); err != nil {
+		t.Fatalf("EnsureCodeSigned: %v", err)
+	}
+
+	if !isCodeSigned(t, bin) {
+		t.Error("binary still unsigned after EnsureCodeSigned")
+	}
+}
+
+func TestEnsureCodeSignedLeavesSignedBinaryAlone(t *testing.T) {
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := compileTinyBinary(t, binDir, "hello")
+
+	if !isCodeSigned(t, bin) {
+		t.Skipf("setup: compiler did not auto-sign, test cannot run")
+	}
+
+	if err := EnsureCodeSigned(dir); err != nil {
+		t.Fatalf("EnsureCodeSigned: %v", err)
+	}
+
+	if !isCodeSigned(t, bin) {
+		t.Error("previously-signed binary lost its signature")
+	}
+}
+
+func TestEnsureCodeSignedSkipsNonMachO(t *testing.T) {
+	dir := t.TempDir()
+	txt := filepath.Join(dir, "readme.txt")
+	if err := os.WriteFile(txt, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := EnsureCodeSigned(dir); err != nil {
+		t.Fatalf("EnsureCodeSigned errored on non-Mach-O contents: %v", err)
+	}
+}
+
 // --- BUG-5: otoolDeps error is not silently swallowed ---
 
 func TestOtoolDepsErrorReturnedByFixupBinaries(t *testing.T) {

@@ -361,6 +361,14 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 		return fmt.Errorf("relocate rpaths: %w", err)
 	}
 
+	// Ad-hoc sign any Mach-O that arrived unsigned — Apple
+	// Silicon kernels SIGKILL unsigned binaries on exec, and
+	// RelocateStaleRpaths only re-signs files whose rpaths
+	// were rewritten. No-op on Linux.
+	if err := build.EnsureCodeSigned(storeDir); err != nil {
+		return fmt.Errorf("ensure code signed: %w", err)
+	}
+
 	// Populate the shared lib farm with symlinks to this
 	// package's versioned dylibs. Best-effort: warn on
 	// conflict but don't fail the install — conflicts are
