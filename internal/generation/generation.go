@@ -15,11 +15,19 @@ import (
 )
 
 // resolveStoreDir returns the actual store dir for a
-// (name, version) pair, falling back from "<v>-1" to bare
-// "<v>" when the suffixed dir is absent. Mirrors the
-// Store.resolveVersion back-compat logic without an
-// import cycle.
+// (name, version) pair. Mirrors Store.resolveVersion's
+// bidirectional resolution without an import cycle: a
+// bare version prefers the canonical "<v>-1" dir, and a
+// "<v>-1" request falls back to a bare dir when the
+// suffixed one is absent.
 func resolveStoreDir(storeRoot, name, version string) string {
+	if !strings.Contains(version, "-") {
+		canonical := version + "-1"
+		canonicalDir := filepath.Join(storeRoot, name, canonical)
+		if _, err := os.Stat(canonicalDir); err == nil {
+			return canonicalDir
+		}
+	}
 	dir := filepath.Join(storeRoot, name, version)
 	if _, err := os.Stat(dir); err == nil {
 		return dir

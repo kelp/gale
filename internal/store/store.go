@@ -51,10 +51,26 @@ func (s *Store) StorePath(name, version string) (string, bool) {
 }
 
 // resolveVersion returns the actual version directory name to use for
-// name+version, along with whether that directory exists. It checks the
-// exact directory first. If the exact directory is absent and version ends
-// with "-1", it falls back to the bare version (suffix stripped).
+// name+version, along with whether that directory exists.
+//
+// Resolution order:
+//  1. A bare version (no "-") prefers the canonical "<v>-1" dir if
+//     present — that's where new installs land.
+//  2. Exact match on the requested version.
+//  3. A "<v>-1" suffix falls back to a bare "<v>" dir — that's where
+//     pre-revision installs live.
+//
+// Steps 1 and 3 together let pre-revision configs (bare versions) find
+// freshly-migrated installs, and revision-aware configs ("<v>-1") find
+// legacy installs, without forcing a hard filesystem migration.
 func (s *Store) resolveVersion(name, version string) (string, bool) {
+	if !strings.Contains(version, "-") {
+		canonical := version + "-1"
+		canonicalDir := filepath.Join(s.Root, name, canonical)
+		if _, err := os.Stat(canonicalDir); err == nil {
+			return canonical, true
+		}
+	}
 	dir := filepath.Join(s.Root, name, version)
 	if _, err := os.Stat(dir); err == nil {
 		return version, true
