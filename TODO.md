@@ -95,6 +95,105 @@
   `git describe` formatted as semver
   (`0.2.0-dev.7+5395b8f`).
 
+## Pre-0.12 Release
+
+Surfaced during 2026-04-18 local test pass of the revision
+system. None block shipping on their own, but each is a
+paper-cut a new user is likely to hit.
+
+- [ ] **Issue #20 — initial sync skips generation on any
+  failure.** `runSync` in `cmd/gale/sync.go` aborts before
+  calling `RebuildGeneration` when any package fails to
+  install. On a fresh machine, one flaky recipe leaves the
+  user with no working gale at all — binaries installed to
+  the store but no `current` symlink, nothing on PATH.
+  Filed by kelp 2026-04-13.
+  Fix direction: rebuild the generation for the packages
+  that did succeed and return a non-zero exit that reports
+  the failures. Keeps partial progress usable. See
+  `finishSync` — it currently short-circuits the rebuild
+  entirely when `failed > 0`. Also touches `gale update`
+  which shares the same pattern.
+
+- [ ] **jq recipe ships libonig.5.dylib alongside
+  oniguruma.** jq's build uses `--with-oniguruma=builtin`
+  which statically links oniguruma into jq, but the
+  autotools install still drops `libonig.5.dylib`,
+  `libonig.a`, etc. into `${PREFIX}/lib/`. The shared-lib
+  farm then reports
+  `farm conflict: libonig.5.dylib claimed by both
+  "jq" and "oniguruma"` on every sync. Cosmetic — farm
+  still resolves to one of them — but recurring noise
+  obscures real warnings.
+  Fix: either add `rm -f ${PREFIX}/lib/libonig*
+  ${PREFIX}/lib/pkgconfig/oniguruma.pc` after
+  `make install` in `recipes/j/jq.toml`, or drop
+  `--with-oniguruma=builtin` and add `oniguruma` as a
+  runtime dep so jq links to the farm copy like other
+  packages. The latter is more consistent but changes
+  the linkage shape of a foundational tool — prefer the
+  post-install rm for minimum blast radius.
+
+- [ ] **`gale doctor --repair` should ad-hoc sign
+  unsigned Mach-Os.** `EnsureCodeSigned` in
+  `internal/build/fixup_darwin.go` (added 2026-04-18,
+  commit f00f2b7) runs on every new extract, but users
+  with pre-fix installs keep any unsigned binaries they
+  already have. Symptom: SIGKILL on exec of gale-managed
+  binaries on Apple Silicon — kernel refuses unsigned
+  Mach-Os. Seen live with vibeutils 0.8.2-1 cat/mktemp,
+  which cascaded into a `starship | fish psub` broken-
+  pipe panic at fish startup.
+  Fix: walk the store from `gale doctor --repair`, call
+  `build.EnsureCodeSigned(storeDir)` for each installed
+  package, and report the list. Low-risk: idempotent,
+  signed binaries short-circuit.
+
+- [ ] **Farm conflicts warn but don't fail.** Same anti-
+  pattern as the codesign swallow we just fixed — a
+  broken invariant ships as stderr noise instead of an
+  error. `internal/farm/populate.go` emits
+  `farm conflict: … claimed by both "X" and "Y"` and
+  keeps going. Makes the release story "sometimes two
+  packages fight over a dylib and one silently wins."
+  Fix: return an error from `farm.Populate` on conflict,
+  let callers decide whether to downgrade to warning
+  (the install code does want to continue on farm
+  errors today — see installer.go ~L370). Blocked on
+  the jq/oniguruma fix above, because turning the
+  warning into an error would make every existing user's
+  sync fail until that recipe ships.
+
+- [ ] **`.gale-deps.toml` records locally-resolved
+  versions, not CI-linked versions.** Comment at
+  `internal/installer/installer.go` ~L375-379 documents
+  the approximation: when extracting a prebuilt, we
+  write the dep closure based on whatever the user's
+  recipes currently resolve to, not the versions CI
+  actually linked against. `IsStale` then compares
+  against *those* versions. In practice fine — revisions
+  are supposed to preserve ABI — but if a user has an
+  unusual pinned dep that diverges from CI's, staleness
+  detection will think the prebuilt is stale when it
+  isn't, or vice versa.
+  Fix direction: have CI write a `.gale-deps.toml` into
+  the tarball at build time with the exact linked
+  versions, and have the installer prefer that file
+  when present and fall back to local resolution only
+  when absent.
+
+### Release notes callouts (not bugs)
+
+- Soft migration: the first `gale sync -g` after
+  upgrade reinstalls every pre-revision package,
+  because missing `.gale-deps.toml` is treated as
+  stale. Expected, but slow on machines with many
+  installs. Worth calling out in the 0.12 notes.
+- New installs land at
+  `~/.gale/pkg/<name>/<version>-<revision>/`. Old bare
+  `<version>/` dirs remain on disk until `gale gc`
+  runs. Harmless other than disk footprint.
+
 ## Declarative Environments
 
 - [x] **Generation model** — `internal/generation/`
