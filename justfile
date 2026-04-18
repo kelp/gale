@@ -43,7 +43,7 @@ check: test lint fmt-check
 
 # Install gale from local source using gale itself
 install:
-    gale update --path . gale
+    gale install --path . -g gale
 
 # Bootstrap gale (first-time: build with go, then self-install)
 bootstrap: build
