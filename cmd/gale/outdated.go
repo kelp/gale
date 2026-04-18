@@ -48,11 +48,17 @@ var outdatedCmd = &cobra.Command{
 				continue
 			}
 
-			if versionNewer(r.Package.Version, version) {
+			// Compare via Full() so a revision bump (e.g.
+			// recipe revision 1 → 2 with unchanged upstream
+			// version) still shows as outdated. Raw Package.Version
+			// only carries the upstream triple, which drops the
+			// revision entirely.
+			latest := r.Package.Full()
+			if versionNewer(latest, version) {
 				items = append(items, outdatedItem{
 					Name:    name,
 					Current: version,
-					Latest:  r.Package.Version,
+					Latest:  latest,
 				})
 			}
 		}
