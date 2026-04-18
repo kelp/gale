@@ -51,6 +51,18 @@ type InstallResult struct {
 
 // Install installs a recipe into the store and links binaries.
 func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
+	return inst.install(r, false)
+}
+
+// Reinstall is Install but skips the IsInstalled cache check so
+// callers can force a fresh install even when the store already
+// satisfies the request. Used by sync's stale-reinstall path to
+// migrate pre-revision bare-dir installs into the canonical layout.
+func (inst *Installer) Reinstall(r *recipe.Recipe) (*InstallResult, error) {
+	return inst.install(r, true)
+}
+
+func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, error) {
 	name := r.Package.Name
 	version := r.Package.Version
 	// Store paths use the full <version>-<revision> form so
@@ -67,8 +79,23 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	}
 	defer unlock()
 
-	// Skip if already installed.
-	if inst.Store.IsInstalled(name, storeVersion) {
+	// Cache check. The default path accepts IsInstalled's
+	// back-compat fallback (bare pre-revision dirs count as
+	// "installed"), so dep installs don't needlessly
+	// re-migrate every package. The forced path requires the
+	// canonical dir specifically — a bare-only install is
+	// not considered cached, which is what makes soft
+	// migration actually do work.
+	canonicalDir := filepath.Join(inst.Store.Root, name, storeVersion)
+	if force {
+		if entries, err := os.ReadDir(canonicalDir); err == nil && len(entries) > 0 {
+			return &InstallResult{
+				Name:    name,
+				Version: version,
+				Method:  MethodCached,
+			}, nil
+		}
+	} else if inst.Store.IsInstalled(name, storeVersion) {
 		return &InstallResult{
 			Name:    name,
 			Version: version,

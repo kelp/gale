@@ -93,13 +93,11 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 
 	var installed, failed int
 	for name, version := range cfg.Packages {
-		// Check store first — pinned version present?
+		// Track whether this iteration is a stale reinstall
+		// so we can route through Reinstall (skip cache) rather
+		// than Install (which would cache-hit on a bare dir).
+		stale := false
 		if ctx.Installer.Store.IsInstalled(name, version) {
-			// Installed. Check if stale relative to the
-			// current recipes of its declared deps. A
-			// stale install means one of its deps had a
-			// recipe bump; we fall through to reinstall.
-			stale := false
 			if storeDir, ok := ctx.Installer.Store.StorePath(name, version); ok {
 				// Missing .gale-deps.toml means the install
 				// predates the revision system. Flag it stale
@@ -153,7 +151,12 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		out.Info(fmt.Sprintf("Installing %s@%s...",
 			name, version))
 
-		result, err := ctx.Installer.Install(r)
+		var result *installer.InstallResult
+		if stale {
+			result, err = ctx.Installer.Reinstall(r)
+		} else {
+			result, err = ctx.Installer.Install(r)
+		}
 		if err != nil {
 			if errors.Is(err, build.ErrUnsupportedPlatform) {
 				out.Warn(fmt.Sprintf(
