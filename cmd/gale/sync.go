@@ -101,7 +101,14 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 			// recipe bump; we fall through to reinstall.
 			stale := false
 			if storeDir, ok := ctx.Installer.Store.StorePath(name, version); ok {
-				if r, err := ctx.ResolveVersionedRecipe(name, version); err == nil {
+				// Missing .gale-deps.toml means the install
+				// predates the revision system. Flag it stale
+				// without needing the recipe, so soft migration
+				// still works when the installed version is no
+				// longer in the registry's .versions index.
+				if !installer.HasDepsMetadata(storeDir) {
+					stale = true
+				} else if r, err := ctx.ResolveVersionedRecipe(name, version); err == nil {
 					if s, err := installer.IsStale(storeDir, r, ctx.Resolver); err == nil {
 						stale = s
 					}

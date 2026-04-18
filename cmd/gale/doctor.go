@@ -296,6 +296,15 @@ func checkStaleInstalls(ctx *doctorContext) bool {
 		if !ok {
 			continue
 		}
+		// Missing .gale-deps.toml means the install predates
+		// the revision system. Flag it stale without needing
+		// the recipe, so old installs whose version is no
+		// longer in the registry's .versions index still
+		// surface as soft-migration candidates.
+		if !installer.HasDepsMetadata(storeDir) {
+			stale = append(stale, pkg.Name+"@"+pkg.Version)
+			continue
+		}
 		r, err := ctx.cmdCtx.ResolveVersionedRecipe(
 			pkg.Name, pkg.Version)
 		if err != nil {

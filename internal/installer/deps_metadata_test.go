@@ -274,6 +274,31 @@ func TestIsStaleIgnoresUndeclaredDepsInMetadata(t *testing.T) {
 	}
 }
 
+// --- HasDepsMetadata tests ---
+
+// Missing .gale-deps.toml file reports no metadata. This is the soft-migration
+// signal: installs that predate the revision system carry no metadata file
+// and should be flagged stale without needing to resolve their recipe.
+func TestHasDepsMetadata_MissingFile(t *testing.T) {
+	dir := t.TempDir()
+	if HasDepsMetadata(dir) {
+		t.Fatal("expected HasDepsMetadata=false when file is missing")
+	}
+}
+
+// Present .gale-deps.toml file reports metadata exists, even when the file
+// is empty (a valid zero-dep install). Pairs with the missing-file test so
+// the bool distinguishes "missing" from "present-but-empty".
+func TestHasDepsMetadata_PresentFile(t *testing.T) {
+	dir := t.TempDir()
+	if err := WriteDepsMetadata(dir, DepsMetadata{}); err != nil {
+		t.Fatalf("WriteDepsMetadata: %v", err)
+	}
+	if !HasDepsMetadata(dir) {
+		t.Fatal("expected HasDepsMetadata=true when file is present")
+	}
+}
+
 // --- BuildDepsToResolved tests ---
 
 // Behavior 1: Nil BuildDeps returns nil — verified by also checking that a

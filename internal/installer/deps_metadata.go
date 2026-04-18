@@ -48,6 +48,18 @@ func WriteDepsMetadata(storeDir string, md DepsMetadata) error {
 	return nil
 }
 
+// HasDepsMetadata reports whether <storeDir>/.gale-deps.toml
+// exists. Callers use this to distinguish "old install that
+// predates the revision system" (file missing → stale) from
+// "fresh install with no deps" (file present but empty).
+// Checking this before resolving a recipe lets sync and doctor
+// detect soft-migration candidates even when the installed
+// version is no longer in the registry's .versions index.
+func HasDepsMetadata(storeDir string) bool {
+	_, err := os.Stat(filepath.Join(storeDir, depsMetadataFile))
+	return err == nil
+}
+
 // ReadDepsMetadata reads <storeDir>/.gale-deps.toml.
 // Returns an empty DepsMetadata (no error) if the file
 // does not exist. Returns an error if the file exists
