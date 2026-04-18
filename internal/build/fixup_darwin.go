@@ -134,7 +134,16 @@ func FixupBinaries(prefixDir string) error {
 		}
 
 		// Re-sign (required on macOS after modification).
-		_ = run("codesign", "--force", "--sign", "-", file)
+		// Warn rather than fail — EnsureCodeSigned runs at
+		// install time as the authoritative safety net, and
+		// an unsigned-from-build binary is a CI hygiene
+		// problem worth surfacing but not aborting the build.
+		if err := run("codesign", "--force", "--sign",
+			"-", file); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: codesign failed for %s: %v\n",
+				filepath.Base(file), err)
+		}
 	}
 
 	return nil
@@ -289,8 +298,12 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		}
 
 		if changed {
-			_ = run("codesign", "--force", "--sign",
-				"-", file)
+			if err := run("codesign", "--force", "--sign",
+				"-", file); err != nil {
+				fmt.Fprintf(os.Stderr,
+					"warning: codesign failed for %s: %v\n",
+					filepath.Base(file), err)
+			}
 		}
 	}
 
@@ -426,7 +439,12 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 			}
 		}
 		// Re-sign after modification.
-		_ = run("codesign", "--force", "--sign", "-", file)
+		if err := run("codesign", "--force", "--sign",
+			"-", file); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"warning: codesign failed for %s: %v\n",
+				filepath.Base(file), err)
+		}
 	}
 	return nil
 }
