@@ -53,17 +53,22 @@ type InstallResult struct {
 func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	name := r.Package.Name
 	version := r.Package.Version
+	// Store paths use the full <version>-<revision> form so
+	// multiple revisions of the same version can coexist.
+	// The Store layer falls back from "<v>-1" to bare "<v>"
+	// for back-compat with pre-revision installs.
+	storeVersion := r.Package.Full()
 
 	// Acquire a file lock to prevent concurrent installs
 	// of the same package version from corrupting the store.
-	unlock, err := lockPackage(inst.Store.Root, name, version)
+	unlock, err := lockPackage(inst.Store.Root, name, storeVersion)
 	if err != nil {
 		return nil, fmt.Errorf("lock package: %w", err)
 	}
 	defer unlock()
 
 	// Skip if already installed.
-	if inst.Store.IsInstalled(name, version) {
+	if inst.Store.IsInstalled(name, storeVersion) {
 		return &InstallResult{
 			Name:    name,
 			Version: version,
@@ -72,7 +77,7 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	}
 
 	// Create store directory.
-	storeDir, err := inst.Store.Create(name, version)
+	storeDir, err := inst.Store.Create(name, storeVersion)
 	if err != nil {
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
@@ -132,10 +137,15 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*InstallResult, error) {
 	name := r.Package.Name
 	version := r.Package.Version
+	// Store paths use <version>-<revision> so revisions of
+	// the same base version don't collide. Back-compat in
+	// the Store layer resolves "<v>-1" to a bare "<v>" dir
+	// when one exists from a pre-revision install.
+	storeVersion := r.Package.Full()
 
 	// Serialize concurrent local installs for the same
 	// package version, matching Install's locking.
-	unlock, err := lockPackage(inst.Store.Root, name, version)
+	unlock, err := lockPackage(inst.Store.Root, name, storeVersion)
 	if err != nil {
 		return nil, fmt.Errorf("lock package: %w", err)
 	}
@@ -146,7 +156,7 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 	// intact until the build succeeds. Same-filesystem
 	// rename is guaranteed since both paths are under the
 	// same parent.
-	storeDir := filepath.Join(inst.Store.Root, name, version)
+	storeDir := filepath.Join(inst.Store.Root, name, storeVersion)
 	pkgDir := filepath.Join(inst.Store.Root, name)
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create package dir: %w", err)
@@ -492,9 +502,17 @@ func (inst *Installer) installDepsInner(
 			return nil, fmt.Errorf("install dep %q: %w", dep, err)
 		}
 
-		// Record this dep's store path.
-		storeDir := filepath.Join(inst.Store.Root,
-			dep, depRecipe.Package.Version)
+		// Resolve the dep's actual store path. Install wrote
+		// to <name>/<version>-<revision>/, but Store.StorePath
+		// also falls back to a bare <version>/ dir for
+		// pre-revision installs.
+		storeDir, ok := inst.Store.StorePath(
+			dep, depRecipe.Package.Full())
+		if !ok {
+			return nil, fmt.Errorf(
+				"dep %q at %s not in store after install",
+				dep, depRecipe.Package.Full())
+		}
 		result.StoreDirs = append(result.StoreDirs, storeDir)
 		if result.NamedDirs == nil {
 			result.NamedDirs = make(map[string]string)

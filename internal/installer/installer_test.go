@@ -56,8 +56,9 @@ func TestInstallFromSourceCreatesBinary(t *testing.T) {
 		t.Errorf("Method = %q, want %q", result.Method, "source")
 	}
 
-	// Verify binary exists in store.
-	storeBin := filepath.Join(storeRoot, "testpkg", "1.0", "bin", "testpkg")
+	// Verify binary exists in store. Store path uses the
+	// full <version>-<revision> form.
+	storeBin := filepath.Join(storeRoot, "testpkg", "1.0-1", "bin", "testpkg")
 	if _, err := os.Stat(storeBin); err != nil {
 		t.Errorf("binary not in store: %v", err)
 	}
@@ -180,11 +181,13 @@ func TestInstallUpgradeMovesSymlink(t *testing.T) {
 		t.Errorf("Method = %q, want %q", result.Method, "source")
 	}
 
-	// Verify both versions exist in store.
-	if !inst.Store.IsInstalled("testpkg", "1.0") {
+	// Verify both versions exist in store. Back-compat in
+	// resolveVersion accepts "<v>-1" when the bare dir is
+	// missing, and IsInstalled follows that path.
+	if !inst.Store.IsInstalled("testpkg", "1.0-1") {
 		t.Error("v1.0 not in store")
 	}
-	if !inst.Store.IsInstalled("testpkg", "2.0") {
+	if !inst.Store.IsInstalled("testpkg", "2.0-1") {
 		t.Error("v2.0 not in store")
 	}
 }
@@ -237,7 +240,7 @@ func TestInstallBinaryFromURL(t *testing.T) {
 
 	// Verify binary exists in store.
 	storeBin := filepath.Join(storeRoot,
-		"testpkg", "1.0", "bin", "testpkg")
+		"testpkg", "1.0-1", "bin", "testpkg")
 	if _, err := os.Stat(storeBin); err != nil {
 		t.Errorf("binary not in store: %v", err)
 	}
@@ -328,14 +331,14 @@ func TestInstallResolvesBuildDeps(t *testing.T) {
 
 	// Verify deptool was installed in store.
 	depBin := filepath.Join(storeRoot,
-		"deptool", "1.0", "bin", "deptool")
+		"deptool", "1.0-1", "bin", "deptool")
 	if _, err := os.Stat(depBin); err != nil {
 		t.Errorf("dep not in store: %v", err)
 	}
 
 	// Verify main package built with deptool available.
 	marker := filepath.Join(storeRoot,
-		"mypkg", "2.0", "bin", "marker.txt")
+		"mypkg", "2.0-1", "bin", "marker.txt")
 	data, err := os.ReadFile(marker)
 	if err != nil {
 		t.Fatalf("marker not found: %v", err)
@@ -519,7 +522,7 @@ func TestInstallBinaryNonGHCR(t *testing.T) {
 
 	// Verify file extracted to store.
 	storeBin := filepath.Join(storeRoot,
-		"tool", "1.0", "bin", "tool")
+		"tool", "1.0-1", "bin", "tool")
 	got, err := os.ReadFile(storeBin)
 	if err != nil {
 		t.Fatalf("read store binary: %v", err)
@@ -678,7 +681,7 @@ func TestInstallLocalBuildsFromSource(t *testing.T) {
 
 	// Verify binary extracted to store.
 	storeBin := filepath.Join(storeRoot,
-		"localbuild", "0.1", "bin", "localbuild")
+		"localbuild", "0.1-1", "bin", "localbuild")
 	if _, err := os.Stat(storeBin); err != nil {
 		t.Errorf("binary not in store: %v", err)
 	}
@@ -733,7 +736,10 @@ func TestInstallLocalPreservesExistingStoreOnReplaceFailure(t *testing.T) {
 	storeRoot := t.TempDir()
 	s := store.NewStore(storeRoot)
 
-	storeDir, err := s.Create("localpkg", "1.0")
+	// Pre-create the canonical <version>-<revision> dir
+	// that InstallLocal would target, since the test's
+	// rename hook matches against newPath == storeDir.
+	storeDir, err := s.Create("localpkg", "1.0-1")
 	if err != nil {
 		t.Fatalf("create store dir: %v", err)
 	}

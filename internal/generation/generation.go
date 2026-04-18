@@ -8,10 +8,31 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
+	"strings"
 
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 )
+
+// resolveStoreDir returns the actual store dir for a
+// (name, version) pair, falling back from "<v>-1" to bare
+// "<v>" when the suffixed dir is absent. Mirrors the
+// Store.resolveVersion back-compat logic without an
+// import cycle.
+func resolveStoreDir(storeRoot, name, version string) string {
+	dir := filepath.Join(storeRoot, name, version)
+	if _, err := os.Stat(dir); err == nil {
+		return dir
+	}
+	if strings.HasSuffix(version, "-1") {
+		bare := strings.TrimSuffix(version, "-1")
+		bareDir := filepath.Join(storeRoot, name, bare)
+		if _, err := os.Stat(bareDir); err == nil {
+			return bareDir
+		}
+	}
+	return dir
+}
 
 //go:embed gale-readme.md
 var galeReadme []byte
@@ -91,7 +112,7 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string)
 
 	for _, name := range names {
 		version := pkgs[name]
-		pkgDir := filepath.Join(storeRoot, name, version)
+		pkgDir := resolveStoreDir(storeRoot, name, version)
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
