@@ -414,6 +414,56 @@ func TestAddDepRpathsNoDeps(t *testing.T) {
 	}
 }
 
+func TestAddDepRpathsSkipsFarmRpathForSelfContainedBinary(t *testing.T) {
+	// A binary that only references system libraries (no
+	// @rpath/X deps) should not get the shared-lib farm
+	// rpath added — there's nothing for it to resolve, and
+	// adding it on stripped binaries triggers spurious
+	// "not enough header space" warnings.
+	galeDir := t.TempDir()
+	pkgRoot := filepath.Join(galeDir, "pkg")
+
+	// Dep store dir under <gale>/pkg/dep/1.0/ so
+	// farm.DirFromStoreDir resolves to <gale>/lib/.
+	depDir := filepath.Join(pkgRoot, "dep", "1.0")
+	depLib := filepath.Join(depDir, "lib")
+	os.MkdirAll(depLib, 0o755)
+
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void) { return 7; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylibPath := filepath.Join(depLib, "libdep.dylib")
+	cmd := exec.Command("cc", "-shared",
+		"-install_name", "@rpath/libdep.dylib",
+		"-o", dylibPath, libSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	// Package binary at <gale>/pkg/app/1.0/bin/app that
+	// does NOT link the dep dylib — only system libs.
+	pkgDir := filepath.Join(pkgRoot, "app", "1.0")
+	binDir := filepath.Join(pkgDir, "bin")
+	os.MkdirAll(binDir, 0o755)
+	binPath := compileWithHeaderpad(t, binDir, "app")
+
+	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+		t.Fatalf("AddDepRpaths error: %v", err)
+	}
+
+	farmDir := filepath.Join(galeDir, "lib")
+	cmdLP := exec.Command("otool", "-l", binPath)
+	out, _ := cmdLP.CombinedOutput()
+	if strings.Contains(string(out), "path "+farmDir) {
+		t.Errorf("farm rpath %s should not be added to "+
+			"self-contained binary; otool -l:\n%s",
+			farmDir, out)
+	}
+}
+
 // --- RelocateStaleRpaths rewrites foreign gale store rpaths ---
 
 func compileWithHeaderpad(t *testing.T, dir, name string) string {

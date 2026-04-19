@@ -2,6 +2,7 @@ package installer
 
 import (
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -30,6 +31,15 @@ type Installer struct {
 	Resolver   RecipeResolver
 	Verifier   attestation.Verifier // nil = skip attestation
 	SourceOnly bool                 // skip binary, build from source
+
+	// BinaryFallbackLog receives a one-line warning when a
+	// binary install fails and the installer falls back to a
+	// source build. nil means write to os.Stderr — the failure
+	// is always reported because reaching this branch means a
+	// binary was advertised in the recipe and could not be
+	// fetched/verified. Tests inject a buffer to assert on
+	// the message.
+	BinaryFallbackLog io.Writer
 }
 
 // InstallMethod represents how a package was installed.
@@ -130,9 +140,19 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 			sha256 = bin.SHA256
 		} else {
 			// Binary install failed — fall back to source build.
-			// Intentionally silent: binary failures are expected
-			// (e.g. missing GHCR artifact, network issues).
-			// Clean partial download before source fallback.
+			// Reaching here means the recipe advertised a binary
+			// for this platform and the fetch/verify pipeline
+			// rejected it. Surface the reason so a silent source
+			// build doesn't hide network errors, missing GHCR
+			// artifacts, hash mismatches, or attestation failures.
+			w := inst.BinaryFallbackLog
+			if w == nil {
+				w = os.Stderr
+			}
+			fmt.Fprintf(w,
+				"warning: binary install for %s@%s failed: %v;"+
+					" falling back to source build\n",
+				name, version, err)
 			os.RemoveAll(storeDir)
 			_ = os.MkdirAll(storeDir, 0o755) //nolint:gosec
 		}

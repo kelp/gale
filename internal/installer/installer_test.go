@@ -2,6 +2,7 @@ package installer
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"fmt"
@@ -624,6 +625,78 @@ func TestInstallBinaryNonGHCR(t *testing.T) {
 	if string(got) != binContent {
 		t.Errorf("binary content = %q, want %q",
 			string(got), binContent)
+	}
+}
+
+// --- Install binary failure is reported via BinaryFallbackLog ---
+
+func TestInstallBinaryFailureLoggedToFallbackWriter(t *testing.T) {
+	// When a binary install fails (here: 404 from the
+	// configured URL), the installer must record the
+	// reason on BinaryFallbackLog so users can see why
+	// they're getting a source build instead of a binary.
+	srcTar := createTestSourceTarGz(t)
+	srcHash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/source.tar.gz" {
+				http.ServeFile(w, r, srcTar)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+	defer srv.Close()
+
+	var logBuf bytes.Buffer
+	inst := &Installer{
+		Store:             store.NewStore(t.TempDir()),
+		BinaryFallbackLog: &logBuf,
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "pkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: srcHash,
+		},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    srv.URL + "/missing-binary.tar.zst",
+				SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+			},
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh' > $PREFIX/bin/pkg",
+				"chmod +x $PREFIX/bin/pkg",
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != MethodSource {
+		t.Fatalf("Method = %q, want source", result.Method)
+	}
+
+	got := logBuf.String()
+	if got == "" {
+		t.Fatal("expected fallback log to record binary "+
+			"failure, got empty buffer")
+	}
+	if !strings.Contains(got, "pkg") ||
+		!strings.Contains(got, "1.0") {
+		t.Errorf("fallback log missing package identity:\n%s",
+			got)
+	}
+	if !strings.Contains(got, "fetch") &&
+		!strings.Contains(got, "404") {
+		t.Errorf("fallback log missing failure reason:\n%s",
+			got)
 	}
 }
 

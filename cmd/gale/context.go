@@ -373,8 +373,8 @@ func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Reci
 func reportResult(out *output.Output, result *installer.InstallResult, verb, sourceLabel string) {
 	switch result.Method {
 	case installer.MethodCached:
-		out.Info(fmt.Sprintf("%s@%s already installed",
-			result.Name, result.Version))
+		out.Success(fmt.Sprintf("%s %s@%s (already in store)",
+			verb, result.Name, result.Version))
 	case installer.MethodBinary:
 		out.Success(fmt.Sprintf("%s %s@%s from binary",
 			verb, result.Name, result.Version))

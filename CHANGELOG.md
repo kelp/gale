@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `gale install`/`update`/`sync` no longer silently fall back
+  to a source build when a binary install fails. Reaching the
+  fallback path means the recipe advertised a binary for the
+  current platform and the fetch/verify pipeline rejected it
+  (404 from GHCR, hash mismatch, attestation failure, network
+  error) — exactly the cases a user wants to see. The installer
+  now prints a one-line warning naming the package and the
+  underlying error before building from source. Internal:
+  `Installer.BinaryFallbackLog` defaults to `os.Stderr`.
+- Stripped, self-contained Mach-O binaries no longer trigger
+  spurious `not enough header space` warnings during the
+  build's "Fixing library paths" step. `AddDepRpaths` now
+  only adds the shared-lib farm rpath
+  (`~/.gale/lib/`) to binaries that actually reference an
+  `@rpath/` dep. The previous gate added it whenever
+  `otool -L` returned anything at all — even when every dep
+  was a system library — so packages like vibeutils (Zig,
+  built with `-Dstrip=true`) printed dozens of warnings per
+  install.
+
+### Changed
+
+- The cached-install line printed by `install`/`update`/`sync`
+  now reads `Updated <name>@<ver> (already in store)` instead
+  of `<name>@<ver> already installed`. The old wording made
+  `gale update` look like a no-op when in fact `gale.toml`,
+  `gale.lock`, and the active generation had all been switched
+  to the cached version. Also styled as success, not info, to
+  match the binary/source paths.
+
 ## v0.12.2 — 2026-04-18
 
 ### Fixed

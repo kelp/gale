@@ -227,6 +227,7 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		// Collect unique dep lib dirs needed by this
 		// binary.
 		needed := make(map[string]bool)
+		hasRpathDep := false
 		for _, dep := range deps {
 			if !strings.HasPrefix(dep, "@rpath/") {
 				// Warn on non-@rpath dep references
@@ -243,6 +244,7 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 				}
 				continue
 			}
+			hasRpathDep = true
 			libName := strings.TrimPrefix(dep, "@rpath/")
 
 			// Skip libs in the package's own lib dir.
@@ -258,8 +260,13 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 
 		// Add the farm rpath alongside per-dep rpaths so
 		// binaries can find versioned dylibs via the
-		// stable ~/.gale/lib/ path.
-		if farmDir != "" && len(deps) > 0 {
+		// stable ~/.gale/lib/ path. Only meaningful when
+		// the binary has at least one @rpath/ dep —
+		// self-contained binaries (system libs only) get
+		// nothing to resolve via the farm and adding the
+		// rpath on stripped Mach-O headers would just
+		// produce noise.
+		if farmDir != "" && hasRpathDep {
 			needed[farmDir] = true
 		}
 
