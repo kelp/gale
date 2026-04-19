@@ -6,8 +6,8 @@ import (
 
 	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
+	ver "github.com/kelp/gale/internal/version"
 	"github.com/spf13/cobra"
-	"golang.org/x/mod/semver"
 )
 
 var (
@@ -124,8 +124,14 @@ var updateCmd = &cobra.Command{
 						"Skipping %s: %v", name, err))
 					continue
 				}
-				ver, skip := updateAction(
-					r.Package.Version, t.current,
+				// Compare via Package.Full() so a revision bump
+				// (e.g. recipe revision 1 → 2 at an unchanged
+				// upstream version) surfaces as outdated. Raw
+				// Package.Version drops the revision entirely
+				// and makes `update` disagree with `outdated`.
+				candidate := r.Package.Full()
+				target, skip := updateAction(
+					candidate, t.current,
 					ctx.Installer.Store.IsInstalled(
 						name, t.current))
 				if skip {
@@ -134,7 +140,7 @@ var updateCmd = &cobra.Command{
 						name, t.current))
 					continue
 				}
-				newVersion = ver
+				newVersion = target
 			}
 
 			// Fetch the recipe for the target version.
@@ -250,18 +256,12 @@ func isGitHash(s string) bool {
 	return true
 }
 
-// isNewerVersion reports whether candidate is strictly
-// newer than current using semver comparison. Returns
-// true if either version is not valid semver (cannot
-// compare, so allow the update to proceed).
+// isNewerVersion reports whether candidate is strictly newer
+// than current. Delegates to internal/version so update and
+// outdated share one ordering — including gale revision
+// semantics (numeric `-<N>` is newer than bare).
 func isNewerVersion(candidate, current string) bool {
-	// golang.org/x/mod/semver requires a "v" prefix.
-	cv := "v" + current
-	nv := "v" + candidate
-	if !semver.IsValid(cv) || !semver.IsValid(nv) {
-		return true
-	}
-	return semver.Compare(nv, cv) > 0
+	return ver.IsNewer(candidate, current)
 }
 
 // updateAction returns the version to install and whether

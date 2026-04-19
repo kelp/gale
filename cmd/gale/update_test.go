@@ -90,6 +90,16 @@ func TestIsNewerVersion(t *testing.T) {
 		{"abc1234", "0.8.1", true},
 		{"0.8.1", "abc1234", true},
 		{"abc1234", "def5678", true},
+
+		// Revision bumps: -N suffix after the patch part is a
+		// gale revision (newer), not a semver pre-release (older).
+		// Struct fields are {current, candidate, want}.
+		{"1.2.3", "1.2.3-2", true},    // bare (rev 1) → rev 2 upgrade
+		{"1.2.3-2", "1.2.3", false},   // rev 2 → bare is downgrade
+		{"1.2.3-2", "1.2.3-3", true},  // rev 2 → rev 3 upgrade
+		{"1.2.3-3", "1.2.3-2", false}, // rev 3 → rev 2 downgrade
+		{"1.2.3-2", "1.2.3-2", false}, // equal
+		{"1.2.3-2", "1.2.4", true},    // patch bump beats revision
 	}
 
 	for _, tt := range tests {
@@ -137,6 +147,32 @@ func TestUpdateAction(t *testing.T) {
 			name:      "older registry version reinstalls current",
 			candidate: "0.9.0", current: "1.0.0",
 			inStore: false, wantVer: "1.0.0", wantSkip: false,
+		},
+		{
+			// Recipe bumped from revision 1 (bare "1.0.0") to
+			// revision 2 ("1.0.0-2"). Installed version is the
+			// bare pre-revision dir, but the store's bidirectional
+			// resolver makes IsInstalled report true via back-compat.
+			// Without revision-aware comparison, update skipped
+			// here and users stayed on the old binary.
+			name:      "revision bump triggers reinstall",
+			candidate: "1.0.0-2", current: "1.0.0",
+			inStore: true, wantVer: "1.0.0-2", wantSkip: false,
+		},
+		{
+			name:      "revision bump to rev 3 from rev 2",
+			candidate: "1.0.0-3", current: "1.0.0-2",
+			inStore: true, wantVer: "1.0.0-3", wantSkip: false,
+		},
+		{
+			name:      "same revision skips",
+			candidate: "1.0.0-2", current: "1.0.0-2",
+			inStore: true, wantVer: "1.0.0-2", wantSkip: true,
+		},
+		{
+			name:      "lower revision does not downgrade",
+			candidate: "1.0.0", current: "1.0.0-2",
+			inStore: true, wantVer: "1.0.0-2", wantSkip: true,
 		},
 	}
 	for _, tt := range tests {

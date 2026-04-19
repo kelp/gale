@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `gale update` now honors recipe revision bumps. `update` was
+  comparing bare `Package.Version` via `golang.org/x/mod/semver`,
+  which has no notion of a revision suffix. As a result, a
+  recipe bump from `1.8.1` (revision 1) to `1.8.1` revision 2
+  left `gale outdated` correctly reporting the bump while
+  `gale update <pkg>` said "up to date" and did nothing.
+  Extracted the version-comparison rules into a new
+  `internal/version` package so `update` and `outdated` share
+  one ordering. Numeric `-<N>` suffixes are treated as gale
+  revisions (newer than bare); non-numeric suffixes like
+  `-dev.2` keep their semver pre-release semantics.
+
 ## v0.12.1 — 2026-04-18
 
 ### Fixed
