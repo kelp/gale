@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `gale update` no longer misreports revision-bumped recipes
+  as `!!! Skipping X: X@V-N not found (registry has V)`.
+  Three independent bugs compounded:
+  - `resolveVersionedRecipe` compared the requested version
+    to `r.Package.Version` literally, ignoring the revision.
+    Asking for `0.12.3-1` against a recipe whose Version is
+    `0.12.3` and Revision is 1 missed the resolver's
+    already-correct result. Now also matches on
+    `Package.Full()` and wraps the underlying registry error
+    so the real cause (HTTP 404, signature failure, network
+    error) surfaces instead of the misleading
+    "not found (registry has X)" string.
+  - `FetchRecipeVersion` built per-commit recipe URLs as
+    `<BaseURL>/<commit>/recipes/...`. With BaseURL set to
+    `raw.githubusercontent.com/kelp/gale-recipes/main` the
+    result was `.../main/<commit>/recipes/...`, always a 404.
+    A new `repoBase()` helper strips the trailing ref segment
+    before splicing in the commit. The `.versions` index URL
+    is unchanged.
+  - `pickVersion` rejected a `-1` lookup against a bare
+    `.versions` entry. Pre-revision indexes record bare
+    versions; revision 1 is the implicit default. Added a
+    `-1` → bare fallback mirroring the existing
+    bare → latest-revision step.
+
 ## v0.12.4 — 2026-04-19
 
 ### Fixed

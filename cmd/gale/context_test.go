@@ -1,12 +1,16 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -278,5 +282,71 @@ func TestRebuildGenerationUsesToolVersionsFallback(t *testing.T) {
 
 	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "go")); err != nil {
 		t.Fatalf("go symlink missing from current generation: %v", err)
+	}
+}
+
+// TestResolveVersionedRecipeMatchesFullVersion guards against a
+// regression where the resolver-already-correct recipe was
+// discarded because the equality check ignored the revision.
+// Asking for "0.12.3-1" against a recipe whose Version is
+// "0.12.3" and Revision is 1 must short-circuit on Full() and
+// return that recipe.
+func TestResolveVersionedRecipeMatchesFullVersion(t *testing.T) {
+	want := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:     "gale",
+			Version:  "0.12.3",
+			Revision: 1,
+		},
+	}
+	ctx := &cmdContext{
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			return want, nil
+		},
+	}
+	got, err := resolveVersionedRecipe(ctx, "gale", "0.12.3-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got != want {
+		t.Fatalf("resolveVersionedRecipe = %p, want %p", got, want)
+	}
+}
+
+// TestResolveVersionedRecipeWrapsRegistryError guards against a
+// regression where a real registry failure (404, signature
+// failure, network error) was hidden behind the misleading
+// "not found (registry has X)" string. The wrapped error must
+// carry enough signal to diagnose the underlying cause.
+func TestResolveVersionedRecipeWrapsRegistryError(t *testing.T) {
+	want := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:     "atuin",
+			Version:  "18.13.6",
+			Revision: 1,
+		},
+	}
+	// Closed server → FetchRecipeVersion returns a connection error.
+	srv := httptest.NewServer(http.NotFoundHandler())
+	addr := srv.URL
+	srv.Close()
+	reg := registry.NewWithKey(addr, "")
+	ctx := &cmdContext{
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			return want, nil
+		},
+		Registry: reg,
+	}
+	_, err := resolveVersionedRecipe(ctx, "atuin", "18.13.6-2")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "not found (registry has 18.13.6)") &&
+		!strings.Contains(msg, "fetch") &&
+		!strings.Contains(msg, "version index") &&
+		!strings.Contains(msg, "connection refused") {
+		t.Errorf("error %q hides the underlying registry failure",
+			msg)
 	}
 }

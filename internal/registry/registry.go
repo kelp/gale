@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
@@ -65,6 +66,30 @@ func NewWithKey(url, publicKey string) *Registry {
 		BaseURL:   url,
 		publicKey: publicKey,
 	}
+}
+
+// repoBase returns BaseURL with the trailing path segment
+// (the ref, typically "main") stripped, so a commit can be
+// substituted for it. raw.githubusercontent.com URLs have
+// the form ".../<owner>/<repo>/<ref>"; FetchRecipeVersion
+// needs the ".../<owner>/<repo>" prefix to splice a commit
+// in. When BaseURL has no path component (test setups
+// pointing at httptest.Server.URL), returns it unchanged.
+func (r *Registry) repoBase() string {
+	u, err := url.Parse(r.BaseURL)
+	if err != nil {
+		return r.BaseURL
+	}
+	path := strings.TrimRight(u.Path, "/")
+	if path == "" {
+		return r.BaseURL
+	}
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		u.Path = path[:i]
+	} else {
+		u.Path = ""
+	}
+	return u.String()
 }
 
 // warn logs a warning via the configured warnf function,
@@ -177,9 +202,12 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	}
 	commit := idx[resolved]
 
-	// Fetch recipe at the specific commit.
+	// Fetch recipe at the specific commit. BaseURL already
+	// includes the ref (e.g. "/main") for the .versions index
+	// above; for a per-commit fetch we substitute the commit
+	// for that ref segment.
 	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
-		r.BaseURL, commit, bucket, name)
+		r.repoBase(), commit, bucket, name)
 
 	resp2, err := client.Get(recipeURL)
 	if err != nil {
@@ -318,9 +346,19 @@ func pickVersion(idx map[string]string, requested string) (string, bool) {
 	if _, ok := idx[requested]; ok {
 		return requested, true
 	}
-	// 2. If requested already has a -<digits> suffix, no
-	//    fallback — we only bump to latest revision for
-	//    bare base versions.
+	// 2. If requested has a "-1" suffix and the bare version
+	//    exists in the index, return the bare entry. Legacy
+	//    pre-revision .versions entries record the bare
+	//    version; revision 1 is the implicit default, so a
+	//    "-1" lookup should still find them.
+	if strings.HasSuffix(requested, "-1") {
+		bare := strings.TrimSuffix(requested, "-1")
+		if _, ok := idx[bare]; ok {
+			return bare, true
+		}
+	}
+	// 3. Other -<digits> suffixes get no fallback — we only
+	//    bump to latest revision for bare base versions.
 	if hasRevisionSuffix(requested) {
 		return "", false
 	}

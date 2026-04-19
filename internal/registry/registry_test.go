@@ -363,6 +363,35 @@ func TestFetchRecipeVersion(t *testing.T) {
 	}
 }
 
+// TestFetchRecipeVersionStripsTrailingRefFromBaseURL guards
+// against the production-URL bug where BaseURL already includes
+// a ref segment (e.g. ".../kelp/gale-recipes/main") and
+// FetchRecipeVersion appended /<commit>/ on top of /main/,
+// producing a 404. The .versions index lives at the ref tip
+// (BaseURL/recipes/...), but the per-commit recipe must drop
+// the ref segment and substitute the commit.
+func TestFetchRecipeVersionStripsTrailingRefFromBaseURL(t *testing.T) {
+	const commit = "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.7.1 " + commit + "\n"
+
+	srv := httptest.NewServer(signedHandler(
+		map[string]string{
+			"/main/recipes/j/jq.versions":       versionsBody,
+			"/" + commit + "/recipes/j/jq.toml": validTOML,
+		}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL + "/main")
+	rec, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Name != "testpkg" {
+		t.Errorf("Name = %q, want %q",
+			rec.Package.Name, "testpkg")
+	}
+}
+
 func TestFetchRecipeVersionNotFound(t *testing.T) {
 	versionsBody := "1.8.1 abc1234\n"
 
@@ -1414,6 +1443,24 @@ func TestPickVersionDifferentBaseVersionsFiltered(t *testing.T) {
 	}
 	if got != "8.19.0-1" {
 		t.Errorf("got %q, want %q", got, "8.19.0-1")
+	}
+}
+
+// Behavior 8b: a "-1" suffix falls back to the bare version
+// when the index only carries the bare entry. Pre-revision
+// .versions indexes record the bare version, but bare recipes
+// resolve to revision 1 (default), so a "-1" lookup must find
+// them. Without this, gale update against legacy recipes
+// reports "not found" even though the recipe exists.
+func TestPickVersionRev1FallsBackToBare(t *testing.T) {
+	idx := map[string]string{"0.12.3": "abc1234"}
+
+	got, ok := pickVersion(idx, "0.12.3-1")
+	if !ok {
+		t.Fatal("expected ok=true for -1 → bare fallback")
+	}
+	if got != "0.12.3" {
+		t.Errorf("got %q, want %q", got, "0.12.3")
 	}
 }
 

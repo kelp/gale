@@ -345,15 +345,21 @@ func addToConfig(name, version string, global, project bool) (string, error) {
 // found.
 func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Recipe, error) {
 	// Try the resolver first — if latest matches, use it.
+	// Compare both bare Version and Full() (with revision) so
+	// a request for "1.2.3-2" matches a recipe whose Version is
+	// "1.2.3" and Revision is 2.
 	r, err := ctx.Resolver(name)
-	if err == nil && r.Package.Version == version {
+	if err == nil &&
+		(r.Package.Version == version || r.Package.Full() == version) {
 		return r, nil
 	}
 
 	// Try versioned registry fetch (not available in
 	// --recipes mode).
+	var vErr error
 	if ctx.Registry != nil {
-		pinned, vErr := ctx.Registry.FetchRecipeVersion(
+		var pinned *recipe.Recipe
+		pinned, vErr = ctx.Registry.FetchRecipeVersion(
 			name, version)
 		if vErr == nil {
 			return pinned, nil
@@ -363,6 +369,11 @@ func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Reci
 	if err != nil {
 		return nil, fmt.Errorf(
 			"resolving %s@%s: %w", name, version, err)
+	}
+	if vErr != nil {
+		return nil, fmt.Errorf(
+			"%s@%s not found (registry has %s): %w",
+			name, version, r.Package.Version, vErr)
 	}
 	return nil, fmt.Errorf(
 		"%s@%s not found (registry has %s)",
