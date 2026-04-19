@@ -203,8 +203,6 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		if failed > 0 {
 			out.Warn(fmt.Sprintf(
 				"Sync finished with %d error(s)", failed))
-		}
-		if failed > 0 {
 			return err
 		}
 		return fmt.Errorf("rebuild generation: %w", err)
@@ -217,19 +215,27 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	return nil
 }
 
-// evictOnSHA256Mismatch removes a package from the store
-// when the installed SHA256 does not match the locked hash.
-// Returns true if a mismatch was detected and the package
-// was evicted.
+// finishSync rebuilds the generation so packages that did
+// install land on PATH, then surfaces any install failure.
+// Issue #20: a single broken recipe used to leave the user
+// with no current symlink at all. Rebuilding first keeps
+// partial progress usable; the failure error still
+// propagates so the exit code is non-zero.
 func finishSync(dryRun bool, failed int, rebuild func() error) error {
 	if dryRun {
 		return nil
 	}
+	rebuildErr := rebuild()
 	if failed > 0 {
 		return fmt.Errorf("%d package(s) could not be synced", failed)
 	}
-	return rebuild()
+	return rebuildErr
 }
+
+// evictOnSHA256Mismatch removes a package from the store
+// when the installed SHA256 does not match the locked hash.
+// Returns true if a mismatch was detected and the package
+// was evicted.
 
 func evictOnSHA256Mismatch(s *store.Store, result *installer.InstallResult, lockedSHA string, out *output.Output) bool {
 	if lockedSHA == result.SHA256 {

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
@@ -463,6 +464,30 @@ func repairDoctor(ctx *doctorContext) error {
 		}
 	}
 	ctx.out.Success("Repaired Gale generations")
+
+	// Re-sign Mach-Os in every installed package. Pre-fix
+	// installs (before f00f2b7) may carry unsigned binaries
+	// that SIGKILL on Apple Silicon. EnsureCodeSigned is a
+	// no-op on Linux and on already-signed binaries, so this
+	// is safe to run unconditionally on every package.
+	s := store.NewStore(ctx.storeRoot)
+	installed, err := s.List()
+	if err != nil {
+		return fmt.Errorf("list store: %w", err)
+	}
+	for _, pkg := range installed {
+		storeDir, ok := s.StorePath(pkg.Name, pkg.Version)
+		if !ok {
+			continue
+		}
+		if err := build.EnsureCodeSigned(storeDir); err != nil {
+			return fmt.Errorf(
+				"ensure code signed %s@%s: %w",
+				pkg.Name, pkg.Version, err)
+		}
+	}
+	ctx.out.Success(fmt.Sprintf(
+		"Re-signed Mach-Os in %d package(s)", len(installed)))
 	return nil
 }
 

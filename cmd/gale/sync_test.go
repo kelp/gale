@@ -111,7 +111,10 @@ func TestSyncSHA256MatchDoesNotEvict(t *testing.T) {
 	}
 }
 
-func TestFinishSyncSkipsRebuildWhenSyncFailed(t *testing.T) {
+func TestFinishSyncRebuildsOnFailure(t *testing.T) {
+	// Issue #20: rebuild even on partial failure so the
+	// packages that did install land on PATH. The failure
+	// error still propagates so the exit code is non-zero.
 	called := false
 	err := finishSync(false, 1, func() error {
 		called = true
@@ -120,8 +123,23 @@ func TestFinishSyncSkipsRebuildWhenSyncFailed(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected sync error")
 	}
-	if called {
-		t.Fatal("rebuild should not be called when sync had failures")
+	if !called {
+		t.Fatal("rebuild should be called even when sync had failures")
+	}
+}
+
+func TestFinishSyncFailureErrorTakesPrecedence(t *testing.T) {
+	// When both an install failure and a rebuild error
+	// occur, the install-failure count is the more useful
+	// signal — it tells the user which package broke.
+	err := finishSync(false, 2, func() error {
+		return errors.New("rebuild boom")
+	})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if got := err.Error(); got != "2 package(s) could not be synced" {
+		t.Fatalf("error = %q, want install-failure message", got)
 	}
 }
 
@@ -149,42 +167,38 @@ func TestFinishSyncSkipsRebuildInDryRun(t *testing.T) {
 	}
 }
 
-func TestFinishSyncFailureKeepsCurrent(t *testing.T) {
+func TestFinishSyncFailurePreservesPartialProgress(t *testing.T) {
+	// Issue #20: when sync partially fails (one recipe broken,
+	// others installed), the next generation should reflect
+	// what's actually in the store. Packages whose install
+	// succeeded land on PATH; packages that failed install are
+	// absent from current/bin (populateGeneration skips
+	// missing store entries). The error still propagates.
 	storeRoot := t.TempDir()
 	galeDir := filepath.Join(t.TempDir(), ".gale")
 	configPath := filepath.Join(t.TempDir(), "gale.toml")
 
+	// Only oldpkg is in the store — newpkg "failed" to install.
 	s := store.NewStore(storeRoot)
-	for _, pkg := range []string{"oldpkg", "newpkg"} {
-		pkgDir, err := s.Create(pkg, "1.0.0")
-		if err != nil {
-			t.Fatal(err)
-		}
-		binDir := filepath.Join(pkgDir, "bin")
-		if err := os.MkdirAll(binDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(binDir, pkg),
-			[]byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  oldpkg = \"1.0.0\"\n"),
-		0o644); err != nil {
+	pkgDir, err := s.Create("oldpkg", "1.0.0")
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
-		t.Fatalf("initial rebuild: %v", err)
+	binDir := filepath.Join(pkgDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "oldpkg"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
 
-	before, err := filepath.EvalSymlinks(filepath.Join(galeDir, "current"))
-	if err != nil {
-		t.Fatalf("eval current before: %v", err)
-	}
-	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "oldpkg")); err != nil {
-		t.Fatalf("oldpkg missing before failed sync: %v", err)
+	// Config lists both — newpkg was requested but its
+	// install failed, so it's not in the store.
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  oldpkg = \"1.0.0\"\n  newpkg = \"1.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
 	}
 
 	err = finishSync(false, 1, func() error {
@@ -194,16 +208,11 @@ func TestFinishSyncFailureKeepsCurrent(t *testing.T) {
 		t.Fatal("expected sync error")
 	}
 
-	after, err := filepath.EvalSymlinks(filepath.Join(galeDir, "current"))
-	if err != nil {
-		t.Fatalf("eval current after: %v", err)
-	}
-	if after != before {
-		t.Fatalf("current changed on failed sync: before=%q after=%q", before, after)
-	}
+	// current/bin must contain oldpkg (install succeeded).
 	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "oldpkg")); err != nil {
 		t.Fatalf("oldpkg missing after failed sync: %v", err)
 	}
+	// current/bin must NOT contain newpkg (install failed).
 	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "newpkg")); !os.IsNotExist(err) {
 		t.Fatalf("newpkg should not be active after failed sync, err=%v", err)
 	}
