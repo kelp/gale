@@ -70,10 +70,22 @@ One symlink swap updates bin, lib, man — everything.
 URLs. Letter-bucketed: `recipes/j/jq.toml`. No git
 clone needed.
 
+**Revision**: Debian-style `[package] revision = N` on
+recipes, defaulting to 1. Store identity is
+`<name>/<version>-<revision>/`; user-facing form is
+`name@<version>-<revision>` (bare when revision = 1). A
+shared dylib farm at `~/.gale/lib/` lets binaries absorb
+SONAME-compatible dep upgrades without rebuilding.
+Full reference: [`docs/revisions.md`](docs/revisions.md).
+
 ## CLI Commands
 
+`@version` and `@version-revision` both work for
+version-aware commands (install, update, etc.). A bare
+`@version` resolves to the highest revision known.
+
 ```
-gale install <pkg>[@ver]  Install package (binary or source)
+gale install <pkg>[@ver[-rev]]  Install package (binary or source)
 gale remove <pkg>         Remove package from store + config
 gale add <pkg> [pkg...]   Add to gale.toml without installing
 gale sync                 Install all packages in gale.toml
@@ -147,6 +159,8 @@ Also exports `[vars]` from gale.toml. `gale run` and
 
 - `docs/` — user-facing guides (getting started,
   direnv, chezmoi, CI, troubleshooting, recipes)
+- `docs/revisions.md` — revision system, shared dylib
+  farm, `.gale-deps.toml` staleness model
 - `docs/dev/` — development reference (design,
   style guide, build improvements)
 
