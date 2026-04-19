@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
@@ -92,6 +93,25 @@ var gcCmd = &cobra.Command{
 	},
 }
 
+// isReferenced reports whether a store entry is kept by
+// the config-derived reference set. Matches both exact
+// name@version (user pinned a revision: jq = "1.8.1-2")
+// and name@base-version (user wrote a bare version:
+// jq = "1.8.1" covers jq@1.8.1-2 in the store). The bare
+// form mirrors the resolver's back-compat lookup — anything
+// the installer treats as a match for the user's pin must
+// also be treated as referenced by gc, or gc will delete
+// live store entries out from under the active generation.
+func isReferenced(name, version string, referenced map[string]bool) bool {
+	if referenced[name+"@"+version] {
+		return true
+	}
+	if base, _, ok := strings.Cut(version, "-"); ok {
+		return referenced[name+"@"+base]
+	}
+	return false
+}
+
 // removeUnreferencedVersions iterates the store and
 // removes any version not in the referenced set.
 // Returns the number of versions removed (or flagged
@@ -109,8 +129,7 @@ func removeUnreferencedVersions(
 	}
 	var removed int
 	for _, pkg := range installed {
-		key := pkg.Name + "@" + pkg.Version
-		if referenced[key] {
+		if isReferenced(pkg.Name, pkg.Version, referenced) {
 			continue
 		}
 		if dry {

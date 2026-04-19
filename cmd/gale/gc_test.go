@@ -142,6 +142,51 @@ func TestRemoveUnreferencedVersionsNoneToRemove(t *testing.T) {
 	}
 }
 
+// TestRemoveUnreferencedVersionsKeepsCanonicalForBareRef
+// pins the v0.12.0 regression where `gale gc` deleted store
+// entries that were actively referenced by the generation.
+// gale.toml lists packages by bare version (jq = "1.8.1"),
+// but the store writes canonical revision-suffixed dirs
+// (jq/1.8.1-2/). gc's exact string match treated these as
+// unreferenced and removed them, taking out 147 versions
+// on a live user machine.
+func TestRemoveUnreferencedVersionsKeepsCanonicalForBareRef(t *testing.T) {
+	storeRoot := t.TempDir()
+	// Store holds the canonical revision dir; gale.toml
+	// references the bare version.
+	for _, ver := range []string{"1.8.1-2", "1.7.1-1"} {
+		dir := filepath.Join(storeRoot, "jq", ver, "bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+
+	// Bare-version reference, as written by users in
+	// gale.toml.
+	referenced := map[string]bool{"jq@1.8.1": true}
+
+	n := removeUnreferencedVersions(s, referenced, false, out)
+
+	// Only the 1.7.1-1 dir should be reaped; 1.8.1-2 must
+	// survive because it's the canonical match for the
+	// bare 1.8.1 reference.
+	if n != 1 {
+		t.Errorf("want 1 removed, got %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(
+		storeRoot, "jq", "1.8.1-2")); err != nil {
+		t.Errorf("jq/1.8.1-2 must survive — it's the "+
+			"canonical match for bare jq@1.8.1: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(
+		storeRoot, "jq", "1.7.1-1")); !os.IsNotExist(err) {
+		t.Errorf("jq/1.7.1-1 should have been removed")
+	}
+}
+
 func TestGCCommandExists(t *testing.T) {
 	for _, c := range rootCmd.Commands() {
 		if c.Name() == "gc" {

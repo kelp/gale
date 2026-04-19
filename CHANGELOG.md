@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `gale gc` no longer deletes store entries actively referenced
+  by the generation. The v0.12.0 revision rollout wrote canonical
+  `<version>-<revision>` directories to the store while user
+  `gale.toml` entries still use bare versions. gc's exact string
+  match treated the canonical dirs as unreferenced and reaped
+  them, emptying the store for every package and leaving every
+  symlink in the active generation dangling. gc now expands each
+  bare reference to also match its revision-suffixed canonical
+  form, mirroring the resolver's back-compat lookup.
+
 ## v0.12.0 — 2026-04-18
 
 ### Added
