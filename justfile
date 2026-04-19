@@ -24,11 +24,11 @@ lint:
 
 # Check formatting
 fmt-check:
-    gofumpt -l .
+    gofumpt -l cmd internal
 
 # Fix formatting
 fmt:
-    gofumpt -w .
+    gofumpt -w cmd internal
 
 # Show test coverage per package
 cover:

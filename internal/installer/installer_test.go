@@ -482,9 +482,9 @@ func TestInstallBinaryPreservesArchiveDepsMetadata(t *testing.T) {
 	// fallback for archives built before the build-time emit.
 	archiveDeps := "[[deps]]\n  name = \"openssl\"\n  version = \"3.4.1\"\n  revision = \"42\"\n"
 	tarzst := createTarZstdWithFiles(t, map[string]string{
-		"bin/":             "",
-		"bin/testpkg":      "#!/bin/sh\necho ok",
-		".gale-deps.toml":  archiveDeps,
+		"bin/":            "",
+		"bin/testpkg":     "#!/bin/sh\necho ok",
+		".gale-deps.toml": archiveDeps,
 	})
 	hash := hashFile(t, tarzst)
 	blobData, err := os.ReadFile(tarzst)
