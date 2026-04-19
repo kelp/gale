@@ -51,8 +51,55 @@
   version skew across a package's own binaries. `--all` scans
   the whole store; `--json` emits machine-readable output; exit
   nonzero on findings so CI can gate on it.
+- `gale build` now writes `.gale-deps.toml` into the prefix
+  before sealing the archive, recording the exact
+  version-revision of each linked dep. The installer
+  preserves the archive's file when present and only computes
+  locally as a fallback for legacy archives. Eliminates a
+  staleness mis-detection class when a user has pinned deps
+  that diverge from the build environment.
+  (New `internal/depsmeta` package shared between build and
+  installer.)
+- `gale doctor --repair` now walks every installed package
+  and runs `EnsureCodeSigned`, ad-hoc signing any Mach-Os
+  that arrived unsigned. Pre-fix installs (before f00f2b7)
+  no longer SIGKILL on Apple Silicon. No-op on Linux and on
+  already-signed binaries.
+- Bidirectional store-version resolution. A bare-version
+  request prefers a canonical `<version>-1` directory when
+  present, and a `<version>-1` request falls back to a bare
+  directory when absent. Pre-revision configs find freshly
+  migrated installs, and revision-aware configs find legacy
+  installs, without any filesystem migration.
+- Soft migration for pre-revision store entries. `gale sync`
+  now routes stale packages through a `Reinstall` path that
+  ignores the back-compat fallback and forces a canonical
+  `<version>-<revision>` install, while fresh installs keep
+  the fallback so dep installs don't needlessly re-migrate.
 
 ### Fixed
+
+- Install-time ad-hoc signing of Mach-O binaries on macOS.
+  `EnsureCodeSigned` now runs after every binary or source
+  install, applying an ad-hoc signature to any unsigned
+  Mach-O in the extracted prefix. Apple Silicon SIGKILLs
+  unsigned binaries on exec, so prebuilt tarballs whose
+  binaries had no gale-store rpaths (e.g. a zig build with
+  no gale dep dylibs) previously extracted into an unusable
+  state. Idempotent and no-op on Linux.
+- Build-time codesign failures on macOS are now fatal instead
+  of silently swallowed. `install_name_tool` and codesign calls
+  in `fixup_darwin.go` used to discard errors with `_ =`,
+  producing tarballs with unsigned binaries that SIGKILL on
+  user machines. Signing errors now abort the build the same
+  way a missing rpath rewrite does; only the optional
+  `codesign --remove-signature` retry keeps a warn-only path.
+- `gale sync` and `gale doctor` now flag an install as stale
+  when `.gale-deps.toml` is missing, even if the recipe for
+  that installed version can no longer be resolved (e.g. the
+  version has fallen out of the registry's `.versions` index).
+  Previously those pre-revision installs silently reported as
+  up to date and never surfaced as migration candidates.
 
 - Prebuilt binary installs now call `RestorePrefixPlaceholder`
   after extraction, so `@@GALE_PREFIX@@` markers baked into text
@@ -62,6 +109,17 @@
   paths embedded in text files (e.g. `curl-config --static-libs`
   emitting `/Users/runner/.gale/pkg/openssl/...`). Matches the
   existing Mach-O / ELF rpath relocation but for text.
+- Issue #20: `gale sync` now rebuilds the active generation
+  even when one or more packages fail to install. Packages
+  that did succeed land on PATH; the install-failure error
+  still propagates so the exit code stays non-zero. Previously
+  a single broken recipe on a fresh machine left the user with
+  no `current` symlink at all.
+- Farm conflicts (two packages claiming the same versioned
+  dylib) now fail the install instead of being silently logged
+  to stderr. Surfaces recipe-level bugs immediately rather
+  than letting the farm pick a winner. Ships after the jq
+  recipe cleanup so existing installs migrate cleanly.
 
 ## v0.11.3 — 2026-04-09
 
