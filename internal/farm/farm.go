@@ -174,10 +174,11 @@ func Depopulate(storeDir, farmDir string) error {
 	return nil
 }
 
-// Repopulate wipes farmDir and rebuilds it by walking every
-// installed package under storeRoot. Called on generation
-// rollback and by `gale rebuild-farm`.
-func Repopulate(storeRoot, farmDir string) error {
+// Rebuild wipes farmDir and repopulates it from the given
+// store dirs. Callers pass the resolved store dir for every
+// package in the current generation; older revisions still
+// on disk are ignored because they're not on PATH.
+func Rebuild(activeStoreDirs []string, farmDir string) error {
 	if err := os.RemoveAll(farmDir); err != nil {
 		return fmt.Errorf("clear farm dir: %w", err)
 	}
@@ -185,41 +186,14 @@ func Repopulate(storeRoot, farmDir string) error {
 		return fmt.Errorf("create farm dir: %w", err)
 	}
 
-	nameEntries, err := os.ReadDir(storeRoot)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("read store root: %w", err)
-	}
-
-	for _, ne := range nameEntries {
-		if !ne.IsDir() {
-			continue
-		}
-		nameDir := filepath.Join(storeRoot, ne.Name())
-		verEntries, err := os.ReadDir(nameDir)
-		if err != nil {
-			continue
-		}
-		for _, ve := range verEntries {
-			if !ve.IsDir() {
-				continue
-			}
-			// Skip the same .build-* staging dirs that
-			// Store.List skips.
-			if strings.HasPrefix(ve.Name(), ".build-") {
-				continue
-			}
-			storeDir := filepath.Join(nameDir, ve.Name())
-			if err := Populate(storeDir, farmDir); err != nil {
-				// Don't fail the whole repopulation on a
-				// single package's conflict — warn and keep
-				// going. A genuine conflict will show up in
-				// `gale inspect` anyway.
-				fmt.Fprintf(os.Stderr,
-					"farm: populate %s: %v\n", storeDir, err)
-			}
+	for _, storeDir := range activeStoreDirs {
+		if err := Populate(storeDir, farmDir); err != nil {
+			// Don't fail the whole rebuild on a single
+			// package's conflict — warn and keep going.
+			// A genuine conflict will show up in
+			// `gale doctor` anyway.
+			fmt.Fprintf(os.Stderr,
+				"farm: populate %s: %v\n", storeDir, err)
 		}
 	}
 	return nil

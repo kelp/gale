@@ -147,14 +147,8 @@ func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 	}
 
 	// Redirect HOME so defaultStoreRoot() and the global
-	// galeConfigDir() resolve under projDir. Without this,
-	// the remove command's RebuildGeneration runs
-	// farm.Repopulate against the user's real ~/.gale/pkg/,
-	// which produces dozens of "farm: replacing" stderr
-	// lines whenever the user happens to have multiple
-	// revisions of the same package on disk — flooding
-	// our captured stderr buffer and pushing the actual
-	// warning out of view.
+	// galeConfigDir() resolve under projDir — the command
+	// must not touch the real ~/.gale/ during tests.
 	t.Setenv("HOME", projDir)
 
 	// Create a generation so rebuild succeeds.

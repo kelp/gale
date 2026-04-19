@@ -82,16 +82,21 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 			return err
 		}
 
-		// Rebuild the shared-lib farm to reflect the
-		// packages in this generation. Rollbacks and
-		// removals can drop packages whose dylibs were
-		// farmed; repopulating from the store keeps the
-		// farm honest. Best-effort — a farm error does
-		// not invalidate the generation swap.
-		if err := farm.Repopulate(
-			storeRoot, farm.Dir(galeDir)); err != nil {
+		// Rebuild the shared-lib farm from this
+		// generation's packages. Older revisions may
+		// still be in the store (awaiting `gale gc`),
+		// but they aren't on PATH and must not leak into
+		// the farm. Best-effort — a farm error does not
+		// invalidate the generation swap.
+		active := make([]string, 0, len(pkgs))
+		for name, version := range pkgs {
+			active = append(active,
+				resolveStoreDir(storeRoot, name, version))
+		}
+		if err := farm.Rebuild(
+			active, farm.Dir(galeDir)); err != nil {
 			fmt.Fprintf(os.Stderr,
-				"farm: repopulate after gen swap: %v\n", err)
+				"farm: rebuild after gen swap: %v\n", err)
 		}
 
 		// Write README (best effort, world-readable).

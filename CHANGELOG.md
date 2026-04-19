@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `gale install`/`update`/`sync` no longer print a cascade
+  of `farm: replacing libX.N.dylib: …-1 -> …-2` lines when
+  old revisions are still in the store. The shared-lib
+  farm rebuild now only considers the packages in the
+  current generation — stale revisions are ignored until
+  `gale gc` collects them. Previously the rebuild walked
+  every `<name>/<ver>` directory under `~/.gale/pkg/` and
+  farmed each in readdir order, so the older revision was
+  symlinked first and then overwritten by the newer one on
+  every generation swap, producing spurious "replacing"
+  output. `farm.Repopulate(storeRoot, farmDir)` is now
+  `farm.Rebuild(activeStoreDirs, farmDir)`; `generation.Build`
+  resolves the store dirs of the new generation's packages
+  and passes them in.
+
 ## v0.12.3 — 2026-04-19
 
 ### Fixed

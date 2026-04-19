@@ -409,6 +409,26 @@ Moved to gale-recipes TODO. Recipe format additions
   versions not referenced by any gale.toml. `--dry-run`
   previews what would be removed.
 
+- [ ] **`gale generations rollback` should rebuild the
+  farm.** `internal/generation/history.go:153` only swaps
+  the `current` symlink; the shared dylib farm at
+  `~/.gale/lib/` stays pointing at the post-Build state,
+  so binaries in the rolled-to gen may load dylibs from
+  revisions that gen never included. Fix requires
+  persisting the gen's package set (e.g. a small
+  per-gen manifest file) so rollback can pass the
+  active set to `farm.Rebuild`. Surfaced while fixing
+  the store-walking farm rebuild.
+
+- [ ] **Collapse install-time farm replace output.**
+  During a revision bump, `installer.Populate` at
+  `internal/installer/installer.go:398` prints one
+  `farm: replacing …` line per dylib. For packages like
+  postgresql or ruby that's 4+ lines per install. Replace
+  with a single summary line
+  (`farm: updated <pkg>@<ver> (N dylibs)`) so the output
+  stays scannable.
+
 ## Installer Resilience
 
 - [x] **Binary pull fallback** — when binary install
