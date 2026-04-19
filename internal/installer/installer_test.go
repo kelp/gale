@@ -685,7 +685,7 @@ func TestInstallBinaryFailureLoggedToFallbackWriter(t *testing.T) {
 
 	got := logBuf.String()
 	if got == "" {
-		t.Fatal("expected fallback log to record binary "+
+		t.Fatal("expected fallback log to record binary " +
 			"failure, got empty buffer")
 	}
 	if !strings.Contains(got, "pkg") ||

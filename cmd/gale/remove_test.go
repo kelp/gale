@@ -1,6 +1,7 @@
 package main
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -131,9 +132,12 @@ func TestRemoveDeletesLockfileEntry(t *testing.T) {
 }
 
 func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
-	// Set up a project directory with config listing
-	// a package, a store without that package, and
-	// a generation directory so the rebuild works.
+	// Project config lists testpkg; an isolated store
+	// (rooted under projDir, not the real ~/.gale/pkg)
+	// does not contain it; rebuild succeeds against the
+	// project generation. The remove command must warn
+	// "not found in store" without any interference from
+	// whatever happens to live in the user's real store.
 	projDir := t.TempDir()
 	configPath := filepath.Join(projDir, "gale.toml")
 	if err := os.WriteFile(configPath,
@@ -142,8 +146,16 @@ func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// The store is the real ~/.gale/pkg/ but testpkg
-	// won't be installed there.
+	// Redirect HOME so defaultStoreRoot() and the global
+	// galeConfigDir() resolve under projDir. Without this,
+	// the remove command's RebuildGeneration runs
+	// farm.Repopulate against the user's real ~/.gale/pkg/,
+	// which produces dozens of "farm: replacing" stderr
+	// lines whenever the user happens to have multiple
+	// revisions of the same package on disk — flooding
+	// our captured stderr buffer and pushing the actual
+	// warning out of view.
+	t.Setenv("HOME", projDir)
 
 	// Create a generation so rebuild succeeds.
 	galeDir := filepath.Join(projDir, ".gale")
@@ -157,13 +169,20 @@ func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Override defaultStoreRoot by changing to the
-	// project dir and using the project scope.
+	// Empty isolated store; matches the layout
+	// defaultStoreRoot() expects under HOME.
+	if err := os.MkdirAll(
+		filepath.Join(projDir, ".gale", "pkg"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
 	orig, _ := os.Getwd()
 	os.Chdir(projDir)
 	t.Cleanup(func() { os.Chdir(orig) })
 
-	// Capture stderr by replacing os.Stderr temporarily.
+	// Capture stderr via a pipe drained on a goroutine so
+	// the writer never blocks regardless of how much output
+	// the command produces.
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -172,36 +191,20 @@ func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 	os.Stderr = w
 	t.Cleanup(func() { os.Stderr = origStderr })
 
-	// Override the store root for this test. Since
-	// defaultStoreRoot() uses the user's home dir, we
-	// need to use the flags approach.
-	// The remove command creates its own store, so we
-	// need a different approach. We can't easily override
-	// defaultStoreRoot(), but the package IS listed in
-	// config and NOT in the real store (it's a random
-	// name), so if we pick a name that's not actually
-	// installed, this works.
-	//
-	// Actually we need a package in the config but not
-	// in the store. The real ~/.gale/pkg/ probably
-	// doesn't have "testpkg". So we can just run the
-	// real command with project scope (-p) and check
-	// stderr for the warning.
+	stderrCh := make(chan string, 1)
+	go func() {
+		data, _ := io.ReadAll(r)
+		stderrCh <- string(data)
+	}()
+
 	removeProject = true
 	t.Cleanup(func() { removeProject = false })
 
 	runErr := removeCmd.RunE(removeCmd, []string{"testpkg"})
 	w.Close()
-
-	var buf [4096]byte
-	n, _ := r.Read(buf[:])
-	stderr := string(buf[:n])
-
+	stderr := <-stderrCh
 	os.Stderr = origStderr
 
-	// The command should succeed (config update + gen
-	// rebuild), but emit a warning about the missing
-	// store entry.
 	if runErr != nil {
 		t.Fatalf("remove command failed: %v", runErr)
 	}

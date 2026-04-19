@@ -23,6 +23,15 @@
   was a system library — so packages like vibeutils (Zig,
   built with `-Dstrip=true`) printed dozens of warnings per
   install.
+- `TestRemoveWarnsWhenPackageNotInStore` was leaking into the
+  user's real `~/.gale/pkg/` because `defaultStoreRoot()` is
+  HOME-relative and the test had no isolation. On boxes where
+  the store contained both `-1` and `-2` revisions of any
+  package, `farm.Repopulate` flooded the captured stderr buffer
+  and pushed the asserted warning past the 4 KiB read window.
+  Test now sets `HOME` to the temp project dir, drains stderr
+  with `io.ReadAll` on a goroutine, and runs against an
+  isolated empty store.
 
 ### Changed
 
