@@ -16,6 +16,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/ulikunitz/xz"
@@ -846,6 +847,114 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "mytool-output") {
 		t.Errorf("output = %q, want mytool-output", data)
+	}
+}
+
+func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
+	// Issue: the installer used to overwrite .gale-deps.toml
+	// with locally-resolved versions because builds did not
+	// emit it. Now the build records the exact linked
+	// version-revision per dep into the prefix root before
+	// the archive is sealed; the installer then preserves
+	// that file rather than computing it from local recipes.
+	srcDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(srcDir, "README"),
+		[]byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Mock dep store dirs — basenames carry the
+	// version-revision that gets recorded in the metadata.
+	storeRoot := t.TempDir()
+	opensslDir := filepath.Join(storeRoot, "openssl", "3.4.1-2")
+	zstdDir := filepath.Join(storeRoot, "zstd", "1.5.6")
+	if err := os.MkdirAll(opensslDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(zstdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin && echo '#!/bin/sh' > $PREFIX/bin/hello && chmod +x $PREFIX/bin/hello",
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	result, err := BuildLocal(r, srcDir, outputDir, false, &BuildDeps{
+		StoreDirs: []string{opensslDir, zstdDir},
+		NamedDirs: map[string]string{
+			"openssl": opensslDir,
+			"zstd":    zstdDir,
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildLocal: %v", err)
+	}
+
+	extractDir := t.TempDir()
+	if err := download.ExtractTarZstd(
+		result.Archive, extractDir); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	md, err := depsmeta.Read(extractDir)
+	if err != nil {
+		t.Fatalf("read deps metadata: %v", err)
+	}
+	if len(md.Deps) != 2 {
+		t.Fatalf("got %d deps, want 2: %#v", len(md.Deps), md.Deps)
+	}
+	want := map[string]depsmeta.ResolvedDep{
+		"openssl": {Name: "openssl", Version: "3.4.1", Revision: 2},
+		"zstd":    {Name: "zstd", Version: "1.5.6", Revision: 1},
+	}
+	for _, dep := range md.Deps {
+		if got, ok := want[dep.Name]; !ok || got != dep {
+			t.Errorf("dep %s = %#v, want %#v",
+				dep.Name, dep, want[dep.Name])
+		}
+	}
+}
+
+func TestBuildLocalSkipsDepsMetadataWhenNoDeps(t *testing.T) {
+	// Recipes with no build deps shouldn't ship a metadata
+	// file — the installer treats a missing file as "old
+	// install, possibly stale" for soft migration. A zero-
+	// dep recipe legitimately has no deps to record.
+	srcDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(srcDir, "README"),
+		[]byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin && echo '#!/bin/sh' > $PREFIX/bin/hello && chmod +x $PREFIX/bin/hello",
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	result, err := BuildLocal(r, srcDir, outputDir, false, nil)
+	if err != nil {
+		t.Fatalf("BuildLocal: %v", err)
+	}
+
+	extractDir := t.TempDir()
+	if err := download.ExtractTarZstd(
+		result.Archive, extractDir); err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	if depsmeta.Has(extractDir) {
+		t.Error("expected no .gale-deps.toml when build had no deps")
 	}
 }
 

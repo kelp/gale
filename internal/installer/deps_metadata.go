@@ -1,51 +1,27 @@
 package installer
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
-	"unicode"
-
-	"github.com/BurntSushi/toml"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/recipe"
 )
 
-const depsMetadataFile = ".gale-deps.toml"
-
 // ResolvedDep records one dep's full identity at install
 // time. Persisted in <storeDir>/.gale-deps.toml.
-type ResolvedDep struct {
-	Name     string `toml:"name"`
-	Version  string `toml:"version"`
-	Revision int    `toml:"revision"`
-}
+type ResolvedDep = depsmeta.ResolvedDep
 
 // DepsMetadata is the on-disk form of a package's
 // built-against dep closure.
-type DepsMetadata struct {
-	Deps []ResolvedDep `toml:"deps"`
-}
+type DepsMetadata = depsmeta.Metadata
 
 // WriteDepsMetadata writes the metadata file into storeDir.
 // Overwrites any existing file.
 func WriteDepsMetadata(storeDir string, md DepsMetadata) error {
-	var buf bytes.Buffer
-	enc := toml.NewEncoder(&buf)
-	if err := enc.Encode(md); err != nil {
-		return fmt.Errorf("encoding deps metadata: %w", err)
-	}
-	path := filepath.Join(storeDir, depsMetadataFile)
-	if err := os.WriteFile(path, buf.Bytes(), 0o644); err != nil {
-		return fmt.Errorf("writing deps metadata: %w", err)
-	}
-	return nil
+	return depsmeta.Write(storeDir, md)
 }
 
 // HasDepsMetadata reports whether <storeDir>/.gale-deps.toml
@@ -56,8 +32,7 @@ func WriteDepsMetadata(storeDir string, md DepsMetadata) error {
 // detect soft-migration candidates even when the installed
 // version is no longer in the registry's .versions index.
 func HasDepsMetadata(storeDir string) bool {
-	_, err := os.Stat(filepath.Join(storeDir, depsMetadataFile))
-	return err == nil
+	return depsmeta.Has(storeDir)
 }
 
 // ReadDepsMetadata reads <storeDir>/.gale-deps.toml.
@@ -65,19 +40,7 @@ func HasDepsMetadata(storeDir string) bool {
 // does not exist. Returns an error if the file exists
 // but fails to parse.
 func ReadDepsMetadata(storeDir string) (DepsMetadata, error) {
-	path := filepath.Join(storeDir, depsMetadataFile)
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return DepsMetadata{}, nil
-		}
-		return DepsMetadata{}, fmt.Errorf("reading deps metadata: %w", err)
-	}
-	var md DepsMetadata
-	if _, err := toml.Decode(string(data), &md); err != nil {
-		return DepsMetadata{}, fmt.Errorf("parsing deps metadata: %w", err)
-	}
-	return md, nil
+	return depsmeta.Read(storeDir)
 }
 
 // IsStale reports whether an installed package is stale
@@ -97,12 +60,12 @@ func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, 
 	// A missing file means the package predates this metadata (soft
 	// migration → stale). A present file with zero deps is a valid
 	// zero-dep install (not stale).
-	metaPath := filepath.Join(storeDir, depsMetadataFile)
+	metaPath := filepath.Join(storeDir, depsmeta.File)
 	if _, statErr := os.Stat(metaPath); os.IsNotExist(statErr) {
 		return true, nil
 	}
 
-	md, err := ReadDepsMetadata(storeDir)
+	md, err := depsmeta.Read(storeDir)
 	if err != nil {
 		return false, fmt.Errorf("read deps metadata: %w", err)
 	}
@@ -185,81 +148,12 @@ func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, 
 	return false, nil
 }
 
-// BuildDepsToResolved converts a BuildDeps into the
-// flat (name, version, revision) list we persist in
-// .gale-deps.toml. The version-revision is extracted
-// from each store dir's basename: "curl/8.19.0-2" →
-// (curl, 8.19.0, 2); a bare basename with no revision
-// suffix is treated as revision 1 for back-compat
-// with old installs.
-//
-// Deps with malformed store dirs (empty path, no parent)
-// are skipped silently.
-// BuildDepsToResolved converts a BuildDeps into the
-// flat (name, version, revision) list we persist in
-// .gale-deps.toml. The version-revision is extracted
-// from each store dir's basename: "curl/8.19.0-2" →
-// (curl, 8.19.0, 2); a bare basename with no revision
-// suffix is treated as revision 1 for back-compat
-// with old installs.
-//
-// Deps with malformed store dirs (empty path, no parent)
-// are skipped silently.
+// BuildDepsToResolved converts a BuildDeps into the flat
+// (name, version, revision) list persisted in .gale-deps.toml.
+// Thin wrapper around depsmeta.FromNamedDirs.
 func BuildDepsToResolved(deps *build.BuildDeps) []ResolvedDep {
 	if deps == nil {
 		return nil
 	}
-	if len(deps.NamedDirs) == 0 {
-		return nil
-	}
-
-	result := make([]ResolvedDep, 0, len(deps.NamedDirs))
-	for name, dir := range deps.NamedDirs {
-		if name == "" || dir == "" {
-			continue
-		}
-		base := filepath.Base(dir)
-		version, revision := parseVersionRevision(base)
-		result = append(result, ResolvedDep{
-			Name:     name,
-			Version:  version,
-			Revision: revision,
-		})
-	}
-
-	sort.Slice(result, func(i, j int) bool {
-		return result[i].Name < result[j].Name
-	})
-	return result
-}
-
-// parseVersionRevision splits a basename into (version, revision).
-// If the basename ends with "-<digits>", the digits become the
-// revision and the prefix is the version. Otherwise the whole
-// basename is the version and revision defaults to 1.
-func parseVersionRevision(base string) (string, int) {
-	idx := strings.LastIndex(base, "-")
-	if idx >= 0 {
-		suffix := base[idx+1:]
-		if isAllDigits(suffix) {
-			rev, err := strconv.Atoi(suffix)
-			if err == nil {
-				return base[:idx], rev
-			}
-		}
-	}
-	return base, 1
-}
-
-// isAllDigits reports whether s is non-empty and contains only ASCII digits.
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if !unicode.IsDigit(r) {
-			return false
-		}
-	}
-	return true
+	return depsmeta.FromNamedDirs(deps.NamedDirs)
 }

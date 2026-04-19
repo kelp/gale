@@ -370,21 +370,28 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 	}
 
 	// Populate the shared lib farm with symlinks to this
-	// package's versioned dylibs. Best-effort: warn on
-	// conflict but don't fail the install — conflicts are
-	// a recipe-level issue surfaced by `gale inspect`.
+	// package's versioned dylibs. A conflict (two packages
+	// claiming the same dylib) is a recipe bug — fail the
+	// install so the bad recipe gets fixed instead of
+	// silently shipping a farm where one package wins.
 	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
 		if err := farm.Populate(storeDir, farmDir); err != nil {
-			fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+			return fmt.Errorf("populate farm: %w", err)
 		}
 	}
 
 	// Record the dep closure the prebuilt expects at
 	// runtime so staleness can be detected when a dep's
-	// recipe changes. Deps reflect locally-resolved
-	// versions rather than the exact versions CI linked
-	// against — a reasonable approximation since
-	// revisions should preserve ABI.
+	// recipe changes. If the archive already shipped a
+	// .gale-deps.toml (built by `gale build` with full
+	// knowledge of the linked versions), keep that —
+	// it's the authoritative record. Otherwise fall back
+	// to locally-resolved versions, which is approximate
+	// but preserves backwards-compat with archives built
+	// before the build-time emit landed.
+	if HasDepsMetadata(storeDir) {
+		return nil
+	}
 	if deps != nil {
 		md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
 		if err := WriteDepsMetadata(storeDir, md); err != nil {

@@ -436,6 +436,100 @@ func createTestTarZstd(t *testing.T, name, content string) string {
 	return path
 }
 
+// createTarZstdWithFiles writes a tar.zst archive containing
+// each (path, content) pair. Used to model archives that ship
+// extra metadata (.gale-deps.toml) alongside a binary.
+func createTarZstdWithFiles(t *testing.T, files map[string]string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "pkg.tar.zst")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create tar.zst: %v", err)
+	}
+	defer f.Close()
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatalf("create zstd writer: %v", err)
+	}
+	defer zw.Close()
+	tw := tar.NewWriter(zw)
+	defer tw.Close()
+	for name, content := range files {
+		if strings.HasSuffix(name, "/") {
+			tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeDir,
+				Name:     name,
+				Mode:     0o755,
+			})
+			continue
+		}
+		tw.WriteHeader(&tar.Header{
+			Typeflag: tar.TypeReg,
+			Name:     name,
+			Mode:     0o755,
+			Size:     int64(len(content)),
+		})
+		tw.Write([]byte(content))
+	}
+	return path
+}
+
+func TestInstallBinaryPreservesArchiveDepsMetadata(t *testing.T) {
+	// Issue: the installer used to overwrite an archive's
+	// .gale-deps.toml with locally-resolved versions. Now it
+	// preserves whatever the archive shipped (CI's exact
+	// linked versions) and only computes locally as a
+	// fallback for archives built before the build-time emit.
+	archiveDeps := "[[deps]]\n  name = \"openssl\"\n  version = \"3.4.1\"\n  revision = \"42\"\n"
+	tarzst := createTarZstdWithFiles(t, map[string]string{
+		"bin/":             "",
+		"bin/testpkg":      "#!/bin/sh\necho ok",
+		".gale-deps.toml":  archiveDeps,
+	})
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData)
+		}))
+	defer srv.Close()
+	restore := download.SetHTTPClient(srv.Client())
+	defer restore()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    fmt.Sprintf("%s/testpkg-1.0.tar.zst", srv.URL),
+				SHA256: hash,
+			},
+		},
+	}
+
+	if _, err := inst.Install(r); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	storeDeps := filepath.Join(storeRoot,
+		"testpkg", "1.0-1", ".gale-deps.toml")
+	got, err := os.ReadFile(storeDeps)
+	if err != nil {
+		t.Fatalf("read store deps file: %v", err)
+	}
+	if string(got) != archiveDeps {
+		t.Fatalf(".gale-deps.toml was overwritten\n got: %q\nwant: %q",
+			string(got), archiveDeps)
+	}
+}
+
 // --- Install cached ---
 
 func TestInstallCachedReturnsWithoutDownload(t *testing.T) {

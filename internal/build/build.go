@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/gitutil"
@@ -203,6 +204,21 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 	// replaces it with the actual store path.
 	if err := ReplacePrefixInTextFiles(prefixDir, PrefixPlaceholder); err != nil {
 		return nil, fmt.Errorf("fixup text prefix paths: %w", err)
+	}
+
+	// Record the exact dep version-revisions linked into this
+	// build so the installer can preserve them through the
+	// archive. Without this, the installer falls back to
+	// locally-resolved versions, which can mis-detect
+	// staleness when a user has pinned deps that diverge from
+	// the build environment.
+	if deps != nil && len(deps.NamedDirs) > 0 {
+		md := depsmeta.Metadata{
+			Deps: depsmeta.FromNamedDirs(deps.NamedDirs),
+		}
+		if err := depsmeta.Write(prefixDir, md); err != nil {
+			return nil, fmt.Errorf("write deps metadata: %w", err)
+		}
 	}
 
 	archiveName := fmt.Sprintf("%s-%s.tar.zst", r.Package.Name, r.Package.Version)
