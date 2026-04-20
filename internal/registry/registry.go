@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/recipe"
-	"github.com/kelp/gale/internal/trust"
 )
 
 // validCommitHash matches a lowercase hex string 7-40 chars long.
@@ -26,46 +25,25 @@ const defaultGHCRBase = "kelp/gale-recipes"
 // Registry fetches recipe TOML files from a remote HTTP
 // registry using letter-bucketed paths.
 type Registry struct {
-	BaseURL   string
-	publicKey string // ed25519 public key (base64)
+	BaseURL string
 
 	// warnf logs a warning. Defaults to fmt.Fprintf(os.Stderr, ...).
 	// Override in tests to capture output.
 	warnf func(format string, args ...any)
 }
 
-// New returns a Registry configured with DefaultURL and
-// the embedded recipe signing public key.
+// New returns a Registry configured with DefaultURL.
 func New() *Registry {
-	return &Registry{
-		BaseURL:   DefaultURL,
-		publicKey: trust.RecipePublicKey(),
-	}
+	return &Registry{BaseURL: DefaultURL}
 }
 
-// NewWithURL returns a Registry with the given base URL
-// and the embedded recipe signing public key. If url is
-// empty, DefaultURL is used.
+// NewWithURL returns a Registry with the given base URL.
+// If url is empty, DefaultURL is used.
 func NewWithURL(url string) *Registry {
 	if url == "" {
 		return New()
 	}
-	return &Registry{
-		BaseURL:   url,
-		publicKey: trust.RecipePublicKey(),
-	}
-}
-
-// NewWithKey returns a Registry with the given base URL
-// and public key. If url is empty, DefaultURL is used.
-func NewWithKey(url, publicKey string) *Registry {
-	if url == "" {
-		url = DefaultURL
-	}
-	return &Registry{
-		BaseURL:   url,
-		publicKey: publicKey,
-	}
+	return &Registry{BaseURL: url}
 }
 
 // repoBase returns BaseURL with the trailing path segment
@@ -130,10 +108,6 @@ func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("fetch recipe %s: %w", name, err)
-	}
-
-	if err := r.verifyRecipe(body, url); err != nil {
-		return nil, fmt.Errorf("recipe %s: %w", name, err)
 	}
 
 	rec, err := recipe.Parse(string(body))
@@ -228,10 +202,6 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 			"read %s@%s recipe: %w", name, version, err)
 	}
 
-	if err := r.verifyRecipe(recipeBody, recipeURL); err != nil {
-		return nil, fmt.Errorf("%s@%s: %w", name, version, err)
-	}
-
 	rec, err := recipe.Parse(string(recipeBody))
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -270,10 +240,6 @@ func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 			"read binaries %s: %w", name, err)
 	}
 
-	if err := r.verifyRecipe(body, url); err != nil {
-		return nil, fmt.Errorf("binaries %s: %w", name, err)
-	}
-
 	return recipe.ParseBinaryIndex(string(body))
 }
 
@@ -291,46 +257,6 @@ func ghcrBaseFromURL(rawURL string) string {
 		return defaultGHCRBase
 	}
 	return parts[0] + "/" + parts[1]
-}
-
-// fetchSignature fetches the .sig file for the given recipe URL.
-func (r *Registry) fetchSignature(url string) (string, error) {
-	sigURL := url + ".sig"
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(sigURL)
-	if err != nil {
-		return "", fmt.Errorf("fetch signature: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("fetch signature: HTTP %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", fmt.Errorf("read signature: %w", err)
-	}
-	return strings.TrimSpace(string(body)), nil
-}
-
-// verifyRecipe checks the recipe signature using the
-// configured public key. Returns an error if no public key
-// is configured.
-func (r *Registry) verifyRecipe(data []byte, recipeURL string) error {
-	if r.publicKey == "" {
-		return fmt.Errorf("signature verification: no public key configured")
-	}
-	sig, err := r.fetchSignature(recipeURL)
-	if err != nil {
-		return fmt.Errorf("signature verification: %w", err)
-	}
-	ok, err := trust.Verify(data, sig, r.publicKey)
-	if err != nil {
-		return fmt.Errorf("signature verification: %w", err)
-	}
-	if !ok {
-		return fmt.Errorf("signature verification failed: invalid signature")
-	}
-	return nil
 }
 
 // pickVersion resolves a user-supplied version string against

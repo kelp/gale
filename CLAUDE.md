@@ -44,7 +44,6 @@ internal/env/          direnv hook, PATH building
 internal/output/       colored terminal output
 internal/lockfile/     gale.lock read/write
 internal/repo/         recipe repository management
-internal/trust/        ed25519 signing and verification
 internal/ai/           Anthropic SDK integration
 internal/lint/         recipe TOML validation
 internal/attestation/  Sigstore attestation via gh CLI

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -9,7 +8,6 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/repo"
-	"github.com/kelp/gale/internal/trust"
 	"github.com/spf13/cobra"
 )
 
@@ -134,23 +132,7 @@ var repoInitCmd = &cobra.Command{
 			return fmt.Errorf("creating recipes dir: %w", err)
 		}
 
-		kp, err := trust.GenerateKeyPair()
-		if err != nil {
-			return fmt.Errorf("generating keypair: %w", err)
-		}
-
-		keyFile := filepath.Join(name, "keys.json")
-		keyData, err := json.MarshalIndent(kp, "", "  ") //nolint:gosec // G117 — ed25519 signing key struct, not a hardcoded credential
-		if err != nil {
-			return fmt.Errorf("encoding keys: %w", err)
-		}
-		if err := os.WriteFile(keyFile, keyData, 0o600); err != nil {
-			return fmt.Errorf("writing keys: %w", err)
-		}
-
 		out.Success(fmt.Sprintf("Initialized repo %s", name))
-		out.Info(fmt.Sprintf("Public key: %s", kp.PublicKey))
-		out.Warn("Keep keys.json private — do not commit it")
 		return nil
 	},
 }

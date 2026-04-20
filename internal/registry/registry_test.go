@@ -7,8 +7,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"github.com/kelp/gale/internal/trust"
 )
 
 // validTOML is a minimal recipe that recipe.Parse accepts.
@@ -24,47 +22,12 @@ url = "https://example.com/testpkg-1.0.0.tar.gz"
 sha256 = "abc123def456"
 `
 
-// testKeyPair is a shared keypair for tests that need
-// signed recipes but aren't testing verification itself.
-var testKeyPair *trust.KeyPair
-
-func init() {
-	kp, err := trust.GenerateKeyPair()
-	if err != nil {
-		panic("generate test keypair: " + err.Error())
-	}
-	testKeyPair = kp
-}
-
-// signedHandler returns an http.HandlerFunc that serves
-// recipes and their signatures for the given files map.
-// Keys are URL paths (e.g., "/recipes/t/testpkg.toml"),
-// values are file contents. Signature endpoints (*.sig)
-// are auto-generated using the test keypair.
-func signedHandler(files map[string]string) http.HandlerFunc {
+// fileHandler returns an http.HandlerFunc that serves file
+// contents for the given map of URL path → content. Missing
+// paths return 404.
+func fileHandler(files map[string]string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.Path
-
-		// Check for .sig request.
-		if strings.HasSuffix(path, ".sig") {
-			base := strings.TrimSuffix(path, ".sig")
-			content, ok := files[base]
-			if !ok {
-				http.NotFound(w, r)
-				return
-			}
-			sig, err := trust.Sign(
-				[]byte(content), testKeyPair.PrivateKey)
-			if err != nil {
-				http.Error(w, err.Error(),
-					http.StatusInternalServerError)
-				return
-			}
-			fmt.Fprint(w, sig)
-			return
-		}
-
-		content, ok := files[path]
+		content, ok := files[r.URL.Path]
 		if !ok {
 			http.NotFound(w, r)
 			return
@@ -73,13 +36,9 @@ func signedHandler(files map[string]string) http.HandlerFunc {
 	}
 }
 
-// testRegistry returns a Registry configured with the test
-// keypair's public key and the given base URL.
+// testRegistry returns a Registry pointing at the given base URL.
 func testRegistry(baseURL string) *Registry {
-	return &Registry{
-		BaseURL:   baseURL,
-		publicKey: testKeyPair.PublicKey,
-	}
+	return &Registry{BaseURL: baseURL}
 }
 
 // --- Behavior 1: FetchRecipe constructs correct URL ---
@@ -129,7 +88,7 @@ func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
 // --- Behavior 2: FetchRecipe downloads and parses recipe ---
 
 func TestFetchRecipeParsesValidTOML(t *testing.T) {
-	srv := httptest.NewServer(signedHandler(
+	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/t/testpkg.toml": validTOML,
 		}))
@@ -174,7 +133,7 @@ func TestFetchRecipeErrorsOn404(t *testing.T) {
 
 func TestFetchRecipeErrorsOnMalformedTOML(t *testing.T) {
 	malformed := "this is not valid toml [[["
-	srv := httptest.NewServer(signedHandler(
+	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/b/badpkg.toml": malformed,
 		}))
@@ -203,7 +162,7 @@ func TestFetchRecipeUsesCustomBaseURL(t *testing.T) {
 	var mu sync.Mutex
 	var called bool
 
-	inner := signedHandler(map[string]string{
+	inner := fileHandler(map[string]string{
 		"/recipes/t/testpkg.toml": validTOML,
 	})
 	srv := httptest.NewServer(http.HandlerFunc(
@@ -345,7 +304,7 @@ func TestFetchRecipeVersion(t *testing.T) {
 	versionsBody := "1.7.1 " + commit + "\n" +
 		"1.8.1 9876543210abcdef9876543210abcdef98765432\n"
 
-	srv := httptest.NewServer(signedHandler(
+	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/j/jq.versions":            versionsBody,
 			"/" + commit + "/recipes/j/jq.toml": validTOML,
@@ -374,7 +333,7 @@ func TestFetchRecipeVersionStripsTrailingRefFromBaseURL(t *testing.T) {
 	const commit = "abc1234def5678901234567890abcdef12345678"
 	versionsBody := "1.7.1 " + commit + "\n"
 
-	srv := httptest.NewServer(signedHandler(
+	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/main/recipes/j/jq.versions":       versionsBody,
 			"/" + commit + "/recipes/j/jq.toml": validTOML,
@@ -496,7 +455,7 @@ sha256 = "a903b0ca428c174e611ad78ee6508fefeab7a8b2eb60e55b554280679b2c07c6"
 `
 
 func TestFetchRecipeMergesBinariesToml(t *testing.T) {
-	srv := httptest.NewServer(signedHandler(
+	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/j/jq.toml":          recipeNoBinaries,
 			"/recipes/j/jq.binaries.toml": binariesToml,
@@ -518,7 +477,7 @@ func TestFetchRecipeMergesBinariesToml(t *testing.T) {
 }
 
 func TestFetchRecipeBinaries404NoError(t *testing.T) {
-	srv := httptest.NewServer(signedHandler(
+	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/j/jq.toml": recipeNoBinaries,
 		}))
@@ -583,7 +542,7 @@ func TestFetchRecipeInlineBinariesSkipsFetch(t *testing.T) {
 url = "https://example.com/jq-darwin"
 sha256 = "inline123"
 `
-	inner := signedHandler(map[string]string{
+	inner := fileHandler(map[string]string{
 		"/recipes/j/jq.toml": inlineRecipe,
 	})
 	srv := httptest.NewServer(http.HandlerFunc(
@@ -834,7 +793,7 @@ func TestFetchRecipeBinariesStaleVersion(t *testing.T) {
 sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 `
 
-	srv := httptest.NewServer(signedHandler(
+	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/j/jq.toml":          recipeNoBinaries,
 			"/recipes/j/jq.binaries.toml": staleBinaries,
@@ -1018,297 +977,6 @@ func TestFetchRecipeVersionConnectionFailure(t *testing.T) {
 	}
 }
 
-// --- Behavior 27: FetchRecipe verifies signature ---
-
-func TestFetchRecipeVerifiesSignature(t *testing.T) {
-	kp, err := trust.GenerateKeyPair()
-	if err != nil {
-		t.Fatalf("GenerateKeyPair: %v", err)
-	}
-
-	recipeBody := []byte(validTOML)
-	sig, err := trust.Sign(recipeBody, kp.PrivateKey)
-	if err != nil {
-		t.Fatalf("Sign: %v", err)
-	}
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/t/testpkg.toml":
-				w.Write(recipeBody)
-			case "/recipes/t/testpkg.toml.sig":
-				fmt.Fprint(w, sig)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv.Close()
-
-	reg := &Registry{
-		BaseURL:   srv.URL,
-		publicKey: kp.PublicKey,
-	}
-	rec, err := reg.FetchRecipe("testpkg")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if rec.Package.Name != "testpkg" {
-		t.Errorf("Name = %q, want %q",
-			rec.Package.Name, "testpkg")
-	}
-}
-
-// --- Behavior 28: FetchRecipe rejects bad signature ---
-
-func TestFetchRecipeRejectsBadSignature(t *testing.T) {
-	kp1, _ := trust.GenerateKeyPair()
-	kp2, _ := trust.GenerateKeyPair()
-
-	recipeBody := []byte(validTOML)
-	sig, _ := trust.Sign(recipeBody, kp1.PrivateKey)
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/t/testpkg.toml":
-				w.Write(recipeBody)
-			case "/recipes/t/testpkg.toml.sig":
-				fmt.Fprint(w, sig)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv.Close()
-
-	reg := &Registry{
-		BaseURL:   srv.URL,
-		publicKey: kp2.PublicKey,
-	}
-	_, err := reg.FetchRecipe("testpkg")
-	if err == nil {
-		t.Fatal("expected error for bad signature")
-	}
-}
-
-// --- Behavior 29: FetchRecipe rejects missing signature ---
-
-func TestFetchRecipeRejectsMissingSignature(t *testing.T) {
-	kp, _ := trust.GenerateKeyPair()
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/t/testpkg.toml":
-				fmt.Fprint(w, validTOML)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv.Close()
-
-	reg := &Registry{
-		BaseURL:   srv.URL,
-		publicKey: kp.PublicKey,
-	}
-	_, err := reg.FetchRecipe("testpkg")
-	if err == nil {
-		t.Fatal("expected error for missing signature")
-	}
-}
-
-// --- Behavior 30: verifyRecipe errors when publicKey is empty ---
-
-func TestVerifyRecipeErrorsWhenPublicKeyEmpty(t *testing.T) {
-	reg := &Registry{BaseURL: "https://example.com"}
-	err := reg.verifyRecipe([]byte("data"), "https://example.com/r.toml")
-	if err == nil {
-		t.Fatal("expected error when publicKey is empty")
-	}
-}
-
-// --- Behavior 36: New always sets publicKey ---
-
-func TestNewSetsPublicKey(t *testing.T) {
-	reg := New()
-	if reg.publicKey == "" {
-		t.Fatal("New() should set publicKey")
-	}
-}
-
-func TestNewWithURLSetsPublicKey(t *testing.T) {
-	reg := NewWithURL("https://example.com")
-	if reg.publicKey == "" {
-		t.Fatal("NewWithURL() should set publicKey")
-	}
-}
-
-func TestNewWithKeySetsPublicKey(t *testing.T) {
-	kp, _ := trust.GenerateKeyPair()
-	reg := NewWithKey("https://example.com", kp.PublicKey)
-	if reg.publicKey != kp.PublicKey {
-		t.Errorf("publicKey = %q, want %q",
-			reg.publicKey, kp.PublicKey)
-	}
-}
-
-// --- Behavior 31: FetchRecipe verifies binaries signature ---
-
-func TestFetchRecipeVerifiesBinariesSignature(t *testing.T) {
-	kp, _ := trust.GenerateKeyPair()
-
-	recipeBody := []byte(recipeNoBinaries)
-	recipeSig, _ := trust.Sign(recipeBody, kp.PrivateKey)
-
-	binBody := []byte(binariesToml)
-	binSig, _ := trust.Sign(binBody, kp.PrivateKey)
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.toml":
-				w.Write(recipeBody)
-			case "/recipes/j/jq.toml.sig":
-				fmt.Fprint(w, recipeSig)
-			case "/recipes/j/jq.binaries.toml":
-				w.Write(binBody)
-			case "/recipes/j/jq.binaries.toml.sig":
-				fmt.Fprint(w, binSig)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv.Close()
-
-	reg := &Registry{
-		BaseURL:   srv.URL,
-		publicKey: kp.PublicKey,
-	}
-	rec, err := reg.FetchRecipe("jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 2 {
-		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
-	}
-}
-
-// --- Behavior 32: FetchRecipe rejects bad binaries signature ---
-
-func TestFetchRecipeRejectsBadBinariesSignature(t *testing.T) {
-	kp1, _ := trust.GenerateKeyPair()
-	kp2, _ := trust.GenerateKeyPair()
-
-	recipeBody := []byte(recipeNoBinaries)
-	recipeSig, _ := trust.Sign(recipeBody, kp1.PrivateKey)
-
-	binBody := []byte(binariesToml)
-	binSig, _ := trust.Sign(binBody, kp2.PrivateKey)
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.toml":
-				w.Write(recipeBody)
-			case "/recipes/j/jq.toml.sig":
-				fmt.Fprint(w, recipeSig)
-			case "/recipes/j/jq.binaries.toml":
-				w.Write(binBody)
-			case "/recipes/j/jq.binaries.toml.sig":
-				fmt.Fprint(w, binSig)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv.Close()
-
-	reg := &Registry{
-		BaseURL:   srv.URL,
-		publicKey: kp1.PublicKey,
-	}
-	_, err := reg.FetchRecipe("jq")
-	if err == nil {
-		t.Fatal("expected error for bad binaries signature")
-	}
-}
-
-// --- Behavior 33: FetchRecipeVersion verifies signature ---
-
-func TestFetchRecipeVersionVerifiesSignature(t *testing.T) {
-	kp, _ := trust.GenerateKeyPair()
-
-	const commit = "abc1234def5678901234567890abcdef12345678"
-	versionsBody := "1.7.1 " + commit + "\n"
-
-	recipeBody := []byte(validTOML)
-	sig, _ := trust.Sign(recipeBody, kp.PrivateKey)
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.versions":
-				fmt.Fprint(w, versionsBody)
-			case "/" + commit + "/recipes/j/jq.toml":
-				w.Write(recipeBody)
-			case "/" + commit + "/recipes/j/jq.toml.sig":
-				fmt.Fprint(w, sig)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv.Close()
-
-	reg := &Registry{
-		BaseURL:   srv.URL,
-		publicKey: kp.PublicKey,
-	}
-	rec, err := reg.FetchRecipeVersion("jq", "1.7.1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if rec.Package.Name != "testpkg" {
-		t.Errorf("Name = %q, want %q",
-			rec.Package.Name, "testpkg")
-	}
-}
-
-// --- Behavior 34: FetchRecipeVersion rejects bad signature ---
-
-func TestFetchRecipeVersionRejectsBadSignature(t *testing.T) {
-	kp1, _ := trust.GenerateKeyPair()
-	kp2, _ := trust.GenerateKeyPair()
-
-	const commit = "abc1234def5678901234567890abcdef12345678"
-	versionsBody := "1.7.1 " + commit + "\n"
-
-	recipeBody := []byte(validTOML)
-	sig, _ := trust.Sign(recipeBody, kp1.PrivateKey)
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.versions":
-				fmt.Fprint(w, versionsBody)
-			case "/" + commit + "/recipes/j/jq.toml":
-				w.Write(recipeBody)
-			case "/" + commit + "/recipes/j/jq.toml.sig":
-				fmt.Fprint(w, sig)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv.Close()
-
-	reg := &Registry{
-		BaseURL:   srv.URL,
-		publicKey: kp2.PublicKey,
-	}
-	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
-	if err == nil {
-		t.Fatal("expected error for bad signature")
-	}
-}
-
 // --- pickVersion behaviors ---
 
 // Behavior 1: exact match in index returns the key as-is.
@@ -1478,87 +1146,5 @@ func TestPickVersionMultiDigitRevisionNumericComparison(t *testing.T) {
 	}
 	if got != "8.19.0-10" {
 		t.Errorf("got %q, want %q", got, "8.19.0-10")
-	}
-}
-
-// --- Behavior 35: end-to-end signature verification ---
-
-func TestFetchRecipeEndToEndSignatureFlow(t *testing.T) {
-	kp, err := trust.GenerateKeyPair()
-	if err != nil {
-		t.Fatalf("GenerateKeyPair: %v", err)
-	}
-
-	recipeBody := []byte(recipeNoBinaries)
-	recipeSig, _ := trust.Sign(recipeBody, kp.PrivateKey)
-
-	binBody := []byte(binariesToml)
-	binSig, _ := trust.Sign(binBody, kp.PrivateKey)
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.toml":
-				w.Write(recipeBody)
-			case "/recipes/j/jq.toml.sig":
-				fmt.Fprint(w, recipeSig)
-			case "/recipes/j/jq.binaries.toml":
-				w.Write(binBody)
-			case "/recipes/j/jq.binaries.toml.sig":
-				fmt.Fprint(w, binSig)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv.Close()
-
-	reg := &Registry{
-		BaseURL:   srv.URL,
-		publicKey: kp.PublicKey,
-	}
-
-	rec, err := reg.FetchRecipe("jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	if rec.Package.Name != "jq" {
-		t.Errorf("Name = %q, want %q",
-			rec.Package.Name, "jq")
-	}
-	if rec.Package.Version != "1.8.1" {
-		t.Errorf("Version = %q, want %q",
-			rec.Package.Version, "1.8.1")
-	}
-	if len(rec.Binary) != 2 {
-		t.Errorf("Binary count = %d, want 2",
-			len(rec.Binary))
-	}
-
-	// Tamper with recipe body — signature should reject.
-	tamperedBody := []byte(
-		strings.ReplaceAll(
-			string(recipeBody), "1.8.1", "1.8.2-evil"))
-
-	srv2 := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/j/jq.toml":
-				w.Write(tamperedBody)
-			case "/recipes/j/jq.toml.sig":
-				fmt.Fprint(w, recipeSig)
-			default:
-				http.NotFound(w, r)
-			}
-		}))
-	defer srv2.Close()
-
-	reg2 := &Registry{
-		BaseURL:   srv2.URL,
-		publicKey: kp.PublicKey,
-	}
-	_, err = reg2.FetchRecipe("jq")
-	if err == nil {
-		t.Fatal("expected error for tampered recipe")
 	}
 }

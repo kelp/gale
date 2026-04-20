@@ -330,7 +330,7 @@ func TestResolveVersionedRecipeWrapsRegistryError(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	addr := srv.URL
 	srv.Close()
-	reg := registry.NewWithKey(addr, "")
+	reg := registry.NewWithURL(addr)
 	ctx := &cmdContext{
 		Resolver: func(name string) (*recipe.Recipe, error) {
 			return want, nil
