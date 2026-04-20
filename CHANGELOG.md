@@ -1,5 +1,31 @@
 # Changelog
 
+## v0.13.0 — 2026-04-19
+
+### Removed
+
+- Recipe signature verification. Recipes are trusted via
+  HTTPS to the recipes repo; tarballs are pinned by
+  `[source] sha256`; prebuilt binaries carry Sigstore
+  attestations verified by `gale verify`. The per-recipe
+  ed25519 `.sig` files did not defend against any threat
+  that the GitHub repo + TLS did not already cover, and
+  the two-commit sign-after-recipe workflow produced a
+  race window that broke `gale update` against a
+  just-pushed recipe. Deleting `internal/trust`,
+  `verifyRecipe`, `fetchSignature`, and the `publicKey`
+  field on `Registry` removes the race by construction.
+  `gale repo init` no longer generates a keypair; it
+  just scaffolds the directory layout.
+
+### Breaking
+
+- Clients ≤ v0.12.x will fail against a recipes repo that
+  no longer serves `.sig` files (the client demands one
+  and 404s). Upgrade to v0.13 before the gale-recipes
+  cleanup lands, or use `--recipes <local-path>` to
+  bypass the registry.
+
 ## v0.12.5 — 2026-04-19
 
 ### Fixed
