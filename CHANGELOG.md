@@ -1,5 +1,67 @@
 # Changelog
 
+## v0.13.1 — 2026-04-21
+
+### Fixed
+
+- `gale doctor` no longer reports phantom "Missing packages",
+  "Lib farm drift", or inflated orphan counts. Several
+  interacting bugs made doctor permanently unhappy any time a
+  recipe revision bumped:
+  - `store.resolveVersion` returned the canonical `-1` dir for
+    bare config versions even when a higher revision was on
+    disk. Now returns the highest `-<N>`, matching the
+    documented "bare @version resolves to the highest revision
+    known" contract. Active generation migrates automatically
+    on the next sync after a revision bump.
+  - `store.Remove` now prefers exact on-disk name over the
+    lookup fallback, so `gc` can delete a bare legacy dir
+    without accidentally redirecting to the highest-revision
+    dir under it.
+  - `installer.Reinstall` short-circuited with `MethodCached`
+    whenever the canonical dir had entries, so stale
+    reinstalls never actually rebuilt. Now wipes the dir and
+    falls through to the real install pipeline so
+    `.gale-deps.toml`, farm symlinks, and code signing all
+    refresh.
+  - `farm.CheckDrift` walked the whole store while
+    `farm.Rebuild` only populated from the active generation.
+    Old revisions awaiting `gale gc` were flagged "missing
+    farm entry" forever. `CheckDrift` now takes the active-gen
+    store dirs, matching `Rebuild`.
+  - `gc.mergeConfig` keyed the referenced set on raw config
+    strings while `store.List` returns revision-suffixed
+    names. The string-strip fallback over-retained every
+    revision sharing a base version. Now resolves each config
+    entry through `store.StorePath` so the set matches `List`
+    output exactly; `isReferenced` collapses to a map lookup.
+  - `doctor.checkOrphans` had no fallback, so every active
+    revisioned package registered as orphaned. Now uses the
+    same retention logic as `gc`.
+- `gale sync` no longer evicts freshly-verified packages when
+  the local lockfile's cached SHA256 differs from the recipe's
+  current hash. Logs a warning and updates the lockfile
+  instead. The download is still verified against the recipe
+  at install time, so nothing unverified lands in the store.
+
+### Changed
+
+- `gale gc` now retains runtime dependencies of packages
+  declared in `gale.toml`. Build-only dependencies (bison,
+  flex, meson, ninja, cmake, rust for cargo builds, etc.) are
+  reaped — they reinstall on demand during the next sync that
+  needs them. Prevents `gale gc` from deleting `readline`,
+  `openssl`, etc. out from under a running postgres or curl.
+  Requires the recipe resolver; falls back to config-only
+  retention when recipes aren't reachable.
+
+### Internal
+
+- `generation.ActiveStoreDirs` exported so `doctor.checkFarm`
+  and `gc.collectReferencedPackagesWithResolver` share the
+  same view of the active generation that `generation.Build`
+  passes to `farm.Rebuild`.
+
 ## v0.13.0 — 2026-04-19
 
 ### Removed
