@@ -521,3 +521,157 @@ func TestCreateThenFailedInstallAllowsRetry(t *testing.T) {
 		t.Error("store dir with content should be installed")
 	}
 }
+
+// --- Behavior N+1: Bare version resolves to highest revision ---
+
+// TestIsInstalledFindsHigherRevisionForBareVersion verifies that when
+// config carries a bare version ("0.26.1") but the store only holds a
+// higher-revision dir ("0.26.1-2"), IsInstalled still returns true.
+// This matches the documented semantic in gale/CLAUDE.md: a bare
+// @version resolves to the highest revision known.
+func TestIsInstalledFindsHigherRevisionForBareVersion(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	// Only revision 2 exists — no "-1" canonical dir, no bare dir.
+	dir := filepath.Join(root, "bat", "0.26.1-2")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if !s.IsInstalled("bat", "0.26.1") {
+		t.Error("IsInstalled = false, want true — bare version should " +
+			"resolve to higher-revision dir when no -1/bare exists")
+	}
+}
+
+// TestStorePathReturnsHighestRevisionForBareVersion verifies that when
+// multiple revisions are on disk and no -1/bare exists, StorePath
+// returns the highest-numbered revision dir.
+func TestStorePathReturnsHighestRevisionForBareVersion(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	for _, rev := range []string{"1.8.1-2", "1.8.1-3", "1.8.1-10"} {
+		dir := filepath.Join(root, "jq", rev)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("setup %s: %v", rev, err)
+		}
+	}
+
+	got, ok := s.StorePath("jq", "1.8.1")
+	if !ok {
+		t.Fatalf("StorePath ok = false, want true")
+	}
+	want := filepath.Join(root, "jq", "1.8.1-10")
+	if got != want {
+		t.Errorf("StorePath = %q, want %q (highest rev)", got, want)
+	}
+}
+
+// TestResolveVersionReturnsHighestRevisionWhenCanonicalAlsoExists
+// verifies that a bare-version lookup picks the highest revision
+// even when the canonical "-1" dir is also present. This is the
+// CLAUDE.md semantic: "a bare @version resolves to the highest
+// revision known." Without this, a recipe revision bump leaves
+// users stuck on the old canonical dir forever — sync keeps
+// installing the new revision but the active gen never migrates.
+func TestResolveVersionReturnsHighestRevisionWhenCanonicalAlsoExists(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	for _, rev := range []string{"1.8.1-1", "1.8.1-3"} {
+		dir := filepath.Join(root, "jq", rev)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("setup %s: %v", rev, err)
+		}
+	}
+
+	got, ok := s.StorePath("jq", "1.8.1")
+	if !ok {
+		t.Fatalf("StorePath ok = false, want true")
+	}
+	want := filepath.Join(root, "jq", "1.8.1-3")
+	if got != want {
+		t.Errorf("StorePath = %q, want %q (highest wins)", got, want)
+	}
+}
+
+// TestRemoveBareVersionRemovesBareDirNotHighestRevision pins
+// the regression where Remove("go", "1.26.1") would resolve
+// the bare version to the highest-revision dir and delete
+// that instead of the bare dir. Callers that pass an on-disk
+// name (from store.List) must get that exact dir removed,
+// even when the lookup-resolve rule says "bare → highest".
+func TestRemoveBareVersionRemovesBareDirNotHighestRevision(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	for _, sub := range []string{"1.26.1", "1.26.1-2"} {
+		dir := filepath.Join(root, "go", sub)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("setup %s: %v", sub, err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(dir, "marker"),
+			[]byte("x"), 0o644); err != nil {
+			t.Fatalf("setup %s: %v", sub, err)
+		}
+	}
+
+	if err := s.Remove("go", "1.26.1"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+
+	bare := filepath.Join(root, "go", "1.26.1")
+	if _, err := os.Stat(bare); !os.IsNotExist(err) {
+		t.Error("bare go/1.26.1 should have been removed")
+	}
+	rev := filepath.Join(root, "go", "1.26.1-2")
+	if _, err := os.Stat(rev); err != nil {
+		t.Errorf("go/1.26.1-2 must survive — Remove should "+
+			"prefer exact match over lookup fallback: %v", err)
+	}
+}
+
+// TestStorePathIgnoresBuildTempAndLockSiblings verifies that the
+// highest-revision scan skips .build-* staging dirs and *.lock
+// sibling files when picking a fallback.
+func TestStorePathIgnoresBuildTempAndLockSiblings(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	// Real revision dir.
+	if err := os.MkdirAll(
+		filepath.Join(root, "foo", "1.0.0-2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Noise that must be ignored.
+	if err := os.MkdirAll(
+		filepath.Join(root, "foo", ".build-tmp-1.0.0-9"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "foo", "1.0.0-2.lock"),
+		[]byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "foo", "1.0.0-99.lock"),
+		[]byte(""), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := s.StorePath("foo", "1.0.0")
+	if !ok {
+		t.Fatalf("StorePath ok = false, want true")
+	}
+	want := filepath.Join(root, "foo", "1.0.0-2")
+	if got != want {
+		t.Errorf("StorePath = %q, want %q", got, want)
+	}
+}

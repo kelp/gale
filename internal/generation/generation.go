@@ -16,16 +16,15 @@ import (
 
 // resolveStoreDir returns the actual store dir for a
 // (name, version) pair. Mirrors Store.resolveVersion's
-// bidirectional resolution without an import cycle: a
-// bare version prefers the canonical "<v>-1" dir, and a
-// "<v>-1" request falls back to a bare dir when the
-// suffixed one is absent.
+// resolution without an import cycle: a bare version
+// returns the highest "<v>-<N>" on disk, falls through
+// to an exact match, and finally to a bare "<v>" (legacy
+// pre-revision install). A "<v>-1" request also falls
+// back to a bare "<v>" when the suffixed one is absent.
 func resolveStoreDir(storeRoot, name, version string) string {
 	if !strings.Contains(version, "-") {
-		canonical := version + "-1"
-		canonicalDir := filepath.Join(storeRoot, name, canonical)
-		if _, err := os.Stat(canonicalDir); err == nil {
-			return canonicalDir
+		if rev, ok := highestRevisionOnDisk(storeRoot, name, version); ok {
+			return filepath.Join(storeRoot, name, rev)
 		}
 	}
 	dir := filepath.Join(storeRoot, name, version)
@@ -40,6 +39,56 @@ func resolveStoreDir(storeRoot, name, version string) string {
 		}
 	}
 	return dir
+}
+
+// highestRevisionOnDisk returns the directory name with the
+// highest N among "<version>-<N>" siblings under
+// <storeRoot>/<name>/. Skips .build-* staging dirs and
+// non-directory entries (lock files).
+func highestRevisionOnDisk(storeRoot, name, version string) (string, bool) {
+	entries, err := os.ReadDir(filepath.Join(storeRoot, name))
+	if err != nil {
+		return "", false
+	}
+	prefix := version + "-"
+	best := -1
+	bestName := ""
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if strings.HasPrefix(n, ".build-") {
+			continue
+		}
+		if !strings.HasPrefix(n, prefix) {
+			continue
+		}
+		rev, err := strconv.Atoi(n[len(prefix):])
+		if err != nil || rev < 0 {
+			continue
+		}
+		if rev > best {
+			best = rev
+			bestName = n
+		}
+	}
+	if best < 0 {
+		return "", false
+	}
+	return bestName, true
+}
+
+// ActiveStoreDirs resolves each (name, version) in pkgs to
+// its on-disk store dir. Returned in an arbitrary order.
+// Used by Build to populate the shared dylib farm, and by
+// `gale doctor` to check farm drift against the same set.
+func ActiveStoreDirs(pkgs map[string]string, storeRoot string) []string {
+	active := make([]string, 0, len(pkgs))
+	for name, version := range pkgs {
+		active = append(active, resolveStoreDir(storeRoot, name, version))
+	}
+	return active
 }
 
 //go:embed gale-readme.md
@@ -88,11 +137,7 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 		// but they aren't on PATH and must not leak into
 		// the farm. Best-effort — a farm error does not
 		// invalidate the generation swap.
-		active := make([]string, 0, len(pkgs))
-		for name, version := range pkgs {
-			active = append(active,
-				resolveStoreDir(storeRoot, name, version))
-		}
+		active := ActiveStoreDirs(pkgs, storeRoot)
 		if err := farm.Rebuild(
 			active, farm.Dir(galeDir)); err != nil {
 			fmt.Fprintf(os.Stderr,

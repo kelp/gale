@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -54,21 +55,20 @@ func (s *Store) StorePath(name, version string) (string, bool) {
 // name+version, along with whether that directory exists.
 //
 // Resolution order:
-//  1. A bare version (no "-") prefers the canonical "<v>-1" dir if
-//     present — that's where new installs land.
+//  1. A bare version (no "-") returns the highest "<v>-<N>" on disk.
+//     This matches the CLAUDE.md contract "a bare @version resolves
+//     to the highest revision known", so a recipe's revision bump
+//     starts flowing through config/lookup without needing users to
+//     re-pin revision numbers in gale.toml.
 //  2. Exact match on the requested version.
 //  3. A "<v>-1" suffix falls back to a bare "<v>" dir — that's where
 //     pre-revision installs live.
-//
-// Steps 1 and 3 together let pre-revision configs (bare versions) find
-// freshly-migrated installs, and revision-aware configs ("<v>-1") find
-// legacy installs, without forcing a hard filesystem migration.
+//  4. A bare version falls back to the bare dir itself (legacy
+//     pre-revision installs) if no "<v>-<N>" dirs exist.
 func (s *Store) resolveVersion(name, version string) (string, bool) {
 	if !strings.Contains(version, "-") {
-		canonical := version + "-1"
-		canonicalDir := filepath.Join(s.Root, name, canonical)
-		if _, err := os.Stat(canonicalDir); err == nil {
-			return canonical, true
+		if rev, ok := highestRevisionOnDisk(s.Root, name, version); ok {
+			return rev, true
 		}
 	}
 	dir := filepath.Join(s.Root, name, version)
@@ -83,6 +83,44 @@ func (s *Store) resolveVersion(name, version string) (string, bool) {
 		}
 	}
 	return version, false
+}
+
+// highestRevisionOnDisk scans <root>/<name>/ for directories named
+// "<version>-<N>" and returns the one with the highest N. Skips
+// .build-* staging dirs and non-directory siblings (lock files).
+// Returns ("", false) when nothing matches.
+func highestRevisionOnDisk(root, name, version string) (string, bool) {
+	entries, err := os.ReadDir(filepath.Join(root, name))
+	if err != nil {
+		return "", false
+	}
+	prefix := version + "-"
+	best := -1
+	bestName := ""
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		n := e.Name()
+		if strings.HasPrefix(n, ".build-") {
+			continue
+		}
+		if !strings.HasPrefix(n, prefix) {
+			continue
+		}
+		rev, err := strconv.Atoi(n[len(prefix):])
+		if err != nil || rev < 0 {
+			continue
+		}
+		if rev > best {
+			best = rev
+			bestName = n
+		}
+	}
+	if best < 0 {
+		return "", false
+	}
+	return bestName, true
 }
 
 // IsInstalled checks if a package version exists in the store.
@@ -142,10 +180,24 @@ func (s *Store) List() ([]InstalledPackage, error) {
 	return pkgs, nil
 }
 
-// Remove removes a package version from the store.
-// When version ends with "-1" and the exact directory is absent,
-// falls back to the bare version directory (back-compat).
+// Remove removes a package version from the store. Prefers
+// exact match — callers that pass an on-disk name (e.g. from
+// List) must get exactly that directory removed. Falls back
+// to the back-compat patterns (bare dir for a "-1" request,
+// highest-revision for a bare request) only when no exact
+// match exists, so user-facing commands like
+// `gale remove jq@1.8.1` still work regardless of which
+// revision layout the store actually holds.
 func (s *Store) Remove(name, version string) error {
+	exact := filepath.Join(s.Root, name, version)
+	if _, err := os.Stat(exact); err == nil {
+		if err := os.RemoveAll(exact); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove version directory: %w", err)
+		}
+		return cleanupEmptyNameDir(s.Root, name)
+	}
+
 	resolved, ok := s.resolveVersion(name, version)
 	if !ok {
 		return fmt.Errorf("remove %s@%s: %w", name, version, ErrNotInstalled)
@@ -163,8 +215,13 @@ func (s *Store) Remove(name, version string) error {
 		return fmt.Errorf("remove version directory: %w", err)
 	}
 
-	// Clean up empty parent name directory.
-	nameDir := filepath.Join(s.Root, name)
+	return cleanupEmptyNameDir(s.Root, name)
+}
+
+// cleanupEmptyNameDir removes the parent <root>/<name> dir
+// if no version dirs remain. Missing parent is not an error.
+func cleanupEmptyNameDir(root, name string) error {
+	nameDir := filepath.Join(root, name)
 	entries, err := os.ReadDir(nameDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -173,10 +230,11 @@ func (s *Store) Remove(name, version string) error {
 		return fmt.Errorf("read name directory: %w", err)
 	}
 	if len(entries) == 0 {
-		if err := os.Remove(nameDir); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove empty name directory: %w", err)
+		if err := os.Remove(nameDir); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf(
+				"remove empty name directory: %w", err)
 		}
 	}
-
 	return nil
 }
