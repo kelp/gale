@@ -200,10 +200,16 @@ func Rebuild(activeStoreDirs []string, farmDir string) error {
 }
 
 // CheckDrift reports farm entries that don't match the
-// current store state. Each returned string describes one
-// drift item in a form suitable for a `gale doctor` line.
-// Returns nil if the farm is in sync.
-func CheckDrift(storeRoot, farmDir string) ([]string, error) {
+// active generation's store dirs. Each returned string
+// describes one drift item in a form suitable for a
+// `gale doctor` line. Returns nil if the farm is in sync.
+//
+// activeStoreDirs is the same slice passed to Rebuild — the
+// resolved store dirs for every package in the active
+// generation. Older revisions still on disk (awaiting
+// `gale gc`) are intentionally ignored because they aren't
+// on PATH and must not be in the farm.
+func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 	entries, err := os.ReadDir(farmDir)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, fmt.Errorf("read farm dir: %w", err)
@@ -228,70 +234,49 @@ func CheckDrift(storeRoot, farmDir string) ([]string, error) {
 		}
 	}
 
-	// Drift type 2: installed packages whose versioned
-	// dylibs aren't represented in the farm.
-	nameEntries, err := os.ReadDir(storeRoot)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return issues, nil
-		}
-		return nil, fmt.Errorf("read store root: %w", err)
-	}
-	for _, ne := range nameEntries {
-		if !ne.IsDir() {
-			continue
-		}
-		versionEntries, err := os.ReadDir(
-			filepath.Join(storeRoot, ne.Name()))
+	// Drift type 2: packages in the active generation whose
+	// versioned dylibs aren't represented in the farm.
+	for _, storeDir := range activeStoreDirs {
+		libDir := filepath.Join(storeDir, "lib")
+		libs, err := os.ReadDir(libDir)
 		if err != nil {
 			continue
 		}
-		for _, ve := range versionEntries {
-			if !ve.IsDir() {
+		pkgName := packageName(storeDir)
+		pkgVer := filepath.Base(storeDir)
+		pkgRoot := filepath.Dir(filepath.Dir(storeDir))
+		for _, l := range libs {
+			if !IsVersionedDylib(l.Name()) {
 				continue
 			}
-			if strings.HasPrefix(ve.Name(), ".build-") {
+			// Only check regular files — skip versioned
+			// aliases (symlinks) to avoid flagging them as
+			// missing when only the real file is farmed.
+			lp := filepath.Join(libDir, l.Name())
+			lInfo, err := os.Lstat(lp)
+			if err != nil || !lInfo.Mode().IsRegular() {
 				continue
 			}
-			libDir := filepath.Join(
-				storeRoot, ne.Name(), ve.Name(), "lib")
-			libs, err := os.ReadDir(libDir)
+			link := filepath.Join(farmDir, l.Name())
+			target, err := os.Readlink(link)
 			if err != nil {
+				issues = append(issues, fmt.Sprintf(
+					"missing farm entry for %s@%s: %s",
+					pkgName, pkgVer, l.Name()))
 				continue
 			}
-			for _, l := range libs {
-				if !IsVersionedDylib(l.Name()) {
-					continue
-				}
-				// Only check regular files — skip versioned
-				// aliases (symlinks) to avoid flagging them
-				// as missing when only the real file is farmed.
-				lp := filepath.Join(libDir, l.Name())
-				lInfo, err := os.Lstat(lp)
-				if err != nil || !lInfo.Mode().IsRegular() {
-					continue
-				}
-				link := filepath.Join(farmDir, l.Name())
-				target, err := os.Readlink(link)
-				if err != nil {
+			// If the symlink points elsewhere, the basename
+			// is claimed by another package — surface it.
+			if filepath.Clean(target) != lp {
+				pkgPrefix := filepath.Clean(filepath.Join(
+					pkgRoot, pkgName)) + string(filepath.Separator)
+				if !strings.HasPrefix(
+					filepath.Clean(target)+string(filepath.Separator),
+					pkgPrefix,
+				) {
 					issues = append(issues, fmt.Sprintf(
-						"missing farm entry for %s@%s: %s",
-						ne.Name(), ve.Name(), l.Name()))
-					continue
-				}
-				// If the symlink points elsewhere, the
-				// conflict with another pkg claiming the
-				// same basename — surface it.
-				if filepath.Clean(target) != lp {
-					if !strings.HasPrefix(
-						filepath.Clean(target)+string(filepath.Separator),
-						filepath.Clean(filepath.Join(
-							storeRoot, ne.Name()))+string(filepath.Separator),
-					) {
-						issues = append(issues, fmt.Sprintf(
-							"%s claimed by another package (farm -> %s)",
-							l.Name(), target))
-					}
+						"%s claimed by another package (farm -> %s)",
+						l.Name(), target))
 				}
 			}
 		}

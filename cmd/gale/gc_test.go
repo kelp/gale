@@ -1,12 +1,15 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -30,8 +33,12 @@ func TestCollectReferencedPackages(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// Empty store — no entries to resolve against. mergeConfig
+	// should fall back to the raw config keys so unresolved
+	// references still register.
+	s := store.NewStore(t.TempDir())
 	out := output.New(os.Stderr, false)
-	ref := collectReferencedPackages(globalDir, projCfg, out)
+	ref := collectReferencedPackages(globalDir, projCfg, s, out)
 
 	want := map[string]bool{
 		"jq@1.7":       true,
@@ -60,8 +67,9 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	s := store.NewStore(t.TempDir())
 	out := output.New(os.Stderr, false)
-	ref := collectReferencedPackages(globalDir, "", out)
+	ref := collectReferencedPackages(globalDir, "", s, out)
 
 	if len(ref) != 1 {
 		t.Fatalf("got %d entries, want 1: %v",
@@ -69,6 +77,43 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 	}
 	if !ref["jq@1.7"] {
 		t.Error("missing jq@1.7")
+	}
+}
+
+// TestCollectReferencedPackagesResolvesBareToCanonical verifies
+// that when the store holds a canonical revision dir (jq/1.8.1-3)
+// but config uses a bare version (jq = "1.8.1"), the referenced
+// set is keyed on the resolved on-disk name. This is what keeps
+// gc and doctor's orphan check from treating the live entry as
+// unreferenced.
+func TestCollectReferencedPackagesResolvesBareToCanonical(t *testing.T) {
+	storeRoot := t.TempDir()
+	if err := os.MkdirAll(
+		filepath.Join(storeRoot, "jq", "1.8.1-3", "bin"),
+		0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg,
+		[]byte("[packages]\njq = \"1.8.1\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+	ref := collectReferencedPackages(globalDir, "", s, out)
+
+	if !ref["jq@1.8.1-3"] {
+		t.Errorf("expected referenced[jq@1.8.1-3] = true "+
+			"(canonical resolution of bare jq@1.8.1), got: %v",
+			ref)
+	}
+	if ref["jq@1.8.1"] {
+		t.Error("bare key jq@1.8.1 must not appear — " +
+			"referenced set should only carry resolved keys")
 	}
 }
 
@@ -142,18 +187,17 @@ func TestRemoveUnreferencedVersionsNoneToRemove(t *testing.T) {
 	}
 }
 
-// TestRemoveUnreferencedVersionsKeepsCanonicalForBareRef
-// pins the v0.12.0 regression where `gale gc` deleted store
-// entries that were actively referenced by the generation.
-// gale.toml lists packages by bare version (jq = "1.8.1"),
-// but the store writes canonical revision-suffixed dirs
-// (jq/1.8.1-2/). gc's exact string match treated these as
-// unreferenced and removed them, taking out 147 versions
-// on a live user machine.
-func TestRemoveUnreferencedVersionsKeepsCanonicalForBareRef(t *testing.T) {
+// TestGCKeepsCanonicalForBareRef pins the v0.12.0 regression
+// where `gale gc` deleted store entries actively referenced by
+// the generation. gale.toml lists packages by bare version
+// (jq = "1.8.1"), but the store writes canonical revision-
+// suffixed dirs (jq/1.8.1-2/). gc must treat these as
+// referenced or it takes out live store entries.
+//
+// collectReferencedPackages resolves each config entry through
+// the store, so bare/canonical comparisons always line up.
+func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 	storeRoot := t.TempDir()
-	// Store holds the canonical revision dir; gale.toml
-	// references the bare version.
 	for _, ver := range []string{"1.8.1-2", "1.7.1-1"} {
 		dir := filepath.Join(storeRoot, "jq", ver, "bin")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -161,29 +205,111 @@ func TestRemoveUnreferencedVersionsKeepsCanonicalForBareRef(t *testing.T) {
 		}
 	}
 
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg,
+		[]byte("[packages]\njq = \"1.8.1\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	// Bare-version reference, as written by users in
-	// gale.toml.
-	referenced := map[string]bool{"jq@1.8.1": true}
+	ref := collectReferencedPackages(globalDir, "", s, out)
+	n := removeUnreferencedVersions(s, ref, false, out)
 
-	n := removeUnreferencedVersions(s, referenced, false, out)
-
-	// Only the 1.7.1-1 dir should be reaped; 1.8.1-2 must
-	// survive because it's the canonical match for the
-	// bare 1.8.1 reference.
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
 	}
 	if _, err := os.Stat(filepath.Join(
 		storeRoot, "jq", "1.8.1-2")); err != nil {
-		t.Errorf("jq/1.8.1-2 must survive — it's the "+
-			"canonical match for bare jq@1.8.1: %v", err)
+		t.Errorf("jq/1.8.1-2 must survive — canonical match "+
+			"for bare jq@1.8.1: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(
 		storeRoot, "jq", "1.7.1-1")); !os.IsNotExist(err) {
 		t.Errorf("jq/1.7.1-1 should have been removed")
+	}
+}
+
+// TestGCReapsOldRevisionsWhenConfigIsBare verifies that when
+// multiple revisions of the same version are on disk and config
+// references the bare version, gc removes older revisions and
+// keeps only the highest (which is what StorePath resolves a
+// bare version to). Regression fix for the farm-drift loop
+// where inactive revisions lingered forever.
+func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
+	storeRoot := t.TempDir()
+	for _, ver := range []string{"1.8.1-2", "1.8.1-3"} {
+		dir := filepath.Join(storeRoot, "jq", ver, "bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg,
+		[]byte("[packages]\njq = \"1.8.1\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+
+	ref := collectReferencedPackages(globalDir, "", s, out)
+	n := removeUnreferencedVersions(s, ref, false, out)
+	if n != 1 {
+		t.Errorf("want 1 removed, got %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(
+		storeRoot, "jq", "1.8.1-3")); err != nil {
+		t.Errorf("jq/1.8.1-3 should survive (highest rev = "+
+			"canonical for bare jq@1.8.1): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(
+		storeRoot, "jq", "1.8.1-2")); !os.IsNotExist(err) {
+		t.Errorf("jq/1.8.1-2 should be removed")
+	}
+}
+
+// TestGCKeepsExplicitlyPinnedRevision verifies that when config
+// pins a specific revision (jq = "1.8.1-2"), gc keeps exactly
+// that revision and reaps others.
+func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
+	storeRoot := t.TempDir()
+	for _, ver := range []string{"1.8.1-2", "1.8.1-3"} {
+		dir := filepath.Join(storeRoot, "jq", ver, "bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg,
+		[]byte("[packages]\njq = \"1.8.1-2\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+
+	ref := collectReferencedPackages(globalDir, "", s, out)
+	n := removeUnreferencedVersions(s, ref, false, out)
+	if n != 1 {
+		t.Errorf("want 1 removed, got %d", n)
+	}
+	if _, err := os.Stat(filepath.Join(
+		storeRoot, "jq", "1.8.1-2")); err != nil {
+		t.Errorf("jq/1.8.1-2 should survive (explicit pin): %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(
+		storeRoot, "jq", "1.8.1-3")); !os.IsNotExist(err) {
+		t.Errorf("jq/1.8.1-3 should be removed")
 	}
 }
 
@@ -333,5 +459,180 @@ func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
 	if !strings.Contains(stderr, "generation(s)") {
 		t.Errorf("expected 'generation(s)' in summary, "+
 			"got %q", stderr)
+	}
+}
+
+// makeTestRecipe builds a minimal recipe usable as a fake
+// resolver result. Runtime/build dep names flow through
+// Dependencies.{Runtime,Build}.
+func makeTestRecipe(name, version string, revision int,
+	runtime, build []string,
+) *recipe.Recipe {
+	return &recipe.Recipe{
+		Package: recipe.Package{
+			Name:     name,
+			Version:  version,
+			Revision: revision,
+		},
+		Dependencies: recipe.Dependencies{
+			Build:   build,
+			Runtime: runtime,
+		},
+	}
+}
+
+func recipeResolverFromMap(
+	m map[string]*recipe.Recipe,
+) installer.RecipeResolver {
+	return func(name string) (*recipe.Recipe, error) {
+		r, ok := m[name]
+		if !ok {
+			return nil, fmt.Errorf("no recipe for %s", name)
+		}
+		return r, nil
+	}
+}
+
+// TestCollectReferencedPackagesIncludesRuntimeDeps verifies
+// that when a config package has runtime dependencies, those
+// deps' installed revisions are kept by gc even though they
+// aren't listed in gale.toml. Prevents gc from reaping
+// `readline@8.2-2` out from under a running `postgresql`
+// that links against it.
+func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
+	storeRoot := t.TempDir()
+	for _, d := range []struct{ n, v string }{
+		{"postgresql", "17.2-1"},
+		{"readline", "8.2-2"},
+		{"bison", "3.8.2-2"},
+	} {
+		if err := os.MkdirAll(
+			filepath.Join(storeRoot, d.n, d.v, "bin"),
+			0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg,
+		[]byte("[packages]\npostgresql = \"17.2\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+
+	resolver := recipeResolverFromMap(map[string]*recipe.Recipe{
+		"postgresql": makeTestRecipe("postgresql", "17.2", 1,
+			[]string{"readline"}, []string{"bison"}),
+		"readline": makeTestRecipe("readline", "8.2", 2, nil, nil),
+		"bison":    makeTestRecipe("bison", "3.8.2", 2, nil, nil),
+	})
+
+	ref := collectReferencedPackagesWithResolver(
+		globalDir, "", s, resolver, out)
+
+	if !ref["postgresql@17.2-1"] {
+		t.Errorf("missing postgresql@17.2-1: %v", ref)
+	}
+	if !ref["readline@8.2-2"] {
+		t.Errorf("runtime dep readline@8.2-2 must be " +
+			"referenced — gc would otherwise delete it " +
+			"out from under postgres")
+	}
+	if ref["bison@3.8.2-2"] {
+		t.Errorf("build-only dep bison@3.8.2-2 must NOT " +
+			"be referenced — user opted to reap build deps")
+	}
+}
+
+// TestCollectReferencedPackagesRuntimeDepsTransitive verifies
+// that runtime deps are expanded transitively — a config
+// package's runtime dep's runtime deps are also retained.
+func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
+	storeRoot := t.TempDir()
+	for _, d := range []struct{ n, v string }{
+		{"curl", "8.19.0-1"},
+		{"openssl", "3.6.1-2"},
+		{"zlib", "1.3.2-2"},
+	} {
+		if err := os.MkdirAll(
+			filepath.Join(storeRoot, d.n, d.v, "lib"),
+			0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg,
+		[]byte("[packages]\ncurl = \"8.19.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+
+	resolver := recipeResolverFromMap(map[string]*recipe.Recipe{
+		"curl": makeTestRecipe("curl", "8.19.0", 1,
+			[]string{"openssl"}, nil),
+		"openssl": makeTestRecipe("openssl", "3.6.1", 2,
+			[]string{"zlib"}, nil),
+		"zlib": makeTestRecipe("zlib", "1.3.2", 2, nil, nil),
+	})
+
+	ref := collectReferencedPackagesWithResolver(
+		globalDir, "", s, resolver, out)
+
+	for _, k := range []string{
+		"curl@8.19.0-1", "openssl@3.6.1-2", "zlib@1.3.2-2",
+	} {
+		if !ref[k] {
+			t.Errorf("transitive runtime dep %q missing: %v",
+				k, ref)
+		}
+	}
+}
+
+// TestCollectReferencedPackagesNilResolverFallsBackToConfig
+// verifies that when no resolver is available (user has no
+// recipes repo synced), gc behaves like it did before runtime
+// expansion: only packages in config are kept.
+func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
+	storeRoot := t.TempDir()
+	if err := os.MkdirAll(
+		filepath.Join(storeRoot, "curl", "8.19.0-1", "bin"),
+		0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(
+		filepath.Join(storeRoot, "openssl", "3.6.1-2", "lib"),
+		0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg,
+		[]byte("[packages]\ncurl = \"8.19.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+
+	ref := collectReferencedPackagesWithResolver(
+		globalDir, "", s, nil, out)
+
+	if !ref["curl@8.19.0-1"] {
+		t.Errorf("curl missing: %v", ref)
+	}
+	if ref["openssl@3.6.1-2"] {
+		t.Errorf("openssl should not be referenced without " +
+			"a resolver — falls back to config-only")
 	}
 }

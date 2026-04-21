@@ -246,10 +246,22 @@ func checkSymlinks(ctx *doctorContext) bool {
 }
 
 // checkFarm verifies the shared dylib farm at
-// ~/.gale/lib/ is in sync with the store.
+// ~/.gale/lib/ is in sync with the active generation.
+// Older revisions still on disk (awaiting `gale gc`) are
+// out of scope — they aren't on PATH and aren't in the
+// farm by design.
 func checkFarm(ctx *doctorContext) bool {
 	farmDir := farm.Dir(ctx.galeDir)
-	issues, err := farm.CheckDrift(ctx.storeRoot, farmDir)
+	activePkgs := make(
+		map[string]string, len(ctx.globalPkgs)+len(ctx.projPkgs))
+	for k, v := range ctx.globalPkgs {
+		activePkgs[k] = v
+	}
+	for k, v := range ctx.projPkgs {
+		activePkgs[k] = v
+	}
+	active := generation.ActiveStoreDirs(activePkgs, ctx.storeRoot)
+	issues, err := farm.CheckDrift(active, farmDir)
 	if err != nil {
 		ctx.out.Error(fmt.Sprintf("Farm check failed: %v", err))
 		return false
@@ -417,14 +429,24 @@ func checkDirenvIntegration(ctx *doctorContext) bool {
 	return false
 }
 
-// checkOrphans reports orphaned package versions.
+// checkOrphans reports orphaned package versions. Walks the
+// same retention set that gc uses — config + runtime-dep
+// closure — so a package kept alive by a runtime dep of an
+// active config entry is not reported as orphaned.
 func checkOrphans(ctx *doctorContext) bool {
 	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
-	referenced := map[string]bool{}
-	mergeConfig(globalConfig, referenced, ctx.out)
-	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
-		mergeConfig(projPath, referenced, ctx.out)
+	var projPath string
+	if p, err := config.FindGaleConfig(ctx.cwd); err == nil {
+		projPath = p
 	}
+	var resolver installer.RecipeResolver
+	if ctx.cmdCtx != nil {
+		resolver = ctx.cmdCtx.Resolver
+	}
+	referenced := collectReferencedPackagesWithResolver(
+		filepath.Dir(globalConfig), projPath,
+		ctx.store, resolver, ctx.out)
+
 	var orphaned int
 	for _, pkg := range ctx.installed {
 		if !referenced[pkg.Name+"@"+pkg.Version] {

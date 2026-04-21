@@ -252,7 +252,7 @@ func TestCheckDriftReportsMissingAndBroken(t *testing.T) {
 	// the other's versioned dylib shows up as "missing".
 	storeA := storeLayout(t, root, "aaa", "1.0",
 		[]string{versionedName("libaaa", "1")})
-	storeLayout(t, root, "bbb", "1.0",
+	storeB := storeLayout(t, root, "bbb", "1.0",
 		[]string{versionedName("libbbb", "1")})
 	if err := Populate(storeA, farmDir); err != nil {
 		t.Fatal(err)
@@ -263,7 +263,8 @@ func TestCheckDriftReportsMissingAndBroken(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	issues, err := CheckDrift(filepath.Join(root, "pkg"), farmDir)
+	issues, err := CheckDrift(
+		[]string{storeA, storeB}, farmDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -295,12 +296,48 @@ func TestCheckDriftCleanFarmReportsNoIssues(t *testing.T) {
 	if err := Populate(storeA, farmDir); err != nil {
 		t.Fatal(err)
 	}
-	issues, err := CheckDrift(filepath.Join(root, "pkg"), farmDir)
+	issues, err := CheckDrift([]string{storeA}, farmDir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(issues) != 0 {
 		t.Errorf("expected no issues, got %v", issues)
+	}
+}
+
+// TestCheckDriftIgnoresInactiveRevisions verifies that old
+// revisions of a package still on disk but not in the active
+// generation are not flagged as "missing farm entry". This
+// matches farm.Rebuild, which only populates the farm from
+// active-gen store dirs. Without this scoping, CheckDrift
+// flagged old revisions forever and `gale doctor --repair`
+// could never clear the drift.
+func TestCheckDriftIgnoresInactiveRevisions(t *testing.T) {
+	root := t.TempDir()
+	farmDir := filepath.Join(root, "lib")
+	// Active revision — this goes in the active set.
+	storeActive := storeLayout(t, root, "jq", "1.8.1-3",
+		[]string{versionedName("libjq", "1")})
+	// Inactive older revision on disk but NOT in active set.
+	// Its dylib must NOT be flagged as "missing farm entry".
+	storeLayout(t, root, "jq", "1.8.1-2",
+		[]string{versionedName("libjq", "1")})
+	if err := Populate(storeActive, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	issues, err := CheckDrift([]string{storeActive}, farmDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, iss := range issues {
+		if strings.Contains(iss, "1.8.1-2") {
+			t.Errorf("CheckDrift should ignore inactive "+
+				"revision jq/1.8.1-2, got: %v", issues)
+		}
+	}
+	if len(issues) != 0 {
+		t.Errorf("expected no drift, got: %v", issues)
 	}
 }
 

@@ -5,10 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
-	"strings"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
@@ -28,13 +28,26 @@ var gcCmd = &cobra.Command{
 			projPath, _ = config.FindGaleConfig(cwd)
 		}
 
-		// Collect all referenced name@version pairs.
-		referenced := collectReferencedPackages(
-			globalDir, projPath, out)
-
 		// Remove unreferenced package versions.
 		storeRoot := defaultStoreRoot()
 		s := store.NewStore(storeRoot)
+
+		// Best-effort resolver so gc can expand config
+		// packages' runtime deps. Build deps are reaped
+		// intentionally. If the recipes repo isn't
+		// available (nil resolver), gc falls back to
+		// config-only retention.
+		var resolver installer.RecipeResolver
+		if ctx, cErr := newCmdContext("", false, false); cErr == nil {
+			resolver = ctx.Resolver
+		}
+
+		// Collect all referenced name@version pairs.
+		// Resolve through the store so bare config versions
+		// match canonical revision dirs on disk, and include
+		// runtime deps (not build deps) transitively.
+		referenced := collectReferencedPackagesWithResolver(
+			globalDir, projPath, s, resolver, out)
 		removedPkgs := removeUnreferencedVersions(
 			s, referenced, dryRun, out)
 
@@ -94,22 +107,13 @@ var gcCmd = &cobra.Command{
 }
 
 // isReferenced reports whether a store entry is kept by
-// the config-derived reference set. Matches both exact
-// name@version (user pinned a revision: jq = "1.8.1-2")
-// and name@base-version (user wrote a bare version:
-// jq = "1.8.1" covers jq@1.8.1-2 in the store). The bare
-// form mirrors the resolver's back-compat lookup — anything
-// the installer treats as a match for the user's pin must
-// also be treated as referenced by gc, or gc will delete
-// live store entries out from under the active generation.
+// the config-derived reference set. The set is keyed on
+// canonical name@version-<rev> strings produced by resolving
+// each config entry through the store (see mergeConfig), so
+// bare and revisioned config entries both end up comparing
+// against the on-disk version key for exact match.
 func isReferenced(name, version string, referenced map[string]bool) bool {
-	if referenced[name+"@"+version] {
-		return true
-	}
-	if base, _, ok := strings.Cut(version, "-"); ok {
-		return referenced[name+"@"+base]
-	}
-	return false
+	return referenced[name+"@"+version]
 }
 
 // removeUnreferencedVersions iterates the store and
@@ -153,28 +157,63 @@ func removeUnreferencedVersions(
 	return removed
 }
 
-// collectReferencedPackages merges all name@version
-// pairs from global and project configs into a set.
-// Silently skips missing configs but warns on parse errors.
+// collectReferencedPackages is the config-only variant
+// (no runtime-dep expansion). Kept for callers that don't
+// have a recipe resolver available — e.g. doctor's orphan
+// check, which would prefer the cheaper config-only view.
 func collectReferencedPackages(
-	globalDir, projPath string, out *output.Output,
+	globalDir, projPath string,
+	s *store.Store, out *output.Output,
+) map[string]bool {
+	return collectReferencedPackagesWithResolver(
+		globalDir, projPath, s, nil, out)
+}
+
+// collectReferencedPackagesWithResolver merges all
+// name@version pairs from global and project configs into
+// a set. When a resolver is provided, each config package's
+// runtime deps (transitively) are also added so gc doesn't
+// reap `readline@8.2-2` out from under a running postgres
+// that links against it. Build deps are intentionally not
+// expanded — users asked for a flat, no-sprawl store.
+//
+// Each entry is resolved through store.StorePath so bare
+// versions (jq = "1.8.1") become canonical (jq@1.8.1-3)
+// on disk and string compare cleanly against store.List
+// output. Entries not in the store stay keyed on their
+// raw name@version.
+func collectReferencedPackagesWithResolver(
+	globalDir, projPath string,
+	s *store.Store,
+	resolver installer.RecipeResolver,
+	out *output.Output,
 ) map[string]bool {
 	referenced := map[string]bool{}
 	if globalDir != "" {
 		mergeConfig(
 			filepath.Join(globalDir, "gale.toml"),
-			referenced, out)
+			s, referenced, out)
 	}
 	if projPath != "" {
-		mergeConfig(projPath, referenced, out)
+		mergeConfig(projPath, s, referenced, out)
+	}
+	if resolver != nil {
+		expandRuntimeDeps(s, resolver, referenced)
 	}
 	return referenced
 }
 
 // mergeConfig reads a gale.toml and adds its packages
 // to the referenced set. Silently skips missing files
-// but warns on parse errors.
-func mergeConfig(path string, referenced map[string]bool, out *output.Output) {
+// but warns on parse errors. Each entry is resolved via
+// store.StorePath so the referenced key always matches
+// the on-disk version name produced by store.List.
+func mergeConfig(
+	path string,
+	s *store.Store,
+	referenced map[string]bool,
+	out *output.Output,
+) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return // missing config is fine
@@ -185,6 +224,13 @@ func mergeConfig(path string, referenced map[string]bool, out *output.Output) {
 		return
 	}
 	for name, version := range cfg.Packages {
+		if dir, ok := s.StorePath(name, version); ok {
+			referenced[name+"@"+filepath.Base(dir)] = true
+			continue
+		}
+		// Not in the store — record the raw request so
+		// callers that diff config-vs-installed can still
+		// see the unresolved reference.
 		referenced[name+"@"+version] = true
 	}
 }
@@ -226,6 +272,84 @@ func cleanOldGenerations(galeDir string, dry bool) int {
 		removed++
 	}
 	return removed
+}
+
+// expandRuntimeDeps walks the runtime-dep closure of every
+// package currently in `referenced` and adds each dep's
+// on-disk canonical version to the set. Build deps are
+// skipped by design — gc reaps them.
+//
+// Uses a breadth-first visit keyed on package name; a dep
+// that's already been expanded is not re-visited, so cycles
+// in the runtime-dep graph terminate. Resolver failures are
+// tolerated: if a recipe can't be found, the walk just
+// stops at that node rather than aborting gc entirely.
+func expandRuntimeDeps(
+	s *store.Store,
+	resolver installer.RecipeResolver,
+	referenced map[string]bool,
+) {
+	// Seed the queue with every package name already in
+	// the set. The set is keyed name@version, so split.
+	queue := make([]string, 0, len(referenced))
+	visited := make(map[string]bool, len(referenced))
+	for key := range referenced {
+		at := lastIndex(key, '@')
+		if at < 0 {
+			continue
+		}
+		name := key[:at]
+		if !visited[name] {
+			visited[name] = true
+			queue = append(queue, name)
+		}
+	}
+
+	for len(queue) > 0 {
+		name := queue[0]
+		queue = queue[1:]
+
+		r, err := resolver(name)
+		if err != nil || r == nil {
+			continue // missing recipe — can't expand; skip.
+		}
+
+		for _, dep := range r.Dependencies.Runtime {
+			if visited[dep] {
+				continue
+			}
+			visited[dep] = true
+			queue = append(queue, dep)
+
+			// Best-effort: if the dep isn't in the store,
+			// nothing to add. The recipe is the source of
+			// truth for the dep name but the store decides
+			// which revision.
+			depRecipe, rErr := resolver(dep)
+			version := ""
+			if rErr == nil && depRecipe != nil {
+				version = depRecipe.Package.Version
+			}
+			if version == "" {
+				continue
+			}
+			if dir, ok := s.StorePath(dep, version); ok {
+				referenced[dep+"@"+filepath.Base(dir)] = true
+			}
+		}
+	}
+}
+
+// lastIndex returns the position of the last occurrence of c
+// in s, or -1 if absent. Local helper so the runtime-dep walk
+// doesn't need to import strings just for IndexByte.
+func lastIndex(s string, c byte) int {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == c {
+			return i
+		}
+	}
+	return -1
 }
 
 func init() {
