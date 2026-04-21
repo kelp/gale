@@ -92,18 +92,20 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 	// Cache check. The default path accepts IsInstalled's
 	// back-compat fallback (bare pre-revision dirs count as
 	// "installed"), so dep installs don't needlessly
-	// re-migrate every package. The forced path requires the
-	// canonical dir specifically — a bare-only install is
-	// not considered cached, which is what makes soft
-	// migration actually do work.
+	// re-migrate every package.
+	//
+	// The forced path (Reinstall) always rebuilds: it wipes
+	// the canonical dir if one exists and falls through to
+	// the install body. Sync calls Reinstall on stale
+	// packages (deps changed since build) and on legacy
+	// bare-dir installs that need to migrate into the
+	// canonical layout — both require a real rebuild so
+	// `.gale-deps.toml` and farm symlinks are refreshed.
 	canonicalDir := filepath.Join(inst.Store.Root, name, storeVersion)
 	if force {
-		if entries, err := os.ReadDir(canonicalDir); err == nil && len(entries) > 0 {
-			return &InstallResult{
-				Name:    name,
-				Version: version,
-				Method:  MethodCached,
-			}, nil
+		if err := os.RemoveAll(canonicalDir); err != nil {
+			return nil, fmt.Errorf(
+				"wipe canonical dir for reinstall: %w", err)
 		}
 	} else if inst.Store.IsInstalled(name, storeVersion) {
 		return &InstallResult{

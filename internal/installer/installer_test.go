@@ -1436,3 +1436,68 @@ func TestIsGHCRRejectsNonGHCRHosts(t *testing.T) {
 		})
 	}
 }
+
+// TestReinstallRebuildsWhenCanonicalPopulated verifies that
+// Reinstall actually rebuilds even when the canonical store
+// dir has content from a previous install. This is the path
+// sync takes for stale packages: if Reinstall short-circuits,
+// .gale-deps.toml never gets refreshed and sync loops forever
+// reporting the same staleness.
+func TestReinstallRebuildsWhenCanonicalPopulated(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	hash := hashFile(t, srcTar)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+
+	// Pre-populate the canonical dir with stale content that
+	// simulates an install from an older recipe revision. The
+	// Reinstall must wipe it before writing the fresh build.
+	canonicalDir := filepath.Join(storeRoot, "testpkg", "1.0-1")
+	if err := os.MkdirAll(canonicalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleMarker := filepath.Join(canonicalDir, "STALE-MARKER")
+	if err := os.WriteFile(
+		staleMarker, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL: srv.URL + "/source.tar.gz", SHA256: hash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho fresh' > $PREFIX/bin/testpkg",
+				"chmod +x $PREFIX/bin/testpkg",
+			},
+		},
+	}
+
+	result, err := inst.Reinstall(r)
+	if err != nil {
+		t.Fatalf("Reinstall error: %v", err)
+	}
+	if result.Method == MethodCached {
+		t.Errorf("Reinstall returned MethodCached — should have " +
+			"rebuilt the populated canonical dir")
+	}
+	// Stale marker must be gone — a real reinstall wipes the dir.
+	if _, err := os.Stat(staleMarker); !os.IsNotExist(err) {
+		t.Errorf("STALE-MARKER still present after Reinstall — " +
+			"canonical dir was not wiped")
+	}
+	// Fresh binary must exist in the rebuilt canonical dir.
+	freshBin := filepath.Join(canonicalDir, "bin", "testpkg")
+	if _, err := os.Stat(freshBin); err != nil {
+		t.Errorf("fresh binary missing: %v", err)
+	}
+}
