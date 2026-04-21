@@ -9,8 +9,6 @@ import (
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
-	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -170,20 +168,26 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 			continue
 		}
 
-		// Verify SHA256 against lockfile if present.
+		// Compare against the lockfile. The install has
+		// already been verified against the recipe's
+		// expected SHA256, so a disagreement here only
+		// means the recipe (or the built output) has
+		// changed since the last install on this machine.
+		// Warn, update the cache, and keep the install —
+		// evicting a freshly-verified package is
+		// destructive and the user doesn't gain anything
+		// from it.
 		locked, hasLock := lf.Packages[name]
 		if hasLock && locked.SHA256 != "" &&
 			result.SHA256 != "" &&
-			evictOnSHA256Mismatch(
-				ctx.Installer.Store, result, locked.SHA256, out) {
+			locked.SHA256 != result.SHA256 {
 			out.Warn(fmt.Sprintf(
-				"%s@%s SHA256 mismatch "+
-					"(lock: %s..., got: %s...)",
+				"%s@%s SHA256 changed since last sync "+
+					"(lock: %s..., got: %s...) — "+
+					"updating lockfile",
 				name, version,
 				locked.SHA256[:12],
 				result.SHA256[:12]))
-			failed++
-			continue
 		}
 
 		reportResult(out, result, "Installed", "built from source")
@@ -230,23 +234,6 @@ func finishSync(dryRun bool, failed int, rebuild func() error) error {
 		return fmt.Errorf("%d package(s) could not be synced", failed)
 	}
 	return rebuildErr
-}
-
-// evictOnSHA256Mismatch removes a package from the store
-// when the installed SHA256 does not match the locked hash.
-// Returns true if a mismatch was detected and the package
-// was evicted.
-
-func evictOnSHA256Mismatch(s *store.Store, result *installer.InstallResult, lockedSHA string, out *output.Output) bool {
-	if lockedSHA == result.SHA256 {
-		return false
-	}
-	if err := s.Remove(result.Name, result.Version); err != nil {
-		// Log but continue — mismatch detected regardless.
-		out.Warn(fmt.Sprintf("removing %s@%s from store: %v",
-			result.Name, result.Version, err))
-	}
-	return true
 }
 
 func init() {

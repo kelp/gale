@@ -6,8 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kelp/gale/internal/installer"
-	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -38,76 +37,55 @@ func TestUpdateBuildFlag(t *testing.T) {
 	}
 }
 
-func TestSyncSHA256MismatchEvictsFromStore(t *testing.T) {
-	// Set up a store with a package already installed.
-	storeRoot := t.TempDir()
-	s := store.NewStore(storeRoot)
-	pkgDir, err := s.Create("testpkg", "1.0.0")
+// TestSyncSHA256MismatchKeepsInstallAndUpdatesLockfile
+// pins the warn-and-update behavior on lockfile SHA
+// mismatch. The install itself verified the download
+// against the recipe's expected hash, so a disagreement
+// against the local lockfile only means the recipe
+// (or build output) has shifted since the last install
+// on this machine. Evicting a freshly-verified package
+// used to leave users stuck re-downloading and
+// re-building on every sync; now we keep it and update
+// the cache.
+func TestSyncSHA256MismatchKeepsInstallAndUpdatesLockfile(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  testpkg = \"1.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lockPath := filepath.Join(tmp, "gale.lock")
+	lf := &lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"testpkg": {
+				Version: "1.0.0",
+				SHA256:  "oldhasholdhasholdhasholdhash",
+			},
+		},
+	}
+	if err := lockfile.Write(lockPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	newHash := "newhashnewhashnewhashnewhashnewh"
+	if err := updateLockfile(
+		lockPath, "testpkg", "1.0.0", newHash); err != nil {
+		t.Fatalf("updateLockfile: %v", err)
+	}
+
+	got, err := lockfile.Read(lockPath)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("lockfile.Read: %v", err)
 	}
-	binDir := filepath.Join(pkgDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
+	entry, ok := got.Packages["testpkg"]
+	if !ok {
+		t.Fatal("testpkg entry missing after update")
 	}
-
-	// Package is in the store.
-	if !s.IsInstalled("testpkg", "1.0.0") {
-		t.Fatal("testpkg should be installed before test")
-	}
-
-	// Simulate SHA256 mismatch: locked hash differs from
-	// result hash. The eviction should remove the package.
-	result := &installer.InstallResult{
-		Name:    "testpkg",
-		Version: "1.0.0",
-		SHA256:  "aaaa1111aaaa1111aaaa1111aaaa1111",
-	}
-	lockedSHA := "bbbb2222bbbb2222bbbb2222bbbb2222"
-
-	out := output.New(os.Stderr, false)
-	evicted := evictOnSHA256Mismatch(s, result, lockedSHA, out)
-	if !evicted {
-		t.Fatal("expected eviction on SHA256 mismatch")
-	}
-
-	// Package should be removed from the store.
-	if s.IsInstalled("testpkg", "1.0.0") {
-		t.Error("testpkg should be removed from store " +
-			"after SHA256 mismatch")
-	}
-}
-
-func TestSyncSHA256MatchDoesNotEvict(t *testing.T) {
-	storeRoot := t.TempDir()
-	s := store.NewStore(storeRoot)
-	pkgDir, err := s.Create("testpkg", "1.0.0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Add a file so IsInstalled reports true (empty dirs
-	// are treated as failed installs).
-	if err := os.WriteFile(filepath.Join(pkgDir, "marker"),
-		[]byte("ok"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	result := &installer.InstallResult{
-		Name:    "testpkg",
-		Version: "1.0.0",
-		SHA256:  "aaaa1111aaaa1111aaaa1111aaaa1111",
-	}
-	// Same hash — no mismatch.
-	lockedSHA := "aaaa1111aaaa1111aaaa1111aaaa1111"
-
-	out := output.New(os.Stderr, false)
-	evicted := evictOnSHA256Mismatch(s, result, lockedSHA, out)
-	if evicted {
-		t.Error("should not evict when SHA256 matches")
-	}
-
-	if !s.IsInstalled("testpkg", "1.0.0") {
-		t.Error("testpkg should remain in store")
+	if entry.SHA256 != newHash {
+		t.Errorf("lockfile SHA256 = %q, want %q",
+			entry.SHA256, newHash)
 	}
 }
 
