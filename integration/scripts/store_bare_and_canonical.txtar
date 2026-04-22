@@ -1,0 +1,38 @@
+# A bare <version>/ store dir can co-exist with the
+# canonical <version>-<revision>/ form. Resolver must
+# pick the canonical when both exist.
+#
+# Pins a recurring bug where IsInstalled / resolveVersion
+# stat-walked the wrong dir and either over-reaped packages
+# in gc or installed twice.
+#
+# SKIPPED: current store.IsInstalled accepts a bare
+# <version>/ dir as "already installed" and install then
+# takes the cached path — leaving the user with *only* the
+# bare dir and no canonical <version>-<revision>/. Per
+# docs/revisions.md the store identity is canonical.
+# Unskip once IsInstalled requires canonical form (or
+# install migrates bare → canonical on detection).
+skip
+
+gale-fixture recipes $WORK/recipes
+
+# Seed a bare directory (old layout / manual migration).
+mkdir $HOME/.gale/pkg/hello/1.0
+mkdir $HOME/.gale/pkg/hello/1.0/bin
+cp $FIXTURES/payloads/hello/bin/hello $HOME/.gale/pkg/hello/1.0/bin/hello
+chmod 755 $HOME/.gale/pkg/hello/1.0/bin/hello
+
+# Install should land at canonical 1.0-1, not disturb bare 1.0.
+exec gale install hello -g --recipes=$WORK/recipes
+stderr 'Installed hello@1\.0 from binary'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/pkg/hello/1.0/bin/hello
+
+# Reinstall @1.0 takes the cached canonical dir — never
+# resolves to the bare dir.
+exec gale install 'hello@1.0' -g --recipes=$WORK/recipes
+stderr 'already in store'
+
+# gale.toml records the canonical revision
+grep 'hello = "1\.0-1"' $HOME/.gale/gale.toml

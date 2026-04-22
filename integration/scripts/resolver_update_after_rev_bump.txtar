@@ -1,0 +1,36 @@
+# Regression pin for commit e8ddd24: `gale update pkg@X.Y`
+# after the recipe was bumped from revision N to N+1 must
+# land at the new revision.
+#
+# The bug was triple-compounded: version matching ignored
+# revision, URL construction for versioned recipes was
+# wrong, and bare→revision fallback was missing. This test
+# asserts the net observable behavior: new canonical dir
+# exists, old one still present.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+stderr 'Installed hello@1\.0 from binary'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
+# Simulate a recipe-side revision bump.
+gale-fixture render recipes-rev2/h/hello.toml.tmpl $WORK/recipes/h/hello.toml
+
+exec gale update hello --recipes=$WORK/recipes
+stderr 'Updated hello'
+
+# The new canonical store dir exists, proving the bump was
+# resolved end-to-end (fetch → SHA check → extract → store).
+exists $HOME/.gale/pkg/hello/1.0-2/bin/hello
+
+# Old revision is retained (gc's job to reap, not update).
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
+# Current symlink points at the new revision.
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'
+
+# gale.toml records hello; form is "1.0" (float) or "1.0-2"
+# (pinned). Either resolves to the new canonical at sync.
+grep 'hello = "1\.0' $HOME/.gale/gale.toml

@@ -1,0 +1,14 @@
+# `gale install hello@1.0-1` (explicit revision) resolves
+# to the same canonical store dir as `gale install hello@1.0`.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install 'hello@1.0-1' -g --recipes=$WORK/recipes
+stderr 'Installed hello@1\.0 from binary'
+
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+! exists $HOME/.gale/pkg/hello/1.0/bin/hello
+
+# Reinstalling with bare @1.0 picks the cached canonical.
+exec gale install 'hello@1.0' -g --recipes=$WORK/recipes
+stderr 'already in store'

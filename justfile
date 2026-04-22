@@ -38,8 +38,16 @@ cover:
 test-race:
     go test -race ./...
 
-# Run all checks (test + lint + format)
-check: test lint fmt-check
+# Run the integration suite (Tier A: fixture-driven, fast)
+integration:
+    go test -tags=integration -timeout 5m ./integration/...
+
+# Run the slow integration tier (Tier B: real recipes, real GHCR)
+integration-slow:
+    GALE_INTEGRATION_TIER=B go test -tags=integration -timeout 15m ./integration/...
+
+# Run all checks (test + lint + format + integration)
+check: test lint fmt-check integration
 
 # Install gale from local source using gale itself
 install:

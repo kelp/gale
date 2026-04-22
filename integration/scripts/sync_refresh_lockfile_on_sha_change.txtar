@@ -1,0 +1,37 @@
+# Regression pin for commit b6631db: a stale gale.lock SHA
+# must NOT evict a freshly-installed package. Sync warns
+# and refreshes the lockfile instead.
+#
+# Pre-b6631db: the install's own SHA verification passed
+# but the lockfile's second check disagreed, and sync
+# reaped the install. Users got stuck on every upstream
+# rebuild.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
+# Corrupt the recorded SHA, simulating a CI rebuild or a
+# maintainer bumping .binaries.toml between install and sync.
+exec sed -i.bak -e 's/sha256 = ".*"/sha256 = "deadbeef0000000000000000000000000000000000000000000000000000babe"/' $HOME/.gale/gale.lock
+grep 'sha256 = "deadbeef' $HOME/.gale/gale.lock
+
+# Remove the store dir so sync actually re-installs and
+# reaches the lockfile-vs-result comparison path.
+rm $HOME/.gale/pkg/hello/1.0-1
+
+# Sync must not evict. Pre-b6631db this failed with
+# "SHA256 mismatch" and ripped the install out. Now it
+# warns and updates the lockfile.
+exec gale sync -g --recipes=$WORK/recipes
+stderr 'SHA256 changed since last sync'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+# Lockfile SHA gets refreshed to the real hash.
+! grep 'sha256 = "deadbeef' $HOME/.gale/gale.lock
+
+# Installed binary still works.
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'

@@ -56,3 +56,6 @@ jobs:
 
       - name: Build
         run: go build -o gale ./cmd/gale/
+
+      - name: Integration (Tier A)
+        run: go test -tags=integration -timeout 5m ./integration/...

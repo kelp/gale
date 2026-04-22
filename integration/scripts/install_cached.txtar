@@ -1,0 +1,17 @@
+# Reinstalling the same package is a no-op cache hit.
+# Regression sentinel: the install path must not refetch
+# or rebuild when the store already contains the version.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+stderr 'Installed hello@1\.0 from binary'
+
+# Second install: store already populated, should take the
+# cached path and not re-download.
+exec gale install hello -g --recipes=$WORK/recipes
+stderr 'already in store'
+! stderr 'from binary'
+
+# Store still has the single version
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello

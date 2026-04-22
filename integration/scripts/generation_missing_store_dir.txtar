@@ -1,0 +1,23 @@
+# H5 regression pin. When a package's store dir is
+# removed out-of-band, the next generation rebuild
+# currently continues silently (generation.go:126-128,
+# symlinkDir at 221-223) and commits a generation with
+# missing packages.
+#
+# SKIPPED: this scenario asserts the correct (loud) behavior.
+# Unskip once H5 is fixed — failing loudly when a referenced
+# store dir is absent.
+skip
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+# Remove the store dir behind gale's back.
+rm -rf $HOME/.gale/pkg/hello/1.0-1
+
+# A sync should fail loudly rather than silently skipping.
+! exec gale sync -g --recipes=$WORK/recipes
+stderr 'missing store dir|not installed|missing package'

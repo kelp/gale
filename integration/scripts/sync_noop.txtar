@@ -1,0 +1,20 @@
+# After install, `gale sync` is a no-op. This pins the
+# regression fixed in ca16643 where staleness detection
+# re-triggered install forever.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+stderr 'Installed hello@1\.0 from binary'
+
+# First sync: package is already satisfied.
+exec gale sync -g --recipes=$WORK/recipes
+! stderr 'Installed hello@1\.0 from binary'
+
+# Second sync also no-op — sentinel against re-detection loops.
+exec gale sync -g --recipes=$WORK/recipes
+! stderr 'Installed hello@1\.0 from binary'
+
+# Binary is still usable
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'

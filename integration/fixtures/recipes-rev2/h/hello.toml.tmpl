@@ -1,0 +1,22 @@
+[package]
+name = "hello"
+version = "1.0"
+revision = 2
+description = "integration test fixture (rev 2)"
+license = "MIT"
+
+[source]
+url = "__GHCR_URL__/blobs/unused/hello-1.0.tar.zst"
+sha256 = "__HELLO_PAYLOAD_SHA__"
+
+[binary.darwin-arm64]
+url = "__GHCR_URL__/blobs/hello/1.0-2/darwin-arm64"
+sha256 = "__HELLO_PAYLOAD_SHA__"
+
+[binary.linux-amd64]
+url = "__GHCR_URL__/blobs/hello/1.0-2/linux-amd64"
+sha256 = "__HELLO_PAYLOAD_SHA__"
+
+[binary.linux-arm64]
+url = "__GHCR_URL__/blobs/hello/1.0-2/linux-arm64"
+sha256 = "__HELLO_PAYLOAD_SHA__"

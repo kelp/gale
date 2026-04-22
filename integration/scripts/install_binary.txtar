@@ -1,0 +1,22 @@
+# Install a package via the binary path, served by fake GHCR.
+# Verifies: recipe resolution, binary download, SHA256 check,
+# store layout, generation symlink, executable works.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+stderr 'Installed hello@1\.0 from binary'
+
+# Store layout uses canonical <version>-<revision> form
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
+# Generation symlink into current
+exists $HOME/.gale/current/bin/hello
+
+# The installed binary runs
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'
+
+# gale.toml records the install
+grep '\[packages\]' $HOME/.gale/gale.toml
+grep 'hello = "1\.0-1"' $HOME/.gale/gale.toml
