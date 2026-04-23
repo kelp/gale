@@ -1,0 +1,22 @@
+# Install must abort when the downloaded archive
+# doesn't match the recipe's sha256. This is the
+# integrity line — the test ensures install never
+# silently accepts corrupted or substituted content.
+
+gale-fixture recipes $WORK/recipes
+
+# Serve hello-dep content at hello's URL. The bytes
+# differ from the sha256 recorded in hello's recipe,
+# so verify_sha256 must fail.
+gale-fixture register-blob /blobs/hello/1.0-1/darwin-arm64 hello-dep
+gale-fixture register-blob /blobs/hello/1.0-1/linux-amd64 hello-dep
+gale-fixture register-blob /blobs/hello/1.0-1/linux-arm64 hello-dep
+
+! exec gale install hello -g --recipes=$WORK/recipes
+stderr 'sha256|SHA256|verify'
+
+# Store must not contain a half-installed package.
+! exists $HOME/.gale/pkg/hello/1.0-1
+
+# gale.toml should not have been written.
+exec sh -c '! test -e $HOME/.gale/gale.toml || ! grep -q hello $HOME/.gale/gale.toml'

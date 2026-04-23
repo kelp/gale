@@ -1,0 +1,21 @@
+# Install, remove, install: the cycle should leave the
+# same observable state as a single install. Pins
+# against cleanup drift between remove and re-install.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+exec gale remove hello -g
+! exists $HOME/.gale/pkg/hello/1.0-1
+! exists $HOME/.gale/current/bin/hello
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+# Binary still works.
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'

@@ -107,10 +107,18 @@ func StartFakeGHCR(t *testing.T, payloads *Payloads) *FakeGHCR {
 	fg := &FakeGHCR{payloads: payloads, serve: make(map[string]string)}
 	fg.server = httptest.NewServer(http.HandlerFunc(fg.handle))
 	fg.URL = fg.server.URL
-	// Default routes: /blobs/<name>/1.0-<rev>/<platform> serves
-	// <name>. Both rev=1 and rev=2 get wired up so scripts that
-	// exercise revision-bump scenarios don't have to re-register.
+	// Default routes:
+	//   /blobs/<name>/1.0-<rev>/<platform>  — prebuilt binary
+	//     archive (served as .tar.zst). Both rev=1 and rev=2
+	//     are wired so revision-bump scenarios don't have to
+	//     re-register.
+	//   /blobs/source/<name>  — source tarball (same .tar.zst
+	//     payload; ExtractSource accepts .tar.zst). Used by
+	//     build-from-source scenarios.
 	for name := range payloads.Map {
+		// Source URLs preserve the .tar.zst extension so
+		// build.sourceExtension picks the right decompressor.
+		fg.Register("/blobs/source/"+name+".tar.zst", name)
 		for _, rev := range []string{"1", "2"} {
 			for _, plat := range []string{
 				"darwin-arm64", "linux-amd64", "linux-arm64",

@@ -1,0 +1,29 @@
+# Build-from-source end-to-end. Exercises the source
+# path that handles the bulk of gale's bug-prone
+# machinery: tarball fetch + SHA256 + extract, build
+# steps, prefix substitution, store layout, generation.
+#
+# Requires cc (any) in PATH. Skip on systems without.
+
+[!exec:cc] skip
+
+gale-fixture recipes $WORK/recipes
+
+# No binary entry on this recipe — install must go
+# through the source path.
+exec gale install hello-src -g --recipes=$WORK/recipes
+stderr 'Installed hello-src@1\.0'
+! stderr 'from binary'
+stderr 'built from source'
+
+exists $HOME/.gale/pkg/hello-src/1.0-1/bin/hello-src
+exists $HOME/.gale/current/bin/hello-src
+
+# The built binary runs.
+exec $HOME/.gale/current/bin/hello-src
+stdout 'hello from gale integration source build'
+
+# gale.toml uses the bare form (consolidation).
+grep 'hello-src = "1\.0"' $HOME/.gale/gale.toml
+# gale.lock pins canonical.
+grep 'version = "1\.0-1"' $HOME/.gale/gale.lock

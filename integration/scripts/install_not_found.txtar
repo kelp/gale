@@ -1,0 +1,10 @@
+# Installing a nonexistent package produces a clear
+# error and doesn't touch the store or config.
+
+gale-fixture recipes $WORK/recipes
+
+! exec gale install does-not-exist -g --recipes=$WORK/recipes
+stderr 'does-not-exist|no local recipe|not found'
+
+! exists $HOME/.gale/pkg/does-not-exist
+exec sh -c '! test -e $HOME/.gale/gale.toml || ! grep -q does-not-exist $HOME/.gale/gale.toml'

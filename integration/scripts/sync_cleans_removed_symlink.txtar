@@ -1,0 +1,24 @@
+# Hand-edit gale.toml to remove a package, then sync.
+# The generation rebuild must drop the removed
+# package's symlink even though the store still has
+# the package (gc is what reaps the store dir).
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exec gale install hello-dep -g --recipes=$WORK/recipes
+exists $HOME/.gale/current/bin/hello
+exists $HOME/.gale/current/bin/hello-dep
+
+# Remove hello-dep from gale.toml by rewriting the file.
+exec sh -c 'grep -v hello-dep $HOME/.gale/gale.toml > $WORK/new.toml && mv $WORK/new.toml $HOME/.gale/gale.toml'
+! grep 'hello-dep' $HOME/.gale/gale.toml
+
+exec gale sync -g --recipes=$WORK/recipes
+
+# hello-dep's symlink is gone from current/bin; hello stays.
+! exists $HOME/.gale/current/bin/hello-dep
+exists $HOME/.gale/current/bin/hello
+
+# Store still has both (gc's job, not sync's).
+exists $HOME/.gale/pkg/hello-dep/1.0-1/bin/hello-dep

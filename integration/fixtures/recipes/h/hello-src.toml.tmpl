@@ -1,0 +1,14 @@
+[package]
+name = "hello-src"
+version = "1.0"
+description = "integration test fixture — source build"
+license = "MIT"
+
+[source]
+url = "__GHCR_URL__/blobs/source/hello-src.tar.zst"
+sha256 = "__HELLO_SRC_PAYLOAD_SHA__"
+
+[build]
+steps = [
+  "make install PREFIX=${PREFIX}",
+]
