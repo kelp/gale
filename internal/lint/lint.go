@@ -26,6 +26,8 @@ type recipe struct {
 		License     string
 		Homepage    string
 		Platforms   []string
+		Verify      string `toml:"verify"`
+		Revision    int    `toml:"revision"`
 	}
 	Source struct {
 		URL        string
@@ -68,7 +70,8 @@ var rules = []lintRule{
 // filePath is used for path-based checks; pass "" to skip.
 func Lint(data, filePath string) []Issue {
 	var r recipe
-	if err := toml.Unmarshal([]byte(data), &r); err != nil {
+	md, err := toml.Decode(data, &r)
+	if err != nil {
 		return []Issue{{
 			Level:   "error",
 			Message: fmt.Sprintf("invalid TOML: %v", err),
@@ -81,6 +84,24 @@ func Lint(data, filePath string) []Issue {
 	}
 	addWarn := func(msg string) {
 		issues = append(issues, Issue{"warning", msg})
+	}
+
+	// Flag typos in [package] and [source] — the two
+	// strict-schema tables. Sub-tables under [build] and
+	// [dependencies], and recipe-repo extensions like
+	// [smoke], legitimately decode into interface{} maps
+	// and must not trigger typo warnings.
+	for _, key := range md.Undecoded() {
+		if len(key) < 2 {
+			continue
+		}
+		head := key[0]
+		if head != "package" && head != "source" {
+			continue
+		}
+		addErr(fmt.Sprintf(
+			"unknown field %q — check for a typo or "+
+				"remove the field", key.String()))
 	}
 
 	for _, rule := range rules {

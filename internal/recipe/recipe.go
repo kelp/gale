@@ -154,8 +154,32 @@ func ParseLocal(data string) (*Recipe, error) { return parse(data, false) }
 
 func parse(data string, requireSource bool) (*Recipe, error) {
 	var raw rawRecipe
-	if err := toml.Unmarshal([]byte(data), &raw); err != nil {
+	md, err := toml.Decode(data, &raw)
+	if err != nil {
 		return nil, fmt.Errorf("invalid TOML: %w", err)
+	}
+	if undecoded := md.Undecoded(); len(undecoded) > 0 {
+		// M1: catch typos in [package] and [source] —
+		// those are strict-schema tables. Everything else
+		// (build/dependencies sub-tables decoded into
+		// interface{} maps; recipe-repo extensions like
+		// [smoke]) legitimately ends up undecoded and must
+		// not fail parsing.
+		var bad []string
+		for _, key := range undecoded {
+			if len(key) < 2 {
+				continue
+			}
+			head := key[0]
+			if head == "package" || head == "source" {
+				bad = append(bad, key.String())
+			}
+		}
+		if len(bad) > 0 {
+			return nil, fmt.Errorf(
+				"unknown recipe field(s): %s",
+				strings.Join(bad, ", "))
+		}
 	}
 
 	deps, err := parseDependencies(raw.Dependencies)

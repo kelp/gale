@@ -1,0 +1,16 @@
+# M1 regression pin. Recipe parser must reject unknown
+# top-level fields like a `source.sha265` typo — today
+# they're silently dropped, so install fails later with
+# a confusing "missing sha256" instead of pointing at
+# the typo.
+
+# Write a recipe with a typo'd sha256 key.
+exec sh -c 'printf "%s\n" "[package]" "name = \"typo\"" "version = \"1.0\"" "" "[source]" "url = \"http://example.invalid/typo.tar.gz\"" "sha265 = \"deadbeef\"" > $WORK/typo.toml'
+
+# Lint must name the typo'd field, not the downstream
+# "missing sha256" symptom. Pre-fix: sha265 is silently
+# dropped and the user sees a confusing "missing
+# required field: source.sha256". Post-fix: the error
+# points at sha265 directly.
+! exec gale lint $WORK/typo.toml
+stderr 'sha265'
