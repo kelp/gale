@@ -135,7 +135,10 @@ func TestBuildLinksMultipleExecutablesFromOnePackage(t *testing.T) {
 	}
 }
 
-func TestBuildSkipsMissingStorePackages(t *testing.T) {
+// H5: strict Build errors (naming pkg@ver) when a store dir
+// for a listed package is missing, rather than silently
+// committing a generation that doesn't match gale.toml.
+func TestBuildReturnsErrorWhenStoreDirMissing(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 
@@ -146,8 +149,84 @@ func TestBuildSkipsMissingStorePackages(t *testing.T) {
 		"awscli": "2.34.19",
 	}
 
-	if err := Build(pkgs, galeDir, storeRoot); err != nil {
-		t.Fatalf("Build error: %v", err)
+	err := Build(pkgs, galeDir, storeRoot)
+	if err == nil {
+		t.Fatal("expected Build to return an error for missing store dir")
+	}
+	msg := err.Error()
+	for _, want := range []string{"awscli", "2.34.19"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q does not mention %q", msg, want)
+		}
+	}
+
+	// The would-be-new generation dir must be cleaned up so
+	// the failed rebuild doesn't leave orphans behind.
+	if _, err := os.Stat(filepath.Join(galeDir, "gen", "1")); !os.IsNotExist(err) {
+		t.Errorf("gen/1 should be removed on error, err=%v", err)
+	}
+
+	// current symlink must not be swapped to a broken
+	// generation. No prior current existed, so it stays
+	// absent.
+	if _, err := os.Lstat(filepath.Join(galeDir, "current")); !os.IsNotExist(err) {
+		t.Errorf("current symlink should not exist after failed Build, err=%v", err)
+	}
+}
+
+// H5: strict Build must not swap current when a store dir
+// disappears mid-rebuild. Previous current stays intact.
+func TestBuildPreservesCurrentOnMissingStoreDir(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+	if err := Build(map[string]string{"jq": "1.8.1"}, galeDir, storeRoot); err != nil {
+		t.Fatalf("initial Build: %v", err)
+	}
+
+	before, err := os.Readlink(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("read current before: %v", err)
+	}
+
+	// Adding a package whose store dir doesn't exist must
+	// leave the existing current symlink alone.
+	pkgs := map[string]string{
+		"jq":  "1.8.1",
+		"fd":  "10.4.2",
+	}
+	if err := Build(pkgs, galeDir, storeRoot); err == nil {
+		t.Fatal("expected Build to error for missing fd store dir")
+	}
+
+	after, err := os.Readlink(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("read current after: %v", err)
+	}
+	if before != after {
+		t.Errorf("current moved on failed Build: before=%q after=%q", before, after)
+	}
+}
+
+// H5: BuildLenient is the partner of strict Build — it
+// silently skips packages whose store dir is missing so
+// `gale sync` can land partial-batch successes on PATH
+// (Issue #20). Strict Build errors instead (see
+// TestBuildReturnsErrorWhenStoreDirMissing).
+func TestBuildLenientSkipsMissingStorePackages(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	pkgs := map[string]string{
+		"jq":     "1.8.1",
+		"awscli": "2.34.19",
+	}
+
+	if err := BuildLenient(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("BuildLenient error: %v", err)
 	}
 
 	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "jq")); err != nil {
@@ -161,6 +240,66 @@ func TestBuildSkipsMissingStorePackages(t *testing.T) {
 	currentPath := filepath.Join(galeDir, "current")
 	if _, err := os.Lstat(currentPath); err != nil {
 		t.Fatalf("current symlink does not exist: %v", err)
+	}
+}
+
+// H5: defense in depth. Even when populateGeneration
+// finishes without error, Build walks the new genDir's
+// symlinks and fails the swap if any point at something
+// that doesn't exist. Race safety for the case where the
+// store dir went away between populate and rename.
+func TestBuildFailsWhenGenerationHasDanglingSymlink(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	// Plant a package whose store layout embeds a symlink
+	// pointing at a target that does not exist. The store
+	// dir itself is present (so populateGeneration is happy),
+	// but the link that gets copied through to the gen dir
+	// points into the void.
+	pkgDir := filepath.Join(storeRoot, "danglepkg", "1.0")
+	binDir := filepath.Join(pkgDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The bin entry is a symlink into the store pointing at
+	// a file that was never created. `symlinkDir` mirrors
+	// this into the gen dir — our validate-before-swap must
+	// catch it.
+	if err := os.Symlink(
+		filepath.Join(pkgDir, "libexec", "real"),
+		filepath.Join(binDir, "danglepkg"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgs := map[string]string{"danglepkg": "1.0"}
+	err := Build(pkgs, galeDir, storeRoot)
+	if err == nil {
+		t.Fatal("expected Build to reject a generation with dangling symlinks")
+	}
+
+	if _, err := os.Stat(filepath.Join(galeDir, "gen", "1")); !os.IsNotExist(err) {
+		t.Errorf("gen/1 should be removed on validation failure, err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(galeDir, "current")); !os.IsNotExist(err) {
+		t.Errorf("current symlink should not be created on validation failure, err=%v", err)
+	}
+}
+
+// H5: symlinkDir used to return nil when its srcDir was
+// missing. The caller (populateGeneration) already walks
+// the parent with ReadDir, so a missing srcDir at this
+// layer is a race (or a concurrent delete) and must fail
+// rather than commit a generation with silently-dropped
+// content.
+func TestSymlinkDirErrorsWhenSrcDirMissing(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := filepath.Join(t.TempDir(), "does-not-exist")
+
+	err := symlinkDir(srcDir, dstDir)
+	if err == nil {
+		t.Fatal("expected symlinkDir to error on missing srcDir")
 	}
 }
 

@@ -1369,17 +1369,12 @@ func TestBuildEnvZeroARDateAlwaysSet(t *testing.T) {
 	}
 }
 
-func TestBuildEnvUserCFLAGSNotOverridden(t *testing.T) {
-	t.Setenv("CFLAGS", "-march=native")
-
-	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
-	envMap := envToMap(env)
-
-	if val := envMap["CFLAGS"]; val != "-march=native" {
-		t.Errorf("CFLAGS = %q, want user-set %q",
-			val, "-march=native")
-	}
-}
+// TestBuildEnvUserCFLAGSNotOverridden (removed).
+// Documented the silent host-CFLAGS leak closed by
+// finding H2a. The inverted invariant — host CFLAGS
+// ignored — is covered by
+// TestBuildEnvCFLAGSIgnoresHostCFLAGS in
+// build_review_test.go.
 
 func TestBuildEnvExportsDepCPPFLAGSAndDepLDFLAGS(t *testing.T) {
 	depDir := t.TempDir()
@@ -1763,7 +1758,12 @@ func TestBuildEnvLLVMToolchainMissingDepReturnsError(t *testing.T) {
 	}
 }
 
-func TestBuildEnvLLVMToolchainRespectsUserCompilerEnv(t *testing.T) {
+// TestBuildEnvLLVMToolchainIgnoresHostCompilerEnv
+// replaces a prior test that asserted host CC/CXX
+// override the declared toolchain. Finding H2b closed
+// that pass-through: declared `toolchain = "llvm"` is
+// authoritative, host env is ignored.
+func TestBuildEnvLLVMToolchainIgnoresHostCompilerEnv(t *testing.T) {
 	llvmDir := t.TempDir()
 	binDir := filepath.Join(llvmDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -1795,11 +1795,15 @@ func TestBuildEnvLLVMToolchainRespectsUserCompilerEnv(t *testing.T) {
 	}
 
 	m := envToMap(env)
-	if got := m["CC"]; got != "/custom/cc" {
-		t.Errorf("CC = %q, want %q", got, "/custom/cc")
+	wantCC := filepath.Join(binDir, "clang")
+	wantCXX := filepath.Join(binDir, "clang++")
+	if got := m["CC"]; got != wantCC {
+		t.Errorf("CC = %q, want toolchain %q (host env "+
+			"must not leak through)", got, wantCC)
 	}
-	if got := m["CXX"]; got != "/custom/cxx" {
-		t.Errorf("CXX = %q, want %q", got, "/custom/cxx")
+	if got := m["CXX"]; got != wantCXX {
+		t.Errorf("CXX = %q, want toolchain %q (host env "+
+			"must not leak through)", got, wantCXX)
 	}
 }
 
@@ -1881,7 +1885,14 @@ func TestCompilerFlagsLLVMToolchainLinuxMergesFlags(t *testing.T) {
 	}
 }
 
-func TestToolchainCompilerFlagsSkipsLLVMFlagsWhenCXXOverridden(t *testing.T) {
+// TestToolchainCompilerFlagsIgnoresHostCXX verifies
+// that a host CXX no longer bypasses llvm toolchain
+// flags. The prior behavior was a host-env escape hatch
+// closed by finding H2b. Recipe-level overrides via
+// [build] env remain honored — see
+// TestToolchainCompilerFlagsSkipsLLVMFlagsWhenRecipeCXXOverridden
+// below.
+func TestToolchainCompilerFlagsIgnoresHostCXX(t *testing.T) {
 	llvmDir := t.TempDir()
 	includeDir := filepath.Join(llvmDir, "include", "c++", "v1")
 	libDir := filepath.Join(llvmDir, "lib")
@@ -1899,8 +1910,13 @@ func TestToolchainCompilerFlagsSkipsLLVMFlagsWhenCXXOverridden(t *testing.T) {
 		Deps:      &BuildDeps{NamedDirs: map[string]string{"llvm": llvmDir}},
 	}).toolchainCompilerFlags("linux")
 
-	if cppflags != "" || cxxflags != "" || ldflags != "" {
-		t.Fatalf("toolchain flags = (%q, %q, %q), want all empty when CXX is overridden", cppflags, cxxflags, ldflags)
+	if cppflags == "" && cxxflags == "" && ldflags == "" {
+		t.Fatalf("toolchain flags all empty; host CXX " +
+			"should be ignored (toolchain wins)")
+	}
+	if !strings.Contains(cxxflags, "-stdlib=libc++") {
+		t.Errorf("CXXFLAGS = %q, want libc++ toolchain "+
+			"flags (host env must not suppress)", cxxflags)
 	}
 }
 

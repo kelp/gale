@@ -3,10 +3,13 @@
 # the corruption — not silently commit a generation
 # with missing packages.
 #
-# The fix warns to stderr and continues; callers like
-# sync that legitimately tolerate missing packages
-# (partial batch install) suppress the warning via the
-# lenient entry point.
+# Strict rebuild (install / remove / update) fails loud
+# so the user learns about the corrupted store and can
+# run `gale install <pkg>` or `gale sync` to repair.
+# Sync uses BuildLenient so a partial-batch install
+# failure still lands the successful installs on PATH
+# (Issue #20); the missing-store case is swallowed
+# there.
 
 gale-fixture recipes $WORK/recipes
 
@@ -22,15 +25,21 @@ rm $HOME/.gale/pkg/hello/1.0-1
 # `gale remove hello-dep` rebuilds the generation with
 # hello still in gale.toml. Pre-fix: silently skipped
 # and the user had no way to learn the store was
-# corrupted. Post-fix: the rebuild warns on stderr.
-exec gale remove hello-dep -g
-stderr 'warning'
-stderr 'hello@1\.0 is missing'
+# corrupted. Post-fix: the rebuild errors; the message
+# names the missing package and the recovery command.
+! exec gale remove hello-dep -g
+stderr 'hello@1\.0'
+stderr 'is missing'
 stderr 'gale install hello'
 
+# Repair the store so we can reach a clean state before
+# exercising the lenient (sync) path.
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
 # Sync, by contrast, tolerates missing packages silently —
-# Issue #20 contract. Corrupt again after remove repairs
-# the generation, then confirm sync stays quiet.
+# Issue #20 contract. Corrupt again and confirm sync
+# stays quiet.
 rm $HOME/.gale/pkg/hello/1.0-1
 exec gale sync -g --recipes=$WORK/recipes
-! stderr 'warning: store dir for hello'
+! stderr 'is missing from the store'

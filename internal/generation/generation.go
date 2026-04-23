@@ -139,6 +139,19 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 			return err
 		}
 
+		// H5: validate every symlink in the new generation
+		// resolves to something that exists before we commit
+		// the swap. populateGeneration's per-package checks
+		// guard the declared-but-missing case; this walk
+		// catches races (store dir removed between populate
+		// and rename) and malformed store contents — any
+		// dangling link in the new gen means the swap would
+		// activate a broken PATH entry.
+		if err := validateGenerationSymlinks(genDir); err != nil {
+			cleanup()
+			return err
+		}
+
 		// Atomic swap: create a temporary symlink then rename.
 		if err := swapCurrentSymlink(galeDir, next); err != nil {
 			cleanup()
@@ -188,20 +201,27 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				// H5: pre-fix this was a silent continue.
-				// Skipping is legitimate (a mid-batch install
-				// failure or a pending install in gale.toml),
-				// but doing so silently hides real corruption.
-				// Warn so the user sees it; keep going so
-				// install/remove/gc still succeed for the
-				// packages that are present. Lenient callers
-				// (sync) suppress the warning since they
-				// surface install failures via a different
-				// path.
+				// H5: strict (Build) callers come through
+				// rebuildGeneration with gale.toml-sourced
+				// packages, so a missing store dir is a real
+				// bug: the user expects the package to be on
+				// PATH. Fail loud — install/remove/update
+				// never commit a broken generation, and the
+				// user learns about the corruption
+				// immediately rather than discovering it when
+				// `<pkg>: command not found` fires later.
+				//
+				// Lenient (BuildLenient) callers — only
+				// `gale sync` — deliberately tolerate this
+				// case. A sync batch where one install fails
+				// must still land the successful installs on
+				// PATH (Issue #20); sync surfaces the install
+				// error via a separate channel, so swallowing
+				// the missing-store-dir here is intentional.
 				if !lenient {
-					fmt.Fprintf(os.Stderr,
-						"gale: warning: store dir for %s@%s is missing (%s); "+
-							"run `gale install %s` or `gale sync` to restore\n",
+					return fmt.Errorf(
+						"%s@%s is missing from the store (%s); "+
+							"run `gale install %s` or `gale sync` to restore",
 						name, version, pkgDir, name)
 				}
 				continue
@@ -237,6 +257,37 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 		}
 	}
 	return nil
+}
+
+// validateGenerationSymlinks walks genDir and returns an
+// error if any symlink target doesn't resolve. Defense in
+// depth for Build/BuildLenient: catches store mutations
+// racing with the generation rebuild and ensures the swap
+// never activates a generation with broken PATH entries.
+// Reads per-file stat, not a full SHA verify — we only
+// care that the target exists on disk.
+func validateGenerationSymlinks(genDir string) error {
+	return filepath.Walk(genDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return fmt.Errorf("walk generation %s: %w", path, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return nil
+		}
+		// os.Stat follows symlinks; a missing target
+		// surfaces as ENOENT here.
+		if _, statErr := os.Stat(path); statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				target, _ := os.Readlink(path)
+				return fmt.Errorf(
+					"generation has dangling symlink %s -> %s; "+
+						"store mutated during rebuild",
+					path, target)
+			}
+			return fmt.Errorf("stat %s: %w", path, statErr)
+		}
+		return nil
+	})
 }
 
 // Current returns the active generation number by
@@ -293,14 +344,18 @@ func swapCurrentSymlink(galeDir string, genNum int) error {
 }
 
 // symlinkDir creates symlinks in dstDir for every file
-// in srcDir. Skips if srcDir doesn't exist. Recursively
-// handles subdirectories (e.g., man/man1/).
+// in srcDir. Recursively handles subdirectories (e.g.,
+// man/man1/). srcDir must exist: callers reach this via
+// populateGeneration, which ReadDir's the parent pkgDir
+// and only invokes symlinkDir for entries that were
+// directory children of a dir we just listed. A
+// not-found here indicates a race (another process
+// mutated the store during the rebuild) rather than a
+// legitimate "package doesn't have this dir" state, so
+// the error propagates instead of being swallowed.
 func symlinkDir(srcDir, dstDir string) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil // package doesn't have this dir
-		}
 		return err
 	}
 

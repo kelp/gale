@@ -117,8 +117,11 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 		return nil, fmt.Errorf("extract source: %w", err)
 	}
 
-	// Reset file timestamps to avoid autotools clock-skew errors.
-	if err := touchAll(srcDir); err != nil {
+	// Reset file timestamps to avoid autotools clock-skew
+	// errors. Use a deterministic stamp (source.released_at
+	// or the Unix epoch) so byte-identical source produces
+	// byte-identical tarballs across builds.
+	if err := touchAll(srcDir, sourceDateEpoch(r)); err != nil {
 		return nil, fmt.Errorf("reset timestamps: %w", err)
 	}
 
@@ -416,9 +419,10 @@ func llvmToolchainFlags(goos, llvmDir string) (cppflags, cxxflags, ldflags strin
 }
 
 func (bc *BuildContext) toolchainCompilerFlags(goos string) (cppflags, cxxflags, ldflags string) {
-	if os.Getenv("CXX") != "" || os.Getenv("LD") != "" {
-		return "", "", ""
-	}
+	// Skip toolchain-derived CXX/LD flags when the recipe
+	// overrides CXX or LD via [build] env. (The host-env
+	// escape hatch was removed alongside the CC/CXX
+	// pass-through — see compilerFlags for the rationale.)
 	if bc.Env != nil && (bc.Env["CXX"] != "" || bc.Env["LD"] != "") {
 		return "", "", ""
 	}
@@ -456,18 +460,21 @@ func (bc *BuildContext) toolchainEnv() ([]string, error) {
 	}
 }
 
-// compilerFlags generates CFLAGS, CXXFLAGS, LDFLAGS, CPPFLAGS,
-// CC, CXX pass-through, and ZERO_AR_DATE.
+// compilerFlags generates CFLAGS, CXXFLAGS, LDFLAGS,
+// CPPFLAGS, and ZERO_AR_DATE.
+//
+// Compiler selection (CC/CXX) is NOT inherited from the
+// host environment. A dev laptop with `CC=gcc-11` would
+// otherwise get a different compiler than CI, producing
+// different binaries for the same recipe (gale-project
+// TODO.md, finding H2b). Recipes that need a specific
+// compiler set it inline in their build step (the catalog
+// pattern is `make ... CC=cc ...`). The declared
+// toolchain (e.g. `toolchain = "llvm"`) sets CC/CXX via
+// toolchainEnv; otherwise the step inherits whatever
+// `sh -c` resolves, which is the system default cc.
 func (bc *BuildContext) compilerFlags(depCPPFLAGS, depLDFLAGS string) []string {
 	var env []string
-
-	// Pass through compiler if set.
-	if cc := os.Getenv("CC"); cc != "" {
-		env = append(env, "CC="+cc)
-	}
-	if cxx := os.Getenv("CXX"); cxx != "" {
-		env = append(env, "CXX="+cxx)
-	}
 
 	toolchainCPPFLAGS, toolchainCXXFLAGS, toolchainLDFLAGS := bc.toolchainCompilerFlags(runtime.GOOS)
 
@@ -626,23 +633,44 @@ func (bc *BuildContext) depSearchPaths() (libPath, incPath, pcPath, cmakePath st
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
+//
+// HOME and TMPDIR are build-scoped tempdirs, not the host user's
+// values. Autotools config.log, libtool .la files, and some CMake
+// artifacts embed absolute HOME/TMPDIR paths into their output — a
+// leak there produces byte-nondeterministic archives across
+// machines (gale-project TODO.md, finding H1). `buildPath` still
+// consults the real home for base search dirs like ~/.gale/bin.
 func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	deps := bc.Deps
-	home := os.Getenv("HOME")
 	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create tools directory: %w", err)
 	}
-	cleanup := func() { os.RemoveAll(toolsDir) }
-	path := buildPath(home, toolsDir)
+	buildHome, err := os.MkdirTemp(TmpDir(), "gale-home-*")
+	if err != nil {
+		os.RemoveAll(toolsDir)
+		return nil, nil, fmt.Errorf("create home directory: %w", err)
+	}
+	buildTmp, err := os.MkdirTemp(TmpDir(), "gale-tmp-*")
+	if err != nil {
+		os.RemoveAll(toolsDir)
+		os.RemoveAll(buildHome)
+		return nil, nil, fmt.Errorf("create tmp directory: %w", err)
+	}
+	cleanup := func() {
+		os.RemoveAll(toolsDir)
+		os.RemoveAll(buildHome)
+		os.RemoveAll(buildTmp)
+	}
+	// buildPath needs the *real* home to locate tools like
+	// cargo under ~/.cargo/bin. The build steps themselves
+	// see the scoped buildHome.
+	realHome, _ := os.UserHomeDir()
+	path := buildPath(realHome, toolsDir)
 	if deps != nil && len(deps.BinDirs) > 0 {
 		path = strings.Join(deps.BinDirs, ":") + ":" + path
 	}
-	tmpdir := os.Getenv("TMPDIR")
-	if tmpdir == "" {
-		tmpdir = "/tmp"
-	}
-	env := bc.baseEnv(home, path, tmpdir)
+	env := bc.baseEnv(buildHome, path, buildTmp)
 
 	// Dependency search paths. Each guard is independent
 	// because depSearchPaths filters nonexistent subdirs:
@@ -685,8 +713,9 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	}
 	env = append(env, toolchainEnv...)
 
-	// Compiler flags (CC/CXX pass-through, CFLAGS, LDFLAGS,
-	// CPPFLAGS, ZERO_AR_DATE).
+	// Compiler flags (CFLAGS, LDFLAGS, CPPFLAGS,
+	// ZERO_AR_DATE). CC/CXX are not inherited from the
+	// host — see compilerFlags docs for the rationale.
 	env = append(env, bc.compilerFlags(depCPPFLAGS, depLDFLAGS)...)
 
 	// Recipe-defined env vars (from [build] env = {...}).
@@ -702,17 +731,21 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 }
 
 // setDefault appends key=val to env only if key is not
-// already present in the env slice or the host environment.
+// already present in the env slice.
+//
+// The host environment is intentionally NOT consulted:
+// an implicit host-env fallback is how the CFLAGS /
+// CXXFLAGS / etc. leak documented in gale-project
+// TODO.md finding H2a got in. Callers that want a
+// different value either set it explicitly (recipe
+// `[build] env`) or extend this file with an allowlist
+// (none needed today).
 func setDefault(env *[]string, key, val string) {
 	prefix := key + "="
 	for _, e := range *env {
 		if strings.HasPrefix(e, prefix) {
 			return
 		}
-	}
-	if hostVal := os.Getenv(key); hostVal != "" {
-		*env = append(*env, key+"="+hostVal)
-		return
 	}
 	*env = append(*env, key+"="+val)
 }
@@ -773,18 +806,59 @@ func resolveTools(toolsDir string, toolPaths []string) {
 	}
 }
 
-// touchAll resets all file modification times under dir to now.
-// Prevents autotools clock-skew errors after extracting tarballs.
-func touchAll(dir string) error {
-	now := time.Now()
+// sourceDateEpoch returns the deterministic timestamp
+// used to stamp extracted sources before archiving.
+// Prefers the recipe's source.released_at (YYYY-MM-DD,
+// UTC) and falls back to the Unix epoch. time.Now() is
+// intentionally never used here — any wall-clock input
+// would leak the build-run time into tarball mtimes and
+// make byte-identical source produce different-hash
+// archives (see gale-project TODO.md, finding H3).
+func sourceDateEpoch(r *recipe.Recipe) time.Time {
+	if r != nil && r.Source.ReleasedAt != "" {
+		// Recipes use YYYY-MM-DD across the catalog;
+		// anything else is treated as malformed and falls
+		// back to the sentinel rather than silently using
+		// time.Now().
+		if t, err := time.ParseInLocation(
+			"2006-01-02", r.Source.ReleasedAt, time.UTC); err == nil {
+			return t
+		}
+	}
+	return time.Unix(0, 0).UTC()
+}
+
+// touchAll sets every file's atime/mtime under dir to
+// stamp. Prevents autotools clock-skew errors after
+// extracting tarballs and keeps archive mtimes
+// deterministic.
+//
+// Broken symlinks in upstream tarballs (especially test
+// fixtures) are tolerated — Walk's err callback for a
+// missing symlink target is the common case. All other
+// errors surface to the caller so a real permission or
+// I/O fault fails the build loudly.
+func touchAll(dir string, stamp time.Time) error {
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return nil //nolint:nilerr // best-effort: skip broken symlinks
+			// ENOENT here is almost always a broken
+			// symlink: Walk stats the target, finds it
+			// missing, and hands us the error. Tolerate
+			// it; propagate anything else.
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("walk %s: %w", path, err)
 		}
 		if info.Mode()&os.ModeSymlink != 0 {
-			return nil // skip symlinks
+			return nil // skip symlinks (avoid following)
 		}
-		_ = os.Chtimes(path, now, now) //nolint:gosec // G122 — best-effort timestamp reset, race is acceptable
+		if err := os.Chtimes(path, stamp, stamp); err != nil { //nolint:gosec // G122 — deterministic stamp, not TOCTOU-sensitive
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("chtimes %s: %w", path, err)
+		}
 		return nil
 	})
 }

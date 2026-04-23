@@ -131,7 +131,11 @@ func TestWriteConfigAndLockPreservesHashOnSameVersionCache(t *testing.T) {
 	}
 }
 
-func TestFinalizeInstallSkipsMissingConfiguredPackages(t *testing.T) {
+// H5: finalizeInstall uses the strict (Build) rebuild path.
+// A configured package whose store dir is missing surfaces
+// as an error — the user learns about the corruption
+// instead of getting a silently-incomplete generation.
+func TestFinalizeInstallErrorsOnMissingConfiguredPackage(t *testing.T) {
 	tmp := t.TempDir()
 	galeDir := filepath.Join(tmp, ".gale")
 	storeRoot := filepath.Join(tmp, "pkg")
@@ -165,13 +169,13 @@ func TestFinalizeInstallSkipsMissingConfiguredPackages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := finalizeInstall(galeDir, storeRoot, configPath,
-		"gale", "0.11.1", "0.11.1", "newhash"); err != nil {
-		t.Fatalf("finalizeInstall: %v", err)
+	err = finalizeInstall(galeDir, storeRoot, configPath,
+		"gale", "0.11.1", "0.11.1", "newhash")
+	if err == nil {
+		t.Fatal("expected finalizeInstall error for missing awscli store dir")
 	}
-
-	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "gale")); err != nil {
-		t.Fatalf("gale symlink missing from current generation: %v", err)
+	if !strings.Contains(err.Error(), "awscli") {
+		t.Errorf("error %q does not mention awscli", err)
 	}
 }
 

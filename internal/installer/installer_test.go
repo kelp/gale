@@ -14,9 +14,11 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/klauspost/compress/zstd"
@@ -1394,6 +1396,246 @@ func TestLockPackagePersistsAfterUnlock(t *testing.T) {
 	// same inode. Removing it causes an inode-split race.
 	if _, err := os.Stat(lockPath); err != nil {
 		t.Error("lock file should persist after unlock")
+	}
+}
+
+// --- H7: store-gen lock serializes install vs. generation.Build ---
+
+// TestInstallBlocksOnStoreGenLock pre-acquires the generation
+// lock that a concurrent `gale sync` (via generation.Build)
+// would hold, then kicks off an install. The install must wait
+// until the lock is released — otherwise its store writes could
+// interleave with a concurrent gen rebuild and leave the gen
+// symlinking a half-extracted package. Mirrors the pattern in
+// `generation_test.go:TestBuildWaitsForGenerationLock`.
+func TestInstallBlocksOnStoreGenLock(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	hash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	// Place the store under a parent dir so filepath.Dir
+	// (storeRoot) is a real directory that can hold the lock.
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir storeRoot: %v", err)
+	}
+
+	// Pre-acquire the lock generation.Build would hold.
+	// Install must block on this lock for its store-write
+	// critical section.
+	lockPath := filepath.Join(galeDir, "generation.lock")
+	unlock, err := filelock.Acquire(lockPath)
+	if err != nil {
+		t.Fatalf("Acquire store-gen lock: %v", err)
+	}
+	defer unlock()
+
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: srv.URL + "/source.tar.gz", SHA256: hash},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho hello' > $PREFIX/bin/testpkg",
+				"chmod +x $PREFIX/bin/testpkg",
+			},
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := inst.Install(r)
+		done <- err
+	}()
+
+	// Install is allowed to do pre-lock work (network fetch,
+	// source build). Give it time; it must stop at the
+	// store-write critical section and wait for the lock.
+	// A timeout here means the install *did* grab the lock
+	// and finish, which is fine — we only care that the
+	// lock-protected phase waited. To distinguish, confirm
+	// that the store dir has NOT been populated with final
+	// content while the lock is held.
+	select {
+	case err := <-done:
+		t.Fatalf(
+			"Install completed while store-gen lock held: %v", err)
+	case <-time.After(500 * time.Millisecond):
+		// Install is blocked on the lock. Good.
+	}
+
+	// Store dir must not contain a finalized bin/ while
+	// the gen lock is held — the critical section covers
+	// extract + finalize.
+	binPath := filepath.Join(
+		storeRoot, "testpkg", "1.0-1", "bin", "testpkg")
+	if _, err := os.Stat(binPath); err == nil {
+		t.Fatal(
+			"install wrote bin/testpkg while store-gen lock held")
+	}
+
+	unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Install error after lock release: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Install did not complete after lock release")
+	}
+
+	// After release, the install should have finalized.
+	if _, err := os.Stat(binPath); err != nil {
+		t.Errorf("binary not in store after install: %v", err)
+	}
+}
+
+// TestInstallReleasesStoreGenLock confirms the install does
+// not leak the store-gen lock: after a successful install,
+// a subsequent Acquire on the same lock path must succeed
+// without blocking. Guards against an unlock leak in the
+// critical-section wrapper.
+func TestInstallReleasesStoreGenLock(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	hash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir storeRoot: %v", err)
+	}
+
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: srv.URL + "/source.tar.gz", SHA256: hash},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho hello' > $PREFIX/bin/testpkg",
+				"chmod +x $PREFIX/bin/testpkg",
+			},
+		},
+	}
+
+	if _, err := inst.Install(r); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// Post-install: the store-gen lock should be free.
+	// Acquire-with-timeout to surface a leaked lock.
+	lockPath := filepath.Join(galeDir, "generation.lock")
+	acquired := make(chan struct{})
+	go func() {
+		unlock, err := filelock.Acquire(lockPath)
+		if err != nil {
+			t.Errorf("Acquire after install: %v", err)
+			close(acquired)
+			return
+		}
+		close(acquired)
+		unlock()
+	}()
+
+	select {
+	case <-acquired:
+		// Good: lock was free.
+	case <-time.After(2 * time.Second):
+		t.Fatal("store-gen lock not released after install")
+	}
+}
+
+// TestInstallLocalBlocksOnStoreGenLock asserts InstallLocal
+// also honors the store-gen lock. The replaceStoreDir rename
+// plus farm.Populate inside extractBuild must be serialized
+// with generation.Build; otherwise a local install and a
+// concurrent sync can race on the farm.
+func TestInstallLocalBlocksOnStoreGenLock(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir storeRoot: %v", err)
+	}
+
+	sourceDir := t.TempDir()
+	// Write a trivial source that produces bin/testpkg.
+	if err := os.WriteFile(
+		filepath.Join(sourceDir, "README"),
+		[]byte("placeholder"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	// Pre-acquire the lock.
+	lockPath := filepath.Join(galeDir, "generation.lock")
+	unlock, err := filelock.Acquire(lockPath)
+	if err != nil {
+		t.Fatalf("Acquire store-gen lock: %v", err)
+	}
+	defer unlock()
+
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho local' > $PREFIX/bin/testpkg",
+				"chmod +x $PREFIX/bin/testpkg",
+			},
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := inst.InstallLocal(r, sourceDir)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf(
+			"InstallLocal completed while store-gen lock held: %v",
+			err)
+	case <-time.After(500 * time.Millisecond):
+		// Install is blocked on the lock. Good.
+	}
+
+	// The canonical store dir must not be populated with
+	// bin/ while the lock is held.
+	binPath := filepath.Join(
+		storeRoot, "testpkg", "1.0-1", "bin", "testpkg")
+	if _, err := os.Stat(binPath); err == nil {
+		t.Fatal(
+			"InstallLocal wrote bin/testpkg while store-gen lock held")
+	}
+
+	unlock()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("InstallLocal error after release: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("InstallLocal did not complete after lock release")
+	}
+
+	if _, err := os.Stat(binPath); err != nil {
+		t.Errorf("binary not in store after InstallLocal: %v", err)
 	}
 }
 

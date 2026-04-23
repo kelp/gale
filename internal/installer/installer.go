@@ -229,8 +229,13 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 	}
 
 	// Build succeeded — swap into place atomically.
-	// The lock ensures no other process touches storeDir.
-	if err := replaceStoreDir(storeDir, buildDir); err != nil {
+	// The per-package lock (above) ensures no other installer
+	// of this package races; the store-gen lock here serializes
+	// with generation.Build so a concurrent gen rebuild sees
+	// either the pre-rename or post-rename tree, not a mix.
+	if err := withStoreGenLock(inst.Store.Root, func() error {
+		return replaceStoreDir(storeDir, buildDir)
+	}); err != nil {
 		return nil, fmt.Errorf("install build output: %w", err)
 	}
 
@@ -367,78 +372,91 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 		}
 	}
 
-	if err := download.ExtractTarZstd(tmpFile, storeDir); err != nil {
-		return fmt.Errorf("extract binary: %w", err)
-	}
-
-	// Rewrite .pc files so pkg-config resolves from
-	// the store dir, not the original build prefix.
-	if err := build.FixupPkgConfig(storeDir); err != nil {
-		return fmt.Errorf("fixup pkg-config: %w", err)
-	}
-
-	// Replace @@GALE_PREFIX@@ placeholders with the
-	// actual store dir in scripts and text files.
-	if err := build.RestorePrefixPlaceholder(storeDir); err != nil {
-		return fmt.Errorf("restore prefix placeholders: %w", err)
-	}
-
-	// Rewrite CI-baked .gale/pkg/ paths in text files
-	// (scripts, .pc Libs.private, .la files, etc.) so
-	// they use the local store root.
+	// Critical section: from tarball extract onward, the store
+	// dir is being mutated in-place. A concurrent
+	// generation.Build could walk a half-extracted package or
+	// race with farm.Populate below. Hold the store-gen lock
+	// for the whole finalize so gen rebuilds see either the
+	// pre-install state or the completed install — never an
+	// intermediate. The fetch + verify above intentionally
+	// stays outside the lock: they don't touch the canonical
+	// store dir (tmpFile is a sibling file, skipped by the gen
+	// walker's dir-only filter) and a network stall must not
+	// block a concurrent sync.
 	storeRoot := filepath.Dir(filepath.Dir(storeDir))
-	if err := build.RelocateStalePathsInTextFiles(storeDir, storeRoot); err != nil {
-		return fmt.Errorf("relocate stale paths in text files: %w", err)
-	}
-
-	// Relocate stale LC_RPATH entries that reference a
-	// foreign gale store root (e.g. CI-baked paths like
-	// /Users/runner/.gale/pkg/...). Only meaningful on
-	// darwin; no-op on Linux where RelocateStaleRpaths
-	// is a stub.
-	if err := build.RelocateStaleRpaths(storeDir, storeRoot); err != nil {
-		return fmt.Errorf("relocate rpaths: %w", err)
-	}
-
-	// Ad-hoc sign any Mach-O that arrived unsigned — Apple
-	// Silicon kernels SIGKILL unsigned binaries on exec, and
-	// RelocateStaleRpaths only re-signs files whose rpaths
-	// were rewritten. No-op on Linux.
-	if err := build.EnsureCodeSigned(storeDir); err != nil {
-		return fmt.Errorf("ensure code signed: %w", err)
-	}
-
-	// Populate the shared lib farm with symlinks to this
-	// package's versioned dylibs. A conflict (two packages
-	// claiming the same dylib) is a recipe bug — fail the
-	// install so the bad recipe gets fixed instead of
-	// silently shipping a farm where one package wins.
-	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
-		if err := farm.Populate(storeDir, farmDir); err != nil {
-			return fmt.Errorf("populate farm: %w", err)
+	return withStoreGenLock(storeRoot, func() error {
+		if err := download.ExtractTarZstd(tmpFile, storeDir); err != nil {
+			return fmt.Errorf("extract binary: %w", err)
 		}
-	}
 
-	// Record the dep closure the prebuilt expects at
-	// runtime so staleness can be detected when a dep's
-	// recipe changes. If the archive already shipped a
-	// .gale-deps.toml (built by `gale build` with full
-	// knowledge of the linked versions), keep that —
-	// it's the authoritative record. Otherwise fall back
-	// to locally-resolved versions, which is approximate
-	// but preserves backwards-compat with archives built
-	// before the build-time emit landed.
-	if HasDepsMetadata(storeDir) {
+		// Rewrite .pc files so pkg-config resolves from
+		// the store dir, not the original build prefix.
+		if err := build.FixupPkgConfig(storeDir); err != nil {
+			return fmt.Errorf("fixup pkg-config: %w", err)
+		}
+
+		// Replace @@GALE_PREFIX@@ placeholders with the
+		// actual store dir in scripts and text files.
+		if err := build.RestorePrefixPlaceholder(storeDir); err != nil {
+			return fmt.Errorf("restore prefix placeholders: %w", err)
+		}
+
+		// Rewrite CI-baked .gale/pkg/ paths in text files
+		// (scripts, .pc Libs.private, .la files, etc.) so
+		// they use the local store root.
+		if err := build.RelocateStalePathsInTextFiles(storeDir, storeRoot); err != nil {
+			return fmt.Errorf("relocate stale paths in text files: %w", err)
+		}
+
+		// Relocate stale LC_RPATH entries that reference a
+		// foreign gale store root (e.g. CI-baked paths like
+		// /Users/runner/.gale/pkg/...). Only meaningful on
+		// darwin; no-op on Linux where RelocateStaleRpaths
+		// is a stub.
+		if err := build.RelocateStaleRpaths(storeDir, storeRoot); err != nil {
+			return fmt.Errorf("relocate rpaths: %w", err)
+		}
+
+		// Ad-hoc sign any Mach-O that arrived unsigned — Apple
+		// Silicon kernels SIGKILL unsigned binaries on exec, and
+		// RelocateStaleRpaths only re-signs files whose rpaths
+		// were rewritten. No-op on Linux.
+		if err := build.EnsureCodeSigned(storeDir); err != nil {
+			return fmt.Errorf("ensure code signed: %w", err)
+		}
+
+		// Populate the shared lib farm with symlinks to this
+		// package's versioned dylibs. A conflict (two packages
+		// claiming the same dylib) is a recipe bug — fail the
+		// install so the bad recipe gets fixed instead of
+		// silently shipping a farm where one package wins.
+		if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
+			if err := farm.Populate(storeDir, farmDir); err != nil {
+				return fmt.Errorf("populate farm: %w", err)
+			}
+		}
+
+		// Record the dep closure the prebuilt expects at
+		// runtime so staleness can be detected when a dep's
+		// recipe changes. If the archive already shipped a
+		// .gale-deps.toml (built by `gale build` with full
+		// knowledge of the linked versions), keep that —
+		// it's the authoritative record. Otherwise fall back
+		// to locally-resolved versions, which is approximate
+		// but preserves backwards-compat with archives built
+		// before the build-time emit landed.
+		if HasDepsMetadata(storeDir) {
+			return nil
+		}
+		if deps != nil {
+			md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
+			if err := WriteDepsMetadata(storeDir, md); err != nil {
+				return fmt.Errorf("write deps metadata: %w", err)
+			}
+		}
+
 		return nil
-	}
-	if deps != nil {
-		md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
-		if err := WriteDepsMetadata(storeDir, md); err != nil {
-			return fmt.Errorf("write deps metadata: %w", err)
-		}
-	}
-
-	return nil
+	})
 }
 
 // checkBinaryTrustPolicy enforces the recipe-declared
@@ -740,25 +758,35 @@ func installFromSource(r *recipe.Recipe, storeDir string, deps *build.BuildDeps)
 // and restores prefix placeholders to the actual store path.
 // If deps is non-nil, writes .gale-deps.toml recording the
 // dep closure the build was linked against.
+//
+// H7: everything here mutates storeDir in place and touches
+// the shared farm. Hold the store-gen lock so a concurrent
+// generation.Build cannot observe a half-extracted package or
+// race with farm.Populate below. The archive is already on
+// disk (result.Archive in a tmp dir), so the lock covers only
+// the store-visible finalize — not the upstream build.
 func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps) error {
-	if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
-		return fmt.Errorf("extract build output: %w", err)
-	}
-	if err := build.RestorePrefixPlaceholder(storeDir); err != nil {
-		return fmt.Errorf("restore prefix paths: %w", err)
-	}
-	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
-		if err := farm.Populate(storeDir, farmDir); err != nil {
-			fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+	storeRoot := filepath.Dir(filepath.Dir(storeDir))
+	return withStoreGenLock(storeRoot, func() error {
+		if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
+			return fmt.Errorf("extract build output: %w", err)
 		}
-	}
-	if deps != nil {
-		md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
-		if err := WriteDepsMetadata(storeDir, md); err != nil {
-			return fmt.Errorf("write deps metadata: %w", err)
+		if err := build.RestorePrefixPlaceholder(storeDir); err != nil {
+			return fmt.Errorf("restore prefix paths: %w", err)
 		}
-	}
-	return nil
+		if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
+			if err := farm.Populate(storeDir, farmDir); err != nil {
+				fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+			}
+		}
+		if deps != nil {
+			md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
+			if err := WriteDepsMetadata(storeDir, md); err != nil {
+				return fmt.Errorf("write deps metadata: %w", err)
+			}
+		}
+		return nil
+	})
 }
 
 // lockPackage acquires an exclusive file lock for a package
@@ -769,4 +797,38 @@ func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildD
 func lockPackage(storeRoot, name, version string) (func(), error) {
 	lockPath := filepath.Join(storeRoot, name, version+".lock")
 	return filelock.Acquire(lockPath)
+}
+
+// storeGenLockPath returns the path to the generation-build
+// lock for the given store root. H7: a concurrent `gale sync`
+// calls generation.Build, which locks this same path (via
+// generation.generationLockPath) to serialize gen rebuilds.
+// The installer acquires this lock around its store-write
+// critical section so a sync cannot walk a half-extracted
+// package or race with farm.Populate.
+//
+// Path semantics: generation.Build's lock is at
+// <galeDir>/generation.lock; the global galeDir is the parent
+// of the global storeRoot (~/.gale/pkg → ~/.gale). Since the
+// store is always global (one store for all scopes), using
+// filepath.Dir(storeRoot) converges on the global gen lock.
+//
+// Limitation: when generation.Build is invoked with a
+// per-project galeDir (e.g. <project>/.gale/), its lock lives
+// under that project dir and is not the same file as this
+// path. The residual install-vs-project-sync race is not
+// closed by this fix; doing so cleanly needs generation.Build
+// to also acquire a store-rooted lock (a separate change).
+func storeGenLockPath(storeRoot string) string {
+	return filepath.Join(
+		filepath.Dir(storeRoot), "generation.lock")
+}
+
+// withStoreGenLock runs fn while holding the store-gen lock
+// (see storeGenLockPath). The lock file is created under
+// filepath.Dir(storeRoot); callers must ensure that parent
+// directory exists — the Store is rooted inside it, so in
+// practice this always holds.
+func withStoreGenLock(storeRoot string, fn func() error) error {
+	return filelock.With(storeGenLockPath(storeRoot), fn)
 }
