@@ -861,7 +861,7 @@ func TestPopulateGenerationCreatesSymlinks(t *testing.T) {
 		"fd": "10.4.2",
 	}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, false); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -903,7 +903,7 @@ func TestPopulateGenerationAlphabeticalConflictResolution(t *testing.T) {
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, false); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -939,7 +939,7 @@ func TestPopulateGenerationRootLevelFiles(t *testing.T) {
 
 	pkgs := map[string]string{"go": "1.26.1"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, false); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 

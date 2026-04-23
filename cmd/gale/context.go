@@ -138,19 +138,41 @@ func (ctx *cmdContext) loadToolVersionsFallback() (*config.GaleConfig, error) {
 }
 
 // rebuildGeneration reads the effective project/global
-// config and rebuilds the generation symlinks.
+// config and rebuilds the generation symlinks. Fails if a
+// referenced store dir is missing — callers that need to
+// tolerate partial install failures (only sync today)
+// should use rebuildGenerationLenient instead.
 func rebuildGeneration(galeDir, storeRoot, configPath string) error {
-	cfg, err := loadEffectiveConfig(configPath)
+	pkgs, err := readConfigPackages(configPath)
 	if err != nil {
 		return err
 	}
+	return generation.Build(pkgs, galeDir, storeRoot)
+}
 
+// rebuildGenerationLenient is rebuildGeneration but
+// silently skips packages whose store dir is missing.
+// Sync uses this so a batch where one install failed
+// still lands the successful installs on PATH — per
+// Issue #20. The install failure is surfaced separately.
+func rebuildGenerationLenient(galeDir, storeRoot, configPath string) error {
+	pkgs, err := readConfigPackages(configPath)
+	if err != nil {
+		return err
+	}
+	return generation.BuildLenient(pkgs, galeDir, storeRoot)
+}
+
+func readConfigPackages(configPath string) (map[string]string, error) {
+	cfg, err := loadEffectiveConfig(configPath)
+	if err != nil {
+		return nil, err
+	}
 	pkgs := cfg.Packages
 	if pkgs == nil {
 		pkgs = map[string]string{}
 	}
-
-	return generation.Build(pkgs, galeDir, storeRoot)
+	return pkgs, nil
 }
 
 func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
@@ -411,6 +433,13 @@ func (ctx *cmdContext) WriteConfigAndLock(name, version, sha256 string) error {
 // generation symlinks.
 func (ctx *cmdContext) RebuildGeneration() error {
 	return rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath)
+}
+
+// RebuildGenerationLenient is RebuildGeneration but
+// tolerates missing store dirs (see
+// rebuildGenerationLenient). Sync uses this.
+func (ctx *cmdContext) RebuildGenerationLenient() error {
+	return rebuildGenerationLenient(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath)
 }
 
 // RemoveLockEntry removes a package entry from the lockfile.

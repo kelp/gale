@@ -180,7 +180,7 @@ func TestFinishSyncFailurePreservesPartialProgress(t *testing.T) {
 	}
 
 	err = finishSync(false, 1, func() error {
-		return rebuildGeneration(galeDir, storeRoot, configPath)
+		return rebuildGenerationLenient(galeDir, storeRoot, configPath)
 	})
 	if err == nil {
 		t.Fatal("expected sync error")

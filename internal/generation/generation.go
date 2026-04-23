@@ -98,6 +98,20 @@ var galeReadme []byte
 // and atomically swaps the current symlink. Previous
 // generations are retained for history and rollback.
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
+	return build(pkgs, galeDir, storeRoot, false)
+}
+
+// BuildLenient is Build but silently skips packages whose
+// store dir is missing. Used by sync, whose Issue #20
+// contract is to keep partial progress usable when some
+// installs in a batch failed — the failure propagates via
+// a separate error path, so the generation still needs to
+// reflect what's actually on disk.
+func BuildLenient(pkgs map[string]string, galeDir, storeRoot string) error {
+	return build(pkgs, galeDir, storeRoot, true)
+}
+
+func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) error {
 	return filelock.With(generationLockPath(galeDir), func() error {
 		prev, err := Current(galeDir)
 		if err != nil {
@@ -120,7 +134,7 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 		// subsequent error so we don't leave orphaned dirs.
 		cleanup := func() { os.RemoveAll(genDir) }
 
-		if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+		if err := populateGeneration(genDir, pkgs, storeRoot, lenient); err != nil {
 			cleanup()
 			return err
 		}
@@ -161,7 +175,7 @@ func generationLockPath(galeDir string) string {
 // contents into genDir. Packages are sorted
 // alphabetically so the first package wins on
 // filename conflicts.
-func populateGeneration(genDir string, pkgs map[string]string, storeRoot string) error {
+func populateGeneration(genDir string, pkgs map[string]string, storeRoot string, lenient bool) error {
 	names := make([]string, 0, len(pkgs))
 	for name := range pkgs {
 		names = append(names, name)
@@ -174,6 +188,22 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string)
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				// H5: pre-fix this was a silent continue.
+				// Skipping is legitimate (a mid-batch install
+				// failure or a pending install in gale.toml),
+				// but doing so silently hides real corruption.
+				// Warn so the user sees it; keep going so
+				// install/remove/gc still succeed for the
+				// packages that are present. Lenient callers
+				// (sync) suppress the warning since they
+				// surface install failures via a different
+				// path.
+				if !lenient {
+					fmt.Fprintf(os.Stderr,
+						"gale: warning: store dir for %s@%s is missing (%s); "+
+							"run `gale install %s` or `gale sync` to restore\n",
+						name, version, pkgDir, name)
+				}
 				continue
 			}
 			return fmt.Errorf("read store %s: %w", name, err)

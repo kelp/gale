@@ -203,7 +203,7 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		installed++
 	}
 
-	if err := finishSync(dryRun, failed, ctx.RebuildGeneration); err != nil {
+	if err := finishSync(dryRun, failed, ctx.RebuildGenerationLenient); err != nil {
 		if failed > 0 {
 			out.Warn(fmt.Sprintf(
 				"Sync finished with %d error(s)", failed))
