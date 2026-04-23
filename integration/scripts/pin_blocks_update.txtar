@@ -1,0 +1,29 @@
+# `gale pin <pkg>` records the current canonical
+# version in [pinned]. Subsequent `gale update` must
+# skip the pinned package even when the recipe has a
+# newer revision. `gale unpin` lifts the block.
+
+gale-fixture recipes $WORK/recipes
+
+# pin operates on project configs (no -g today), so
+# stage a project and install into it.
+mkdir $WORK/proj
+cd $WORK/proj
+exec gale init
+exec gale install hello -p --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1
+
+exec gale pin hello
+stderr 'Pinned|pinned'
+grep 'pinned' $WORK/proj/gale.toml
+
+# Bump recipe and try to update — pin must hold.
+gale-fixture render recipes-rev2/h/hello.toml.tmpl $WORK/recipes/h/hello.toml
+exec gale update hello --recipes=$WORK/recipes
+! exists $HOME/.gale/pkg/hello/1.0-2
+exists $HOME/.gale/pkg/hello/1.0-1
+
+# Unpin, then update actually updates.
+exec gale unpin hello
+exec gale update hello --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-2

@@ -1,0 +1,11 @@
+# `gale add` accepts multiple packages in one call.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale add hello hello-dep -g --recipes=$WORK/recipes
+grep 'hello = ' $HOME/.gale/gale.toml
+grep 'hello-dep = ' $HOME/.gale/gale.toml
+
+# Nothing installed yet — add doesn't install.
+! exists $HOME/.gale/pkg/hello
+! exists $HOME/.gale/pkg/hello-dep
