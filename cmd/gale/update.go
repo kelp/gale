@@ -154,13 +154,13 @@ var updateCmd = &cobra.Command{
 
 			if dryRun {
 				out.Info(fmt.Sprintf("update %s %s → %s",
-					name, t.current, r.Package.Version))
+					name, t.current, r.Package.Full()))
 				updated++
 				continue
 			}
 
 			out.Info(fmt.Sprintf("Updating %s %s → %s...",
-				name, t.current, r.Package.Version))
+				name, t.current, r.Package.Full()))
 
 			result, err := ctx.Installer.Install(r)
 			if err != nil {
@@ -169,10 +169,11 @@ var updateCmd = &cobra.Command{
 				continue
 			}
 
-			// Update gale.toml and lockfile.
-			if err := ctx.WriteConfigAndLock(
-				name, r.Package.Version,
-				result.SHA256); err != nil {
+			// Update gale.toml and lockfile. Bare form
+			// goes to gale.toml (auto-tracks revision
+			// bumps); canonical <v>-<N> pins gale.lock.
+			if err := ctx.WriteConfigAndLockForRecipe(
+				r, result.SHA256); err != nil {
 				return fmt.Errorf("updating %s: %w",
 					name, err)
 			}

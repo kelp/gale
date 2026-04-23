@@ -19,4 +19,8 @@ stdout 'hello from gale integration fixture'
 
 # gale.toml records the install
 grep '\[packages\]' $HOME/.gale/gale.toml
-grep 'hello = "1\.0-1"' $HOME/.gale/gale.toml
+# gale.toml records the bare version — tracks revision
+# bumps automatically. gale.lock pins the canonical
+# <version>-<revision> (see sync_refresh_lockfile test).
+grep 'hello = "1\.0"' $HOME/.gale/gale.toml
+grep 'version = "1\.0-1"' $HOME/.gale/gale.lock

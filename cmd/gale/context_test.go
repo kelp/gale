@@ -68,7 +68,7 @@ func TestWriteConfigAndLockUpdatesLockfileOnCachedInstall(t *testing.T) {
 
 	// Simulate a cached install to v2.0.0 (sha256 is empty).
 	if err := writeConfigAndLock(
-		configPath, "mypkg", "2.0.0", ""); err != nil {
+		configPath, "mypkg", "2.0.0", "2.0.0", ""); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -115,7 +115,7 @@ func TestWriteConfigAndLockPreservesHashOnSameVersionCache(t *testing.T) {
 
 	// Cached install of the same version (sha256 empty).
 	if err := writeConfigAndLock(
-		configPath, "mypkg", "1.0.0", ""); err != nil {
+		configPath, "mypkg", "1.0.0", "1.0.0", ""); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -166,7 +166,7 @@ func TestFinalizeInstallSkipsMissingConfiguredPackages(t *testing.T) {
 	}
 
 	if err := finalizeInstall(galeDir, storeRoot, configPath,
-		"gale", "0.11.1", "newhash"); err != nil {
+		"gale", "0.11.1", "0.11.1", "newhash"); err != nil {
 		t.Fatalf("finalizeInstall: %v", err)
 	}
 
@@ -231,7 +231,7 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 	defer os.Chmod(galeDir, 0o755)
 
 	err = finalizeInstall(galeDir, storeRoot, configPath,
-		"newpkg", "2.0.0", "newhash")
+		"newpkg", "2.0.0", "2.0.0", "newhash")
 	if err == nil {
 		t.Fatal("expected finalizeInstall error")
 	}

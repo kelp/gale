@@ -25,7 +25,7 @@ rm $HOME/.gale/pkg/hello/1.0-1
 # corrupted. Post-fix: the rebuild warns on stderr.
 exec gale remove hello-dep -g
 stderr 'warning'
-stderr 'hello@1\.0-1 is missing'
+stderr 'hello@1\.0 is missing'
 stderr 'gale install hello'
 
 # Sync, by contrast, tolerates missing packages silently —

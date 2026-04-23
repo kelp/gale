@@ -278,8 +278,14 @@ func lockfilePath(configPath string) (string, error) {
 // When sha256 is empty (cached install), the lockfile
 // entry is still updated with the new version so stale
 // hashes from a previous version are not retained.
-func writeConfigAndLock(configPath, name, version, sha256 string) error {
-	if err := config.AddPackage(configPath, name, version); err != nil {
+//
+// configVersion is the form written to gale.toml (bare
+// by convention so the entry tracks revision bumps
+// automatically); lockVersion is the canonical
+// `<version>-<revision>` form written to gale.lock for
+// exact pinning. See docs/revisions.md.
+func writeConfigAndLock(configPath, name, configVersion, lockVersion, sha256 string) error {
+	if err := config.AddPackage(configPath, name, configVersion); err != nil {
 		return fmt.Errorf("adding to config: %w", err)
 	}
 	lp, err := lockfilePath(configPath)
@@ -294,18 +300,18 @@ func writeConfigAndLock(configPath, name, version, sha256 string) error {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
 		if existing, ok := lf.Packages[name]; ok &&
-			existing.Version == version {
+			existing.Version == lockVersion {
 			return nil // same version, keep existing hash
 		}
 	}
-	return updateLockfile(lp, name, version, sha256)
+	return updateLockfile(lp, name, lockVersion, sha256)
 }
 
 // finalizeInstall adds a package to gale.toml, updates
 // gale.lock, and rebuilds the generation.
-func finalizeInstall(galeDir, storeRoot, configPath, name, version, sha256 string) error {
+func finalizeInstall(galeDir, storeRoot, configPath, name, configVersion, lockVersion, sha256 string) error {
 	if err := writeConfigAndLock(
-		configPath, name, version, sha256); err != nil {
+		configPath, name, configVersion, lockVersion, sha256); err != nil {
 		return fmt.Errorf("writing config and lock: %w", err)
 	}
 	return rebuildGeneration(galeDir, storeRoot, configPath)
@@ -418,15 +424,37 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 }
 
 // FinalizeInstall adds a package to gale.toml, updates
-// gale.lock, and rebuilds the generation.
-func (ctx *cmdContext) FinalizeInstall(name, version, sha256 string) error {
-	return finalizeInstall(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, name, version, sha256)
+// gale.lock, and rebuilds the generation. configVersion
+// is written to gale.toml (bare by convention);
+// lockVersion is the canonical `<version>-<revision>`
+// written to gale.lock.
+func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256 string) error {
+	return finalizeInstall(
+		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath,
+		name, configVersion, lockVersion, sha256)
+}
+
+// FinalizeRecipeInstall is FinalizeInstall for the
+// common case: pass a recipe and let the helper pick
+// the canonical/bare forms. Bare goes to gale.toml so
+// the entry tracks revision bumps automatically; the
+// canonical `<v>-<N>` goes to gale.lock for exact pin.
+func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe, sha256 string) error {
+	return ctx.FinalizeInstall(
+		r.Package.Name, r.Package.Version, r.Package.Full(), sha256)
 }
 
 // WriteConfigAndLock adds a package to gale.toml and
 // updates gale.lock without rebuilding the generation.
-func (ctx *cmdContext) WriteConfigAndLock(name, version, sha256 string) error {
-	return writeConfigAndLock(ctx.GalePath, name, version, sha256)
+func (ctx *cmdContext) WriteConfigAndLock(name, configVersion, lockVersion, sha256 string) error {
+	return writeConfigAndLock(ctx.GalePath, name, configVersion, lockVersion, sha256)
+}
+
+// WriteConfigAndLockForRecipe is WriteConfigAndLock for
+// the recipe-in-hand case. See FinalizeRecipeInstall.
+func (ctx *cmdContext) WriteConfigAndLockForRecipe(r *recipe.Recipe, sha256 string) error {
+	return ctx.WriteConfigAndLock(
+		r.Package.Name, r.Package.Version, r.Package.Full(), sha256)
 }
 
 // RebuildGeneration reads gale.toml and rebuilds the

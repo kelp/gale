@@ -1,0 +1,26 @@
+# gale.toml uses a single consistent version format
+# across install / update / add: the bare version
+# (no revision suffix). Canonical <version>-<revision>
+# lives in gale.lock for exact pinning — Cargo-style.
+#
+# Regression pin for the install-vs-update inconsistency:
+# install used to write "1.0-1" while update wrote "1.0"
+# for the same package.
+
+gale-fixture recipes $WORK/recipes
+
+# install → bare in gale.toml, canonical in gale.lock
+exec gale install hello -g --recipes=$WORK/recipes
+grep 'hello = "1\.0"' $HOME/.gale/gale.toml
+grep 'version = "1\.0-1"' $HOME/.gale/gale.lock
+
+# Bump to rev 2 and update — same format rules.
+gale-fixture render recipes-rev2/h/hello.toml.tmpl $WORK/recipes/h/hello.toml
+exec gale update hello --recipes=$WORK/recipes
+
+grep 'hello = "1\.0"' $HOME/.gale/gale.toml
+grep 'version = "1\.0-2"' $HOME/.gale/gale.lock
+
+# add uses the same format too.
+exec gale add hello-dep -g --recipes=$WORK/recipes
+grep 'hello-dep = "1\.0"' $HOME/.gale/gale.toml
