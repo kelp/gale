@@ -168,6 +168,17 @@ SONAME-compatible revision bumps. Bare-string deps (`runtime
 = ["expat"]`) remain strict: any revision bump of the dep
 invalidates the dependent.
 
+Constraints are also enforced at dep-install time
+(`internal/installer/installer.go:installDepsInner`). When
+a constrained dep resolves to a version that doesn't satisfy
+the expression — e.g. the recipe pins `openssl >=3.6.0-1`
+but the registry's current `openssl` recipe is `3.5.4-1` —
+the install fails with a message naming the dep, the
+constraint, and the resolved version. This covers the gap
+where the staleness check only fires after install; a
+constraint violation at resolve time stops the install
+before it starts.
+
 `gale sync` reinstalls stale packages automatically.
 `gale doctor` surfaces them with a hint to run sync.
 
@@ -225,6 +236,38 @@ every recipe's `.versions` via the sweep (see the gale-recipes
 rebuild pass referenced in that repo's CHANGELOG), you may
 need to target a bare `foo@1.2.3` and let the resolver pick
 the highest revision it can find.
+
+## `.binaries.toml` resolved-closure index
+
+Alongside the `sha256` for each platform, CI also writes the
+resolved (name, version, revision) closure the prebuilt was
+linked against:
+
+```toml
+version = "2.53.0-2"
+
+[darwin-arm64]
+sha256 = "..."
+deps = [
+  { name = "curl", version = "8.11.0", revision = 1 },
+  { name = "openssl", version = "3.6.1", revision = 2 },
+]
+```
+
+This is informational only at install time — the archive's
+own `.gale-deps.toml` (written by `gale build` and preserved
+through the tarball) remains the authoritative record the
+installer consults for staleness. The registry-level `deps`
+block lets `gale info`, audit tooling, and reviewers
+inspect closures without fetching and extracting the
+archive. Older `.binaries.toml` files (pre-C4) carry no
+`deps` field; gale's parser returns an empty closure in
+that case.
+
+CI extracts `deps` from the archive's `.gale-deps.toml` in
+`gale-recipes/.github/workflows/build.yml` (the "Save
+build metadata" step), then emits the array-of-tables into
+`.binaries.toml` in the "Write .binaries.toml files" step.
 
 ## Related reading
 

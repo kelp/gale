@@ -321,6 +321,16 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 	tmpFile := storeDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)
 
+	// Enforce the recipe's declared trust policy before
+	// fetching anything. A recipe that ships a non-GHCR
+	// URL with the default (sigstore) policy is rejected
+	// here: we can't produce an attestation for an
+	// arbitrary third-party host, and silently skipping
+	// attestation for non-GHCR URLs was the C3 bypass.
+	if err := checkBinaryTrustPolicy(bin); err != nil {
+		return err
+	}
+
 	displayName := fmt.Sprintf("%s-%s.tar.zst", name, version)
 
 	if isGHCR(bin.URL) {
@@ -342,8 +352,15 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 		return fmt.Errorf("verify binary: %w", err)
 	}
 
-	// Verify Sigstore attestation for GHCR binaries.
-	if isGHCR(bin.URL) && v != nil && v.Available() {
+	// Attestation verification fires only when the recipe's
+	// trust policy requires it (sigstore — the default) AND
+	// a Verifier is wired up and available. `nil = skip` is
+	// load-bearing: tests set Verifier=nil instead of mocking
+	// the gh CLI. The explicit trust-policy check above
+	// closes the C3 bypass where a non-GHCR URL dodged this
+	// step entirely; here we only verify when the recipe
+	// opted in to sigstore (which by definition means GHCR).
+	if bin.EffectiveTrust() == recipe.TrustSigstore && v != nil && v.Available() {
 		if err := v.VerifyFile(
 			tmpFile, attestation.DefaultRepo); err != nil {
 			return fmt.Errorf("attestation: %w", err)
@@ -422,6 +439,44 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 	}
 
 	return nil
+}
+
+// checkBinaryTrustPolicy enforces the recipe-declared
+// verification policy for a [binary.<platform>] entry.
+//
+// Decision table, indexed by the effective trust (empty
+// defaults to sigstore):
+//
+//   - sigstore + GHCR URL: accept. Attestation is
+//     verified later when the Verifier is available.
+//   - sigstore + non-GHCR URL: reject. We cannot produce
+//     a Sigstore attestation for a third-party host that
+//     isn't signing under our CI identity. Silently
+//     skipping attestation here was the C3 bypass.
+//   - sha256-only: accept regardless of host. Recipe has
+//     explicitly opted out of attestation; only the
+//     SHA256 is verified downstream.
+//
+// The returned error text names the field (trust) and the
+// policy value (sigstore) so the installer's fallback log
+// surfaces an actionable message.
+func checkBinaryTrustPolicy(bin *recipe.Binary) error {
+	switch bin.EffectiveTrust() {
+	case recipe.TrustSHA256Only:
+		return nil
+	case recipe.TrustSigstore:
+		if !isGHCR(bin.URL) {
+			return fmt.Errorf(
+				"binary trust policy: %q requires a ghcr.io URL "+
+					"(got %q); set trust = %q to opt out",
+				recipe.TrustSigstore, bin.URL, recipe.TrustSHA256Only)
+		}
+		return nil
+	default:
+		return fmt.Errorf(
+			"binary trust policy: unknown trust value %q",
+			bin.Trust)
+	}
 }
 
 // isGHCR returns true if the URL host is ghcr.io. Only
@@ -510,6 +565,19 @@ func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recip
 		}
 	}
 
+	// Preserve the Constraints map so the recursive
+	// installDepsInner can enforce version constraints the
+	// parent recipe declared (C4). Without this copy, the
+	// merged-deps recipe handed to installDepsInner loses
+	// every constraint entry.
+	var constraintsCopy map[string]string
+	if r.Dependencies.Constraints != nil {
+		constraintsCopy = make(map[string]string, len(r.Dependencies.Constraints))
+		for k, v := range r.Dependencies.Constraints {
+			constraintsCopy[k] = v
+		}
+	}
+
 	return &recipe.Recipe{
 		Package: r.Package,
 		Source:  r.Source,
@@ -523,9 +591,10 @@ func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recip
 		},
 		Binary: binaryCopy,
 		Dependencies: recipe.Dependencies{
-			Build:    deps.Build,
-			Runtime:  deps.Runtime,
-			Platform: depPlatformCopy,
+			Build:       deps.Build,
+			Runtime:     deps.Runtime,
+			Constraints: constraintsCopy,
+			Platform:    depPlatformCopy,
 		},
 	}
 }
@@ -559,6 +628,35 @@ func (inst *Installer) installDepsInner(
 		if depRecipe == nil {
 			return nil, fmt.Errorf(
 				"no recipe found for dependency %q", dep)
+		}
+
+		// C4: enforce any version constraint the parent recipe
+		// declared on this dep. The constraint was parsed and
+		// stored at recipe load time but was previously only
+		// consulted by IsStale — the resolver silently accepted
+		// whatever version the registry said was latest. Now a
+		// constraint mismatch fails the install with a clear
+		// message naming the dep, required constraint, and
+		// resolved version. Bare-string deps have no entry in
+		// Constraints and skip this check, preserving today's
+		// "resolve to latest" behavior.
+		if expr, has := r.Dependencies.Constraints[dep]; has && expr != "" {
+			c, cerr := recipe.ParseConstraint(expr)
+			if cerr != nil {
+				return nil, fmt.Errorf(
+					"dep %q: invalid version constraint %q: %w",
+					dep, expr, cerr)
+			}
+			if !c.Satisfies(
+				depRecipe.Package.Version,
+				depRecipe.Package.Revision,
+			) {
+				return nil, fmt.Errorf(
+					"dep %q: resolved version %s does not "+
+						"satisfy constraint %q (declared in %s)",
+					dep, depRecipe.Package.Full(), expr,
+					r.Package.Name)
+			}
 		}
 
 		// Install the dep (will be cached if already present).

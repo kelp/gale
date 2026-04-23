@@ -168,3 +168,74 @@ func TestMergeBinariesNilIndex(t *testing.T) {
 		t.Errorf("Binary count = %d, want 0", len(r.Binary))
 	}
 }
+
+// --- Behavior 6 (C4): .binaries.toml surfaces per-platform dep closure ---
+
+// A .binaries.toml may carry a `deps` array-of-tables under each
+// platform section recording the exact (name, version, revision)
+// closure the prebuilt was linked against. This is informational
+// — the archive's own .gale-deps.toml remains the authoritative
+// record at install time — but exposing it at the registry layer
+// lets `gale info` and audit tooling inspect closures without
+// fetching and extracting the tarball. Old gale ignores the field.
+const validBinariesTOMLWithDeps = `version = "2.53.0-2"
+
+[darwin-arm64]
+sha256 = "abc123"
+deps = [
+  { name = "curl", version = "8.11.0", revision = 1 },
+  { name = "openssl", version = "3.5.4", revision = 2 },
+]
+
+[linux-amd64]
+sha256 = "def456"
+deps = [
+  { name = "curl", version = "8.11.0", revision = 1 },
+  { name = "openssl", version = "3.5.4", revision = 2 },
+]
+`
+
+func TestParseBinaryIndexWithDepsParses(t *testing.T) {
+	idx, err := ParseBinaryIndex(validBinariesTOMLWithDeps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idx.Version != "2.53.0-2" {
+		t.Errorf("Version = %q, want %q", idx.Version, "2.53.0-2")
+	}
+	if got := idx.Platforms["darwin-arm64"]; got != "abc123" {
+		t.Errorf("darwin-arm64 sha = %q, want %q", got, "abc123")
+	}
+}
+
+func TestParseBinaryIndexExtractsDeps(t *testing.T) {
+	idx, err := ParseBinaryIndex(validBinariesTOMLWithDeps)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(idx.Deps) != 2 {
+		t.Fatalf("Deps platform count = %d, want 2", len(idx.Deps))
+	}
+	darwin := idx.Deps["darwin-arm64"]
+	if len(darwin) != 2 {
+		t.Fatalf("darwin deps count = %d, want 2", len(darwin))
+	}
+	if darwin[0].Name != "curl" || darwin[0].Version != "8.11.0" || darwin[0].Revision != 1 {
+		t.Errorf("darwin[0] = %+v, want {curl 8.11.0 1}", darwin[0])
+	}
+	if darwin[1].Name != "openssl" || darwin[1].Version != "3.5.4" || darwin[1].Revision != 2 {
+		t.Errorf("darwin[1] = %+v, want {openssl 3.5.4 2}", darwin[1])
+	}
+}
+
+// A .binaries.toml without a `deps` field is still valid —
+// backward compat with every file written before this change.
+func TestParseBinaryIndexWithoutDepsParses(t *testing.T) {
+	idx, err := ParseBinaryIndex(validBinariesTOML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(idx.Deps) != 0 {
+		t.Errorf("Deps = %v, want empty", idx.Deps)
+	}
+}

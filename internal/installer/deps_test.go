@@ -308,6 +308,160 @@ func TestInstallBuildDepsUsesPlatformOverride(t *testing.T) {
 	}
 }
 
+// --- C4: dep constraints are enforced at resolve time ---
+//
+// A recipe that declares `runtime = [{name="openssl", version=">=3.5.0"}]`
+// must fail the install loudly when the resolved openssl recipe is
+// older than 3.5.0. The bug before C4: the constraint was parsed
+// and stored, but only IsStale consulted it — installDepsInner
+// resolved whatever was latest and silently proceeded.
+
+// TestInstallBuildDepsConstraintSatisfied verifies that when the
+// resolved dep satisfies the recipe's version constraint, the
+// install proceeds as normal.
+func TestInstallBuildDepsConstraintSatisfied(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	preInstall(t, s, "openssl", "3.5.4-1")
+
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if name == "openssl" {
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name:     "openssl",
+						Version:  "3.5.4",
+						Revision: 1,
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	r := makeRecipe("git", "2.53.0", nil, []string{"openssl"})
+	r.Dependencies.Constraints = map[string]string{
+		"openssl": ">=3.5.0",
+	}
+
+	if _, err := inst.InstallBuildDeps(r); err != nil {
+		t.Fatalf("InstallBuildDeps: unexpected error: %v", err)
+	}
+}
+
+// TestInstallBuildDepsConstraintViolated verifies that when the
+// resolved dep does not satisfy the constraint, the install fails
+// with an error naming the dep, the constraint, and the resolved
+// version.
+func TestInstallBuildDepsConstraintViolated(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if name == "openssl" {
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name:     "openssl",
+						Version:  "3.4.2",
+						Revision: 1,
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	r := makeRecipe("git", "2.53.0", nil, []string{"openssl"})
+	r.Dependencies.Constraints = map[string]string{
+		"openssl": ">=3.5.0",
+	}
+
+	_, err := inst.InstallBuildDeps(r)
+	if err == nil {
+		t.Fatal("expected error for unsatisfied constraint, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"openssl", ">=3.5.0", "3.4.2"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+}
+
+// TestInstallBuildDepsInvalidConstraintExpression verifies that a
+// malformed constraint expression fails loudly rather than silently
+// skipping enforcement.
+func TestInstallBuildDepsInvalidConstraintExpression(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if name == "openssl" {
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name:     "openssl",
+						Version:  "3.5.0",
+						Revision: 1,
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	r := makeRecipe("git", "2.53.0", nil, []string{"openssl"})
+	r.Dependencies.Constraints = map[string]string{
+		"openssl": "not-a-version",
+	}
+
+	_, err := inst.InstallBuildDeps(r)
+	if err == nil {
+		t.Fatal("expected error for invalid constraint, got nil")
+	}
+	if !strings.Contains(err.Error(), "openssl") {
+		t.Errorf("error %q should name the dep", err)
+	}
+}
+
+// TestInstallBuildDepsBareDepSkipsConstraintCheck verifies that a
+// bare-string dep (no constraint) resolves to whatever is latest,
+// preserving today's behavior for recipes that haven't opted in.
+func TestInstallBuildDepsBareDepSkipsConstraintCheck(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	preInstall(t, s, "openssl", "1.0.0-1")
+
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if name == "openssl" {
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name:     "openssl",
+						Version:  "1.0.0",
+						Revision: 1,
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	// No Constraints map set.
+	r := makeRecipe("git", "2.53.0", nil, []string{"openssl"})
+
+	if _, err := inst.InstallBuildDeps(r); err != nil {
+		t.Fatalf("bare dep should not be constraint-checked: %v", err)
+	}
+}
+
 func contains(ss []string, s string) bool {
 	for _, v := range ss {
 		if v == s {

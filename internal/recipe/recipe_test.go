@@ -573,6 +573,149 @@ func TestBinaryForPlatformNotFound(t *testing.T) {
 	}
 }
 
+// --- Behavior 5b: Binary trust policy ---
+
+func TestParseBinaryDefaultTrustIsSigstore(t *testing.T) {
+	// A [binary.<platform>] without an explicit trust field
+	// must default to "sigstore". This is the fail-safe
+	// default: forgetting the field enforces attestation,
+	// not bypasses it.
+	r, err := Parse(recipeWithBinaries)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := r.BinaryForPlatform("darwin", "arm64")
+	if b == nil {
+		t.Fatal("expected non-nil binary for darwin-arm64")
+	}
+	if b.Trust != "sigstore" {
+		t.Errorf("Trust = %q, want %q (default)", b.Trust, "sigstore")
+	}
+}
+
+const recipeWithSha256OnlyTrust = `
+[package]
+name = "vendor-tool"
+version = "1.0"
+
+[source]
+url = "https://example.com/vendor-tool-1.0-src.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+
+[build]
+steps = ["make install"]
+
+[binary.darwin-arm64]
+url = "https://example.com/releases/vendor-tool-1.0.tar.zst"
+sha256 = "abc123"
+trust = "sha256-only"
+`
+
+func TestParseBinaryExplicitSha256OnlyTrust(t *testing.T) {
+	r, err := Parse(recipeWithSha256OnlyTrust)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := r.BinaryForPlatform("darwin", "arm64")
+	if b == nil {
+		t.Fatal("expected non-nil binary for darwin-arm64")
+	}
+	if b.Trust != "sha256-only" {
+		t.Errorf("Trust = %q, want %q", b.Trust, "sha256-only")
+	}
+}
+
+const recipeWithExplicitSigstoreTrust = `
+[package]
+name = "jq"
+version = "1.7.1"
+
+[source]
+url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
+sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+
+[build]
+steps = ["make install"]
+
+[binary.darwin-arm64]
+url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64"
+sha256 = "abc123"
+trust = "sigstore"
+`
+
+func TestParseBinaryExplicitSigstoreTrust(t *testing.T) {
+	r, err := Parse(recipeWithExplicitSigstoreTrust)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := r.BinaryForPlatform("darwin", "arm64")
+	if b == nil {
+		t.Fatal("expected non-nil binary for darwin-arm64")
+	}
+	if b.Trust != "sigstore" {
+		t.Errorf("Trust = %q, want %q", b.Trust, "sigstore")
+	}
+}
+
+const recipeWithInvalidTrust = `
+[package]
+name = "jq"
+version = "1.7.1"
+
+[source]
+url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
+sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+
+[build]
+steps = ["make install"]
+
+[binary.darwin-arm64]
+url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64"
+sha256 = "abc123"
+trust = "pinky-promise"
+`
+
+func TestParseBinaryInvalidTrustErrors(t *testing.T) {
+	_, err := Parse(recipeWithInvalidTrust)
+	if err == nil {
+		t.Fatal("expected error for invalid trust value")
+	}
+	if !strings.Contains(err.Error(), "trust") {
+		t.Errorf("error = %q, want to mention %q", err.Error(), "trust")
+	}
+}
+
+const recipeWithUnknownBinaryField = `
+[package]
+name = "jq"
+version = "1.7.1"
+
+[source]
+url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
+sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+
+[build]
+steps = ["make install"]
+
+[binary.darwin-arm64]
+url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64"
+sha256 = "abc123"
+bogus_key = "typo"
+`
+
+func TestParseBinaryUnknownFieldErrors(t *testing.T) {
+	// Typos in [binary.<platform>] must fail closed like
+	// [package] and [source] do — the trust semantics make
+	// silent acceptance of unknown keys dangerous.
+	_, err := Parse(recipeWithUnknownBinaryField)
+	if err == nil {
+		t.Fatal("expected error for unknown field in [binary.<platform>]")
+	}
+	if !strings.Contains(err.Error(), "bogus_key") {
+		t.Errorf("error = %q, want to mention %q", err.Error(), "bogus_key")
+	}
+}
+
 // containsField checks if the error message contains the field name
 // in a case-insensitive manner.
 func containsField(msg, field string) bool {

@@ -226,6 +226,9 @@ func TestInstallBinaryFromURL(t *testing.T) {
 			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
 				URL:    blobURL,
 				SHA256: hash,
+				// Unit test uses a non-ghcr.io URL, so opt
+				// out of attestation via the declared policy.
+				Trust: recipe.TrustSHA256Only,
 			},
 		},
 	}
@@ -294,6 +297,7 @@ func TestInstallResolvesBuildDeps(t *testing.T) {
 							runtime.GOOS, runtime.GOARCH): {
 							URL:    srv.URL + "/dep.tar.zst",
 							SHA256: depHash,
+							Trust:  recipe.TrustSHA256Only,
 						},
 					},
 				}, nil
@@ -511,6 +515,7 @@ func TestInstallBinaryPreservesArchiveDepsMetadata(t *testing.T) {
 			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
 				URL:    fmt.Sprintf("%s/testpkg-1.0.tar.zst", srv.URL),
 				SHA256: hash,
+				Trust:  recipe.TrustSHA256Only,
 			},
 		},
 	}
@@ -591,8 +596,9 @@ func TestInstallBinaryNonGHCR(t *testing.T) {
 		Store: store.NewStore(storeRoot),
 	}
 
-	// Plain HTTP URL (not /v2/.../blobs/) triggers
-	// non-GHCR download path.
+	// Plain HTTP URL (not /v2/.../blobs/) triggers the
+	// non-GHCR download path. Requires trust = "sha256-only"
+	// to opt out of attestation enforcement.
 	r := &recipe.Recipe{
 		Package: recipe.Package{Name: "tool", Version: "1.0"},
 		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
@@ -600,6 +606,7 @@ func TestInstallBinaryNonGHCR(t *testing.T) {
 			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
 				URL:    srv.URL + "/tool-1.0.tar.zst",
 				SHA256: hash,
+				Trust:  recipe.TrustSHA256Only,
 			},
 		},
 	}
@@ -664,6 +671,11 @@ func TestInstallBinaryFailureLoggedToFallbackWriter(t *testing.T) {
 			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
 				URL:    srv.URL + "/missing-binary.tar.zst",
 				SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+				// This test covers the 404-fetch fallback path,
+				// not the trust-policy rejection path. Opt out
+				// of attestation so the fetch failure is what
+				// triggers the fallback (not policy).
+				Trust: recipe.TrustSHA256Only,
 			},
 		},
 		Build: recipe.Build{
@@ -742,6 +754,9 @@ func TestInstallBinaryBadHashFallsBackToSource(t *testing.T) {
 			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
 				URL:    srv.URL + "/binary.tar.zst",
 				SHA256: "0000000000000000000000000000000000000000000000000000000000000000",
+				// Isolate the bad-hash fallback path from the
+				// trust-policy path.
+				Trust: recipe.TrustSHA256Only,
 			},
 		},
 		Build: recipe.Build{
@@ -983,6 +998,7 @@ func TestInstallResultSHA256Populated(t *testing.T) {
 			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
 				URL:    srv.URL + "/sha.tar.zst",
 				SHA256: hash,
+				Trust:  recipe.TrustSHA256Only,
 			},
 		},
 	}
@@ -1499,5 +1515,205 @@ func TestReinstallRebuildsWhenCanonicalPopulated(t *testing.T) {
 	freshBin := filepath.Join(canonicalDir, "bin", "testpkg")
 	if _, err := os.Stat(freshBin); err != nil {
 		t.Errorf("fresh binary missing: %v", err)
+	}
+}
+
+// --- C3: non-GHCR binary without sha256-only opt-in fails ---
+
+// TestInstallBinaryNonGHCRDefaultTrustFails ensures a recipe
+// that ships a non-GHCR binary URL without explicit
+// trust = "sha256-only" is rejected rather than silently
+// bypassing attestation. This closes the C3 bypass at
+// installer.go:324-329 where isGHCR(bin.URL) gated the
+// attestation check, letting any non-GHCR URL skip it.
+func TestInstallBinaryNonGHCRDefaultTrustFails(t *testing.T) {
+	// Build a tar.zst and a source tarball so we can
+	// confirm the installer does NOT fall back to source
+	// when the binary is rejected on policy grounds — the
+	// whole point is to make the error visible, not to
+	// silently paper over it.
+	binContent := "#!/bin/sh\necho direct-binary"
+	tarzst := createTestTarZstd(t, "bin/tool", binContent)
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	srcTar := createTestSourceTarGz(t)
+	srcHash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/tool-1.0.tar.zst":
+				w.Write(blobData)
+			case "/source.tar.gz":
+				http.ServeFile(w, r, srcTar)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	var logBuf bytes.Buffer
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store:             store.NewStore(storeRoot),
+		BinaryFallbackLog: &logBuf,
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "tool", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: srcHash,
+		},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				// Non-GHCR URL, no explicit trust field → default
+				// sigstore → must fail because attestation can't
+				// validate a non-GHCR artifact.
+				URL:    srv.URL + "/tool-1.0.tar.zst",
+				SHA256: hash,
+				// Trust intentionally empty; EffectiveTrust
+				// resolves to "sigstore".
+			},
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh' > $PREFIX/bin/tool",
+				"chmod +x $PREFIX/bin/tool",
+			},
+		},
+	}
+
+	// The binary install must be rejected on policy grounds
+	// — the fallback to source is acceptable (it's how the
+	// installer always handles a rejected binary) but the
+	// reason must surface in the fallback log.
+	_, err = inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	got := logBuf.String()
+	if got == "" {
+		t.Fatal("expected fallback log to record binary " +
+			"rejection, got empty buffer")
+	}
+	if !strings.Contains(got, "trust") && !strings.Contains(got, "sigstore") {
+		t.Errorf("fallback log missing trust-policy reason:\n%s", got)
+	}
+	if !strings.Contains(got, "ghcr") && !strings.Contains(got, "GHCR") {
+		t.Errorf("fallback log should mention GHCR requirement:\n%s", got)
+	}
+}
+
+// TestInstallBinaryNonGHCRSha256OnlyAccepted ensures a
+// recipe that explicitly declares trust = "sha256-only"
+// is accepted from a non-GHCR URL (with an informational
+// warning surfaced via BinaryFallbackLog) and the binary
+// is installed without attestation verification.
+func TestInstallBinaryNonGHCRSha256OnlyAccepted(t *testing.T) {
+	binContent := "#!/bin/sh\necho vendor-binary"
+	tarzst := createTestTarZstd(t, "bin/tool", binContent)
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "tool", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    srv.URL + "/tool-1.0.tar.zst",
+				SHA256: hash,
+				Trust:  recipe.TrustSHA256Only,
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != "binary" {
+		t.Errorf("Method = %q, want %q", result.Method, "binary")
+	}
+}
+
+// TestCheckBinaryTrustPolicy asserts the policy layer
+// independently of the download + verify machinery. The
+// full install path hits ghcr.io for a ghcr.io URL
+// (token exchange), so we can't exercise "GHCR URL accepted"
+// end-to-end inside a unit test. This table drives the
+// policy decision directly.
+func TestCheckBinaryTrustPolicy(t *testing.T) {
+	tests := []struct {
+		name    string
+		bin     recipe.Binary
+		wantErr bool
+	}{
+		{
+			name: "ghcr URL with default (empty) trust is accepted",
+			bin: recipe.Binary{
+				URL: "https://ghcr.io/v2/kelp/gale-recipes/jq/blobs/sha256:abc",
+			},
+			wantErr: false,
+		},
+		{
+			name: "ghcr URL with explicit sigstore trust is accepted",
+			bin: recipe.Binary{
+				URL:   "https://ghcr.io/v2/kelp/gale-recipes/jq/blobs/sha256:abc",
+				Trust: recipe.TrustSigstore,
+			},
+			wantErr: false,
+		},
+		{
+			name: "non-ghcr URL with default trust is rejected",
+			bin: recipe.Binary{
+				URL: "https://example.com/releases/tool-1.0.tar.zst",
+			},
+			wantErr: true,
+		},
+		{
+			name: "non-ghcr URL with explicit sigstore trust is rejected",
+			bin: recipe.Binary{
+				URL:   "https://example.com/releases/tool-1.0.tar.zst",
+				Trust: recipe.TrustSigstore,
+			},
+			wantErr: true,
+		},
+		{
+			name: "non-ghcr URL with sha256-only trust is accepted",
+			bin: recipe.Binary{
+				URL:   "https://example.com/releases/tool-1.0.tar.zst",
+				Trust: recipe.TrustSHA256Only,
+			},
+			wantErr: false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := checkBinaryTrustPolicy(&tt.bin)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("checkBinaryTrustPolicy(%+v) err=%v, wantErr=%v",
+					tt.bin, err, tt.wantErr)
+			}
+		})
 	}
 }

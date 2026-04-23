@@ -18,6 +18,11 @@ type Issue struct {
 
 // recipe mirrors the TOML structure for linting.
 // Uses pointers and raw maps to detect missing fields.
+//
+// Dependencies is a raw map because entries accept either a
+// bare string or an inline table with a `name` key (see
+// recipe.Parse). Lint only needs the dep names, so
+// depNames() extracts them after decode.
 type recipe struct {
 	Package struct {
 		Name        string
@@ -35,15 +40,48 @@ type recipe struct {
 		Repo       string
 		ReleasedAt string `toml:"released_at"`
 	}
-	Dependencies struct {
-		Build   []string `toml:"build"`
-		Runtime []string `toml:"runtime"`
-	}
-	Build  map[string]interface{}
-	Binary map[string]struct {
+	Dependencies map[string]interface{}
+	Build        map[string]interface{}
+	Binary       map[string]struct {
 		URL    string
 		SHA256 string
 	}
+}
+
+// depNames extracts dep names from a decoded
+// [dependencies.<section>] list. Accepts both bare strings
+// ("curl") and inline tables ({name = "curl", version = ...}),
+// matching recipe.parseDep. Invalid entries are skipped —
+// deeper validation is recipe.Parse's responsibility; Lint
+// should not re-implement it.
+func depNames(raw interface{}) []string {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, v := range arr {
+		switch val := v.(type) {
+		case string:
+			if val != "" {
+				out = append(out, val)
+			}
+		case map[string]interface{}:
+			if name, ok := val["name"].(string); ok && name != "" {
+				out = append(out, name)
+			}
+		}
+	}
+	return out
+}
+
+// buildDepNames returns the bare dep names for
+// [dependencies.build]; empty if absent.
+func buildDepNames(deps map[string]interface{}) []string {
+	if deps == nil {
+		return nil
+	}
+	return depNames(deps["build"])
 }
 
 var hexRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -251,8 +289,10 @@ func lintBuildSteps(
 		}
 	}
 
-	// Missing build deps.
-	checkBuildDeps(steps, r.Dependencies.Build, addWarn)
+	// Missing build deps. Dep list may include inline-table
+	// entries; buildDepNames pulls bare names out of both
+	// shapes.
+	checkBuildDeps(steps, buildDepNames(r.Dependencies), addWarn)
 }
 
 // lintPlatforms warns about unrecognized platform strings.

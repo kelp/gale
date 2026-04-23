@@ -765,3 +765,73 @@ func hasWarning(issues []Issue, substr string) bool {
 	}
 	return false
 }
+
+// --- C4: lint accepts inline-table deps (mixed with bare strings) ---
+//
+// The parser accepts both forms (recipe.Parse), but the linter
+// previously defined its own `recipe` struct with `Runtime []string`
+// and rejected any recipe that used inline-table deps with a TOML
+// type error. Linting is gated by CI, so this blocks any recipe
+// from adopting the pinning syntax.
+
+const validRecipeInlineTableRuntime = `
+[package]
+name = "git"
+version = "2.53.0"
+
+[source]
+url = "https://example.com/git.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+
+[dependencies]
+runtime = [
+  { name = "openssl", version = ">=3.6.0-1" },
+  "zlib",
+]
+`
+
+func TestLintAcceptsInlineTableRuntimeDeps(t *testing.T) {
+	issues := Lint(validRecipeInlineTableRuntime,
+		"recipes/g/git.toml")
+	for _, i := range issues {
+		if i.Level == "error" &&
+			strings.Contains(i.Message, "invalid TOML") {
+			t.Fatalf("lint rejected inline-table dep: %v",
+				i.Message)
+		}
+	}
+}
+
+const validRecipeInlineTableBuild = `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+
+[dependencies]
+build = [
+  "pkgconf",
+  { name = "cmake", version = ">=3.26" },
+]
+`
+
+func TestLintAcceptsInlineTableBuildDeps(t *testing.T) {
+	issues := Lint(validRecipeInlineTableBuild,
+		"recipes/f/foo.toml")
+	for _, i := range issues {
+		if i.Level == "error" &&
+			strings.Contains(i.Message, "invalid TOML") {
+			t.Fatalf("lint rejected inline-table dep: %v",
+				i.Message)
+		}
+	}
+}

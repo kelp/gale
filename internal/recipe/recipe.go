@@ -17,9 +17,41 @@ type Recipe struct {
 }
 
 // Binary holds a prebuilt archive location for a platform.
+//
+// Trust declares the expected verification policy for this
+// prebuilt. Valid values:
+//
+//   - "sigstore" (default when empty) — the binary must be
+//     served from ghcr.io and carry a Sigstore attestation
+//     tied to our CI identity. This is the fail-safe default:
+//     forgetting the field enforces attestation, not bypasses
+//     it.
+//   - "sha256-only" — the binary is served from an upstream
+//     host that doesn't publish attestations keyed to our
+//     signing identity (e.g. language-toolchain bootstraps).
+//     Only the SHA256 is verified. Recipes must opt in
+//     explicitly.
 type Binary struct {
 	URL    string `toml:"url"`
 	SHA256 string `toml:"sha256"`
+	Trust  string `toml:"trust"`
+}
+
+// TrustSigstore requires a Sigstore attestation (default
+// policy for binaries without an explicit trust field).
+const TrustSigstore = "sigstore"
+
+// TrustSHA256Only accepts a SHA256-only verified binary
+// from a non-GHCR host. Explicit opt-in per [binary.<platform>].
+const TrustSHA256Only = "sha256-only"
+
+// EffectiveTrust returns the declared trust value, defaulting
+// to TrustSigstore when the field is empty.
+func (b Binary) EffectiveTrust() string {
+	if b.Trust == "" {
+		return TrustSigstore
+	}
+	return b.Trust
 }
 
 // BinaryForPlatform returns the binary for the given OS and
@@ -159,19 +191,24 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 		return nil, fmt.Errorf("invalid TOML: %w", err)
 	}
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		// M1: catch typos in [package] and [source] —
-		// those are strict-schema tables. Everything else
-		// (build/dependencies sub-tables decoded into
-		// interface{} maps; recipe-repo extensions like
-		// [smoke]) legitimately ends up undecoded and must
-		// not fail parsing.
+		// M1: catch typos in [package], [source], and
+		// [binary.<platform>] — those are strict-schema
+		// tables. Everything else (build/dependencies
+		// sub-tables decoded into interface{} maps; recipe-repo
+		// extensions like [smoke]) legitimately ends up
+		// undecoded and must not fail parsing.
+		//
+		// [binary.<platform>] enforcement is load-bearing for
+		// the trust policy: an unnoticed typo on the `trust`
+		// field would silently fall back to the default
+		// (sigstore), masking the author's intent.
 		var bad []string
 		for _, key := range undecoded {
 			if len(key) < 2 {
 				continue
 			}
 			head := key[0]
-			if head == "package" || head == "source" {
+			if head == "package" || head == "source" || head == "binary" {
 				bad = append(bad, key.String())
 			}
 		}
@@ -218,6 +255,19 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 		}
 		if r.Source.SHA256 == "" {
 			return nil, fmt.Errorf("missing required field: source.sha256")
+		}
+	}
+	for platform, bin := range r.Binary {
+		switch bin.Trust {
+		case "":
+			bin.Trust = TrustSigstore
+			r.Binary[platform] = bin
+		case TrustSigstore, TrustSHA256Only:
+			// ok
+		default:
+			return nil, fmt.Errorf(
+				"binary.%s: invalid trust value %q (want %q or %q)",
+				platform, bin.Trust, TrustSigstore, TrustSHA256Only)
 		}
 	}
 	return r, nil

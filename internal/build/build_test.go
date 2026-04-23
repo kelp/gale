@@ -2,6 +2,7 @@ package build
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"errors"
@@ -2365,6 +2366,44 @@ func TestRestorePrefixPlaceholder(t *testing.T) {
 	if !strings.Contains(string(got), storeDir) {
 		t.Errorf("script should contain store dir %q:\n%s",
 			storeDir, got)
+	}
+}
+
+// A binary under bin/ that happens to embed the
+// PrefixPlaceholder bytes must not be rewritten — the
+// rewrite would corrupt the executable. Mirrors the
+// isTextContent guard in ReplacePrefixInTextFiles.
+func TestRestorePrefixPlaceholderSkipsBinaries(t *testing.T) {
+	storeDir := t.TempDir()
+	binDir := filepath.Join(storeDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Null byte in the first 512 bytes → isTextContent false.
+	// The placeholder appears later; naive ReplaceAll would
+	// still rewrite it and corrupt the binary.
+	binFile := filepath.Join(binDir, "tool")
+	binData := append(
+		[]byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0, 0, 0, 0, 0},
+		[]byte(PrefixPlaceholder+"/share")...)
+	if err := os.WriteFile(binFile, binData, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RestorePrefixPlaceholder(storeDir); err != nil {
+		t.Fatalf("RestorePrefixPlaceholder: %v", err)
+	}
+
+	got, err := os.ReadFile(binFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, binData) {
+		t.Errorf(
+			"binary was rewritten (len %d → %d); "+
+				"isTextContent guard missing",
+			len(binData), len(got))
 	}
 }
 

@@ -131,6 +131,51 @@ func TestRemoveDeletesLockfileEntry(t *testing.T) {
 	}
 }
 
+// TestRemoveRefusesGale verifies that `gale remove gale`
+// is rejected before touching config or store. Removing
+// the active binary strands the install with no in-band
+// recovery path. The test runs inside an isolated HOME +
+// CWD so that a regression (guard removed) can't reach
+// the real config.
+func TestRemoveRefusesGale(t *testing.T) {
+	projDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(projDir, "gale.toml"),
+		[]byte("[packages]\n  gale = \"0.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", projDir)
+
+	orig, _ := os.Getwd()
+	if err := os.Chdir(projDir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	removeProject = true
+	t.Cleanup(func() { removeProject = false })
+
+	err := removeCmd.RunE(removeCmd, []string{"gale"})
+	if err == nil {
+		t.Fatal("expected error refusing to remove gale")
+	}
+	if !strings.Contains(err.Error(), "refusing to remove gale") {
+		t.Errorf("expected refusal message, got: %v", err)
+	}
+
+	// Guard must refuse *before* touching the config.
+	data, readErr := os.ReadFile(
+		filepath.Join(projDir, "gale.toml"))
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if !strings.Contains(string(data), "gale = ") {
+		t.Error("guard modified gale.toml; should refuse " +
+			"before any write")
+	}
+}
+
 func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 	// Project config lists testpkg; an isolated store
 	// (rooted under projDir, not the real ~/.gale/pkg)

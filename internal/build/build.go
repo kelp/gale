@@ -922,6 +922,9 @@ func RestorePrefixPlaceholder(storeDir string) error {
 			if readErr != nil {
 				return nil //nolint:nilerr // skip unreadable files
 			}
+			if !isTextContent(data) {
+				return nil
+			}
 			if !strings.Contains(string(data), PrefixPlaceholder) {
 				return nil
 			}
