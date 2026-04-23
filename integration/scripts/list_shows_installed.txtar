@@ -1,0 +1,15 @@
+# `gale list` reports packages from gale.toml.
+
+gale-fixture recipes $WORK/recipes
+
+# Empty case.
+exec gale list
+! stdout 'hello'
+
+exec gale install hello -g --recipes=$WORK/recipes
+exec gale install hello-dep -g --recipes=$WORK/recipes
+
+exec gale list
+stdout 'hello'
+stdout 'hello-dep'
+stdout '1\.0'

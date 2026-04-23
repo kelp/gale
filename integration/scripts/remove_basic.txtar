@@ -1,0 +1,22 @@
+# `gale remove <pkg>` removes a package from the config,
+# the store, and the generation. The symlink in
+# current/bin must disappear along with the store dir.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+exec gale remove hello -g
+stderr 'Removed hello'
+
+! exists $HOME/.gale/pkg/hello/1.0-1
+! exists $HOME/.gale/current/bin/hello
+
+# gale.toml no longer lists hello.
+! grep 'hello = ' $HOME/.gale/gale.toml
+
+# Removing a non-installed package errors clearly.
+! exec gale remove hello -g
+stderr 'not in|not installed'

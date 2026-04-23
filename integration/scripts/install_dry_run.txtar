@@ -1,0 +1,15 @@
+# --dry-run must not touch the store or config.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes --dry-run
+stderr 'install'
+
+# Nothing written to the store.
+! exists $HOME/.gale/pkg/hello
+
+# No generation created.
+! exists $HOME/.gale/current
+
+# gale.toml either does not exist or has no hello entry.
+exec sh -c '! test -e $HOME/.gale/gale.toml || ! grep -q hello $HOME/.gale/gale.toml'

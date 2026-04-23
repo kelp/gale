@@ -1,0 +1,26 @@
+# Project-scope install lands in the project's .gale/
+# directory, not ~/.gale/. The project gale.toml holds
+# the package, and the project's current/bin/ gets the
+# symlink.
+
+gale-fixture recipes $WORK/recipes
+
+mkdir $WORK/proj
+cd $WORK/proj
+exec sh -c 'printf "[packages]\n" > gale.toml'
+
+exec gale install hello -p --recipes=$WORK/recipes
+stderr 'Installed hello@1\.0 from binary'
+
+# Project-scoped symlinks live under $WORK/proj/.gale/,
+# not $HOME/.gale/.
+exists $WORK/proj/.gale/current/bin/hello
+! exists $HOME/.gale/current/bin/hello
+
+# Store is shared — install still lands globally.
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
+# The project gale.toml records the install, global one
+# does not (it might not exist; check fallback).
+grep 'hello = ' $WORK/proj/gale.toml
+exec sh -c '! test -e $HOME/.gale/gale.toml || ! grep -q hello $HOME/.gale/gale.toml'

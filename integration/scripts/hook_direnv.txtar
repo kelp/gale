@@ -1,0 +1,14 @@
+# `gale hook direnv` emits a shell function named
+# use_gale that direnv can eval. The hook must reference
+# the current symlink and watch gale.toml so direnv
+# reloads on edits.
+
+exec gale hook direnv
+stdout 'use_gale'
+stdout 'gale sync'
+stdout 'current/bin'
+stdout 'watch_file'
+
+# The script must be valid POSIX shell — pipe through
+# sh -n for a syntax check.
+exec sh -c 'gale hook direnv | sh -n'

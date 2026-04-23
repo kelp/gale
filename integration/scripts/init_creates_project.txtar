@@ -1,0 +1,19 @@
+# `gale init` bootstraps a project by creating gale.toml
+# and .envrc. Re-running it on an existing project is a
+# safe no-op (doesn't clobber).
+
+mkdir $WORK/proj
+cd $WORK/proj
+
+exec gale init
+exists $WORK/proj/gale.toml
+exists $WORK/proj/.envrc
+
+grep 'use gale' $WORK/proj/.envrc
+grep 'packages' $WORK/proj/gale.toml
+
+# Append user content and re-init: files must not be
+# clobbered.
+exec sh -c 'printf "\n[vars]\nFOO = \"bar\"\n" >> $WORK/proj/gale.toml'
+exec gale init
+grep 'FOO = "bar"' $WORK/proj/gale.toml

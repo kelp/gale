@@ -1,0 +1,18 @@
+# `gale outdated` reports packages whose installed
+# revision is behind the recipe. Install at rev=1, bump
+# recipe to rev=2, outdated should list hello.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1
+
+# Before the bump, outdated finds nothing.
+exec gale outdated --recipes=$WORK/recipes
+! stdout 'hello'
+
+# Bump the recipe to rev=2.
+gale-fixture render recipes-rev2/h/hello.toml.tmpl $WORK/recipes/h/hello.toml
+
+exec gale outdated --recipes=$WORK/recipes
+stdout 'hello'

@@ -1,0 +1,21 @@
+# `gale doctor` reports "No active generation" before
+# anything is installed; that's expected. After install,
+# doctor reports no orphaned store entries (regression
+# pin for the "revision-suffix-keyed orphan false
+# positives" commit from the research).
+
+gale-fixture recipes $WORK/recipes
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+# Doctor exits 1 if PATH doesn't include current/bin,
+# which is normal in a sandbox. Accept the exit and
+# check the structural signals instead: no orphan
+# report, store view aligned with config.
+! exec gale doctor
+! stderr 'orphan'
+stderr 'No stale installs'
+stderr 'All packages installed'
+stderr 'Symlinks intact'
+

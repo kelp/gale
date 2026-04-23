@@ -1,0 +1,16 @@
+# `gale add <pkg>` records the package in gale.toml but
+# does not install or build it. That's sync's job.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale add hello -g --recipes=$WORK/recipes
+grep 'hello' $HOME/.gale/gale.toml
+
+# Store and generation untouched.
+! exists $HOME/.gale/pkg/hello
+! exists $HOME/.gale/current/bin/hello
+
+# Now sync actually installs it.
+exec gale sync -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello

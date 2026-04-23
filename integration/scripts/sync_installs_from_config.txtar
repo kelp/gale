@@ -1,0 +1,20 @@
+# `gale sync` installs everything listed in gale.toml,
+# not just newly-added entries. Pre-populate gale.toml
+# with a package that isn't in the store and verify sync
+# picks it up.
+
+gale-fixture recipes $WORK/recipes
+
+# Hand-written config: hello present, no store entry yet.
+exec sh -c 'printf "%s\n" "[packages]" "hello = \"1.0-1\"" > $HOME/.gale/gale.toml'
+! exists $HOME/.gale/pkg/hello/1.0-1
+
+exec gale sync -g --recipes=$WORK/recipes
+stderr 'Installed hello'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+# Second sync is a no-op.
+exec gale sync -g --recipes=$WORK/recipes
+! stderr 'Installed hello'
+stderr 'up to date'
