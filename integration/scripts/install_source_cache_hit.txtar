@@ -1,0 +1,37 @@
+# Source-tarball cache-hit behavior. A source build caches
+# the verified tarball at ~/.gale/cache/<sha256> and reuses
+# it on subsequent builds of the same source. This pins
+# that second install doesn't re-fetch — proved by breaking
+# the upstream URL between installs, so any network access
+# would fail.
+#
+# Integration runs non-TTY, which disables step/progress
+# logging, so this asserts on observable effects rather
+# than log strings.
+#
+# Requires cc (any) in PATH. Skip on systems without.
+
+[!exec:cc] skip
+
+gale-fixture recipes $WORK/recipes
+
+# First install — cache miss. Populates the cache entry.
+exec gale install hello-src -g --recipes=$WORK/recipes
+stderr 'Installed hello-src@1\.0'
+exists $HOME/.gale/cache/$HELLO_SRC_PAYLOAD_SHA
+
+# Remove wipes the store but leaves the source cache alone.
+exec gale remove hello-src -g
+! exists $HOME/.gale/pkg/hello-src/1.0-1
+exists $HOME/.gale/cache/$HELLO_SRC_PAYLOAD_SHA
+
+# Break the source URL so any fetch attempt would 500.
+# A cache hit never reaches the network.
+gale-fixture register-blob /blobs/source/hello-src.tar.zst payload-does-not-exist
+
+# Second install — succeeds only because the cache is used.
+exec gale install hello-src -g --recipes=$WORK/recipes
+stderr 'Installed hello-src@1\.0'
+exists $HOME/.gale/pkg/hello-src/1.0-1/bin/hello-src
+exec $HOME/.gale/current/bin/hello-src
+stdout 'hello from gale integration source build'
