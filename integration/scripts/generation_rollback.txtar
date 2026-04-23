@@ -1,0 +1,18 @@
+# `gale generations rollback` swaps current back one
+# generation. Multiple installs generate distinct
+# generations; rollback restores the previous one.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/current/bin/hello
+! exists $HOME/.gale/current/bin/hello-dep
+
+exec gale install hello-dep -g --recipes=$WORK/recipes
+exists $HOME/.gale/current/bin/hello-dep
+
+# Rollback: back to the gen with only hello.
+exec gale generations rollback
+stderr 'Rolled back'
+exists $HOME/.gale/current/bin/hello
+! exists $HOME/.gale/current/bin/hello-dep

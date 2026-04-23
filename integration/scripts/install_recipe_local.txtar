@@ -1,0 +1,14 @@
+# `gale install --recipe <file>` reads a single TOML
+# file rather than walking a recipes directory.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello --recipe=$WORK/recipes/h/hello.toml -g
+stderr 'Installed hello@1\.0 from binary'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+# The single-file path is resolver-agnostic: the same
+# recipe installs without --recipes.
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'

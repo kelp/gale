@@ -1,0 +1,22 @@
+# `gale env` prints the export line for PATH (and any
+# [vars] from gale.toml) — used by shell hooks.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/current/bin/hello
+
+# Global env: PATH export points at the global gen.
+exec gale env
+stdout '^export PATH=.*/\.gale/current/bin:\$PATH'
+
+# --vars-only skips PATH export.
+exec gale env --vars-only
+! stdout 'export PATH'
+
+# Project scope with [vars] block.
+mkdir $WORK/proj
+cd $WORK/proj
+exec sh -c 'printf "[vars]\nFOO = \"bar\"\n" > gale.toml'
+exec gale env --vars-only
+stdout '^export FOO=.bar.$'
