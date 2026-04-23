@@ -5,31 +5,17 @@
 # Regression pin for the recurring bug where gc reaps
 # packages that are still referenced via runtime deps
 # (sqlite→readline, ruby→gems, etc.).
-#
-# SKIPPED: gc does not accept --recipes and falls back to
-# config-only retention when the remote registry resolver
-# fails (offline / hermetic test). Unskip this scenario
-# once gc exposes a way to resolve recipes locally —
-# either a --recipes flag or sibling auto-detect that
-# matches what install/sync/update already do.
-skip
 
-# gc's runtime-dep retention needs access to the recipes.
-# Stage recipes at $WORK/gale-recipes/recipes/ so gc's
-# auto-detect (sibling gale-recipes relative to cwd) finds
-# them when we cd into $WORK/project.
-mkdir $WORK/project
-gale-fixture recipes $WORK/gale-recipes/recipes
+gale-fixture recipes $WORK/recipes
 
-cd $WORK/project
-exec gale install hello-dep -g --recipes=$WORK/gale-recipes/recipes
+exec gale install hello-dep -g --recipes=$WORK/recipes
 stderr 'Installed hello-dep@1\.0 from binary'
 exists $HOME/.gale/pkg/hello-dep/1.0-1/bin/hello-dep
 exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
 
 # gc with only hello-dep in gale.toml: hello is not
 # explicitly listed but is a runtime dep — must be kept.
-exec gale gc
+exec gale gc --recipes=$WORK/recipes
 ! stderr 'Removed hello@'
 
 exists $HOME/.gale/pkg/hello-dep/1.0-1/bin/hello-dep

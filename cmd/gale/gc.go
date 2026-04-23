@@ -14,6 +14,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var gcRecipes string
+
 var gcCmd = &cobra.Command{
 	Use:   "gc",
 	Short: "Remove unused package versions from the store",
@@ -38,7 +40,7 @@ var gcCmd = &cobra.Command{
 		// available (nil resolver), gc falls back to
 		// config-only retention.
 		var resolver installer.RecipeResolver
-		if ctx, cErr := newCmdContext("", false, false); cErr == nil {
+		if ctx, cErr := newCmdContext(gcRecipes, false, false); cErr == nil {
 			resolver = ctx.Resolver
 		}
 
@@ -353,5 +355,9 @@ func lastIndex(s string, c byte) int {
 }
 
 func init() {
+	gcCmd.Flags().StringVar(&gcRecipes, "recipes", "",
+		"Use local recipes directory (default: ../gale-recipes/) "+
+			"for runtime-dep retention")
+	gcCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	rootCmd.AddCommand(gcCmd)
 }
