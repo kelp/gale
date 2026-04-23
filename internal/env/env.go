@@ -23,11 +23,19 @@ func generateDirenvHook() string {
 #   eval "$(gale hook direnv)"
 
 use_gale() {
-  local gale_dir
-  gale_dir="$(pwd)/.gale"
+  local gale_dir="$(pwd)/.gale"
+  local manifest="$(pwd)/gale.toml"
 
-  # Sync project packages quietly.
-  gale sync 2>/dev/null || true
+  # Re-run this .envrc when the manifest changes.
+  watch_file "$manifest"
+
+  # Sync only when the manifest is newer than the current
+  # generation symlink (or no generation exists yet). The
+  # symlink is swapped atomically at the end of every
+  # successful gale sync, so its mtime is the source of truth.
+  if [ ! -L "$gale_dir/current" ] || [ "$manifest" -nt "$gale_dir/current" ]; then
+    gale sync 2>/dev/null || true
+  fi
 
   # Add the project's current/bin to PATH.
   if [ -d "$gale_dir/current/bin" ]; then

@@ -35,6 +35,31 @@ func TestGenerateHookDirenvContainsPATHAdd(t *testing.T) {
 	}
 }
 
+func TestGenerateHookDirenvWatchesManifest(t *testing.T) {
+	hook, err := GenerateHook("direnv")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(hook, "watch_file") {
+		t.Errorf("direnv hook missing 'watch_file': %q", hook)
+	}
+	if !strings.Contains(hook, "gale.toml") {
+		t.Errorf("direnv hook missing 'gale.toml': %q", hook)
+	}
+}
+
+func TestGenerateHookDirenvSkipsSyncWhenFresh(t *testing.T) {
+	hook, err := GenerateHook("direnv")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The freshness check guards `gale sync` behind a mtime
+	// comparison so activation is a no-op when nothing changed.
+	if !strings.Contains(hook, "-nt") {
+		t.Errorf("direnv hook missing '-nt' freshness check: %q", hook)
+	}
+}
+
 func TestGenerateHookUnsupportedShellReturnsError(t *testing.T) {
 	_, err := GenerateHook("powershell")
 	if err == nil {
