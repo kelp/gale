@@ -1,0 +1,10 @@
+# Mutually exclusive flag pairs must produce a clear
+# error rather than a silently-ignored setting.
+
+gale-fixture recipes $WORK/recipes
+
+! exec gale install hello -g -p --recipes=$WORK/recipes
+stderr 'both|global.*project|project.*global'
+
+# State unchanged.
+! exists $HOME/.gale/pkg/hello

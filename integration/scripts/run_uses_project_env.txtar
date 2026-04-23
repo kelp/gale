@@ -1,0 +1,16 @@
+# `gale run <cmd>` executes <cmd> with the project's
+# .gale/current/bin on PATH, so a project-installed
+# binary resolves even when the shell's PATH doesn't
+# include it.
+
+gale-fixture recipes $WORK/recipes
+
+mkdir $WORK/proj
+cd $WORK/proj
+exec gale init
+exec gale install hello -p --recipes=$WORK/recipes
+exists $WORK/proj/.gale/current/bin/hello
+
+# `gale run hello` finds hello via the project env.
+exec gale run hello
+stdout 'hello from gale integration fixture'

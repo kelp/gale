@@ -22,7 +22,20 @@ var runCmd = &cobra.Command{
 
 		binDir := filepath.Join(galeDir, "current", "bin")
 
-		c := exec.Command(args[0], args[1:]...)
+		// Resolve args[0] against the project's binDir
+		// first, then fall back to the ambient PATH. Go's
+		// exec.Command resolves the name before applying
+		// c.Env, so without this the project env only
+		// works when the caller already has binDir on PATH
+		// (typically via the direnv hook).
+		resolved := args[0]
+		if cand := filepath.Join(binDir, args[0]); fileExecutable(cand) {
+			resolved = cand
+		} else if p, err := exec.LookPath(args[0]); err == nil {
+			resolved = p
+		}
+
+		c := exec.Command(resolved, args[1:]...)
 		c.Stdin = os.Stdin
 		c.Stdout = os.Stdout
 		c.Stderr = os.Stderr
@@ -30,6 +43,14 @@ var runCmd = &cobra.Command{
 
 		return c.Run()
 	},
+}
+
+func fileExecutable(path string) bool {
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() {
+		return false
+	}
+	return info.Mode()&0o111 != 0
 }
 
 func init() {

@@ -1,0 +1,18 @@
+# `gale sync --build` forces every package to build
+# from source, bypassing any prebuilt binary entries
+# in the recipe. Exercises the flag wiring end-to-end.
+
+[!exec:cc] skip
+
+gale-fixture recipes $WORK/recipes
+
+# Stage a config with hello-src (source-only recipe
+# so --build matters). hello-src has no [binary]
+# entries; sync will build regardless of --build.
+exec sh -c 'printf "[packages]\nhello-src = \"1.0\"\n" > $HOME/.gale/gale.toml'
+
+exec gale sync -g --build --recipes=$WORK/recipes
+stderr 'built from source'
+exists $HOME/.gale/pkg/hello-src/1.0-1/bin/hello-src
+exec $HOME/.gale/current/bin/hello-src
+stdout 'hello from gale integration source build'
