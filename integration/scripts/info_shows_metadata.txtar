@@ -1,0 +1,9 @@
+# `gale info <pkg>` prints recipe metadata for an
+# installed package.
+
+gale-fixture recipes $WORK/recipes
+exec gale install hello -g --recipes=$WORK/recipes
+
+exec gale info hello
+stdout 'hello'
+stdout '1\.0'

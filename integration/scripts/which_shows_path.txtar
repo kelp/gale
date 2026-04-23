@@ -1,0 +1,13 @@
+# `gale which <binary>` prints the store path for a
+# binary that the current generation resolves.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+
+exec gale which hello
+stdout 'hello/1\.0-1/bin/hello'
+
+# Nonexistent binary errors cleanly.
+! exec gale which nonexistent
+stderr 'nonexistent|not found'

@@ -1,0 +1,27 @@
+# After updating a package past a revision, the old
+# revision dir is retained in the store (update is not
+# destructive). gc reaps it because it's no longer
+# referenced by gale.toml or any runtime-dep chain.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1
+
+gale-fixture render recipes-rev2/h/hello.toml.tmpl $WORK/recipes/h/hello.toml
+exec gale update hello --recipes=$WORK/recipes
+
+# Both revisions coexist after update.
+exists $HOME/.gale/pkg/hello/1.0-1
+exists $HOME/.gale/pkg/hello/1.0-2
+
+exec gale gc --recipes=$WORK/recipes
+stderr 'Removed hello@1\.0-1'
+
+# Old revision reaped, current kept.
+! exists $HOME/.gale/pkg/hello/1.0-1
+exists $HOME/.gale/pkg/hello/1.0-2
+
+# Current generation still serves the binary.
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'
