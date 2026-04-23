@@ -1,0 +1,19 @@
+# M8 regression pin. `gale remove gale` deletes the
+# active binary and destroys the bootstrap — both
+# CLAUDE.md files warn users not to do it. The guard
+# should be enforced in code, not just documentation.
+
+gale-fixture recipes $WORK/recipes
+
+# Put a fake gale install in the store + gale.toml so
+# remove has something to operate on.
+mkdir $HOME/.gale/pkg/gale/0.13.1/bin
+cp $FIXTURES/payloads/hello/bin/hello $HOME/.gale/pkg/gale/0.13.1/bin/gale
+chmod 755 $HOME/.gale/pkg/gale/0.13.1/bin/gale
+exec sh -c 'printf "[packages]\ngale = \"0.13.1\"\n" > $HOME/.gale/gale.toml'
+
+# Attempt the self-removal. Must fail and not touch the
+# store.
+! exec gale remove gale -g
+stderr 'gale'
+exists $HOME/.gale/pkg/gale/0.13.1/bin/gale

@@ -27,6 +27,20 @@ var removeCmd = &cobra.Command{
 
 		name := args[0]
 
+		// gale manages itself via the bootstrap, not
+		// through its own `remove` command. Letting the
+		// user nuke the active binary from its own store
+		// is a footgun with no non-trivial recovery: the
+		// PATH entry disappears, direnv can't reload the
+		// hook, and the only way back is a fresh bootstrap.
+		if name == "gale" {
+			return fmt.Errorf(
+				"refusing to remove gale itself — " +
+					"use the bootstrap script " +
+					"(`just upgrade` from the umbrella) to " +
+					"manage the active install")
+		}
+
 		out := newCmdOutput(cmd)
 
 		ctx, err := newCmdContext("", removeGlobal, removeProject)
