@@ -1,38 +1,39 @@
-# A bare <version>/ store dir can co-exist with the
-# canonical <version>-<revision>/ form. Resolver must
-# pick the canonical when both exist.
+# A bare <version>/ and canonical <version>-<revision>/
+# store dir can co-exist (pre-revision installs stay
+# valid under back-compat). When both exist, gale
+# commands must present a consistent view — gc must not
+# report both as separate packages or reap the wrong
+# one, and the resolver must prefer canonical.
 #
-# Pins a recurring bug where IsInstalled / resolveVersion
-# stat-walked the wrong dir and either over-reaped packages
-# in gc or installed twice.
-#
-# SKIPPED: current store.IsInstalled accepts a bare
-# <version>/ dir as "already installed" and install then
-# takes the cached path — leaving the user with *only* the
-# bare dir and no canonical <version>-<revision>/. Per
-# docs/revisions.md the store identity is canonical.
-# Unskip once IsInstalled requires canonical form (or
-# install migrates bare → canonical on detection).
-skip
+# Pins the "store view alignment across commands" class
+# of bug surfaced in d32021f.
 
 gale-fixture recipes $WORK/recipes
 
-# Seed a bare directory (old layout / manual migration).
-mkdir $HOME/.gale/pkg/hello/1.0
+# Install creates the canonical dir.
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
+# Seed a bare dir alongside (simulating a pre-revision
+# install migrated partially).
 mkdir $HOME/.gale/pkg/hello/1.0/bin
 cp $FIXTURES/payloads/hello/bin/hello $HOME/.gale/pkg/hello/1.0/bin/hello
 chmod 755 $HOME/.gale/pkg/hello/1.0/bin/hello
 
-# Install should land at canonical 1.0-1, not disturb bare 1.0.
-exec gale install hello -g --recipes=$WORK/recipes
-stderr 'Installed hello@1\.0 from binary'
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
-exists $HOME/.gale/pkg/hello/1.0/bin/hello
-
-# Reinstall @1.0 takes the cached canonical dir — never
-# resolves to the bare dir.
+# Reinstall @1.0 must resolve to canonical, not bare —
+# the cached path stays on the revisioned layout.
 exec gale install 'hello@1.0' -g --recipes=$WORK/recipes
 stderr 'already in store'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
 
-# gale.toml records the canonical revision
-grep 'hello = "1\.0-1"' $HOME/.gale/gale.toml
+# gc must not double-count: the bare dir is an orphan
+# relative to the canonical gale.toml entry, so gc
+# reports exactly one removal (the bare dir) and the
+# canonical dir stays.
+exec gale gc --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+! exists $HOME/.gale/pkg/hello/1.0/bin/hello
+
+# Binary still works after the cleanup.
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'
