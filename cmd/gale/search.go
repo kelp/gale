@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 
-	"github.com/kelp/gale/internal/ai"
 	"github.com/spf13/cobra"
 )
 
@@ -37,19 +36,4 @@ var searchCmd = &cobra.Command{
 
 func init() {
 	rootCmd.AddCommand(searchCmd)
-}
-
-// loadAIClient creates an AI client from config.toml, or nil
-// if no API key is configured.
-func loadAIClient() *ai.Client {
-	cfg, err := loadAppConfig()
-	if err != nil {
-		return nil
-	}
-
-	if cfg.Anthropic.APIKey == "" {
-		return nil
-	}
-
-	return ai.NewClient(cfg.Anthropic.APIKey)
 }

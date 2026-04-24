@@ -155,8 +155,14 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 				"warning: binary install for %s@%s failed: %v;"+
 					" falling back to source build\n",
 				name, version, err)
-			os.RemoveAll(storeDir)
-			_ = os.MkdirAll(storeDir, 0o755) //nolint:gosec
+			if err := os.RemoveAll(storeDir); err != nil {
+				return nil, fmt.Errorf(
+					"clean store dir for source fallback: %w", err)
+			}
+			if err := os.MkdirAll(storeDir, 0o755); err != nil {
+				return nil, fmt.Errorf(
+					"recreate store dir for source fallback: %w", err)
+			}
 		}
 	}
 

@@ -17,6 +17,21 @@ import (
 var validRepoPattern = regexp.MustCompile(
 	`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
 
+// loadAIClient creates an AI client from config.toml, or nil
+// if no API key is configured.
+func loadAIClient() *ai.Client {
+	cfg, err := loadAppConfig()
+	if err != nil {
+		return nil
+	}
+
+	if cfg.Anthropic.APIKey == "" {
+		return nil
+	}
+
+	return ai.NewClient(cfg.Anthropic.APIKey)
+}
+
 var (
 	createRecipeOutput   string
 	createRecipeMaxDepth int
