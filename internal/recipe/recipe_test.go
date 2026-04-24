@@ -722,6 +722,64 @@ func containsField(msg, field string) bool {
 	return strings.Contains(strings.ToLower(msg), strings.ToLower(field))
 }
 
+// --- M1 regression: typos in [source] / [package] must fail closed ---
+//
+// The original bug (TODO M1) was that BurntSushi decoded [package]
+// and [source] directly into typed structs; unknown keys were silently
+// dropped, so `sha265 = "..."` (typo of sha256) parsed fine and
+// produced a recipe with an empty SHA256. Fixed by consulting
+// md.Undecoded() and rejecting undecoded keys under those tables.
+// These tests pin the behavior so future refactors can't regress it.
+
+const recipeWithSourceSHA265Typo = `
+[package]
+name = "jq"
+version = "1.7.1"
+
+[source]
+url = "https://example.com/jq-1.7.1.tar.gz"
+sha265 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+
+[build]
+steps = ["make install"]
+`
+
+func TestParseSourceSHA265TypoRejected(t *testing.T) {
+	_, err := Parse(recipeWithSourceSHA265Typo)
+	if err == nil {
+		t.Fatal("expected error for sha265 typo under [source]")
+	}
+	if !strings.Contains(err.Error(), "sha265") {
+		t.Errorf("error = %q, want to mention %q", err.Error(), "sha265")
+	}
+}
+
+const recipeWithUnknownPackageField = `
+[package]
+name = "jq"
+version = "1.7.1"
+licence = "MIT"
+
+[source]
+url = "https://example.com/jq-1.7.1.tar.gz"
+sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
+
+[build]
+steps = ["make install"]
+`
+
+func TestParsePackageUnknownFieldRejected(t *testing.T) {
+	// `licence` is a common typo for `license`; must not be
+	// silently discarded.
+	_, err := Parse(recipeWithUnknownPackageField)
+	if err == nil {
+		t.Fatal("expected error for unknown field under [package]")
+	}
+	if !strings.Contains(err.Error(), "licence") {
+		t.Errorf("error = %q, want to mention %q", err.Error(), "licence")
+	}
+}
+
 // --- Source repo and released_at fields ---
 
 const recipeWithSourceMeta = `

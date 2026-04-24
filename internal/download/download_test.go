@@ -351,6 +351,66 @@ func TestFetchFallsBackToMirror(t *testing.T) {
 	}
 }
 
+func TestFetchLogsSucceedingMirrorURL(t *testing.T) {
+	// When a fallback mirror supplies the bytes, the success log
+	// must name the URL that delivered so forensics can tell
+	// which mirror won. The "being tried" line alone is not
+	// enough — with multiple fallbacks, all get tried regardless
+	// of which one succeeded.
+	restore := SetProgressEnabled(false)
+	defer restore()
+
+	// Primary fails, first fallback fails, second fallback wins.
+	primary := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "server error",
+				http.StatusInternalServerError)
+		}))
+	defer primary.Close()
+
+	failingMirror := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "server error",
+				http.StatusInternalServerError)
+		}))
+	defer failingMirror.Close()
+
+	winningMirror := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write([]byte("payload"))
+		}))
+	defer winningMirror.Close()
+
+	oldMirrors := mirrors
+	mirrors = map[string][]string{
+		primary.URL + "/": {
+			failingMirror.URL + "/",
+			winningMirror.URL + "/",
+		},
+	}
+	defer func() { mirrors = oldMirrors }()
+
+	dest := filepath.Join(t.TempDir(), "output.bin")
+	wantURL := winningMirror.URL + "/gnu/make/make-4.4.tar.gz"
+
+	out := captureStderr(t, func() {
+		if err := Fetch(
+			primary.URL+"/gnu/make/make-4.4.tar.gz",
+			dest); err != nil {
+			t.Fatalf("expected fallback to succeed: %v", err)
+		}
+	})
+
+	if !strings.Contains(out, wantURL) {
+		t.Errorf("stderr = %q, want it to contain the succeeding URL %q",
+			out, wantURL)
+	}
+	if !strings.Contains(out, "fetched") {
+		t.Errorf("stderr = %q, want a success log line mentioning 'fetched'",
+			out)
+	}
+}
+
 func TestFetchNoFallbackForNonMirroredURL(t *testing.T) {
 	// Non-mirrored URL should fail normally, no fallback.
 	srv := httptest.NewServer(http.HandlerFunc(

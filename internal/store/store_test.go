@@ -638,6 +638,136 @@ func TestRemoveBareVersionRemovesBareDirNotHighestRevision(t *testing.T) {
 	}
 }
 
+// TestResolveVersionAllCasesOnFixedLayout exercises every resolution
+// path in one store layout so the contract is locked in ahead of the
+// single-ReadDir consolidation (M2). The layout carries:
+//   - curl with bare "8.19.0" and revision "8.19.0-1" coexisting,
+//   - jq with revisions "1.8.1-1", "1.8.1-3", and noise,
+//   - foo with only a bare "2.0.0" (pre-revision),
+//   - bar with only "3.0.0-5" (revision, no -1, no bare),
+//   - .build-* and .lock siblings scattered through to catch
+//     scans that forget to filter them.
+//
+// Every assertion below is a distinct branch in resolveVersion:
+// bare→highest, bare→bare when no revisions, exact-match with
+// coexisting bare, "-1"→bare fallback, and straight not-found.
+func TestResolveVersionAllCasesOnFixedLayout(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	dirs := []string{
+		filepath.Join(root, "curl", "8.19.0"),
+		filepath.Join(root, "curl", "8.19.0-1"),
+		filepath.Join(root, "curl", ".build-tmp-8.19.0-9"),
+		filepath.Join(root, "jq", "1.8.1-1"),
+		filepath.Join(root, "jq", "1.8.1-3"),
+		filepath.Join(root, "jq", ".build-tmp-1.8.1-9"),
+		filepath.Join(root, "foo", "2.0.0"),
+		filepath.Join(root, "bar", "3.0.0-5"),
+	}
+	for _, d := range dirs {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatalf("setup %s: %v", d, err)
+		}
+		// Every real dir gets a file so IsInstalled can't be
+		// fooled by empty-dir semantics.
+		if !filepath.IsAbs(d) || filepath.Base(filepath.Dir(d))[0] == '.' {
+			continue
+		}
+		if err := os.WriteFile(
+			filepath.Join(d, "marker"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("setup marker %s: %v", d, err)
+		}
+	}
+	// Lock-file siblings that the revision scan must ignore.
+	for _, lock := range []string{
+		filepath.Join(root, "curl", "8.19.0.lock"),
+		filepath.Join(root, "jq", "1.8.1-3.lock"),
+	} {
+		if err := os.WriteFile(lock, []byte(""), 0o644); err != nil {
+			t.Fatalf("setup %s: %v", lock, err)
+		}
+	}
+
+	cases := []struct {
+		name, version string
+		wantResolved  string
+		wantFound     bool
+		wantInstalled bool
+	}{
+		// Exact "-1" wins over the coexisting bare.
+		{"curl", "8.19.0-1", "8.19.0-1", true, true},
+		// Bare request on coexisting bare+rev: highest rev wins.
+		{"curl", "8.19.0", "8.19.0-1", true, true},
+		// Bare request with only revisions: highest wins.
+		{"jq", "1.8.1", "1.8.1-3", true, true},
+		// Exact revision request: exact dir.
+		{"jq", "1.8.1-1", "1.8.1-1", true, true},
+		// Bare request, only pre-revision bare dir exists.
+		{"foo", "2.0.0", "2.0.0", true, true},
+		// "-1" fallback to bare when no -1 dir exists.
+		{"foo", "2.0.0-1", "2.0.0", true, true},
+		// "-2" has no fallback: not found.
+		{"foo", "2.0.0-2", "2.0.0-2", false, false},
+		// Only a "-5" dir exists; exact match wins.
+		{"bar", "3.0.0-5", "3.0.0-5", true, true},
+		// Bare request finds highest rev even though it is "-5".
+		{"bar", "3.0.0", "3.0.0-5", true, true},
+		// "-1" fallback fails: no bare, no "-1" for bar.
+		{"bar", "3.0.0-1", "3.0.0-1", false, false},
+		// Nonexistent package.
+		{"missing", "1.0.0", "1.0.0", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"@"+tc.version, func(t *testing.T) {
+			got, ok := s.resolveVersion(tc.name, tc.version)
+			if ok != tc.wantFound {
+				t.Errorf("resolveVersion ok = %v, want %v", ok, tc.wantFound)
+			}
+			if got != tc.wantResolved {
+				t.Errorf("resolveVersion = %q, want %q", got, tc.wantResolved)
+			}
+			if s.IsInstalled(tc.name, tc.version) != tc.wantInstalled {
+				t.Errorf("IsInstalled = %v, want %v",
+					s.IsInstalled(tc.name, tc.version), tc.wantInstalled)
+			}
+		})
+	}
+}
+
+// TestIsInstalledRevisionOneWinsOverBare pins the exact-match
+// priority for the IsInstalled path: when both "1.0-1" and "1.0"
+// exist with content, IsInstalled("x", "1.0-1") must return true
+// via the exact dir, not the bare fallback. Guards the single-
+// ReadDir refactor against re-ordering exact-match vs "-1"→bare.
+func TestIsInstalledRevisionOneWinsOverBare(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	for _, sub := range []string{"1.0", "1.0-1"} {
+		dir := filepath.Join(root, "x", sub)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("setup %s: %v", sub, err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(dir, "marker"), []byte("x"), 0o644); err != nil {
+			t.Fatalf("setup %s: %v", sub, err)
+		}
+	}
+
+	if !s.IsInstalled("x", "1.0-1") {
+		t.Error("IsInstalled(x, 1.0-1) = false, want true")
+	}
+	got, ok := s.StorePath("x", "1.0-1")
+	if !ok {
+		t.Fatalf("StorePath ok = false, want true")
+	}
+	want := filepath.Join(root, "x", "1.0-1")
+	if got != want {
+		t.Errorf("StorePath = %q, want %q", got, want)
+	}
+}
+
 // TestStorePathIgnoresBuildTempAndLockSiblings verifies that the
 // highest-revision scan skips .build-* staging dirs and *.lock
 // sibling files when picking a fallback.

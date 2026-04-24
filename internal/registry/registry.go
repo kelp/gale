@@ -2,7 +2,6 @@ package registry
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"net/url"
 	"os"
@@ -27,23 +26,34 @@ const defaultGHCRBase = "kelp/gale-recipes"
 type Registry struct {
 	BaseURL string
 
+	// CacheDir is the root for HTTP response caching. When
+	// non-empty, FetchRecipe and related calls write fetched
+	// bodies + ETags under <CacheDir>/registry/<hash>/ and
+	// revalidate with If-None-Match on subsequent calls. When
+	// empty, no caching is performed. Defaults to
+	// ~/.gale/cache/ via New() / NewWithURL(); tests set it to
+	// a temp dir.
+	CacheDir string
+
 	// warnf logs a warning. Defaults to fmt.Fprintf(os.Stderr, ...).
 	// Override in tests to capture output.
 	warnf func(format string, args ...any)
 }
 
-// New returns a Registry configured with DefaultURL.
+// New returns a Registry configured with DefaultURL and the
+// default on-disk cache under ~/.gale/cache/.
 func New() *Registry {
-	return &Registry{BaseURL: DefaultURL}
+	return &Registry{BaseURL: DefaultURL, CacheDir: defaultCacheDir()}
 }
 
-// NewWithURL returns a Registry with the given base URL.
-// If url is empty, DefaultURL is used.
+// NewWithURL returns a Registry with the given base URL and
+// the default on-disk cache. If url is empty, DefaultURL is
+// used.
 func NewWithURL(url string) *Registry {
 	if url == "" {
 		return New()
 	}
-	return &Registry{BaseURL: url}
+	return &Registry{BaseURL: url, CacheDir: defaultCacheDir()}
 }
 
 // repoBase returns BaseURL with the trailing path segment
@@ -83,7 +93,8 @@ func (r *Registry) warn(format string, args ...any) {
 }
 
 // FetchRecipe downloads and parses the recipe for the named
-// package from the registry.
+// package from the registry. Uses an ETag-based HTTP cache
+// under r.CacheDir when set.
 func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 	if name == "" {
 		return nil, fmt.Errorf("fetch recipe: name must not be empty")
@@ -94,18 +105,7 @@ func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 		r.BaseURL, bucket, name)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
-	if err != nil {
-		return nil, fmt.Errorf("fetch recipe %s: %w", name, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch recipe %s: HTTP %d",
-			name, resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
+	body, err := cachedGet(client, url, r.CacheDir)
 	if err != nil {
 		return nil, fmt.Errorf("fetch recipe %s: %w", name, err)
 	}
@@ -145,22 +145,10 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 		r.BaseURL, bucket, name)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(indexURL)
+	body, err := cachedGet(client, indexURL, r.CacheDir)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"fetch version index for %s: %w", name, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"version index for %s: HTTP %d", name, resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"read version index for %s: %w", name, err)
 	}
 
 	idx, err := parseVersionIndex(string(body))
@@ -183,23 +171,10 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
 		r.repoBase(), commit, bucket, name)
 
-	resp2, err := client.Get(recipeURL)
+	recipeBody, err := cachedGet(client, recipeURL, r.CacheDir)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"fetch %s@%s recipe: %w", name, version, err)
-	}
-	defer resp2.Body.Close()
-
-	if resp2.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"fetch %s@%s recipe: HTTP %d",
-			name, version, resp2.StatusCode)
-	}
-
-	recipeBody, err := io.ReadAll(resp2.Body)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"read %s@%s recipe: %w", name, version, err)
 	}
 
 	rec, err := recipe.Parse(string(recipeBody))
@@ -212,32 +187,26 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 }
 
 // fetchBinaries fetches the .binaries.toml file for a
-// package. Returns nil (not error) if the file is not found.
+// package. Returns nil (not error) if the file is not found
+// or the network is unreachable — the caller falls back to
+// source build. Uses the ETag cache when enabled.
 func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 	bucket := string(name[0])
 	url := fmt.Sprintf("%s/recipes/%s/%s.binaries.toml",
 		r.BaseURL, bucket, name)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	body, err := cachedGet(client, url, r.CacheDir)
 	if err != nil {
+		// 404 → graceful nil, everything else → warn + nil.
+		// cachedGet wraps the status in the error text so we
+		// can detect 404 via string match; this keeps the
+		// helper simple at the cost of a fragile pattern.
+		if strings.Contains(err.Error(), "HTTP 404") {
+			return nil, nil
+		}
 		r.warn("fetch binaries %s: %v", name, err)
 		return nil, nil //nolint:nilerr // network error is not fatal
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode == http.StatusNotFound {
-		return nil, nil
-	}
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf(
-			"fetch binaries %s: HTTP %d", name, resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf(
-			"read binaries %s: %w", name, err)
 	}
 
 	return recipe.ParseBinaryIndex(string(body))

@@ -65,38 +65,38 @@ func (s *Store) StorePath(name, version string) (string, bool) {
 //     pre-revision installs live.
 //  4. A bare version falls back to the bare dir itself (legacy
 //     pre-revision installs) if no "<v>-<N>" dirs exist.
+//
+// Implementation: a single os.ReadDir on <root>/<name>/ answers every
+// question above from one atomic directory listing. The previous
+// implementation chained up to three os.Stat calls plus a ReadDir,
+// which raced with a concurrent `gale gc` removing a sibling
+// mid-chain (M2 in TODO.md).
 func (s *Store) resolveVersion(name, version string) (string, bool) {
-	if !strings.Contains(version, "-") {
-		if rev, ok := highestRevisionOnDisk(s.Root, name, version); ok {
-			return rev, true
-		}
+	entries, err := os.ReadDir(filepath.Join(s.Root, name))
+	if err != nil {
+		return version, false
 	}
-	dir := filepath.Join(s.Root, name, version)
-	if _, err := os.Stat(dir); err == nil {
-		return version, true
-	}
-	if strings.HasSuffix(version, "-1") {
-		bare := strings.TrimSuffix(version, "-1")
-		bareDir := filepath.Join(s.Root, name, bare)
-		if _, err := os.Stat(bareDir); err == nil {
-			return bare, true
-		}
-	}
-	return version, false
+	return resolveVersionFromEntries(entries, version)
 }
 
-// highestRevisionOnDisk scans <root>/<name>/ for directories named
-// "<version>-<N>" and returns the one with the highest N. Skips
-// .build-* staging dirs and non-directory siblings (lock files).
-// Returns ("", false) when nothing matches.
-func highestRevisionOnDisk(root, name, version string) (string, bool) {
-	entries, err := os.ReadDir(filepath.Join(root, name))
-	if err != nil {
-		return "", false
-	}
+// resolveVersionFromEntries applies the resolution order documented
+// on resolveVersion to a directory listing of <root>/<name>/.
+// Broken out so callers that already hold the listing (e.g. future
+// batch lookups) can reuse the logic without a redundant syscall.
+func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, bool) {
+	hasDash := strings.Contains(version, "-")
 	prefix := version + "-"
-	best := -1
+
+	hasExact := false
+	hasBareForDashOne := false
+	var bare string
+	if strings.HasSuffix(version, "-1") {
+		bare = strings.TrimSuffix(version, "-1")
+	}
+
+	bestRev := -1
 	bestName := ""
+
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -105,22 +105,34 @@ func highestRevisionOnDisk(root, name, version string) (string, bool) {
 		if strings.HasPrefix(n, ".build-") {
 			continue
 		}
-		if !strings.HasPrefix(n, prefix) {
-			continue
+		if n == version {
+			hasExact = true
 		}
-		rev, err := strconv.Atoi(n[len(prefix):])
-		if err != nil || rev < 0 {
-			continue
+		if bare != "" && n == bare {
+			hasBareForDashOne = true
 		}
-		if rev > best {
-			best = rev
-			bestName = n
+		if !hasDash && strings.HasPrefix(n, prefix) {
+			rev, err := strconv.Atoi(n[len(prefix):])
+			if err == nil && rev >= 0 && rev > bestRev {
+				bestRev = rev
+				bestName = n
+			}
 		}
 	}
-	if best < 0 {
-		return "", false
+
+	// Bare request: highest "<v>-<N>" wins over bare "<v>".
+	if !hasDash && bestRev >= 0 {
+		return bestName, true
 	}
-	return bestName, true
+	// Exact match.
+	if hasExact {
+		return version, true
+	}
+	// "-1" fallback to bare "<v>".
+	if hasBareForDashOne {
+		return bare, true
+	}
+	return version, false
 }
 
 // IsInstalled checks if a package version exists in the store.

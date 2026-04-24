@@ -82,6 +82,8 @@ func FetchNamed(rawURL, destPath, displayName string) error {
 				"  > Mirror fallback: %s\n", alt)
 			if ferr := fetchOnce(
 				alt, destPath, displayName); ferr == nil {
+				fmt.Fprintf(os.Stderr,
+					"  > Mirror fetched from: %s\n", alt)
 				return nil
 			}
 		}
