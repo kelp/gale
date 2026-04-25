@@ -1,5 +1,128 @@
 # Changelog
 
+## Unreleased
+
+Architectural review work — every Critical, High, Medium,
+and Observation finding from the 2026-04-18 review is now
+closed. See `gale-project/TODO.md` for the inventory.
+
+### Added
+
+- `[[repos]]` entries in `~/.gale/config.toml` are now
+  consulted by the install resolver in priority order
+  (lowest number wins) before falling back to the default
+  registry. `gale repo add <name> <url>` already cloned
+  and persisted these but the install path ignored them.
+  `gale install <pkg>` walks tap caches first; missing
+  cache dirs are skipped silently. Versioned fetches
+  (`pkg@1.2.3`) still go through the registry only.
+- Recipe `[binary.<platform>]` sections accept a
+  `trust = "sigstore" | "sha256-only"` field (default
+  `"sigstore"`). Default policy rejects non-`ghcr.io`
+  URLs before fetch with a message naming the field, the
+  current URL, and the opt-out. `"sha256-only"` is the
+  required opt-in for upstream tarball mirrors that
+  don't carry our Sigstore identity.
+- Recipe `[dependencies]` accepts inline-table form with
+  a `version` constraint:
+  `runtime = [{name = "openssl", version = ">=3.6.0-1"}]`.
+  Constraint is enforced at install time — a violated
+  pin fails the install with the dep, resolved version,
+  required constraint, and parent recipe all named.
+  Bare-string deps remain unconstrained.
+- Registry recipe fetches use ETag-based conditional
+  GETs against a content-addressed cache at
+  `~/.gale/cache/registry/`. First fetch populates
+  `<sha256(url)>/body` + `<sha256(url)>/etag`;
+  subsequent fetches send `If-None-Match` and return the
+  cached body on 304. Cache hit returns the *exact bytes*
+  the server would have returned, so any future
+  signature-verification layer sees identical input.
+- Mirror fallback now logs the URL that successfully
+  served the bytes (not just the URLs that were tried).
+
+### Fixed
+
+- Build environment no longer leaks host `HOME`,
+  `TMPDIR`, `CFLAGS`, `CC`, or `CXX` into recipe builds.
+  Each step gets per-build tempdirs under
+  `~/.gale/tmp/`, and unknown env keys no longer fall
+  back to the host. Recipes that need a specific
+  compiler set `CC=cc` inline; the declared
+  `toolchain = "llvm"` can no longer be bypassed by a
+  host `CC=gcc-11`.
+- Source builds are now reproducible: tarball mtimes
+  derive from `[source].released_at` (parsed as
+  YYYY-MM-DD UTC) instead of the wall clock, so two
+  back-to-back builds of the same recipe produce
+  byte-identical archives. `touchAll` now propagates
+  Walk errors except `ENOENT`; broken symlinks remain
+  tolerated for upstream test fixtures.
+- Generation rebuild fails loudly when a referenced
+  store directory is missing. `populateGeneration`'s
+  silent `continue` and `symlinkDir`'s silent srcDir
+  skip are gone; a new validate-before-swap step stats
+  every symlink target before `current` flips. Catches
+  concurrent `gale gc` or manual `rm -rf` of a store
+  dir between populate and swap. `gale sync` keeps the
+  lenient path (one failed install in a batch doesn't
+  block the rest).
+- The installer holds a store-rooted generation lock
+  around tarball extract, prefix fixups, farm populate,
+  `.gale-deps.toml` write, and store-dir rename. A
+  concurrent `gale sync` rebuilding the generation can
+  no longer walk a half-installed package.
+- Binary install fallback to source build now surfaces
+  errors from `os.RemoveAll` / `os.MkdirAll` on the
+  store dir. A wedged store gives a real wrapped error
+  message instead of letting the downstream tar
+  extraction fail confusingly.
+- `RestorePrefixPlaceholder` skips files whose first
+  512 bytes contain a null byte. Prevents a binary
+  file containing the placeholder string from being
+  silently mangled during prefix restore.
+- Recipe parser rejects unknown fields under
+  `[package]`, `[source]`, and `[binary.<platform>]`.
+  `source.sha265` typo (which used to silently parse)
+  now fails closed with `"unknown recipe field(s):
+  source.sha265"`.
+- Concurrent `gale gc` + install race tightened in
+  `store.resolveVersion`: one `os.ReadDir` instead of
+  three `os.Stat`s + a `ReadDir`. A single readdir
+  syscall is atomic on supported platforms, so a
+  partial removal mid-chain is no longer observable.
+- `gale remove gale` is refused before touching config
+  or store. Pointer to the bootstrap script instead.
+
+### Changed
+
+- Tap recipes (resolved through configured `[[repos]]`)
+  inherit `source.trust` from the recipe itself;
+  auto-deriving a per-tap GHCR base from the repo URL
+  is deferred. Tap recipes that want binary-first
+  installs must declare inline `[binary.<platform>]`
+  sections.
+- `gale repo list` output sorts by priority so the user
+  sees the install resolver's order.
+- `loadAIClient` moved out of `search.go` (search hasn't
+  used the AI client since fuzzy match landed). Now
+  lives with `create_recipe.go`, its only consumer.
+  `search.go` no longer pulls in `internal/ai`.
+
+### Internal
+
+- 44 testscript scenarios in `gale/integration/`,
+  matrixed across `macos-26` and `ubuntu-latest` in CI
+  (`Integration (Tier A)` step). New scripts pin the
+  binary trust default rejecting non-GHCR URLs, dep
+  constraint enforcement, and end-to-end deterministic
+  archive output.
+- `golangci-lint run ./...` reports 0 issues. Five
+  remaining false positives in trusted-path code (the
+  `gale run` exec resolver and the integration test
+  scaffolding) carry inline `nolint` rationale matching
+  the pattern in `internal/build` / `internal/download`.
+
 ## v0.13.1 — 2026-04-21
 
 ### Fixed
