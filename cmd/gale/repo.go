@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/repo"
@@ -108,7 +109,16 @@ var repoListCmd = &cobra.Command{
 			return nil
 		}
 
-		for _, r := range cfg.Repos {
+		// Configured repos are now consulted by the install
+		// resolver in priority order (lowest number wins),
+		// before the default registry. Show the order so the
+		// user can see what install/sync will see first.
+		sorted := make([]config.Repo, len(cfg.Repos))
+		copy(sorted, cfg.Repos)
+		sort.SliceStable(sorted, func(i, j int) bool {
+			return sorted[i].Priority < sorted[j].Priority
+		})
+		for _, r := range sorted {
 			fmt.Printf("%s (priority %d) %s\n", r.Name, r.Priority, r.URL)
 		}
 		return nil

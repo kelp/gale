@@ -31,8 +31,11 @@ func loadRecipeFile(path string, local bool) (*recipe.Recipe, error) {
 // resolveRecipeResolver constructs a RecipeResolver from
 // the --recipes flag value and working directory. When
 // recipesFlag is non-empty, returns a local resolver.
-// Otherwise returns a registry-based resolver. The returned
-// registry is nil when using local recipes.
+// Otherwise composes a chain: configured `[[repos]]` taps
+// (priority order, lowest number first) → registry. The
+// returned registry is nil when using local recipes; when
+// taps are wired in it remains non-nil so versioned fetches
+// still resolve through the registry.
 func resolveRecipeResolver(recipesFlag, cwd string) (installer.RecipeResolver, *registry.Registry, error) {
 	if recipesFlag != "" {
 		override := ""
@@ -45,8 +48,21 @@ func resolveRecipeResolver(recipesFlag, cwd string) (installer.RecipeResolver, *
 		}
 		return localRecipeResolver(recipesDir), nil, nil
 	}
+
+	repoResolvers, err := configuredRepoResolvers()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	reg := newRegistry()
-	return reg.FetchRecipe, reg, nil
+	if len(repoResolvers) == 0 {
+		return reg.FetchRecipe, reg, nil
+	}
+
+	chain := make([]installer.RecipeResolver, 0, len(repoResolvers)+1)
+	chain = append(chain, repoResolvers...)
+	chain = append(chain, reg.FetchRecipe)
+	return composeResolvers(chain...), reg, nil
 }
 
 // localRecipeResolver returns a RecipeResolver that reads
