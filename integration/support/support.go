@@ -278,7 +278,10 @@ func CmdGHReturns(ts *testscript.TestScript, neg bool, args []string) {
 	m := parseKV(args)
 	exitCode := 0
 	if v, ok := m["exit"]; ok {
-		fmt.Sscanf(v, "%d", &exitCode)
+		// Sscanf failure leaves exitCode at 0 — same as
+		// omitting the key. That matches the test contract:
+		// "exit=" alone means success.
+		_, _ = fmt.Sscanf(v, "%d", &exitCode)
 	}
 	if err := gh.SetState(exitCode, m["stdout"], m["stderr"]); err != nil {
 		ts.Fatalf("gale-gh-returns: %v", err)
@@ -313,7 +316,9 @@ func renderFile(ts *testscript.TestScript, src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0o644)
+	// G703 — dst is a fixture path the test scaffolding
+	// constructs; not user input.
+	return os.WriteFile(dst, data, 0o644) //nolint:gosec
 }
 
 // copyRecipes walks $FIXTURES/recipes/ and writes each
@@ -332,7 +337,10 @@ func copyRecipes(ts *testscript.TestScript, dst string) error {
 		if fi.IsDir() {
 			return os.MkdirAll(target, 0o755)
 		}
-		data, err := os.ReadFile(path)
+		// G122/G703 — src and target are fixture paths the
+		// test scaffolding constructs from $FIXTURES; the
+		// Walk callback runs over a tree we just laid down.
+		data, err := os.ReadFile(path) //nolint:gosec
 		if err != nil {
 			return err
 		}
@@ -342,7 +350,7 @@ func copyRecipes(ts *testscript.TestScript, dst string) error {
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, fi.Mode())
+		return os.WriteFile(target, data, fi.Mode()) //nolint:gosec
 	})
 }
 

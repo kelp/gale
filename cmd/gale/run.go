@@ -46,7 +46,12 @@ var runCmd = &cobra.Command{
 }
 
 func fileExecutable(path string) bool {
-	info, err := os.Stat(path)
+	// G703 false positive — `gale run <name>` is contractually
+	// user-controlled. We just want to know whether
+	// <binDir>/<name> is an executable regular file; a
+	// traversal name like "../etc/passwd" yields a Stat miss
+	// or non-executable mode and we fall through to LookPath.
+	info, err := os.Stat(path) //nolint:gosec
 	if err != nil || info.IsDir() {
 		return false
 	}
