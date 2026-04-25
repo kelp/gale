@@ -1,0 +1,27 @@
+# H2b — the build env must not pass through the host
+# CC/CXX. The declared toolchain (or the fallback
+# `cc`) is authoritative; a laptop with CC=gcc-11
+# exported for unrelated reasons must not get a
+# different compiler than CI.
+#
+# Approach: export CC and CXX to names that don't
+# resolve on PATH, then force the source path. If
+# the pass-through regresses, `make` picks up
+# `fakecc-does-not-exist` and compile errors before
+# install completes. With the scrub in place, gale
+# drops the host values and `make` uses the real
+# `cc` that the Makefile's `CC ?= cc` resolves to.
+
+[!exec:cc] skip
+
+gale-fixture recipes $WORK/recipes
+
+env CC=fakecc-does-not-exist
+env CXX=fakecxx-does-not-exist
+
+exec gale install hello-src --build -g --recipes=$WORK/recipes
+stderr 'Installed hello-src@1\.0'
+
+exists $HOME/.gale/pkg/hello-src/1.0-1/bin/hello-src
+exec $HOME/.gale/current/bin/hello-src
+stdout 'hello from gale integration source build'
