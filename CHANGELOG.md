@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.14.0 — 2026-04-24
 
 Architectural review work — every Critical, High, Medium,
 and Observation finding from the 2026-04-18 review is now
