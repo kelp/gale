@@ -1,0 +1,28 @@
+# O6 — a `[[repos]]` entry in ~/.gale/config.toml is
+# consulted by the install resolver before the
+# registry. A recipe the tap can serve must
+# short-circuit the registry entirely (first hit
+# wins in `composeResolvers`). That's the only way
+# `gale repo add` + a populated cache under
+# ~/.gale/repos/<name>/recipes does anything useful.
+#
+# Approach: render the hello recipe into a
+# handcrafted tap cache dir, wire a `[[repos]]`
+# entry into config.toml, and install without
+# --recipes. If the tap-wins path regresses the
+# install falls through to the real registry and
+# either errors or installs a different hello.
+
+gale-fixture render recipes/h/hello.toml.tmpl $HOME/.gale/repos/testtap/recipes/h/hello.toml
+
+cp config.toml $HOME/.gale/config.toml
+
+exec gale install hello -g
+stderr 'Installed hello@1\.0'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
+-- config.toml --
+[[repos]]
+name = "testtap"
+url = "https://example.com/testtap.git"
+priority = 0
