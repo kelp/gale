@@ -1,0 +1,28 @@
+# End-to-end determinism for source builds.
+# `gale build` of the same recipe must produce a
+# byte-identical archive across runs. Several layers
+# contribute: stable file ordering in the tar (Walk),
+# zero ModTime in tar headers (CreateTarZstd), single-
+# threaded zstd encoding (concurrency=1), and stable
+# source mtimes via touchAll(srcDir, sourceDateEpoch(r))
+# for build tools that bake mtimes in. Any one of those
+# regressing fails this cmp.
+#
+# Requires cc (any) in PATH. Skip on systems without.
+
+[!exec:cc] skip
+
+gale-fixture recipes $WORK/recipes
+
+# Build twice. Each `gale build` writes
+# <name>-<version>.tar.zst into the current directory.
+exec gale build $WORK/recipes/h/hello-src.toml --recipes=$WORK/recipes
+exists hello-src-1.0.tar.zst
+mv hello-src-1.0.tar.zst run1.tar.zst
+
+exec gale build $WORK/recipes/h/hello-src.toml --recipes=$WORK/recipes
+exists hello-src-1.0.tar.zst
+mv hello-src-1.0.tar.zst run2.tar.zst
+
+# Byte-for-byte identical.
+cmp run1.tar.zst run2.tar.zst

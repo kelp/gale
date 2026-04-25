@@ -1,0 +1,26 @@
+# Default `trust = "sigstore"` policy rejects non-ghcr.io
+# URLs before any fetch. The `trust = "sha256-only"` opt-in
+# is the only way to install a binary from a non-GHCR host.
+#
+# This pin would have caught the regression cycle where C3
+# landed without updating fixtures: every binary scenario
+# silently fell back to source build.
+
+gale-fixture recipes $WORK/recipes
+
+# Strip the trust opt-in from the fake-GHCR fixture so it
+# falls under the default policy. The fixture's URL points
+# at 127.0.0.1, which is not ghcr.io.
+exec sed -i.bak '/trust = "sha256-only"/d' $WORK/recipes/h/hello.toml
+
+# Install must fail. Binary is rejected by the trust check;
+# falls back to source; source URL serves nothing useful so
+# the source path errors too. The actionable message is the
+# trust-policy warning, asserted on stderr.
+! exec gale install hello -g --recipes=$WORK/recipes
+stderr 'binary trust policy: "sigstore" requires a ghcr.io URL'
+stderr 'set trust = "sha256-only" to opt out'
+
+# Nothing should land on disk when both binary and source
+# paths fail.
+! exists $HOME/.gale/pkg/hello/1.0-1

@@ -1,0 +1,31 @@
+# C4 — dep version constraints are enforced at install
+# time. Previously the resolver took whatever the
+# registry said was latest and the recipe's declared
+# constraint was advisory at best. Now `installDepsInner`
+# fails the parent install with a clear message naming
+# the dep, the resolved version, the required constraint,
+# and the parent recipe.
+#
+# Approach: rewrite hello-dep's runtime dep to require
+# hello>=2.0.0 (hello fixture is at 1.0), expect install
+# to refuse before any store mutation.
+
+gale-fixture recipes $WORK/recipes
+
+# Bare-string dep ["hello"] → inline-table dep with a
+# constraint hello@1.0 cannot satisfy.
+exec sed -i.bak 's/runtime = \["hello"\]/runtime = [{name = "hello", version = ">=2.0.0"}]/' $WORK/recipes/h/hello-dep.toml
+grep 'version = ">=2.0.0"' $WORK/recipes/h/hello-dep.toml
+
+# Install must fail with the constraint error. The four
+# pieces of context — dep name, resolved version, required
+# constraint, parent recipe — are all in the message so a
+# user can act on it.
+! exec gale install hello-dep -g --recipes=$WORK/recipes
+stderr 'dep "hello": resolved version 1\.0-1 does not satisfy constraint ">=2\.0\.0"'
+stderr 'declared in hello-dep'
+
+# No partial state — neither the parent nor the dep
+# landed in the store.
+! exists $HOME/.gale/pkg/hello-dep/1.0-1
+! exists $HOME/.gale/pkg/hello/1.0-1
