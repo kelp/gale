@@ -111,12 +111,39 @@ closed. See `gale-project/TODO.md` for the inventory.
 
 ### Internal
 
-- 44 testscript scenarios in `gale/integration/`,
-  matrixed across `macos-26` and `ubuntu-latest` in CI
-  (`Integration (Tier A)` step). New scripts pin the
-  binary trust default rejecting non-GHCR URLs, dep
-  constraint enforcement, and end-to-end deterministic
-  archive output.
+- End-to-end regression suite under `gale/integration/`
+  expanded to 47 testscript scenarios driving the real
+  `gale` binary against a fake GHCR + fake `gh` shim.
+  Matrixed across `macos-26` and `ubuntu-latest` in CI
+  (`Integration (Tier A)` step). Coverage spans:
+  - **install**: binary, source, cached, sha-mismatch,
+    not-found, dry-run, flag-conflict, source-cache-hit,
+    `--recipe` local file, `--recipes` local dir, install
+    via configured tap.
+  - **sync / update**: install-from-config, no-op,
+    `--build` flag forces source, lockfile refresh on
+    sha change, removed-symlink cleanup, dry-run,
+    outdated-after-rev-bump, pin-blocks-update.
+  - **resolver**: explicit revision, update after rev
+    bump, store bare-vs-canonical layout, configured-tap
+    precedence over registry.
+  - **gc**: reaps old revisions, retains runtime deps.
+  - **generations**: list, rollback, missing-store-dir
+    error path.
+  - **remove**: basic, then-reinstall, gale-self-guard.
+  - **add**: with/without install, multiple packages.
+  - **other CLI**: env, hook direnv, info, list, run,
+    which, doctor healthy, init project, config scope,
+    config version format.
+  - **architectural-review pins**: build env scrubs
+    host `HOME` (per-build `~/.gale/tmp/gale-home-*`),
+    build env ignores host `CC`/`CXX`, deterministic
+    archive output (build-twice + cmp), default
+    `trust = "sigstore"` rejects non-GHCR URLs, dep
+    constraint violation fails install with the right
+    message, recipe parser rejects unknown
+    `[package]`/`[source]` fields, gale-self-remove
+    guarded.
 - `golangci-lint run ./...` reports 0 issues. Five
   remaining false positives in trusted-path code (the
   `gale run` exec resolver and the integration test
