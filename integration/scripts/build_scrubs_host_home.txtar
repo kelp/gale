@@ -1,0 +1,23 @@
+# H1 — the build env must not leak the host HOME.
+# `buildEnv` mints a per-build tempdir under
+# ~/.gale/tmp/gale-home-* and exports it as HOME to
+# the build step. Autotools, libtool, and some CMake
+# artifacts bake absolute paths into generated files;
+# letting the real user HOME through contaminates
+# every downstream archive with the machine it was
+# built on.
+#
+# Approach: hello-envprobe's build step captures
+# `$HOME` into a file that ends up in the installed
+# package. Read it back and assert the path is rooted
+# at the scoped tempdir. If the scrub regresses the
+# file contains $WORK/home directly and the grep
+# fails.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello-envprobe --build -g --recipes=$WORK/recipes
+stderr 'Installed hello-envprobe@1\.0'
+
+exists $HOME/.gale/pkg/hello-envprobe/1.0-1/bin/gale-home.txt
+grep '\.gale/tmp/gale-home-' $HOME/.gale/pkg/hello-envprobe/1.0-1/bin/gale-home.txt
