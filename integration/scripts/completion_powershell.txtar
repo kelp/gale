@@ -1,0 +1,6 @@
+# `gale completion powershell` emits a PowerShell completion
+# script. Cobra-generated scripts use Register-ArgumentCompleter.
+
+exec gale completion powershell
+stdout 'Register-ArgumentCompleter'
+stdout 'gale'

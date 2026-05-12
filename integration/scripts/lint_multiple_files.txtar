@@ -1,0 +1,15 @@
+# `gale lint` accepts multiple recipes. When any file has
+# errors the run as a whole exits non-zero. The good recipe
+# emits no error lines; the bad one prints all three of its
+# missing-field errors.
+
+gale-fixture recipes $WORK/recipes
+
+! exec gale lint $WORK/recipes/h/hello-src.toml $FIXTURES/recipes-invalid/b/broken.toml
+# Errors are tagged with "xxx " by the output formatter.
+# The good file must not generate any.
+! stderr 'xxx \$WORK/recipes/h/hello-src\.toml'
+# The bad file's errors are present.
+stderr 'broken\.toml.*source\.url'
+stderr 'broken\.toml.*build steps'
+stderr 'lint errors found'

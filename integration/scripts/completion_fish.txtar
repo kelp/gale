@@ -1,0 +1,4 @@
+# `gale completion fish` emits a fish completion script.
+
+exec gale completion fish
+stdout 'complete -c gale'

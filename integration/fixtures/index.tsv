@@ -1,0 +1,6 @@
+hello	integration test fixture
+hello-dep	dep used by hello
+hello-src	integration test fixture — source build
+hello-envprobe	build environment probe fixture
+ripgrep	fast recursive grep
+jq	command-line JSON processor

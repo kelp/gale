@@ -94,8 +94,9 @@ type FakeGHCR struct {
 	server   *httptest.Server
 	payloads *Payloads
 
-	mu    sync.Mutex
-	serve map[string]string // URL path → payload name
+	mu      sync.Mutex
+	serve   map[string]string // URL path → payload name
+	content map[string][]byte // URL path → raw bytes (for index.tsv etc.)
 }
 
 // StartFakeGHCR launches an httptest server. The server
@@ -104,7 +105,11 @@ type FakeGHCR struct {
 // registered under /blobs/<name>/any.
 func StartFakeGHCR(t *testing.T, payloads *Payloads) *FakeGHCR {
 	t.Helper()
-	fg := &FakeGHCR{payloads: payloads, serve: make(map[string]string)}
+	fg := &FakeGHCR{
+		payloads: payloads,
+		serve:    make(map[string]string),
+		content:  make(map[string][]byte),
+	}
 	fg.server = httptest.NewServer(http.HandlerFunc(fg.handle))
 	fg.URL = fg.server.URL
 	// Default routes:
@@ -143,10 +148,24 @@ func (fg *FakeGHCR) Register(urlPath, payloadName string) {
 	fg.serve[urlPath] = payloadName
 }
 
+// RegisterContent serves raw bytes at urlPath. Used for
+// non-tarball responses like index.tsv or .versions files.
+func (fg *FakeGHCR) RegisterContent(urlPath string, body []byte) {
+	fg.mu.Lock()
+	defer fg.mu.Unlock()
+	fg.content[urlPath] = body
+}
+
 func (fg *FakeGHCR) handle(w http.ResponseWriter, r *http.Request) {
 	fg.mu.Lock()
+	body, hasBody := fg.content[r.URL.Path]
 	name, ok := fg.serve[r.URL.Path]
 	fg.mu.Unlock()
+	if hasBody {
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write(body)
+		return
+	}
 	if !ok {
 		http.NotFound(w, r)
 		return
@@ -174,7 +193,9 @@ type FakeGH struct {
 }
 
 // WriteFakeGH creates a shell script named "gh" in a new
-// dir. Default state: exit 0 with no output.
+// dir. Default state: exit 0 with no output. Every
+// invocation appends its full argv to <dir>/log so tests
+// can assert on the args gale passed.
 func WriteFakeGH(t *testing.T, workDir string) *FakeGH {
 	t.Helper()
 	dir := filepath.Join(workDir, "fake-gh")
@@ -188,6 +209,8 @@ func WriteFakeGH(t *testing.T, workDir string) *FakeGH {
 	script := filepath.Join(dir, "gh")
 	body := "#!/bin/sh\n" +
 		"state=\"" + state + "\"\n" +
+		"log=\"" + filepath.Join(dir, "log") + "\"\n" +
+		"printf '%s\\n' \"$*\" >> \"$log\"\n" +
 		"exitcode=$(sed -n '1p' \"$state\")\n" +
 		"stdout=$(sed -n '2p' \"$state\")\n" +
 		"stderr=$(sed -n '3p' \"$state\")\n" +
@@ -257,6 +280,19 @@ func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 			ts.Fatalf("no ghcr in env")
 		}
 		ghcr.Register(args[1], args[2])
+	case "serve-file":
+		if len(args) != 3 {
+			ts.Fatalf("gale-fixture serve-file: needs <url-path> <src-file>")
+		}
+		ghcr, _ := ts.Value("ghcr").(*FakeGHCR)
+		if ghcr == nil {
+			ts.Fatalf("no ghcr in env")
+		}
+		body, err := os.ReadFile(ts.MkAbs(args[2])) //nolint:gosec
+		if err != nil {
+			ts.Fatalf("gale-fixture serve-file: %v", err)
+		}
+		ghcr.RegisterContent(args[1], body)
 	default:
 		ts.Fatalf("gale-fixture: unknown subcommand %q", args[0])
 	}

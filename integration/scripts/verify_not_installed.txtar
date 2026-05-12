@@ -1,0 +1,6 @@
+# `gale verify` can only inspect packages that exist in the
+# lockfile. A typoed name should fail with a clear "not in
+# lockfile" message — not surprise us by trying to fetch.
+
+! exec gale verify nonexistent
+stderr 'not found in lockfile|install it first'

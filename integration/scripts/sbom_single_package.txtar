@@ -1,0 +1,18 @@
+# `gale sbom <pkg>` filters output to that one package even
+# when multiple are installed.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exec gale install hello-dep -g --recipes=$WORK/recipes
+
+# Filter for hello-dep so the substring match doesn't
+# accidentally pass on the hello row. The output is column-
+# aligned by tabwriter — pin the package column with ^.
+exec gale sbom hello-dep
+stdout '^hello-dep'
+! stdout '^hello\s'
+
+# Asking for a name that isn't in gale.toml fails loudly.
+! exec gale sbom nonexistent
+stderr 'not found in gale\.toml'

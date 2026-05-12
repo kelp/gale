@@ -1,0 +1,8 @@
+# `gale inspect <pkg>` on a package that was never installed
+# must fail with a clear message — silent success would mask
+# a typo or stale CI invocation.
+
+gale-fixture recipes $WORK/recipes
+
+! exec gale inspect hello --recipes=$WORK/recipes
+stderr 'not installed'

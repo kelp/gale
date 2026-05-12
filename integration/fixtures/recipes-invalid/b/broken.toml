@@ -1,0 +1,6 @@
+[package]
+name = "broken"
+version = "1.0"
+
+# Required fields source.url, source.sha256, and build steps
+# are intentionally missing so lint must report errors.

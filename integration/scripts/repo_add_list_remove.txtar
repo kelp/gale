@@ -1,0 +1,38 @@
+# Full lifecycle: add a tap, list it, remove it. After
+# remove, both the config entry and the local cache must be
+# gone. We use a local git repo so `gale repo add` clones
+# something real — the network is offline in tests.
+
+# Build a tiny tap repo with one recipe.
+mkdir $WORK/tap-src
+mkdir $WORK/tap-src/recipes
+mkdir $WORK/tap-src/recipes/h
+gale-fixture render recipes/h/hello.toml.tmpl $WORK/tap-src/recipes/h/hello.toml
+
+exec git -C $WORK/tap-src init -q
+exec git -C $WORK/tap-src config user.email test@example.com
+exec git -C $WORK/tap-src config user.name test
+exec git -C $WORK/tap-src add .
+exec git -C $WORK/tap-src commit -q -m init
+
+# Add. Cache must materialise under ~/.gale/repos/.
+exec gale repo add mytap $WORK/tap-src
+stderr 'Added repo mytap'
+exists $HOME/.gale/repos/mytap
+exists $HOME/.gale/config.toml
+grep 'mytap' $HOME/.gale/config.toml
+
+# List. Must show the configured entry and the priority field.
+exec gale repo list
+stdout 'mytap'
+stdout 'priority'
+
+# Remove. Config entry and cache both gone.
+exec gale repo remove mytap
+stderr 'Removed repo mytap'
+! exists $HOME/.gale/repos/mytap
+! grep 'mytap' $HOME/.gale/config.toml
+
+# Second list confirms the empty path again.
+exec gale repo list
+! stdout 'mytap'

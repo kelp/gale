@@ -1,0 +1,30 @@
+# `gale update --build` forces the source build path even
+# when a prebuilt binary is available. After a revision bump
+# the new install must report "built from source", not
+# "from binary".
+#
+# Requires cc (any) in PATH.
+
+[!exec:cc] skip
+
+# Stage hello-src + a second-revision template so we have
+# something to update. (hello.toml has no [build] block — we
+# need hello-src which is source-only.)
+mkdir $WORK/recipes
+mkdir $WORK/recipes/h
+gale-fixture render recipes/h/hello-src.toml.tmpl $WORK/recipes/h/hello-src.toml
+
+exec gale install hello-src -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello-src/1.0-1
+
+# Hand-edit the recipe to bump revision (no rev2 fixture for
+# hello-src; just write a new one in place).
+exec sh -c 'sed "s/^version = \"1.0\"$/version = \"1.0\"\nrevision = 2/" $WORK/recipes/h/hello-src.toml > $WORK/recipes/h/hello-src.new.toml && mv $WORK/recipes/h/hello-src.new.toml $WORK/recipes/h/hello-src.toml'
+
+# Update with --build: must rebuild from source.
+exec gale update hello-src --build --recipes=$WORK/recipes
+stderr 'built from source'
+! stderr 'from binary'
+
+# rev-2 directory must now exist.
+exists $HOME/.gale/pkg/hello-src/1.0-2

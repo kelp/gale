@@ -1,0 +1,15 @@
+# `gale sbom --json` emits an array of entries with structured
+# fields. The archive SHA must come from the lockfile and
+# match the payload we served. No table header should leak
+# into JSON mode.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+
+exec gale sbom --json
+stdout '"name": "hello"'
+stdout '"version": "1\.0"'
+stdout '"archive_sha256": "'$HELLO_PAYLOAD_SHA'"'
+# No table header in JSON mode.
+! stdout 'PACKAGE.*VERSION'

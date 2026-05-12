@@ -1,0 +1,11 @@
+# `gale inspect --json` emits an empty array (not null) when
+# no issues are found. JSON consumers depend on this shape.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+
+exec gale inspect hello --json --recipes=$WORK/recipes
+stdout '^\[\]$'
+# No human prose should leak into stdout in JSON mode.
+! stdout 'no issues'

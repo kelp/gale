@@ -1,0 +1,12 @@
+# `gale inspect` exits non-zero when issues are found and
+# names them. hello-dep's recipe declares a runtime dep on
+# hello but its binary never references hello — a classic
+# over-declared-dep case.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello-dep -g --recipes=$WORK/recipes
+
+! exec gale inspect hello-dep --recipes=$WORK/recipes
+stderr 'over-declared-dep'
+stderr 'hello'

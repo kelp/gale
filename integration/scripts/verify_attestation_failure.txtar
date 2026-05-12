@@ -1,0 +1,10 @@
+# When `gh attestation verify` exits non-zero, `gale verify`
+# must report the failure rather than swallowing the error.
+
+gale-fixture recipes $WORK/recipes
+exec gale install hello -g --recipes=$WORK/recipes
+
+gale-gh-returns exit=1 stderr=no-attestation-found
+
+! exec gale verify hello
+stderr 'verification failed'

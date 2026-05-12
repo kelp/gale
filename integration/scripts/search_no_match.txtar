@@ -1,0 +1,16 @@
+# `gale search` reports "no packages found" rather than
+# silently exiting 0 with empty output.
+
+gale-fixture serve-file /index.tsv $FIXTURES/index.tsv
+
+cp config.toml $HOME/.gale/config.toml
+exec sh -c 'sed -i.bak "s|__GHCR_URL__|$GHCR_URL|" $HOME/.gale/config.toml'
+
+exec gale search zzzzznotapackage
+stderr 'No packages found'
+# stdout has no package lines.
+! stdout 'hello'
+
+-- config.toml --
+[registry]
+url = "__GHCR_URL__"

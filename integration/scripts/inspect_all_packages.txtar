@@ -1,0 +1,10 @@
+# `gale inspect --all` scans every installed package. With a
+# single clean install, inspect uses the single-result path
+# and reports the package@version followed by "no issues".
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+
+exec gale inspect --all --recipes=$WORK/recipes
+stderr 'hello@1\.0-1: no issues'

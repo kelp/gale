@@ -1,0 +1,5 @@
+# `gale completion zsh` emits a valid zsh completion script.
+
+exec gale completion zsh
+stdout '#compdef _gale gale|#compdef gale'
+stdout '_gale'

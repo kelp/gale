@@ -1,0 +1,8 @@
+# `gale hook` is restricted to direnv. Other shells reach
+# env.GenerateHook which returns ErrUnsupportedShell.
+
+! exec gale hook bash
+stderr 'unsupported shell'
+
+! exec gale hook zsh
+stderr 'unsupported shell'

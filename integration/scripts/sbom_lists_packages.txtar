@@ -1,0 +1,19 @@
+# `gale sbom` lists every installed package with version and
+# archive hash from gale.lock. We anchor row assertions to
+# `^name\s` so the `hello-dep` row can't accidentally satisfy
+# the `hello` check (substring matching would let that
+# through).
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exec gale install hello-dep -g --recipes=$WORK/recipes
+
+exec gale sbom
+stdout 'PACKAGE'
+# Anchor to start-of-row so `hello-dep` row doesn't satisfy
+# the `hello` assertion alone.
+stdout '^hello\s'
+stdout '^hello-dep\s'
+# Version column.
+stdout '1\.0'

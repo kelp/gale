@@ -1,0 +1,16 @@
+# `gale generations diff <from> <to>` reports what changed
+# between two generations. Install one package, then a
+# second — gen 1 has only hello, gen 2 has hello + hello-dep.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exec gale install hello-dep -g --recipes=$WORK/recipes
+
+exec gale generations diff 1 2
+# Diff must show hello-dep as added between the two gens.
+stdout '\+ hello-dep'
+# Hello was present in both gens — it must not show as
+# added. We anchor to `hello@` to avoid matching hello-dep
+# (which starts with "hello-").
+! stdout '\+ hello@'

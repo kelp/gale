@@ -1,0 +1,10 @@
+[package]
+name = "bad-sha"
+version = "1.0"
+
+[source]
+url = "https://example.com/bad.tar.gz"
+sha256 = "not-a-real-hash"
+
+[build]
+steps = ["true"]

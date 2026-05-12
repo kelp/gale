@@ -1,0 +1,9 @@
+# `gale lint` on a recipe missing required fields reports
+# errors and exits non-zero. The fixture omits source.url,
+# source.sha256, and build steps — three distinct errors.
+
+! exec gale lint $FIXTURES/recipes-invalid/b/broken.toml
+stderr 'source\.url'
+stderr 'source\.sha256'
+stderr 'build steps'
+stderr 'lint errors found'

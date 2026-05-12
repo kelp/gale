@@ -1,0 +1,27 @@
+# `gale doctor --repair` rebuilds the active generation from
+# the config + store. The sandbox PATH never includes
+# $HOME/.gale/current/bin, so doctor always exits non-zero
+# from the PATH check (see doctor_healthy.txtar). The
+# regression we care about: after wiping the `current`
+# symlink, --repair restores it and the "No active generation"
+# error goes away.
+
+gale-fixture recipes $WORK/recipes
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/current/bin/hello
+
+# Wipe the current symlink. Doctor must now flag the
+# missing generation.
+exec rm $HOME/.gale/current
+! exec gale doctor
+stderr 'No active generation'
+
+# Repair. The final doctor pass still exits non-zero because
+# of PATH, but the generation must have been rebuilt.
+! exec gale doctor --repair
+stderr 'Repaired Gale generations'
+exists $HOME/.gale/current/bin/hello
+
+# The "No active generation" error must no longer appear.
+! exec gale doctor
+! stderr 'No active generation'

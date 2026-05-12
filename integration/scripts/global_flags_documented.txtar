@@ -1,0 +1,26 @@
+# The global flags `--no-color`, `--plain`, and
+# `--error-format` are not meaningfully testable in a
+# non-TTY testscript environment: `color`/`steps`/`progress`
+# are already off when stderr isn't a terminal, so setting
+# `--no-color` or `--plain` produces the same output. The
+# value of testing them here is to confirm the flag wiring
+# survives — they appear in --help and the command accepts
+# them without error.
+
+# Documented in help output.
+exec gale --help
+stderr '--no-color'
+stderr '--plain'
+stderr '--quiet'
+stderr '--error-format'
+stderr '--dry-run'
+stderr '--verbose'
+
+# Each flag is accepted on a real command (not "unknown flag").
+gale-fixture recipes $WORK/recipes
+exec gale install hello -g --no-color --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+
+exec gale remove hello -g
+exec gale install hello -g --plain --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello

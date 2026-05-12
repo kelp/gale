@@ -1,0 +1,10 @@
+# `gale repo init <name>` scaffolds a new recipe repo with the
+# letter-bucketed layout. The recipes/ subdir is what makes the
+# directory recognisable to the local resolver.
+
+cd $WORK
+exec gale repo init mytap
+stderr 'Initialized repo mytap'
+
+exists $WORK/mytap
+exists $WORK/mytap/recipes

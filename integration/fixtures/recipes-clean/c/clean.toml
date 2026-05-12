@@ -1,0 +1,17 @@
+[package]
+name = "clean"
+version = "1.0"
+description = "fully lint-clean recipe fixture"
+license = "MIT"
+homepage = "https://example.com/clean"
+
+[source]
+url = "https://github.com/example/clean/archive/v1.0.tar.gz"
+sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
+repo = "example/clean"
+
+[build]
+steps = [
+  "install -d ${PREFIX}/bin",
+  "install clean ${PREFIX}/bin/clean",
+]

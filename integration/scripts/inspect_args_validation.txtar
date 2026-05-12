@@ -1,0 +1,11 @@
+# `gale inspect` requires either a package name or --all.
+# Neither is an error; both together is also an error.
+
+! exec gale inspect
+stderr 'specify a package name or pass --all'
+
+gale-fixture recipes $WORK/recipes
+exec gale install hello -g --recipes=$WORK/recipes
+
+! exec gale inspect hello --all --recipes=$WORK/recipes
+stderr '--all cannot be combined with a package name'

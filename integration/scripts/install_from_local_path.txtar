@@ -1,0 +1,38 @@
+# `gale install --path <dir>` builds from a local source
+# directory. Version is derived from `git describe`. We tag
+# the working tree so the version is a clean semver (without
+# the `+<hash>` build-metadata suffix that confuses store
+# lookups).
+#
+# Requires cc + git. Skip if either is missing.
+
+[!exec:cc] skip
+[!exec:git] skip
+
+# Stage a git working tree of the hello-src fixture.
+mkdir $WORK/hello-src
+cp $FIXTURES/payloads/hello-src/Makefile $WORK/hello-src/Makefile
+cp $FIXTURES/payloads/hello-src/hello.c $WORK/hello-src/hello.c
+
+exec git -C $WORK/hello-src init -q
+exec git -C $WORK/hello-src config user.email test@example.com
+exec git -C $WORK/hello-src config user.name test
+exec git -C $WORK/hello-src add .
+exec git -C $WORK/hello-src commit -q -m init
+# Tag the commit so `git describe` returns a clean version.
+exec git -C $WORK/hello-src tag v0.1.0
+
+# Stage the recipe.
+gale-fixture recipes $WORK/recipes
+
+# Install from the local path with the explicit recipe.
+exec gale install hello-src --path $WORK/hello-src --recipe $WORK/recipes/h/hello-src.toml -g
+stderr 'Installed hello-src@'
+stderr 'from local source'
+
+# Version comes from `git describe --tags`: "v0.1.0" → "0.1.0".
+exists $HOME/.gale/pkg/hello-src/0.1.0-1/bin/hello-src
+exists $HOME/.gale/current/bin/hello-src
+
+exec $HOME/.gale/current/bin/hello-src
+stdout 'hello from gale integration source build'

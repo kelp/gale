@@ -1,0 +1,10 @@
+# `gale inspect <pkg>` scans installed binaries for linkage
+# problems. The hello fixture is a tiny self-contained binary
+# with no external library deps, so it must report no issues.
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+
+exec gale inspect hello --recipes=$WORK/recipes
+stderr 'hello@1\.0-1.*no issues|no issues'

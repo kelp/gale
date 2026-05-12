@@ -1,0 +1,7 @@
+# `gale lint` flags a non-hex source.sha256 as an error
+# even when the recipe is otherwise complete.
+
+! exec gale lint $FIXTURES/recipes-invalid/b/bad-sha.toml
+stderr 'source\.sha256'
+stderr 'not-a-real-hash|not valid'
+stderr 'lint errors found'

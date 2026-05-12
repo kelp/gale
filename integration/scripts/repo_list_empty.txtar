@@ -1,0 +1,8 @@
+# With no config.toml, `gale repo list` reports the empty
+# state explicitly. Silent empty output would hide a missing
+# config file from operators.
+
+! exists $HOME/.gale/config.toml
+
+exec gale repo list
+stdout 'No repositories configured'

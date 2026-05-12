@@ -1,0 +1,32 @@
+# `--quiet` suppresses informational and success lines from
+# install. We pair the assertion with a baseline run that
+# confirms those lines ARE printed without --quiet — so a
+# regression that universally hid the lines (e.g. someone
+# breaking the Info() / Success() methods) would fail the
+# baseline assertion, not the quiet one.
+
+gale-fixture recipes $WORK/recipes
+
+# Baseline: --quiet is NOT set, all status lines must appear.
+exec gale install hello -g --recipes=$WORK/recipes
+stderr 'Fetching recipe for'
+stderr 'Installing hello@'
+stderr 'Installed hello@'
+
+# Wipe and reinstall under --quiet. Remove may leave an
+# empty parent dir, so check the version-specific subdir.
+exec gale remove hello -g
+! exists $HOME/.gale/pkg/hello/1.0-1
+! exists $HOME/.gale/current/bin/hello
+
+exec gale install hello -g --quiet --recipes=$WORK/recipes
+# Info() lines (Fetching/Installing) gate only on `o.quiet`,
+# not on TTY, so they distinguish the flag's behavior.
+! stderr 'Fetching recipe for'
+! stderr 'Installing hello@'
+# Success() also gates on `o.quiet`.
+! stderr 'Installed hello@'
+
+# Result still landed in the store — install is silent, not skipped.
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello

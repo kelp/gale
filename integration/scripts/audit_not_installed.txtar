@@ -1,0 +1,6 @@
+# `gale audit` can only verify packages we have a lockfile
+# entry for. A typoed name fails fast rather than firing off
+# a useless build.
+
+! exec gale audit nonexistent
+stderr 'not found in lockfile|install it first'

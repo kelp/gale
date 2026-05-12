@@ -1,0 +1,7 @@
+# `gale lint` on a clean recipe (no errors, no warnings)
+# exits 0 AND prints the "ok" confirmation line — proof the
+# file was actually processed, not silently skipped.
+
+exec gale lint $FIXTURES/recipes-clean/c/clean.toml
+stderr 'clean\.toml: ok'
+! stderr 'lint errors found'

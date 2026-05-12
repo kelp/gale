@@ -1,0 +1,22 @@
+# `gale verify <pkg>` shells out to `gh attestation verify`.
+# The fake gh returns exit 0 by default and logs every call
+# under $WORK/fake-gh/log, so we can also confirm gh was
+# really invoked with the right OCI URI — not short-
+# circuited away to silent success.
+
+gale-fixture recipes $WORK/recipes
+exec gale install hello -g --recipes=$WORK/recipes
+
+# Pre-verify: gh log is empty (install doesn't call gh — our
+# trust=sha256-only fixture skips attestation on install).
+! exists $WORK/fake-gh/log
+
+# Run verify.
+exec gale verify hello
+stderr 'attestation verified'
+
+# Post-verify: gh was invoked at least once, and the argv
+# contains both the OCI URI and the recipes repo.
+exists $WORK/fake-gh/log
+grep 'oci://ghcr\.io/kelp/gale-recipes/hello' $WORK/fake-gh/log
+grep 'attestation' $WORK/fake-gh/log

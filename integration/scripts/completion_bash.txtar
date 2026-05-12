@@ -1,0 +1,9 @@
+# `gale completion bash` emits a valid bash completion script.
+# Bash completion scripts use the `complete` builtin and the
+# cobra-generated bridge `__gale_*` functions.
+
+exec gale completion bash
+stdout '_gale'
+stdout 'complete '
+# Cobra v1.x emits a marker comment we can pin against.
+stdout 'bash completion'
