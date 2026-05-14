@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.15.0 — 2026-05-14
+
+### Added
+
+- Build sandbox now wires up `sccache` when it's on the
+  host PATH. Detection is implicit: install sccache on
+  the host (in CI via `mozilla-actions/sccache-action`)
+  and the sandbox auto-sets `RUSTC_WRAPPER=sccache`,
+  symlinks the binary into the build tools dir, and
+  forwards a narrow allowlist of configuration env vars
+  — any `SCCACHE_*` key plus `ACTIONS_CACHE_URL`,
+  `ACTIONS_RUNTIME_TOKEN`, `ACTIONS_RESULTS_URL`, and
+  `ACTIONS_CACHE_SERVICE_V2`. Forwarding is gated on
+  sccache resolving via the host PATH — wrapper config
+  is never passed to a build that can't run the wrapper.
+  Recipe `[build] env` `RUSTC_WRAPPER` overrides the
+  auto-wiring (including `""` to opt out). No general
+  env passthrough knob was added; the existing CC/CXX/
+  CFLAGS seal stays intact.
+
 ## v0.14.1 — 2026-05-14
 
 ### Fixed
