@@ -727,7 +727,60 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 		env = append(env, k+"="+v)
 	}
 
+	// Narrow opt-in: sccache. Only wires up when the binary
+	// is on the host PATH — recipe-declared values above
+	// already won via setDefault, so an explicit recipe
+	// RUSTC_WRAPPER (including an opt-out empty string) is
+	// honored.
+	for _, e := range sccacheEnv() {
+		k, v, _ := strings.Cut(e, "=")
+		setDefault(&env, k, v)
+	}
+
 	return env, cleanup, nil
+}
+
+// sccacheEnv returns env vars that wire sccache into the
+// build: RUSTC_WRAPPER=sccache plus any host SCCACHE_* and
+// GitHub-Actions cache vars that configure its backends.
+// Returns nil when sccache is not on the host PATH —
+// forwarding wrapper config without the wrapper itself just
+// produces confusing failures inside rustc.
+//
+// Forwarded keys:
+//   - RUSTC_WRAPPER (set to "sccache")
+//   - any SCCACHE_* host env var
+//   - ACTIONS_CACHE_URL, ACTIONS_RUNTIME_TOKEN,
+//     ACTIONS_RESULTS_URL, ACTIONS_CACHE_SERVICE_V2
+//
+// Caller merges via setDefault so [build] env keys win.
+func sccacheEnv() []string {
+	if _, err := exec.LookPath("sccache"); err != nil {
+		return nil
+	}
+	env := []string{"RUSTC_WRAPPER=sccache"}
+	for _, e := range os.Environ() {
+		k, _, ok := strings.Cut(e, "=")
+		if !ok {
+			continue
+		}
+		if !strings.HasPrefix(k, "SCCACHE_") && !isActionsCacheKey(k) {
+			continue
+		}
+		env = append(env, e)
+	}
+	return env
+}
+
+func isActionsCacheKey(k string) bool {
+	switch k {
+	case "ACTIONS_CACHE_URL",
+		"ACTIONS_RUNTIME_TOKEN",
+		"ACTIONS_RESULTS_URL",
+		"ACTIONS_CACHE_SERVICE_V2":
+		return true
+	}
+	return false
 }
 
 // setDefault appends key=val to env only if key is not
@@ -771,7 +824,7 @@ func buildPath(home, toolsDir string) string {
 	// If a tool lives in a well-known base directory, no
 	// symlink is needed. Otherwise, symlink just that binary
 	// into toolsDir to avoid pulling in the whole directory.
-	tools := []string{"go", "cargo", "rustc", "cmake", "autoconf", "automake", "libtool", "meson", "ninja", "zig", "python3", "pip3", "ruby", "gem"}
+	tools := []string{"go", "cargo", "rustc", "sccache", "cmake", "autoconf", "automake", "libtool", "meson", "ninja", "zig", "python3", "pip3", "ruby", "gem"}
 	baseSet := map[string]bool{}
 	for _, d := range base {
 		baseSet[d] = true

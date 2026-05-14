@@ -425,3 +425,244 @@ func TestTouchAllPropagatesWalkErrors(t *testing.T) {
 
 // Test helpers are shared with build_test.go:
 // createSourceTarGz, serveFile, envToMap.
+
+// --- sccache: narrow opt-in passthrough for Rust caching ---
+
+// fakeSccacheOnPATH plants an executable named "sccache" in
+// a tempdir and sets PATH to that directory (plus /usr/bin
+// and /bin so other tools resolve). Lets buildEnv/buildPath
+// detect sccache via exec.LookPath without depending on the
+// host environment.
+func fakeSccacheOnPATH(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "sccache")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake sccache: %v", err)
+	}
+	t.Setenv("PATH", dir+":/usr/bin:/bin")
+}
+
+// TestBuildEnvNoSccacheLeavesWrapperUnset: when sccache is
+// not on the host PATH, the sandbox must not advertise it.
+// Setting RUSTC_WRAPPER=sccache for a wrapper that won't
+// resolve makes every rustc invocation fail with a confusing
+// "sccache: command not found".
+func TestBuildEnvNoSccacheLeavesWrapperUnset(t *testing.T) {
+	// PATH without sccache anywhere.
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("SCCACHE_GHA_ENABLED", "")
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	m := envToMap(env)
+
+	if got, ok := m["RUSTC_WRAPPER"]; ok {
+		t.Errorf("RUSTC_WRAPPER = %q with sccache absent, want unset", got)
+	}
+	for k := range m {
+		if strings.HasPrefix(k, "SCCACHE_") {
+			t.Errorf("env leaked %s=%q with sccache absent", k, m[k])
+		}
+	}
+}
+
+// TestBuildEnvSccachePresentSetsWrapper: detecting sccache
+// on host PATH flips two things on simultaneously — the
+// RUSTC_WRAPPER env var so cargo/rustc shim through it, and
+// the sandbox PATH so the wrapper binary actually resolves.
+// Either alone is broken; tested together.
+func TestBuildEnvSccachePresentSetsWrapper(t *testing.T) {
+	fakeSccacheOnPATH(t)
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	m := envToMap(env)
+
+	if got := m["RUSTC_WRAPPER"]; got != "sccache" {
+		t.Errorf("RUSTC_WRAPPER = %q, want %q", got, "sccache")
+	}
+
+	// The sandbox PATH must resolve sccache. buildPath puts
+	// resolved tools into a symlink directory; walking the
+	// PATH and checking that <dir>/sccache exists is the
+	// invariant a build step would rely on.
+	if !pathHasExecutable(m["PATH"], "sccache") {
+		t.Errorf("sandbox PATH=%q does not resolve sccache", m["PATH"])
+	}
+}
+
+// TestBuildEnvPassesGitHubActionsCacheVars: when sccache is
+// the active wrapper, the GitHub Actions cache backend needs
+// a handful of runner-provided env vars to reach the build
+// step. Only forward them when sccache is the wrapper —
+// passing GHA tokens into a vanilla local build is needless
+// surface area.
+func TestBuildEnvPassesGitHubActionsCacheVars(t *testing.T) {
+	fakeSccacheOnPATH(t)
+	t.Setenv("SCCACHE_GHA_ENABLED", "true")
+	t.Setenv("ACTIONS_CACHE_URL", "https://example/cache")
+	t.Setenv("ACTIONS_RUNTIME_TOKEN", "secret-token")
+	t.Setenv("ACTIONS_RESULTS_URL", "https://example/results")
+	t.Setenv("ACTIONS_CACHE_SERVICE_V2", "true")
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	m := envToMap(env)
+
+	want := map[string]string{
+		"SCCACHE_GHA_ENABLED":      "true",
+		"ACTIONS_CACHE_URL":        "https://example/cache",
+		"ACTIONS_RUNTIME_TOKEN":    "secret-token",
+		"ACTIONS_RESULTS_URL":      "https://example/results",
+		"ACTIONS_CACHE_SERVICE_V2": "true",
+	}
+	for k, v := range want {
+		if m[k] != v {
+			t.Errorf("%s = %q, want %q", k, m[k], v)
+		}
+	}
+}
+
+// TestBuildEnvForwardsArbitrarySccachePrefixVars: any
+// SCCACHE_* host var is forwarded when sccache is the
+// active wrapper. Covers SCCACHE_DIR, SCCACHE_REDIS, and
+// future keys without needing a fixed allowlist.
+func TestBuildEnvForwardsArbitrarySccachePrefixVars(t *testing.T) {
+	fakeSccacheOnPATH(t)
+	t.Setenv("SCCACHE_DIR", "/tmp/sccache-dir")
+	t.Setenv("SCCACHE_BUCKET", "my-s3-bucket")
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	m := envToMap(env)
+
+	if got := m["SCCACHE_DIR"]; got != "/tmp/sccache-dir" {
+		t.Errorf("SCCACHE_DIR = %q, want %q", got, "/tmp/sccache-dir")
+	}
+	if got := m["SCCACHE_BUCKET"]; got != "my-s3-bucket" {
+		t.Errorf("SCCACHE_BUCKET = %q, want %q", got, "my-s3-bucket")
+	}
+}
+
+// TestBuildEnvSccacheConfigNotPassedWhenWrapperAbsent:
+// passing sccache configuration without the wrapper itself
+// is worse than passing neither — cargo would have no idea
+// what to do with SCCACHE_GHA_ENABLED. The trigger is
+// strictly the presence of the sccache binary on host PATH.
+func TestBuildEnvSccacheConfigNotPassedWhenWrapperAbsent(t *testing.T) {
+	t.Setenv("PATH", "/usr/bin:/bin")
+	t.Setenv("SCCACHE_GHA_ENABLED", "true")
+	t.Setenv("ACTIONS_CACHE_URL", "https://example/cache")
+	t.Setenv("ACTIONS_RUNTIME_TOKEN", "secret-token")
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	m := envToMap(env)
+
+	if _, ok := m["RUSTC_WRAPPER"]; ok {
+		t.Errorf("RUSTC_WRAPPER set with sccache absent")
+	}
+	for _, k := range []string{
+		"SCCACHE_GHA_ENABLED",
+		"ACTIONS_CACHE_URL",
+		"ACTIONS_RUNTIME_TOKEN",
+	} {
+		if got, ok := m[k]; ok {
+			t.Errorf("%s = %q forwarded without sccache wrapper", k, got)
+		}
+	}
+}
+
+// TestBuildEnvRecipeRustcWrapperWinsOverAutoSet: a recipe
+// that explicitly sets RUSTC_WRAPPER (e.g. to an alternative
+// wrapper or empty string for opt-out) must override the
+// auto-set. Same precedence rule as every other recipe-
+// declared env key: [build] env wins.
+func TestBuildEnvRecipeRustcWrapperWinsOverAutoSet(t *testing.T) {
+	fakeSccacheOnPATH(t)
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+		Env:       map[string]string{"RUSTC_WRAPPER": "/opt/custom-wrapper"},
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	m := envToMap(env)
+
+	if got := m["RUSTC_WRAPPER"]; got != "/opt/custom-wrapper" {
+		t.Errorf("RUSTC_WRAPPER = %q, want recipe value %q",
+			got, "/opt/custom-wrapper")
+	}
+}
+
+// pathHasExecutable returns true if path (a colon-separated
+// PATH string) contains a directory holding an executable
+// named name. Used to assert the sandbox PATH resolves
+// build tools.
+func pathHasExecutable(path, name string) bool {
+	for _, dir := range strings.Split(path, ":") {
+		if dir == "" {
+			continue
+		}
+		info, err := os.Stat(filepath.Join(dir, name))
+		if err != nil {
+			continue
+		}
+		if info.Mode().IsRegular() || info.Mode()&os.ModeSymlink != 0 {
+			return true
+		}
+	}
+	return false
+}
