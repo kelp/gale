@@ -193,8 +193,8 @@ func TestBuildPreservesCurrentOnMissingStoreDir(t *testing.T) {
 	// Adding a package whose store dir doesn't exist must
 	// leave the existing current symlink alone.
 	pkgs := map[string]string{
-		"jq":  "1.8.1",
-		"fd":  "10.4.2",
+		"jq": "1.8.1",
+		"fd": "10.4.2",
 	}
 	if err := Build(pkgs, galeDir, storeRoot); err == nil {
 		t.Fatal("expected Build to error for missing fd store dir")
@@ -240,6 +240,83 @@ func TestBuildLenientSkipsMissingStorePackages(t *testing.T) {
 	currentPath := filepath.Join(galeDir, "current")
 	if _, err := os.Lstat(currentPath); err != nil {
 		t.Fatalf("current symlink does not exist: %v", err)
+	}
+}
+
+// Lenient build carries a package forward from the previous
+// generation when gale.toml pins a version that isn't in the
+// store. Scenario: user edits gale.toml to a future version
+// before the recipe lands in the registry, or the registry
+// removes a version. Sync fails the install but the package
+// is still in the store under its old version — without
+// carry-forward, the old, working symlink is silently dropped
+// from PATH (the original bug this guards against).
+func TestBuildLenientCarriesForwardMissingVersion(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "starship", "1.24.2-2", []string{"starship"})
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	// Seed gen 1 with the working starship version so there is
+	// a previous generation to carry forward from.
+	prev := map[string]string{
+		"starship": "1.24.2",
+		"jq":       "1.8.1",
+	}
+	if err := BuildLenient(prev, galeDir, storeRoot); err != nil {
+		t.Fatalf("seed BuildLenient error: %v", err)
+	}
+
+	// gale.toml now pins a version that doesn't exist in the
+	// store. The previous gen had starship; carry it forward.
+	next := map[string]string{
+		"starship": "1.25.1",
+		"jq":       "1.8.1",
+	}
+	if err := BuildLenient(next, galeDir, storeRoot); err != nil {
+		t.Fatalf("BuildLenient error: %v", err)
+	}
+
+	link := filepath.Join(galeDir, "gen", "2", "bin", "starship")
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("starship symlink missing in new gen: %v", err)
+	}
+	wantSuffix := filepath.Join("starship", "1.24.2-2", "bin", "starship")
+	if !strings.HasSuffix(target, wantSuffix) {
+		t.Errorf("starship target = %q, want suffix %q", target, wantSuffix)
+	}
+
+	// Sanity: current advanced to gen 2.
+	cur, err := os.Readlink(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("read current: %v", err)
+	}
+	if filepath.Base(cur) != "2" {
+		t.Errorf("current = %q, want gen/2", cur)
+	}
+}
+
+// No previous generation means nothing to carry forward —
+// lenient build must still silently skip the missing package,
+// matching the Issue #20 contract.
+func TestBuildLenientSkipsWhenNoPreviousGeneration(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	pkgs := map[string]string{
+		"jq":       "1.8.1",
+		"starship": "1.25.1",
+	}
+	if err := BuildLenient(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("BuildLenient error: %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "starship")); !os.IsNotExist(err) {
+		t.Fatalf("starship should not exist (no prev gen), err=%v", err)
 	}
 }
 

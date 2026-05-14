@@ -79,6 +79,81 @@ func highestRevisionOnDisk(storeRoot, name, version string) (string, bool) {
 	return bestName, true
 }
 
+// carryForwardMissingVersions returns a copy of pkgs where
+// any (name, version) whose store dir is absent has its
+// version replaced with the version that was active in the
+// previous generation, when that store dir is still on disk.
+// Used by lenient build so a sync that can't install a newly-
+// pinned version doesn't silently drop the previously-working
+// install from PATH.
+func carryForwardMissingVersions(
+	pkgs map[string]string, storeRoot, galeDir string, prevGen int,
+) map[string]string {
+	prevGenDir := filepath.Join(galeDir, "gen", strconv.Itoa(prevGen))
+	prev := previousGenVersions(prevGenDir, storeRoot)
+	if len(prev) == 0 {
+		return pkgs
+	}
+
+	out := make(map[string]string, len(pkgs))
+	for name, version := range pkgs {
+		out[name] = version
+		if _, err := os.Stat(resolveStoreDir(storeRoot, name, version)); err == nil {
+			continue
+		}
+		prevVer, ok := prev[name]
+		if !ok || prevVer == version {
+			continue
+		}
+		if _, err := os.Stat(resolveStoreDir(storeRoot, name, prevVer)); err != nil {
+			continue
+		}
+		fmt.Fprintf(os.Stderr,
+			"generation: %s@%s not installed; "+
+				"carrying %s@%s forward from gen/%d\n",
+			name, version, name, prevVer, prevGen)
+		out[name] = prevVer
+	}
+	return out
+}
+
+// previousGenVersions returns a name → version map by reading
+// the symlinks under prevGenDir. Each symlink in a generation
+// points at <storeRoot>/<name>/<version>/...; the first two
+// path components after storeRoot give the (name, version)
+// pair. Unparseable links are skipped — best-effort, since the
+// caller only uses this as a hint for carry-forward.
+func previousGenVersions(prevGenDir, storeRoot string) map[string]string {
+	out := map[string]string{}
+	//nolint:errcheck // best-effort walk; per-entry errors below are intentionally swallowed
+	filepath.Walk(prevGenDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.Mode()&os.ModeSymlink == 0 {
+			return nil //nolint:nilerr // skip unreadable entries, keep walking
+		}
+		target, readErr := os.Readlink(path)
+		if readErr != nil {
+			return nil //nolint:nilerr // skip unreadable link, keep walking
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		rel, relErr := filepath.Rel(storeRoot, target)
+		if relErr != nil || strings.HasPrefix(rel, "..") {
+			return nil //nolint:nilerr // target outside store; not ours
+		}
+		parts := strings.Split(rel, string(filepath.Separator))
+		if len(parts) < 2 {
+			return nil
+		}
+		name, version := parts[0], parts[1]
+		if _, seen := out[name]; !seen {
+			out[name] = version
+		}
+		return nil
+	})
+	return out
+}
+
 // ActiveStoreDirs resolves each (name, version) in pkgs to
 // its on-disk store dir. Returned in an arbitrary order.
 // Used by Build to populate the shared dylib farm, and by
@@ -116,6 +191,16 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 		prev, err := Current(galeDir)
 		if err != nil {
 			return fmt.Errorf("read current generation: %w", err)
+		}
+
+		// Lenient builds carry forward any package whose
+		// pinned store dir is missing — keeps a working
+		// version on PATH when gale.toml pins something
+		// that hasn't been installed yet. Strict Build
+		// errors on that case instead.
+		if lenient && prev > 0 {
+			pkgs = carryForwardMissingVersions(
+				pkgs, storeRoot, galeDir, prev)
 		}
 
 		next := prev + 1
