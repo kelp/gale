@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.14.1 — 2026-05-14
+
+### Fixed
+
+- `gale sync` no longer silently drops a working package
+  from PATH when `gale.toml` pins a version that isn't
+  installed. The lenient generation rebuild now carries
+  the package forward from the previous generation when
+  the pinned store dir is missing but the previously-
+  active version is still on disk, and emits a one-line
+  stderr note naming the carried-over version. Surfaced
+  in the wild when a user edited `gale.toml` to a future
+  version that hadn't landed in the registry yet: sync
+  warned about the missing recipe, then rebuilt a
+  generation without the package — leaving
+  `~/.gale/current/bin/<pkg>` dangling even though the
+  old version was still in the store.
+
 ## v0.14.0 — 2026-04-24
 
 Architectural review work — every Critical, High, Medium,
