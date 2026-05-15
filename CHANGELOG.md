@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Forced reinstalls are now stage-then-replace.** The sync
+  stale-rebuild path and other internal reinstall callers no
+  longer wipe the live canonical store directory before
+  rebuilding. The new install is staged into a sibling
+  `.build-<rand>/` dir (already filtered out of the
+  generation walker and store enumeration), then atomically
+  renamed into place once the build succeeds. A failed
+  reinstall now leaves the previously-installed package
+  intact instead of breaking the active generation.
+- **`.binaries.toml` indexes with a bare-version `version`
+  field no longer merge into recipes with revision ≥ 2.**
+  Previously a recipe at revision 2 that shipped an old
+  index reading `version = "1.8.1"` would silently inherit
+  the rev-1 binaries. Revisioned recipes now require the
+  canonical `<version>-<revision>` form (e.g. `"1.8.1-2"`);
+  bare-version indexes are accepted only for revision 1
+  (the legacy default). Recipes that have been bumped past
+  revision 1 must regenerate their `.binaries.toml` or
+  installs will fall through to source builds.
+
+### Added
+
+- `gale lint` warns when a recipe at revision ≥ 2 has a
+  sibling `<name>.binaries.toml` whose `version` field is
+  the bare `<version>` form. The warning names the file and
+  suggests the canonical replacement string so the
+  fall-through-to-source surprise is caught before install.
+- `gale repo update [name]` refreshes one named tap (or
+  all configured taps when omitted). `gale update` and
+  `gale outdated` now auto-refresh tap caches before
+  resolving, so a stale `~/.gale/repos/<name>/` clone no
+  longer masks an upstream version bump. Pass
+  `--no-refresh` or set `GALE_OFFLINE=1` to skip the
+  refresh. Per-tap fetch errors warn and continue — the
+  resolver falls through to the (now-stale) cache and the
+  command still runs.
+
 ## v0.15.0 — 2026-05-14
 
 ### Added

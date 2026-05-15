@@ -11,11 +11,12 @@ import (
 )
 
 var (
-	updateRecipes string
-	updatePath    string
-	updateGit     bool
-	updateRecipe  string
-	updateBuild   bool
+	updateRecipes   string
+	updatePath      string
+	updateGit       bool
+	updateRecipe    string
+	updateBuild     bool
+	updateNoRefresh bool
 )
 
 var updateCmd = &cobra.Command{
@@ -28,6 +29,16 @@ var updateCmd = &cobra.Command{
 		if updatePath != "" && len(args) != 1 {
 			return fmt.Errorf(
 				"--path requires exactly one package name")
+		}
+
+		// Auto-refresh configured taps so a stale local clone
+		// doesn't mask an upstream version bump. Skip when
+		// --recipes is set (resolver bypasses taps anyway),
+		// when --no-refresh is passed, or when GALE_OFFLINE=1.
+		if updateRecipes == "" && !tapsOfflineMode(updateNoRefresh) {
+			if err := refreshConfiguredTapsDefault(out); err != nil {
+				out.Warn(fmt.Sprintf("tap refresh: %v", err))
+			}
 		}
 
 		// Resolve context for config path. All branches
@@ -308,5 +319,7 @@ func init() {
 		"Use a specific recipe TOML file")
 	updateCmd.Flags().BoolVar(&updateBuild, "build", false,
 		"Build from source (skip prebuilt binary)")
+	updateCmd.Flags().BoolVar(&updateNoRefresh, "no-refresh", false,
+		"Skip refreshing configured recipe taps before resolving")
 	rootCmd.AddCommand(updateCmd)
 }

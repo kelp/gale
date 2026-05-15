@@ -7,7 +7,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var outdatedRecipes string
+var (
+	outdatedRecipes   string
+	outdatedNoRefresh bool
+)
 
 // outdatedItem represents a package with a newer version.
 type outdatedItem struct {
@@ -22,6 +25,15 @@ var outdatedCmd = &cobra.Command{
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newCmdOutput(cmd)
+
+		// Auto-refresh configured taps so listings reflect the
+		// actual upstream state. Skip with --recipes,
+		// --no-refresh, or GALE_OFFLINE=1.
+		if outdatedRecipes == "" && !tapsOfflineMode(outdatedNoRefresh) {
+			if err := refreshConfiguredTapsDefault(out); err != nil {
+				out.Warn(fmt.Sprintf("tap refresh: %v", err))
+			}
+		}
 
 		ctx, err := newCmdContext(outdatedRecipes, false, false)
 		if err != nil {
@@ -89,5 +101,7 @@ func init() {
 	outdatedCmd.Flags().StringVar(&outdatedRecipes, "recipes", "",
 		"Use local recipes directory (default: ../gale-recipes/)")
 	outdatedCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+	outdatedCmd.Flags().BoolVar(&outdatedNoRefresh, "no-refresh", false,
+		"Skip refreshing configured recipe taps before resolving")
 	rootCmd.AddCommand(outdatedCmd)
 }

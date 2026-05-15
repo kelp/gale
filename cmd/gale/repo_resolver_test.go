@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/installer"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
 )
 
@@ -323,5 +325,168 @@ func TestResolveRecipeResolverPrefersTapOverRegistry(t *testing.T) {
 	if got.Package.Version != "7.7.7" {
 		t.Errorf("Version = %q, want 7.7.7 (tap wins)",
 			got.Package.Version)
+	}
+}
+
+// --- refreshConfiguredTaps ---
+//
+// Called by `gale update` / `gale outdated` before resolving so
+// tap caches are current. Per-tap errors are warned, not bubbled
+// — falling through to a stale cache beats failing the command.
+
+func TestRefreshConfiguredTapsNoConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	buf := &bytes.Buffer{}
+	out := output.New(buf, false)
+	called := 0
+	n, err := refreshConfiguredTaps(out, func(name string) error {
+		called++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("refreshConfiguredTaps: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("refresh count = %d, want 0", n)
+	}
+	if called != 0 {
+		t.Errorf("fetch should not be called, got %d", called)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("no output expected, got: %q", buf.String())
+	}
+}
+
+func TestRefreshConfiguredTapsNoReposEntry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	writeAppConfig(t, galeDir, "[registry]\nurl = \"https://example.com\"\n")
+
+	buf := &bytes.Buffer{}
+	out := output.New(buf, false)
+	called := 0
+	n, err := refreshConfiguredTaps(out, func(name string) error {
+		called++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("refreshConfiguredTaps: %v", err)
+	}
+	if n != 0 || called != 0 {
+		t.Errorf("n=%d called=%d, want both 0", n, called)
+	}
+}
+
+func TestRefreshConfiguredTapsCallsFetchPerLiveTap(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	setupTapCache(t, galeDir, "a", map[string]string{"jq": jqRecipe("1.0.0")})
+	setupTapCache(t, galeDir, "b", map[string]string{"jq": jqRecipe("2.0.0")})
+	writeAppConfig(t, galeDir,
+		"[[repos]]\nname = \"a\"\nurl = \"https://x/a.git\"\n"+
+			"\n[[repos]]\nname = \"b\"\nurl = \"https://x/b.git\"\n")
+
+	buf := &bytes.Buffer{}
+	out := output.New(buf, false)
+	seen := map[string]int{}
+	n, err := refreshConfiguredTaps(out, func(name string) error {
+		seen[name]++
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("refreshConfiguredTaps: %v", err)
+	}
+	if n != 2 {
+		t.Errorf("refresh count = %d, want 2", n)
+	}
+	if seen["a"] != 1 || seen["b"] != 1 {
+		t.Errorf("fetch call counts = %v, want each 1", seen)
+	}
+	if !strings.Contains(buf.String(), "Refreshing 2 tap") {
+		t.Errorf("expected info line for 2 taps, got: %q", buf.String())
+	}
+}
+
+func TestRefreshConfiguredTapsSkipsMissingCache(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	// "real" has a cache, "ghost" doesn't.
+	setupTapCache(t, galeDir, "real", map[string]string{"jq": jqRecipe("1.0.0")})
+	writeAppConfig(t, galeDir,
+		"[[repos]]\nname = \"ghost\"\nurl = \"https://x/g.git\"\n"+
+			"\n[[repos]]\nname = \"real\"\nurl = \"https://x/r.git\"\n")
+
+	called := []string{}
+	buf := &bytes.Buffer{}
+	out := output.New(buf, false)
+	n, err := refreshConfiguredTaps(out, func(name string) error {
+		called = append(called, name)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("refreshConfiguredTaps: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("refresh count = %d, want 1 (ghost skipped)", n)
+	}
+	if len(called) != 1 || called[0] != "real" {
+		t.Errorf("called = %v, want [real]", called)
+	}
+}
+
+func TestRefreshConfiguredTapsWarnsOnFetchError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	setupTapCache(t, galeDir, "broken", map[string]string{"jq": jqRecipe("1.0.0")})
+	writeAppConfig(t, galeDir,
+		"[[repos]]\nname = \"broken\"\nurl = \"https://x/b.git\"\n")
+
+	buf := &bytes.Buffer{}
+	out := output.New(buf, false)
+	n, err := refreshConfiguredTaps(out, func(name string) error {
+		return errors.New("offline")
+	})
+	if err != nil {
+		t.Fatalf("refreshConfiguredTaps should not bubble fetch errors, got: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("refresh count = %d, want 1 (attempted)", n)
+	}
+	s := buf.String()
+	if !strings.Contains(s, "offline") {
+		t.Errorf("expected warn containing 'offline', got: %q", s)
+	}
+}
+
+func TestRefreshConfiguredTapsSilentWhenZeroLiveTaps(t *testing.T) {
+	// Tap is configured but never cloned — no cache dir. We
+	// should not emit the "Refreshing N tap(s)..." line at all,
+	// to preserve the existing no-tap UX.
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	writeAppConfig(t, galeDir,
+		"[[repos]]\nname = \"ghost\"\nurl = \"https://x/g.git\"\n")
+
+	buf := &bytes.Buffer{}
+	out := output.New(buf, false)
+	n, err := refreshConfiguredTaps(out, func(name string) error {
+		t.Fatalf("fetch should not be called: %s", name)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("refreshConfiguredTaps: %v", err)
+	}
+	if n != 0 {
+		t.Errorf("refresh count = %d, want 0", n)
+	}
+	if buf.Len() != 0 {
+		t.Errorf("no output expected when zero live taps, got: %q", buf.String())
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/repo"
 	"github.com/spf13/cobra"
 )
@@ -125,6 +126,96 @@ var repoListCmd = &cobra.Command{
 	},
 }
 
+var repoUpdateCmd = &cobra.Command{
+	Use:   "update [name]",
+	Short: "Refresh cached recipe repositories",
+	Args:  cobra.MaximumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		out := newCmdOutput(cmd)
+
+		name := ""
+		if len(args) == 1 {
+			name = args[0]
+		}
+
+		repos, err := loadConfiguredRepos()
+		if err != nil {
+			return err
+		}
+		fetch, err := defaultTapFetcher(repos)
+		if err != nil {
+			return err
+		}
+		return runRepoUpdate(out, name, fetch)
+	},
+}
+
+// loadConfiguredRepos returns the `[[repos]]` entries from
+// ~/.gale/config.toml, or an empty slice when the file is
+// absent. Errors other than "not exist" bubble up.
+func loadConfiguredRepos() ([]config.Repo, error) {
+	cfg, err := loadAppConfig()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+	return cfg.Repos, nil
+}
+
+// runRepoUpdate refreshes a single named tap, or every
+// configured tap when name is empty. Per-tap errors are
+// warned and the loop continues; the command fails only
+// when *every* attempted refresh failed. fetch is
+// injectable so tests can substitute a recorder.
+func runRepoUpdate(out *output.Output, name string, fetch tapFetcher) error {
+	repos, err := loadConfiguredRepos()
+	if err != nil {
+		return err
+	}
+	if len(repos) == 0 {
+		out.Info("No repositories configured.")
+		return nil
+	}
+
+	var targets []config.Repo
+	if name != "" {
+		for _, r := range repos {
+			if r.Name == name {
+				targets = append(targets, r)
+				break
+			}
+		}
+		if len(targets) == 0 {
+			return fmt.Errorf("repo %q not configured", name)
+		}
+	} else {
+		targets = repos
+	}
+
+	var succeeded, failed int
+	for _, r := range targets {
+		out.Info(fmt.Sprintf("Refreshing %s...", r.Name))
+		if err := fetch(r.Name); err != nil {
+			out.Warn(fmt.Sprintf("%s: %v", r.Name, err))
+			failed++
+			continue
+		}
+		succeeded++
+	}
+	if succeeded == 0 {
+		return fmt.Errorf("all %d tap refresh(es) failed", failed)
+	}
+	if failed > 0 {
+		out.Success(fmt.Sprintf(
+			"Refreshed %d tap(s), %d failed", succeeded, failed))
+	} else {
+		out.Success(fmt.Sprintf("Refreshed %d tap(s)", succeeded))
+	}
+	return nil
+}
+
 var repoInitCmd = &cobra.Command{
 	Use:   "init <name>",
 	Short: "Create a new recipe repository",
@@ -165,5 +256,6 @@ func init() {
 	repoCmd.AddCommand(repoRemoveCmd)
 	repoCmd.AddCommand(repoListCmd)
 	repoCmd.AddCommand(repoInitCmd)
+	repoCmd.AddCommand(repoUpdateCmd)
 	rootCmd.AddCommand(repoCmd)
 }

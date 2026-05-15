@@ -229,6 +229,32 @@ func TestFinishUpdateSkipsRebuildInDryRun(t *testing.T) {
 	}
 }
 
+func TestTapsOfflineMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		noRefresh bool
+		envVal    string
+		want      bool
+	}{
+		{"default off", false, "", false},
+		{"flag forces on", true, "", true},
+		{"env=1 forces on", false, "1", true},
+		{"env=0 stays off", false, "0", false},
+		{"env=true stays off", false, "true", false},
+		{"flag wins over env=0", true, "0", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("GALE_OFFLINE", tt.envVal)
+			got := tapsOfflineMode(tt.noRefresh)
+			if got != tt.want {
+				t.Errorf("tapsOfflineMode(%v) with GALE_OFFLINE=%q = %v, want %v",
+					tt.noRefresh, tt.envVal, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestUpdateGitSkipsWhenVersionIsSemver(t *testing.T) {
 	// A semver version like "1.7.1" should never match a
 	// 7-char git hash like "abc1234". The up-to-date
