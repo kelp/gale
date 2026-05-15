@@ -1,8 +1,13 @@
 name: Release
 
 on:
-  release:
-    types: [created]
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.16.0)"
+        required: true
 
 permissions:
   contents: write
@@ -12,6 +17,7 @@ jobs:
     timeout-minutes: 30
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: true
       matrix:
         include:
           - goos: darwin
@@ -24,21 +30,33 @@ jobs:
             goarch: arm64
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
         with:
           go-version: stable
+
+      - name: Resolve tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: "0"
-          REF_NAME: ${{ github.ref_name }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          VERSION: ${{ steps.tag.outputs.version }}
         run: |
-          VERSION="${REF_NAME#v}"
-          BINARY="gale-${REF_NAME}-${GOOS}-${GOARCH}"
+          BINARY="gale-${TAG}-${GOOS}-${GOARCH}"
           go build \
             -ldflags "-X main.version=${VERSION}" \
             -o "${BINARY}" \
@@ -46,14 +64,83 @@ jobs:
           tar czf "${BINARY}.tar.gz" "${BINARY}"
           sha256sum "${BINARY}.tar.gz" > "${BINARY}.tar.gz.sha256"
 
-      - name: Upload release assets
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: gale-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            gale-*.tar.gz
+            gale-*.tar.gz.sha256
+
+  release:
+    needs: build
+    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          ref: ${{ github.event.inputs.tag || github.ref }}
+
+      - name: Resolve tag
+        id: tag
+        env:
+          INPUT_TAG: ${{ github.event.inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG="${INPUT_TAG:-$REF_NAME}"
+          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Extract release notes from CHANGELOG
+        env:
+          VERSION: ${{ steps.tag.outputs.version }}
+        run: |
+          awk -v ver="$VERSION" '
+            $0 ~ "^## v" ver " " {found=1; next}
+            found && /^## v/ {exit}
+            found {print}
+          ' CHANGELOG.md > release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "Error: no notes found for v${VERSION} in CHANGELOG.md"
+            exit 1
+          fi
+
+      - name: Delete leftover draft (if any)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          REF_NAME: ${{ github.ref_name }}
-          GOOS: ${{ matrix.goos }}
-          GOARCH: ${{ matrix.goarch }}
+          TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          BINARY="gale-${REF_NAME}-${GOOS}-${GOARCH}"
-          gh release upload "${REF_NAME}" \
-            "${BINARY}.tar.gz" \
-            "${BINARY}.tar.gz.sha256"
+          state=$(gh release view "$TAG" --json isDraft -q .isDraft 2>/dev/null || echo missing)
+          if [ "$state" = "true" ]; then
+            gh release delete "$TAG" --yes
+          elif [ "$state" = "false" ]; then
+            echo "Release $TAG is already published — refusing to overwrite."
+            exit 1
+          fi
+
+      - name: Create draft release with assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          gh release create "$TAG" \
+            artifacts/gale-*.tar.gz \
+            artifacts/gale-*.tar.gz.sha256 \
+            --draft \
+            --verify-tag \
+            --title "$TAG" \
+            --notes-file release-notes.md
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: gh release edit "$TAG" --draft=false --latest
