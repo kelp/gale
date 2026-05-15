@@ -74,7 +74,7 @@ tag version: fmt check
     echo "Tagged v{{version}} — run 'just release {{version}}' to publish"
     echo "Reminder: bump gale-recipes/recipes/g/gale.toml to v{{version}} after the release is published."
 
-# Push tag and create GitHub release
+# Push tag — the release workflow builds, drafts, and publishes
 release version:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -82,19 +82,19 @@ release version:
       echo "Tag v{{version}} does not exist — run 'just tag {{version}}' first"
       exit 1
     fi
-    # Extract release notes from CHANGELOG.md for this version.
-    NOTES=$(awk '/^## v{{version}} /{found=1; next} /^## v/{if(found) exit} found' CHANGELOG.md)
-    if [ -z "$NOTES" ]; then
+    # Preflight: confirm CHANGELOG section exists; the workflow extracts it.
+    if ! awk '/^## v{{version}} /{found=1; next} /^## v/{if(found) exit} found' CHANGELOG.md | grep -q .; then
       echo "No CHANGELOG section found for v{{version}}"
       exit 1
     fi
     git push origin main "v{{version}}"
-    gh release create "v{{version}}" \
-      --title "v{{version}}" \
-      --notes "$NOTES"
-    echo "Published https://github.com/kelp/gale/releases/tag/v{{version}}"
-    echo "Release workflow will build and attach binaries."
+    echo "Pushed v{{version}}. Release workflow will build, draft, and publish."
+    echo "Watch: https://github.com/kelp/gale/actions/workflows/release.yml"
     echo "Reminder: bump gale-recipes/recipes/g/gale.toml to v{{version}} once the release is live."
+
+# Retry a failed release run (e.g. matrix flake) without re-tagging
+release-retry version:
+    gh workflow run release.yml --ref "v{{version}}" -f tag="v{{version}}"
 
 # Format git describe as semver (used by build and install)
 _dev-version:
