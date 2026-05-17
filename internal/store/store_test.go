@@ -768,6 +768,50 @@ func TestIsInstalledRevisionOneWinsOverBare(t *testing.T) {
 	}
 }
 
+// TestListIgnoresBackupAndBuildSiblings pins the store-enumeration
+// filter against the two transient sibling layouts a forced
+// reinstall produces:
+//   - ".build-<rand>/" — staging dir created by commitStaged before
+//     it renames the build output into place.
+//   - "<version>.bak/"  — backup dir created by replaceStoreDir
+//     during the rename window in case the swap fails.
+//
+// Either can show up briefly while a reinstall runs concurrently
+// with a non-locking `gale list`. List must not report either as
+// an installed version.
+func TestListIgnoresBackupAndBuildSiblings(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	live := filepath.Join(root, "jq", "1.8.1-2")
+	if err := os.MkdirAll(live, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(live, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, noise := range []string{
+		filepath.Join(root, "jq", ".build-abcdef"),
+		filepath.Join(root, "jq", "1.8.1-2.bak"),
+	} {
+		if err := os.MkdirAll(noise, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	pkgs, err := s.List()
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+	if len(pkgs) != 1 {
+		t.Fatalf("List returned %d entries, want 1: %+v", len(pkgs), pkgs)
+	}
+	if pkgs[0].Name != "jq" || pkgs[0].Version != "1.8.1-2" {
+		t.Errorf("List entry = %+v, want {jq 1.8.1-2}", pkgs[0])
+	}
+}
+
 // TestStorePathIgnoresBuildTempAndLockSiblings verifies that the
 // highest-revision scan skips .build-* staging dirs and *.lock
 // sibling files when picking a fallback.

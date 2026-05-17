@@ -43,7 +43,8 @@ func resolveStoreDir(storeRoot, name, version string) string {
 
 // highestRevisionOnDisk returns the directory name with the
 // highest N among "<version>-<N>" siblings under
-// <storeRoot>/<name>/. Skips .build-* staging dirs and
+// <storeRoot>/<name>/. Skips .build-* staging dirs,
+// "<version>.bak" backups from in-progress reinstalls, and
 // non-directory entries (lock files).
 func highestRevisionOnDisk(storeRoot, name, version string) (string, bool) {
 	entries, err := os.ReadDir(filepath.Join(storeRoot, name))
@@ -58,7 +59,7 @@ func highestRevisionOnDisk(storeRoot, name, version string) (string, bool) {
 			continue
 		}
 		n := e.Name()
-		if strings.HasPrefix(n, ".build-") {
+		if strings.HasPrefix(n, ".build-") || strings.HasSuffix(n, ".bak") {
 			continue
 		}
 		if !strings.HasPrefix(n, prefix) {

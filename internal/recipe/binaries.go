@@ -130,9 +130,11 @@ func parseBinaryDeps(raw interface{}) []BinaryDep {
 // match the recipe version (stale), this is a no-op.
 //
 // Accepted match forms for idx.Version:
-//   - the full "<version>-<revision>" string (new canonical)
-//   - the bare "<version>" (legacy .binaries.toml files
-//     written before the revision system)
+//   - revision 1 recipes accept either "<version>" or
+//     "<version>-1" for compatibility with existing indexes.
+//   - revision > 1 recipes require the full
+//     "<version>-<revision>" string so a stale bare index
+//     cannot install old prebuilts into a new revision.
 //
 // The GHCR URL is constructed as:
 //
@@ -141,7 +143,7 @@ func MergeBinaries(r *Recipe, idx *BinaryIndex, ghcrBase string) {
 	if idx == nil {
 		return
 	}
-	if idx.Version != r.Package.Full() && idx.Version != r.Package.Version {
+	if !binaryIndexMatchesRecipe(r, idx.Version) {
 		return
 	}
 
@@ -155,4 +157,11 @@ func MergeBinaries(r *Recipe, idx *BinaryIndex, ghcrBase string) {
 			Trust:  TrustSigstore,
 		}
 	}
+}
+
+func binaryIndexMatchesRecipe(r *Recipe, indexVersion string) bool {
+	if indexVersion == r.Package.Full() {
+		return true
+	}
+	return r.Package.Revision <= 1 && indexVersion == r.Package.Version
 }

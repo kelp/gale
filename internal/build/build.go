@@ -1030,11 +1030,19 @@ func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
 // storeDir in all text files under storeDir. Called after
 // extracting a build archive into the package store.
 func RestorePrefixPlaceholder(storeDir string) error {
+	return RestorePrefixPlaceholderTo(storeDir, storeDir)
+}
+
+// RestorePrefixPlaceholderTo replaces PrefixPlaceholder with
+// replacement in all text files under rootDir. This is used
+// when install output is staged in a temporary directory before
+// being moved into its final store path.
+func RestorePrefixPlaceholderTo(rootDir, replacement string) error {
 	dirs := []string{
 		"bin", "sbin", "libexec", "share", "etc", "lib",
 	}
 	for _, d := range dirs {
-		dir := filepath.Join(storeDir, d)
+		dir := filepath.Join(rootDir, d)
 		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
@@ -1056,7 +1064,7 @@ func RestorePrefixPlaceholder(storeDir string) error {
 				return nil
 			}
 			newData := strings.ReplaceAll(
-				string(data), PrefixPlaceholder, storeDir)
+				string(data), PrefixPlaceholder, replacement)
 			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
 		})
 		if err != nil {

@@ -1760,6 +1760,198 @@ func TestReinstallRebuildsWhenCanonicalPopulated(t *testing.T) {
 	}
 }
 
+func TestReinstallPreservesExistingStoreOnBuildFailure(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	hash := hashFile(t, srcTar)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+
+	canonicalDir := filepath.Join(storeRoot, "testpkg", "1.0-1")
+	if err := os.MkdirAll(filepath.Join(canonicalDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldBin := filepath.Join(canonicalDir, "bin", "testpkg")
+	if err := os.WriteFile(oldBin, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL: srv.URL + "/source.tar.gz", SHA256: hash,
+		},
+		Build: recipe.Build{Steps: []string{"exit 1"}},
+	}
+
+	_, err := inst.Reinstall(r)
+	if err == nil {
+		t.Fatal("expected Reinstall error")
+	}
+	data, readErr := os.ReadFile(oldBin)
+	if readErr != nil {
+		t.Fatalf("read old binary after failed Reinstall: %v", readErr)
+	}
+	if string(data) != "old" {
+		t.Fatalf("old binary content = %q, want %q", string(data), "old")
+	}
+}
+
+func TestReinstallPreservesExistingStoreOnReplaceFailure(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	hash := hashFile(t, srcTar)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+
+	canonicalDir := filepath.Join(storeRoot, "testpkg", "1.0-1")
+	if err := os.MkdirAll(filepath.Join(canonicalDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldBin := filepath.Join(canonicalDir, "bin", "testpkg")
+	if err := os.WriteFile(oldBin, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL: srv.URL + "/source.tar.gz", SHA256: hash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho fresh' > $PREFIX/bin/testpkg",
+				"chmod +x $PREFIX/bin/testpkg",
+			},
+		},
+	}
+
+	origRename := renameDir
+	renameDir = func(oldPath, newPath string) error {
+		if strings.Contains(filepath.Base(oldPath), ".build-") &&
+			newPath == canonicalDir {
+			return fmt.Errorf("boom")
+		}
+		return origRename(oldPath, newPath)
+	}
+	defer func() { renameDir = origRename }()
+
+	_, err := inst.Reinstall(r)
+	if err == nil {
+		t.Fatal("expected Reinstall error")
+	}
+	data, readErr := os.ReadFile(oldBin)
+	if readErr != nil {
+		t.Fatalf("read old binary after failed Reinstall: %v", readErr)
+	}
+	if string(data) != "old" {
+		t.Fatalf("old binary content = %q, want %q", string(data), "old")
+	}
+}
+
+func TestReinstallBlocksOnStoreGenLockBeforeReplace(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	hash := hashFile(t, srcTar)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		}))
+	defer srv.Close()
+
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatalf("mkdir storeRoot: %v", err)
+	}
+	canonicalDir := filepath.Join(storeRoot, "testpkg", "1.0-1")
+	if err := os.MkdirAll(filepath.Join(canonicalDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	oldBin := filepath.Join(canonicalDir, "bin", "testpkg")
+	if err := os.WriteFile(oldBin, []byte("old"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	unlock, err := filelock.Acquire(filepath.Join(galeDir, "generation.lock"))
+	if err != nil {
+		t.Fatalf("Acquire store-gen lock: %v", err)
+	}
+	unlockFn := unlock
+	defer func() {
+		if unlockFn != nil {
+			unlockFn()
+		}
+	}()
+
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL: srv.URL + "/source.tar.gz", SHA256: hash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho fresh' > $PREFIX/bin/testpkg",
+				"chmod +x $PREFIX/bin/testpkg",
+			},
+		},
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := inst.Reinstall(r)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		t.Fatalf("Reinstall completed while store-gen lock held: %v", err)
+	case <-time.After(500 * time.Millisecond):
+		// Reinstall is either still building its staged output
+		// or blocked before replacing the canonical dir. In both
+		// cases, the live store must remain untouched.
+	}
+	data, readErr := os.ReadFile(oldBin)
+	if readErr != nil {
+		t.Fatalf("read old binary while lock held: %v", readErr)
+	}
+	if string(data) != "old" {
+		t.Fatalf("old binary content = %q, want %q", string(data), "old")
+	}
+
+	unlockFn()
+	unlockFn = nil
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Reinstall error after release: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("Reinstall did not complete after lock release")
+	}
+
+	data, readErr = os.ReadFile(oldBin)
+	if readErr != nil {
+		t.Fatalf("read new binary after Reinstall: %v", readErr)
+	}
+	if !strings.Contains(string(data), "fresh") {
+		t.Fatalf("binary content = %q, want fresh content", string(data))
+	}
+}
+
 // --- C3: non-GHCR binary without sha256-only opt-in fails ---
 
 // TestInstallBinaryNonGHCRDefaultTrustFails ensures a recipe

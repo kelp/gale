@@ -156,6 +156,57 @@ func TestMergeBinariesSkipsStaleVersion(t *testing.T) {
 	}
 }
 
+func TestMergeBinariesRevisionOneAcceptsBareVersion(t *testing.T) {
+	r := &Recipe{
+		Package: Package{Name: "jq", Version: "1.8.1", Revision: 1},
+	}
+	idx := &BinaryIndex{
+		Version: "1.8.1",
+		Platforms: map[string]string{
+			"darwin-arm64": "abc123",
+		},
+	}
+	MergeBinaries(r, idx, "kelp/gale-recipes")
+
+	if len(r.Binary) != 1 {
+		t.Fatalf("Binary count = %d, want 1", len(r.Binary))
+	}
+}
+
+func TestMergeBinariesRevisionedRecipeRejectsBareVersion(t *testing.T) {
+	r := &Recipe{
+		Package: Package{Name: "jq", Version: "1.8.1", Revision: 2},
+	}
+	idx := &BinaryIndex{
+		Version: "1.8.1",
+		Platforms: map[string]string{
+			"darwin-arm64": "abc123",
+		},
+	}
+	MergeBinaries(r, idx, "kelp/gale-recipes")
+
+	if len(r.Binary) != 0 {
+		t.Fatalf("Binary count = %d, want 0", len(r.Binary))
+	}
+}
+
+func TestMergeBinariesRevisionedRecipeAcceptsFullVersion(t *testing.T) {
+	r := &Recipe{
+		Package: Package{Name: "jq", Version: "1.8.1", Revision: 2},
+	}
+	idx := &BinaryIndex{
+		Version: "1.8.1-2",
+		Platforms: map[string]string{
+			"darwin-arm64": "abc123",
+		},
+	}
+	MergeBinaries(r, idx, "kelp/gale-recipes")
+
+	if len(r.Binary) != 1 {
+		t.Fatalf("Binary count = %d, want 1", len(r.Binary))
+	}
+}
+
 // --- Behavior 5: MergeBinaries with nil index is a no-op ---
 
 func TestMergeBinariesNilIndex(t *testing.T) {

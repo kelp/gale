@@ -89,25 +89,20 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 	}
 	defer unlock()
 
+	canonicalDir := filepath.Join(inst.Store.Root, name, storeVersion)
+	var storeDir string
+	staged := false
+
 	// Cache check. The default path accepts IsInstalled's
 	// back-compat fallback (bare pre-revision dirs count as
 	// "installed"), so dep installs don't needlessly
 	// re-migrate every package.
 	//
-	// The forced path (Reinstall) always rebuilds: it wipes
-	// the canonical dir if one exists and falls through to
-	// the install body. Sync calls Reinstall on stale
-	// packages (deps changed since build) and on legacy
-	// bare-dir installs that need to migrate into the
-	// canonical layout — both require a real rebuild so
-	// `.gale-deps.toml` and farm symlinks are refreshed.
-	canonicalDir := filepath.Join(inst.Store.Root, name, storeVersion)
-	if force {
-		if err := os.RemoveAll(canonicalDir); err != nil {
-			return nil, fmt.Errorf(
-				"wipe canonical dir for reinstall: %w", err)
-		}
-	} else if inst.Store.IsInstalled(name, storeVersion) {
+	// The forced path (Reinstall) always rebuilds into a
+	// sibling staging dir first. The live canonical dir stays
+	// intact until the final replace succeeds, so a failed
+	// stale reinstall does not break the active generation.
+	if !force && inst.Store.IsInstalled(name, storeVersion) {
 		return &InstallResult{
 			Name:    name,
 			Version: version,
@@ -115,10 +110,25 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 		}, nil
 	}
 
-	// Create store directory.
-	storeDir, err := inst.Store.Create(name, storeVersion)
-	if err != nil {
-		return nil, fmt.Errorf("create store dir: %w", err)
+	if force {
+		pkgDir := filepath.Join(inst.Store.Root, name)
+		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+			return nil, fmt.Errorf("create package dir: %w", err)
+		}
+		buildDir, err := os.MkdirTemp(pkgDir, ".build-")
+		if err != nil {
+			return nil, fmt.Errorf("create reinstall staging dir: %w", err)
+		}
+		storeDir = buildDir
+		staged = true
+		defer os.RemoveAll(buildDir)
+	} else {
+		// Create store directory.
+		var err error
+		storeDir, err = inst.Store.Create(name, storeVersion)
+		if err != nil {
+			return nil, fmt.Errorf("create store dir: %w", err)
+		}
 	}
 
 	method := MethodSource
@@ -137,7 +147,7 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 	// Try binary first (unless source-only mode).
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	if bin != nil && !inst.SourceOnly {
-		if err := installBinary(bin, storeDir, name, version, depPaths, inst.Verifier); err == nil {
+		if err := installBinaryTo(bin, storeDir, canonicalDir, name, version, depPaths, inst.Verifier, !staged); err == nil {
 			method = MethodBinary
 			sha256 = bin.SHA256
 		} else {
@@ -167,13 +177,19 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 	}
 
 	if method != MethodBinary {
-		hash, buildErr := installFromSource(r, storeDir, depPaths)
+		hash, buildErr := installFromSourceTo(r, storeDir, canonicalDir, depPaths, !staged)
 		if buildErr != nil {
 			// Clean up failed install.
 			os.RemoveAll(storeDir)
 			return nil, fmt.Errorf("build from source: %w", buildErr)
 		}
 		sha256 = hash
+	}
+
+	if staged {
+		if err := commitStaged(inst.Store.Root, canonicalDir, storeDir); err != nil {
+			return nil, fmt.Errorf("install staged output: %w", err)
+		}
 	}
 
 	return &InstallResult{
@@ -303,6 +319,31 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 	}, nil
 }
 
+// commitStaged finishes a staged reinstall by renaming the
+// staging dir into the canonical store path and repopulating
+// the shared farm. Both steps happen under the store-gen
+// lock so a concurrent generation rebuild sees either the
+// pre-install or completed install — never an intermediate.
+//
+// If the rename fails, replaceStoreDir restores the prior
+// canonical dir from its .bak sibling. If farm.Populate
+// fails after a successful rename, the canonical dir is
+// already the new version; the caller will see the error
+// and the farm will be repopulated on the next sync.
+func commitStaged(storeRoot, canonicalDir, stagingDir string) error {
+	return withStoreGenLock(storeRoot, func() error {
+		if err := replaceStoreDir(canonicalDir, stagingDir); err != nil {
+			return err
+		}
+		if farmDir := farm.DirFromStoreDir(canonicalDir); farmDir != "" {
+			if err := farm.Populate(canonicalDir, farmDir); err != nil {
+				return fmt.Errorf("populate farm: %w", err)
+			}
+		}
+		return nil
+	})
+}
+
 func replaceStoreDir(storeDir, buildDir string) error {
 	backupDir := storeDir + ".bak"
 	_ = os.RemoveAll(backupDir)
@@ -328,8 +369,14 @@ func replaceStoreDir(storeDir, buildDir string) error {
 	return nil
 }
 
-func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *build.BuildDeps, v attestation.Verifier) error {
-	tmpFile := storeDir + ".download.tar.zst"
+// installBinaryTo fetches and finalizes a prebuilt archive
+// into extractDir. When inPlace is true, extractDir IS the
+// canonical store dir: the function acquires the store-gen
+// lock and populates the farm. When inPlace is false, the
+// caller is staging into a sibling dir and will commit the
+// rename + farm.Populate itself.
+func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, version string, deps *build.BuildDeps, v attestation.Verifier, inPlace bool) error {
+	tmpFile := extractDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)
 
 	// Enforce the recipe's declared trust policy before
@@ -389,28 +436,28 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 	// store dir (tmpFile is a sibling file, skipped by the gen
 	// walker's dir-only filter) and a network stall must not
 	// block a concurrent sync.
-	storeRoot := filepath.Dir(filepath.Dir(storeDir))
-	return withStoreGenLock(storeRoot, func() error {
-		if err := download.ExtractTarZstd(tmpFile, storeDir); err != nil {
+	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
+	finalize := func() error {
+		if err := download.ExtractTarZstd(tmpFile, extractDir); err != nil {
 			return fmt.Errorf("extract binary: %w", err)
 		}
 
 		// Rewrite .pc files so pkg-config resolves from
 		// the store dir, not the original build prefix.
-		if err := build.FixupPkgConfig(storeDir); err != nil {
+		if err := build.FixupPkgConfig(extractDir); err != nil {
 			return fmt.Errorf("fixup pkg-config: %w", err)
 		}
 
 		// Replace @@GALE_PREFIX@@ placeholders with the
 		// actual store dir in scripts and text files.
-		if err := build.RestorePrefixPlaceholder(storeDir); err != nil {
+		if err := build.RestorePrefixPlaceholderTo(extractDir, finalStoreDir); err != nil {
 			return fmt.Errorf("restore prefix placeholders: %w", err)
 		}
 
 		// Rewrite CI-baked .gale/pkg/ paths in text files
 		// (scripts, .pc Libs.private, .la files, etc.) so
 		// they use the local store root.
-		if err := build.RelocateStalePathsInTextFiles(storeDir, storeRoot); err != nil {
+		if err := build.RelocateStalePathsInTextFiles(extractDir, storeRoot); err != nil {
 			return fmt.Errorf("relocate stale paths in text files: %w", err)
 		}
 
@@ -419,7 +466,7 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 		// /Users/runner/.gale/pkg/...). Only meaningful on
 		// darwin; no-op on Linux where RelocateStaleRpaths
 		// is a stub.
-		if err := build.RelocateStaleRpaths(storeDir, storeRoot); err != nil {
+		if err := build.RelocateStaleRpaths(extractDir, storeRoot); err != nil {
 			return fmt.Errorf("relocate rpaths: %w", err)
 		}
 
@@ -427,7 +474,7 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 		// Silicon kernels SIGKILL unsigned binaries on exec, and
 		// RelocateStaleRpaths only re-signs files whose rpaths
 		// were rewritten. No-op on Linux.
-		if err := build.EnsureCodeSigned(storeDir); err != nil {
+		if err := build.EnsureCodeSigned(extractDir); err != nil {
 			return fmt.Errorf("ensure code signed: %w", err)
 		}
 
@@ -436,9 +483,13 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 		// claiming the same dylib) is a recipe bug — fail the
 		// install so the bad recipe gets fixed instead of
 		// silently shipping a farm where one package wins.
-		if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
-			if err := farm.Populate(storeDir, farmDir); err != nil {
-				return fmt.Errorf("populate farm: %w", err)
+		// Skipped when staging: the caller commits the farm
+		// after renaming the staging dir into place.
+		if inPlace {
+			if farmDir := farm.DirFromStoreDir(finalStoreDir); farmDir != "" {
+				if err := farm.Populate(finalStoreDir, farmDir); err != nil {
+					return fmt.Errorf("populate farm: %w", err)
+				}
 			}
 		}
 
@@ -451,18 +502,22 @@ func installBinary(bin *recipe.Binary, storeDir, name, version string, deps *bui
 		// to locally-resolved versions, which is approximate
 		// but preserves backwards-compat with archives built
 		// before the build-time emit landed.
-		if HasDepsMetadata(storeDir) {
+		if HasDepsMetadata(extractDir) {
 			return nil
 		}
 		if deps != nil {
 			md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
-			if err := WriteDepsMetadata(storeDir, md); err != nil {
+			if err := WriteDepsMetadata(extractDir, md); err != nil {
 				return fmt.Errorf("write deps metadata: %w", err)
 			}
 		}
 
 		return nil
-	})
+	}
+	if inPlace {
+		return withStoreGenLock(storeRoot, finalize)
+	}
+	return finalize()
 }
 
 // checkBinaryTrustPolicy enforces the recipe-declared
@@ -746,7 +801,11 @@ func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *
 	return result.SHA256, extractBuild(result, storeDir, deps)
 }
 
-func installFromSource(r *recipe.Recipe, storeDir string, deps *build.BuildDeps) (string, error) {
+// installFromSourceTo runs the source build and extracts the
+// archive into extractDir. inPlace mirrors installBinaryTo:
+// true means extractDir is the live canonical dir; false
+// means the caller is staging.
+func installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) (string, error) {
 	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
@@ -757,7 +816,7 @@ func installFromSource(r *recipe.Recipe, storeDir string, deps *build.BuildDeps)
 	if err != nil {
 		return "", fmt.Errorf("building from source: %w", err)
 	}
-	return result.SHA256, extractBuild(result, storeDir, deps)
+	return result.SHA256, extractBuildTo(result, extractDir, finalStoreDir, deps, inPlace)
 }
 
 // extractBuild extracts a build archive into the store dir
@@ -772,27 +831,41 @@ func installFromSource(r *recipe.Recipe, storeDir string, deps *build.BuildDeps)
 // disk (result.Archive in a tmp dir), so the lock covers only
 // the store-visible finalize — not the upstream build.
 func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps) error {
-	storeRoot := filepath.Dir(filepath.Dir(storeDir))
-	return withStoreGenLock(storeRoot, func() error {
-		if err := download.ExtractTarZstd(result.Archive, storeDir); err != nil {
+	return extractBuildTo(result, storeDir, storeDir, deps, true)
+}
+
+// extractBuildTo extracts result.Archive into extractDir,
+// rewriting prefix placeholders to point at finalStoreDir.
+// When inPlace is true, the store-gen lock is held and the
+// farm is populated; otherwise the caller commits both.
+func extractBuildTo(result *build.BuildResult, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) error {
+	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
+	finalize := func() error {
+		if err := download.ExtractTarZstd(result.Archive, extractDir); err != nil {
 			return fmt.Errorf("extract build output: %w", err)
 		}
-		if err := build.RestorePrefixPlaceholder(storeDir); err != nil {
+		if err := build.RestorePrefixPlaceholderTo(extractDir, finalStoreDir); err != nil {
 			return fmt.Errorf("restore prefix paths: %w", err)
 		}
-		if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
-			if err := farm.Populate(storeDir, farmDir); err != nil {
-				fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+		if inPlace {
+			if farmDir := farm.DirFromStoreDir(finalStoreDir); farmDir != "" {
+				if err := farm.Populate(finalStoreDir, farmDir); err != nil {
+					fmt.Fprintf(os.Stderr, "farm: %v\n", err)
+				}
 			}
 		}
 		if deps != nil {
 			md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
-			if err := WriteDepsMetadata(storeDir, md); err != nil {
+			if err := WriteDepsMetadata(extractDir, md); err != nil {
 				return fmt.Errorf("write deps metadata: %w", err)
 			}
 		}
 		return nil
-	})
+	}
+	if inPlace {
+		return withStoreGenLock(storeRoot, finalize)
+	}
+	return finalize()
 }
 
 // lockPackage acquires an exclusive file lock for a package

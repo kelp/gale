@@ -811,6 +811,43 @@ sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 	}
 }
 
+func TestFetchRecipeBinariesStaleRevision(t *testing.T) {
+	const revisionedRecipe = `[package]
+name = "jq"
+version = "1.8.1"
+revision = 2
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://example.com/jq-1.8.1.tar.gz"
+sha256 = "abc123"
+`
+	const staleBinaries = `version = "1.8.1"
+
+[darwin-arm64]
+sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
+`
+
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			"/recipes/j/jq.toml":          revisionedRecipe,
+			"/recipes/j/jq.binaries.toml": staleBinaries,
+		}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 0 {
+		t.Errorf("Binary count = %d, want 0 (bare index "+
+			"should not merge into revisioned recipe)", len(rec.Binary))
+	}
+}
+
 // --- Behavior 21: parseIndex edge cases ---
 
 func TestParseIndex(t *testing.T) {

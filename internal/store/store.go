@@ -28,6 +28,17 @@ func NewStore(root string) *Store {
 	return &Store{Root: root}
 }
 
+// isTransientStoreEntry reports whether a sibling under
+// <root>/<name>/ is a transient artifact of a forced reinstall
+// rather than a real installed version. Both ".build-*" staging
+// dirs and "<version>.bak" backups can appear briefly while
+// commitStaged / replaceStoreDir runs, and non-locking readers
+// must skip them.
+func isTransientStoreEntry(name string) bool {
+	return strings.HasPrefix(name, ".build-") ||
+		strings.HasSuffix(name, ".bak")
+}
+
 // Create creates the directory for a package version.
 // It is idempotent; calling it for an existing version succeeds.
 // Returns the full path to the version directory.
@@ -102,7 +113,7 @@ func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, b
 			continue
 		}
 		n := e.Name()
-		if strings.HasPrefix(n, ".build-") {
+		if isTransientStoreEntry(n) {
 			continue
 		}
 		if n == version {
@@ -178,9 +189,11 @@ func (s *Store) List() ([]InstalledPackage, error) {
 			if !versionEntry.IsDir() {
 				continue
 			}
-			// Skip in-progress build temp dirs from
-			// InstallLocal (same-filesystem staging).
-			if strings.HasPrefix(versionEntry.Name(), ".build-") {
+			// Skip transient siblings created by reinstall:
+			// ".build-*" staging dirs and "<version>.bak"
+			// backups that replaceStoreDir leaves visible
+			// during its rename window.
+			if isTransientStoreEntry(versionEntry.Name()) {
 				continue
 			}
 			pkgs = append(pkgs, InstalledPackage{

@@ -2,6 +2,7 @@ package lint
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -102,6 +103,7 @@ var rules = []lintRule{
 	lintReleasedAt,
 	lintBuildSteps,
 	lintPlatforms,
+	lintBinariesIndexRevision,
 }
 
 // Lint validates a recipe TOML string and returns issues.
@@ -301,6 +303,43 @@ func lintPlatforms(
 	_ func(string), addWarn func(string),
 ) {
 	checkPlatforms(r.Package.Platforms, addWarn)
+}
+
+// lintBinariesIndexRevision warns when a recipe at
+// revision >= 2 has a sibling .binaries.toml whose `version`
+// is not the canonical `<version>-<revision>` form.
+// recipe.MergeBinaries refuses to merge a stale index into a
+// revisioned recipe, which means the binary path will fall
+// through to a source build until the index is rewritten.
+func lintBinariesIndexRevision(
+	r *recipe, filePath string,
+	_ func(string), addWarn func(string),
+) {
+	if filePath == "" || r.Package.Name == "" || r.Package.Revision < 2 {
+		return
+	}
+	indexPath := filepath.Join(
+		filepath.Dir(filePath), r.Package.Name+".binaries.toml")
+	data, err := os.ReadFile(indexPath) //nolint:gosec // path is recipe-derived
+	if err != nil {
+		return
+	}
+	var idx struct {
+		Version string `toml:"version"`
+	}
+	if _, err := toml.Decode(string(data), &idx); err != nil {
+		return
+	}
+	expected := fmt.Sprintf("%s-%d", r.Package.Version, r.Package.Revision)
+	if idx.Version == "" || idx.Version == expected {
+		return
+	}
+	addWarn(fmt.Sprintf(
+		"%s carries version = %q but recipe is revision %d; "+
+			"rewrite as %q so prebuilt binaries are not skipped",
+		r.Package.Name+".binaries.toml",
+		idx.Version, r.Package.Revision,
+		expected))
 }
 
 // extractSteps pulls the "steps" array from the raw

@@ -1,6 +1,8 @@
 package lint
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -739,6 +741,133 @@ steps = ["make install PREFIX=${PREFIX}"]
 	if hasWarning(issues, "does not match") {
 		t.Errorf("should not check URL match when repo is empty, got %v",
 			issues)
+	}
+}
+
+// --- Binaries-index revision check ---
+
+const revisionedRecipe = `
+[package]
+name = "jq"
+version = "1.8.1"
+revision = 2
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+repo = "jqlang/jq"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-1.8.1.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+released_at = "2025-07-01"
+
+[build]
+steps = [
+  "./configure --prefix=${PREFIX}",
+  "make -j${JOBS}",
+  "make install",
+]
+`
+
+const revOneRecipe = `
+[package]
+name = "jq"
+version = "1.8.1"
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+repo = "jqlang/jq"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-1.8.1.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+released_at = "2025-07-01"
+
+[build]
+steps = [
+  "./configure --prefix=${PREFIX}",
+  "make -j${JOBS}",
+  "make install",
+]
+`
+
+func writeBinariesIndex(t *testing.T, dir, version string) string {
+	t.Helper()
+	letterDir := filepath.Join(dir, "j")
+	if err := os.MkdirAll(letterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "version = \"" + version + "\"\n\n" +
+		"[darwin-arm64]\nsha256 = \"" +
+		"aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111\"\n"
+	indexPath := filepath.Join(letterDir, "jq.binaries.toml")
+	if err := os.WriteFile(indexPath, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return filepath.Join(letterDir, "jq.toml")
+}
+
+func TestLintBareBinariesIndexAgainstRevisionedRecipeWarns(t *testing.T) {
+	dir := t.TempDir()
+	recipePath := writeBinariesIndex(t, dir, "1.8.1")
+
+	issues := Lint(revisionedRecipe, recipePath)
+	if !hasWarning(issues, "1.8.1-2") {
+		t.Errorf("expected warning suggesting 1.8.1-2 rewrite, got %v",
+			issues)
+	}
+	if !hasWarning(issues, "binaries.toml") {
+		t.Errorf("expected warning naming the binaries file, got %v",
+			issues)
+	}
+}
+
+func TestLintCanonicalBinariesIndexAgainstRevisionedRecipeOK(t *testing.T) {
+	dir := t.TempDir()
+	recipePath := writeBinariesIndex(t, dir, "1.8.1-2")
+
+	issues := Lint(revisionedRecipe, recipePath)
+	if hasWarning(issues, "binaries.toml") {
+		t.Errorf("expected no binaries.toml warning when index is "+
+			"canonical, got %v", issues)
+	}
+}
+
+func TestLintStaleRevisionedBinariesIndexWarns(t *testing.T) {
+	dir := t.TempDir()
+	recipePath := writeBinariesIndex(t, dir, "1.8.1-1")
+
+	issues := Lint(revisionedRecipe, recipePath)
+	if !hasWarning(issues, "1.8.1-2") {
+		t.Errorf("expected warning suggesting 1.8.1-2 rewrite, got %v",
+			issues)
+	}
+}
+
+func TestLintBareBinariesIndexAgainstRevOneRecipeOK(t *testing.T) {
+	dir := t.TempDir()
+	recipePath := writeBinariesIndex(t, dir, "1.8.1")
+
+	issues := Lint(revOneRecipe, recipePath)
+	if hasWarning(issues, "binaries.toml") {
+		t.Errorf("expected no binaries.toml warning for rev-1 "+
+			"recipe with bare index, got %v", issues)
+	}
+}
+
+func TestLintNoBinariesIndexFileOK(t *testing.T) {
+	dir := t.TempDir()
+	// Set up the recipe path but DON'T write a sibling index.
+	letterDir := filepath.Join(dir, "j")
+	if err := os.MkdirAll(letterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipePath := filepath.Join(letterDir, "jq.toml")
+
+	issues := Lint(revisionedRecipe, recipePath)
+	if hasWarning(issues, "binaries.toml") {
+		t.Errorf("expected no binaries.toml warning when index is "+
+			"absent, got %v", issues)
 	}
 }
 
