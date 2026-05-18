@@ -1021,7 +1021,16 @@ func TestExtractBuildExtractsArchive(t *testing.T) {
 	tarzst := createTestTarZstd(t, "bin/hello", "world")
 	hash := hashFile(t, tarzst)
 
-	storeDir := t.TempDir()
+	// extractBuildTo derives storeRoot via filepath.Dir twice,
+	// then storeGenLockPath walks one more level up. A bare
+	// t.TempDir() works on macOS (deep /var/folders path) but
+	// fails on Linux (/tmp/X/001 walks to / for the lock).
+	// Mirror the production <galeDir>/pkg/<name>/<version>
+	// layout.
+	storeDir := filepath.Join(t.TempDir(), "pkg", "testpkg", "1.0")
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatalf("mkdir storeDir: %v", err)
+	}
 	result := &build.BuildResult{
 		Archive: tarzst,
 		SHA256:  hash,
@@ -1041,7 +1050,12 @@ func TestExtractBuildExtractsArchive(t *testing.T) {
 }
 
 func TestExtractBuildBadArchiveReturnsError(t *testing.T) {
-	storeDir := t.TempDir()
+	// See note in TestExtractBuildExtractsArchive on the
+	// store-gen lock path depth.
+	storeDir := filepath.Join(t.TempDir(), "pkg", "testpkg", "1.0")
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatalf("mkdir storeDir: %v", err)
+	}
 	result := &build.BuildResult{
 		Archive: "/nonexistent/archive.tar.zst",
 		SHA256:  "abc",
