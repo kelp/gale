@@ -24,7 +24,9 @@ just lint         # golangci-lint + go vet
 just bootstrap    # first-time: go build + self-install
 just install      # rebuild gale from current source
 just tag 0.2.0    # run checks, update CHANGELOG, tag
-just release 0.2.0 # push tag, create GitHub release
+just release 0.2.0 # push tag — CI builds and publishes
+                   # (releases are immutable once published;
+                   # see docs/dev/releasing.md)
 ```
 
 ## Project Layout
@@ -162,6 +164,8 @@ Also exports `[vars]` from gale.toml. `gale run` and
   farm, `.gale-deps.toml` staleness model
 - `docs/dev/` — development reference (design,
   style guide, build improvements)
+- `docs/dev/releasing.md` — release flow (immutable
+  releases; `just tag` + `just release` drive CI)
 
 ## Principles
 
