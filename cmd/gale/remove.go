@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 
 	"github.com/kelp/gale/internal/config"
@@ -13,6 +14,7 @@ import (
 var (
 	removeGlobal  bool
 	removeProject bool
+	removeHost    string
 )
 
 var removeCmd = &cobra.Command{
@@ -56,6 +58,7 @@ var removeCmd = &cobra.Command{
 			return err
 		}
 
+		host := resolveHostFlag(removeHost)
 		version, ok := cfg.Packages[name]
 		if !ok {
 			return fmt.Errorf(
@@ -71,8 +74,17 @@ var removeCmd = &cobra.Command{
 		// Update config first so a failed write does not
 		// leave the store missing but config still listing
 		// the package.
+		removeFromHost := host
+		if host == "" {
+			// No flag: remove from wherever the package
+			// lives. Prefer the current host's section over
+			// shared so per-host entries don't silently
+			// linger after a remove.
+			removeFromHost = locatePackageHost(
+				ctx.GalePath, name, config.CurrentHost())
+		}
 		if err := config.RemovePackage(
-			ctx.GalePath, name); err != nil {
+			ctx.GalePath, removeFromHost, name); err != nil {
 			return fmt.Errorf("removing from config: %w",
 				err)
 		}
@@ -128,5 +140,39 @@ func init() {
 		false, "Remove from global config")
 	removeCmd.Flags().BoolVarP(&removeProject, "project", "p",
 		false, "Remove from project config")
+	removeCmd.Flags().StringVar(&removeHost, "host", "",
+		"Remove from [hosts.<host>.packages] "+
+			"(use 'current' for this machine)")
 	rootCmd.AddCommand(removeCmd)
+}
+
+// locatePackageHost returns the host name whose section
+// contains name in the given config, or "" if it lives in
+// shared [packages] or is absent. Preference: current host
+// first, then any host that has it. Used by `gale remove`
+// to default to the host overlay rather than shared when a
+// package only exists per-host.
+func locatePackageHost(configPath, name, current string) string {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return ""
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		return ""
+	}
+	if _, inShared := cfg.Packages[name]; inShared {
+		return ""
+	}
+	if h, ok := cfg.Hosts[current]; ok {
+		if _, has := h.Packages[name]; has {
+			return current
+		}
+	}
+	for host, h := range cfg.Hosts {
+		if _, has := h.Packages[name]; has {
+			return host
+		}
+	}
+	return ""
 }

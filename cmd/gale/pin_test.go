@@ -19,7 +19,7 @@ func TestPinPackage_RejectsRemovedPackage(t *testing.T) {
 	}
 
 	// Pinning a package not in [packages] should fail.
-	err := config.PinPackage(configPath, "ripgrep")
+	err := config.PinPackage(configPath, "", "ripgrep")
 	if err == nil {
 		t.Fatal("expected error when pinning absent package")
 	}
@@ -34,7 +34,7 @@ func TestPinPackage_AcceptsInstalledPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := config.PinPackage(configPath, "jq")
+	err := config.PinPackage(configPath, "", "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

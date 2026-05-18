@@ -96,6 +96,7 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 			"sync: parsing config: %v", err))
 		return
 	}
+	cfg.ApplyHost(config.CurrentHost())
 	lp, lpErr := lockfilePath(configPath)
 	if lpErr != nil {
 		out.Warn(fmt.Sprintf(

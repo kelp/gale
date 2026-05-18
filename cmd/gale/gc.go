@@ -225,6 +225,7 @@ func mergeConfig(
 		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
 		return
 	}
+	cfg.ApplyHost(config.CurrentHost())
 	for name, version := range cfg.Packages {
 		if dir, ok := s.StorePath(name, version); ok {
 			referenced[name+"@"+filepath.Base(dir)] = true

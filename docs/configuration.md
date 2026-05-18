@@ -43,6 +43,58 @@ activates. Direnv exports these via `use_gale`.
 `gale env` prints them. `gale env --vars-only`
 prints only variables, not PATH.
 
+### `[hosts.<name>.packages]` and `[hosts.<name>.pinned]`
+
+Per-machine overlays. Top-level `[packages]` and
+`[pinned]` apply on every machine. Host sections add
+or override entries when the local hostname matches
+`<name>`.
+
+```toml
+[packages]
+  jq = "1.8.1"
+  just = "1.48.0"
+
+[hosts.my-mac.packages]
+  fzf = "0.50"
+  mas = "1.8.6"
+
+[hosts.my-server.packages]
+  htop = "3.0"
+```
+
+On `my-mac`, `gale sync` installs jq, just, fzf, and
+mas. On `my-server`, jq, just, and htop. On any other
+machine, just jq and just.
+
+When the same package appears in both `[packages]`
+and a host section, the host entry wins — useful for
+running a different version of one tool on one
+machine while sharing everything else.
+
+`gale add`, `remove`, `pin`, and `unpin` default to
+the shared `[packages]` section. Pass `--host <name>`
+(or `--host current` for the local machine) to write
+to a host section.
+
+```sh
+gale add fzf --host current
+gale remove htop --host my-server
+```
+
+The active hostname comes from `hostname(1)`. Override
+with the `GALE_HOST` environment variable for cases
+where the system hostname is wrong or you want a
+short identifier:
+
+```sh
+export GALE_HOST=my-mac
+```
+
+This composes naturally with [chezmoi](chezmoi.md):
+one `gale.toml` tracked across machines, each
+machine reads its own section.
+
 ## config.toml
 
 Application settings. Lives at `~/.gale/config.toml`.

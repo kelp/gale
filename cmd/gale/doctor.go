@@ -131,6 +131,7 @@ func checkGlobalConfig(ctx *doctorContext) bool {
 			"Global gale.toml parse error: %v", err))
 		return false
 	}
+	cfg.ApplyHost(config.CurrentHost())
 	ctx.out.Success(fmt.Sprintf(
 		"Global config (%d packages)", len(cfg.Packages)))
 	ctx.globalPkgs = cfg.Packages
@@ -153,6 +154,7 @@ func checkProjectConfig(ctx *doctorContext) bool {
 			"Project gale.toml parse error: %v", err))
 		return false
 	}
+	cfg.ApplyHost(config.CurrentHost())
 	ctx.out.Success(fmt.Sprintf(
 		"Project config (%d packages)", len(cfg.Packages)))
 	ctx.projPkgs = cfg.Packages

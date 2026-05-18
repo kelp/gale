@@ -52,6 +52,7 @@ var sbomCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("parsing config: %w", err)
 		}
+		cfg.ApplyHost(config.CurrentHost())
 
 		lp, lpErr := lockfilePath(configPath)
 		if lpErr != nil {

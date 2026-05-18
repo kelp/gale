@@ -12,8 +12,7 @@ to version-control, and a clean reinstall means
 starting over. Nix solves all of this — declarative
 config, rollback, per-project isolation — but demands
 you learn a language and debug cryptic build failures.
-Gale gives you the declarative model without the
-complexity. Gale is as easy to use as Homebrew and as predictable
+Gale is as easy to use as Homebrew and as predictable
 as Nix, without the baggage of either.
 
 ## Install
@@ -103,6 +102,39 @@ Teams migrating from asdf or mise can keep their
 `.tool-versions` file. Gale reads it as a fallback
 when no `gale.toml` exists.
 
+## Multiple Machines
+
+One `gale.toml` can describe more than one machine.
+Top-level `[packages]` applies everywhere; per-host
+sections add or override entries on a specific
+machine:
+
+```toml
+[packages]
+  jq = "1.8.1"
+  ripgrep = "14.1.1"
+
+[hosts.my-mac.packages]
+  fzf = "0.50"
+
+[hosts.my-server.packages]
+  htop = "3.0"
+```
+
+Gale picks the section that matches `hostname` (or
+`GALE_HOST` if set). Sync the same file across
+machines with chezmoi or git — each machine runs
+`gale sync` and gets its own toolset.
+
+```sh
+gale add fzf --host current   # write to this host's section
+ssh server gale sync          # remote install — no special command needed
+```
+
+See [docs/chezmoi.md](docs/chezmoi.md) and
+[docs/configuration.md](docs/configuration.md) for
+details.
+
 ## Commands
 
 ```
@@ -130,8 +162,6 @@ gale create-recipe <repo> Generate recipe with AI
 gale audit <pkg>          Rebuild and compare hashes
 gale verify <pkg>         Check binary attestation
 gale sbom [pkg]           Software bill of materials
-gale remote sync <host>   Sync packages to remote host
-gale remote diff <host>   Compare local vs remote
 gale completion <shell>   Generate shell completions
 ```
 
@@ -141,7 +171,7 @@ See `man gale` for the full reference.
 
 Recipes are TOML files in
 [gale-recipes](https://github.com/kelp/gale-recipes).
-The repository has over 120 recipes today, covering
+The repository has over 180 recipes today, covering
 tools like jq, ripgrep, git, terraform, kubectl, and
 Go. Each recipe defines how to build a package from
 source.
@@ -186,11 +216,6 @@ Without it, gale skips attestation checks and
 installs proceed normally. `gale doctor` reports
 its availability.
 
-**ssh / scp** — used by `gale remote` commands to
-sync packages to remote machines. Standard on macOS
-and Linux. Respects `~/.ssh/config` for host aliases
-and key configuration.
-
 **[Anthropic API key](https://console.anthropic.com/)** —
 used by `gale create-recipe` for AI-powered recipe
 generation. Configure in `~/.gale/config.toml` under
@@ -198,7 +223,7 @@ generation. Configure in `~/.gale/config.toml` under
 
 ## Development
 
-Requires Go 1.21+ for bootstrapping.
+Requires Go 1.26+ for bootstrapping.
 
 ```sh
 git clone https://github.com/kelp/gale

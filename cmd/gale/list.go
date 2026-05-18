@@ -43,6 +43,7 @@ var listCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("parsing config: %w", err)
 		}
+		cfg.ApplyHost(config.CurrentHost())
 
 		if len(cfg.Packages) == 0 {
 			fmt.Println("No packages installed.")

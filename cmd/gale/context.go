@@ -112,7 +112,12 @@ func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
 		}
 		return nil, fmt.Errorf("reading %s: %w", ctx.GalePath, err)
 	}
-	return config.ParseGaleConfig(string(data))
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		return nil, err
+	}
+	cfg.ApplyHost(config.CurrentHost())
+	return cfg, nil
 }
 
 // loadToolVersionsFallback checks for a .tool-versions file
@@ -201,6 +206,9 @@ func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("parsing config: %w", err)
 	}
+	host := config.CurrentHost()
+	cfg.Packages = cfg.EffectivePackages(host)
+	cfg.Pinned = cfg.EffectivePinned(host)
 	return cfg, nil
 }
 
@@ -285,7 +293,8 @@ func lockfilePath(configPath string) (string, error) {
 // `<version>-<revision>` form written to gale.lock for
 // exact pinning. See docs/revisions.md.
 func writeConfigAndLock(configPath, name, configVersion, lockVersion, sha256 string) error {
-	if err := config.AddPackage(configPath, name, configVersion); err != nil {
+	if err := config.UpsertPackage(
+		configPath, config.CurrentHost(), name, configVersion); err != nil {
 		return fmt.Errorf("adding to config: %w", err)
 	}
 	lp, err := lockfilePath(configPath)
@@ -349,8 +358,11 @@ func removeLockEntry(configPath, name string) error {
 }
 
 // addToConfig resolves scope and writes a package version
-// to gale.toml. Returns the config path used.
-func addToConfig(name, version string, global, project bool) (string, error) {
+// to gale.toml. Returns the config path used. When host is
+// non-empty, writes to [hosts.<host>.packages]; otherwise
+// writes to the shared [packages] section, preserving an
+// existing host-scoped entry for the current machine.
+func addToConfig(name, version, host string, global, project bool) (string, error) {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("getting working dir: %w", err)
@@ -360,7 +372,15 @@ func addToConfig(name, version string, global, project bool) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolving config path: %w", err)
 	}
-	if err := config.AddPackage(configPath, name, version); err != nil {
+	if host != "" {
+		if err := config.AddPackage(
+			configPath, host, name, version); err != nil {
+			return "", fmt.Errorf("adding %s to config: %w", name, err)
+		}
+		return configPath, nil
+	}
+	if err := config.UpsertPackage(
+		configPath, config.CurrentHost(), name, version); err != nil {
 		return "", fmt.Errorf("adding %s to config: %w", name, err)
 	}
 	return configPath, nil

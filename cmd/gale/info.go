@@ -85,6 +85,7 @@ func printConfigInfo(name, configPath, scope string) (bool, error) {
 		return false, fmt.Errorf("parsing %s: %w",
 			configPath, err)
 	}
+	cfg.ApplyHost(config.CurrentHost())
 
 	version, ok := cfg.Packages[name]
 	if !ok {

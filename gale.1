@@ -257,26 +257,6 @@ for machine-readable output.
 .Dl $ gale sbom
 .Dl $ gale sbom jq --json
 .El
-.Ss Remote Management
-.Bl -tag -width Ds
-.It Cm remote sync Ar host
-Sync local
-.Pa gale.toml
-to a remote machine via SSH.
-Bootstraps gale on the host if not installed.
-.Pp
-.Dl $ gale remote sync dev-server
-.It Cm remote diff Ar host
-Compare local and remote package lists.
-.Pp
-.Dl $ gale remote diff dev-server
-.It Cm remote export Ar host
-Copy local
-.Pa gale.toml
-to a remote host and run sync.
-.Pp
-.Dl $ gale remote export staging
-.El
 .Ss Repository Management
 .Bl -tag -width Ds
 .It Cm repo add Ar url
@@ -452,12 +432,6 @@ $ gale build recipes/j/jq.toml
 $ gale install jq --recipe recipes/j/jq.toml
 .Ed
 .Pp
-Manage packages on a remote server:
-.Bd -literal -offset indent
-$ gale remote diff prod-server
-$ gale remote sync prod-server
-.Ed
-.Pp
 Audit supply chain integrity:
 .Bd -literal -offset indent
 $ gale audit jq
@@ -502,11 +476,52 @@ go = true
 
 [vars]
 GOPATH = "${HOME}/go"
+
+[hosts.my-mac.packages]
+fzf = "0.50"
+
+[hosts.my-server.packages]
+htop = "3.0"
 .Ed
+.Pp
+Top-level
+.Ic [packages]
+applies on every machine.
+.Ic [hosts. Ns Ar name Ns Ic .packages]
+sections add machine-specific packages when the local
+hostname matches
+.Ar name .
+Host entries override shared entries when both
+declare the same package.
+.Ic [hosts. Ns Ar name Ns Ic .pinned]
+mirrors the shared
+.Ic [pinned]
+behavior per host.
+The active host is
+.Ev GALE_HOST
+if set, otherwise the value returned by
+.Xr hostname 1 .
+.Pp
+Use
+.Fl -host Ar name
+on
+.Cm add , remove , pin ,
+and
+.Cm unpin
+to target a host section.
+.Fl -host current
+expands to the current machine.
 .Sh ENVIRONMENT
 .Bl -tag -width Ds
 .It Ev NO_COLOR
 Disables colored output when set.
+.It Ev GALE_HOST
+Overrides the hostname used to select
+.Ic [hosts. Ns Ar X Ns Ic ]
+sections in
+.Pa gale.toml .
+Defaults to
+.Xr hostname 1 .
 .El
 .Sh FILES
 .Bl -tag -width "~/.gale/config.toml" -compact

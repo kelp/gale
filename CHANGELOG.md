@@ -40,6 +40,24 @@
   refresh. Per-tap fetch errors warn and continue — the
   resolver falls through to the (now-stale) cache and the
   command still runs.
+- `gale.toml` now supports per-machine package lists via
+  `[hosts.<name>.packages]` and `[hosts.<name>.pinned]`
+  sections. Top-level `[packages]` and `[pinned]` apply on
+  every machine; host sections add or override entries
+  when the local hostname matches. Hostname comes from
+  `hostname(1)` and can be overridden with the `GALE_HOST`
+  environment variable. `gale add`, `remove`, `pin`, and
+  `unpin` accept a new `--host <name>` flag (or
+  `--host current` for the local machine) to target a
+  host section instead of the shared one.
+
+### Removed
+
+- `gale remote sync|export|diff` commands. They were thin
+  wrappers around `ssh` and `scp` that are easily composed
+  in a shell. With per-host sections in `gale.toml`, a
+  single chezmoi-tracked config reaches every machine and
+  `ssh host gale sync` replaces `gale remote sync`.
 
 ## v0.15.0 — 2026-05-14
 

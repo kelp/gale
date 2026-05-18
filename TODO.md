@@ -175,15 +175,6 @@ paper-cut a new user is likely to hit.
 - [x] **Shortened paths** — `packages/` → `pkg/`,
   `generations/` → `gen/`.
 
-## Remote Environments
-
-- [x] **`gale remote sync <host>`** — SSH to host,
-  bootstrap gale if missing, push gale.toml, sync.
-- [x] **`gale remote export <host>`** — push
-  gale.toml and sync without bootstrap check.
-- [x] **`gale remote diff <host>`** — compare
-  local vs remote package versions.
-
 ## Shell Completions
 
 - [x] **Generate completions** — `gale completion`

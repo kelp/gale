@@ -440,7 +440,7 @@ func TestAddPackageToExistingConfig(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	if err := AddPackage(path, "ripgrep", "14.0"); err != nil {
+	if err := AddPackage(path, "", "ripgrep", "14.0"); err != nil {
 		t.Fatalf("AddPackage error: %v", err)
 	}
 
@@ -472,7 +472,7 @@ func TestAddPackagePreservesExisting(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	if err := AddPackage(path, "ripgrep", "14.0"); err != nil {
+	if err := AddPackage(path, "", "ripgrep", "14.0"); err != nil {
 		t.Fatalf("AddPackage error: %v", err)
 	}
 
@@ -504,7 +504,7 @@ func TestAddPackageUpdatesExistingVersion(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	if err := AddPackage(path, "jq", "1.8.0"); err != nil {
+	if err := AddPackage(path, "", "jq", "1.8.0"); err != nil {
 		t.Fatalf("AddPackage error: %v", err)
 	}
 
@@ -532,7 +532,7 @@ func TestAddPackageBootstrapsNewFile(t *testing.T) {
 	path := filepath.Join(dir, "gale.toml")
 
 	// File does not exist yet
-	if err := AddPackage(path, "jq", "1.7.1"); err != nil {
+	if err := AddPackage(path, "", "jq", "1.7.1"); err != nil {
 		t.Fatalf("AddPackage error: %v", err)
 	}
 
@@ -562,7 +562,7 @@ func TestRemovePackageFromConfig(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	if err := RemovePackage(path, "jq"); err != nil {
+	if err := RemovePackage(path, "", "jq"); err != nil {
 		t.Fatalf("RemovePackage error: %v", err)
 	}
 
@@ -593,7 +593,7 @@ func TestRemovePackagePreservesOthers(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	if err := RemovePackage(path, "jq"); err != nil {
+	if err := RemovePackage(path, "", "jq"); err != nil {
 		t.Fatalf("RemovePackage error: %v", err)
 	}
 
@@ -625,7 +625,7 @@ func TestRemovePackageNonexistentReturnsError(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	err := RemovePackage(path, "nonexistent")
+	err := RemovePackage(path, "", "nonexistent")
 	if err == nil {
 		t.Fatal("expected error when removing nonexistent package")
 	}
@@ -690,7 +690,7 @@ func TestPinPackageAddsPinnedSection(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	if err := PinPackage(path, "jq"); err != nil {
+	if err := PinPackage(path, "", "jq"); err != nil {
 		t.Fatalf("PinPackage error: %v", err)
 	}
 
@@ -718,7 +718,7 @@ func TestPinPackagePreservesExisting(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	if err := PinPackage(path, "jq"); err != nil {
+	if err := PinPackage(path, "", "jq"); err != nil {
 		t.Fatalf("PinPackage error: %v", err)
 	}
 
@@ -757,7 +757,7 @@ func TestUnpinPackageRemovesPin(t *testing.T) {
 		t.Fatalf("failed to write initial gale.toml: %v", err)
 	}
 
-	if err := UnpinPackage(path, "jq"); err != nil {
+	if err := UnpinPackage(path, "", "jq"); err != nil {
 		t.Fatalf("UnpinPackage error: %v", err)
 	}
 
@@ -786,7 +786,7 @@ func TestUnpinPackageNonexistentIsNoop(t *testing.T) {
 	}
 
 	// Unpinning something that isn't pinned should not error.
-	if err := UnpinPackage(path, "jq"); err != nil {
+	if err := UnpinPackage(path, "", "jq"); err != nil {
 		t.Fatalf("UnpinPackage error: %v", err)
 	}
 }
@@ -1011,7 +1011,7 @@ func TestConcurrentAddPackageNoLostWrites(t *testing.T) {
 		go func(idx int) {
 			defer wg.Done()
 			name := fmt.Sprintf("pkg%d", idx)
-			errs[idx] = AddPackage(path, name, "1.0.0")
+			errs[idx] = AddPackage(path, "", name, "1.0.0")
 		}(i)
 	}
 	wg.Wait()
@@ -1085,5 +1085,293 @@ func TestAddRepoConcurrentNoDataLoss(t *testing.T) {
 	if len(cfg.Repos) != n {
 		t.Errorf("Repos count = %d, want %d: "+
 			"concurrent writes lost data", len(cfg.Repos), n)
+	}
+}
+
+// --- Behavior: Per-host packages ---
+
+const galeWithHosts = `
+[packages]
+jq = "1.7.1"
+ripgrep = "14.0"
+
+[hosts.my-mac.packages]
+fzf = "0.50"
+
+[hosts.my-server.packages]
+htop = "3.0"
+
+[hosts.override-host.packages]
+jq = "2.0.0"
+`
+
+func TestParseGaleConfigHostsNotNil(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHosts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Hosts == nil {
+		t.Fatal("expected non-nil Hosts map")
+	}
+	if _, ok := cfg.Hosts["my-mac"]; !ok {
+		t.Error("expected hosts.my-mac to be present")
+	}
+}
+
+func TestParseGaleConfigHostPackages(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHosts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.Hosts["my-mac"].Packages["fzf"] != "0.50" {
+		t.Errorf("Hosts[my-mac].Packages[fzf] = %q, want %q",
+			cfg.Hosts["my-mac"].Packages["fzf"], "0.50")
+	}
+}
+
+func TestEffectivePackagesMergesSharedAndHost(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHosts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pkgs := cfg.EffectivePackages("my-mac")
+	if pkgs["jq"] != "1.7.1" {
+		t.Errorf("EffectivePackages[jq] = %q, want %q",
+			pkgs["jq"], "1.7.1")
+	}
+	if pkgs["fzf"] != "0.50" {
+		t.Errorf("EffectivePackages[fzf] = %q, want %q",
+			pkgs["fzf"], "0.50")
+	}
+	if _, has := pkgs["htop"]; has {
+		t.Error("expected htop to be absent on my-mac")
+	}
+	if len(pkgs) != 3 {
+		t.Errorf("EffectivePackages count = %d, want 3", len(pkgs))
+	}
+}
+
+func TestEffectivePackagesUnknownHostReturnsSharedOnly(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHosts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pkgs := cfg.EffectivePackages("nowhere")
+	if len(pkgs) != 2 {
+		t.Errorf("EffectivePackages count = %d, want 2 (shared only)",
+			len(pkgs))
+	}
+	if pkgs["jq"] != "1.7.1" || pkgs["ripgrep"] != "14.0" {
+		t.Error("expected shared packages only")
+	}
+}
+
+func TestEffectivePackagesHostOverridesShared(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHosts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pkgs := cfg.EffectivePackages("override-host")
+	if pkgs["jq"] != "2.0.0" {
+		t.Errorf("EffectivePackages[jq] = %q, want %q (host override)",
+			pkgs["jq"], "2.0.0")
+	}
+}
+
+func TestEffectivePackagesDoesNotMutateReceiver(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHosts)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	_ = cfg.EffectivePackages("my-mac")
+	if len(cfg.Packages) != 2 {
+		t.Errorf("expected receiver Packages unchanged, got %d",
+			len(cfg.Packages))
+	}
+}
+
+const galeWithHostPinned = `
+[packages]
+jq = "1.7.1"
+
+[pinned]
+jq = true
+
+[hosts.my-mac.packages]
+fzf = "0.50"
+
+[hosts.my-mac.pinned]
+fzf = true
+`
+
+func TestEffectivePinnedMergesSharedAndHost(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHostPinned)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pinned := cfg.EffectivePinned("my-mac")
+	if !pinned["jq"] {
+		t.Error("expected jq pinned (shared)")
+	}
+	if !pinned["fzf"] {
+		t.Error("expected fzf pinned (host)")
+	}
+}
+
+func TestCurrentHostHonorsEnvVar(t *testing.T) {
+	t.Setenv("GALE_HOST", "test-host-xyz")
+	if got := CurrentHost(); got != "test-host-xyz" {
+		t.Errorf("CurrentHost() = %q, want %q", got, "test-host-xyz")
+	}
+}
+
+func TestCurrentHostFallsBackToHostname(t *testing.T) {
+	t.Setenv("GALE_HOST", "")
+	got := CurrentHost()
+	if got == "" {
+		t.Error("CurrentHost() returned empty string")
+	}
+	osHost, err := os.Hostname()
+	if err == nil && got != osHost {
+		t.Errorf("CurrentHost() = %q, want os.Hostname() = %q",
+			got, osHost)
+	}
+}
+
+func TestAddPackageToHostSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+	initial := "[packages]\njq = \"1.7.1\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddPackage(path, "my-mac", "fzf", "0.50"); err != nil {
+		t.Fatalf("AddPackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hosts["my-mac"].Packages["fzf"] != "0.50" {
+		t.Errorf("expected fzf=0.50 under hosts.my-mac, got cfg=%+v",
+			cfg)
+	}
+	if _, has := cfg.Packages["fzf"]; has {
+		t.Error("expected fzf NOT to leak into top-level packages")
+	}
+	if cfg.Packages["jq"] != "1.7.1" {
+		t.Error("expected top-level jq preserved")
+	}
+}
+
+func TestAddPackageToHostSectionPreservesOtherHost(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+	initial := "[hosts.my-server.packages]\nhtop = \"3.0\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddPackage(path, "my-mac", "fzf", "0.50"); err != nil {
+		t.Fatalf("AddPackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Hosts["my-server"].Packages["htop"] != "3.0" {
+		t.Error("expected my-server.htop preserved")
+	}
+	if cfg.Hosts["my-mac"].Packages["fzf"] != "0.50" {
+		t.Error("expected my-mac.fzf added")
+	}
+}
+
+func TestRemovePackageFromHostSection(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+	initial := "[packages]\njq = \"1.7.1\"\n\n" +
+		"[hosts.my-mac.packages]\nfzf = \"0.50\"\nbat = \"0.26\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemovePackage(path, "my-mac", "fzf"); err != nil {
+		t.Fatalf("RemovePackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, has := cfg.Hosts["my-mac"].Packages["fzf"]; has {
+		t.Error("expected fzf removed from my-mac")
+	}
+	if cfg.Hosts["my-mac"].Packages["bat"] != "0.26" {
+		t.Error("expected bat preserved in my-mac")
+	}
+	if cfg.Packages["jq"] != "1.7.1" {
+		t.Error("expected top-level jq preserved")
+	}
+}
+
+func TestRemovePackageFromHostSectionNotFound(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+	// fzf exists at top level but not under host — must still
+	// return ErrPackageNotFound when removing from host scope.
+	initial := "[packages]\nfzf = \"0.50\"\n"
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := RemovePackage(path, "my-mac", "fzf")
+	if !errors.Is(err, ErrPackageNotFound) {
+		t.Errorf("err = %v, want ErrPackageNotFound", err)
+	}
+}
+
+func TestWriteGaleConfigRoundTripWithHosts(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+	cfg := &GaleConfig{
+		Packages: map[string]string{"jq": "1.7.1"},
+		Hosts: map[string]HostConfig{
+			"my-mac": {
+				Packages: map[string]string{"fzf": "0.50"},
+			},
+		},
+	}
+	if err := WriteGaleConfig(path, cfg); err != nil {
+		t.Fatalf("WriteGaleConfig error: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	round, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if round.Hosts["my-mac"].Packages["fzf"] != "0.50" {
+		t.Error("round-trip lost host package")
+	}
+	if round.Packages["jq"] != "1.7.1" {
+		t.Error("round-trip lost shared package")
 	}
 }
