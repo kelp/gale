@@ -134,20 +134,45 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 	method := MethodSource
 	var sha256 string
 
-	// Resolve and install deps first. Needed for source
-	// builds (to supply the build environment) AND for
-	// prebuilt installs (so we can record the dep closure
-	// in .gale-deps.toml for staleness detection).
-	depPaths, err := inst.InstallBuildDeps(r)
+	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
+	binaryViable := bin != nil && !inst.SourceOnly
+
+	// Install runtime deps up front. The binary path needs
+	// them on disk (the prebuilt links against them); the
+	// source path needs them too. Build-only deps are
+	// deferred until we know we actually have to build from
+	// source — a successful binary install avoids them
+	// entirely.
+	//
+	// When there's no binary path to try (source-only mode,
+	// or no platform binary), install everything in one
+	// shot — matches the pre-revision behavior and keeps a
+	// single failure surface for source-only installs.
+	var depPaths *build.BuildDeps
+	if binaryViable {
+		depPaths, err = inst.InstallRuntimeDeps(r)
+	} else {
+		depPaths, err = inst.InstallBuildDeps(r)
+	}
 	if err != nil {
 		os.RemoveAll(storeDir)
-		return nil, fmt.Errorf("install build deps: %w", err)
+		return nil, fmt.Errorf("install deps: %w", err)
 	}
 
 	// Try binary first (unless source-only mode).
-	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	if bin != nil && !inst.SourceOnly {
-		if err := installBinaryTo(bin, storeDir, canonicalDir, name, version, depPaths, inst.Verifier, !staged); err == nil {
+	if binaryViable {
+		// Resolve the full declared closure so metadata
+		// records every direct dep — even the build-only
+		// ones we just skipped installing. IsStale needs
+		// this to flag stale installs when a build dep's
+		// recipe bumps revision.
+		fallback, ferr := inst.ResolveDirectDeps(r)
+		if ferr != nil {
+			os.RemoveAll(storeDir)
+			return nil, fmt.Errorf(
+				"resolve deps for metadata: %w", ferr)
+		}
+		if berr := installBinaryTo(bin, storeDir, canonicalDir, name, version, fallback, inst.Verifier, !staged); berr == nil {
 			method = MethodBinary
 			sha256 = bin.SHA256
 		} else {
@@ -164,7 +189,7 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 			fmt.Fprintf(w,
 				"warning: binary install for %s@%s failed: %v;"+
 					" falling back to source build\n",
-				name, version, err)
+				name, version, berr)
 			if err := os.RemoveAll(storeDir); err != nil {
 				return nil, fmt.Errorf(
 					"clean store dir for source fallback: %w", err)
@@ -173,6 +198,14 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 				return nil, fmt.Errorf(
 					"recreate store dir for source fallback: %w", err)
 			}
+			// Top up with the build-only deps we skipped.
+			buildOnly, derr := inst.InstallBuildOnlyDeps(r)
+			if derr != nil {
+				os.RemoveAll(storeDir)
+				return nil, fmt.Errorf(
+					"install build deps for source fallback: %w", derr)
+			}
+			depPaths = mergeBuildDeps(depPaths, buildOnly)
 		}
 	}
 
@@ -375,7 +408,7 @@ func replaceStoreDir(storeDir, buildDir string) error {
 // lock and populates the farm. When inPlace is false, the
 // caller is staging into a sibling dir and will commit the
 // rename + farm.Populate itself.
-func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, version string, deps *build.BuildDeps, v attestation.Verifier, inPlace bool) error {
+func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, version string, depsFallback []ResolvedDep, v attestation.Verifier, inPlace bool) error {
 	tmpFile := extractDir + ".download.tar.zst"
 	defer os.Remove(tmpFile)
 
@@ -505,8 +538,8 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		if HasDepsMetadata(extractDir) {
 			return nil
 		}
-		if deps != nil {
-			md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
+		if len(depsFallback) > 0 {
+			md := DepsMetadata{Deps: depsFallback}
 			if err := WriteDepsMetadata(extractDir, md); err != nil {
 				return fmt.Errorf("write deps metadata: %w", err)
 			}
@@ -586,31 +619,157 @@ func repoFromURL(rawURL string) string {
 	return p
 }
 
-// InstallBuildDeps installs build dependencies and returns
-// their bin directory paths.
+// InstallBuildDeps installs every declared direct
+// dependency (build + runtime, after applying the platform
+// overlay and merging in implicit system tools). Used by
+// the source-build paths (`gale build`, InstallLocal,
+// InstallGit) where the full toolchain is needed.
+//
+// The binary-first install path uses InstallRuntimeDeps and
+// InstallBuildOnlyDeps instead so build-only deps can be
+// skipped when a prebuilt binary install succeeds.
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
-	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
-
-	// Merge implicit system deps with explicit build deps
-	// without mutating the recipe.
-	sysDeps := build.SystemDeps(r.Build.System)
-	if len(sysDeps) > 0 {
-		explicit := make(map[string]bool)
-		for _, d := range deps.Build {
-			explicit[d] = true
-		}
-		merged := append([]string{}, deps.Build...)
-		for _, d := range sysDeps {
-			if !explicit[d] {
-				merged = append(merged, d)
-			}
-		}
-		deps.Build = merged
-	}
-	r = copyRecipeForDeps(r, deps)
-
+	deps := withSystemDeps(
+		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
+		r.Build.System)
+	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(r, seen)
+	return inst.installDepsInner(rCopy, seen)
+}
+
+// InstallRuntimeDeps installs only the runtime-tagged
+// direct deps of r. Build-only deps are not installed.
+// Transitive resolution inside each runtime dep is
+// unchanged — that dep's own build deps still get
+// installed if it has to be built from source.
+//
+// Called by the binary-first install path so a prebuilt
+// binary install doesn't drag in autoconf et al.
+func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
+	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
+	deps.Build = nil
+	rCopy := copyRecipeForDeps(r, deps)
+	seen := make(map[string]bool)
+	return inst.installDepsInner(rCopy, seen)
+}
+
+// InstallBuildOnlyDeps installs only the build-tagged
+// direct deps of r (plus implicit system tools). Used by
+// the binary-fallback-to-source path after
+// InstallRuntimeDeps has already installed the runtime
+// deps: now we top up with the build-only pieces before
+// running the source build.
+func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
+	deps := withSystemDeps(
+		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
+		r.Build.System)
+	deps.Runtime = nil
+	rCopy := copyRecipeForDeps(r, deps)
+	seen := make(map[string]bool)
+	return inst.installDepsInner(rCopy, seen)
+}
+
+// ResolveDirectDeps returns the (name, version, revision)
+// tuple for every direct declared dep of r (build +
+// runtime, deduped, after platform overlay). Does NOT
+// install anything — the binary-install path uses this to
+// populate .gale-deps.toml with the full declared closure
+// even though build-only deps weren't actually installed.
+// Keeps IsStale's "declared dep missing from metadata =
+// stale" contract intact.
+func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]ResolvedDep, error) {
+	if inst.Resolver == nil {
+		return nil, nil
+	}
+	deps := withSystemDeps(
+		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
+		r.Build.System)
+	names := make([]string, 0,
+		len(deps.Build)+len(deps.Runtime))
+	seen := make(map[string]bool)
+	for _, d := range deps.Build {
+		if !seen[d] {
+			seen[d] = true
+			names = append(names, d)
+		}
+	}
+	for _, d := range deps.Runtime {
+		if !seen[d] {
+			seen[d] = true
+			names = append(names, d)
+		}
+	}
+	resolved := make([]ResolvedDep, 0, len(names))
+	for _, name := range names {
+		dr, err := inst.Resolver(name)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"resolve dep %q: %w", name, err)
+		}
+		if dr == nil {
+			return nil, fmt.Errorf(
+				"no recipe found for dependency %q", name)
+		}
+		resolved = append(resolved, ResolvedDep{
+			Name:     name,
+			Version:  dr.Package.Version,
+			Revision: dr.Package.Revision,
+		})
+	}
+	return resolved, nil
+}
+
+// withSystemDeps returns deps with build.SystemDeps(system)
+// merged into deps.Build (deduped). Returns the input
+// unchanged when there are no system deps to merge.
+func withSystemDeps(deps recipe.Dependencies, system string) recipe.Dependencies {
+	sysDeps := build.SystemDeps(system)
+	if len(sysDeps) == 0 {
+		return deps
+	}
+	explicit := make(map[string]bool, len(deps.Build))
+	for _, d := range deps.Build {
+		explicit[d] = true
+	}
+	merged := append([]string{}, deps.Build...)
+	for _, d := range sysDeps {
+		if !explicit[d] {
+			merged = append(merged, d)
+		}
+	}
+	deps.Build = merged
+	return deps
+}
+
+// mergeBuildDeps returns a BuildDeps whose slices and
+// NamedDirs are the union of a and b. Used to combine the
+// runtime-only install (done before the binary attempt)
+// with the build-only install (done after binary failure)
+// before handing the merged set to a source build.
+func mergeBuildDeps(a, b *build.BuildDeps) *build.BuildDeps {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	out := &build.BuildDeps{
+		BinDirs:   append([]string{}, a.BinDirs...),
+		StoreDirs: append([]string{}, a.StoreDirs...),
+		NamedDirs: make(map[string]string,
+			len(a.NamedDirs)+len(b.NamedDirs)),
+	}
+	for k, v := range a.NamedDirs {
+		out.NamedDirs[k] = v
+	}
+	out.BinDirs = append(out.BinDirs, b.BinDirs...)
+	out.StoreDirs = append(out.StoreDirs, b.StoreDirs...)
+	for k, v := range b.NamedDirs {
+		if _, exists := out.NamedDirs[k]; !exists {
+			out.NamedDirs[k] = v
+		}
+	}
+	return out
 }
 
 // copyRecipeForDeps creates a shallow copy of a Recipe with

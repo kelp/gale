@@ -2165,3 +2165,489 @@ func TestCheckBinaryTrustPolicy(t *testing.T) {
 		})
 	}
 }
+
+// TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds verifies that
+// when a recipe has a usable prebuilt binary, build-only deps
+// are NOT installed. Build-only deps (autoconf, automake, etc.)
+// are needed only to compile from source; the prebuilt binary
+// doesn't use them. Installing them for every binary install is
+// wasted bandwidth and store space.
+//
+// Runtime deps must still be installed (the binary links against
+// them) and .gale-deps.toml must record BOTH so IsStale's
+// staleness detection keeps working.
+func TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds(t *testing.T) {
+	// Three prebuilt binaries: victim (the target), bdep
+	// (build-only), rdep (runtime). All served via httptest.
+	victimTar := createTestTarZstd(t, "bin/victim",
+		"#!/bin/sh\necho victim")
+	victimHash := hashFile(t, victimTar)
+	victimData, err := os.ReadFile(victimTar)
+	if err != nil {
+		t.Fatalf("read victim: %v", err)
+	}
+
+	bdepTar := createTestTarZstd(t, "bin/bdep",
+		"#!/bin/sh\necho bdep")
+	bdepHash := hashFile(t, bdepTar)
+	bdepData, err := os.ReadFile(bdepTar)
+	if err != nil {
+		t.Fatalf("read bdep: %v", err)
+	}
+
+	rdepTar := createTestTarZstd(t, "bin/rdep",
+		"#!/bin/sh\necho rdep")
+	rdepHash := hashFile(t, rdepTar)
+	rdepData, err := os.ReadFile(rdepTar)
+	if err != nil {
+		t.Fatalf("read rdep: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/victim.tar.zst":
+				w.Write(victimData)
+			case "/bdep.tar.zst":
+				w.Write(bdepData)
+			case "/rdep.tar.zst":
+				w.Write(rdepData)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	restore := download.SetHTTPClient(srv.Client())
+	defer restore()
+
+	storeRoot := t.TempDir()
+	platform := fmt.Sprintf("%s-%s",
+		runtime.GOOS, runtime.GOARCH)
+
+	makeRec := func(name, hash, path string) *recipe.Recipe {
+		return &recipe.Recipe{
+			Package: recipe.Package{Name: name, Version: "1.0"},
+			Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+			Binary: map[string]recipe.Binary{
+				platform: {
+					URL:    srv.URL + path,
+					SHA256: hash,
+					Trust:  recipe.TrustSHA256Only,
+				},
+			},
+		}
+	}
+
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			switch name {
+			case "bdep":
+				return makeRec("bdep", bdepHash, "/bdep.tar.zst"), nil
+			case "rdep":
+				return makeRec("rdep", rdepHash, "/rdep.tar.zst"), nil
+			}
+			return nil, fmt.Errorf("unknown dep: %s", name)
+		},
+	}
+
+	victim := makeRec("victim", victimHash, "/victim.tar.zst")
+	victim.Dependencies = recipe.Dependencies{
+		Build:   []string{"bdep"},
+		Runtime: []string{"rdep"},
+	}
+
+	result, err := inst.Install(victim)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != "binary" {
+		t.Fatalf("Method = %q, want binary", result.Method)
+	}
+
+	// Runtime dep must be installed.
+	if _, err := os.Stat(filepath.Join(storeRoot,
+		"rdep", "1.0-1", "bin", "rdep")); err != nil {
+		t.Errorf("runtime dep not installed: %v", err)
+	}
+
+	// Build-only dep must NOT be installed — this is the
+	// regression check.
+	bdepPath := filepath.Join(storeRoot, "bdep", "1.0-1")
+	if _, err := os.Stat(bdepPath); err == nil {
+		t.Errorf("build-only dep was installed at %s — "+
+			"should have been skipped because the binary "+
+			"install succeeded", bdepPath)
+	}
+
+	// Metadata must record both so IsStale still works.
+	md, err := ReadDepsMetadata(filepath.Join(storeRoot,
+		"victim", "1.0-1"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	names := map[string]bool{}
+	for _, d := range md.Deps {
+		names[d.Name] = true
+	}
+	if !names["bdep"] {
+		t.Errorf("metadata missing bdep entry; "+
+			"got %v — staleness detection won't catch "+
+			"build-dep revision bumps", md.Deps)
+	}
+	if !names["rdep"] {
+		t.Errorf("metadata missing rdep entry; got %v", md.Deps)
+	}
+}
+
+// TestInstallInstallsBuildOnlyDepsOnSourceFallback verifies
+// that when the binary attempt fails, the deferred
+// build-only deps DO get installed before the source build
+// runs. Otherwise a failed binary install would leave a
+// half-resolved state where the source build can't proceed.
+func TestInstallInstallsBuildOnlyDepsOnSourceFallback(t *testing.T) {
+	// bdep is a real prebuilt; rdep is a real prebuilt.
+	// victim advertises a binary but the server 404s — so
+	// the install falls through to source.
+	bdepTar := createTestTarZstd(t, "bin/bdep",
+		"#!/bin/sh\necho bdep")
+	bdepHash := hashFile(t, bdepTar)
+	bdepData, _ := os.ReadFile(bdepTar)
+
+	rdepTar := createTestTarZstd(t, "bin/rdep",
+		"#!/bin/sh\necho rdep")
+	rdepHash := hashFile(t, rdepTar)
+	rdepData, _ := os.ReadFile(rdepTar)
+
+	// Real source tarball for victim so the source build
+	// has something to run against.
+	srcTar := createTestSourceTarGz(t)
+	srcHash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/bdep.tar.zst":
+				w.Write(bdepData)
+			case "/rdep.tar.zst":
+				w.Write(rdepData)
+			case "/source.tar.gz":
+				http.ServeFile(w, r, srcTar)
+			default:
+				// /victim-binary.tar.zst falls through here
+				// and the install path treats 404 as a binary
+				// failure → source fallback.
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	restore := download.SetHTTPClient(srv.Client())
+	defer restore()
+
+	storeRoot := t.TempDir()
+	platform := fmt.Sprintf("%s-%s",
+		runtime.GOOS, runtime.GOARCH)
+
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+		// Silence the fallback warning in test output.
+		BinaryFallbackLog: io.Discard,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			switch name {
+			case "bdep":
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name: "bdep", Version: "1.0",
+					},
+					Source: recipe.Source{URL: "unused", SHA256: "unused"},
+					Binary: map[string]recipe.Binary{
+						platform: {
+							URL:    srv.URL + "/bdep.tar.zst",
+							SHA256: bdepHash,
+							Trust:  recipe.TrustSHA256Only,
+						},
+					},
+				}, nil
+			case "rdep":
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name: "rdep", Version: "1.0",
+					},
+					Source: recipe.Source{URL: "unused", SHA256: "unused"},
+					Binary: map[string]recipe.Binary{
+						platform: {
+							URL:    srv.URL + "/rdep.tar.zst",
+							SHA256: rdepHash,
+							Trust:  recipe.TrustSHA256Only,
+						},
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	victim := &recipe.Recipe{
+		Package: recipe.Package{Name: "victim", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: srcHash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh' > $PREFIX/bin/victim",
+				"chmod +x $PREFIX/bin/victim",
+			},
+		},
+		Binary: map[string]recipe.Binary{
+			platform: {
+				URL:    srv.URL + "/victim-binary.tar.zst",
+				SHA256: "deadbeef",
+				Trust:  recipe.TrustSHA256Only,
+			},
+		},
+		Dependencies: recipe.Dependencies{
+			Build:   []string{"bdep"},
+			Runtime: []string{"rdep"},
+		},
+	}
+
+	result, err := inst.Install(victim)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.Method != "source" {
+		t.Fatalf("Method = %q, want source", result.Method)
+	}
+
+	// Both deps should be installed in the fallback path.
+	for _, dep := range []string{"bdep", "rdep"} {
+		path := filepath.Join(storeRoot, dep, "1.0-1",
+			"bin", dep)
+		if _, err := os.Stat(path); err != nil {
+			t.Errorf("%s not installed after source "+
+				"fallback: %v", dep, err)
+		}
+	}
+}
+
+// TestInstallInstallsAllDepsInSourceOnlyMode verifies that
+// SourceOnly mode walks the full dep set via
+// InstallBuildDeps (not just runtime deps) — even when the
+// recipe declares a usable binary, because the binary path
+// is never entered.
+//
+// Pre-installs bdep so the deps walk hits the Cached path
+// and the test doesn't have to model a full source build
+// for the dep itself; the assertion is that the walker
+// VISITED bdep, evidenced by bdep ending up in the build
+// env paths returned to the caller.
+func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
+	srcTar := createTestSourceTarGz(t)
+	srcHash := hashFile(t, srcTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/source.tar.gz" {
+				http.ServeFile(w, r, srcTar)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+	defer srv.Close()
+
+	restore := download.SetHTTPClient(srv.Client())
+	defer restore()
+
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+	// Pre-install bdep so the deps walk treats it as
+	// cached. The point of the test is the walker reaches
+	// build-only deps, not that it can build them.
+	preInstall(t, s, "bdep", "1.0-1")
+
+	platform := fmt.Sprintf("%s-%s",
+		runtime.GOOS, runtime.GOARCH)
+
+	inst := &Installer{
+		Store:      s,
+		SourceOnly: true,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if name == "bdep" {
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name: "bdep", Version: "1.0",
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	victim := &recipe.Recipe{
+		Package: recipe.Package{Name: "victim", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: srcHash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh' > $PREFIX/bin/victim",
+				"chmod +x $PREFIX/bin/victim",
+			},
+		},
+		// Recipe DOES advertise a binary, but SourceOnly is
+		// set on the installer so we ignore it.
+		Binary: map[string]recipe.Binary{
+			platform: {
+				URL:    srv.URL + "/never-fetched.tar.zst",
+				SHA256: "deadbeef",
+				Trust:  recipe.TrustSHA256Only,
+			},
+		},
+		Dependencies: recipe.Dependencies{
+			Build: []string{"bdep"},
+		},
+	}
+
+	if _, err := inst.Install(victim); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// bdep should appear in victim's .gale-deps.toml — this
+	// only happens if the dep walker visited it via the
+	// SourceOnly path's InstallBuildDeps (since the binary
+	// path's metadata fallback is unreachable in
+	// SourceOnly).
+	md, err := ReadDepsMetadata(filepath.Join(storeRoot,
+		"victim", "1.0-1"))
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	found := false
+	for _, d := range md.Deps {
+		if d.Name == "bdep" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("bdep missing from metadata in SourceOnly "+
+			"mode — deps walker didn't visit build-only "+
+			"deps; got %+v", md.Deps)
+	}
+}
+
+// TestInstallSkipsBuildOnlyDepsPreservesStaleness pins the
+// contract that even though build-only deps aren't
+// installed locally, they ARE recorded in
+// .gale-deps.toml — so IsStale flags the package as stale
+// when a build dep's recipe bumps revision.
+func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
+	victimTar := createTestTarZstd(t, "bin/victim",
+		"#!/bin/sh\necho victim")
+	victimHash := hashFile(t, victimTar)
+	victimData, _ := os.ReadFile(victimTar)
+
+	bdepTar := createTestTarZstd(t, "bin/bdep",
+		"#!/bin/sh\necho bdep")
+	bdepHash := hashFile(t, bdepTar)
+	bdepData, _ := os.ReadFile(bdepTar)
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/victim.tar.zst":
+				w.Write(victimData)
+			case "/bdep.tar.zst":
+				w.Write(bdepData)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+	defer srv.Close()
+
+	restore := download.SetHTTPClient(srv.Client())
+	defer restore()
+
+	storeRoot := t.TempDir()
+	platform := fmt.Sprintf("%s-%s",
+		runtime.GOOS, runtime.GOARCH)
+
+	// bdep at revision 1 when victim is installed.
+	bdepRev := 1
+	resolver := func(name string) (*recipe.Recipe, error) {
+		if name == "bdep" {
+			return &recipe.Recipe{
+				Package: recipe.Package{
+					Name: "bdep", Version: "1.0",
+					Revision: bdepRev,
+				},
+				Source: recipe.Source{URL: "unused", SHA256: "unused"},
+				Binary: map[string]recipe.Binary{
+					platform: {
+						URL:    srv.URL + "/bdep.tar.zst",
+						SHA256: bdepHash,
+						Trust:  recipe.TrustSHA256Only,
+					},
+				},
+			}, nil
+		}
+		return nil, fmt.Errorf("unknown: %s", name)
+	}
+
+	inst := &Installer{
+		Store:    store.NewStore(storeRoot),
+		Resolver: resolver,
+	}
+
+	victim := &recipe.Recipe{
+		Package: recipe.Package{Name: "victim", Version: "1.0"},
+		Source:  recipe.Source{URL: "unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			platform: {
+				URL:    srv.URL + "/victim.tar.zst",
+				SHA256: victimHash,
+				Trust:  recipe.TrustSHA256Only,
+			},
+		},
+		Dependencies: recipe.Dependencies{
+			Build: []string{"bdep"},
+		},
+	}
+
+	if _, err := inst.Install(victim); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	// Confirm metadata recorded bdep at revision 1.
+	storeDir := filepath.Join(storeRoot, "victim", "1.0-1")
+	md, err := ReadDepsMetadata(storeDir)
+	if err != nil {
+		t.Fatalf("read metadata: %v", err)
+	}
+	if len(md.Deps) != 1 || md.Deps[0].Name != "bdep" ||
+		md.Deps[0].Revision != 1 {
+		t.Fatalf("metadata = %+v, want one bdep@1.0-1 entry",
+			md.Deps)
+	}
+
+	// Bump bdep's revision in the resolver and ask
+	// IsStale to compare.
+	bdepRev = 2
+	stale, err := IsStale(storeDir, victim, resolver)
+	if err != nil {
+		t.Fatalf("IsStale: %v", err)
+	}
+	if !stale {
+		t.Error("victim should be reported stale after " +
+			"bdep revision bump — metadata records bdep " +
+			"but a binary-only install skipped its actual " +
+			"installation, so without the recorded entry " +
+			"staleness detection silently breaks")
+	}
+}

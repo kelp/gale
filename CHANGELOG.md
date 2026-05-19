@@ -1,5 +1,25 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Binary installs no longer install build-only deps.
+  Previously, `gale install <pkg>` installed every entry
+  in `[dependencies.build]` and `[dependencies.runtime]`
+  before attempting the prebuilt-binary fetch. Recipes
+  like `jq` (build deps: autoconf, automake, libtool;
+  runtime dep: oniguruma) dragged in the full autotools
+  toolchain even when the GHCR binary was used. Now the
+  binary-first path installs only runtime deps; build-only
+  deps are resolved (for `.gale-deps.toml` staleness
+  detection) but skipped. If the binary attempt fails and
+  the install falls through to a source build, the
+  build-only deps are topped up first — same end state as
+  before. `gale build`, `gale install --build`,
+  `--source-only`, and the `InstallLocal` / `InstallGit`
+  paths still install the full dep set.
+
 ## v0.16.1 — 2026-05-18
 
 ### Fixed
