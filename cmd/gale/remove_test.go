@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
 )
 
@@ -252,5 +253,105 @@ func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 		t.Errorf(
 			"expected warning about missing store entry, "+
 				"stderr = %q", stderr)
+	}
+}
+
+// TestRemoveCleansHostOverlayAndShared verifies that when a
+// package appears in BOTH shared [packages] and the current
+// host's [hosts.<host>.packages] overlay, a single `gale
+// remove` clears both. Before the fix, only shared was
+// touched: the host overlay entry survived, gale doctor
+// then reported the package as "missing" (still in effective
+// config, store gone) and offered only `gale sync` —
+// reinstalling the thing the user just asked to remove.
+func TestRemoveCleansHostOverlayAndShared(t *testing.T) {
+	projDir := t.TempDir()
+	configPath := filepath.Join(projDir, "gale.toml")
+	// Pin the host so the test is deterministic across
+	// machines and the section name in the TOML matches what
+	// CurrentHost() returns.
+	t.Setenv("GALE_HOST", "testhost")
+	t.Setenv("HOME", projDir)
+
+	initial := "[packages]\n" +
+		"  foo = \"1.0\"\n\n" +
+		"[hosts.testhost.packages]\n" +
+		"  foo = \"2.0\"\n"
+	if err := os.WriteFile(configPath, []byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-create the store entry for the host version —
+	// that's the version LoadConfig will surface as
+	// "effective" and the one remove will delete from the
+	// store.
+	storeRoot := filepath.Join(projDir, ".gale", "pkg")
+	storePkgDir := filepath.Join(storeRoot, "foo", "2.0", "bin")
+	if err := os.MkdirAll(storePkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(storePkgDir, "foo"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Minimal generation layout so RebuildGeneration finds
+	// a previous generation to advance from.
+	galeDir := filepath.Join(projDir, ".gale")
+	gen1Bin := filepath.Join(galeDir, "gen", "1", "bin")
+	if err := os.MkdirAll(gen1Bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	removeProject = true
+	t.Cleanup(func() { removeProject = false })
+
+	if err := removeCmd.RunE(removeCmd, []string{"foo"}); err != nil {
+		t.Fatalf("remove command failed: %v", err)
+	}
+
+	// Both sections must be empty.
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("parse config after remove: %v", err)
+	}
+	if _, has := cfg.Packages["foo"]; has {
+		t.Errorf("foo still present in shared [packages]: %q",
+			string(data))
+	}
+	if h, ok := cfg.Hosts["testhost"]; ok {
+		if _, has := h.Packages["foo"]; has {
+			t.Errorf("foo still present in "+
+				"[hosts.testhost.packages]: %q", string(data))
+		}
+	}
+
+	// Newly built generation must not symlink foo —
+	// otherwise PATH points at a deleted store dir.
+	currentBin := filepath.Join(galeDir, "current", "bin", "foo")
+	if _, err := os.Lstat(currentBin); err == nil {
+		t.Errorf(
+			"current generation still has bin/foo symlink — " +
+				"effective config wasn't fully cleaned before rebuild")
+	}
+
+	// Store dir for the removed version must be gone.
+	if _, err := os.Stat(
+		filepath.Join(storeRoot, "foo", "2.0")); err == nil {
+		t.Error("store entry foo@2.0 was not removed")
 	}
 }

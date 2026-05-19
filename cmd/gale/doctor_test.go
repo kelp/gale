@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/output"
@@ -51,6 +52,45 @@ func TestRepairDoctorRebuildsGlobalGeneration(t *testing.T) {
 
 	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "jq")); err != nil {
 		t.Fatalf("jq symlink missing after repair: %v", err)
+	}
+}
+
+// TestCheckPackagesInstalledOffersRemove verifies that when
+// the store is missing a package the config lists, the
+// remediation message points the user at BOTH `gale sync`
+// and `gale remove`. Before the fix, only `gale sync` was
+// suggested — so a user who had just tried (and failed,
+// because of the host-overlay bug) to remove the package
+// had no discoverable path forward and would reinstall the
+// thing they wanted gone.
+func TestCheckPackagesInstalledOffersRemove(t *testing.T) {
+	home := t.TempDir()
+	storeRoot := filepath.Join(home, ".gale", "pkg")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	s := store.NewStore(storeRoot)
+
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir:    filepath.Join(home, ".gale"),
+		storeRoot:  storeRoot,
+		cwd:        home,
+		store:      s,
+		globalPkgs: map[string]string{"foo": "1.0"},
+		out:        output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if checkPackagesInstalled(ctx) {
+		t.Fatal("expected checkPackagesInstalled to return false")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "gale sync") {
+		t.Errorf("missing `gale sync` suggestion: %q", out)
+	}
+	if !strings.Contains(out, "gale remove foo") {
+		t.Errorf("missing `gale remove foo` suggestion: %q", out)
 	}
 }
 

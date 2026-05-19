@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- `gale remove <pkg>` now clears every section that lists
+  the package — both shared `[packages]` and any
+  `[hosts.<host>.packages]` overlay — in a single call.
+  Previously, when a package appeared in both, only the
+  shared entry was removed; the host overlay survived,
+  while the store dir was deleted anyway. `gale doctor`
+  then reported the package as missing and offered only
+  `gale sync` (reinstall) as a remediation — the opposite
+  of what the user asked for.
+- `gale doctor` now suggests both `gale sync` and
+  `gale remove <pkg>` when packages declared in
+  `gale.toml` are missing from the store, so users who
+  intended to remove a package have a discoverable path
+  forward.
+
 ## v0.16.0 — 2026-05-18
 
 ### Changed

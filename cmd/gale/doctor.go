@@ -192,9 +192,22 @@ func checkPackagesInstalled(ctx *doctorContext) bool {
 		}
 	}
 	if len(missing) > 0 {
+		// Surface both remediations: `gale sync` for the
+		// "never installed" case and `gale remove` for the
+		// "tried to remove but config still lists it" case.
+		// Doctor can't tell which one the user wants, so it
+		// shows both.
+		names := make([]string, 0, len(missing))
+		for _, m := range missing {
+			names = append(names,
+				strings.SplitN(m, "@", 2)[0])
+		}
 		ctx.out.Error(fmt.Sprintf(
-			"Missing packages: %s\n  Run: gale sync",
-			strings.Join(missing, ", ")))
+			"Missing packages: %s\n"+
+				"  Run: gale sync          (to reinstall)\n"+
+				"  Or:  gale remove %s (to delete from config)",
+			strings.Join(missing, ", "),
+			strings.Join(names, " ")))
 		return false
 	}
 	if len(allPkgs) > 0 {

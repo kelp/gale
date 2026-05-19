@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
@@ -73,23 +75,30 @@ var removeCmd = &cobra.Command{
 
 		// Update config first so a failed write does not
 		// leave the store missing but config still listing
-		// the package.
-		removeFromHost := host
-		if host == "" {
-			// No flag: remove from wherever the package
-			// lives. Prefer the current host's section over
-			// shared so per-host entries don't silently
-			// linger after a remove.
-			removeFromHost = locatePackageHost(
+		// the package. With --host, only that section is
+		// touched. Without --host, sweep every section that
+		// lists the package (shared + any host overlays) —
+		// otherwise a host overlay can survive the remove,
+		// leaving gale.toml referencing a package whose
+		// store dir we're about to delete.
+		var sections []string
+		if host != "" {
+			sections = []string{host}
+		} else {
+			sections = locatePackageSections(
 				ctx.GalePath, name, config.CurrentHost())
 		}
-		if err := config.RemovePackage(
-			ctx.GalePath, removeFromHost, name); err != nil {
-			return fmt.Errorf("removing from config: %w",
-				err)
+		for _, section := range sections {
+			if err := config.RemovePackage(
+				ctx.GalePath, section, name); err != nil {
+				return fmt.Errorf("removing from config: %w",
+					err)
+			}
 		}
 		out.Info(fmt.Sprintf(
-			"Removed %s from %s", name, ctx.GalePath))
+			"Removed %s from %s (%s)",
+			name, ctx.GalePath,
+			formatSections(sections)))
 
 		// Remove from lockfile. Warn on error but continue
 		// since the main operation (config + store) succeeded.
@@ -146,33 +155,61 @@ func init() {
 	rootCmd.AddCommand(removeCmd)
 }
 
-// locatePackageHost returns the host name whose section
-// contains name in the given config, or "" if it lives in
-// shared [packages] or is absent. Preference: current host
-// first, then any host that has it. Used by `gale remove`
-// to default to the host overlay rather than shared when a
-// package only exists per-host.
-func locatePackageHost(configPath, name, current string) string {
+// locatePackageSections returns every section in the
+// gale.toml at configPath that lists name. Sections are
+// encoded as "" for shared [packages] and "<hostname>" for
+// each matching [hosts.<hostname>.packages]. Returns nil if
+// the package is absent (caller has already verified via
+// the effective config, so this can only happen on a parse
+// failure). Order is deterministic: shared first, then host
+// names sorted alphabetically.
+//
+// `gale remove` calls this so a single invocation cleans
+// both shared and host-overlay entries. Removing only one
+// leaves the package in the effective config while we
+// delete its store dir — see TestRemoveCleansHostOverlayAndShared.
+// `current` is accepted for future preference rules but is
+// not used: every match must be cleared regardless.
+func locatePackageSections(configPath, name, _ string) []string {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		return ""
+		return nil
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
-		return ""
+		return nil
 	}
+
+	var sections []string
 	if _, inShared := cfg.Packages[name]; inShared {
-		return ""
+		sections = append(sections, "")
 	}
-	if h, ok := cfg.Hosts[current]; ok {
-		if _, has := h.Packages[name]; has {
-			return current
+	hostNames := make([]string, 0, len(cfg.Hosts))
+	for host := range cfg.Hosts {
+		hostNames = append(hostNames, host)
+	}
+	sort.Strings(hostNames)
+	for _, host := range hostNames {
+		if _, has := cfg.Hosts[host].Packages[name]; has {
+			sections = append(sections, host)
 		}
 	}
-	for host, h := range cfg.Hosts {
-		if _, has := h.Packages[name]; has {
-			return host
+	return sections
+}
+
+// formatSections renders the section list from
+// locatePackageSections for user-facing output.
+func formatSections(sections []string) string {
+	if len(sections) == 0 {
+		return "no sections"
+	}
+	parts := make([]string, 0, len(sections))
+	for _, s := range sections {
+		if s == "" {
+			parts = append(parts, "shared")
+		} else {
+			parts = append(parts, "hosts."+s)
 		}
 	}
-	return ""
+	return strings.Join(parts, ", ")
 }
