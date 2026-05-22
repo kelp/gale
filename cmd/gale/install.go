@@ -26,6 +26,7 @@ var (
 	installPath    string
 	installGit     bool
 	installBuild   bool
+	installHost    string
 )
 
 var installCmd = &cobra.Command{
@@ -45,6 +46,7 @@ var installCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		ctx.Host = resolveHostFlag(installHost)
 
 		// If --path flag is provided, build from local source.
 		if installPath != "" {
@@ -148,6 +150,9 @@ func init() {
 		"Clone and build from git repository")
 	installCmd.Flags().BoolVar(&installBuild, "build", false,
 		"Build from source (skip prebuilt binary)")
+	installCmd.Flags().StringVar(&installHost, "host", "",
+		"Write under [hosts.<host>.packages] "+
+			"(use 'current' for this machine)")
 	rootCmd.AddCommand(installCmd)
 }
 

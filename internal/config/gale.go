@@ -93,10 +93,10 @@ func (c *GaleConfig) EffectivePinned(host string) map[string]bool {
 	return out
 }
 
-// hostKeyMatches reports whether sectionKey applies to the
+// HostKeyMatches reports whether sectionKey applies to the
 // given host. The key is a comma-separated list of glob
 // patterns; any matching pattern returns true.
-func hostKeyMatches(sectionKey, host string) bool {
+func HostKeyMatches(sectionKey, host string) bool {
 	for pat := range strings.SplitSeq(sectionKey, ",") {
 		pat = strings.TrimSpace(pat)
 		if pat == "" {
@@ -135,7 +135,7 @@ func hostKeySpecificity(sectionKey string) int {
 func matchingHostKeys(hosts map[string]HostConfig, host string) []string {
 	keys := make([]string, 0, len(hosts))
 	for k := range hosts {
-		if hostKeyMatches(k, host) {
+		if HostKeyMatches(k, host) {
 			keys = append(keys, k)
 		}
 	}

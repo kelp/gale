@@ -38,6 +38,17 @@ func TestParsePackageArg(t *testing.T) {
 	}
 }
 
+func TestInstallHasHostFlag(t *testing.T) {
+	f := installCmd.Flags().Lookup("host")
+	if f == nil {
+		t.Fatal("install: --host flag not found")
+	}
+	if f.DefValue != "" {
+		t.Errorf("install: --host default = %q, want empty",
+			f.DefValue)
+	}
+}
+
 func TestValidateInstallFlags(t *testing.T) {
 	tests := []struct {
 		name    string

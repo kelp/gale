@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
@@ -46,6 +47,80 @@ func TestLockfilePathReturnsCorrectPath(t *testing.T) {
 	}
 }
 
+// TestWriteConfigAndLockWritesToHostSection verifies that
+// passing a non-empty host writes the package to
+// [hosts.<host>.packages] rather than shared [packages]. This
+// is the foundation that backs `gale install --host`.
+func TestWriteConfigAndLockWritesToHostSection(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeConfigAndLock(configPath, "myhost",
+		"mypkg", "1.0.0", "1.0.0", "abc"); err != nil {
+		t.Fatalf("writeConfigAndLock: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, in := cfg.Packages["mypkg"]; in {
+		t.Errorf("mypkg leaked into shared [packages]: %q",
+			string(data))
+	}
+	h, ok := cfg.Hosts["myhost"]
+	if !ok {
+		t.Fatalf("no [hosts.myhost] section: %q", string(data))
+	}
+	if got := h.Packages["mypkg"]; got != "1.0.0" {
+		t.Errorf("hosts.myhost.packages[mypkg] = %q, want %q",
+			got, "1.0.0")
+	}
+}
+
+// TestWriteConfigAndLockHostUpdatesExisting verifies that
+// reinstalling a host-scoped package with --host updates the
+// version in place rather than duplicating into [packages].
+func TestWriteConfigAndLockHostUpdatesExisting(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "gale.toml")
+	initial := "[hosts.myhost.packages]\n  mypkg = \"1.0.0\"\n"
+	if err := os.WriteFile(configPath,
+		[]byte(initial), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := writeConfigAndLock(configPath, "myhost",
+		"mypkg", "2.0.0", "2.0.0", "abc"); err != nil {
+		t.Fatalf("writeConfigAndLock: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, in := cfg.Packages["mypkg"]; in {
+		t.Errorf("mypkg leaked into shared [packages]: %q",
+			string(data))
+	}
+	if got := cfg.Hosts["myhost"].Packages["mypkg"]; got != "2.0.0" {
+		t.Errorf("hosts.myhost.packages[mypkg] = %q, want %q",
+			got, "2.0.0")
+	}
+}
+
 func TestWriteConfigAndLockUpdatesLockfileOnCachedInstall(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "gale.toml")
@@ -68,7 +143,7 @@ func TestWriteConfigAndLockUpdatesLockfileOnCachedInstall(t *testing.T) {
 
 	// Simulate a cached install to v2.0.0 (sha256 is empty).
 	if err := writeConfigAndLock(
-		configPath, "mypkg", "2.0.0", "2.0.0", ""); err != nil {
+		configPath, "", "mypkg", "2.0.0", "2.0.0", ""); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -115,7 +190,7 @@ func TestWriteConfigAndLockPreservesHashOnSameVersionCache(t *testing.T) {
 
 	// Cached install of the same version (sha256 empty).
 	if err := writeConfigAndLock(
-		configPath, "mypkg", "1.0.0", "1.0.0", ""); err != nil {
+		configPath, "", "mypkg", "1.0.0", "1.0.0", ""); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -169,7 +244,7 @@ func TestFinalizeInstallErrorsOnMissingConfiguredPackage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = finalizeInstall(galeDir, storeRoot, configPath,
+	err = finalizeInstall(galeDir, storeRoot, configPath, "",
 		"gale", "0.11.1", "0.11.1", "newhash")
 	if err == nil {
 		t.Fatal("expected finalizeInstall error for missing awscli store dir")
@@ -234,7 +309,7 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 	}
 	defer os.Chmod(galeDir, 0o755)
 
-	err = finalizeInstall(galeDir, storeRoot, configPath,
+	err = finalizeInstall(galeDir, storeRoot, configPath, "",
 		"newpkg", "2.0.0", "2.0.0", "newhash")
 	if err == nil {
 		t.Fatal("expected finalizeInstall error")

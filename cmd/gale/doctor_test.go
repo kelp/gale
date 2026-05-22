@@ -94,6 +94,79 @@ func TestCheckPackagesInstalledOffersRemove(t *testing.T) {
 	}
 }
 
+// TestCheckHostOverridesReportsShadowedShared verifies that
+// when a package appears in both shared [packages] and a
+// matching [hosts.<host>.packages] overlay, doctor surfaces
+// it. Host-wins is intentional but easy to miss; this check
+// makes the redundancy discoverable.
+func TestCheckHostOverridesReportsShadowedShared(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GALE_HOST", "h1")
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "gale.toml"),
+		[]byte("[packages]\n  ripgrep = \"15.0\"\n\n"+
+			"[hosts.h1.packages]\n  ripgrep = \"14.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir: galeDir,
+		cwd:     home,
+		out:     output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if !checkHostOverrides(ctx) {
+		t.Fatal("checkHostOverrides should warn (not fail)")
+	}
+
+	out := buf.String()
+	if !strings.Contains(out, "ripgrep") {
+		t.Errorf("expected ripgrep mentioned: %q", out)
+	}
+	if !strings.Contains(out, "h1") {
+		t.Errorf("expected host h1 mentioned: %q", out)
+	}
+}
+
+// TestCheckHostOverridesSilentWhenNoOverlap verifies the
+// check stays quiet when shared and host overlays don't
+// shadow each other.
+func TestCheckHostOverridesSilentWhenNoOverlap(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("GALE_HOST", "h1")
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "gale.toml"),
+		[]byte("[packages]\n  ripgrep = \"15.0\"\n\n"+
+			"[hosts.h1.packages]\n  fzf = \"0.50\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir: galeDir,
+		cwd:     home,
+		out:     output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if !checkHostOverrides(ctx) {
+		t.Fatal("checkHostOverrides should pass")
+	}
+	if strings.Contains(buf.String(), "overrides") {
+		t.Errorf("unexpected override warning: %q", buf.String())
+	}
+}
+
 // TestCheckOrphansIgnoresResolvedRevisions verifies that when
 // config carries a bare version (`bat = "0.26.1"`) and the
 // store holds the canonical revision dir (`bat/0.26.1-2`),

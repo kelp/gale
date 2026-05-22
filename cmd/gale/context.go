@@ -28,6 +28,11 @@ type cmdContext struct {
 	Resolver  installer.RecipeResolver
 	Installer *installer.Installer
 	Registry  *registry.Registry // nil when --recipes
+
+	// Host force-writes the package to
+	// [hosts.<Host>.packages] when finalize runs. Empty
+	// preserves the existing location (see writeConfigAndLock).
+	Host string
 }
 
 // newCmdContext resolves the config, store, and installer.
@@ -292,8 +297,21 @@ func lockfilePath(configPath string) (string, error) {
 // automatically); lockVersion is the canonical
 // `<version>-<revision>` form written to gale.lock for
 // exact pinning. See docs/revisions.md.
-func writeConfigAndLock(configPath, name, configVersion, lockVersion, sha256 string) error {
-	if err := config.UpsertPackage(
+//
+// host selects where in gale.toml the package lands.
+// When non-empty, the package is force-written to
+// [hosts.<host>.packages]. When empty, the package is
+// upserted with location preservation: if the current
+// machine already lists it under its host overlay, that
+// entry is updated in place; otherwise it goes to shared
+// [packages].
+func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha256 string) error {
+	if host != "" {
+		if err := config.AddPackage(
+			configPath, host, name, configVersion); err != nil {
+			return fmt.Errorf("adding to config: %w", err)
+		}
+	} else if err := config.UpsertPackage(
 		configPath, config.CurrentHost(), name, configVersion); err != nil {
 		return fmt.Errorf("adding to config: %w", err)
 	}
@@ -317,10 +335,11 @@ func writeConfigAndLock(configPath, name, configVersion, lockVersion, sha256 str
 }
 
 // finalizeInstall adds a package to gale.toml, updates
-// gale.lock, and rebuilds the generation.
-func finalizeInstall(galeDir, storeRoot, configPath, name, configVersion, lockVersion, sha256 string) error {
+// gale.lock, and rebuilds the generation. See
+// writeConfigAndLock for host semantics.
+func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, lockVersion, sha256 string) error {
 	if err := writeConfigAndLock(
-		configPath, name, configVersion, lockVersion, sha256); err != nil {
+		configPath, host, name, configVersion, lockVersion, sha256); err != nil {
 		return fmt.Errorf("writing config and lock: %w", err)
 	}
 	return rebuildGeneration(galeDir, storeRoot, configPath)
@@ -447,10 +466,11 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 // gale.lock, and rebuilds the generation. configVersion
 // is written to gale.toml (bare by convention);
 // lockVersion is the canonical `<version>-<revision>`
-// written to gale.lock.
+// written to gale.lock. ctx.Host controls section
+// targeting (see writeConfigAndLock).
 func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256 string) error {
 	return finalizeInstall(
-		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath,
+		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, ctx.Host,
 		name, configVersion, lockVersion, sha256)
 }
 
@@ -466,8 +486,11 @@ func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe, sha256 string) er
 
 // WriteConfigAndLock adds a package to gale.toml and
 // updates gale.lock without rebuilding the generation.
+// ctx.Host controls section targeting (see
+// writeConfigAndLock).
 func (ctx *cmdContext) WriteConfigAndLock(name, configVersion, lockVersion, sha256 string) error {
-	return writeConfigAndLock(ctx.GalePath, name, configVersion, lockVersion, sha256)
+	return writeConfigAndLock(
+		ctx.GalePath, ctx.Host, name, configVersion, lockVersion, sha256)
 }
 
 // WriteConfigAndLockForRecipe is WriteConfigAndLock for

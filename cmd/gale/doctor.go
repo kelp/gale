@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/kelp/gale/internal/build"
@@ -44,6 +45,7 @@ var doctorChecks = []doctorCheck{
 	{"gale home", checkGaleHome},
 	{"global config", checkGlobalConfig},
 	{"project config", checkProjectConfig},
+	{"host overrides", checkHostOverrides},
 	{"store", checkStore},
 	{"packages installed", checkPackagesInstalled},
 	{"generation", checkGeneration},
@@ -159,6 +161,80 @@ func checkProjectConfig(ctx *doctorContext) bool {
 		"Project config (%d packages)", len(cfg.Packages)))
 	ctx.projPkgs = cfg.Packages
 	return true
+}
+
+// checkHostOverrides reports packages that appear in both
+// shared [packages] and a matching [hosts.<host>.packages]
+// overlay for the current machine. Host-wins is intentional
+// (so per-machine version pins work) but easy to forget; the
+// shared entry effectively becomes dead config. Warns so the
+// user can decide whether to clean up; never fails.
+func checkHostOverrides(ctx *doctorContext) bool {
+	host := config.CurrentHost()
+	overrides := loadHostOverrides(
+		filepath.Join(ctx.galeDir, "gale.toml"), host)
+	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
+		overrides = append(overrides,
+			loadHostOverrides(projPath, host)...)
+	}
+	if len(overrides) == 0 {
+		ctx.out.Success("No host-override shadows")
+		return true
+	}
+	const maxShown = 5
+	shown := overrides
+	if len(shown) > maxShown {
+		shown = shown[:maxShown]
+	}
+	msg := fmt.Sprintf(
+		"Host overlay shadows %d shared package(s):", len(overrides))
+	for _, line := range shown {
+		msg += "\n  " + line
+	}
+	if len(overrides) > maxShown {
+		msg += fmt.Sprintf("\n  ... %d more",
+			len(overrides)-maxShown)
+	}
+	msg += "\n  (host overlay wins — remove shared entry or " +
+		"the overlay to silence)"
+	ctx.out.Warn(msg)
+	return true
+}
+
+// loadHostOverrides returns formatted "<name>: shared
+// <v1> overridden by [hosts.<key>] <v2>" lines for every
+// shared package that a matching host overlay shadows for
+// host. Returns nil for missing or unparseable files —
+// other checks already surface those failures.
+func loadHostOverrides(configPath, host string) []string {
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		return nil
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		return nil
+	}
+	if host == "" || len(cfg.Hosts) == 0 || len(cfg.Packages) == 0 {
+		return nil
+	}
+	var lines []string
+	for name, sharedVer := range cfg.Packages {
+		for key, h := range cfg.Hosts {
+			hostVer, ok := h.Packages[name]
+			if !ok {
+				continue
+			}
+			if !config.HostKeyMatches(key, host) {
+				continue
+			}
+			lines = append(lines, fmt.Sprintf(
+				"%s: shared %s overridden by [hosts.%s] %s",
+				name, sharedVer, key, hostVer))
+		}
+	}
+	sort.Strings(lines)
+	return lines
 }
 
 // checkStore verifies the package store is readable.

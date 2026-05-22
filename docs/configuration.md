@@ -96,15 +96,31 @@ one machine while sharing everything else:
   fzf = "0.60"          # laptop only — overrides the multi-host entry
 ```
 
-`gale add`, `remove`, `pin`, and `unpin` default to
-the shared `[packages]` section. Pass `--host <name>`
-(or `--host current` for the local machine) to write
-to a host section.
+`gale install`, `add`, `remove`, `pin`, and `unpin`
+default to the shared `[packages]` section. Pass
+`--host <name>` (or `--host current` for the local
+machine) to write to a host section. The flag is
+opt-in: users with a single machine can ignore it.
 
 ```sh
+gale install fzf --host current      # install + record under [hosts.<this-host>.packages]
 gale add fzf --host current
-gale remove htop --host my-server
+gale remove htop --host my-server    # edit another machine's section
 ```
+
+Bare `gale install fzf` writes to shared
+`[packages]`, except when the package already lives
+in the current host's overlay — then it updates in
+place. That way reinstalling a host-scoped tool
+without remembering the flag does not silently move
+it to shared.
+
+When the same package appears in both shared
+`[packages]` and a matching host overlay, **the host
+overlay wins** — the shared value is dead config on
+that machine. `gale list` flags shared entries with
+`(overridden by host)` and `gale doctor` reports the
+shadow so you can clean up if it was unintentional.
 
 The active hostname comes from `hostname(1)`. Override
 with the `GALE_HOST` environment variable for cases
@@ -113,6 +129,16 @@ short identifier:
 
 ```sh
 export GALE_HOST=my-mac
+```
+
+`gale list` groups output by scope when host
+overlays are present. Use `--scope shared|host|all`
+(default `all`) to filter:
+
+```sh
+gale list                # both sections
+gale list --scope shared # shared [packages] only
+gale list --scope host   # current host's overlay only
 ```
 
 This composes naturally with [chezmoi](chezmoi.md):
