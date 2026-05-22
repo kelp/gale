@@ -30,6 +30,26 @@
   can sit beside a shared group entry without conflict. Quote
   the key when it contains commas or wildcards so TOML treats
   it as one string.
+- `gale install --host <name>` writes the package under
+  `[hosts.<name>.packages]` instead of shared `[packages]`.
+  Matches the existing flag on `add`, `remove`, `pin`, and
+  `unpin`. Use `--host current` for the local machine.
+  Bare `gale install <pkg>` is unchanged — it writes to
+  shared, except when the package already lives in the
+  current host's overlay (then it updates in place, so
+  reinstalling a host-scoped tool without remembering the
+  flag does not silently move it to shared).
+- `gale list` groups output into `Shared:` and
+  `Host (<host>):` sections when host overlays apply, and
+  marks shared entries shadowed by an overlay with
+  `(overridden by host)`. New `--scope shared|host|all`
+  (default `all`) filters the output. Configs without any
+  host overlays still render as a flat `name@version` list.
+- `gale doctor` adds a `host overrides` check that warns
+  when a shared package is shadowed by a matching host
+  overlay. Host-wins is intentional but easy to miss; the
+  warning surfaces the redundant shared entry so it can be
+  cleaned up if unintentional.
 
 ### Fixed
 
