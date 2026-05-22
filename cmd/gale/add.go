@@ -58,6 +58,23 @@ var addCmd = &cobra.Command{
 			}
 
 			host := resolveHostFlag(addHost)
+
+			if dryRun {
+				useGlobal := resolveScope(addGlobal, addProject, cwd)
+				configPath, err := resolveConfigPath(useGlobal)
+				if err != nil {
+					return err
+				}
+				location := configPath
+				if host != "" {
+					location = fmt.Sprintf("%s [hosts.%s]",
+						configPath, host)
+				}
+				out.Info(fmt.Sprintf("add %s@%s to %s",
+					name, version, location))
+				continue
+			}
+
 			configPath, err := addToConfig(
 				name, version, host, addGlobal, addProject)
 			if err != nil {

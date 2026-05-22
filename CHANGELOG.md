@@ -1,5 +1,47 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `gale switch <pkg> <version>` (or `gale switch <pkg>@<version>`)
+  moves a managed package to a specific version — typically a
+  rollback to a known-good release. Updates `gale.toml` and
+  `gale.lock`, installs (cache-hit if the version is already in
+  the store), and rebuilds the generation. Refuses to act when
+  the package is not already in `gale.toml`, pointing the user
+  at `gale install` instead. Bypasses `[pinned]` because a
+  switch is an explicit user choice.
+- `gale update --no-install` rewrites the version pins in
+  `gale.toml` without building or installing anything. The
+  follow-up `gale sync` does the actual install. This splits
+  the bump from the build so the pin change can be reviewed
+  on its own (e.g. as a separate PR). `gale.lock` and the
+  current generation stay untouched until `sync` runs.
+  Combining `--no-install` with `--path` or `--git` is
+  rejected — those flags always build.
+- Host section keys accept comma-separated lists and glob
+  wildcards: `[hosts."laptop,desktop".packages]` applies on
+  either host; `[hosts."work-*".packages]` matches every host
+  whose name has the `work-` prefix; `[hosts."*".packages]`
+  applies everywhere. When the same package appears in more
+  than one matching section, the most specific match wins —
+  exact hostname > comma-list > glob — so a single override
+  can sit beside a shared group entry without conflict. Quote
+  the key when it contains commas or wildcards so TOML treats
+  it as one string.
+
+### Fixed
+
+- `gale add --dry-run` now honors the flag and skips writing
+  to `gale.toml`. Previously the persistent `-n` flag was
+  ignored and the config was mutated as if dry-run were not
+  set.
+- `gale pin --dry-run`, `gale unpin --dry-run`,
+  `gale init --dry-run`, `gale repo add --dry-run`,
+  `gale repo remove --dry-run`, and `gale repo init --dry-run`
+  also honor the flag now. The same audit covered them all.
+
 ## v0.16.2 — 2026-05-19
 
 ### Changed

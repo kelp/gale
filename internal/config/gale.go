@@ -7,6 +7,8 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -49,16 +51,19 @@ func ParseGaleConfig(data string) (*GaleConfig, error) {
 }
 
 // EffectivePackages returns the shared [packages] merged with
-// [hosts.<host>.packages]. Host entries override shared entries.
-// Does not mutate the receiver.
+// every [hosts.<key>.packages] section whose key matches host.
+// Host section keys may list multiple comma-separated patterns
+// and use glob wildcards (*, ?). Wildcard-bearing sections are
+// applied first; exact-name sections last, so exact entries
+// override globs. Does not mutate the receiver.
 func (c *GaleConfig) EffectivePackages(host string) map[string]string {
 	out := make(map[string]string, len(c.Packages))
 	maps.Copy(out, c.Packages)
 	if host == "" {
 		return out
 	}
-	if h, ok := c.Hosts[host]; ok {
-		maps.Copy(out, h.Packages)
+	for _, k := range matchingHostKeys(c.Hosts, host) {
+		maps.Copy(out, c.Hosts[k].Packages)
 	}
 	return out
 }
@@ -72,18 +77,77 @@ func (c *GaleConfig) ApplyHost(host string) {
 	c.Pinned = c.EffectivePinned(host)
 }
 
-// EffectivePinned merges shared [pinned] with the host overlay.
-// Does not mutate the receiver.
+// EffectivePinned merges shared [pinned] with every matching
+// [hosts.<key>.pinned] overlay, using the same multi-pattern
+// matching and override order as EffectivePackages. Does not
+// mutate the receiver.
 func (c *GaleConfig) EffectivePinned(host string) map[string]bool {
 	out := make(map[string]bool, len(c.Pinned))
 	maps.Copy(out, c.Pinned)
 	if host == "" {
 		return out
 	}
-	if h, ok := c.Hosts[host]; ok {
-		maps.Copy(out, h.Pinned)
+	for _, k := range matchingHostKeys(c.Hosts, host) {
+		maps.Copy(out, c.Hosts[k].Pinned)
 	}
 	return out
+}
+
+// hostKeyMatches reports whether sectionKey applies to the
+// given host. The key is a comma-separated list of glob
+// patterns; any matching pattern returns true.
+func hostKeyMatches(sectionKey, host string) bool {
+	for pat := range strings.SplitSeq(sectionKey, ",") {
+		pat = strings.TrimSpace(pat)
+		if pat == "" {
+			continue
+		}
+		if pat == host {
+			return true
+		}
+		if ok, err := filepath.Match(pat, host); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
+// hostKeySpecificity ranks a section key from least to most
+// specific so callers can apply broader sections first and
+// let narrower ones override. Order: glob (0) < comma-list
+// of literals (1) < single literal name (2).
+func hostKeySpecificity(sectionKey string) int {
+	if strings.ContainsAny(sectionKey, "*?[") {
+		return 0
+	}
+	if strings.Contains(sectionKey, ",") {
+		return 1
+	}
+	return 2
+}
+
+// matchingHostKeys returns the host section keys that apply
+// to host, sorted from least to most specific so the caller
+// can apply each section in order — later sections override
+// earlier ones, so exact-name entries win over comma-lists,
+// which in turn win over globs. Within each tier, keys are
+// sorted alphabetically for deterministic merge order.
+func matchingHostKeys(hosts map[string]HostConfig, host string) []string {
+	keys := make([]string, 0, len(hosts))
+	for k := range hosts {
+		if hostKeyMatches(k, host) {
+			keys = append(keys, k)
+		}
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		si := hostKeySpecificity(keys[i])
+		sj := hostKeySpecificity(keys[j])
+		if si != sj {
+			return si < sj
+		}
+		return keys[i] < keys[j]
+	})
+	return keys
 }
 
 // CurrentHost returns the active host identifier. Reads

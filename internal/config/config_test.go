@@ -1375,3 +1375,113 @@ func TestWriteGaleConfigRoundTripWithHosts(t *testing.T) {
 		t.Error("round-trip lost shared package")
 	}
 }
+
+// --- Behavior: Multi-host and wildcard host syntax ---
+
+const galeWithMultiHost = `
+[packages]
+jq = "1.7.1"
+
+[hosts."laptop,desktop".packages]
+fzf = "0.50"
+
+[hosts."work-*".packages]
+slack = "1.0"
+
+[hosts."*".packages]
+common = "9.9"
+
+[hosts.laptop.packages]
+fzf = "0.60"
+`
+
+func TestEffectivePackagesMatchesCommaList(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithMultiHost)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pkgs := cfg.EffectivePackages("desktop")
+	if pkgs["fzf"] != "0.50" {
+		t.Errorf("desktop fzf = %q, want %q (matched via comma list)",
+			pkgs["fzf"], "0.50")
+	}
+}
+
+func TestEffectivePackagesMatchesGlob(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithMultiHost)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pkgs := cfg.EffectivePackages("work-mac")
+	if pkgs["slack"] != "1.0" {
+		t.Errorf("work-mac slack = %q, want %q (matched via glob)",
+			pkgs["slack"], "1.0")
+	}
+}
+
+func TestEffectivePackagesWildcardMatchesEveryHost(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithMultiHost)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	for _, h := range []string{"laptop", "desktop", "work-mac", "nowhere"} {
+		if got := cfg.EffectivePackages(h)["common"]; got != "9.9" {
+			t.Errorf("%s common = %q, want %q (wildcard)", h, got, "9.9")
+		}
+	}
+}
+
+func TestEffectivePackagesExactOverridesGlob(t *testing.T) {
+	// `laptop` is in both the comma-list "laptop,desktop" (fzf=0.50)
+	// and the exact `[hosts.laptop]` section (fzf=0.60). The exact
+	// section wins because it is the most specific match.
+	cfg, err := ParseGaleConfig(galeWithMultiHost)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pkgs := cfg.EffectivePackages("laptop")
+	if pkgs["fzf"] != "0.60" {
+		t.Errorf("laptop fzf = %q, want %q (exact host overrides multi-list)",
+			pkgs["fzf"], "0.60")
+	}
+}
+
+func TestEffectivePackagesUnmatchedHostStillGetsShared(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithMultiHost)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	pkgs := cfg.EffectivePackages("nowhere")
+	if pkgs["jq"] != "1.7.1" {
+		t.Error("expected shared jq on unknown host")
+	}
+	if _, has := pkgs["fzf"]; has {
+		t.Error("expected fzf absent on unknown host")
+	}
+	if _, has := pkgs["slack"]; has {
+		t.Error("expected slack absent on non-work host")
+	}
+}
+
+func TestEffectivePinnedMatchesGlob(t *testing.T) {
+	src := `
+[packages]
+jq = "1.7.1"
+
+[hosts."work-*".packages]
+slack = "1.0"
+
+[hosts."work-*".pinned]
+slack = true
+`
+	cfg, err := ParseGaleConfig(src)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !cfg.EffectivePinned("work-mac")["slack"] {
+		t.Error("expected slack pinned on work-mac (glob)")
+	}
+	if cfg.EffectivePinned("home")["slack"] {
+		t.Error("expected slack not pinned on home")
+	}
+}

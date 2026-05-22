@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"sort"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
 	ver "github.com/kelp/gale/internal/version"
@@ -17,6 +18,7 @@ var (
 	updateRecipe    string
 	updateBuild     bool
 	updateNoRefresh bool
+	updateNoInstall bool
 )
 
 var updateCmd = &cobra.Command{
@@ -29,6 +31,14 @@ var updateCmd = &cobra.Command{
 		if updatePath != "" && len(args) != 1 {
 			return fmt.Errorf(
 				"--path requires exactly one package name")
+		}
+
+		// --no-install only makes sense for the
+		// pin-resolution path. --path and --git both imply
+		// building, so combining them is a user error.
+		if updateNoInstall && (updatePath != "" || updateGit) {
+			return fmt.Errorf(
+				"--no-install cannot be combined with --path or --git")
 		}
 
 		// Auto-refresh configured taps so a stale local clone
@@ -170,6 +180,24 @@ var updateCmd = &cobra.Command{
 				continue
 			}
 
+			// --no-install: bump the gale.toml pin and stop.
+			// The user runs `gale sync` to actually build and
+			// install the new version; the lockfile stays
+			// untouched because it tracks installed artifacts.
+			if updateNoInstall {
+				if err := config.UpsertPackage(
+					ctx.GalePath, config.CurrentHost(),
+					name, r.Package.Version); err != nil {
+					return fmt.Errorf("updating %s pin: %w",
+						name, err)
+				}
+				out.Success(fmt.Sprintf(
+					"Bumped %s %s → %s (run 'gale sync' to install)",
+					name, t.current, r.Package.Full()))
+				updated++
+				continue
+			}
+
 			out.Info(fmt.Sprintf("Updating %s %s → %s...",
 				name, t.current, r.Package.Full()))
 
@@ -193,11 +221,19 @@ var updateCmd = &cobra.Command{
 			updated++
 		}
 
-		if err := finishUpdate(dryRun, ctx.RebuildGeneration); err != nil {
+		// Skip the generation rebuild under --no-install: the
+		// new pin points at a store dir that does not exist
+		// yet, which would cause rebuild to fail. The
+		// follow-up `gale sync` installs and rebuilds.
+		if err := finishUpdate(dryRun || updateNoInstall, ctx.RebuildGeneration); err != nil {
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 		if updated == 0 {
 			out.Success("Everything is up to date.")
+		} else if updateNoInstall {
+			out.Success(fmt.Sprintf(
+				"Bumped %d pin(s) — run 'gale sync' to install",
+				updated))
 		} else {
 			out.Success(fmt.Sprintf(
 				"Updated %d package(s)", updated))
@@ -321,5 +357,8 @@ func init() {
 		"Build from source (skip prebuilt binary)")
 	updateCmd.Flags().BoolVar(&updateNoRefresh, "no-refresh", false,
 		"Skip refreshing configured recipe taps before resolving")
+	updateCmd.Flags().BoolVar(&updateNoInstall, "no-install", false,
+		"Write new version pins to gale.toml without installing "+
+			"(run 'gale sync' to install)")
 	rootCmd.AddCommand(updateCmd)
 }

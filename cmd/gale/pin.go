@@ -55,6 +55,11 @@ var pinCmd = &cobra.Command{
 			pkgVer = v
 		}
 
+		if dryRun {
+			out.Info(fmt.Sprintf("pin %s@%s", name, pkgVer))
+			return nil
+		}
+
 		if err := config.PinPackage(configPath, host, name); err != nil {
 			return fmt.Errorf("pinning %s: %w", name, err)
 		}
@@ -77,6 +82,11 @@ var unpinCmd = &cobra.Command{
 		configPath, err := resolveConfigPath(false)
 		if err != nil {
 			return err
+		}
+
+		if dryRun {
+			out.Info(fmt.Sprintf("unpin %s", name))
+			return nil
 		}
 
 		if err := config.UnpinPackage(

@@ -43,34 +43,58 @@ activates. Direnv exports these via `use_gale`.
 `gale env` prints them. `gale env --vars-only`
 prints only variables, not PATH.
 
-### `[hosts.<name>.packages]` and `[hosts.<name>.pinned]`
+### `[hosts.<key>.packages]` and `[hosts.<key>.pinned]`
 
 Per-machine overlays. Top-level `[packages]` and
 `[pinned]` apply on every machine. Host sections add
 or override entries when the local hostname matches
-`<name>`.
+`<key>`.
+
+The key can be:
+
+- A single hostname: `[hosts.my-mac.packages]`
+- A comma-separated list: `[hosts."laptop,desktop".packages]`
+- A glob pattern: `[hosts."work-*".packages]`,
+  `[hosts."*".packages]`
+
+Use the multi-host or glob forms to share one package
+list across machines without duplicating it. Quote
+the key when it contains commas or wildcards so TOML
+treats it as a single string.
 
 ```toml
 [packages]
   jq = "1.8.1"
   just = "1.48.0"
 
-[hosts.my-mac.packages]
+[hosts."laptop,desktop".packages]
   fzf = "0.50"
-  mas = "1.8.6"
+
+[hosts."work-*".packages]
+  slack = "1.0"
 
 [hosts.my-server.packages]
   htop = "3.0"
 ```
 
-On `my-mac`, `gale sync` installs jq, just, fzf, and
-mas. On `my-server`, jq, just, and htop. On any other
-machine, just jq and just.
+On `laptop`, `gale sync` installs jq, just, and fzf.
+On `work-mac`, jq, just, and slack. On `my-server`,
+jq, just, and htop. On any unmatched host, just jq
+and just.
 
-When the same package appears in both `[packages]`
-and a host section, the host entry wins — useful for
-running a different version of one tool on one
-machine while sharing everything else.
+When the same package appears in multiple sections,
+the most specific match wins: exact hostname overrides
+a comma-list, which in turn overrides a glob. This is
+useful for running a different version of one tool on
+one machine while sharing everything else:
+
+```toml
+[hosts."laptop,desktop".packages]
+  fzf = "0.50"
+
+[hosts.laptop.packages]
+  fzf = "0.60"          # laptop only — overrides the multi-host entry
+```
 
 `gale add`, `remove`, `pin`, and `unpin` default to
 the shared `[packages]` section. Pass `--host <name>`

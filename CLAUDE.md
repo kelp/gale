@@ -91,6 +91,7 @@ gale remove <pkg>         Remove package from store + config
 gale add <pkg> [pkg...]   Add to gale.toml without installing
 gale sync                 Install all packages in gale.toml
 gale update [pkg...]      Update packages to latest version
+gale switch <pkg> <ver>   Switch a managed package to a specific version
 gale list                 List packages in gale.toml
 gale info <pkg>           Show package information
 gale gc                   Remove unused versions + generations
@@ -122,6 +123,8 @@ gale generations          List and manage generations
   source, skip prebuilt binaries
 - `--git` (install, update, sync, build): clone repo
   and build from HEAD instead of downloading tarball
+- `--no-install` (update): rewrite gale.toml pins
+  without building; run `gale sync` after to install
 - `--recipe <file>` (install, update): use a local
   recipe file
 - `-g/--global`, `-p/--project` (install, add,

@@ -31,6 +31,11 @@ var repoAddCmd = &cobra.Command{
 			return err
 		}
 
+		if dryRun {
+			out.Info(fmt.Sprintf("add repo %s from %s", name, url))
+			return nil
+		}
+
 		cacheRoot := filepath.Join(galeDir, "repos")
 		mgr := repo.NewManager(cacheRoot)
 		mgr.AddRepo(repo.RepoConfig{
@@ -63,6 +68,11 @@ var repoRemoveCmd = &cobra.Command{
 		galeDir, err := galeConfigDir()
 		if err != nil {
 			return err
+		}
+
+		if dryRun {
+			out.Info(fmt.Sprintf("remove repo %s", name))
+			return nil
 		}
 
 		configPath := filepath.Join(galeDir, "config.toml")
@@ -223,6 +233,11 @@ var repoInitCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		name := args[0]
 		out := newCmdOutput(cmd)
+
+		if dryRun {
+			out.Info(fmt.Sprintf("initialize repo %s", name))
+			return nil
+		}
 
 		if err := os.MkdirAll(name, 0o755); err != nil {
 			return fmt.Errorf("creating directory: %w", err)

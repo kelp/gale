@@ -22,6 +22,13 @@ var initCmd = &cobra.Command{
 			return fmt.Errorf("getting working dir: %w", err)
 		}
 
+		if dryRun {
+			out.Info("create gale.toml")
+			out.Info("create .envrc")
+			out.Info("append .gale/ to .gitignore")
+			return nil
+		}
+
 		// Create gale.toml if it doesn't exist.
 		galePath := filepath.Join(cwd, "gale.toml")
 		if err := writeIfNotExists(galePath,

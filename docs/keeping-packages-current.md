@@ -31,6 +31,46 @@ gale update
 Updates every package in the manifest to its latest
 version.
 
+## Roll Back to a Specific Version
+
+Bad release? Switch back to a known-good version:
+
+```sh
+gale switch gh 2.89.0
+```
+
+`switch` works for downgrades and upgrades alike. It updates
+`gale.toml` and `gale.lock`, installs the requested version
+(cache-hit if it's already in the store from a prior
+install), and rebuilds the generation. The package must
+already be in `gale.toml`; `switch` will not add new
+packages — use `gale install` for that.
+
+Unlike `gale update`, `switch` ignores `[pinned]`: an
+explicit switch is the user's choice and overrides the pin
+guard.
+
+The `gale switch gh@2.89.0` form is accepted too, for
+consistency with `gale install`.
+
+## Bump Pins Without Installing
+
+To split the workflow — review the new versions before
+touching the store — use `--no-install`:
+
+```sh
+gale update --no-install      # rewrite gale.toml pins
+git diff gale.toml            # review the bumps
+gale sync                     # install what gale.toml says
+```
+
+`--no-install` writes new versions to `gale.toml` but
+does not build, install, update `gale.lock`, or rebuild
+the generation. The follow-up `gale sync` does all of
+those based on the new pins. This is useful in shared
+projects where a PR that bumps pins is reviewed
+separately from the install.
+
 ## Preview Changes
 
 Before running sync on a modified manifest, preview
