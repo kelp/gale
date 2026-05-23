@@ -114,6 +114,76 @@ func TestRemoveHasScopeFlags(t *testing.T) {
 	}
 }
 
+// TestSyncProjectFlagOutsideProjectErrors verifies that
+// `gale sync --project` returns an error when the working
+// directory contains no gale.toml (and none exists in any
+// parent). Today runSync calls resolveConfigPath(false)
+// which silently returns cwd/gale.toml — the missing file
+// causes LoadConfig to return an empty config, so sync
+// exits 0 with "No packages to sync." instead of an error.
+func TestSyncProjectFlagOutsideProjectErrors(t *testing.T) {
+	// Change to a temp dir with no gale.toml in its tree.
+	tmp := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig) //nolint:errcheck
+
+	err = runSync("", false, false, true, "")
+	if err == nil {
+		t.Error("sync --project outside any project must return error, got nil")
+	}
+}
+
+// TestAddProjectFlagOutsideProjectErrors verifies that
+// `gale add --project` returns an error when the working
+// directory contains no gale.toml (and none exists in any
+// parent). Today addToConfig → resolveConfigPath(false)
+// returns cwd/gale.toml → config.UpsertPackage creates it,
+// leaking a stray gale.toml into an unrelated directory.
+func TestAddProjectFlagOutsideProjectErrors(t *testing.T) {
+	// Change to a temp dir with no gale.toml in its tree.
+	tmp := t.TempDir()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig) //nolint:errcheck
+
+	// Confirm no gale.toml exists before the call.
+	if _, statErr := os.Stat(filepath.Join(tmp, "gale.toml")); statErr == nil {
+		t.Fatal("gale.toml should not exist in temp dir before test")
+	}
+
+	// Save and restore package-level globals mutated here.
+	origAddGlobal := addGlobal
+	origAddProject := addProject
+	addGlobal = false
+	addProject = true
+	defer func() {
+		addGlobal = origAddGlobal
+		addProject = origAddProject
+	}()
+
+	// Use an explicit @version so the network resolver is not invoked.
+	err = addCmd.RunE(addCmd, []string{"jq@1.8.1"})
+	if err == nil {
+		t.Error("add --project outside any project must return error, got nil")
+	}
+
+	// Verify no gale.toml was created as a side-effect.
+	if _, statErr := os.Stat(filepath.Join(tmp, "gale.toml")); statErr == nil {
+		t.Error("add --project must not create gale.toml when no project exists")
+	}
+}
+
 // TestRebuildGenerationGlobalDoesNotTouchProject is the
 // inverse: rebuilding global doesn't affect an existing
 // project generation.

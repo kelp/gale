@@ -32,6 +32,12 @@ var addCmd = &cobra.Command{
 			return fmt.Errorf("getting working dir: %w", err)
 		}
 
+		if addProject {
+			if _, err := projectConfigPath(cwd); err != nil {
+				return fmt.Errorf("no project found — run 'gale init' first")
+			}
+		}
+
 		recipeRes, _, resolveErr := resolveRecipeResolver(addRecipes, cwd)
 		if resolveErr != nil {
 			return resolveErr

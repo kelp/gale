@@ -329,6 +329,20 @@ func TestUpdateGitSkipsWhenVersionIsSemver(t *testing.T) {
 // called unconditionally even with --dry-run, causing a real install
 // attempt (and failure). After the fix, dryRun is checked first and
 // the function returns nil immediately.
+// TestUpdateHasScopeFlags verifies that updateCmd registers
+// --global/-g and --project/-p flags, matching every other
+// mutation command (install, add, remove, sync, switch).
+// Today updateCmd never registers these flags; users cannot
+// explicitly target global scope while inside a project dir.
+func TestUpdateHasScopeFlags(t *testing.T) {
+	if updateCmd.Flags().Lookup("global") == nil {
+		t.Error("update is missing --global/-g flag")
+	}
+	if updateCmd.Flags().Lookup("project") == nil {
+		t.Error("update is missing --project/-p flag")
+	}
+}
+
 func TestUpdatePathRespectsDryRun(t *testing.T) {
 	// Create a temp dir with a minimal gale.toml.
 	tmp := t.TempDir()

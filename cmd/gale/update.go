@@ -19,6 +19,8 @@ var (
 	updateBuild     bool
 	updateNoRefresh bool
 	updateNoInstall bool
+	updateGlobal    bool
+	updateProject   bool
 )
 
 var updateCmd = &cobra.Command{
@@ -26,6 +28,10 @@ var updateCmd = &cobra.Command{
 	Short: "Update packages to the latest version",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newCmdOutput(cmd)
+
+		if updateGlobal && updateProject {
+			return fmt.Errorf("cannot use both --global and --project")
+		}
 
 		// --path requires exactly one package name.
 		if updatePath != "" && len(args) != 1 {
@@ -53,7 +59,7 @@ var updateCmd = &cobra.Command{
 
 		// Resolve context for config path. All branches
 		// use ctx.GalePath for config writes.
-		ctx, err := newCmdContext(updateRecipes, false, false)
+		ctx, err := newCmdContext(updateRecipes, updateGlobal, updateProject)
 		if err != nil {
 			return err
 		}
@@ -379,5 +385,9 @@ func init() {
 	updateCmd.Flags().BoolVar(&updateNoInstall, "no-install", false,
 		"Write new version pins to gale.toml without installing "+
 			"(run 'gale sync' to install)")
+	updateCmd.Flags().BoolVarP(&updateGlobal, "global", "g",
+		false, "Update global packages")
+	updateCmd.Flags().BoolVarP(&updateProject, "project", "p",
+		false, "Update project packages")
 	rootCmd.AddCommand(updateCmd)
 }

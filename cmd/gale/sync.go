@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 
@@ -52,6 +53,16 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		ctx.GalePath = filepath.Join(projectDir, "gale.toml")
 		ctx.GaleDir = filepath.Join(projectDir, ".gale")
 	} else if global || project {
+		// Validate that --project requires an existing project.
+		if project {
+			cwd, cwdErr := os.Getwd()
+			if cwdErr != nil {
+				return fmt.Errorf("getting working dir: %w", cwdErr)
+			}
+			if _, pErr := projectConfigPath(cwd); pErr != nil {
+				return fmt.Errorf("no project found — run 'gale init' first")
+			}
+		}
 		// Override scope when -g or -p is set.
 		galePath, pathErr := resolveConfigPath(global)
 		if pathErr != nil {
