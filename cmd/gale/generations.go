@@ -2,10 +2,18 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strconv"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/spf13/cobra"
+)
+
+var (
+	generationsGlobal  bool
+	generationsProject bool
 )
 
 var generationsCmd = &cobra.Command{
@@ -13,7 +21,11 @@ var generationsCmd = &cobra.Command{
 	Short: "List and manage generations",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		galeDir, err := resolveGaleDir()
+		if err := validateScopeFlags(generationsGlobal, generationsProject); err != nil {
+			return err
+		}
+		galeDir, err := resolveGenerationsGaleDir(
+			generationsGlobal, generationsProject)
 		if err != nil {
 			return err
 		}
@@ -49,7 +61,11 @@ var genDiffCmd = &cobra.Command{
 	Short: "Show differences between two generations",
 	Args:  cobra.RangeArgs(0, 2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		galeDir, err := resolveGaleDir()
+		if err := validateScopeFlags(generationsGlobal, generationsProject); err != nil {
+			return err
+		}
+		galeDir, err := resolveGenerationsGaleDir(
+			generationsGlobal, generationsProject)
 		if err != nil {
 			return err
 		}
@@ -135,7 +151,11 @@ var genRollbackCmd = &cobra.Command{
 	Short: "Switch to a previous generation",
 	Args:  cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		galeDir, err := resolveGaleDir()
+		if err := validateScopeFlags(generationsGlobal, generationsProject); err != nil {
+			return err
+		}
+		galeDir, err := resolveGenerationsGaleDir(
+			generationsGlobal, generationsProject)
 		if err != nil {
 			return err
 		}
@@ -186,7 +206,46 @@ var genRollbackCmd = &cobra.Command{
 	},
 }
 
+// resolveGenerationsGaleDir returns the .gale dir for the
+// generations commands. Like which, it does not require
+// gale.toml to exist — only the generation symlinks.
+func resolveGenerationsGaleDir(global, project bool) (string, error) {
+	if global {
+		return galeConfigDir()
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting working dir: %w", err)
+	}
+	if project {
+		projPath, err := config.FindGaleConfig(cwd)
+		if err != nil {
+			return "", fmt.Errorf(
+				"no project found — run 'gale init' first")
+		}
+		return filepath.Join(filepath.Dir(projPath), ".gale"), nil
+	}
+	// Auto.
+	if projPath, err := config.FindGaleConfig(cwd); err == nil {
+		return filepath.Join(filepath.Dir(projPath), ".gale"), nil
+	}
+	return galeConfigDir()
+}
+
+// addGenerationsScopeFlags registers -g/-p on the given
+// generations subcommand using package-level state shared
+// with the parent.
+func addGenerationsScopeFlags(c *cobra.Command) {
+	c.Flags().BoolVarP(&generationsGlobal, "global", "g", false,
+		"Use the global generation dir")
+	c.Flags().BoolVarP(&generationsProject, "project", "p", false,
+		"Use the project generation dir")
+}
+
 func init() {
+	addGenerationsScopeFlags(generationsCmd)
+	addGenerationsScopeFlags(genDiffCmd)
+	addGenerationsScopeFlags(genRollbackCmd)
 	generationsCmd.AddCommand(genDiffCmd)
 	generationsCmd.AddCommand(genRollbackCmd)
 	rootCmd.AddCommand(generationsCmd)

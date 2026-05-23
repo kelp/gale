@@ -9,12 +9,20 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	verifyGlobal  bool
+	verifyProject bool
+)
+
 var verifyCmd = &cobra.Command{
 	Use:   "verify <package>",
 	Short: "Verify attestation for an installed package",
 	Long:  "Check Sigstore attestation to confirm a package binary was built by gale-recipes CI. Requires the gh CLI.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateScopeFlags(verifyGlobal, verifyProject); err != nil {
+			return err
+		}
 		name := args[0]
 		out := newCmdOutput(cmd)
 
@@ -27,7 +35,7 @@ var verifyCmd = &cobra.Command{
 
 		// Resolve context first so lockfile uses the same
 		// config path the installer would use.
-		ctx, err := newCmdContext("", false, false)
+		ctx, err := newCmdContext("", verifyGlobal, verifyProject)
 		if err != nil {
 			return fmt.Errorf("creating context: %w", err)
 		}
@@ -68,5 +76,9 @@ var verifyCmd = &cobra.Command{
 }
 
 func init() {
+	verifyCmd.Flags().BoolVarP(&verifyGlobal, "global", "g", false,
+		"Verify against the global lockfile")
+	verifyCmd.Flags().BoolVarP(&verifyProject, "project", "p", false,
+		"Verify against the project lockfile")
 	rootCmd.AddCommand(verifyCmd)
 }

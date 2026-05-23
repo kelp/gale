@@ -14,6 +14,8 @@ import (
 var (
 	outdatedRecipes   string
 	outdatedNoRefresh bool
+	outdatedGlobal    bool
+	outdatedProject   bool
 )
 
 // outdatedItem represents a package with a newer version.
@@ -50,7 +52,12 @@ var outdatedCmd = &cobra.Command{
 			}
 		}
 
-		ctx, err := newCmdContext(outdatedRecipes, false, false)
+		if err := validateScopeFlags(outdatedGlobal, outdatedProject); err != nil {
+			return err
+		}
+
+		ctx, err := newCmdContext(
+			outdatedRecipes, outdatedGlobal, outdatedProject)
 		if err != nil {
 			return err
 		}
@@ -203,5 +210,9 @@ func init() {
 	outdatedCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	outdatedCmd.Flags().BoolVar(&outdatedNoRefresh, "no-refresh", false,
 		"Skip refreshing configured recipe taps before resolving")
+	outdatedCmd.Flags().BoolVarP(&outdatedGlobal, "global", "g", false,
+		"Check outdated packages in the global gale.toml")
+	outdatedCmd.Flags().BoolVarP(&outdatedProject, "project", "p", false,
+		"Check outdated packages in the project gale.toml")
 	rootCmd.AddCommand(outdatedCmd)
 }

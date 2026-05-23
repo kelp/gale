@@ -26,6 +26,11 @@ func infoRegistry() *registry.Registry {
 	return newRegistry()
 }
 
+var (
+	infoGlobal  bool
+	infoProject bool
+)
+
 var infoCmd = &cobra.Command{
 	Use:   "info <package>[@version]",
 	Short: "Show package information",
@@ -41,7 +46,16 @@ var infoCmd = &cobra.Command{
 // project/global config first, then falls back to a single
 // metadata fetch from the registry. Validation of <name>
 // happens inside the registry layer (registry.ValidName).
+//
+// Scope flags (--global / --project) narrow the installed
+// lookup to a single config — `info -g jq` from inside a
+// project reads ~/.gale/gale.toml directly, bypassing the
+// project-shadowing default.
 func runInfo(w io.Writer, arg string) error {
+	if err := validateScopeFlags(infoGlobal, infoProject); err != nil {
+		return err
+	}
+
 	name, version := parsePackageArg(arg)
 
 	// "name@" / "name@@" — parsePackageArg returns version=""
@@ -64,6 +78,30 @@ func runInfo(w io.Writer, arg string) error {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("getting working dir: %w", err)
+	}
+
+	// Scope-flag fast path: consult only the requested config.
+	// Versioned form always defers to the registry, so flags
+	// only affect the unversioned lookup.
+	if version == "" && (infoGlobal || infoProject) {
+		configPath, err := resolveReadOnlyConfigPath(
+			infoGlobal, infoProject)
+		if err != nil {
+			return err
+		}
+		scope := "project"
+		if infoGlobal {
+			scope = "global"
+		}
+		found, err := printConfigInfo(w, name, configPath, scope)
+		if err != nil {
+			return err
+		}
+		if !found {
+			return fmt.Errorf("%s not found in %s gale.toml",
+				name, scope)
+		}
+		return nil
 	}
 
 	// Versioned form bypasses the installed-config lookup —
@@ -177,5 +215,9 @@ func printConfigInfo(w io.Writer, name, configPath, scope string) (bool, error) 
 }
 
 func init() {
+	infoCmd.Flags().BoolVarP(&infoGlobal, "global", "g", false,
+		"Look up the package in the global gale.toml")
+	infoCmd.Flags().BoolVarP(&infoProject, "project", "p", false,
+		"Look up the package in the project gale.toml")
 	rootCmd.AddCommand(infoCmd)
 }

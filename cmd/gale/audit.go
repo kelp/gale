@@ -9,6 +9,11 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	auditGlobal  bool
+	auditProject bool
+)
+
 var auditCmd = &cobra.Command{
 	Use:   "audit <package>",
 	Short: "Rebuild a package and compare its hash",
@@ -19,12 +24,15 @@ confirms the build is reproducible. A mismatch does not indicate
 tampering.`,
 	Args: cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateScopeFlags(auditGlobal, auditProject); err != nil {
+			return err
+		}
 		name := args[0]
 		out := newCmdOutput(cmd)
 
 		// Resolve context first so lockfile uses the same
 		// config path as the installer.
-		ctx, err := newCmdContext("", false, false)
+		ctx, err := newCmdContext("", auditGlobal, auditProject)
 		if err != nil {
 			return fmt.Errorf("creating context: %w", err)
 		}
@@ -96,5 +104,9 @@ tampering.`,
 }
 
 func init() {
+	auditCmd.Flags().BoolVarP(&auditGlobal, "global", "g", false,
+		"Audit against the global lockfile")
+	auditCmd.Flags().BoolVarP(&auditProject, "project", "p", false,
+		"Audit against the project lockfile")
 	rootCmd.AddCommand(auditCmd)
 }

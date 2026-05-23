@@ -17,18 +17,31 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var sbomJSON bool
+var (
+	sbomJSON    bool
+	sbomGlobal  bool
+	sbomProject bool
+	sbomAll     bool
+)
 
 // sbomEntry holds the metadata for one package.
 type sbomEntry struct {
 	Name          string `json:"name"`
 	Version       string `json:"version"`
+	Scope         string `json:"scope,omitempty"`
 	SourceURL     string `json:"source_url,omitempty"`
 	SourceSHA256  string `json:"source_sha256,omitempty"`
 	ArchiveSHA256 string `json:"archive_sha256,omitempty"`
 	License       string `json:"license,omitempty"`
 	Homepage      string `json:"homepage,omitempty"`
 	Method        string `json:"method"`
+}
+
+// sbomConfig holds a config path and an optional scope label
+// to attach to each entry parsed from that config.
+type sbomConfig struct {
+	path  string
+	scope string
 }
 
 var sbomCmd = &cobra.Command{
@@ -47,107 +60,190 @@ var sbomCmd = &cobra.Command{
 // or no matching packages) exit zero so downstream pipelines can
 // rely on a stable contract — JSON mode always emits a JSON array,
 // never the literal `null`.
+//
+// Scope flags (--global / --project / --all) select which
+// config(s) to consult. With no flag, the existing
+// project-then-global fallback applies.
 func runSbom(stdout, stderr io.Writer, args []string) error {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("getting working dir: %w", err)
+	if err := validateScopeFlags(sbomGlobal, sbomProject); err != nil {
+		return err
 	}
-	globalDir, err := galeConfigDir()
-	if err != nil {
-		return fmt.Errorf("finding config dir: %w", err)
-	}
-	data, configPath, err := resolveSbomConfig(cwd, globalDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			// No gale.toml anywhere — treat as empty SBOM. Mirrors
-			// `list` and `outdated`.
-			return emitEmptySbom(stdout, stderr)
-		}
-		return fmt.Errorf("reading config: %w", err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		return fmt.Errorf("parsing config: %w", err)
-	}
-	cfg.ApplyHost(config.CurrentHost())
-
-	// Filter to single package if specified.
-	packages := cfg.Packages
+	filter := ""
 	if len(args) == 1 {
-		name := args[0]
-		ver, ok := packages[name]
-		if !ok {
-			return fmt.Errorf(
-				"%s not found in gale.toml", name)
-		}
-		packages = map[string]string{name: ver}
+		filter = args[0]
 	}
 
-	if len(packages) == 0 {
+	configs, err := resolveSbomConfigs(sbomGlobal, sbomProject, sbomAll)
+	if err != nil {
+		return err
+	}
+	if len(configs) == 0 {
+		// No gale.toml anywhere — treat as empty SBOM. Mirrors
+		// `list` and `outdated`.
 		return emitEmptySbom(stdout, stderr)
 	}
 
-	lp, lpErr := lockfilePath(configPath)
-	if lpErr != nil {
-		return lpErr
-	}
-	lf, err := lockfile.Read(lp)
+	entries, err := collectSbomEntries(configs, filter)
 	if err != nil {
-		return fmt.Errorf("reading lockfile: %w", err)
+		return err
 	}
 
-	// Resolve recipes for metadata.
-	ctx, err := newCmdContext("", false, false)
-	if err != nil {
-		return fmt.Errorf("creating context: %w", err)
-	}
-
-	// Pre-size to zero so JSON emits `[]` not `null` even if the
-	// loop body never appends.
-	entries := make([]sbomEntry, 0, len(packages))
-
-	for name, version := range packages {
-		e := sbomEntry{
-			Name:    name,
-			Version: version,
-			Method:  "source",
-		}
-
-		// Get archive hash from lockfile.
-		if locked, ok := lf.Packages[name]; ok {
-			e.ArchiveSHA256 = locked.SHA256
-		}
-
-		// Get recipe metadata.
-		r, err := ctx.ResolveVersionedRecipe(
-			name, version)
-		if err == nil {
-			e.SourceURL = r.Source.URL
-			e.SourceSHA256 = r.Source.SHA256
-			e.License = r.Package.License
-			e.Homepage = r.Package.Homepage
-
-			// Infer install method.
-			if bin := r.BinaryForPlatform(
-				runtime.GOOS, runtime.GOARCH); bin != nil {
-				if e.ArchiveSHA256 == bin.SHA256 {
-					e.Method = "binary"
-				}
-			}
-		}
-
-		entries = append(entries, e)
+	if len(entries) == 0 {
+		return emitEmptySbom(stdout, stderr)
 	}
 
 	sort.Slice(entries, func(i, j int) bool {
+		if entries[i].Scope != entries[j].Scope {
+			return entries[i].Scope < entries[j].Scope
+		}
 		return entries[i].Name < entries[j].Name
 	})
 
 	if sbomJSON {
 		return outputJSON(stdout, entries)
 	}
-	outputTable(stdout, entries)
+	outputTable(stdout, entries, sbomAll)
 	return nil
+}
+
+// resolveSbomConfigs returns the list of gale.toml configs to
+// read. For --all, both project and global are included
+// (filtered to those that exist). For --global / --project, a
+// single explicit scope. With no flag, the same
+// project-then-global fallback used by other read-only
+// commands.
+func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
+	if all {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return nil, fmt.Errorf("getting working dir: %w", err)
+		}
+		var configs []sbomConfig
+		if projPath, err := projectConfigPath(cwd); err == nil {
+			if _, statErr := os.Stat(projPath); statErr == nil {
+				configs = append(configs, sbomConfig{
+					path: projPath, scope: "project",
+				})
+			}
+		}
+		gPath, err := globalConfigPath()
+		if err != nil {
+			return nil, err
+		}
+		if _, statErr := os.Stat(gPath); statErr == nil {
+			configs = append(configs, sbomConfig{
+				path: gPath, scope: "global",
+			})
+		}
+		return configs, nil
+	}
+
+	// Single-scope path. Reuse main's resolver so the
+	// project-then-global fallback and ErrNotExist semantics
+	// stay consistent with `list`, `outdated`, and `env`.
+	if global || project {
+		path, err := resolveReadOnlyConfigPath(global, project)
+		if err != nil {
+			return nil, err
+		}
+		if _, statErr := os.Stat(path); statErr != nil {
+			if errors.Is(statErr, os.ErrNotExist) {
+				return nil, nil
+			}
+			return nil, fmt.Errorf("stat %s: %w", path, statErr)
+		}
+		return []sbomConfig{{path: path}}, nil
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return nil, fmt.Errorf("getting working dir: %w", err)
+	}
+	globalDir, err := galeConfigDir()
+	if err != nil {
+		return nil, fmt.Errorf("finding config dir: %w", err)
+	}
+	_, path, err := resolveSbomConfig(cwd, globalDir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("reading config: %w", err)
+	}
+	return []sbomConfig{{path: path}}, nil
+}
+
+// collectSbomEntries reads each config + lockfile and returns
+// the SBOM entries (one per package).
+func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error) {
+	ctx, err := newCmdContext("", false, false)
+	if err != nil {
+		return nil, fmt.Errorf("creating context: %w", err)
+	}
+
+	// Pre-size to zero so JSON emits `[]` not `null` even when
+	// no config yields any entries.
+	entries := make([]sbomEntry, 0)
+	for _, sc := range configs {
+		data, err := os.ReadFile(sc.path)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", sc.path, err)
+		}
+		cfg, err := config.ParseGaleConfig(string(data))
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", sc.path, err)
+		}
+		cfg.ApplyHost(config.CurrentHost())
+
+		lp, lpErr := lockfilePath(sc.path)
+		if lpErr != nil {
+			return nil, lpErr
+		}
+		lf, err := lockfile.Read(lp)
+		if err != nil {
+			return nil, fmt.Errorf("reading lockfile: %w", err)
+		}
+
+		packages := cfg.Packages
+		if filter != "" {
+			ver, ok := packages[filter]
+			if !ok {
+				if len(configs) == 1 {
+					return nil, fmt.Errorf(
+						"%s not found in gale.toml", filter)
+				}
+				continue
+			}
+			packages = map[string]string{filter: ver}
+		}
+
+		for name, version := range packages {
+			e := sbomEntry{
+				Name:    name,
+				Version: version,
+				Scope:   sc.scope,
+				Method:  "source",
+			}
+			if locked, ok := lf.Packages[name]; ok {
+				e.ArchiveSHA256 = locked.SHA256
+			}
+			r, err := ctx.ResolveVersionedRecipe(name, version)
+			if err == nil {
+				e.SourceURL = r.Source.URL
+				e.SourceSHA256 = r.Source.SHA256
+				e.License = r.Package.License
+				e.Homepage = r.Package.Homepage
+				if bin := r.BinaryForPlatform(
+					runtime.GOOS, runtime.GOARCH); bin != nil {
+					if e.ArchiveSHA256 == bin.SHA256 {
+						e.Method = "binary"
+					}
+				}
+			}
+			entries = append(entries, e)
+		}
+	}
+	return entries, nil
 }
 
 // emitEmptySbom writes the consistent empty-state response: a
@@ -171,13 +267,23 @@ func outputJSON(w io.Writer, entries []sbomEntry) error {
 	return enc.Encode(entries)
 }
 
-func outputTable(w io.Writer, entries []sbomEntry) {
+func outputTable(w io.Writer, entries []sbomEntry, showScope bool) {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PACKAGE\tVERSION\tLICENSE\tSOURCE\tMETHOD")
+	if showScope {
+		fmt.Fprintln(tw, "SCOPE\tPACKAGE\tVERSION\tLICENSE\tSOURCE\tMETHOD")
+	} else {
+		fmt.Fprintln(tw, "PACKAGE\tVERSION\tLICENSE\tSOURCE\tMETHOD")
+	}
 	for _, e := range entries {
 		source := shortenURL(e.SourceURL)
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-			e.Name, e.Version, e.License, source, e.Method)
+		if showScope {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+				e.Scope, e.Name, e.Version, e.License,
+				source, e.Method)
+		} else {
+			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
+				e.Name, e.Version, e.License, source, e.Method)
+		}
 	}
 	tw.Flush()
 }
@@ -223,5 +329,11 @@ func resolveSbomConfig(cwd, globalDir string) ([]byte, string, error) {
 func init() {
 	sbomCmd.Flags().BoolVar(&sbomJSON, "json", false,
 		"Output as JSON")
+	sbomCmd.Flags().BoolVarP(&sbomGlobal, "global", "g", false,
+		"Show SBOM for the global gale.toml")
+	sbomCmd.Flags().BoolVarP(&sbomProject, "project", "p", false,
+		"Show SBOM for the project gale.toml")
+	sbomCmd.Flags().BoolVarP(&sbomAll, "all", "a", false,
+		"Show SBOM for both project and global gale.toml")
 	rootCmd.AddCommand(sbomCmd)
 }

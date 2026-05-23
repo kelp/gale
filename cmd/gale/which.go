@@ -9,12 +9,21 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var (
+	whichGlobal  bool
+	whichProject bool
+)
+
 var whichCmd = &cobra.Command{
 	Use:   "which <binary>",
 	Short: "Show which package provides a binary",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		galeDir, err := resolveGaleDir()
+		if err := validateScopeFlags(whichGlobal, whichProject); err != nil {
+			return err
+		}
+		galeDir, _, err := resolveReadOnlyGaleDirForWhich(
+			whichGlobal, whichProject)
 		if err != nil {
 			return err
 		}
@@ -31,6 +40,43 @@ var whichCmd = &cobra.Command{
 		fmt.Println(resolved)
 		return nil
 	},
+}
+
+// resolveReadOnlyGaleDirForWhich returns the .gale dir used
+// for binary lookup. Unlike resolveReadOnlyGaleDir, it does
+// not require gale.toml to exist — `which` resolves against
+// the generation symlinks, not the config.
+func resolveReadOnlyGaleDirForWhich(global, project bool) (galeDir, configPath string, err error) {
+	if global {
+		galeDir, err = galeConfigDir()
+		if err != nil {
+			return "", "", err
+		}
+		configPath, err = globalConfigPath()
+		return galeDir, configPath, err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", "", fmt.Errorf("getting working dir: %w", err)
+	}
+	if project {
+		projPath, err := projectConfigPath(cwd)
+		if err != nil {
+			return "", "", fmt.Errorf(
+				"no project found — run 'gale init' first")
+		}
+		return filepath.Join(filepath.Dir(projPath), ".gale"), projPath, nil
+	}
+	// Auto.
+	if projPath, err := projectConfigPath(cwd); err == nil {
+		return filepath.Join(filepath.Dir(projPath), ".gale"), projPath, nil
+	}
+	galeDir, err = galeConfigDir()
+	if err != nil {
+		return "", "", err
+	}
+	configPath, err = globalConfigPath()
+	return galeDir, configPath, err
 }
 
 // resolveWhich finds which package provides a binary by
@@ -82,5 +128,9 @@ func resolveWhich(binary, galeDir, storeRoot string) (string, string, string, er
 }
 
 func init() {
+	whichCmd.Flags().BoolVarP(&whichGlobal, "global", "g", false,
+		"Look up the binary in the global generation")
+	whichCmd.Flags().BoolVarP(&whichProject, "project", "p", false,
+		"Look up the binary in the project generation")
 	rootCmd.AddCommand(whichCmd)
 }
