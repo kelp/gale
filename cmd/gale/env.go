@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -29,22 +30,46 @@ var envCmd = &cobra.Command{
 			fmt.Fprintf(out, "export PATH=\"%s:$PATH\"\n", binDir)
 		}
 
-		// Export [vars] from gale.toml.
+		// Export [vars] from gale.toml. Prefer the project
+		// config; if none is in the walk-up chain, fall back
+		// to the global ~/.gale/gale.toml so global [vars]
+		// are honoured when env resolves to the global scope.
 		cwd, err := os.Getwd()
 		if err != nil {
-			return nil //nolint:nilerr // best-effort
+			return fmt.Errorf("getting working dir: %w", err)
 		}
 		configPath, err := config.FindGaleConfig(cwd)
 		if err != nil {
-			return nil //nolint:nilerr // no project config
+			if !errors.Is(err, config.ErrGaleConfigNotFound) {
+				return fmt.Errorf(
+					"locating gale.toml: %w", err)
+			}
+			// No project config — try the global config.
+			globalDir, gerr := galeConfigDir()
+			if gerr != nil {
+				return gerr
+			}
+			globalConfig := filepath.Join(
+				globalDir, "gale.toml")
+			if _, sterr := os.Stat(globalConfig); sterr != nil {
+				if errors.Is(sterr, os.ErrNotExist) {
+					// No config anywhere — nothing to export.
+					return nil
+				}
+				return fmt.Errorf(
+					"stat global gale.toml: %w", sterr)
+			}
+			configPath = globalConfig
 		}
 		data, err := os.ReadFile(configPath)
 		if err != nil {
-			return nil //nolint:nilerr // best-effort
+			return fmt.Errorf(
+				"reading %s: %w", configPath, err)
 		}
 		cfg, err := config.ParseGaleConfig(string(data))
 		if err != nil {
-			return nil //nolint:nilerr // best-effort
+			return fmt.Errorf(
+				"parsing %s: %w", configPath, err)
 		}
 
 		// Sort keys for deterministic output.
