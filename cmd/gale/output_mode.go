@@ -62,14 +62,26 @@ func stderrIsTTY() bool {
 }
 
 func currentOutputMode() outputMode {
-	return resolveOutputMode(outputModeInput{
+	in := outputModeInput{
 		tty:         stderrIsTTY(),
 		noColor:     noColor,
 		plain:       plain,
 		quiet:       quiet,
 		verbose:     verbose,
 		errorFormat: errorFormat,
-	})
+	}
+	applyNoColorEnv(&in)
+	return resolveOutputMode(in)
+}
+
+// applyNoColorEnv honors https://no-color.org: if NO_COLOR is
+// set and non-empty in the environment, treat it as if
+// --no-color were passed. An empty value is ignored per the
+// spec. Reads from os.Getenv so callers don't have to.
+func applyNoColorEnv(in *outputModeInput) {
+	if v := os.Getenv("NO_COLOR"); v != "" {
+		in.noColor = true
+	}
 }
 
 func newOutputForWriter(w io.Writer) *output.Output {

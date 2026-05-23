@@ -1,6 +1,8 @@
 package main
 
-import "testing"
+import (
+	"testing"
+)
 
 func TestResolveOutputModeTTYAuto(t *testing.T) {
 	mode := resolveOutputMode(outputModeInput{tty: true})
@@ -104,6 +106,48 @@ func TestVerboseFlagIsWiredToOutputMode(t *testing.T) {
 	if modeOff == modeOn {
 		t.Error("currentOutputMode() returns the same value regardless of " +
 			"the verbose flag — --verbose/-v must affect the output mode")
+	}
+}
+
+// TestNoColorEnvDisablesColorOnTTY verifies that setting the
+// NO_COLOR environment variable to a non-empty value disables
+// color even on a TTY. Spec: https://no-color.org.
+func TestNoColorEnvDisablesColorOnTTY(t *testing.T) {
+	t.Setenv("NO_COLOR", "1")
+	in := outputModeInput{tty: true}
+	applyNoColorEnv(&in)
+	mode := resolveOutputMode(in)
+	if mode.color {
+		t.Error("color = true, want false when NO_COLOR is set")
+	}
+}
+
+// TestNoColorEnvEmptyIsIgnored verifies that an empty NO_COLOR
+// does NOT disable color (per the no-color.org spec: only a
+// non-empty value disables color).
+func TestNoColorEnvEmptyIsIgnored(t *testing.T) {
+	t.Setenv("NO_COLOR", "")
+	in := outputModeInput{tty: true}
+	applyNoColorEnv(&in)
+	mode := resolveOutputMode(in)
+	if !mode.color {
+		t.Error("color = false, want true when NO_COLOR is empty")
+	}
+}
+
+// TestCurrentOutputModeReadsNoColorEnv verifies the end-to-end
+// path: currentOutputMode() must honor NO_COLOR, not just the
+// --no-color flag.
+func TestCurrentOutputModeReadsNoColorEnv(t *testing.T) {
+	savedNoColor := noColor
+	defer func() { noColor = savedNoColor }()
+	noColor = false
+
+	t.Setenv("NO_COLOR", "1")
+	mode := currentOutputMode()
+	if mode.color {
+		t.Error("currentOutputMode().color = true, want false when " +
+			"NO_COLOR is set in the environment")
 	}
 }
 
