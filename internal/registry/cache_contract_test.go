@@ -248,4 +248,3 @@ func TestNewRespectsGaleOfflineEnv(t *testing.T) {
 		t.Error("New() should set Offline=true when GALE_OFFLINE=1")
 	}
 }
-

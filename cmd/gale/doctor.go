@@ -18,7 +18,18 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var doctorRepair bool
+var (
+	doctorRepair bool
+
+	// doctorCheckRegistry gates the network-touching checks
+	// (stale-installs deps resolution, orphan runtime-dep
+	// expansion) behind an explicit opt-in. Default is off so
+	// `gale doctor` is airplane-mode-clean: no HTTP requests,
+	// no cache writes under ~/.gale/cache/. Pins
+	// audit/readonly/read-only-invariant/0002 and
+	// network-perf/0004.
+	doctorCheckRegistry bool
+)
 
 // doctorContext holds resolved state shared across checks.
 type doctorContext struct {
@@ -388,7 +399,19 @@ func checkFarm(ctx *doctorContext) bool {
 // its deps had a revision/version bump since the install
 // happened; the package should be reinstalled to pick up
 // the new dep artifacts.
+//
+// This check hits the recipe registry to look up the
+// current dep versions. It is gated behind
+// --check-registry so the default `gale doctor` run is
+// airplane-mode-clean (no HTTP, no cache writes). Pins
+// audit/readonly/read-only-invariant/0002 and
+// network-perf/0004.
 func checkStaleInstalls(ctx *doctorContext) bool {
+	if !doctorCheckRegistry {
+		ctx.out.Success(
+			"Stale installs (skipped — pass --check-registry to probe)")
+		return true
+	}
 	if ctx.cmdCtx == nil || ctx.store == nil {
 		// Can't resolve recipes without a cmd context.
 		ctx.out.Success("Stale installs (skipped — no context)")
@@ -524,6 +547,13 @@ func checkDirenvIntegration(ctx *doctorContext) bool {
 // same retention set that gc uses — config + runtime-dep
 // closure — so a package kept alive by a runtime dep of an
 // active config entry is not reported as orphaned.
+//
+// Runtime-dep expansion calls the resolver, which hits the
+// registry. We only thread the resolver through when
+// --check-registry is set so the default run stays offline.
+// Without it, a runtime-dep keepalive may be misreported as
+// orphaned; the user can rerun with --check-registry or
+// `gale gc --dry-run` to get the network-accurate count.
 func checkOrphans(ctx *doctorContext) bool {
 	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
 	var projPath string
@@ -531,7 +561,7 @@ func checkOrphans(ctx *doctorContext) bool {
 		projPath = p
 	}
 	var resolver installer.RecipeResolver
-	if ctx.cmdCtx != nil {
+	if doctorCheckRegistry && ctx.cmdCtx != nil {
 		resolver = ctx.cmdCtx.Resolver
 	}
 	referenced := collectReferencedPackagesWithResolver(
@@ -607,5 +637,8 @@ func repairDoctor(ctx *doctorContext) error {
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorRepair, "repair", false,
 		"Repair active generations from current config and store")
+	doctorCmd.Flags().BoolVar(&doctorCheckRegistry, "check-registry", false,
+		"Probe the recipe registry for stale-install and "+
+			"orphan-dep diagnosis (off by default — implies network access)")
 	rootCmd.AddCommand(doctorCmd)
 }
