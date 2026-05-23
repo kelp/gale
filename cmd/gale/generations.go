@@ -56,17 +56,24 @@ var genDiffCmd = &cobra.Command{
 
 		storeRoot := defaultStoreRoot()
 
-		cur, err := generation.Current(galeDir)
-		if err != nil {
-			return fmt.Errorf("reading current: %w", err)
-		}
-		if cur == 0 {
-			return fmt.Errorf("no current generation")
-		}
-
 		var from, to int
 		switch len(args) {
 		case 0:
+			// No args: diff previous against current. Both
+			// require Current() to be set.
+			cur, err := generation.Current(galeDir)
+			if err != nil {
+				return fmt.Errorf("reading current: %w", err)
+			}
+			if cur == 0 {
+				// Match the parent `gale generations`
+				// empty-state: stderr notice, exit 0, no
+				// stdout output. Subcommands of a group must
+				// agree on what "nothing to do" looks like.
+				fmt.Fprintln(cmd.ErrOrStderr(),
+					"No generations found.")
+				return nil
+			}
 			if cur < 2 {
 				return fmt.Errorf(
 					"only one generation exists")
@@ -74,6 +81,15 @@ var genDiffCmd = &cobra.Command{
 			from = cur - 1
 			to = cur
 		case 1:
+			// One arg: diff the named generation against
+			// current. Current() must be set.
+			cur, err := generation.Current(galeDir)
+			if err != nil {
+				return fmt.Errorf("reading current: %w", err)
+			}
+			if cur == 0 {
+				return fmt.Errorf("no current generation")
+			}
 			from, err = strconv.Atoi(args[0])
 			if err != nil {
 				return fmt.Errorf(
@@ -81,6 +97,9 @@ var genDiffCmd = &cobra.Command{
 			}
 			to = cur
 		case 2:
+			// Two args: explicit pair. Don't require Current()
+			// — generation.Diff validates both ends exist.
+			var err error
 			from, err = strconv.Atoi(args[0])
 			if err != nil {
 				return fmt.Errorf(
