@@ -231,6 +231,10 @@ func finishSync(dryRun bool, failed int, rebuild func() error) error {
 	}
 	rebuildErr := rebuild()
 	if failed > 0 {
+		if rebuildErr != nil {
+			return fmt.Errorf("%d package(s) could not be synced; rebuild: %w",
+				failed, rebuildErr)
+		}
 		return fmt.Errorf("%d package(s) could not be synced", failed)
 	}
 	return rebuildErr

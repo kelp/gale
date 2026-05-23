@@ -50,7 +50,7 @@ var gcCmd = &cobra.Command{
 		// runtime deps (not build deps) transitively.
 		referenced := collectReferencedPackagesWithResolver(
 			globalDir, projPath, s, resolver, out)
-		removedPkgs := removeUnreferencedVersions(
+		removedPkgs, failedPkgs := removeUnreferencedVersions(
 			s, referenced, dryRun, out)
 
 		// Clean up old generations.
@@ -66,7 +66,7 @@ var gcCmd = &cobra.Command{
 				projGaleDir, dryRun)
 		}
 
-		if removedPkgs == 0 && removedGens == 0 {
+		if removedPkgs == 0 && removedGens == 0 && failedPkgs == 0 {
 			out.Success("Nothing to clean up.")
 			return nil
 		}
@@ -104,6 +104,9 @@ var gcCmd = &cobra.Command{
 		out.Success(fmt.Sprintf(
 			"Removed %d version(s) and %d generation(s)",
 			removedPkgs, removedGens))
+		if failedPkgs > 0 {
+			return fmt.Errorf("%d package version(s) could not be removed", failedPkgs)
+		}
 		return nil
 	},
 }
@@ -120,20 +123,21 @@ func isReferenced(name, version string, referenced map[string]bool) bool {
 
 // removeUnreferencedVersions iterates the store and
 // removes any version not in the referenced set.
-// Returns the number of versions removed (or flagged
-// in dry-run mode).
+// Returns (removed, failed): the number of versions
+// removed (or flagged in dry-run mode) and the number
+// of versions that could not be removed due to errors.
 func removeUnreferencedVersions(
 	s *store.Store,
 	referenced map[string]bool,
 	dry bool,
 	out *output.Output,
-) int {
+) (int, int) {
 	installed, err := s.List()
 	if err != nil {
 		out.Warn(fmt.Sprintf("listing store: %v", err))
-		return 0
+		return 0, 0
 	}
-	var removed int
+	var removed, failed int
 	for _, pkg := range installed {
 		if isReferenced(pkg.Name, pkg.Version, referenced) {
 			continue
@@ -142,21 +146,23 @@ func removeUnreferencedVersions(
 			out.Info(fmt.Sprintf(
 				"Would remove %s@%s",
 				pkg.Name, pkg.Version))
+			removed++
 		} else {
 			if err := s.Remove(
 				pkg.Name, pkg.Version); err != nil {
 				out.Warn(fmt.Sprintf(
 					"Failed to remove %s@%s: %v",
 					pkg.Name, pkg.Version, err))
+				failed++
 				continue
 			}
 			out.Success(fmt.Sprintf(
 				"Removed %s@%s",
 				pkg.Name, pkg.Version))
+			removed++
 		}
-		removed++
 	}
-	return removed
+	return removed, failed
 }
 
 // collectReferencedPackages is the config-only variant

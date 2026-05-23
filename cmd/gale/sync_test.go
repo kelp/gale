@@ -106,18 +106,20 @@ func TestFinishSyncRebuildsOnFailure(t *testing.T) {
 	}
 }
 
-func TestFinishSyncFailureErrorTakesPrecedence(t *testing.T) {
-	// When both an install failure and a rebuild error
-	// occur, the install-failure count is the more useful
-	// signal — it tells the user which package broke.
+func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
+	// When both an install failure and a rebuild error occur,
+	// the returned error must mention both so neither is silently
+	// discarded. The install count tells the user which package
+	// broke; the rebuild error tells them the PATH may be stale.
+	rebuildErr := errors.New("rebuild boom")
 	err := finishSync(false, 2, func() error {
-		return errors.New("rebuild boom")
+		return rebuildErr
 	})
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	if got := err.Error(); got != "2 package(s) could not be synced" {
-		t.Fatalf("error = %q, want install-failure message", got)
+	if !errors.Is(err, rebuildErr) {
+		t.Fatalf("error %q must wrap the rebuild error", err)
 	}
 }
 
@@ -128,6 +130,21 @@ func TestFinishSyncReturnsRebuildError(t *testing.T) {
 	})
 	if !errors.Is(err, errBoom) {
 		t.Fatalf("finishSync error = %v, want %v", err, errBoom)
+	}
+}
+
+// TestFinishSyncIncludesRebuildErrorOnFailure verifies that when
+// both failed > 0 and rebuildErr != nil, finishSync wraps the
+// rebuild error so callers can inspect it via errors.Is. Previously
+// the rebuild error was silently discarded when failed > 0.
+func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
+	rebuildErr := errors.New("generation build failed")
+	err := finishSync(false, 1, func() error { return rebuildErr })
+	if err == nil {
+		t.Fatal("finishSync must return error when failed > 0")
+	}
+	if !errors.Is(err, rebuildErr) {
+		t.Errorf("finishSync error %q must wrap the rebuild error", err)
 	}
 }
 

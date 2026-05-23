@@ -194,7 +194,7 @@ func TestUpdateAction(t *testing.T) {
 
 func TestFinishUpdateReturnsRebuildError(t *testing.T) {
 	errBoom := errors.New("boom")
-	err := finishUpdate(false, func() error {
+	err := finishUpdate(false, 0, func() error {
 		return errBoom
 	})
 	if !errors.Is(err, errBoom) {
@@ -204,7 +204,7 @@ func TestFinishUpdateReturnsRebuildError(t *testing.T) {
 
 func TestFinishUpdateRebuildsWhenNothingUpdated(t *testing.T) {
 	called := false
-	err := finishUpdate(false, func() error {
+	err := finishUpdate(false, 0, func() error {
 		called = true
 		return nil
 	})
@@ -218,7 +218,7 @@ func TestFinishUpdateRebuildsWhenNothingUpdated(t *testing.T) {
 
 func TestFinishUpdateSkipsRebuildInDryRun(t *testing.T) {
 	called := false
-	err := finishUpdate(true, func() error {
+	err := finishUpdate(true, 0, func() error {
 		called = true
 		return nil
 	})
@@ -227,6 +227,29 @@ func TestFinishUpdateSkipsRebuildInDryRun(t *testing.T) {
 	}
 	if called {
 		t.Fatal("rebuild should not be called in dry-run mode")
+	}
+}
+
+// TestFinishUpdateReturnsErrorOnFailure verifies that finishUpdate
+// returns a non-nil error when one or more package installs failed,
+// even if the generation rebuild itself succeeds. Without this, a
+// partially-failed update exits 0, hiding failures from callers and
+// CI scripts.
+func TestFinishUpdateReturnsErrorOnFailure(t *testing.T) {
+	err := finishUpdate(false, 1, func() error { return nil })
+	if err == nil {
+		t.Error("finishUpdate must return non-nil error when failed > 0")
+	}
+}
+
+func TestFinishUpdateWrapsRebuildErrorOnFailure(t *testing.T) {
+	rebuildErr := errors.New("generation rebuild failed")
+	err := finishUpdate(false, 1, func() error { return rebuildErr })
+	if err == nil {
+		t.Fatal("finishUpdate must return non-nil when failed > 0 and rebuild fails")
+	}
+	if !errors.Is(err, rebuildErr) {
+		t.Errorf("finishUpdate error %q must wrap the rebuild error via %%w", err)
 	}
 }
 

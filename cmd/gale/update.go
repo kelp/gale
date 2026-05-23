@@ -129,7 +129,7 @@ var updateCmd = &cobra.Command{
 		}
 		targetNames = sortedTargetKeys(targetNames)
 
-		var updated int
+		var updated, failed int
 		for _, name := range targetNames {
 			t := targets[name]
 			var newVersion string
@@ -205,6 +205,7 @@ var updateCmd = &cobra.Command{
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Failed to update %s: %v", name, err))
+				failed++
 				continue
 			}
 
@@ -225,8 +226,8 @@ var updateCmd = &cobra.Command{
 		// new pin points at a store dir that does not exist
 		// yet, which would cause rebuild to fail. The
 		// follow-up `gale sync` installs and rebuilds.
-		if err := finishUpdate(dryRun || updateNoInstall, ctx.RebuildGeneration); err != nil {
-			return fmt.Errorf("rebuild generation: %w", err)
+		if err := finishUpdate(dryRun || updateNoInstall, failed, ctx.RebuildGeneration); err != nil {
+			return err
 		}
 		if updated == 0 {
 			out.Success("Everything is up to date.")
@@ -242,11 +243,19 @@ var updateCmd = &cobra.Command{
 	},
 }
 
-func finishUpdate(dryRun bool, rebuild func() error) error {
+func finishUpdate(dryRun bool, failed int, rebuild func() error) error {
 	if dryRun {
 		return nil
 	}
-	return rebuild()
+	rebuildErr := rebuild()
+	if failed > 0 {
+		if rebuildErr != nil {
+			return fmt.Errorf("%d package(s) could not be updated; rebuild: %w",
+				failed, rebuildErr)
+		}
+		return fmt.Errorf("%d package(s) could not be updated", failed)
+	}
+	return rebuildErr
 }
 
 // updateFromGit checks if the remote HEAD changed, and

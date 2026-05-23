@@ -139,7 +139,7 @@ func TestRemoveUnreferencedVersions(t *testing.T) {
 	referenced := map[string]bool{"jq@1.7": true}
 
 	// Dry run — nothing removed.
-	n := removeUnreferencedVersions(
+	n, _ := removeUnreferencedVersions(
 		s, referenced, true, out)
 	if n != 2 {
 		t.Errorf("dry-run: want 2 flagged, got %d", n)
@@ -152,7 +152,7 @@ func TestRemoveUnreferencedVersions(t *testing.T) {
 	}
 
 	// Real run.
-	n = removeUnreferencedVersions(
+	n, _ = removeUnreferencedVersions(
 		s, referenced, false, out)
 	if n != 2 {
 		t.Errorf("want 2 removed, got %d", n)
@@ -180,7 +180,7 @@ func TestRemoveUnreferencedVersionsNoneToRemove(t *testing.T) {
 	out := output.New(os.Stderr, false)
 	referenced := map[string]bool{"jq@1.7": true}
 
-	n := removeUnreferencedVersions(
+	n, _ := removeUnreferencedVersions(
 		s, referenced, false, out)
 	if n != 0 {
 		t.Errorf("want 0 removed, got %d", n)
@@ -217,7 +217,7 @@ func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 	out := output.New(os.Stderr, false)
 
 	ref := collectReferencedPackages(globalDir, "", s, out)
-	n := removeUnreferencedVersions(s, ref, false, out)
+	n, _ := removeUnreferencedVersions(s, ref, false, out)
 
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
@@ -260,7 +260,7 @@ func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
 	out := output.New(os.Stderr, false)
 
 	ref := collectReferencedPackages(globalDir, "", s, out)
-	n := removeUnreferencedVersions(s, ref, false, out)
+	n, _ := removeUnreferencedVersions(s, ref, false, out)
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
 	}
@@ -299,7 +299,7 @@ func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
 	out := output.New(os.Stderr, false)
 
 	ref := collectReferencedPackages(globalDir, "", s, out)
-	n := removeUnreferencedVersions(s, ref, false, out)
+	n, _ := removeUnreferencedVersions(s, ref, false, out)
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
 	}
@@ -646,5 +646,96 @@ func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
 	if ref["openssl@3.6.1-2"] {
 		t.Errorf("openssl should not be referenced without " +
 			"a resolver — falls back to config-only")
+	}
+}
+
+// TestRemoveUnreferencedVersionsAllFailedReturnsFailureCount verifies
+// that when every removal attempt fails, removeUnreferencedVersions
+// returns a non-zero failure count and zero removed count. The gc
+// early-return guard must check failedPkgs == 0 so it does not emit
+// "Nothing to clean up." and return nil when all removals fail.
+func TestRemoveUnreferencedVersionsAllFailedReturnsFailureCount(t *testing.T) {
+	// Same setup as TestRemoveUnreferencedVersionsReturnsFailureCount:
+	// one package, store root read-only → removal fails
+	if os.Getuid() == 0 {
+		t.Skip("root can remove read-only dirs")
+	}
+	tmp := t.TempDir()
+	storeRoot := filepath.Join(tmp, "pkg")
+	s := store.NewStore(storeRoot)
+
+	pkgDir, err := s.Create("bat", "0.24.0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(pkgDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Make the store root read-only so removal fails
+	if err := os.Chmod(storeRoot, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(storeRoot, 0o755) })
+
+	out := output.New(os.Stderr, false)
+	removed, failed := removeUnreferencedVersions(s, map[string]bool{}, false, out)
+	if failed == 0 {
+		t.Error("expected failed > 0 when all removals fail")
+	}
+	if removed > 0 {
+		t.Errorf("expected removed == 0, got %d", removed)
+	}
+	// The key invariant: when failed > 0 and removed == 0,
+	// the caller MUST NOT say "Nothing to clean up." and must return an error.
+	// (The early-return guard in gcCmd.RunE now checks failedPkgs == 0.)
+	_ = removed
+	_ = failed
+}
+
+// TestRemoveUnreferencedVersionsReturnsFailureCount verifies that
+// removeUnreferencedVersions returns a non-zero failure count when
+// a store removal fails (e.g. read-only directory). Without this,
+// a partially-failed gc exits 0, silently leaving the store dirty.
+func TestRemoveUnreferencedVersionsReturnsFailureCount(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("running as root; chmod restrictions do not apply")
+	}
+
+	tmp := t.TempDir()
+	storeRoot := filepath.Join(tmp, "pkg")
+
+	// Create a package entry in the store.
+	s := store.NewStore(storeRoot)
+	pkgDir, err := s.Create("jq", "1.7.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Place a file inside so the package looks installed.
+	if err := os.MkdirAll(filepath.Join(pkgDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the version dir and its parent read-only so
+	// os.RemoveAll will fail when gc tries to remove jq@1.7.1.
+	if err := os.Chmod(pkgDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(pkgDir, 0o755) })
+
+	nameDir := filepath.Join(storeRoot, "jq")
+	if err := os.Chmod(nameDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(nameDir, 0o755) })
+
+	out := output.New(os.Stderr, false)
+	// Empty referenced set — jq@1.7.1 is unreferenced and
+	// should be removed, but the read-only dirs will cause failure.
+	_, failed := removeUnreferencedVersions(
+		s, map[string]bool{}, false, out)
+	if failed == 0 {
+		t.Error("expected failure count > 0 when store removal fails")
 	}
 }
