@@ -153,7 +153,7 @@ func Diff(galeDir, storeRoot string, from, to int) (*GenDiff, error) {
 // Rollback atomically swaps the current symlink to point
 // at the given generation number. Acquires the generation
 // lock so it serializes with Build.
-func Rollback(galeDir string, target int) error {
+func Rollback(galeDir, storeRoot string, target int) error {
 	genDir := filepath.Join(
 		galeDir, "gen", strconv.Itoa(target))
 	if _, err := os.Stat(genDir); err != nil {
@@ -161,7 +161,8 @@ func Rollback(galeDir string, target int) error {
 			target, err)
 	}
 
-	return filelock.With(generationLockPath(galeDir), func() error {
+	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
+	return filelock.With(lockPath, func() error {
 		return swapCurrentSymlink(galeDir, target)
 	})
 }

@@ -1040,23 +1040,18 @@ func lockPackage(storeRoot, name, version string) (func(), error) {
 // storeGenLockPath returns the path to the generation-build
 // lock for the given store root. H7: a concurrent `gale sync`
 // calls generation.Build, which locks this same path (via
-// generation.generationLockPath) to serialize gen rebuilds.
-// The installer acquires this lock around its store-write
-// critical section so a sync cannot walk a half-extracted
+// filepath.Dir(storeRoot)/generation.lock) to serialize gen
+// rebuilds. The installer acquires this lock around its store-
+// write critical section so a sync cannot walk a half-extracted
 // package or race with farm.Populate.
 //
-// Path semantics: generation.Build's lock is at
-// <galeDir>/generation.lock; the global galeDir is the parent
-// of the global storeRoot (~/.gale/pkg → ~/.gale). Since the
-// store is always global (one store for all scopes), using
-// filepath.Dir(storeRoot) converges on the global gen lock.
-//
-// Limitation: when generation.Build is invoked with a
-// per-project galeDir (e.g. <project>/.gale/), its lock lives
-// under that project dir and is not the same file as this
-// path. The residual install-vs-project-sync race is not
-// closed by this fix; doing so cleanly needs generation.Build
-// to also acquire a store-rooted lock (a separate change).
+// Path semantics: generation.Build always acquires the lock at
+// filepath.Dir(storeRoot)/generation.lock regardless of the
+// galeDir argument. Since the store is always global, both the
+// installer and project-scoped Build calls converge on the same
+// file (~/.gale/generation.lock). The install-vs-project-sync
+// race is fully closed: a project gale sync serializes against
+// a concurrent global install.
 func storeGenLockPath(storeRoot string) string {
 	return filepath.Join(
 		filepath.Dir(storeRoot), "generation.lock")

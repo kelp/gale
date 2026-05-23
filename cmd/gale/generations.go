@@ -157,7 +157,7 @@ var genRollbackCmd = &cobra.Command{
 		}
 
 		if err := generation.Rollback(
-			galeDir, target); err != nil {
+			galeDir, defaultStoreRoot(), target); err != nil {
 			return fmt.Errorf("rollback: %w", err)
 		}
 

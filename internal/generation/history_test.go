@@ -163,7 +163,7 @@ func TestDiffShowsVersionChanges(t *testing.T) {
 
 func TestRollbackSwapsCurrent(t *testing.T) {
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 
 	createStoreEntry(t, storeRoot, "jq", "1.7.1", []string{"jq"})
 	createStoreEntry(t, storeRoot, "fd", "9.0", []string{"fd"})
@@ -186,7 +186,7 @@ func TestRollbackSwapsCurrent(t *testing.T) {
 	}
 
 	// Rollback to gen 1.
-	if err := Rollback(galeDir, 1); err != nil {
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
 		t.Fatalf("Rollback error: %v", err)
 	}
 
@@ -208,7 +208,7 @@ func TestRollbackSwapsCurrent(t *testing.T) {
 
 func TestRollbackNonexistentGeneration(t *testing.T) {
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 
 	createStoreEntry(t, storeRoot, "jq", "1.7.1", []string{"jq"})
 
@@ -216,7 +216,7 @@ func TestRollbackNonexistentGeneration(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	err := Rollback(galeDir, 99)
+	err := Rollback(galeDir, storeRoot, 99)
 	if err == nil {
 		t.Fatal("expected Rollback to non-existent generation to return error")
 	}

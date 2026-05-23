@@ -188,7 +188,14 @@ func BuildLenient(pkgs map[string]string, galeDir, storeRoot string) error {
 }
 
 func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) error {
-	return filelock.With(generationLockPath(galeDir), func() error {
+	// Use the store-rooted lock path so project-scoped and global
+	// Build calls contend on the same lock file as the installer.
+	// filepath.Dir(storeRoot) is always the global galeDir
+	// (~/.gale/ at global scope, same at project scope since the
+	// store is shared). This closes the residual install-vs-project-
+	// sync race described in installer.go:storeGenLockPath.
+	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
+	return filelock.With(lockPath, func() error {
 		prev, err := Current(galeDir)
 		if err != nil {
 			return fmt.Errorf("read current generation: %w", err)
@@ -264,10 +271,6 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 
 		return nil
 	})
-}
-
-func generationLockPath(galeDir string) string {
-	return filepath.Join(galeDir, "generation.lock")
 }
 
 // populateGeneration symlinks each package's store

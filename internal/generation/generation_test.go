@@ -891,7 +891,14 @@ func TestBuildDeterministicSymlinkOrder(t *testing.T) {
 
 func TestBuildWaitsForGenerationLock(t *testing.T) {
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	// storeRoot must be a child of galeDir so that
+	// filepath.Dir(storeRoot) == galeDir — Build acquires
+	// the lock at filepath.Dir(storeRoot)/generation.lock,
+	// which equals galeDir/generation.lock here.
+	storeRoot := filepath.Join(galeDir, "pkg")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
 
 	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
 
@@ -1172,7 +1179,7 @@ func TestPopulateGenerationRootLevelFiles(t *testing.T) {
 
 func TestRollbackDoesNotClobberConcurrentTempLink(t *testing.T) {
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 
 	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
 	createStoreEntry(t, storeRoot, "fd", "10.4.2", []string{"fd"})
@@ -1192,7 +1199,7 @@ func TestRollbackDoesNotClobberConcurrentTempLink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Rollback(galeDir, 1); err != nil {
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
 		t.Fatalf("Rollback error: %v", err)
 	}
 

@@ -20,7 +20,7 @@ import (
 // (fails red) and will go green once the fix is applied.
 func TestAudit_RollbackBypassesGenLock(t *testing.T) {
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 
 	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
 	pkgs := map[string]string{"jq": "1.8.1"}
@@ -73,7 +73,7 @@ func TestAudit_RollbackBypassesGenLock(t *testing.T) {
 	}()
 
 	start := time.Now()
-	if err := Rollback(galeDir, 1); err != nil {
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
 		t.Fatalf("Rollback while gen lock held: %v", err)
 	}
 	waited := time.Since(start)
@@ -117,7 +117,7 @@ func TestAudit_RollbackBypassesGenLock(t *testing.T) {
 // with final == 2) and will go green once Rollback locks.
 func TestAudit_RollbackVsBuildRace_Deterministic(t *testing.T) {
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 
 	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
 
@@ -167,7 +167,7 @@ func TestAudit_RollbackVsBuildRace_Deterministic(t *testing.T) {
 	// Rollback to gen 1. With the fix it will block until
 	// the simulated Build releases the lock (after its
 	// swap to gen 2). Then Rollback runs and swaps to gen 1.
-	if err := Rollback(galeDir, 1); err != nil {
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
 		t.Fatalf("Rollback: %v", err)
 	}
 

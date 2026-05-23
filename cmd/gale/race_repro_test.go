@@ -142,7 +142,7 @@ func TestAudit_RemoveLockEntryRace(t *testing.T) {
 //   - current still points at gen/2 (no swap happened)
 func TestAudit_GcVsBuildRace(t *testing.T) {
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 
 	// Seed a fake jq binary in the store.
 	binDir := filepath.Join(storeRoot, "jq", "1.8.1", "bin")
@@ -212,7 +212,7 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 		// With the bug it will not acquire the lock and will
 		// delete gen/3. With the fix it will block, then only
 		// delete gen/1 (n < curGen=2).
-		cleanOldGenerations(galeDir, false)
+		cleanOldGenerations(galeDir, storeRoot, false)
 	}()
 
 	// Wait for gc to finish. It should either return quickly
@@ -339,75 +339,105 @@ func TestAudit_GcVsInstall_WindowBetweenStoreWriteAndConfigWrite(t *testing.T) {
 }
 
 // TestAudit_ProjectGenLockNotSharedWithStoreGenLock
-// proves the documented "residual install-vs-project-sync
-// race" in internal/installer/installer.go:1051. A
-// project-scoped generation.Build acquires
-// <projGaleDir>/generation.lock; a global install acquires
-// storeGenLock which is <filepath.Dir(storeRoot)>/generation.lock
-// (i.e., <globalGaleDir>/generation.lock). These are different
-// files, so the locks don't serialize against each other.
+// demonstrates the "residual install-vs-project-sync race"
+// documented in internal/installer/installer.go:1051.
 //
-// We don't need to wait — we observe that one goroutine can
-// acquire its lock while the other still holds the other.
+// The intended fix: generation.Build (at any scope) must
+// acquire the SAME lock as the installer — the store-rooted
+// lock at filepath.Join(filepath.Dir(storeRoot),
+// "generation.lock") — so that a project-scoped Build
+// serializes against a concurrent global install.
+//
+// Approach:
+//   - Goroutine A directly acquires the store-rooted lock
+//     and holds it for ~80ms (simulating an in-flight
+//     global install).
+//   - Main calls generation.Build with projectGaleDir as
+//     the galeDir argument and the shared storeRoot.
+//   - RED (today): Build acquires
+//     <projGaleDir>/generation.lock (a different file)
+//     and returns in microseconds — no contention.
+//   - GREEN (after fix): Build also acquires the
+//     store-rooted lock and blocks for ~80ms.
 func TestAudit_ProjectGenLockNotSharedWithStoreGenLock(t *testing.T) {
 	globalGaleDir := t.TempDir()
-	projGaleDir := t.TempDir()
+	projectGaleDir := t.TempDir()
+
+	// The shared store root: always global.
 	storeRoot := filepath.Join(globalGaleDir, "pkg")
 	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
 		t.Fatal(err)
 	}
 
-	// storeGenLockPath as defined in installer.go:1060:
-	// filepath.Join(filepath.Dir(storeRoot), "generation.lock")
+	// Seed a fake jq binary in the store so generation.Build
+	// can succeed without a real install pipeline.
+	jqBinDir := filepath.Join(storeRoot, "jq", "1.8.1", "bin")
+	if err := os.MkdirAll(jqBinDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(jqBinDir, "jq"), []byte("fake"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pkgs := map[string]string{"jq": "1.8.1"}
+
+	// The store-rooted lock: filepath.Dir(storeRoot)/generation.lock
+	// = globalGaleDir/generation.lock.
+	// This is the same path storeGenLockPath(storeRoot) returns
+	// in installer.go:1060, and the same path generation.Build
+	// must acquire after the fix.
 	storeGenLock := filepath.Join(
 		filepath.Dir(storeRoot), "generation.lock")
-	// generationLockPath at project scope:
-	projGenLock := filepath.Join(
-		projGaleDir, "generation.lock")
 
+	// Sanity: storeGenLock must NOT be inside projectGaleDir.
+	projGenLock := filepath.Join(projectGaleDir, "generation.lock")
 	if storeGenLock == projGenLock {
-		t.Fatal("paths unexpectedly identical")
+		t.Fatal("test setup error: storeGenLock == projGenLock")
 	}
 
-	heldStore := make(chan struct{})
-	releaseStore := make(chan struct{})
-	heldProj := make(chan struct{})
-	releaseProj := make(chan struct{})
-
+	// Goroutine A: acquire the store-rooted lock and hold
+	// it for ~80ms — simulating an in-flight global install.
+	acquired := make(chan struct{})
 	go func() {
 		_ = filelock.With(storeGenLock, func() error {
-			close(heldStore)
-			<-releaseStore
+			close(acquired)
+			time.Sleep(80 * time.Millisecond)
 			return nil
 		})
 	}()
-	<-heldStore
 
+	// Wait until goroutine A has the lock before we call Build.
+	<-acquired
+
+	// Call generation.Build at project scope: galeDir =
+	// projectGaleDir, storeRoot = global storeRoot.
+	//
+	// RED today: Build acquires projGenLock (a different file)
+	// and returns in microseconds — no serialization with A.
+	//
+	// GREEN after fix: Build acquires storeGenLock (the same
+	// file A holds) and blocks until A releases it (~80ms).
 	start := time.Now()
-	go func() {
-		_ = filelock.With(projGenLock, func() error {
-			close(heldProj)
-			<-releaseProj
-			return nil
-		})
-	}()
-
-	select {
-	case <-heldProj:
-		dur := time.Since(start)
-		t.Errorf("CONFIRMED: project gen lock acquired in %v "+
-			"while another holder still owns the store-gen "+
-			"lock — the locks are different files, so install "+
-			"and project sync do not serialize. Documented "+
-			"in installer.go:1051.", dur)
-	case <-time.After(500 * time.Millisecond):
-		t.Errorf("project gen lock did not acquire within "+
-			"500ms; this would mean the locks ARE shared — " +
-			"unexpected given the static analysis.")
+	if err := generation.Build(pkgs, projectGaleDir, storeRoot); err != nil {
+		t.Fatalf("generation.Build: %v", err)
 	}
+	elapsed := time.Since(start)
 
-	close(releaseProj)
-	close(releaseStore)
+	// Build must have blocked waiting for the store-rooted
+	// lock. Today (RED) it returns in microseconds because
+	// it acquires a project-local lock instead, so this
+	// assertion FAILS. After the fix (GREEN) it blocks ~80ms.
+	const minBlock = 60 * time.Millisecond
+	if elapsed < minBlock {
+		t.Errorf(
+			"CONFIRMED: generation.Build(pkgs, projectGaleDir, "+
+				"storeRoot) returned in %v (< %v) without "+
+				"waiting for the store-rooted generation lock "+
+				"at %s. A concurrent global install holds that "+
+				"lock; the project sync does not serialize "+
+				"against it. Documented in installer.go:1051.",
+			elapsed, minBlock, storeGenLock)
+	}
 }
 
 // TestAudit_GaleTomlReadModifyWriteAcrossLockBoundary

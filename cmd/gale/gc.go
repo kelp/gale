@@ -58,13 +58,13 @@ var gcCmd = &cobra.Command{
 		var removedGens int
 		if globalDir != "" {
 			removedGens += cleanOldGenerations(
-				globalDir, dryRun)
+				globalDir, storeRoot, dryRun)
 		}
 		if projPath != "" {
 			projGaleDir := filepath.Join(
 				filepath.Dir(projPath), ".gale")
 			removedGens += cleanOldGenerations(
-				projGaleDir, dryRun)
+				projGaleDir, storeRoot, dryRun)
 		}
 
 		if removedPkgs == 0 && removedGens == 0 && failedPkgs == 0 {
@@ -255,10 +255,10 @@ func mergeConfig(
 // that has created gen/N+1 but not yet swapped current is
 // never considered for deletion (n < curGen is the criterion,
 // not n != curGen).
-func cleanOldGenerations(galeDir string, dry bool) int {
+func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 	out := newOutput()
 	genRoot := filepath.Join(galeDir, "gen")
-	lockPath := filepath.Join(galeDir, "generation.lock")
+	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
 	var removed int
 	_ = filelock.With(lockPath, func() error {
 		// Read curGen first (while holding the lock) so the

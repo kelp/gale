@@ -341,6 +341,7 @@ func TestGCShortMentionsGenerations(t *testing.T) {
 // gen/3 survives.
 func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 	genRoot := filepath.Join(galeDir, "gen")
 
 	// Create three generation directories.
@@ -364,7 +365,7 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	t.Cleanup(func() { dryRun = false })
 
 	// Call cleanOldGenerations directly.
-	removed := cleanOldGenerations(galeDir, true)
+	removed := cleanOldGenerations(galeDir, storeRoot, true)
 	if removed != 2 {
 		t.Errorf("dry-run: want 2 flagged, got %d", removed)
 	}
@@ -378,7 +379,7 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 
 	// Now run for real.
 	dryRun = false
-	removed = cleanOldGenerations(galeDir, false)
+	removed = cleanOldGenerations(galeDir, storeRoot, false)
 	if removed != 2 {
 		t.Errorf("want 2 removed, got %d", removed)
 	}
