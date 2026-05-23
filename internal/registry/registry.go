@@ -54,6 +54,25 @@ const defaultGHCRBase = "kelp/gale-recipes"
 
 // Registry fetches recipe TOML files from a remote HTTP
 // registry using letter-bucketed paths.
+//
+// # Cache contract
+//
+// The on-disk cache at <CacheDir>/registry/ is a documented
+// optimization, not silent state. It stores HTTP response
+// bodies keyed by sha256(url) plus the matching ETag for
+// conditional revalidation. Rules:
+//
+//   - DryRun=true suppresses cache writes. Bodies are still
+//     returned to callers, but no files are persisted.
+//   - Offline=true skips network entirely. A cached entry is
+//     served verbatim; absence of a cached entry returns a
+//     "no cached entry" error. Set by `gale --dry-run` (writes)
+//     and by `GALE_OFFLINE=1` (network).
+//   - Stale-on-error: when client.Do fails with a network
+//     error (DNS, ECONNREFUSED, deadline, context cancel),
+//     the cached body is served if present. The cache is
+//     NOT rewritten in this path — staleness propagates via
+//     a marker the caller may surface in user-facing output.
 type Registry struct {
 	BaseURL string
 
@@ -66,25 +85,47 @@ type Registry struct {
 	// a temp dir.
 	CacheDir string
 
+	// DryRun suppresses cache writes. Reads still consult
+	// the cache (304 revalidation still serves the cached
+	// body), but a 200 OK is never persisted. Set this when
+	// the command-layer `--dry-run` flag is in effect.
+	DryRun bool
+
+	// Offline suppresses network traffic entirely. Cached
+	// entries are served verbatim; a cache miss returns a
+	// clear error. Set this when `GALE_OFFLINE=1` is in the
+	// environment.
+	Offline bool
+
 	// warnf logs a warning. Defaults to fmt.Fprintf(os.Stderr, ...).
 	// Override in tests to capture output.
 	warnf func(format string, args ...any)
 }
 
 // New returns a Registry configured with DefaultURL and the
-// default on-disk cache under ~/.gale/cache/.
+// default on-disk cache under ~/.gale/cache/. Offline is set
+// when GALE_OFFLINE=1 is in the environment; callers that need
+// to override (e.g. for tests) can mutate the returned value.
 func New() *Registry {
-	return &Registry{BaseURL: DefaultURL, CacheDir: defaultCacheDir()}
+	return &Registry{
+		BaseURL:  DefaultURL,
+		CacheDir: defaultCacheDir(),
+		Offline:  os.Getenv("GALE_OFFLINE") == "1",
+	}
 }
 
 // NewWithURL returns a Registry with the given base URL and
 // the default on-disk cache. If url is empty, DefaultURL is
-// used.
+// used. Honours GALE_OFFLINE=1 in the environment.
 func NewWithURL(url string) *Registry {
 	if url == "" {
 		return New()
 	}
-	return &Registry{BaseURL: url, CacheDir: defaultCacheDir()}
+	return &Registry{
+		BaseURL:  url,
+		CacheDir: defaultCacheDir(),
+		Offline:  os.Getenv("GALE_OFFLINE") == "1",
+	}
 }
 
 // repoBase returns BaseURL with the trailing path segment
@@ -153,12 +194,12 @@ func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe,
 		r.BaseURL, bucket, name)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	body, err := cachedGet(client, url, r.CacheDir)
+	cr, err := r.cachedGet(client, url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch recipe %s: %w", name, err)
 	}
 
-	rec, err := recipe.Parse(string(body))
+	rec, err := recipe.Parse(string(cr.Body))
 	if err != nil {
 		return nil, fmt.Errorf("fetch recipe %s: %w", name, err)
 	}
@@ -193,13 +234,13 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 		r.BaseURL, bucket, name)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	body, err := cachedGet(client, indexURL, r.CacheDir)
+	cr, err := r.cachedGet(client, indexURL)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"fetch version index for %s: %w", name, err)
 	}
 
-	idx, err := parseVersionIndex(string(body))
+	idx, err := parseVersionIndex(string(cr.Body))
 	if err != nil {
 		return nil, fmt.Errorf(
 			"parse version index for %s: %w", name, err)
@@ -219,13 +260,13 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
 		r.repoBase(), commit, bucket, name)
 
-	recipeBody, err := cachedGet(client, recipeURL, r.CacheDir)
+	rcr, err := r.cachedGet(client, recipeURL)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"fetch %s@%s recipe: %w", name, version, err)
 	}
 
-	rec, err := recipe.Parse(string(recipeBody))
+	rec, err := recipe.Parse(string(rcr.Body))
 	if err != nil {
 		return nil, fmt.Errorf(
 			"parse %s@%s recipe: %w", name, version, err)
@@ -244,7 +285,7 @@ func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 		r.BaseURL, bucket, name)
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	body, err := cachedGet(client, url, r.CacheDir)
+	cr, err := r.cachedGet(client, url)
 	if err != nil {
 		// 404 → graceful nil, everything else → warn + nil.
 		// cachedGet wraps the status in the error text so we
@@ -257,7 +298,7 @@ func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 		return nil, nil //nolint:nilerr // network error is not fatal
 	}
 
-	return recipe.ParseBinaryIndex(string(body))
+	return recipe.ParseBinaryIndex(string(cr.Body))
 }
 
 // ghcrBaseFromURL extracts the "owner/repo" from a

@@ -243,6 +243,27 @@ runtime instead of whatever happens to be on the host.
 Recipes are fetched on demand from GitHub raw URLs.
 No git clone needed for installation.
 
+## Registry Cache
+
+Recipe TOML and `index.tsv` responses are cached under
+`~/.gale/cache/registry/<sha256(url)>/{body,etag}`. The cache
+is a documented optimization, not silent state. Rules:
+
+- **First fetch** writes body + ETag. Subsequent fetches send
+  `If-None-Match` and accept 304 to skip the body transfer.
+- **`--dry-run`** suppresses cache writes. The body is still
+  returned to the caller, but no files are persisted.
+- **`GALE_OFFLINE=1`** suppresses network entirely. A cached
+  entry is served; a cache miss returns
+  `GALE_OFFLINE=1 and no cached entry for <url>`.
+- **Stale-on-error**: when the network errors out (DNS,
+  ECONNREFUSED, deadline, context cancel), the cached body is
+  served if present. The cache is NOT rewritten in this path.
+
+Implementation lives in `internal/registry/cache.go`. All HTTP
+fetches (`FetchRecipe`, `FetchRecipeVersion`, `fetchBinaries`,
+`Search`) route through `(*Registry).cachedGet`.
+
 ## Bootstrap
 
 Fresh machine setup:

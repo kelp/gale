@@ -266,13 +266,20 @@ func resolveBuildDebug(recipeDebug, cliDebug, cliRelease bool) bool {
 }
 
 // newRegistry creates a Registry, using the URL from
-// ~/.gale/config.toml if configured.
+// ~/.gale/config.toml if configured. Wires the package-level
+// `dryRun` flag and the `GALE_OFFLINE` environment variable
+// (already honoured by registry.New) into the returned
+// Registry so the cache contract is uniform across commands.
 func newRegistry() *registry.Registry {
+	var reg *registry.Registry
 	cfg, err := loadAppConfig()
 	if err != nil {
-		return registry.New()
+		reg = registry.New()
+	} else {
+		reg = registry.NewWithURL(cfg.Registry.URL)
 	}
-	return registry.NewWithURL(cfg.Registry.URL)
+	reg.DryRun = dryRun
+	return reg
 }
 
 // lockfilePath returns the gale.lock path for a given

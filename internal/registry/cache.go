@@ -21,6 +21,16 @@ import (
 // (~/.gale/cache/), which is shared with the source-tarball
 // cache in internal/build.
 
+// cacheResult is the return value of cachedGet. Body is the
+// response (whether from network or cache); Stale is set true
+// when the body came from the cache because the network was
+// unreachable (stale-on-error). Callers may surface staleness
+// in user-facing output.
+type cacheResult struct {
+	Body  []byte
+	Stale bool
+}
+
 // cacheKey derives a filesystem-safe key for the given URL.
 func cacheKey(url string) string {
 	sum := sha256.Sum256([]byte(url))
@@ -38,29 +48,49 @@ func defaultCacheDir() string {
 	return filepath.Join(home, ".gale", "cache")
 }
 
-// cachedGet fetches url with an HTTP conditional GET. If the
-// response is a 304 Not Modified, cachedGet returns the cached
-// body. If the response is a 200 OK with an ETag, the body and
-// ETag are written to the cache before returning. If the cache
-// is disabled (cacheDir == "") or unreachable, cachedGet falls
-// back to an ordinary GET.
+// cachedGet fetches url with an HTTP conditional GET, applying
+// the cache contract documented on Registry:
+//
+//   - r.Offline=true: serve cached body or return a clear error;
+//     never hit the network.
+//   - r.DryRun=true: do not persist any fetched body.
+//   - Stale-on-error: on transport-level failure, serve cached
+//     body if present (cacheResult.Stale=true) without rewriting
+//     the cache.
 //
 // Non-200/304 responses return an error wrapping the status
 // code; the caller owns HTTP-specific handling like 404-is-not-
 // fatal for the .binaries.toml path (see fetchBinaries).
-func cachedGet(client *http.Client, url, cacheDir string) ([]byte, error) {
-	// No cache configured — plain fetch.
-	if cacheDir == "" {
-		return plainGet(client, url)
+func (r *Registry) cachedGet(client *http.Client, url string) (cacheResult, error) {
+	// No cache configured — plain fetch, unless offline.
+	if r.CacheDir == "" {
+		if r.Offline {
+			return cacheResult{}, fmt.Errorf(
+				"GALE_OFFLINE=1 and no cache directory configured for %s",
+				url)
+		}
+		body, err := plainGet(client, url)
+		return cacheResult{Body: body}, err
 	}
 
-	entryDir := filepath.Join(cacheDir, "registry", cacheKey(url))
+	entryDir := filepath.Join(r.CacheDir, "registry", cacheKey(url))
 	bodyPath := filepath.Join(entryDir, "body")
 	etagPath := filepath.Join(entryDir, "etag")
 
+	// Offline mode: serve cached body or fail loudly. Never
+	// touch the network.
+	if r.Offline {
+		body, err := os.ReadFile(bodyPath)
+		if err != nil {
+			return cacheResult{}, fmt.Errorf(
+				"GALE_OFFLINE=1 and no cached entry for %s", url)
+		}
+		return cacheResult{Body: body, Stale: true}, nil
+	}
+
 	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
-		return nil, err
+		return cacheResult{}, err
 	}
 	// If we have a prior ETag, send it.
 	if etag, err := os.ReadFile(etagPath); err == nil {
@@ -69,7 +99,12 @@ func cachedGet(client *http.Client, url, cacheDir string) ([]byte, error) {
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		// Stale-on-error: transport-level failure. Serve the
+		// cached body if it exists. Do NOT rewrite the cache.
+		if body, rerr := os.ReadFile(bodyPath); rerr == nil {
+			return cacheResult{Body: body, Stale: true}, nil
+		}
+		return cacheResult{}, err
 	}
 	defer resp.Body.Close()
 
@@ -80,23 +115,27 @@ func cachedGet(client *http.Client, url, cacheDir string) ([]byte, error) {
 		if rerr != nil {
 			// Cache disappeared between request and read. Fall
 			// back to a fresh fetch without the conditional.
-			return plainGet(client, url)
+			body, perr := plainGet(client, url)
+			return cacheResult{Body: body}, perr
 		}
-		return body, nil
+		return cacheResult{Body: body}, nil
 	case http.StatusOK:
 		body, rerr := io.ReadAll(resp.Body)
 		if rerr != nil {
-			return nil, rerr
+			return cacheResult{}, rerr
 		}
 		// Only persist if the server gave us a validator. ETag is
 		// the only one we use; without it the cache entry could
 		// never be refreshed and would serve stale content.
-		if etag := resp.Header.Get("ETag"); etag != "" {
-			writeCacheEntry(entryDir, bodyPath, etagPath, body, etag)
+		// DryRun suppresses all writes.
+		if !r.DryRun {
+			if etag := resp.Header.Get("ETag"); etag != "" {
+				writeCacheEntry(entryDir, bodyPath, etagPath, body, etag)
+			}
 		}
-		return body, nil
+		return cacheResult{Body: body}, nil
 	default:
-		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
+		return cacheResult{}, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 }
 

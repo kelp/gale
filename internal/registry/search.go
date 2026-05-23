@@ -2,7 +2,6 @@ package registry
 
 import (
 	"fmt"
-	"io"
 	"net/http"
 	"sort"
 	"strings"
@@ -18,27 +17,19 @@ type SearchResult struct {
 
 // Search fetches the package index from the registry and
 // returns packages matching the query, sorted by relevance.
+// The index TSV is routed through the shared ETag cache so
+// repeated invocations revalidate cheaply (and serve stale
+// when the network is unreachable). See cache.go.
 func (r *Registry) Search(query string) ([]SearchResult, error) {
 	url := r.BaseURL + "/index.tsv"
 
 	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(url)
+	cr, err := r.cachedGet(client, url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch index: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch index: HTTP %d",
-			resp.StatusCode)
-	}
-
-	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return nil, fmt.Errorf("read index: %w", err)
-	}
-
-	entries := parseIndex(string(body))
+	entries := parseIndex(string(cr.Body))
 	q := strings.ToLower(query)
 
 	var results []SearchResult
