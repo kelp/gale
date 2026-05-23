@@ -227,18 +227,15 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 	out.Info(fmt.Sprintf("Installing %s from git (%s)...",
 		r.Package.Name, r.Source.Repo))
 
-	result, err := inst.InstallGit(r)
+	result, err := inst.InstallGitWithFinalize(r, func(res *installer.InstallResult) error {
+		// Git installs produce a dev version derived from the
+		// repo state; sync it onto the recipe so Full() emits
+		// the matching <version>-<revision> string.
+		r.Package.Version = res.Version
+		return ctx.FinalizeRecipeInstall(r, res.SHA256)
+	})
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
-	}
-
-	// Git installs produce a dev version derived from the
-	// repo state; sync it onto the recipe so Full() emits
-	// the matching <version>-<revision> string.
-	r.Package.Version = result.Version
-
-	if err := ctx.FinalizeRecipeInstall(r, result.SHA256); err != nil {
-		return err
 	}
 
 	reportResult(out, result, "Installed", "built from git")

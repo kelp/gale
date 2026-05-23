@@ -340,28 +340,42 @@ func (inst *Installer) InstallLocalWithFinalize(
 	return result, nil
 }
 
-// InstallGit clones a git repo and builds from the clone.
-// Returns the install result with the commit hash as version.
-func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
-	name := r.Package.Name
+// installGitPrepare runs the pre-lock phase of a git install:
+// installs build deps, creates a tmp dir, and calls build.BuildGit.
+// Returns the build result, commit hash, dep paths, a cleanup
+// function, and any error. cleanup is always non-nil — callers must
+// unconditionally defer it immediately after the call, before
+// checking err. On early-error paths (before MkdirTemp), cleanup is
+// a no-op; on later errors it removes the tmp dir.
+func (inst *Installer) installGitPrepare(r *recipe.Recipe) (*build.BuildResult, string, *build.BuildDeps, func(), error) {
+	noop := func() {}
 
 	// Resolve and install build deps.
 	depPaths, err := inst.InstallBuildDeps(r)
 	if err != nil {
-		return nil, fmt.Errorf("install build deps: %w", err)
+		return nil, "", nil, noop, fmt.Errorf("install build deps: %w", err)
 	}
 
 	// Build from git — returns hash as version.
 	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
-		return nil, fmt.Errorf("create temp dir: %w", err)
+		return nil, "", nil, noop, fmt.Errorf("create temp dir: %w", err)
 	}
-	defer os.RemoveAll(tmpDir)
+	cleanup := func() { os.RemoveAll(tmpDir) }
 
 	buildResult, hash, err := build.BuildGit(r, tmpDir, r.Build.Debug, depPaths)
 	if err != nil {
-		return nil, fmt.Errorf("git build: %w", err)
+		return nil, "", nil, cleanup, fmt.Errorf("git build: %w", err)
 	}
+	return buildResult, hash, depPaths, cleanup, nil
+}
+
+// installGitLocked performs the post-build store-mutation phase of a
+// git install. Assumes the per-package lock for (r.Package.Name, hash)
+// is held by the caller.
+func (inst *Installer) installGitLocked(r *recipe.Recipe, buildResult *build.BuildResult, hash string, depPaths *build.BuildDeps) (*InstallResult, error) {
+	name := r.Package.Name
+
 	// Skip if this hash is already installed.
 	if inst.Store.IsInstalled(name, hash) {
 		return &InstallResult{
@@ -388,6 +402,55 @@ func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
 		Method:  MethodSource,
 		SHA256:  buildResult.SHA256,
 	}, nil
+}
+
+// InstallGit clones a git repo and builds from the clone.
+// Returns the install result with the commit hash as version.
+func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
+	buildResult, hash, depPaths, cleanup, err := inst.installGitPrepare(r)
+	defer cleanup()
+	if err != nil {
+		return nil, err
+	}
+
+	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, hash)
+	if err != nil {
+		return nil, fmt.Errorf("lock package: %w", err)
+	}
+	defer unlock()
+	return inst.installGitLocked(r, buildResult, hash, depPaths)
+}
+
+// InstallGitWithFinalize acquires the per-package lock (keyed on the
+// resolved commit hash), runs the git install, then invokes finalize()
+// while still holding the lock, then releases. finalize == nil is a
+// no-op. finalize errors are returned alongside the InstallResult so
+// the caller sees partial state.
+func (inst *Installer) InstallGitWithFinalize(r *recipe.Recipe, finalize func(*InstallResult) error) (*InstallResult, error) {
+	buildResult, hash, depPaths, cleanup, err := inst.installGitPrepare(r)
+	defer cleanup()
+	if err != nil {
+		return nil, err
+	}
+
+	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, hash)
+	if err != nil {
+		return nil, fmt.Errorf("lock package: %w", err)
+	}
+	defer unlock()
+
+	result, err := inst.installGitLocked(r, buildResult, hash, depPaths)
+	if err != nil {
+		return nil, err
+	}
+
+	if finalize != nil {
+		if err := finalize(result); err != nil {
+			return result, fmt.Errorf("finalize: %w", err)
+		}
+	}
+
+	return result, nil
 }
 
 // commitStaged finishes a staged reinstall by renaming the

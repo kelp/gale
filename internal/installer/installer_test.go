@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -2939,5 +2940,143 @@ func TestInstallLocalWithFinalize_HoldsLockAcrossFinalize(t *testing.T) {
 	case <-lockAcquired:
 	case <-time.After(10 * time.Second):
 		t.Fatal("lockPackage did not acquire lock after finalize released it")
+	}
+}
+
+// --- InstallGitWithFinalize ---
+
+// TestInstallGitWithFinalize_HoldsLockAcrossFinalize verifies that
+// InstallGitWithFinalize holds the per-package lock (keyed on the
+// commit hash) for the entire duration of finalize(), not just for
+// the build phase. A goroutine calls lockPackage directly and must
+// block until finalize() returns. Uses a local bare git repo to
+// avoid any network dependency.
+func TestInstallGitWithFinalize_HoldsLockAcrossFinalize(t *testing.T) {
+	// Build a local bare git repo so the test doesn't touch the
+	// network. gitutil.Clone works with file:// paths.
+	repoDir := makeLocalBareRepo(t)
+
+	storeRoot := t.TempDir()
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "gitpkg", Version: "0.1"},
+		Source:  recipe.Source{Repo: repoDir},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho git' > $PREFIX/bin/gitpkg",
+				"chmod +x $PREFIX/bin/gitpkg",
+			},
+		},
+	}
+
+	// unblock is closed by the test once we want finalize to return.
+	unblock := make(chan struct{})
+	// finalizeStarted is closed once finalize() is entered so we
+	// know the per-package lock is held.
+	finalizeStarted := make(chan struct{})
+	// capturedHash receives the commit hash resolved during build,
+	// so the test can use it to contend on the correct lock.
+	capturedHash := make(chan string, 1)
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := inst.InstallGitWithFinalize(r,
+			func(res *InstallResult) error {
+				capturedHash <- res.Version
+				close(finalizeStarted)
+				<-unblock // hold the lock until test says go
+				return nil
+			})
+		done <- err
+	}()
+
+	// Wait until finalize is entered (lock is held).
+	select {
+	case <-finalizeStarted:
+	case <-time.After(60 * time.Second):
+		t.Fatal("finalize never started")
+	}
+
+	hash := <-capturedHash
+
+	// Try to acquire the same per-package lock from a goroutine.
+	// It must block until finalize releases it.
+	lockAcquired := make(chan struct{})
+	go func() {
+		unlock, err := lockPackage(storeRoot, "gitpkg", hash)
+		if err != nil {
+			t.Errorf("lockPackage: %v", err)
+			close(lockAcquired)
+			return
+		}
+		close(lockAcquired)
+		unlock()
+	}()
+
+	// Pause briefly to let the goroutine reach the lock contention.
+	time.Sleep(150 * time.Millisecond)
+
+	// Lock must NOT have been acquired while finalize holds it.
+	select {
+	case <-lockAcquired:
+		t.Fatal("lockPackage acquired the lock before finalize released it")
+	default:
+	}
+
+	// Unblock finalize — lock is now released.
+	close(unblock)
+
+	// Both finalize and the lock goroutine must complete.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("InstallGitWithFinalize: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("InstallGitWithFinalize did not complete")
+	}
+
+	select {
+	case <-lockAcquired:
+	case <-time.After(10 * time.Second):
+		t.Fatal("lockPackage did not acquire lock after finalize released it")
+	}
+}
+
+// makeLocalBareRepo creates a local bare git repo with a single
+// commit so tests can clone it without network access.
+func makeLocalBareRepo(t *testing.T) string {
+	t.Helper()
+
+	workDir := t.TempDir()
+	gitRun(t, workDir, "git", "init")
+	gitRun(t, workDir, "git", "config", "user.email", "test@test.com")
+	gitRun(t, workDir, "git", "config", "user.name", "Test")
+	gitRun(t, workDir, "git", "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(
+		filepath.Join(workDir, "README"),
+		[]byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gitRun(t, workDir, "git", "add", "README")
+	gitRun(t, workDir, "git", "commit", "-m", "initial")
+
+	bareDir := t.TempDir()
+	gitRun(t, "", "git", "clone", "--bare", workDir, bareDir)
+	return bareDir
+}
+
+// gitRun executes a git command in dir, failing the test on error.
+func gitRun(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command(args[0], args[1:]...) //nolint:gosec
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%v failed: %s: %v", args, out, err)
 	}
 }
