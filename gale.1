@@ -85,7 +85,7 @@ forms.
 .Pp
 .Dl $ gale switch gh 2.89.0
 .Dl $ gale switch gh@2.89.0
-.It Cm list Op Fl -scope Ar all|shared|host
+.It Cm list Op Fl -scope Ar all|shared|host Op Fl g | Fl p | Fl a
 List packages declared in
 .Pa gale.toml
 with their versions.
@@ -93,9 +93,17 @@ Use
 .Fl -scope
 to filter shared and host overlay entries
 .Pq default Li all .
+Use
+.Fl g
+to list global packages from inside a project,
+.Fl p
+to force project scope, or
+.Fl a
+to list both with section headers.
 .Pp
 .Dl $ gale list
 .Dl $ gale list --scope host
+.Dl $ gale list -a
 .It Cm gc
 Remove unused package versions from the store and
 old generations.
@@ -121,20 +129,31 @@ to upgrade it again.
 .El
 .Ss Inspection
 .Bl -tag -width Ds
-.It Cm info Ar pkg
+.It Cm info Ar pkg Op Fl g | Fl p
 Show package metadata: version, store path, scope,
 config path, and pin status.
 For uninstalled packages, shows registry information.
+With
+.Fl g ,
+read only the global
+.Pa gale.toml \(em
+this is how to view a global entry that a project
+.Pa gale.toml
+shadows.
 .Pp
 .Dl $ gale info jq
-.It Cm which Ar binary
+.Dl $ gale info jq -g
+.It Cm which Ar binary Op Fl g | Fl p
 Show which installed package provides a binary and
 print its full path.
+Scope flags select which generation's
+.Pa current/bin
+is searched.
 .Pp
 .Dl $ gale which jq
 .Dl jq@1.8.1
 .Dl /Users/you/.gale/pkg/jq/1.8.1/bin/jq
-.It Cm outdated Op Fl -recipes Op Fl -no-refresh
+.It Cm outdated Op Fl -recipes Op Fl -no-refresh Op Fl g | Fl p
 Show packages that have newer versions available in
 the registry.
 Pass
@@ -177,11 +196,14 @@ Search for packages by name or description.
 .El
 .Ss Generation Management
 .Bl -tag -width Ds
-.It Cm generations
+.It Cm generations Op Fl g | Fl p
 List all generations, marking the active one.
+Scope flags select the project or global generation
+directory.
 .Pp
 .Dl $ gale generations
-.It Cm generations diff Op Ar from Op Ar to
+.Dl $ gale generations -g
+.It Cm generations diff Op Ar from Op Ar to Op Fl g | Fl p
 Show packages added and removed between two
 generations.
 Defaults to comparing the current generation with
@@ -189,7 +211,7 @@ the previous one.
 .Pp
 .Dl $ gale generations diff
 .Dl $ gale generations diff 3 5
-.It Cm generations rollback Op Ar N
+.It Cm generations rollback Op Ar N Op Fl g | Fl p
 Switch to a previous generation.
 Defaults to the previous generation (current \- 1).
 Atomic symlink swap, same as install/sync.
@@ -207,7 +229,7 @@ and
 in the current directory, setting up direnv integration.
 .Pp
 .Dl $ gale init
-.It Cm env Op Fl -vars-only
+.It Cm env Op Fl -vars-only Op Fl g | Fl p
 Print shell export commands to activate the environment.
 Use
 .Fl -vars-only
@@ -215,8 +237,12 @@ to print only
 .Ic [vars]
 exports from
 .Pa gale.toml .
+Use
+.Fl g
+to opt into global vars and PATH from inside a project.
 .Pp
 .Dl $ eval "$(gale env)"
+.Dl $ eval "$(gale env -g)"
 .It Cm shell
 Open an interactive shell with the project environment
 activated.
@@ -282,28 +308,40 @@ Requires an Anthropic API key in
 .El
 .Ss Supply Chain Security
 .Bl -tag -width Ds
-.It Cm audit Ar pkg
+.It Cm audit Ar pkg Op Fl g | Fl p
 Rebuild a package from source and compare its SHA256
 against the installed binary.
 A match confirms the build is reproducible; most builds
 are not yet deterministic, so a mismatch does not
 indicate tampering.
+Scope flags select which lockfile to read the
+installed hash from.
 .Pp
 .Dl $ gale audit jq
-.It Cm verify Ar pkg
+.It Cm verify Ar pkg Op Fl g | Fl p
 Check the Sigstore attestation for an installed
 package's prebuilt binary.
+Scope flags select which lockfile to read the
+installed version from.
 .Pp
 .Dl $ gale verify jq
-.It Cm sbom Op Ar pkg Op Fl -json
+.It Cm sbom Op Ar pkg Op Fl -json Op Fl g | Fl p | Fl a
 Show a software bill of materials for installed
 packages.
 Use
 .Fl -json
 for machine-readable output.
+With
+.Fl a ,
+emit entries from both the project and global
+gale.toml; each entry gets a
+.Ic scope
+field
+.Pq Sq project No or Sq global .
 .Pp
 .Dl $ gale sbom
 .Dl $ gale sbom jq --json
+.Dl $ gale sbom -a
 .El
 .Ss Repository Management
 .Bl -tag -width Ds
@@ -361,8 +399,24 @@ When neither flag is set, defaults to project scope
 if a
 .Pa gale.toml
 exists in the directory tree, otherwise global.
-Applies to
-.Cm install , add , remove , sync , update .
+Applies to mutation commands
+.Pq Cm install , add , remove , sync , update , switch
+and to read-only commands
+.Pq Cm list , info , sbom , outdated , env , which , verify , audit , generations .
+.It Fl a , -all
+For inventory commands
+.Pq Cm list , sbom ,
+list packages from both project and global
+.Pa gale.toml
+under
+.Sq Project:
+and
+.Sq Global:
+section headers.
+Mutually exclusive with
+.Fl g
+and
+.Fl p .
 .El
 .Ss Source Strategy Flags
 .Bl -tag -width Ds
