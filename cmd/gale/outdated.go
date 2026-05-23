@@ -198,7 +198,8 @@ func formatOutdated(items []outdatedItem) []string {
 
 func init() {
 	outdatedCmd.Flags().StringVar(&outdatedRecipes, "recipes", "",
-		"Use local recipes directory (default: ../gale-recipes/)")
+		"Resolve recipes from a local directory instead of the registry "+
+			"(bare --recipes uses ../gale-recipes/)")
 	outdatedCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	outdatedCmd.Flags().BoolVar(&outdatedNoRefresh, "no-refresh", false,
 		"Skip refreshing configured recipe taps before resolving")

@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"strings"
 
 	"github.com/fatih/color"
@@ -16,7 +17,10 @@ var (
 )
 
 func colorHelp(cmd *cobra.Command, args []string) {
-	w := cmd.OutOrStderr()
+	// Help text is not an error; route it to stdout so users
+	// can pipe it through less/grep. Cobra's own default help
+	// uses stdout for the same reason.
+	w := cmd.OutOrStdout()
 
 	// Description.
 	if cmd.Long != "" {
@@ -58,26 +62,18 @@ func colorHelp(cmd *cobra.Command, args []string) {
 		fmt.Fprintln(w)
 	}
 
-	// Flags.
-	flags := cmd.LocalFlags()
-	if flags.HasFlags() {
+	// Flags. Print local (command-specific) and inherited
+	// (persistent / global) flags in separate sections so users
+	// see every flag that affects the command, not just the
+	// command's own additions.
+	if local := cmd.LocalFlags(); local.HasFlags() {
 		yellow.Fprintln(w, "FLAGS")
-		flags.VisitAll(func(f *pflag.Flag) {
-			var parts []string
-			if f.Shorthand != "" {
-				parts = append(parts,
-					cyan.Sprintf("-%s", f.Shorthand))
-			}
-			name := cyan.Sprintf("--%s", f.Name)
-			if f.Value.Type() == "string" {
-				name += " " + f.Value.Type()
-			}
-			parts = append(parts, name)
-			fmt.Fprintf(w, "  %s\n", strings.Join(parts, ", "))
-			if f.Usage != "" {
-				fmt.Fprintf(w, "      %s\n", f.Usage)
-			}
-		})
+		printFlagSet(w, local)
+		fmt.Fprintln(w)
+	}
+	if inherited := cmd.InheritedFlags(); inherited.HasFlags() {
+		yellow.Fprintln(w, "GLOBAL FLAGS")
+		printFlagSet(w, inherited)
 		fmt.Fprintln(w)
 	}
 
@@ -87,6 +83,27 @@ func colorHelp(cmd *cobra.Command, args []string) {
 			"Use %s for more information about a command.\n",
 			bold.Sprintf("%s [command] --help", cmd.CommandPath()))
 	}
+}
+
+// printFlagSet renders a pflag.FlagSet block matching the rest
+// of the colored help layout.
+func printFlagSet(w io.Writer, fs *pflag.FlagSet) {
+	fs.VisitAll(func(f *pflag.Flag) {
+		var parts []string
+		if f.Shorthand != "" {
+			parts = append(parts,
+				cyan.Sprintf("-%s", f.Shorthand))
+		}
+		name := cyan.Sprintf("--%s", f.Name)
+		if f.Value.Type() == "string" {
+			name += " " + f.Value.Type()
+		}
+		parts = append(parts, name)
+		fmt.Fprintf(w, "  %s\n", strings.Join(parts, ", "))
+		if f.Usage != "" {
+			fmt.Fprintf(w, "      %s\n", f.Usage)
+		}
+	})
 }
 
 // Persistent flags bound in root.go init().
