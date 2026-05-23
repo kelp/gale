@@ -8,6 +8,8 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/kelp/gale/internal/filelock"
 )
 
 // GenInfo describes one generation.
@@ -149,7 +151,8 @@ func Diff(galeDir, storeRoot string, from, to int) (*GenDiff, error) {
 }
 
 // Rollback atomically swaps the current symlink to point
-// at the given generation number.
+// at the given generation number. Acquires the generation
+// lock so it serializes with Build.
 func Rollback(galeDir string, target int) error {
 	genDir := filepath.Join(
 		galeDir, "gen", strconv.Itoa(target))
@@ -158,5 +161,7 @@ func Rollback(galeDir string, target int) error {
 			target, err)
 	}
 
-	return swapCurrentSymlink(galeDir, target)
+	return filelock.With(generationLockPath(galeDir), func() error {
+		return swapCurrentSymlink(galeDir, target)
+	})
 }
