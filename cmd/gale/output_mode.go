@@ -16,14 +16,17 @@ type outputModeInput struct {
 	noColor     bool
 	plain       bool
 	quiet       bool
+	verbose     bool
 	errorFormat string
 }
 
 type outputMode struct {
-	color       bool
-	steps       bool
-	progress    bool
-	quiet       bool
+	color    bool
+	steps    bool
+	progress bool
+	quiet    bool
+	// TODO: wire to output.Output once it supports verbose mode.
+	verbose     bool
 	errorFormat string
 }
 
@@ -33,6 +36,7 @@ func resolveOutputMode(in outputModeInput) outputMode {
 		steps:       in.tty,
 		progress:    in.tty,
 		quiet:       in.quiet,
+		verbose:     in.verbose,
 		errorFormat: in.errorFormat,
 	}
 	if mode.errorFormat == "" {
@@ -63,12 +67,14 @@ func currentOutputMode() outputMode {
 		noColor:     noColor,
 		plain:       plain,
 		quiet:       quiet,
+		verbose:     verbose,
 		errorFormat: errorFormat,
 	})
 }
 
 func newOutputForWriter(w io.Writer) *output.Output {
 	mode := currentOutputMode()
+	// mode.verbose is stored but not yet forwarded; see TODO on outputMode.verbose.
 	out := output.NewWithOptions(w, output.Options{
 		Color: mode.color,
 		Steps: mode.steps,

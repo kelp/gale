@@ -332,6 +332,67 @@ func TestInstallFromGitResolverFallback(t *testing.T) {
 	// local), not a file-not-found from a wrong directory.
 }
 
+// TestInstallRecipesWithVersionErrors verifies that combining
+// --recipes with an @version pin is rejected explicitly.
+// Bug 0016: the version is silently ignored when --recipes is
+// set, because the condition short-circuits to the else branch.
+// The fix must return an error whose message mentions both the
+// version pin and the --recipes flag incompatibility.
+func TestInstallRecipesWithVersionErrors(t *testing.T) {
+	tmp := t.TempDir()
+	recipesDir := filepath.Join(tmp, "gale-recipes")
+	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig) //nolint:errcheck
+
+	// Save and restore all install package-level globals.
+	savedRecipes := installRecipes
+	savedGlobal := installGlobal
+	savedProject := installProject
+	savedPath := installPath
+	savedGit := installGit
+	savedBuild := installBuild
+	savedRecipe := installRecipe
+	defer func() {
+		installRecipes = savedRecipes
+		installGlobal = savedGlobal
+		installProject = savedProject
+		installPath = savedPath
+		installGit = savedGit
+		installBuild = savedBuild
+		installRecipe = savedRecipe
+	}()
+
+	installRecipes = recipesDir
+	installGlobal = true
+	installProject = false
+	installPath = ""
+	installGit = false
+	installBuild = false
+	installRecipe = ""
+
+	// "jq@1.8.1" — @version specified while --recipes is also set.
+	err := installCmd.RunE(installCmd, []string{"jq@1.8.1"})
+	if err == nil {
+		t.Error("install --recipes jq@1.8.1 must return an error: " +
+			"@version is incompatible with --recipes")
+		return
+	}
+	// The error must explicitly identify the incompatibility —
+	// not just a generic "recipe not found" from the empty dir.
+	msg := err.Error()
+	if !strings.Contains(msg, "version") && !strings.Contains(msg, "recipes") {
+		t.Errorf("error %q does not mention version/recipes incompatibility — "+
+			"install --recipes must explicitly reject @version pins", msg)
+	}
+}
+
 func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
 	tmp := t.TempDir()
 

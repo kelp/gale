@@ -79,3 +79,45 @@ func TestResolveOutputModeErrorFormatJSON(t *testing.T) {
 		t.Errorf("errorFormat = %q, want json", mode.errorFormat)
 	}
 }
+
+// TestVerboseFlagIsWiredToOutputMode verifies that the global
+// --verbose / -v flag is consumed by currentOutputMode().
+//
+// Bug 0018: the verbose package-level var is declared in
+// help.go but never passed to resolveOutputMode, so
+// currentOutputMode() returns the same value regardless of
+// whether --verbose was set.
+//
+// The fix must add a verbose field to outputModeInput, pass
+// the verbose global through, and have resolveOutputMode
+// return a distinct outputMode when verbose is true.
+func TestVerboseFlagIsWiredToOutputMode(t *testing.T) {
+	savedVerbose := verbose
+	defer func() { verbose = savedVerbose }()
+
+	verbose = false
+	modeOff := currentOutputMode()
+
+	verbose = true
+	modeOn := currentOutputMode()
+
+	if modeOff == modeOn {
+		t.Error("currentOutputMode() returns the same value regardless of " +
+			"the verbose flag — --verbose/-v must affect the output mode")
+	}
+}
+
+// TestResolveOutputModeVerboseDistinguishable verifies that
+// resolveOutputMode itself treats verbose=true differently
+// from verbose=false, independent of the global package
+// variable. This confirms the plumbing inside
+// resolveOutputMode, not just currentOutputMode's call site.
+func TestResolveOutputModeVerboseDistinguishable(t *testing.T) {
+	off := resolveOutputMode(outputModeInput{tty: true, verbose: false})
+	on := resolveOutputMode(outputModeInput{tty: true, verbose: true})
+
+	if off == on {
+		t.Error("resolveOutputMode with verbose=true must return a " +
+			"different outputMode than verbose=false")
+	}
+}

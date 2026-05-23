@@ -381,12 +381,28 @@ func removeLockEntry(configPath, name string) error {
 	})
 }
 
-// addToConfig resolves scope and writes a package version
-// to gale.toml. Returns the config path used. When host is
+// stripNumericRevision removes a Debian-style "-N" suffix from
+// a version string when N is all decimal digits. Pre-release
+// tags like "1.0.0-rc1" are left unchanged.
+func stripNumericRevision(version string) string {
+	if i := strings.LastIndex(version, "-"); i >= 0 {
+		suffix := version[i+1:]
+		if len(suffix) > 0 && strings.IndexFunc(suffix, func(r rune) bool {
+			return r < '0' || r > '9'
+		}) == -1 {
+			return version[:i]
+		}
+	}
+	return version
+}
+
+// addToConfig resolves scope and writes a package version to
+// gale.toml. Returns the config path used. When host is
 // non-empty, writes to [hosts.<host>.packages]; otherwise
 // writes to the shared [packages] section, preserving an
 // existing host-scoped entry for the current machine.
 func addToConfig(name, version, host string, global, project bool) (string, error) {
+	version = stripNumericRevision(version)
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("getting working dir: %w", err)

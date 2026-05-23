@@ -41,6 +41,11 @@ var installCmd = &cobra.Command{
 		name, version := parsePackageArg(args[0])
 		out := newCmdOutput(cmd)
 
+		if installRecipes != "" && version != "" {
+			return fmt.Errorf("cannot specify @version with --recipes; " +
+				"omit @version or use --recipe to specify a recipe file directly")
+		}
+
 		// Resolve scope and paths via cmdContext.
 		ctx, err := newCmdContext(installRecipes, installGlobal, installProject)
 		if err != nil {
