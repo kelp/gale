@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kelp/gale/internal/store"
 )
 
 // TestListGroupsByScope verifies that the default output of
@@ -40,8 +42,8 @@ func TestListGroupsByScope(t *testing.T) {
 	listScope = "all"
 	t.Cleanup(func() { listScope = "all" })
 
-	var buf bytes.Buffer
-	if err := runList(&buf); err != nil {
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
 		t.Fatalf("runList: %v", err)
 	}
 	out := buf.String()
@@ -95,8 +97,8 @@ func TestListMarksOverriddenSharedEntry(t *testing.T) {
 	listScope = "all"
 	t.Cleanup(func() { listScope = "all" })
 
-	var buf bytes.Buffer
-	if err := runList(&buf); err != nil {
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
 		t.Fatalf("runList: %v", err)
 	}
 	out := buf.String()
@@ -140,8 +142,8 @@ func TestListScopeSharedHidesHostOverlay(t *testing.T) {
 	listScope = "shared"
 	t.Cleanup(func() { listScope = "all" })
 
-	var buf bytes.Buffer
-	if err := runList(&buf); err != nil {
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
 		t.Fatalf("runList: %v", err)
 	}
 	out := buf.String()
@@ -183,8 +185,8 @@ func TestListScopeHostHidesShared(t *testing.T) {
 	listScope = "host"
 	t.Cleanup(func() { listScope = "all" })
 
-	var buf bytes.Buffer
-	if err := runList(&buf); err != nil {
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
 		t.Fatalf("runList: %v", err)
 	}
 	out := buf.String()
@@ -196,11 +198,12 @@ func TestListScopeHostHidesShared(t *testing.T) {
 	}
 }
 
-// TestListBackwardCompatibleWhenNoHosts verifies that when no
-// host overlays exist, list output stays simple — one
-// `name@version` per line. Adding scope headers for users who
-// never used hosts would be needless noise.
-func TestListBackwardCompatibleWhenNoHosts(t *testing.T) {
+// TestListStableFormatWithoutHostOverlays verifies that the
+// grouped Shared / Host schema is used even when no host
+// overlays apply, so shell pipelines don't break the day a
+// user adds their first overlay. Regression test for
+// audit/readonly/output-format/findings/0003-list-format-changes-with-overlays.md.
+func TestListStableFormatWithoutHostOverlays(t *testing.T) {
 	home := t.TempDir()
 	galeDir := filepath.Join(home, ".gale")
 	if err := os.MkdirAll(galeDir, 0o755); err != nil {
@@ -225,16 +228,192 @@ func TestListBackwardCompatibleWhenNoHosts(t *testing.T) {
 	listScope = "all"
 	t.Cleanup(func() { listScope = "all" })
 
-	var buf bytes.Buffer
-	if err := runList(&buf); err != nil {
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
 		t.Fatalf("runList: %v", err)
 	}
 	out := buf.String()
-	if strings.Contains(out, "Shared") {
-		t.Errorf("should not show Shared header when no hosts: %q",
-			out)
+	if !strings.Contains(out, "Shared:") {
+		t.Errorf("expected Shared header (stable schema): %q", out)
 	}
+	if !strings.Contains(out, "  jq@1.8") {
+		t.Errorf("jq should be indented under Shared: %q", out)
+	}
+	if !strings.Contains(out, "  ripgrep@15.0") {
+		t.Errorf("ripgrep should be indented under Shared: %q", out)
+	}
+}
+
+// TestListEmptyStateExitsZeroAndUsesStderr verifies that when
+// no gale.toml exists, list exits cleanly (no error) and the
+// empty-state notice goes to stderr — stdout stays empty so
+// pipelines like `gale list | wc -l` see 0 lines. Regression
+// for audit/readonly/exit-codes/findings/0003-list-vs-sbom-empty-state-mismatch.md.
+func TestListEmptyStateExitsZeroAndUsesStderr(t *testing.T) {
+	home := t.TempDir()
+	// Deliberately do NOT create .gale/gale.toml.
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(home, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(home)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	listScope = "all"
+	t.Cleanup(func() { listScope = "all" })
+
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
+	if got := buf.String(); got != "" {
+		t.Errorf("stdout should be empty in empty state, got %q",
+			got)
+	}
+	if !strings.Contains(errBuf.String(), "No packages declared") {
+		t.Errorf("stderr should explain empty state, got %q",
+			errBuf.String())
+	}
+}
+
+// TestListEmptyStateWithEmptyConfig verifies that an empty
+// gale.toml also produces an empty stdout and a stderr
+// notice. Same exit-code/stream contract as no config at all.
+func TestListEmptyStateWithEmptyConfig(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "gale.toml"), []byte(""),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cwd := filepath.Join(home, "empty")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	os.Chdir(cwd)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	listScope = "all"
+	t.Cleanup(func() { listScope = "all" })
+
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
+	if got := buf.String(); got != "" {
+		t.Errorf("stdout should be empty, got %q", got)
+	}
+	if !strings.Contains(errBuf.String(), "No packages declared") {
+		t.Errorf("stderr should explain empty state, got %q",
+			errBuf.String())
+	}
+}
+
+// TestListMarksDeclaredButNotInstalled verifies that
+// packages declared in gale.toml but absent from the store
+// are flagged so list doesn't lie about installation state.
+// Regression for audit/readonly/empty-state/findings/0004-list-reports-declared-as-installed.md.
+func TestListMarksDeclaredButNotInstalled(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "gale.toml"),
+		[]byte("[packages]\n  jq = \"1.8\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	// No store entries — package is declared but not installed.
+
+	cwd := filepath.Join(home, "empty")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	os.Chdir(cwd)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	listScope = "all"
+	t.Cleanup(func() { listScope = "all" })
+
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "jq@1.8") {
+		t.Errorf("missing jq entry: %q", out)
+	}
+	if !strings.Contains(out, "(not installed)") {
+		t.Errorf("missing (not installed) marker: %q", out)
+	}
+}
+
+// TestListInstalledPackageHasNoMarker verifies the
+// (not installed) marker is gated on store presence: an
+// installed package shows clean.
+func TestListInstalledPackageHasNoMarker(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "gale.toml"),
+		[]byte("[packages]\n  jq = \"1.8\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Fake the store entry: a non-empty version dir is what
+	// IsInstalled checks.
+	storeRoot := filepath.Join(home, ".gale", "pkg")
+	pkgDir := filepath.Join(storeRoot, "jq", "1.8")
+	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(pkgDir, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Sanity check: store agrees the pkg is installed.
+	s := store.NewStore(storeRoot)
+	if !s.IsInstalled("jq", "1.8") {
+		t.Fatalf("test setup: store should report jq@1.8 installed")
+	}
+
+	cwd := filepath.Join(home, "empty")
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	os.Chdir(cwd)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	listScope = "all"
+	t.Cleanup(func() { listScope = "all" })
+
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
+	out := buf.String()
 	if !strings.Contains(out, "jq@1.8") {
 		t.Errorf("missing jq line: %q", out)
+	}
+	if strings.Contains(out, "(not installed)") {
+		t.Errorf("installed pkg should not be flagged: %q", out)
 	}
 }

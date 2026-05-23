@@ -10,6 +10,7 @@ import (
 	"sort"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -17,16 +18,23 @@ var listScope = "all"
 
 var listCmd = &cobra.Command{
 	Use:   "list",
-	Short: "List installed packages",
-	Args:  cobra.NoArgs,
+	Short: "List packages declared in gale.toml",
+	Long: "List packages declared in gale.toml.\n\n" +
+		"Reads the active gale.toml (project if present, else " +
+		"global). Entries not yet present in the store are " +
+		"flagged with (not installed). Use `gale sbom` for a " +
+		"store-rooted view of what is actually installed.",
+	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runList(cmd.OutOrStdout())
+		return runList(cmd.OutOrStdout(), cmd.ErrOrStderr())
 	},
 }
 
-// runList writes the package list to w. Split out so tests
-// can inject a buffer without reaching into the cobra command.
-func runList(w io.Writer) error {
+// runList writes the package list to stdout. Empty-state and
+// informational messages go to stderr so stdout stays clean
+// for shell pipelines. Returns nil for empty configurations
+// (exit 0): "nothing declared" is not an error.
+func runList(stdout, stderr io.Writer) error {
 	switch listScope {
 	case "all", "shared", "host":
 	default:
@@ -51,7 +59,7 @@ func runList(w io.Writer) error {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintln(w, "No packages installed.")
+			fmt.Fprintln(stderr, "No packages declared.")
 			return nil
 		}
 		return fmt.Errorf("reading config: %w", err)
@@ -64,52 +72,64 @@ func runList(w io.Writer) error {
 
 	host := config.CurrentHost()
 	hostPkgs := hostOverlayPackages(cfg, host)
-
-	// Backward-compatible flat output when no host overlays
-	// apply to this machine. Users who never touched hosts
-	// see the same output they always have.
-	if len(hostPkgs) == 0 && listScope == "all" {
-		if len(cfg.Packages) == 0 {
-			fmt.Fprintln(w, "No packages installed.")
-			return nil
-		}
-		for _, name := range sortedKeys(cfg.Packages) {
-			fmt.Fprintf(w, "%s@%s\n", name, cfg.Packages[name])
-		}
-		return nil
-	}
+	s := store.NewStore(defaultStoreRoot())
 
 	showShared := listScope == "all" || listScope == "shared"
 	showHost := listScope == "all" || listScope == "host"
 
+	// Stable schema: always use the grouped Shared / Host
+	// form. Previously the command switched to a flat
+	// `name@version` schema when no overlays applied, which
+	// broke pipelines the day a user added their first
+	// overlay. See audit/readonly/output-format/findings/
+	// 0003-list-format-changes-with-overlays.md.
 	wrote := false
 	if showShared && len(cfg.Packages) > 0 {
-		fmt.Fprintln(w, "Shared:")
+		fmt.Fprintln(stdout, "Shared:")
 		for _, name := range sortedKeys(cfg.Packages) {
 			ver := cfg.Packages[name]
+			suffix := installedSuffix(s, name, ver)
 			if _, shadowed := hostPkgs[name]; shadowed {
-				fmt.Fprintf(w,
-					"  %s@%s  (overridden by host)\n", name, ver)
+				fmt.Fprintf(stdout,
+					"  %s@%s  (overridden by host)%s\n",
+					name, ver, suffix)
 			} else {
-				fmt.Fprintf(w, "  %s@%s\n", name, ver)
+				fmt.Fprintf(stdout, "  %s@%s%s\n",
+					name, ver, suffix)
 			}
 		}
 		wrote = true
 	}
 	if showHost && len(hostPkgs) > 0 {
 		if wrote {
-			fmt.Fprintln(w)
+			fmt.Fprintln(stdout)
 		}
-		fmt.Fprintf(w, "Host (%s):\n", host)
+		fmt.Fprintf(stdout, "Host (%s):\n", host)
 		for _, name := range sortedKeys(hostPkgs) {
-			fmt.Fprintf(w, "  %s@%s\n", name, hostPkgs[name])
+			ver := hostPkgs[name]
+			suffix := installedSuffix(s, name, ver)
+			fmt.Fprintf(stdout, "  %s@%s%s\n",
+				name, ver, suffix)
 		}
 		wrote = true
 	}
 	if !wrote {
-		fmt.Fprintln(w, "No packages installed.")
+		fmt.Fprintln(stderr, "No packages declared.")
 	}
 	return nil
+}
+
+// installedSuffix returns "  (not installed)" if the package
+// is declared but absent from the store, else "". Gated on a
+// cheap store.IsInstalled check — the same call doctor uses.
+func installedSuffix(s *store.Store, name, ver string) string {
+	if s == nil {
+		return ""
+	}
+	if s.IsInstalled(name, ver) {
+		return ""
+	}
+	return "  (not installed)"
 }
 
 // hostOverlayPackages returns the merged map of packages
