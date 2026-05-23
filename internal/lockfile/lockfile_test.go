@@ -855,3 +855,61 @@ func TestWriteMultiplePackagesRoundTrip(t *testing.T) {
 		}
 	}
 }
+
+// TestIsStaleCanonicalAndBareVersionsAreEquivalent is the lockfile-level
+// test for finding 0006. install and update write the canonical form
+// (e.g. "1.8.1-1") to gale.lock via r.Package.Full(). sync and
+// syncIfNeeded call lockfile.IsStale with tomlPackages whose values are
+// the bare form (e.g. "1.8.1") read from gale.toml.
+//
+// IsStale must treat "1.8.1-1" as equivalent to "1.8.1" when the suffix
+// "-1" indicates revision 1 (the default). Failing to normalize causes a
+// perpetual stale-detection loop: every invocation of syncIfNeeded sees a
+// mismatch and triggers runSync, which finds packages up to date, skips
+// the install, and does not update the lockfile — so the mismatch persists.
+//
+// This test FAILS today because IsStale does a literal string comparison
+// (locked.Version != version). It will PASS once IsStale is updated to
+// strip a trailing "-1" suffix (or similar normalization) before comparing.
+func TestIsStaleCanonicalAndBareVersionsAreEquivalent(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "gale.toml")
+	lockPath := filepath.Join(dir, "gale.lock")
+
+	// Write gale.toml with bare version (as gale.toml always stores).
+	if err := os.WriteFile(tomlPath,
+		[]byte("[packages]\njq = \"1.8.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Write lockfile with canonical form — as install/update write it
+	// via r.Package.Full() when revision = 1.
+	writeLock(t, lockPath, map[string]LockedPackage{
+		"jq": {Version: "1.8.1-1", SHA256: "abc123"},
+	})
+
+	// Push toml mtime into the past so mtime comparison (if any)
+	// does not affect the result.
+	past := time.Now().Add(-10 * time.Second)
+	if err := os.Chtimes(tomlPath, past, past); err != nil {
+		t.Fatal(err)
+	}
+
+	// tomlPackages mirrors what syncIfNeeded reads from gale.toml:
+	// bare versions only.
+	tomlPackages := map[string]string{"jq": "1.8.1"}
+
+	stale, err := IsStale(tomlPath, lockPath, tomlPackages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// "1.8.1-1" and "1.8.1" represent the same version at revision 1.
+	// IsStale must return false so syncIfNeeded does not trigger an
+	// unnecessary resync loop (finding 0006).
+	if stale {
+		t.Error("IsStale returned true for lockfile version " +
+			"\"1.8.1-1\" vs toml version \"1.8.1\": " +
+			"these represent the same package at revision 1 and " +
+			"must not trigger a perpetual resync loop")
+	}
+}

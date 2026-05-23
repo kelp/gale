@@ -196,10 +196,18 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		reportResult(out, result, "Installed", "built from source")
 
 		// Update lockfile with the SHA256 from install.
+		// Use the canonical version form (e.g. "1.8.1-1") so
+		// IsStale can match it against the bare toml version.
 		if result.SHA256 != "" {
 			lp, lpErr := lockfilePath(ctx.GalePath)
-			if lpErr == nil {
-				_ = updateLockfile(lp, name, version, result.SHA256)
+			if lpErr != nil {
+				out.Warn(fmt.Sprintf(
+					"resolving lockfile path for %s: %v",
+					name, lpErr))
+			} else if err := updateLockfile(
+				lp, name, r.Package.Full(), result.SHA256); err != nil {
+				out.Warn(fmt.Sprintf(
+					"updating lockfile for %s: %v", name, err))
 			}
 		}
 

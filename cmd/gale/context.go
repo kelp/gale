@@ -327,7 +327,7 @@ func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha2
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
 		if existing, ok := lf.Packages[name]; ok &&
-			existing.Version == lockVersion {
+			lockfile.VersionMatches(lockVersion, existing.Version) {
 			return nil // same version, keep existing hash
 		}
 	}
@@ -368,12 +368,14 @@ func removeLockEntry(configPath, name string) error {
 	if err != nil {
 		return fmt.Errorf("resolving lockfile path: %w", err)
 	}
-	lf, err := lockfile.Read(lp)
-	if err != nil {
-		return fmt.Errorf("reading lockfile: %w", err)
-	}
-	delete(lf.Packages, name)
-	return lockfile.Write(lp, lf)
+	return filelock.With(lp+".lock", func() error {
+		lf, err := lockfile.Read(lp)
+		if err != nil {
+			return fmt.Errorf("reading lockfile: %w", err)
+		}
+		delete(lf.Packages, name)
+		return lockfile.Write(lp, lf)
+	})
 }
 
 // addToConfig resolves scope and writes a package version

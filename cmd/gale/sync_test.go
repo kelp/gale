@@ -254,28 +254,59 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 // the installer, so this test just verifies the code path
 // exists and the lockfilePath helper is called correctly.
 func TestSyncWritesLockfileHash(t *testing.T) {
-	// This test verifies that the sync command updates
-	// the lockfile with SHA256 values after installing
-	// packages. The actual integration test would require
-	// a full install setup, but we can at least verify
-	// the lockfilePath function is called correctly.
-	//
-	// The key code is in sync.go after reportResult:
-	//   if result.SHA256 != "" {
-	//     lp, lpErr := lockfilePath(ctx.GalePath)
-	//     if lpErr == nil {
-	//       _ = updateLockfile(lp, name, version, result.SHA256)
-	//     }
-	//   }
-	//
-	// For now, this test just documents the expected
-	// behavior. Integration tests should verify the
-	// lockfile actually gets updated.
-	t.Log("sync should write SHA256 hashes to gale.lock")
+	t.Skip("integration test: requires store+registry infrastructure")
 }
 
 // NOTE (finding 0005): The bug where sync --dry-run emits "stale —
 // reinstalling" before the dry-run check cannot be unit-tested without
 // output-capture infrastructure (newOutput() writes directly to os.Stderr).
+
+// NOTE (finding 0006 — sync writes bare version to lockfile):
+//
+// Fix location: sync.go, around line 202 (inside runSync, after
+// reportResult).
+//
+// Buggy code:
+//   _ = updateLockfile(lp, name, version, result.SHA256)
+//   // `version` is the bare string from gale.toml ("1.8.1").
+//
+// Fix:
+//   _ = updateLockfile(lp, name, r.Package.Full(), result.SHA256)
+//   // r is in scope (fetched at line ~139 via ResolveVersionedRecipe).
+//   // r.Package.Full() returns "1.8.1-1" (canonical form with revision).
+//
+// Impact: install and update both use r.Package.Full() when writing to
+// the lockfile. Sync used the bare version from gale.toml. This
+// inconsistency means:
+//
+//   1. gale install jq writes "1.8.1-1" to the lockfile.
+//   2. gale sync reinstalls jq, overwrites lock entry with "1.8.1".
+//   3. lockfile.IsStale compares locked.Version ("1.8.1") against
+//      tomlPackages["jq"] ("1.8.1") — they match, no stale signal.
+//   4. But a subsequent install again writes "1.8.1-1" → mismatch
+//      with toml's "1.8.1" → IsStale returns true → perpetual resync.
+//
+// The unit-level test for the invariant is:
+// internal/lockfile/lockfile_test.go:TestIsStaleCanonicalAndBareVersionsAreEquivalent.
+
+// NOTE (finding 0008 — sync discards lockfile write errors):
+//
+// Fix location: sync.go, same line as finding 0006.
+//
+// Buggy code:
+//   _ = updateLockfile(lp, name, version, result.SHA256)
+//
+// Fix: propagate or log the error. The simplest approach:
+//   if err := updateLockfile(lp, name, r.Package.Full(), result.SHA256); err != nil {
+//       out.Warn(fmt.Sprintf("updating lockfile for %s: %v", name, err))
+//   }
+//
+// The fix for 0006 (using r.Package.Full()) and 0008 (not discarding
+// the error) are both on the same line, so they are fixed together.
+//
+// A unit test for this behavior requires mocking the lockfile write
+// path, which would require refactoring updateLockfile to accept an
+// injectable writer. The integration-level signal is that a read-only
+// lockfile causes sync to emit a warning rather than silently succeeding.
 // The fix is a one-line code movement in runSync — moving the stale info
 // message inside the !dryRun block.

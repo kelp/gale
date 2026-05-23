@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 
@@ -86,10 +87,41 @@ func IsStale(
 	}
 	for name, version := range tomlPackages {
 		locked, ok := lf.Packages[name]
-		if !ok || locked.Version != version {
+		if !ok || !VersionMatches(locked.Version, version) {
 			return true, nil
 		}
 	}
 
 	return false, nil
+}
+
+// VersionMatches reports whether the locked version
+// (potentially canonical form like "1.8.1-1") matches the
+// toml version (bare form like "1.8.1"). They match if the
+// strings are equal, or if the locked version is
+// "<toml>-<N>" for any all-digit suffix N > 0 (canonical
+// revision form). Revision 0 is not a valid canonical
+// revision and is not treated as a match.
+func VersionMatches(locked, toml string) bool {
+	if locked == toml {
+		return true
+	}
+	// Canonical form: "<version>-<revision>" where revision
+	// is a positive integer. Strip the last "-<N>" suffix
+	// and compare the base to toml.
+	if i := strings.LastIndex(locked, "-"); i >= 0 {
+		base := locked[:i]
+		suffix := locked[i+1:]
+		allDigits := len(suffix) > 0
+		for _, c := range suffix {
+			if c < '0' || c > '9' {
+				allDigits = false
+				break
+			}
+		}
+		if allDigits && suffix != "0" && base == toml {
+			return true
+		}
+	}
+	return false
 }

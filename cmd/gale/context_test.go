@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/kelp/gale/internal/config"
@@ -427,5 +428,122 @@ func TestResolveVersionedRecipeWrapsRegistryError(t *testing.T) {
 		!strings.Contains(msg, "connection refused") {
 		t.Errorf("error %q hides the underlying registry failure",
 			msg)
+	}
+}
+
+// TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion tests
+// Fix 2: when a pre-fix sync wrote bare "1.8.1" to the lockfile and
+// a cached install arrives with lockVersion="1.8.1-1" (canonical)
+// and sha256="" (cached), the guard must recognise "1.8.1" ≈
+// "1.8.1-1" and preserve the existing hash rather than clearing it.
+func TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  mypkg = \"1.8.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lockPath := filepath.Join(tmp, "gale.lock")
+	lf := &lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"mypkg": {Version: "1.8.1", SHA256: "existinghash"},
+		},
+	}
+	if err := lockfile.Write(lockPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cached install with canonical lockVersion and empty sha256.
+	if err := writeConfigAndLock(
+		configPath, "mypkg", "1.8.1", "1.8.1-1", ""); err != nil {
+		t.Fatalf("writeConfigAndLock: %v", err)
+	}
+
+	got, err := lockfile.Read(lockPath)
+	if err != nil {
+		t.Fatalf("reading lockfile: %v", err)
+	}
+	pkg := got.Packages["mypkg"]
+	if pkg.SHA256 != "existinghash" {
+		t.Errorf("hash = %q, want %q (cached install with bare lockfile version "+
+			"should preserve existing hash)", pkg.SHA256, "existinghash")
+	}
+}
+
+// TestRemoveLockEntryHoldsFileLock tests bug 0007: removeLockEntry
+// performs a plain read-modify-write with no filelock.With(), unlike
+// updateLockfile which serializes via filelock.With(). Concurrent
+// calls to removeLockEntry race on the same file: both goroutines
+// can read the full lockfile, delete their respective entry, and
+// write back — leaving the other entry intact in one of the writes.
+// The race detector catches this unsynchronized access.
+//
+// The fix: wrap the read-modify-write in removeLockEntry with
+// filelock.With(lp+".lock", ...) matching updateLockfile's pattern.
+func TestRemoveLockEntryHoldsFileLock(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "gale.toml")
+	lockPath := filepath.Join(tmp, "gale.lock")
+
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	initial := &lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"jq":      {Version: "1.8.1-1", SHA256: "aaa"},
+			"ripgrep": {Version: "14.1.0-1", SHA256: "bbb"},
+		},
+	}
+	if err := lockfile.Write(lockPath, initial); err != nil {
+		t.Fatal(err)
+	}
+
+	// Run concurrent removeLockEntry calls. Without the file lock,
+	// both goroutines can read the same initial state, delete their
+	// own entry, and write back — one write will resurrect the entry
+	// the other deleted. With the file lock, the operations serialize
+	// and both entries are absent from the final lockfile.
+	const iterations = 50
+	for i := 0; i < iterations; i++ {
+		// Reset lockfile to both entries before each iteration.
+		if err := lockfile.Write(lockPath, &lockfile.LockFile{
+			Packages: map[string]lockfile.LockedPackage{
+				"jq":      {Version: "1.8.1-1", SHA256: "aaa"},
+				"ripgrep": {Version: "14.1.0-1", SHA256: "bbb"},
+			},
+		}); err != nil {
+			t.Fatal(err)
+		}
+
+		var wg sync.WaitGroup
+		for _, name := range []string{"jq", "ripgrep"} {
+			name := name
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				if err := removeLockEntry(configPath, name); err != nil {
+					t.Errorf("removeLockEntry(%q): %v", name, err)
+				}
+			}()
+		}
+		wg.Wait()
+
+		lf, err := lockfile.Read(lockPath)
+		if err != nil {
+			t.Fatalf("iteration %d: reading lockfile: %v", i, err)
+		}
+		if len(lf.Packages) != 0 {
+			t.Errorf("iteration %d: got %d packages after removing both, want 0: %v",
+				i, len(lf.Packages), lf.Packages)
+			// Report specific survivors for diagnosis.
+			for name := range lf.Packages {
+				t.Errorf("  surviving entry: %q (resurrected by racy write)", name)
+			}
+			break
+		}
 	}
 }
