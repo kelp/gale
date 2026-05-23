@@ -69,12 +69,33 @@ Skips pinned packages unless explicitly named.
 .Pp
 .Dl $ gale update
 .Dl $ gale update jq@1.8.1
-.It Cm list
+.It Cm switch Ar pkg Ar version
+Switch a package already declared in
+.Pa gale.toml
+to a specific version.
+Bypasses
+.Ic [pinned] ,
+works for downgrades as well as upgrades, and refuses to
+add packages that aren't already declared (use
+.Cm install
+for that).
+Accepts both two-arg and
+.Ar pkg@ver
+forms.
+.Pp
+.Dl $ gale switch gh 2.89.0
+.Dl $ gale switch gh@2.89.0
+.It Cm list Op Fl -scope Ar all|shared|host
 List packages declared in
 .Pa gale.toml
 with their versions.
+Use
+.Fl -scope
+to filter shared and host overlay entries
+.Pq default Li all .
 .Pp
 .Dl $ gale list
+.Dl $ gale list --scope host
 .It Cm gc
 Remove unused package versions from the store and
 old generations.
@@ -113,17 +134,42 @@ print its full path.
 .Dl $ gale which jq
 .Dl jq@1.8.1
 .Dl /Users/you/.gale/pkg/jq/1.8.1/bin/jq
-.It Cm outdated
+.It Cm outdated Op Fl -recipes Op Fl -no-refresh
 Show packages that have newer versions available in
 the registry.
+Pass
+.Fl -recipes
+to resolve against a local recipes checkout instead, or
+.Fl -no-refresh
+to skip the automatic tap refresh.
 .Pp
 .Dl $ gale outdated
 .Dl jq 1.7.1 -> 1.8.1
-.It Cm doctor
+.It Cm inspect Op Ar pkg | Fl -all
+Audit installed packages for linkage issues:
+unresolvable
+.Va @rpath
+references, stale rpath entries, and mismatches between
+binary references and the recipe's declared deps.
+Exits non-zero when issues are found, so CI can gate on it.
+Use
+.Fl -all
+to scan every installed package, or
+.Fl -json
+for machine-readable output.
+.Pp
+.Dl $ gale inspect jq
+.Dl $ gale inspect --all --json
+.It Cm doctor Op Fl -repair
 Check the gale installation for common problems:
-PATH configuration, store integrity, stale generations.
+PATH configuration, store integrity, stale generations,
+host-overlay shadows, and lib farm drift.
+Use
+.Fl -repair
+to rebuild active generations and re-sign Mach-O binaries.
 .Pp
 .Dl $ gale doctor
+.Dl $ gale doctor --repair
 .It Cm search Ar query
 Search for packages by name or description.
 .Pp
@@ -286,10 +332,21 @@ Verbose output.
 Show what would happen without making changes.
 Applies to all mutating commands:
 .Cm install , remove , sync , update , gc .
+.It Fl q , -quiet
+Suppress non-essential status output.
+Warnings and errors still print.
+.It Fl -plain
+Disable color, progress bars, and step indicators.
+Use when capturing output for logs or tests.
 .It Fl -no-color
 Disable colored output.
 Same as setting
-.Ev NO_COLOR .
+.Ev NO_COLOR
+to a non-empty value.
+.It Fl -error-format Ar text|json
+Format top-level runtime errors.
+Default
+.Li text .
 .El
 .Ss Scope Flags
 .Bl -tag -width Ds
@@ -516,7 +573,12 @@ expands to the current machine.
 .Sh ENVIRONMENT
 .Bl -tag -width Ds
 .It Ev NO_COLOR
-Disables colored output when set.
+Disables colored output when set to a non-empty value,
+regardless of TTY status.
+Follows the
+.Lk https://no-color.org
+convention.
+An empty value is ignored.
 .It Ev GALE_HOST
 Overrides the hostname used to select
 .Ic [hosts. Ns Ar X Ns Ic ]
