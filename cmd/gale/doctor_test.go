@@ -293,6 +293,115 @@ func TestCheckOrphansCountsOldRevisions(t *testing.T) {
 	}
 }
 
+// TestCheckGenerationFailsOnDanglingCurrentSymlink pins the
+// marquee doctor bug: when ~/.gale/current points to a gen
+// directory that no longer exists, checkGeneration must fail
+// loudly (red xxx) instead of reporting a green checkmark.
+// Doctor exists specifically to catch this corruption.
+func TestCheckGenerationFailsOnDanglingCurrentSymlink(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Point current at gen/9 without creating gen/9.
+	if err := os.Symlink(
+		filepath.Join("gen", "9"),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir: galeDir,
+		cwd:     home,
+		out:     output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if checkGeneration(ctx) {
+		t.Fatalf("checkGeneration should fail on dangling "+
+			"current symlink; output: %q", buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "xxx ") {
+		t.Errorf("expected error prefix, got: %q", out)
+	}
+	if !strings.Contains(out, "gale sync") {
+		t.Errorf("expected actionable `gale sync` suggestion, "+
+			"got: %q", out)
+	}
+}
+
+// TestCheckGenerationPassesWhenTargetExists verifies the happy
+// path still works after we tightened the check: a current
+// symlink to an existing gen dir gives a green success.
+func TestCheckGenerationPassesWhenTargetExists(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(
+		filepath.Join(galeDir, "gen", "1", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir: galeDir,
+		cwd:     home,
+		out:     output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if !checkGeneration(ctx) {
+		t.Fatalf("checkGeneration should pass; output: %q", buf.String())
+	}
+	if !strings.Contains(buf.String(), "==> ") {
+		t.Errorf("expected success prefix, got: %q", buf.String())
+	}
+}
+
+// TestDoctorRunWritesSummaryToStdout pins the stdout discipline:
+// per-check progress lines go to stderr (an Output writer), but
+// the final summary block ("OK" or "N issues") goes to stdout
+// so `gale doctor > status.txt` captures the answer. Without
+// this contract, the file would be zero bytes.
+func TestDoctorRunWritesSummaryToStdout(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var stdout, stderr bytes.Buffer
+	if err := runDoctor(&doctorIO{
+		galeDir: galeDir,
+		cwd:     home,
+		stdout:  &stdout,
+		stderr:  &stderr,
+	}); err == nil {
+		// We expect failures (no current symlink, no PATH, etc.)
+		// — the point is the summary line still goes to stdout.
+		t.Log("runDoctor returned nil; test still checks summary")
+	}
+
+	if stdout.Len() == 0 {
+		t.Fatalf("stdout was empty; doctor must emit a summary "+
+			"to stdout. stderr: %q", stderr.String())
+	}
+	// Summary should contain a structured marker so users can
+	// grep it. Either "OK" (all green) or "issues" (some failed).
+	s := stdout.String()
+	if !strings.Contains(s, "OK") && !strings.Contains(s, "issue") {
+		t.Errorf("stdout should contain a summary line "+
+			"(OK or issues), got: %q", s)
+	}
+}
+
 func TestRepairDoctorRebuildsToolVersionsProjectGeneration(t *testing.T) {
 	home := t.TempDir()
 	galeDir := filepath.Join(home, ".gale")

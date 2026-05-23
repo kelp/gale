@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -74,49 +75,89 @@ var doctorCmd = &cobra.Command{
 	Short: "Check your gale installation for problems",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := newCmdOutput(cmd)
-
 		galeDir, err := galeConfigDir()
 		if err != nil {
-			out.Error("Cannot find home directory")
+			fmt.Fprintln(cmd.ErrOrStderr(),
+				"xxx Cannot find home directory")
 			return err
 		}
-
 		cwd, _ := os.Getwd()
-
-		// cmdCtx is best-effort — if it fails (e.g. no
-		// recipes resolver), the stale-installs check
-		// degrades gracefully.
-		cmdCtx, _ := newCmdContext("", false, false)
-
-		ctx := &doctorContext{
-			galeDir:    galeDir,
-			storeRoot:  defaultStoreRoot(),
-			cwd:        cwd,
-			globalPkgs: map[string]string{},
-			projPkgs:   map[string]string{},
-			out:        out,
-			cmdCtx:     cmdCtx,
-		}
-
-		if doctorRepair {
-			if err := repairDoctor(ctx); err != nil {
-				return fmt.Errorf("repair doctor state: %w", err)
-			}
-		}
-
-		var failed bool
-		for _, check := range doctorChecks {
-			if !check.run(ctx) {
-				failed = true
-			}
-		}
-
-		if failed {
-			return fmt.Errorf("doctor found problems")
-		}
-		return nil
+		return runDoctor(&doctorIO{
+			galeDir: galeDir,
+			cwd:     cwd,
+			stdout:  cmd.OutOrStdout(),
+			stderr:  cmd.ErrOrStderr(),
+		})
 	},
+}
+
+// doctorIO bundles the writers and resolved paths a doctor
+// run needs. Extracted so tests can drive runDoctor without
+// going through cobra and can assert on stdout/stderr
+// independently — the stdout summary is the user-facing
+// "answer", per-check progress lines are on stderr.
+type doctorIO struct {
+	galeDir string
+	cwd     string
+	stdout  io.Writer
+	stderr  io.Writer
+}
+
+// runDoctor executes every doctor check and writes a final
+// summary block to stdout. Each check still emits its own
+// success/warn/error line to stderr via *output.Output, so
+// the existing color/TTY discipline is preserved.
+// Stream discipline:
+//   - stderr: per-check progress (==>, !!!, xxx). Human-
+//     readable, suppressible via 2>/dev/null.
+//   - stdout: one final summary line. "OK: N checks passed"
+//     when everything is green, "PROBLEMS: M issue(s) of N
+//     checks" otherwise. `gale doctor > status.txt` captures
+//     the answer; exit code stays the programmatic signal.
+func runDoctor(d *doctorIO) error {
+	// Per-check output writer — uses the same TTY/color
+	// resolution as the rest of the CLI, but redirected to
+	// the provided stderr writer so tests can capture it.
+	out := newOutputForWriter(d.stderr)
+
+	// cmdCtx is best-effort — if it fails (e.g. no
+	// recipes resolver), the stale-installs check
+	// degrades gracefully.
+	cmdCtx, _ := newCmdContext("", false, false)
+
+	ctx := &doctorContext{
+		galeDir:    d.galeDir,
+		storeRoot:  defaultStoreRoot(),
+		cwd:        d.cwd,
+		globalPkgs: map[string]string{},
+		projPkgs:   map[string]string{},
+		out:        out,
+		cmdCtx:     cmdCtx,
+	}
+
+	if doctorRepair {
+		if err := repairDoctor(ctx); err != nil {
+			fmt.Fprintln(d.stdout,
+				"PROBLEMS: repair failed before checks ran")
+			return fmt.Errorf("repair doctor state: %w", err)
+		}
+	}
+
+	var failed int
+	for _, check := range doctorChecks {
+		if !check.run(ctx) {
+			failed++
+		}
+	}
+	total := len(doctorChecks)
+
+	if failed > 0 {
+		fmt.Fprintf(d.stdout,
+			"PROBLEMS: %d issue(s) of %d checks\n", failed, total)
+		return fmt.Errorf("doctor found problems")
+	}
+	fmt.Fprintf(d.stdout, "OK: %d checks passed\n", total)
+	return nil
 }
 
 // checkGaleHome verifies ~/.gale/ exists.
@@ -303,18 +344,26 @@ func checkPackagesInstalled(ctx *doctorContext) bool {
 	return true
 }
 
-// checkGeneration verifies an active generation exists.
+// checkGeneration verifies an active generation exists and
+// its directory is on disk. Resolve (not Current) is used so
+// a dangling current symlink — where the target gen
+// directory has been deleted — surfaces as a hard error.
+// Doctor exists specifically to catch this case; Current
+// alone only Readlinks the symlink and parses the trailing
+// integer, which is why the bug went undetected for so long.
 func checkGeneration(ctx *doctorContext) bool {
-	gen, err := generation.Current(ctx.galeDir)
-	if err != nil || gen == 0 {
-		ctx.out.Error(
-			"No active generation\n  Run: gale sync")
+	gen, target, err := generation.Resolve(ctx.galeDir)
+	if err != nil {
+		// Target missing or symlink unparseable. Surface the
+		// raw error so the user can see what's wrong, and
+		// point at the only safe remediation.
+		ctx.out.Error(fmt.Sprintf(
+			"Generation broken: %v\n  Run: gale sync", err))
 		return false
 	}
-	currentLink := filepath.Join(ctx.galeDir, "current")
-	target, err := os.Readlink(currentLink)
-	if err != nil {
-		ctx.out.Error("current symlink broken")
+	if gen == 0 {
+		ctx.out.Error(
+			"No active generation\n  Run: gale sync")
 		return false
 	}
 	ctx.out.Success(fmt.Sprintf(

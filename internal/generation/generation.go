@@ -401,6 +401,52 @@ func Current(galeDir string) (int, error) {
 	return n, nil
 }
 
+// Resolve is Current plus a target-existence check. It
+// returns (gen, relTarget, nil) when the current symlink
+// points at an extant gen directory, (0, "", nil) when no
+// current symlink exists yet, and a descriptive error when
+// the symlink dangles (target gen directory absent) or its
+// name doesn't parse. `gale doctor` uses this to flag a
+// corrupted current pointer — the case where the active
+// generation has been deleted out from under us by rm -rf,
+// a partial gc, or a half-restored backup — which Current
+// alone cannot detect because it only Readlinks the symlink.
+func Resolve(galeDir string) (int, string, error) {
+	currentPath := filepath.Join(galeDir, "current")
+	target, err := os.Readlink(currentPath)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, "", nil
+		}
+		return 0, "", fmt.Errorf("read current symlink: %w", err)
+	}
+
+	numStr := filepath.Base(target)
+	n, err := strconv.Atoi(numStr)
+	if err != nil {
+		return 0, target, fmt.Errorf(
+			"parse generation number %q: %w", numStr, err)
+	}
+
+	// Resolve relative targets against galeDir so Stat hits
+	// the right path (current is created with a relative
+	// target like "gen/4").
+	absTarget := target
+	if !filepath.IsAbs(absTarget) {
+		absTarget = filepath.Join(galeDir, target)
+	}
+	if _, err := os.Stat(absTarget); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return n, target, fmt.Errorf(
+				"current symlink points at %s but that "+
+					"generation directory does not exist", target)
+		}
+		return n, target, fmt.Errorf(
+			"stat current target %s: %w", target, err)
+	}
+	return n, target, nil
+}
+
 // Next returns the next generation number (Current+1,
 // or 1 if none exists).
 func Next(galeDir string) (int, error) {

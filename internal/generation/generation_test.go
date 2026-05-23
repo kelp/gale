@@ -610,6 +610,83 @@ func TestCurrentReturnsErrorForNonNumericSymlinkTarget(t *testing.T) {
 	}
 }
 
+// --- Behavior 4b: Resolve verifies the generation directory exists ---
+
+// TestResolveReturnsErrorForDanglingCurrentSymlink pins the
+// invariant that Resolve treats a current symlink whose target
+// gen directory is absent as an error — not as a healthy
+// generation. `gale doctor` relies on this to catch the case
+// where the active generation has been deleted out from under
+// the current symlink (rm -rf, partial gc, restored backup).
+func TestResolveReturnsErrorForDanglingCurrentSymlink(t *testing.T) {
+	galeDir := t.TempDir()
+
+	// Point current at gen/7 without ever creating gen/7.
+	if err := os.Symlink(
+		filepath.Join("gen", "7"),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatalf("failed to create current symlink: %v", err)
+	}
+
+	gen, target, err := Resolve(galeDir)
+	if err == nil {
+		t.Fatalf("expected Resolve to error on dangling current, "+
+			"got gen=%d target=%q", gen, target)
+	}
+	if !strings.Contains(err.Error(), "gen/7") &&
+		!strings.Contains(err.Error(), "7") {
+		t.Errorf("error should mention the missing target, got %v", err)
+	}
+}
+
+// TestResolveSucceedsWhenTargetExists verifies the happy path:
+// a current symlink pointing at an existing gen dir resolves to
+// (n, target, nil).
+func TestResolveSucceedsWhenTargetExists(t *testing.T) {
+	galeDir := t.TempDir()
+
+	if err := os.MkdirAll(
+		filepath.Join(galeDir, "gen", "4", "bin"), 0o755); err != nil {
+		t.Fatalf("failed to create gen dir: %v", err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "4"),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatalf("failed to create current symlink: %v", err)
+	}
+
+	gen, target, err := Resolve(galeDir)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if gen != 4 {
+		t.Errorf("Resolve gen = %d, want 4", gen)
+	}
+	if target != filepath.Join("gen", "4") {
+		t.Errorf("Resolve target = %q, want gen/4", target)
+	}
+}
+
+// TestResolveReturnsZeroWhenNoCurrent matches Current's
+// "no current symlink yet" contract — Resolve reports (0, "",
+// nil) for fresh ~/.gale/ before the first install.
+func TestResolveReturnsZeroWhenNoCurrent(t *testing.T) {
+	galeDir := t.TempDir()
+
+	gen, target, err := Resolve(galeDir)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if gen != 0 {
+		t.Errorf("Resolve gen = %d, want 0", gen)
+	}
+	if target != "" {
+		t.Errorf("Resolve target = %q, want empty", target)
+	}
+}
+
 // --- Behavior 5: Next returns incremented generation number ---
 
 func TestNextReturnsIncrementedNumber(t *testing.T) {
