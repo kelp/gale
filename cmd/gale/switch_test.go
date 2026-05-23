@@ -9,6 +9,17 @@ import (
 	"github.com/kelp/gale/internal/config"
 )
 
+// TestSwitchHasBuildFlag verifies that switchCmd exposes a
+// --build flag so users can force a source build when switching
+// to a version that has no prebuilt binary in GHCR.
+func TestSwitchHasBuildFlag(t *testing.T) {
+	if switchCmd.Flags().Lookup("build") == nil {
+		t.Error("switchCmd is missing --build flag — " +
+			"users must be able to force a source build " +
+			"when switching versions")
+	}
+}
+
 // TestSwitchRejectsMissingPackage verifies that `gale switch
 // foo 1.0` refuses to act when foo is not in gale.toml. The
 // suggestion in the error points users at `gale install`.

@@ -18,7 +18,7 @@ var gcRecipes string
 
 var gcCmd = &cobra.Command{
 	Use:   "gc",
-	Short: "Remove unused package versions from the store",
+	Short: "Remove unused package versions and old generations",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newCmdOutput(cmd)

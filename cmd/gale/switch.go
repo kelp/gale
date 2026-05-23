@@ -13,6 +13,7 @@ var (
 	switchRecipes string
 	switchGlobal  bool
 	switchProject bool
+	switchBuild   bool
 )
 
 var switchCmd = &cobra.Command{
@@ -82,6 +83,10 @@ Unlike 'gale update', switch:
 		out.Info(fmt.Sprintf("Switching %s %s → %s...",
 			name, current, r.Package.Full()))
 
+		if switchBuild {
+			ctx.Installer.SourceOnly = true
+		}
+
 		result, err := ctx.Installer.Install(r)
 		if err != nil {
 			if errors.Is(err, build.ErrUnsupportedPlatform) {
@@ -129,5 +134,7 @@ func init() {
 	switchCmd.Flags().StringVar(&switchRecipes, "recipes", "",
 		"Use local recipes directory (default: ../gale-recipes/)")
 	switchCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+	switchCmd.Flags().BoolVar(&switchBuild, "build", false,
+		"Build from source (skip prebuilt binary)")
 	rootCmd.AddCommand(switchCmd)
 }

@@ -322,6 +322,18 @@ func TestGCCommandExists(t *testing.T) {
 	t.Fatal("gc command not found on rootCmd")
 }
 
+// TestGCShortMentionsGenerations verifies that gcCmd.Short
+// mentions generation cleanup, not just package version removal.
+// Users need to know that gc also cleans old generations.
+func TestGCShortMentionsGenerations(t *testing.T) {
+	if !strings.Contains(gcCmd.Short, "generation") {
+		t.Errorf("gcCmd.Short %q does not mention "+
+			"\"generation\" — short description must "+
+			"cover both package version and generation cleanup",
+			gcCmd.Short)
+	}
+}
+
 // TestCleanGenerationsRemovesOldDirs verifies that gc
 // removes generation directories other than the current
 // one. We set up a fake gale dir with gen/1, gen/2,

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"sort"
+	"strings"
 	"testing"
 )
 
@@ -252,6 +253,23 @@ func TestTapsOfflineMode(t *testing.T) {
 					tt.noRefresh, tt.envVal, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestUpdatePathFlagDescriptionDoesNotSayRebuild verifies that
+// the --path flag on updateCmd says "Build from a local source
+// directory", not "Rebuild from a local source directory".
+// The description must match install --path for consistency.
+func TestUpdatePathFlagDescriptionDoesNotSayRebuild(t *testing.T) {
+	f := updateCmd.Flags().Lookup("path")
+	if f == nil {
+		t.Fatal("updateCmd has no --path flag")
+	}
+	if strings.Contains(f.Usage, "Rebuild") {
+		t.Errorf("updateCmd --path Usage %q must not contain "+
+			"\"Rebuild\" — use \"Build from a local source "+
+			"directory\" to match install --path wording",
+			f.Usage)
 	}
 }
 

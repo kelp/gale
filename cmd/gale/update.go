@@ -348,7 +348,7 @@ func init() {
 		"Use local recipes directory (default: ../gale-recipes/)")
 	updateCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	updateCmd.Flags().StringVar(&updatePath, "path", "",
-		"Rebuild from a local source directory")
+		"Build from a local source directory")
 	updateCmd.Flags().BoolVar(&updateGit, "git", false,
 		"Update from git repository HEAD")
 	updateCmd.Flags().StringVar(&updateRecipe, "recipe", "",
