@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
@@ -245,41 +246,56 @@ func mergeConfig(
 }
 
 // cleanOldGenerations removes all generation directories
-// except the current one. Returns the count of generations
+// older than the current one. Returns the count of generations
 // removed (or flagged in dry-run mode).
+//
+// The function holds the generation lock for its entire
+// execution so it serializes with generation.Build. Inside
+// the lock, curGen is read first so that an in-flight Build
+// that has created gen/N+1 but not yet swapped current is
+// never considered for deletion (n < curGen is the criterion,
+// not n != curGen).
 func cleanOldGenerations(galeDir string, dry bool) int {
 	out := newOutput()
 	genRoot := filepath.Join(galeDir, "gen")
-	entries, err := os.ReadDir(genRoot)
-	if err != nil {
-		return 0
-	}
-	curGen, _ := generation.Current(galeDir)
+	lockPath := filepath.Join(galeDir, "generation.lock")
 	var removed int
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
+	_ = filelock.With(lockPath, func() error {
+		// Read curGen first (while holding the lock) so the
+		// snapshot is consistent with the directory listing.
+		curGen, _ := generation.Current(galeDir)
+		entries, err := os.ReadDir(genRoot)
+		if err != nil {
+			return nil //nolint:nilerr
 		}
-		n, err := strconv.Atoi(e.Name())
-		if err != nil || n == curGen {
-			continue
-		}
-		genPath := filepath.Join(genRoot, e.Name())
-		if dry {
-			out.Info(fmt.Sprintf(
-				"Would remove generation %d", n))
-		} else {
-			if err := os.RemoveAll(genPath); err != nil {
-				out.Warn(fmt.Sprintf(
-					"Failed to remove generation %d: %v",
-					n, err))
+		for _, e := range entries {
+			if !e.IsDir() {
 				continue
 			}
-			out.Success(fmt.Sprintf(
-				"Removed generation %d", n))
+			n, err := strconv.Atoi(e.Name())
+			if err != nil || n >= curGen {
+				// Skip non-numeric entries and anything at or
+				// above curGen (includes in-flight gen/N+1).
+				continue
+			}
+			genPath := filepath.Join(genRoot, e.Name())
+			if dry {
+				out.Info(fmt.Sprintf(
+					"Would remove generation %d", n))
+			} else {
+				if err := os.RemoveAll(genPath); err != nil {
+					out.Warn(fmt.Sprintf(
+						"Failed to remove generation %d: %v",
+						n, err))
+					continue
+				}
+				out.Success(fmt.Sprintf(
+					"Removed generation %d", n))
+			}
+			removed++
 		}
-		removed++
-	}
+		return nil
+	})
 	return removed
 }
 
