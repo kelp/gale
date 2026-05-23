@@ -254,39 +254,33 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 }
 
 // TestAudit_GcVsInstall_WindowBetweenStoreWriteAndConfigWrite
-// shows the Class-C window: install.go calls Installer.Install
-// (which writes the store dir under the per-package lock and
-// then releases it) before ctx.FinalizeRecipeInstall (which
-// writes gale.toml). gc concurrently reads gale.toml, sees
-// the just-installed package as "unreferenced", and removes
-// it from the store. The subsequent generation rebuild then
-// fails because the store dir is gone.
+// shows that store.Remove does not acquire the per-package
+// lock at <storeRoot>/<name>/<version>.lock before calling
+// os.RemoveAll. The intended fix is for store.Remove to
+// acquire that lock (the same lockfile that
+// installer.lockPackage uses) so it serializes against a
+// concurrent install of the same package version.
 //
-// Reproducer simulates this without invoking the real
-// installer (no network). We:
-//   1. Pre-create a store dir for jq@1.8.1
-//   2. Leave gale.toml empty
-//   3. Run gc's body: store.Remove(jq, 1.8.1)
-//   4. Show that the store dir is gone — no lock prevented it
+// Setup:
+//   - Pre-creates a store dir for jq@1.8.1 with a bin/jq
+//     file, simulating a completed Installer.Install.
+//   - A goroutine acquires the per-package lock at
+//     <storeRoot>/jq/1.8.1.lock via filelock.With and holds
+//     it for ~80ms.
+//   - After the goroutine holds the lock, the main goroutine
+//     calls store.Remove("jq", "1.8.1").
 //
-// In production, this race is wider because Installer.Install
-// has fully released the per-package lock by the time gc
-// could see the dir; even acquiring that lock from gc would
-// not close the window between Install's lock release and
-// the eventual FinalizeRecipeInstall write to gale.toml.
+// RED (today): Remove ignores the lock and returns in
+// microseconds. The elapsed-time assertion (>= 60ms) FAILS.
+//
+// GREEN (after fix): Remove acquires the lock, blocks until
+// the goroutine releases it (~80ms), then proceeds. The
+// elapsed-time assertion PASSES. The store dir is gone.
 func TestAudit_GcVsInstall_WindowBetweenStoreWriteAndConfigWrite(t *testing.T) {
-	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 
-	// Empty gale.toml (simulating mid-install state where
-	// the store has jq but the config does not yet).
-	if err := os.WriteFile(filepath.Join(galeDir, "gale.toml"),
-		[]byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
 	// Pre-create the jq store dir as if Installer.Install
-	// just returned.
+	// just completed and released the per-package lock.
 	jqDir := filepath.Join(storeRoot, "jq", "1.8.1")
 	if err := os.MkdirAll(filepath.Join(jqDir, "bin"), 0o755); err != nil {
 		t.Fatal(err)
@@ -296,40 +290,52 @@ func TestAudit_GcVsInstall_WindowBetweenStoreWriteAndConfigWrite(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Also acquire the per-package lock from a goroutine —
-	// mimicking the install holding it briefly. (In reality
-	// Install releases this BEFORE FinalizeRecipeInstall, so
-	// this is the optimistic case where the lock is still
-	// held — gc must not depend on this anyway.)
+	// Spawn a goroutine that acquires the per-package lock and
+	// holds it for ~80ms — simulating an in-flight install
+	// that still holds the lock.
 	lockPath := filepath.Join(storeRoot, "jq", "1.8.1.lock")
-	held := make(chan struct{})
-	releaseHold := make(chan struct{})
+	acquired := make(chan struct{})
 	go func() {
 		_ = filelock.With(lockPath, func() error {
-			close(held)
-			<-releaseHold
+			close(acquired)
+			time.Sleep(80 * time.Millisecond)
 			return nil
 		})
 	}()
-	<-held
 
-	// Mirror gc.removeUnreferencedVersions: read gale.toml,
-	// see no references, store.Remove(jq, 1.8.1). gc doesn't
-	// hold the per-package lock. Uses the real Store API.
+	// Wait until the goroutine has the lock before calling
+	// Remove, so the lock is definitely held.
+	<-acquired
+
+	// Call store.Remove from the main goroutine. With the fix,
+	// this will block until the goroutine releases the lock
+	// (~80ms). Without the fix it returns in microseconds.
 	s := store.NewStore(storeRoot)
+	start := time.Now()
 	if err := s.Remove("jq", "1.8.1"); err != nil {
 		t.Fatalf("store.Remove: %v", err)
 	}
-	close(releaseHold)
+	elapsed := time.Since(start)
 
-	// Verify the store dir is gone.
+	// The store dir must be gone after Remove returns.
 	if _, err := os.Stat(jqDir); !os.IsNotExist(err) {
-		t.Skipf("gc did not remove jq dir: %v", err)
+		t.Errorf("store dir still exists after Remove: %v", err)
 	}
-	t.Errorf("CONFIRMED: store dir for in-flight install was "+
-		"removed by gc-equivalent unlocked RemoveAll. " +
-		"A subsequent FinalizeRecipeInstall would fail in " +
-		"populateGeneration with ENOENT on the missing dir.")
+
+	// Remove must have blocked for the lock. Today (RED) it
+	// returns in microseconds, so this assertion FAILS.
+	// After the fix (GREEN) it blocks ~80ms, so this PASSES.
+	const minBlock = 60 * time.Millisecond
+	if elapsed < minBlock {
+		t.Errorf(
+			"CONFIRMED: store.Remove returned in %v (< %v) "+
+				"without waiting for the per-package lock at %s. "+
+				"A concurrent gc can delete in-flight store dirs "+
+				"because store.Remove does not acquire "+
+				"<storeRoot>/<name>/<version>.lock before "+
+				"os.RemoveAll.",
+			elapsed, minBlock, lockPath)
+	}
 }
 
 // TestAudit_ProjectGenLockNotSharedWithStoreGenLock

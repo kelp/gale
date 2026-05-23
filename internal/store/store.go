@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
+
+	"github.com/kelp/gale/internal/filelock"
 )
 
 // ErrNotInstalled is returned when removing a package that does not exist.
@@ -216,11 +219,17 @@ func (s *Store) List() ([]InstalledPackage, error) {
 func (s *Store) Remove(name, version string) error {
 	exact := filepath.Join(s.Root, name, version)
 	if _, err := os.Stat(exact); err == nil {
-		if err := os.RemoveAll(exact); err != nil &&
-			!errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove version directory: %w", err)
-		}
-		return cleanupEmptyNameDir(s.Root, name)
+		lockPath := filepath.Join(s.Root, name, version+".lock")
+		return filelock.With(lockPath, func() error {
+			// ErrNotExist guard is load-bearing: two concurrent
+			// removers can both pass the Stat above, then race
+			// under the lock; the loser must tolerate ENOENT.
+			if err := os.RemoveAll(exact); err != nil &&
+				!errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove version directory: %w", err)
+			}
+			return cleanupEmptyNameDir(s.Root, name)
+		})
 	}
 
 	resolved, ok := s.resolveVersion(name, version)
@@ -236,15 +245,19 @@ func (s *Store) Remove(name, version string) error {
 		return fmt.Errorf("stat version directory: %w", err)
 	}
 
-	if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
-		return fmt.Errorf("remove version directory: %w", err)
-	}
-
-	return cleanupEmptyNameDir(s.Root, name)
+	lockPath := filepath.Join(s.Root, name, resolved+".lock")
+	return filelock.With(lockPath, func() error {
+		if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove version directory: %w", err)
+		}
+		return cleanupEmptyNameDir(s.Root, name)
+	})
 }
 
 // cleanupEmptyNameDir removes the parent <root>/<name> dir
-// if no version dirs remain. Missing parent is not an error.
+// if no version dirs remain. Lock files (*.lock) left behind
+// by filelock are ignored when deciding emptiness. Missing
+// parent is not an error.
 func cleanupEmptyNameDir(root, name string) error {
 	nameDir := filepath.Join(root, name)
 	entries, err := os.ReadDir(nameDir)
@@ -254,9 +267,20 @@ func cleanupEmptyNameDir(root, name string) error {
 		}
 		return fmt.Errorf("read name directory: %w", err)
 	}
-	if len(entries) == 0 {
+	realEntries := 0
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".lock") {
+			realEntries++
+		}
+	}
+	if realEntries == 0 {
+		// Remove any residual lock files before removing the dir.
+		for _, e := range entries {
+			_ = os.Remove(filepath.Join(nameDir, e.Name()))
+		}
 		if err := os.Remove(nameDir); err != nil &&
-			!errors.Is(err, os.ErrNotExist) {
+			!errors.Is(err, os.ErrNotExist) &&
+			!errors.Is(err, syscall.ENOTEMPTY) {
 			return fmt.Errorf(
 				"remove empty name directory: %w", err)
 		}
