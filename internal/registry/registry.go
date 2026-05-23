@@ -16,6 +16,37 @@ import (
 // validCommitHash matches a lowercase hex string 7-40 chars long.
 var validCommitHash = regexp.MustCompile(`^[0-9a-f]{7,40}$`)
 
+// validRecipeName matches the gale-recipes naming convention:
+// lowercase ASCII alphanumerics and hyphens, starting with an
+// alphanumeric character. This is the charset observed across
+// all recipes in ../gale-recipes/recipes/ (e.g. "jq", "ripgrep",
+// "1password-cli", "arm-none-eabi-gcc"). A 64-char upper bound
+// rules out absurd inputs without rejecting anything the
+// registry actually serves.
+//
+// Anything outside this charset — slash, dot, percent, query,
+// fragment, whitespace, uppercase, non-ASCII — is rejected
+// before the name is interpolated into a registry URL, closing
+// the arbitrary-URL-fetch surface flagged by
+// audit/readonly/bad-input/0002.
+var validRecipeName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,63}$`)
+
+// ValidName reports whether name matches the recipe naming
+// convention. Returns nil for valid names and a descriptive
+// error otherwise. Callers should invoke this before
+// interpolating user-supplied names into registry URLs.
+func ValidName(name string) error {
+	if name == "" {
+		return fmt.Errorf("package name must not be empty")
+	}
+	if !validRecipeName.MatchString(name) {
+		return fmt.Errorf(
+			"invalid package name %q: must match [a-z0-9][a-z0-9-]*",
+			name)
+	}
+	return nil
+}
+
 const DefaultURL = "https://raw.githubusercontent.com/" +
 	"kelp/gale-recipes/main"
 
@@ -96,8 +127,25 @@ func (r *Registry) warn(format string, args ...any) {
 // package from the registry. Uses an ETag-based HTTP cache
 // under r.CacheDir when set.
 func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
-	if name == "" {
-		return nil, fmt.Errorf("fetch recipe: name must not be empty")
+	return r.fetchRecipe(name, true)
+}
+
+// FetchRecipeMetadata is FetchRecipe without the secondary
+// .binaries.toml roundtrip. Suitable for read-only consumers
+// (e.g. `gale info`) that only need package metadata, not the
+// binary distribution map. Saves one HTTP request per
+// invocation — significant for cache-cold runs against the
+// real registry. See audit/readonly/network-perf/0005.
+func (r *Registry) FetchRecipeMetadata(name string) (*recipe.Recipe, error) {
+	return r.fetchRecipe(name, false)
+}
+
+// fetchRecipe is the shared implementation. When mergeBinaries
+// is true the legacy behavior is preserved (extra
+// .binaries.toml fetch when no inline binaries are declared).
+func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe, error) {
+	if err := ValidName(name); err != nil {
+		return nil, fmt.Errorf("fetch recipe: %w", err)
 	}
 
 	bucket := string(name[0])
@@ -117,7 +165,7 @@ func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 
 	// If the recipe has no inline binary entries, try to
 	// fetch a separate .binaries.toml file.
-	if len(rec.Binary) == 0 {
+	if mergeBinaries && len(rec.Binary) == 0 {
 		idx, err := r.fetchBinaries(name)
 		if err != nil {
 			return nil, err
@@ -135,8 +183,8 @@ func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
 // by looking up the commit hash in the .versions index, then
 // fetching the recipe at that commit.
 func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, error) {
-	if name == "" {
-		return nil, fmt.Errorf("name must not be empty")
+	if err := ValidName(name); err != nil {
+		return nil, err
 	}
 
 	// Fetch the versions index.

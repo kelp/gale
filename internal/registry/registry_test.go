@@ -941,6 +941,151 @@ func TestFetchRecipeVersionEmptyName(t *testing.T) {
 	}
 }
 
+// --- Behavior 23a: FetchRecipe rejects invalid names without HTTP ---
+
+// TestFetchRecipeRejectsInjectionNames guards against the bad-input
+// finding that user-supplied recipe names are interpolated into the
+// registry URL with zero validation. Each input below would, before
+// the fix, produce an HTTP request against
+// raw.githubusercontent.com with attacker-controlled path/query
+// components. After the fix, validation must reject these before any
+// network call (verified by the fact that we point the registry at
+// an address that refuses connections — a real HTTP attempt would
+// surface a connection error, not the validation error).
+func TestFetchRecipeRejectsInjectionNames(t *testing.T) {
+	// Use a closed server to make any actual HTTP request fail
+	// loudly. We assert errors are returned for validation
+	// reasons, not network reasons.
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("unexpected HTTP request for invalid name: %s", r.URL.Path)
+		}))
+	defer srv.Close()
+
+	cases := []string{
+		"",              // empty
+		"jq?foo=bar",    // query injection
+		"jq#frag",       // fragment
+		"%2e%2e/etc",    // url-encoded traversal
+		"..",            // literal traversal
+		"../etc",        // traversal
+		"jq/sub",        // slash
+		"jq with space", // whitespace
+		"jq$shell",      // dollar
+		";rm -rf /",     // shell metachars (leading non-alnum)
+		"-jq",           // leading dash
+		".jq",           // leading dot
+		"JQ",            // uppercase
+		"jq@1.7",        // version marker leaks through
+		"jq\nfoo",       // newline
+		"jq\x00null",    // NUL byte
+		"é-utf8",        // multi-byte first rune
+		"jq+plus",       // plus
+		"jq:colon",      // colon
+	}
+
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			reg := testRegistry(srv.URL)
+			_, err := reg.FetchRecipe(name)
+			if err == nil {
+				t.Fatalf("expected validation error for %q", name)
+			}
+		})
+	}
+}
+
+func TestFetchRecipeVersionRejectsInjectionNames(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("unexpected HTTP request for invalid name: %s", r.URL.Path)
+		}))
+	defer srv.Close()
+
+	cases := []string{
+		"jq?x=y", "jq/sub", "../etc", "%2e%2e", "JQ",
+		"jq@v", " jq", "jq with space",
+	}
+	for _, name := range cases {
+		t.Run(name, func(t *testing.T) {
+			reg := testRegistry(srv.URL)
+			_, err := reg.FetchRecipeVersion(name, "1.0.0")
+			if err == nil {
+				t.Fatalf("expected validation error for %q", name)
+			}
+		})
+	}
+}
+
+// TestValidNameAcceptsRealRecipeNames pins the validation rule
+// against the actual gale-recipes naming scheme: lowercase
+// alphanumerics, hyphens, leading digit allowed (e.g.
+// "1password-cli"). If this regresses, an installed package would
+// fail to refetch.
+func TestValidNameAcceptsRealRecipeNames(t *testing.T) {
+	good := []string{
+		"jq", "ripgrep", "1password-cli", "arm-none-eabi-gcc",
+		"awscli", "git-delta", "a", "0",
+	}
+	for _, name := range good {
+		if err := ValidName(name); err != nil {
+			t.Errorf("ValidName(%q) = %v, want nil", name, err)
+		}
+	}
+}
+
+func TestValidNameRejectsBadNames(t *testing.T) {
+	bad := []string{
+		"", "..", "jq/x", "jq?x", "JQ", "-jq", ".jq",
+		"jq with space", "é", "jq@1.0", "jq+x",
+	}
+	for _, name := range bad {
+		if err := ValidName(name); err == nil {
+			t.Errorf("ValidName(%q) = nil, want error", name)
+		}
+	}
+}
+
+// --- Behavior 23b: FetchRecipeMetadata skips binaries roundtrip ---
+
+// TestFetchRecipeMetadataSkipsBinariesFetch confirms that a
+// metadata-only fetch (used by `gale info`) makes exactly one
+// HTTP request for the .toml and never probes .binaries.toml.
+func TestFetchRecipeMetadataSkipsBinariesFetch(t *testing.T) {
+	var mu sync.Mutex
+	paths := []string{}
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			mu.Lock()
+			paths = append(paths, r.URL.Path)
+			mu.Unlock()
+			if r.URL.Path == "/recipes/j/jq.toml" {
+				fmt.Fprint(w, recipeNoBinaries)
+				return
+			}
+			http.NotFound(w, r)
+		}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipeMetadata("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Name != "jq" {
+		t.Errorf("Name = %q, want jq", rec.Package.Name)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 1 {
+		t.Fatalf("expected 1 HTTP request, got %d: %v", len(paths), paths)
+	}
+	if paths[0] != "/recipes/j/jq.toml" {
+		t.Errorf("path = %q, want /recipes/j/jq.toml", paths[0])
+	}
+}
+
 // --- Behavior 24: NewWithURL empty string uses default ---
 
 func TestNewWithURLEmpty(t *testing.T) {

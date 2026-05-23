@@ -3,30 +3,77 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
+// registryOverride lets tests inject a custom registry. When
+// nil, newRegistry() is used.
+var registryOverride func() *registry.Registry
+
+func infoRegistry() *registry.Registry {
+	if registryOverride != nil {
+		return registryOverride()
+	}
+	return newRegistry()
+}
+
 var infoCmd = &cobra.Command{
-	Use:   "info <package>",
+	Use:   "info <package>[@version]",
 	Short: "Show package information",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		name := args[0]
+		return runInfo(cmd.OutOrStdout(), args[0])
+	},
+}
 
-		cwd, err := os.Getwd()
-		if err != nil {
-			return fmt.Errorf("getting working dir: %w", err)
-		}
+// runInfo prints package metadata for arg (which may be
+// "<name>" or "<name>@<version>") to w. The version form
+// resolves through FetchRecipeVersion; the bare form checks
+// project/global config first, then falls back to a single
+// metadata fetch from the registry. Validation of <name>
+// happens inside the registry layer (registry.ValidName).
+func runInfo(w io.Writer, arg string) error {
+	name, version := parsePackageArg(arg)
 
+	// "name@" / "name@@" — parsePackageArg returns version=""
+	// for both, which would silently fall through to the
+	// "latest" branch. Reject explicitly so the user sees the
+	// real problem.
+	if strings.Contains(arg, "@") && version == "" {
+		return fmt.Errorf(
+			"invalid argument %q: expected <name>[@version]", arg)
+	}
+
+	// Pin the validation contract here too — `info` is the
+	// canonical reproducer for audit/readonly/bad-input/0002
+	// and pre-validating gives a clean error before any config
+	// lookups touch the filesystem.
+	if err := registry.ValidName(name); err != nil {
+		return err
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("getting working dir: %w", err)
+	}
+
+	// Versioned form bypasses the installed-config lookup —
+	// users asking for a specific @version want registry
+	// metadata, not whatever happens to be pinned locally.
+	if version == "" {
 		// Check project config first.
 		if projectPath, pErr := config.FindGaleConfig(cwd); pErr == nil {
 			if found, err := printConfigInfo(
-				name, projectPath, "project"); err != nil {
+				w, name, projectPath, "project"); err != nil {
 				return err
 			} else if found {
 				return nil
@@ -40,37 +87,53 @@ var infoCmd = &cobra.Command{
 		}
 		globalPath := filepath.Join(globalDir, "gale.toml")
 		if found, err := printConfigInfo(
-			name, globalPath, "global"); err != nil {
+			w, name, globalPath, "global"); err != nil {
 			return err
 		} else if found {
 			return nil
 		}
+	}
 
-		// Not installed -- try registry.
-		reg := newRegistry()
-		r, err := reg.FetchRecipe(name)
+	// Not installed (or versioned form requested) — fetch from
+	// registry. FetchRecipeMetadata skips the .binaries.toml
+	// roundtrip the legacy code paid on every invocation; see
+	// audit/readonly/network-perf/0005.
+	reg := infoRegistry()
+	var r *recipe.Recipe
+	if version != "" {
+		r, err = reg.FetchRecipeVersion(name, version)
+		if err != nil {
+			return fmt.Errorf("%s@%s: %w", name, version, err)
+		}
+	} else {
+		r, err = reg.FetchRecipeMetadata(name)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}
+	}
 
-		fmt.Printf("Name:    %s\n", r.Package.Name)
-		fmt.Printf("Version: %s (latest)\n", r.Package.Version)
-		if r.Package.Description != "" {
-			fmt.Printf("About:   %s\n", r.Package.Description)
-		}
-		if r.Source.URL != "" {
-			fmt.Printf("Source:  %s\n", r.Source.URL)
-		}
-		fmt.Println("(not installed)")
+	versionLabel := r.Package.Version
+	if version == "" {
+		versionLabel += " (latest)"
+	}
 
-		return nil
-	},
+	fmt.Fprintf(w, "Name:    %s\n", r.Package.Name)
+	fmt.Fprintf(w, "Version: %s\n", versionLabel)
+	if r.Package.Description != "" {
+		fmt.Fprintf(w, "About:   %s\n", r.Package.Description)
+	}
+	if r.Source.URL != "" {
+		fmt.Fprintf(w, "Source:  %s\n", r.Source.URL)
+	}
+	fmt.Fprintln(w, "(not installed)")
+
+	return nil
 }
 
 // printConfigInfo checks if name is in the config at
-// configPath and prints its info. Returns true if the
+// configPath and prints its info to w. Returns true if the
 // package was found.
-func printConfigInfo(name, configPath, scope string) (bool, error) {
+func printConfigInfo(w io.Writer, name, configPath, scope string) (bool, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -95,20 +158,20 @@ func printConfigInfo(name, configPath, scope string) (bool, error) {
 	storeRoot := defaultStoreRoot()
 	s := store.NewStore(storeRoot)
 
-	fmt.Printf("Name:    %s\n", name)
-	fmt.Printf("Version: %s\n", version)
+	fmt.Fprintf(w, "Name:    %s\n", name)
+	fmt.Fprintf(w, "Version: %s\n", version)
 	if s.IsInstalled(name, version) {
-		fmt.Printf("Store:   %s\n",
+		fmt.Fprintf(w, "Store:   %s\n",
 			filepath.Join(storeRoot, name, version))
 	}
-	fmt.Printf("Scope:   %s\n", scope)
-	fmt.Printf("Config:  %s\n", configPath)
+	fmt.Fprintf(w, "Scope:   %s\n", scope)
+	fmt.Fprintf(w, "Config:  %s\n", configPath)
 
 	pinned := "no"
 	if cfg.Pinned[name] {
 		pinned = "yes"
 	}
-	fmt.Printf("Pinned:  %s\n", pinned)
+	fmt.Fprintf(w, "Pinned:  %s\n", pinned)
 
 	return true, nil
 }
