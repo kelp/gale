@@ -69,17 +69,25 @@ tampering.`,
 		}
 		defer os.Remove(result.Archive)
 
-		// Compare hashes.
+		// Compare hashes. Human-friendly banner + detail go to
+		// stderr via the output helper so quiet/color modes are
+		// honoured. The hash(es) themselves go to stdout, one
+		// per line with no prefix, so scripts can pipe:
+		//   gale audit foo | head -1
+		stdout := cmd.OutOrStdout()
 		if result.SHA256 == pkg.SHA256 {
 			out.Success(fmt.Sprintf(
 				"%s@%s: build is reproducible", name, pkg.Version))
-			fmt.Fprintf(os.Stderr, "    sha256: %s\n", pkg.SHA256)
+			out.Step(fmt.Sprintf("sha256: %s", pkg.SHA256))
+			fmt.Fprintln(stdout, pkg.SHA256)
 		} else {
 			out.Error(fmt.Sprintf(
 				"%s@%s: build differs from installed binary",
 				name, pkg.Version))
-			fmt.Fprintf(os.Stderr, "    installed: %s\n", pkg.SHA256)
-			fmt.Fprintf(os.Stderr, "    rebuilt:   %s\n", result.SHA256)
+			out.Step(fmt.Sprintf("installed: %s", pkg.SHA256))
+			out.Step(fmt.Sprintf("rebuilt:   %s", result.SHA256))
+			fmt.Fprintln(stdout, pkg.SHA256)
+			fmt.Fprintln(stdout, result.SHA256)
 			return fmt.Errorf("audit failed: hashes do not match")
 		}
 

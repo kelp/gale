@@ -35,18 +35,8 @@ var lintCmd = &cobra.Command{
 				continue
 			}
 
-			for _, issue := range issues {
-				switch issue.Level {
-				case "error":
-					lintIssueOutput(out, lint.Issue{
-						Level:   issue.Level,
-						Message: fmt.Sprintf("%s: %s", path, issue.Message),
-					})
-					hasErrors = true
-				case "warning":
-					out.Info(fmt.Sprintf(
-						"%s: %s", path, issue.Message))
-				}
+			if emitLintIssues(out, path, issues) {
+				hasErrors = true
 			}
 		}
 
@@ -55,6 +45,32 @@ var lintCmd = &cobra.Command{
 		}
 		return nil
 	},
+}
+
+// emitLintIssues writes each lint issue to out, mapping
+// severity → prefix consistently with the rest of gale:
+// errors use out.Error (red `xxx `), warnings use out.Warn
+// (yellow `!!! `). Returns true if at least one error-level
+// issue was emitted, so the caller can set a failing exit
+// status.
+func emitLintIssues(
+	out *output.Output, path string, issues []lint.Issue,
+) bool {
+	hasErrors := false
+	for _, issue := range issues {
+		msg := fmt.Sprintf("%s: %s", path, issue.Message)
+		switch issue.Level {
+		case "error":
+			lintIssueOutput(out, lint.Issue{
+				Level:   issue.Level,
+				Message: msg,
+			})
+			hasErrors = true
+		case "warning":
+			out.Warn(msg)
+		}
+	}
+	return hasErrors
 }
 
 // lintIssueOutput outputs an error-level lint issue.
