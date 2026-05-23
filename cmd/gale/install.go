@@ -280,13 +280,12 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	out.Info(fmt.Sprintf("Installing %s@%s from local source...",
 		r.Package.Name, r.Package.Version))
 
-	result, err := inst.InstallLocal(r, absSource)
+	result, err := inst.InstallLocalWithFinalize(r, absSource,
+		func(res *installer.InstallResult) error {
+			return ctx.FinalizeRecipeInstall(r, res.SHA256)
+		})
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
-	}
-
-	if err := ctx.FinalizeRecipeInstall(r, result.SHA256); err != nil {
-		return err
 	}
 
 	reportResult(out, result, "Installed", "built from local source")

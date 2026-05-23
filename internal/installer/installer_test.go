@@ -2844,3 +2844,100 @@ func TestInstallWithFinalize_NilFinalizeIsNoop(t *testing.T) {
 			result.Method, MethodCached)
 	}
 }
+
+// --- InstallLocalWithFinalize ---
+
+// TestInstallLocalWithFinalize_HoldsLockAcrossFinalize verifies that
+// InstallLocalWithFinalize holds the per-package lock for the entire
+// duration of finalize(), not just for the build phase. A goroutine
+// calls lockPackage directly (the same primitive store.Remove uses)
+// and must block until finalize() returns.
+func TestInstallLocalWithFinalize_HoldsLockAcrossFinalize(t *testing.T) {
+	sourceDir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(sourceDir, "README"),
+		[]byte("placeholder"), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	storeRoot := t.TempDir()
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "localpkg", Version: "1.0"},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				"echo '#!/bin/sh\necho local' > $PREFIX/bin/localpkg",
+				"chmod +x $PREFIX/bin/localpkg",
+			},
+		},
+	}
+
+	// unblock is closed by the test once we want finalize to return.
+	unblock := make(chan struct{})
+	// finalizeStarted is closed once finalize() is entered so we
+	// know the per-package lock is held.
+	finalizeStarted := make(chan struct{})
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := inst.InstallLocalWithFinalize(r, sourceDir,
+			func(res *InstallResult) error {
+				close(finalizeStarted)
+				<-unblock // hold the lock until test says go
+				return nil
+			})
+		done <- err
+	}()
+
+	// Wait until finalize is entered (lock is held).
+	select {
+	case <-finalizeStarted:
+	case <-time.After(30 * time.Second):
+		t.Fatal("finalize never started")
+	}
+
+	// Try to acquire the same per-package lock from a goroutine.
+	// It must block until finalize releases it.
+	lockAcquired := make(chan struct{})
+	go func() {
+		unlock, err := lockPackage(storeRoot, "localpkg", "1.0-1")
+		if err != nil {
+			t.Errorf("lockPackage: %v", err)
+			close(lockAcquired)
+			return
+		}
+		close(lockAcquired)
+		unlock()
+	}()
+
+	// Pause briefly to let the goroutine reach the lock contention.
+	time.Sleep(150 * time.Millisecond)
+
+	// Lock must NOT have been acquired while finalize holds it.
+	select {
+	case <-lockAcquired:
+		t.Fatal("lockPackage acquired the lock before finalize released it")
+	default:
+	}
+
+	// Unblock finalize — lock is now released.
+	close(unblock)
+
+	// Both finalize and the lock goroutine must complete.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("InstallLocalWithFinalize: %v", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("InstallLocalWithFinalize did not complete")
+	}
+
+	select {
+	case <-lockAcquired:
+	case <-time.After(10 * time.Second):
+		t.Fatal("lockPackage did not acquire lock after finalize released it")
+	}
+}

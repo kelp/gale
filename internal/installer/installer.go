@@ -244,6 +244,18 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 // the version exists in the store, since local source may
 // have changed without a version bump.
 func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*InstallResult, error) {
+	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
+	if err != nil {
+		return nil, fmt.Errorf("lock package: %w", err)
+	}
+	defer unlock()
+	return inst.installLocalLocked(r, sourceDir)
+}
+
+// installLocalLocked is the body of InstallLocal assuming the
+// per-package lock is held by the caller. Used by InstallLocal
+// and InstallLocalWithFinalize.
+func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*InstallResult, error) {
 	name := r.Package.Name
 	version := r.Package.Version
 	// Store paths use <version>-<revision> so revisions of
@@ -251,14 +263,6 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 	// the Store layer resolves "<v>-1" to a bare "<v>" dir
 	// when one exists from a pre-revision install.
 	storeVersion := r.Package.Full()
-
-	// Serialize concurrent local installs for the same
-	// package version, matching Install's locking.
-	unlock, err := lockPackage(inst.Store.Root, name, storeVersion)
-	if err != nil {
-		return nil, fmt.Errorf("lock package: %w", err)
-	}
-	defer unlock()
 
 	// Build into a temp dir inside <storeRoot>/<name>/ so
 	// the existing store entry and its active symlinks stay
@@ -305,6 +309,35 @@ func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*Instal
 		Method:  MethodSource,
 		SHA256:  hash,
 	}, nil
+}
+
+// InstallLocalWithFinalize acquires the per-package lock, runs the
+// local source install, then invokes finalize() while still holding
+// the lock, then releases. finalize == nil is a no-op. finalize
+// errors are returned alongside the InstallResult so the caller
+// sees partial state.
+func (inst *Installer) InstallLocalWithFinalize(
+	r *recipe.Recipe, sourceDir string,
+	finalize func(*InstallResult) error,
+) (*InstallResult, error) {
+	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
+	if err != nil {
+		return nil, fmt.Errorf("lock package: %w", err)
+	}
+	defer unlock()
+
+	result, err := inst.installLocalLocked(r, sourceDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if finalize != nil {
+		if err := finalize(result); err != nil {
+			return result, fmt.Errorf("finalize: %w", err)
+		}
+	}
+
+	return result, nil
 }
 
 // InstallGit clones a git repo and builds from the clone.
