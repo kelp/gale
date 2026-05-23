@@ -2651,3 +2651,196 @@ func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 			"staleness detection silently breaks")
 	}
 }
+
+// --- InstallWithFinalize ---
+
+// TestInstallWithFinalize_BlocksConcurrentStoreRemove is the
+// load-bearing regression test. InstallWithFinalize must hold the
+// per-package lock while finalize() runs, so a concurrent
+// store.Remove cannot delete the store dir out from under the caller
+// (e.g. a generation rebuild) until finalize() has finished.
+//
+// The test pre-seeds the store so the install returns MethodCached
+// (avoiding a real network/build round-trip). It then calls
+// InstallWithFinalize with a finalize that blocks on a channel for
+// ~200 ms. A goroutine races store.Remove against that window.
+// The assertion is that Remove returns AFTER finalize unblocked —
+// proving the lock was held for the whole finalize duration.
+func TestInstallWithFinalize_BlocksConcurrentStoreRemove(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	// Pre-seed the store so install hits MethodCached.
+	// Use the canonical <version>-<revision> form.
+	dir, err := s.Create("lockpkg", "1.0-1")
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatalf("create bin: %v", err)
+	}
+
+	inst := &Installer{Store: s}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "lockpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+	}
+
+	// unblock is closed by the test once we want finalize to return.
+	unblock := make(chan struct{})
+	// finalizeStarted is closed once finalize() is entered so we know
+	// the lock is held.
+	finalizeStarted := make(chan struct{})
+
+	var installDone time.Time
+	done := make(chan error, 1)
+	go func() {
+		_, err := inst.InstallWithFinalize(r, false, func(res *InstallResult) error {
+			close(finalizeStarted)
+			<-unblock // block until test says go
+			return nil
+		})
+		installDone = time.Now()
+		done <- err
+	}()
+
+	// Wait until finalize is entered (lock is held).
+	select {
+	case <-finalizeStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("finalize never started")
+	}
+
+	// Now race store.Remove against the held lock.
+	var removeDone time.Time
+	removeDoneC := make(chan struct{})
+	go func() {
+		defer close(removeDoneC)
+		// Remove uses the same per-package lock internally; it must
+		// block until finalize releases it.
+		_ = s.Remove("lockpkg", "1.0-1")
+		removeDone = time.Now()
+	}()
+
+	// Pause briefly to let Remove block on the lock.
+	time.Sleep(150 * time.Millisecond)
+
+	// Remove must NOT have returned yet (it should be waiting for
+	// the per-package lock that finalize holds).
+	select {
+	case <-removeDoneC:
+		t.Fatal("store.Remove returned before finalize released the lock")
+	default:
+	}
+
+	// Unblock finalize.
+	unblockTime := time.Now()
+	close(unblock)
+
+	// Wait for both operations.
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("InstallWithFinalize error: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("InstallWithFinalize did not complete")
+	}
+
+	select {
+	case <-removeDoneC:
+	case <-time.After(10 * time.Second):
+		t.Fatal("store.Remove did not complete after lock release")
+	}
+
+	// Remove must have finished AFTER finalize was unblocked.
+	if removeDone.Before(unblockTime) {
+		t.Errorf("store.Remove finished before finalize was unblocked: "+
+			"remove=%v unblock=%v — lock was not held during finalize",
+			removeDone, unblockTime)
+	}
+	_ = installDone // suppress unused warning
+}
+
+// TestInstallWithFinalize_PropagatesFinalizeError asserts that when
+// finalize returns a non-nil error, InstallWithFinalize returns a
+// non-nil error AND a non-nil result (partial state is visible).
+func TestInstallWithFinalize_PropagatesFinalizeError(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	// Pre-seed so install hits MethodCached — avoids network.
+	dir, err := s.Create("errpkg", "2.0-1")
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatalf("create bin: %v", err)
+	}
+
+	inst := &Installer{Store: s}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "errpkg", Version: "2.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+	}
+
+	sentinel := fmt.Errorf("finalize sentinel error")
+
+	result, err := inst.InstallWithFinalize(r, false, func(res *InstallResult) error {
+		return sentinel
+	})
+
+	if err == nil {
+		t.Fatal("expected non-nil error from finalize, got nil")
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result even when finalize errors")
+	}
+	// The error must wrap or equal the sentinel.
+	if !strings.Contains(err.Error(), sentinel.Error()) {
+		t.Errorf("error = %q, want it to contain sentinel %q",
+			err.Error(), sentinel.Error())
+	}
+	// Result must carry the package identity.
+	if result.Name != "errpkg" {
+		t.Errorf("result.Name = %q, want %q", result.Name, "errpkg")
+	}
+}
+
+// TestInstallWithFinalize_NilFinalizeIsNoop asserts that passing nil
+// as finalize causes the call to behave identically to Install:
+// no panic, no error, and the result carries the expected fields.
+func TestInstallWithFinalize_NilFinalizeIsNoop(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	// Pre-seed so install hits MethodCached.
+	dir, err := s.Create("nooppkg", "3.0-1")
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "bin"), 0o755); err != nil {
+		t.Fatalf("create bin: %v", err)
+	}
+
+	inst := &Installer{Store: s}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "nooppkg", Version: "3.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+	}
+
+	result, err := inst.InstallWithFinalize(r, false, nil)
+	if err != nil {
+		t.Fatalf("InstallWithFinalize with nil finalize: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result for nil finalize")
+	}
+	if result.Name != "nooppkg" {
+		t.Errorf("result.Name = %q, want %q", result.Name, "nooppkg")
+	}
+	if result.Method != MethodCached {
+		t.Errorf("result.Method = %q, want %q",
+			result.Method, MethodCached)
+	}
+}

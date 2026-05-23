@@ -1070,3 +1070,28 @@ func storeGenLockPath(storeRoot string) string {
 func withStoreGenLock(storeRoot string, fn func() error) error {
 	return filelock.With(storeGenLockPath(storeRoot), fn)
 }
+
+// InstallWithFinalize acquires the per-package lock, runs the install,
+// then invokes finalize() while still holding the lock, then releases.
+// finalize == nil is a no-op. finalize errors are returned alongside
+// the InstallResult so the caller sees partial state.
+func (inst *Installer) InstallWithFinalize(r *recipe.Recipe, force bool, finalize func(*InstallResult) error) (*InstallResult, error) {
+	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
+	if err != nil {
+		return nil, fmt.Errorf("lock package: %w", err)
+	}
+	defer unlock()
+
+	result, err := inst.installLocked(r, force)
+	if err != nil {
+		return nil, err
+	}
+
+	if finalize != nil {
+		if err := finalize(result); err != nil {
+			return result, fmt.Errorf("finalize: %w", err)
+		}
+	}
+
+	return result, nil
+}
