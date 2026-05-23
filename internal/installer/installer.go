@@ -73,6 +73,18 @@ func (inst *Installer) Reinstall(r *recipe.Recipe) (*InstallResult, error) {
 }
 
 func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, error) {
+	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
+	if err != nil {
+		return nil, fmt.Errorf("lock package: %w", err)
+	}
+	defer unlock()
+	return inst.installLocked(r, force)
+}
+
+// installLocked is the body of install assuming the per-package
+// lock is held by the caller. Used by install() and by
+// InstallWithFinalize (added in a follow-up commit).
+func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResult, error) {
 	name := r.Package.Name
 	version := r.Package.Version
 	// Store paths use the full <version>-<revision> form so
@@ -80,14 +92,6 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 	// The Store layer falls back from "<v>-1" to bare "<v>"
 	// for back-compat with pre-revision installs.
 	storeVersion := r.Package.Full()
-
-	// Acquire a file lock to prevent concurrent installs
-	// of the same package version from corrupting the store.
-	unlock, err := lockPackage(inst.Store.Root, name, storeVersion)
-	if err != nil {
-		return nil, fmt.Errorf("lock package: %w", err)
-	}
-	defer unlock()
 
 	canonicalDir := filepath.Join(inst.Store.Root, name, storeVersion)
 	var storeDir string
@@ -149,6 +153,7 @@ func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, er
 	// shot — matches the pre-revision behavior and keeps a
 	// single failure surface for source-only installs.
 	var depPaths *build.BuildDeps
+	var err error
 	if binaryViable {
 		depPaths, err = inst.InstallRuntimeDeps(r)
 	} else {
