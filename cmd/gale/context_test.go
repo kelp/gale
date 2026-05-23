@@ -456,7 +456,7 @@ func TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion(t *testing.T) {
 
 	// Cached install with canonical lockVersion and empty sha256.
 	if err := writeConfigAndLock(
-		configPath, "mypkg", "1.8.1", "1.8.1-1", ""); err != nil {
+		configPath, "", "mypkg", "1.8.1", "1.8.1-1", ""); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -504,7 +504,7 @@ func TestFinalizeInstallWrapsRebuildError(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(galeDir, 0o755) }) //nolint:gosec
 
-	err = finalizeInstall(galeDir, storeRoot, configPath, "jq", "1.8.1", "1.8.1-1", "sha256abc")
+	err = finalizeInstall(galeDir, storeRoot, configPath, "", "jq", "1.8.1", "1.8.1-1", "sha256abc")
 	if err == nil {
 		t.Fatal("expected finalizeInstall to return error on rebuild failure")
 	}

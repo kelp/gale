@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -1483,5 +1484,127 @@ slack = true
 	}
 	if cfg.EffectivePinned("home")["slack"] {
 		t.Error("expected slack not pinned on home")
+	}
+}
+
+// --- Bug 0012: Config mutations strip TOML comments ---
+
+func TestAddPackagePreservesComments(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+
+	// Write a gale.toml with both standalone and inline comments.
+	initial := `# Managed by gale - do not edit manually
+[packages]
+# search tools
+ripgrep = "14.0" # fast grep replacement
+jq = "1.7.1"
+`
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("failed to write initial gale.toml: %v", err)
+	}
+
+	if err := AddPackage(path, "", "bat", "0.24.0"); err != nil {
+		t.Fatalf("AddPackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file after mutation: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "# Managed by gale") {
+		t.Error("AddPackage stripped the standalone header comment")
+	}
+	if !strings.Contains(content, "# search tools") {
+		t.Error("AddPackage stripped the inline section comment")
+	}
+	if !strings.Contains(content, "# fast grep replacement") {
+		t.Error("AddPackage stripped the inline value comment")
+	}
+}
+
+// --- Bug 0013: Config mutations reorder package keys alphabetically ---
+
+func TestAddPackagePreservesKeyOrdering(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+
+	// Packages in a deliberate non-alphabetical order:
+	// ripgrep, fd, bat, jq.
+	// Alphabetically the order would be: bat, fd, jq, ripgrep.
+	// So after a buggy alphabetical sort, ripgrep appears AFTER jq.
+	// The test verifies ripgrep still appears BEFORE jq (original order).
+	initial := `[packages]
+ripgrep = "14.0"
+fd = "9.0"
+bat = "0.24.0"
+jq = "1.7.1"
+`
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("failed to write initial gale.toml: %v", err)
+	}
+
+	if err := AddPackage(path, "", "fzf", "0.50"); err != nil {
+		t.Fatalf("AddPackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file after mutation: %v", err)
+	}
+	content := string(data)
+
+	idxRipgrep := strings.Index(content, "ripgrep")
+	idxJq := strings.Index(content, "jq")
+
+	if idxRipgrep < 0 {
+		t.Fatal("ripgrep not found in output file")
+	}
+	if idxJq < 0 {
+		t.Fatal("jq not found in output file")
+	}
+	if idxRipgrep >= idxJq {
+		t.Errorf("key ordering changed: ripgrep (pos %d) should appear before jq (pos %d) but does not; AddPackage alphabetized the keys", idxRipgrep, idxJq)
+	}
+}
+
+// --- Bug 0014: Config mutations drop unknown TOML sections ---
+
+func TestAddPackagePreservesUnknownSections(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+
+	// Write a gale.toml with a custom section not known to GaleConfig.
+	initial := `[packages]
+jq = "1.7.1"
+
+[custom]
+owner = "my-team"
+environment = "production"
+`
+	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
+		t.Fatalf("failed to write initial gale.toml: %v", err)
+	}
+
+	if err := AddPackage(path, "", "ripgrep", "14.0"); err != nil {
+		t.Fatalf("AddPackage error: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("failed to read file after mutation: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "[custom]") {
+		t.Error("AddPackage dropped the unknown [custom] section header")
+	}
+	if !strings.Contains(content, "owner") {
+		t.Error("AddPackage dropped the 'owner' key from the unknown [custom] section")
+	}
+	if !strings.Contains(content, "my-team") {
+		t.Error("AddPackage dropped the 'my-team' value from the unknown [custom] section")
 	}
 }
