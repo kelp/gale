@@ -239,7 +239,9 @@ Requires an Anthropic API key in
 .It Cm audit Ar pkg
 Rebuild a package from source and compare its SHA256
 against the installed binary.
-Verifies reproducibility.
+A match confirms the build is reproducible; most builds
+are not yet deterministic, so a mismatch does not
+indicate tampering.
 .Pp
 .Dl $ gale audit jq
 .It Cm verify Ar pkg

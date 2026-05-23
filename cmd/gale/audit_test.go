@@ -27,6 +27,33 @@ func TestVerifyDoesNotCallResolveConfigPathSeparately(t *testing.T) {
 // through internal/output helpers, not raw `fmt.Fprintf(
 // os.Stderr, ...)`. The raw writes bypass quiet/color modes
 // — a `-q` user still sees the SHA pair.
+// TestAuditShortMatchesLongFraming pins audit
+// RO-J:help-text/0005: the Short summary must describe what
+// `gale audit` *does* (rebuild + SHA compare), not what the
+// Long string then walks back ("most builds are not yet
+// deterministic"). A user scanning `gale --help` should not
+// infer that audit is a tamper-detection check.
+func TestAuditShortMatchesLongFraming(t *testing.T) {
+	short := strings.ToLower(auditCmd.Short)
+	if !strings.Contains(short, "rebuild") &&
+		!strings.Contains(short, "hash") &&
+		!strings.Contains(short, "sha") {
+		t.Errorf(
+			"audit Short = %q should describe the mechanism "+
+				"(rebuild + compare hash), not aspirational "+
+				"semantics most builds don't satisfy",
+			auditCmd.Short)
+	}
+	if strings.Contains(short, "reproducibly") ||
+		strings.Contains(short, "reproducible") {
+		t.Errorf(
+			"audit Short = %q over-claims; the Long string "+
+				"explicitly says most builds are not "+
+				"deterministic",
+			auditCmd.Short)
+	}
+}
+
 func TestAuditDoesNotUseFprintfStderrDirectly(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "audit.go", nil, 0)

@@ -11,7 +11,7 @@ import (
 
 var auditCmd = &cobra.Command{
 	Use:   "audit <package>",
-	Short: "Verify a package builds reproducibly",
+	Short: "Rebuild a package and compare its hash",
 	Long: `Rebuild a package from source and compare the SHA256 against the
 installed binary. Most builds are not yet deterministic — mismatches
 are expected due to timestamps, embedded paths, and build IDs. A match

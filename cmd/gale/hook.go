@@ -8,14 +8,21 @@ import (
 )
 
 var hookCmd = &cobra.Command{
-	Use:   "hook <shell>",
+	Use:   "hook direnv",
 	Short: "Print shell integration script",
 	Long: `Print a script that integrates gale with direnv.
 
-Add to ~/.config/direnv/direnvrc:
+Currently only direnv is supported. Add to
+~/.config/direnv/direnvrc:
 
   eval "$(gale hook direnv)"`,
-	Args:      cobra.ExactArgs(1),
+	// ExactArgs(1) by itself ignores ValidArgs. Compose with
+	// OnlyValidArgs so an unknown shell is rejected at the
+	// cobra layer with a diagnostic listing the accepted
+	// values, rather than falling through to a generic
+	// "unsupported shell" error from env.GenerateHook.
+	Args: cobra.MatchAll(
+		cobra.ExactArgs(1), cobra.OnlyValidArgs),
 	ValidArgs: []string{"direnv"},
 	RunE: func(cmd *cobra.Command, args []string) error {
 		script, err := env.GenerateHook(args[0])
