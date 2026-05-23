@@ -1,8 +1,85 @@
 package main
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"sort"
 	"testing"
 )
+
+// TestOutdatedSortsByName pins audit RO-J:output-format/0004:
+// outdated's display order must be sorted by package name. Go
+// map iteration is randomised, so iterating `cfg.Packages`
+// directly produces non-deterministic output that peer
+// read-only commands (list, sbom, env, inspect) already avoid.
+//
+// Static check: outdated.go must call sort.* before iterating
+// cfg.Packages, so the resulting items slice has a stable
+// order.
+func TestOutdatedSortsByName(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(
+		fset, "outdated.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parsing outdated.go: %v", err)
+	}
+
+	callsSort := false
+	rangesOverPackagesDirectly := false
+
+	ast.Inspect(f, func(n ast.Node) bool {
+		// Detect any call to sort.* (sort.Strings, sort.Slice,
+		// etc.).
+		if call, ok := n.(*ast.CallExpr); ok {
+			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+				if ident, ok := sel.X.(*ast.Ident); ok {
+					if ident.Name == "sort" {
+						callsSort = true
+					}
+				}
+			}
+		}
+		// Detect `for ... := range cfg.Packages` (map iter).
+		if rs, ok := n.(*ast.RangeStmt); ok {
+			if sel, ok := rs.X.(*ast.SelectorExpr); ok {
+				if sel.Sel.Name == "Packages" {
+					rangesOverPackagesDirectly = true
+				}
+			}
+		}
+		return true
+	})
+
+	if rangesOverPackagesDirectly && !callsSort {
+		t.Errorf(
+			"outdated.go iterates cfg.Packages (a map) without " +
+				"calling sort.* — output order will vary " +
+				"between runs. Build a sorted keys slice first.")
+	}
+}
+
+// TestFormatOutdatedPreservesOrder verifies the helper keeps
+// the caller's input order intact. The caller is responsible
+// for sorting; formatOutdated itself must not shuffle.
+func TestFormatOutdatedPreservesOrder(t *testing.T) {
+	items := []outdatedItem{
+		{"zlib", "1.2", "1.3"},
+		{"jq", "1.7", "1.8"},
+		{"go", "1.25", "1.26"},
+	}
+	sort.Slice(items, func(i, j int) bool {
+		return items[i].Name < items[j].Name
+	})
+	lines := formatOutdated(items)
+	want := []string{"go", "jq", "zlib"}
+	for i, w := range want {
+		if !contains(lines[i], w) {
+			t.Errorf("line %d = %q, want it to start with %s",
+				i, lines[i], w)
+		}
+	}
+}
 
 func TestFormatOutdated(t *testing.T) {
 	tests := []struct {

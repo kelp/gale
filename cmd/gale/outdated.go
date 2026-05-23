@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"sort"
 
 	ver "github.com/kelp/gale/internal/version"
 	"github.com/spf13/cobra"
@@ -50,8 +51,19 @@ var outdatedCmd = &cobra.Command{
 			return nil
 		}
 
+		// Sort package names before iterating cfg.Packages so
+		// the output order is deterministic. Go's map iteration
+		// is randomised; peer read-only commands (list, sbom,
+		// env, inspect) all sort first.
+		names := make([]string, 0, len(cfg.Packages))
+		for name := range cfg.Packages {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+
 		var items []outdatedItem
-		for name, version := range cfg.Packages {
+		for _, name := range names {
+			version := cfg.Packages[name]
 			r, err := ctx.Resolver(name)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
