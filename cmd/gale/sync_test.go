@@ -94,7 +94,7 @@ func TestFinishSyncRebuildsOnFailure(t *testing.T) {
 	// packages that did install land on PATH. The failure
 	// error still propagates so the exit code is non-zero.
 	called := false
-	err := finishSync(false, 1, func() error {
+	err := finishSync(false, 1, 0, func() error {
 		called = true
 		return nil
 	})
@@ -112,7 +112,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 	// discarded. The install count tells the user which package
 	// broke; the rebuild error tells them the PATH may be stale.
 	rebuildErr := errors.New("rebuild boom")
-	err := finishSync(false, 2, func() error {
+	err := finishSync(false, 2, 0, func() error {
 		return rebuildErr
 	})
 	if err == nil {
@@ -125,7 +125,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 
 func TestFinishSyncReturnsRebuildError(t *testing.T) {
 	errBoom := errors.New("boom")
-	err := finishSync(false, 0, func() error {
+	err := finishSync(false, 0, 1, func() error {
 		return errBoom
 	})
 	if !errors.Is(err, errBoom) {
@@ -139,7 +139,7 @@ func TestFinishSyncReturnsRebuildError(t *testing.T) {
 // the rebuild error was silently discarded when failed > 0.
 func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 	rebuildErr := errors.New("generation build failed")
-	err := finishSync(false, 1, func() error { return rebuildErr })
+	err := finishSync(false, 1, 0, func() error { return rebuildErr })
 	if err == nil {
 		t.Fatal("finishSync must return error when failed > 0")
 	}
@@ -150,7 +150,7 @@ func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 
 func TestFinishSyncSkipsRebuildInDryRun(t *testing.T) {
 	called := false
-	err := finishSync(true, 0, func() error {
+	err := finishSync(true, 0, 1, func() error {
 		called = true
 		return nil
 	})
@@ -196,7 +196,7 @@ func TestFinishSyncFailurePreservesPartialProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = finishSync(false, 1, func() error {
+	err = finishSync(false, 1, 0, func() error {
 		return rebuildGenerationLenient(galeDir, storeRoot, configPath)
 	})
 	if err == nil {
@@ -246,6 +246,25 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 	// important thing is that the function accepts 4 args
 	// and the project flag reaches config resolution.
 	_ = err
+}
+
+// TestFinishSyncSkipsRebuildWhenNothingInstalled guards against bug 0020:
+// finishSync always calls rebuild() when not in dry-run mode, even when
+// no packages were actually installed. This creates a new generation on
+// every invocation, causing the generation counter to grow without bound.
+// Fix: add an `installed int` parameter and skip rebuild when installed == 0.
+func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
+	rebuilt := false
+	err := finishSync(false, 0, 0, func() error {
+		rebuilt = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("finishSync returned unexpected error: %v", err)
+	}
+	if rebuilt {
+		t.Error("finishSync must not call rebuild when installed == 0")
+	}
 }
 
 // TestSyncWritesLockfileHash documents that sync should

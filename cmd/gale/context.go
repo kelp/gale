@@ -342,7 +342,10 @@ func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, 
 		configPath, host, name, configVersion, lockVersion, sha256); err != nil {
 		return fmt.Errorf("writing config and lock: %w", err)
 	}
-	return rebuildGeneration(galeDir, storeRoot, configPath)
+	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+		return fmt.Errorf("rebuild generation: %w", err)
+	}
+	return nil
 }
 
 // updateLockfile reads the lockfile, updates one package

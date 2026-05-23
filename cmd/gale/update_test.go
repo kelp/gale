@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
@@ -195,7 +196,7 @@ func TestUpdateAction(t *testing.T) {
 
 func TestFinishUpdateReturnsRebuildError(t *testing.T) {
 	errBoom := errors.New("boom")
-	err := finishUpdate(false, 0, func() error {
+	err := finishUpdate(false, 0, 1, func() error {
 		return errBoom
 	})
 	if !errors.Is(err, errBoom) {
@@ -205,7 +206,7 @@ func TestFinishUpdateReturnsRebuildError(t *testing.T) {
 
 func TestFinishUpdateRebuildsWhenNothingUpdated(t *testing.T) {
 	called := false
-	err := finishUpdate(false, 0, func() error {
+	err := finishUpdate(false, 0, 1, func() error {
 		called = true
 		return nil
 	})
@@ -219,7 +220,7 @@ func TestFinishUpdateRebuildsWhenNothingUpdated(t *testing.T) {
 
 func TestFinishUpdateSkipsRebuildInDryRun(t *testing.T) {
 	called := false
-	err := finishUpdate(true, 0, func() error {
+	err := finishUpdate(true, 0, 1, func() error {
 		called = true
 		return nil
 	})
@@ -237,7 +238,7 @@ func TestFinishUpdateSkipsRebuildInDryRun(t *testing.T) {
 // partially-failed update exits 0, hiding failures from callers and
 // CI scripts.
 func TestFinishUpdateReturnsErrorOnFailure(t *testing.T) {
-	err := finishUpdate(false, 1, func() error { return nil })
+	err := finishUpdate(false, 1, 0, func() error { return nil })
 	if err == nil {
 		t.Error("finishUpdate must return non-nil error when failed > 0")
 	}
@@ -245,7 +246,7 @@ func TestFinishUpdateReturnsErrorOnFailure(t *testing.T) {
 
 func TestFinishUpdateWrapsRebuildErrorOnFailure(t *testing.T) {
 	rebuildErr := errors.New("generation rebuild failed")
-	err := finishUpdate(false, 1, func() error { return rebuildErr })
+	err := finishUpdate(false, 1, 0, func() error { return rebuildErr })
 	if err == nil {
 		t.Fatal("finishUpdate must return non-nil when failed > 0 and rebuild fails")
 	}
@@ -340,6 +341,91 @@ func TestUpdateHasScopeFlags(t *testing.T) {
 	}
 	if updateCmd.Flags().Lookup("project") == nil {
 		t.Error("update is missing --project/-p flag")
+	}
+}
+
+// TestFinishUpdateSkipsRebuildWhenNothingChanged guards against bug 0020:
+// finishUpdate always calls rebuild() when not in dry-run mode, even when
+// no packages were updated. This creates a new generation on every
+// invocation, causing the generation counter to grow without bound.
+// Fix: add an `updated int` parameter and skip rebuild when updated == 0.
+func TestFinishUpdateSkipsRebuildWhenNothingChanged(t *testing.T) {
+	rebuilt := false
+	err := finishUpdate(false, 0, 0, func() error {
+		rebuilt = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("finishUpdate returned unexpected error: %v", err)
+	}
+	if rebuilt {
+		t.Error("finishUpdate must not call rebuild when updated == 0")
+	}
+}
+
+// TestUpdatePathRequiresPackageInConfig guards against bug 0021:
+// update --path fires before loading the config, so any package name
+// can be passed without being checked for gale.toml membership. Normal
+// `update <pkg>` warns "not in gale.toml, skipping". The --path branch
+// must return an error explicitly about the missing membership, not
+// proceed to the install attempt. The test asserts the error message
+// contains "not in gale.toml" or "newpkg", which the current code never
+// produces (it fails later with a recipe/path error).
+func TestUpdatePathRequiresPackageInConfig(t *testing.T) {
+	tmp := t.TempDir()
+	// Create a gale.toml that does NOT list "newpkg".
+	if err := os.WriteFile(filepath.Join(tmp, "gale.toml"),
+		[]byte("[packages]\njq = \"1.8.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	defer os.Chdir(orig) //nolint:errcheck
+
+	// Save/restore package-level flags.
+	savedPath := updatePath
+	savedRecipes := updateRecipes
+	savedNoRefresh := updateNoRefresh
+	savedGit := updateGit
+	savedNoInstall := updateNoInstall
+	savedBuild := updateBuild
+	savedRecipe := updateRecipe
+	savedDryRun := dryRun
+	defer func() {
+		updatePath = savedPath
+		updateRecipes = savedRecipes
+		updateNoRefresh = savedNoRefresh
+		updateGit = savedGit
+		updateNoInstall = savedNoInstall
+		updateBuild = savedBuild
+		updateRecipe = savedRecipe
+		dryRun = savedDryRun
+	}()
+
+	updatePath = "/some/path"
+	updateRecipes = ""
+	updateNoRefresh = true
+	updateGit = false
+	updateNoInstall = false
+	updateBuild = false
+	updateRecipe = ""
+	dryRun = false
+
+	err := updateCmd.RunE(updateCmd, []string{"newpkg"})
+	if err == nil {
+		t.Error("update --path with package not in gale.toml must return error")
+		return
+	}
+	// The error must explicitly say "not in gale.toml" — the same phrasing
+	// normal `update <pkg>` uses via out.Warn. Today the code bypasses the
+	// membership check and returns a recipe/path error instead. After the
+	// fix, the check runs first and produces a clear membership error.
+	if !strings.Contains(err.Error(), "not in gale.toml") {
+		t.Errorf("update --path error %q must say 'not in gale.toml'; "+
+			"today the membership check is bypassed and the error is about "+
+			"a missing recipe/path instead", err.Error())
 	}
 }
 

@@ -225,7 +225,7 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		installed++
 	}
 
-	if err := finishSync(dryRun, failed, ctx.RebuildGenerationLenient); err != nil {
+	if err := finishSync(dryRun, failed, installed, ctx.RebuildGenerationLenient); err != nil {
 		if failed > 0 {
 			out.Warn(fmt.Sprintf(
 				"Sync finished with %d error(s)", failed))
@@ -247,9 +247,12 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 // with no current symlink at all. Rebuilding first keeps
 // partial progress usable; the failure error still
 // propagates so the exit code is non-zero.
-func finishSync(dryRun bool, failed int, rebuild func() error) error {
+func finishSync(dryRun bool, failed int, installed int, rebuild func() error) error {
 	if dryRun {
 		return nil
+	}
+	if installed == 0 && failed == 0 {
+		return nil // nothing changed — skip rebuild
 	}
 	rebuildErr := rebuild()
 	if failed > 0 {

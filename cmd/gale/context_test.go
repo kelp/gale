@@ -471,6 +471,48 @@ func TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion(t *testing.T) {
 	}
 }
 
+// TestFinalizeInstallWrapsRebuildError guards against bug 0015:
+// finalizeInstall returns the raw error from rebuildGeneration without
+// wrapping it with "rebuild generation" context. Install and switch
+// callers cannot add context they don't have; the wrapper belongs here.
+func TestFinalizeInstallWrapsRebuildError(t *testing.T) {
+	tmp := t.TempDir()
+	galeDir := filepath.Join(tmp, ".gale")
+	storeRoot := filepath.Join(tmp, "pkg")
+	configPath := filepath.Join(tmp, "gale.toml")
+
+	// Create a valid package in the store so config+lockfile writes succeed.
+	s := store.NewStore(storeRoot)
+	pkgDir, err := s.Create("jq", "1.8.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(pkgDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "jq"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("[packages]\n  jq = \"1.8.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Make the gale directory read-only so generation.Build fails.
+	if err := os.MkdirAll(galeDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(galeDir, 0o755) }) //nolint:gosec
+
+	err = finalizeInstall(galeDir, storeRoot, configPath, "jq", "1.8.1", "1.8.1-1", "sha256abc")
+	if err == nil {
+		t.Fatal("expected finalizeInstall to return error on rebuild failure")
+	}
+	if !strings.Contains(err.Error(), "rebuild generation") {
+		t.Errorf("finalizeInstall error %q does not contain 'rebuild generation' context", err.Error())
+	}
+}
+
 // TestRemoveLockEntryHoldsFileLock tests bug 0007: removeLockEntry
 // performs a plain read-modify-write with no filelock.With(), unlike
 // updateLockfile which serializes via filelock.With(). Concurrent

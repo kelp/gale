@@ -75,6 +75,15 @@ var updateCmd = &cobra.Command{
 					"update %s (from local source)", args[0]))
 				return nil
 			}
+			// Check membership in gale.toml — consistent with normal update path.
+			cfg, cfgErr := ctx.LoadConfig()
+			if cfgErr != nil {
+				return cfgErr
+			}
+			if _, ok := cfg.Packages[args[0]]; !ok {
+				return fmt.Errorf("%s not in gale.toml — use 'gale install --path %s %s' to add it",
+					args[0], updatePath, args[0])
+			}
 			return installFromLocalSource(ctx,
 				args[0], updateRecipe, updatePath, out)
 		}
@@ -89,6 +98,15 @@ var updateCmd = &cobra.Command{
 				out.Info(fmt.Sprintf(
 					"update %s (from git HEAD)", args[0]))
 				return nil
+			}
+			// Check membership in gale.toml.
+			cfg, cfgErr := ctx.LoadConfig()
+			if cfgErr != nil {
+				return cfgErr
+			}
+			if _, ok := cfg.Packages[args[0]]; !ok {
+				return fmt.Errorf("%s not in gale.toml — use 'gale install --git %s' to add it",
+					args[0], args[0])
 			}
 			return updateFromGit(args[0], ctx, out)
 		}
@@ -242,7 +260,7 @@ var updateCmd = &cobra.Command{
 		// new pin points at a store dir that does not exist
 		// yet, which would cause rebuild to fail. The
 		// follow-up `gale sync` installs and rebuilds.
-		if err := finishUpdate(dryRun || updateNoInstall, failed, ctx.RebuildGeneration); err != nil {
+		if err := finishUpdate(dryRun || updateNoInstall, failed, updated, ctx.RebuildGeneration); err != nil {
 			return err
 		}
 		if updated == 0 {
@@ -259,9 +277,12 @@ var updateCmd = &cobra.Command{
 	},
 }
 
-func finishUpdate(dryRun bool, failed int, rebuild func() error) error {
+func finishUpdate(dryRun bool, failed int, updated int, rebuild func() error) error {
 	if dryRun {
 		return nil
+	}
+	if updated == 0 && failed == 0 {
+		return nil // nothing changed — skip rebuild
 	}
 	rebuildErr := rebuild()
 	if failed > 0 {
