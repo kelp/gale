@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"os"
 	"sort"
 	"strings"
 	"testing"
@@ -319,5 +320,74 @@ func TestUpdateGitSkipsWhenVersionIsSemver(t *testing.T) {
 	installedHash := "def5678"
 	if isGitHash(installedHash) && installedHash == remoteHash {
 		t.Error("different hashes should not match")
+	}
+}
+
+// TestUpdatePathRespectsDryRun verifies that update --path --dry-run
+// does not perform any real writes. Bug 0004: the --path branch fires
+// before the dryRun check in update.go, so installFromLocalSource is
+// called unconditionally even with --dry-run, causing a real install
+// attempt (and failure). After the fix, dryRun is checked first and
+// the function returns nil immediately.
+func TestUpdatePathRespectsDryRun(t *testing.T) {
+	// Create a temp dir with a minimal gale.toml.
+	tmp := t.TempDir()
+	if err := os.WriteFile(
+		tmp+"/gale.toml",
+		[]byte("[packages]\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// Change working dir so newCmdContext auto-detects the project.
+	origDir, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(tmp); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(origDir) })
+
+	// Save and restore all package-level globals we mutate.
+	origDryRun := dryRun
+	origUpdatePath := updatePath
+	origUpdateRecipes := updateRecipes
+	origUpdateNoRefresh := updateNoRefresh
+	origUpdateGit := updateGit
+	origUpdateRecipe := updateRecipe
+	origUpdateNoInstall := updateNoInstall
+	origUpdateBuild := updateBuild
+	t.Cleanup(func() {
+		dryRun = origDryRun
+		updatePath = origUpdatePath
+		updateRecipes = origUpdateRecipes
+		updateNoRefresh = origUpdateNoRefresh
+		updateGit = origUpdateGit
+		updateRecipe = origUpdateRecipe
+		updateNoInstall = origUpdateNoInstall
+		updateBuild = origUpdateBuild
+	})
+
+	dryRun = true
+	updatePath = "/absolutely-nonexistent-source-xyz"
+	updateRecipes = ""
+	updateNoRefresh = true
+	updateGit = false
+	updateRecipe = ""
+	updateNoInstall = false
+	updateBuild = false
+
+	// With dryRun=true, RunE must return nil — no real install.
+	// Before the fix: updatePath != "" causes installFromLocalSource
+	// to be called without a dryRun check, which fails with a
+	// "no recipe found" error, making err non-nil.
+	err = updateCmd.RunE(updateCmd, []string{"testpkg"})
+	if err != nil {
+		t.Errorf(
+			"update --path --dry-run returned error %v; "+
+				"want nil (dry-run must not attempt real install)",
+			err)
 	}
 }

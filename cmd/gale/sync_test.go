@@ -273,3 +273,9 @@ func TestSyncWritesLockfileHash(t *testing.T) {
 	// lockfile actually gets updated.
 	t.Log("sync should write SHA256 hashes to gale.lock")
 }
+
+// NOTE (finding 0005): The bug where sync --dry-run emits "stale —
+// reinstalling" before the dry-run check cannot be unit-tested without
+// output-capture infrastructure (newOutput() writes directly to os.Stderr).
+// The fix is a one-line code movement in runSync — moving the stale info
+// message inside the !dryRun block.

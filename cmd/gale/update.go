@@ -64,6 +64,11 @@ var updateCmd = &cobra.Command{
 
 		// --path: rebuild from local source directory.
 		if updatePath != "" {
+			if dryRun {
+				out.Info(fmt.Sprintf(
+					"update %s (from local source)", args[0]))
+				return nil
+			}
 			return installFromLocalSource(ctx,
 				args[0], updateRecipe, updatePath, out)
 		}
@@ -73,6 +78,11 @@ var updateCmd = &cobra.Command{
 			if len(args) != 1 {
 				return fmt.Errorf(
 					"--git requires exactly one package name")
+			}
+			if dryRun {
+				out.Info(fmt.Sprintf(
+					"update %s (from git HEAD)", args[0]))
+				return nil
 			}
 			return updateFromGit(args[0], ctx, out)
 		}

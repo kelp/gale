@@ -121,16 +121,19 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 				}
 				continue
 			}
-			out.Info(fmt.Sprintf(
-				"%s@%s stale — deps changed; reinstalling",
-				name, version))
 		}
 
 		if dryRun {
 			out.Info(fmt.Sprintf(
-				"install %s@%s", name, version))
+				"install %s@%s (stale)", name, version))
 			installed++
 			continue
+		}
+
+		if stale {
+			out.Info(fmt.Sprintf(
+				"%s@%s stale — deps changed; reinstalling",
+				name, version))
 		}
 
 		// Not in store — fetch recipe for pinned version.
