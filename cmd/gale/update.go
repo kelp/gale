@@ -6,6 +6,7 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/gitutil"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	ver "github.com/kelp/gale/internal/version"
 	"github.com/spf13/cobra"
@@ -235,21 +236,15 @@ var updateCmd = &cobra.Command{
 			out.Info(fmt.Sprintf("Updating %s %s → %s...",
 				name, t.current, r.Package.Full()))
 
-			result, err := ctx.Installer.Install(r)
+			result, err := ctx.Installer.InstallWithFinalize(r, false,
+				func(res *installer.InstallResult) error {
+					return ctx.WriteConfigAndLockForRecipe(r, res.SHA256)
+				})
 			if err != nil {
 				out.Warn(fmt.Sprintf(
 					"Failed to update %s: %v", name, err))
 				failed++
 				continue
-			}
-
-			// Update gale.toml and lockfile. Bare form
-			// goes to gale.toml (auto-tracks revision
-			// bumps); canonical <v>-<N> pins gale.lock.
-			if err := ctx.WriteConfigAndLockForRecipe(
-				r, result.SHA256); err != nil {
-				return fmt.Errorf("updating %s: %w",
-					name, err)
 			}
 
 			reportResult(out, result, "Updated", "built from source")

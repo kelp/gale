@@ -119,7 +119,10 @@ var installCmd = &cobra.Command{
 		out.Info(fmt.Sprintf("Installing %s@%s...",
 			r.Package.Name, r.Package.Version))
 
-		result, err := ctx.Installer.Install(r)
+		result, err := ctx.Installer.InstallWithFinalize(r, false,
+			func(res *installer.InstallResult) error {
+				return ctx.FinalizeRecipeInstall(r, res.SHA256)
+			})
 		if err != nil {
 			if errors.Is(err, build.ErrUnsupportedPlatform) {
 				out.Warn(fmt.Sprintf("%s does not support %s/%s",
@@ -127,10 +130,6 @@ var installCmd = &cobra.Command{
 				return fmt.Errorf("install failed: %w", err)
 			}
 			return fmt.Errorf("install failed: %w", err)
-		}
-
-		if err := ctx.FinalizeRecipeInstall(r, result.SHA256); err != nil {
-			return err
 		}
 
 		reportResult(out, result, "Installed", "built from source")

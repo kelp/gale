@@ -6,6 +6,7 @@ import (
 	"runtime"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/spf13/cobra"
 )
 
@@ -87,7 +88,10 @@ Unlike 'gale update', switch:
 			ctx.Installer.SourceOnly = true
 		}
 
-		result, err := ctx.Installer.Install(r)
+		result, err := ctx.Installer.InstallWithFinalize(r, false,
+			func(res *installer.InstallResult) error {
+				return ctx.FinalizeRecipeInstall(r, res.SHA256)
+			})
 		if err != nil {
 			if errors.Is(err, build.ErrUnsupportedPlatform) {
 				out.Warn(fmt.Sprintf(
@@ -95,10 +99,6 @@ Unlike 'gale update', switch:
 					name, runtime.GOOS, runtime.GOARCH))
 			}
 			return fmt.Errorf("install failed: %w", err)
-		}
-
-		if err := ctx.FinalizeRecipeInstall(r, result.SHA256); err != nil {
-			return err
 		}
 
 		reportResult(out, result, "Switched", "built from source")
