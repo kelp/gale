@@ -539,6 +539,72 @@ func TestInstallBinaryPreservesArchiveDepsMetadata(t *testing.T) {
 	}
 }
 
+// TestInstallBinaryWritesEmptyDepsForZeroDepRecipe pins the
+// fresh-vs-legacy distinction for the staleness check. A
+// zero-dep recipe whose binary archive doesn't ship a
+// .gale-deps.toml must still get an (empty) metadata file
+// written at install time. Without it, IsStale's
+// "missing file = soft-migration stale" heuristic treats a
+// fresh install as if it predated the revision system and
+// `gale sync` re-installs forever. The legacy-stale path is
+// reserved for installs that pre-date this metadata; a fresh
+// install with known-empty deps must record that fact.
+func TestInstallBinaryWritesEmptyDepsForZeroDepRecipe(t *testing.T) {
+	binContent := "#!/bin/sh\necho ok"
+	tarzst := createTarZstdWithFiles(t, map[string]string{
+		"bin/":        "",
+		"bin/testpkg": binContent,
+	})
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData)
+		}))
+	defer srv.Close()
+	restore := download.SetHTTPClient(srv.Client())
+	defer restore()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    fmt.Sprintf("%s/testpkg-1.0.tar.zst", srv.URL),
+				SHA256: hash,
+				Trust:  recipe.TrustSHA256Only,
+			},
+		},
+	}
+
+	if _, err := inst.Install(r); err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+
+	storeDeps := filepath.Join(storeRoot,
+		"testpkg", "1.0-1", ".gale-deps.toml")
+	if _, err := os.Stat(storeDeps); err != nil {
+		t.Fatalf(".gale-deps.toml not written for zero-dep "+
+			"recipe: %v", err)
+	}
+
+	md, err := ReadDepsMetadata(filepath.Join(storeRoot,
+		"testpkg", "1.0-1"))
+	if err != nil {
+		t.Fatalf("read deps metadata: %v", err)
+	}
+	if len(md.Deps) != 0 {
+		t.Errorf("Deps = %v, want empty", md.Deps)
+	}
+}
+
 // --- Install cached ---
 
 func TestInstallCachedReturnsWithoutDownload(t *testing.T) {

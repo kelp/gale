@@ -632,18 +632,24 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		// recipe changes. If the archive already shipped a
 		// .gale-deps.toml (built by `gale build` with full
 		// knowledge of the linked versions), keep that —
-		// it's the authoritative record. Otherwise fall back
-		// to locally-resolved versions, which is approximate
-		// but preserves backwards-compat with archives built
+		// it's the authoritative record. Otherwise write our
+		// locally-resolved closure, which is approximate but
+		// preserves backwards-compat with archives built
 		// before the build-time emit landed.
+		//
+		// The write happens even when depsFallback is empty:
+		// a zero-dep recipe must still record an empty file
+		// so doctor's "missing metadata = legacy install of
+		// unknown deps" heuristic doesn't flag a fresh
+		// install as stale. The legacy-stale path is
+		// preserved for installs that genuinely predate this
+		// metadata (no file on disk at all).
 		if HasDepsMetadata(extractDir) {
 			return nil
 		}
-		if len(depsFallback) > 0 {
-			md := DepsMetadata{Deps: depsFallback}
-			if err := WriteDepsMetadata(extractDir, md); err != nil {
-				return fmt.Errorf("write deps metadata: %w", err)
-			}
+		md := DepsMetadata{Deps: depsFallback}
+		if err := WriteDepsMetadata(extractDir, md); err != nil {
+			return fmt.Errorf("write deps metadata: %w", err)
 		}
 
 		return nil
