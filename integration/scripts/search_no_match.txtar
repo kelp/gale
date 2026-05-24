@@ -1,13 +1,14 @@
-# `gale search` reports "no packages found" rather than
-# silently exiting 0 with empty output.
+# `gale search` exits non-zero with a clear error when no
+# packages match (per db1decd: aligned with info/which/verify/
+# audit no-match semantics).
 
 gale-fixture serve-file /index.tsv $FIXTURES/index.tsv
 
 cp config.toml $HOME/.gale/config.toml
 exec sh -c 'sed -i.bak "s|__GHCR_URL__|$GHCR_URL|" $HOME/.gale/config.toml'
 
-exec gale search zzzzznotapackage
-stderr 'No packages found'
+! exec gale search zzzzznotapackage
+stderr 'no packages found matching "zzzzznotapackage"'
 # stdout has no package lines.
 ! stdout 'hello'
 

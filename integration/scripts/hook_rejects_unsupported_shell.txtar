@@ -1,8 +1,10 @@
-# `gale hook` is restricted to direnv. Other shells reach
-# env.GenerateHook which returns ErrUnsupportedShell.
+# `gale hook` is restricted to direnv. Per 537d53e (RO-J:
+# hook help matches actual behaviour), cobra's OnlyValidArgs
+# rejects unknown shells with "invalid argument" before
+# the runtime ErrUnsupportedShell path is reached.
 
 ! exec gale hook bash
-stderr 'unsupported shell'
+stderr 'invalid argument "bash" for "gale hook"'
 
 ! exec gale hook zsh
-stderr 'unsupported shell'
+stderr 'invalid argument "zsh" for "gale hook"'

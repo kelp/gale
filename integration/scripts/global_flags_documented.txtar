@@ -7,14 +7,15 @@
 # survives — they appear in --help and the command accepts
 # them without error.
 
-# Documented in help output.
+# Documented in help output. Help writes to stdout per
+# 4a54c9e (RO-F: help: route to stdout).
 exec gale --help
-stderr '--no-color'
-stderr '--plain'
-stderr '--quiet'
-stderr '--error-format'
-stderr '--dry-run'
-stderr '--verbose'
+stdout '--no-color'
+stdout '--plain'
+stdout '--quiet'
+stdout '--error-format'
+stdout '--dry-run'
+stdout '--verbose'
 
 # Each flag is accepted on a real command (not "unknown flag").
 gale-fixture recipes $WORK/recipes
