@@ -44,9 +44,15 @@ var installCmd = &cobra.Command{
 		}
 		out := newCmdOutput(cmd)
 
-		if installRecipes != "" && version != "" {
-			return fmt.Errorf("cannot specify @version with --recipes; " +
-				"omit @version or use --recipe to specify a recipe file directly")
+		// --recipe (singular) names a specific file; an @version
+		// pin would be silently ignored if we let it through.
+		// --recipes (plural) is a local registry directory — it
+		// MUST accept @version (resolved by ResolveVersionedRecipe
+		// against the local recipes below). See finding F-5.3.
+		if installRecipe != "" && version != "" {
+			return fmt.Errorf("cannot specify @version with --recipe; " +
+				"the file already pins the version — omit @version, " +
+				"or use --recipes (plural) for a recipes directory")
 		}
 
 		// Resolve scope and paths via cmdContext.
@@ -90,7 +96,8 @@ var installCmd = &cobra.Command{
 		out.Info(fmt.Sprintf("Fetching recipe for %s...", name))
 
 		var r *recipe.Recipe
-		if version != "" && version != "latest" && installRecipes == "" {
+		switch {
+		case version != "" && version != "latest" && installRecipes == "":
 			// Specific version requested — fetch from
 			// versioned registry index.
 			reg := newRegistry()
@@ -102,7 +109,17 @@ var installCmd = &cobra.Command{
 			// Use the registry for dep resolution too.
 			ctx.Resolver = reg.FetchRecipe
 			ctx.Installer.Resolver = reg.FetchRecipe
-		} else {
+		case version != "" && version != "latest":
+			// --recipes mode: resolve @version against the
+			// local recipes directory. ResolveVersionedRecipe
+			// compares against both bare Version and Full() so
+			// explicit revisions like "1.0-1" work too.
+			r, err = ctx.ResolveVersionedRecipe(name, version)
+			if err != nil {
+				return fmt.Errorf("fetching %s@%s: %w",
+					name, version, err)
+			}
+		default:
 			r, err = ctx.Resolver(name)
 			if err != nil {
 				return fmt.Errorf("fetching recipe: %w", err)

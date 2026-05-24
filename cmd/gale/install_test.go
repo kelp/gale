@@ -217,7 +217,6 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 	}
 }
 
-
 // TestRecipesFlagWordingIsAccurate verifies the --recipes
 // flag description across every command that exposes it. The
 // previous wording — "Use local recipes directory (default:
@@ -433,16 +432,19 @@ func TestInstallFromGitResolverFallback(t *testing.T) {
 	// local), not a file-not-found from a wrong directory.
 }
 
-// TestInstallRecipesWithVersionErrors verifies that combining
-// --recipes with an @version pin is rejected explicitly.
-// Bug 0016: the version is silently ignored when --recipes is
-// set, because the condition short-circuits to the else branch.
-// The fix must return an error whose message mentions both the
-// version pin and the --recipes flag incompatibility.
-func TestInstallRecipesWithVersionErrors(t *testing.T) {
+// TestInstallRecipeFileWithVersionErrors verifies that
+// combining --recipe (singular, a specific file) with an
+// @version pin is rejected. The user already named the recipe
+// file; an additional @version would be silently ignored.
+//
+// Finding F-5.3: --recipes (plural, a directory) is a local
+// registry override and MUST accept @version. Only --recipe
+// (singular, a file) rejects it.
+func TestInstallRecipeFileWithVersionErrors(t *testing.T) {
 	tmp := t.TempDir()
-	recipesDir := filepath.Join(tmp, "gale-recipes")
-	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+	recipePath := filepath.Join(tmp, "jq.toml")
+	if err := os.WriteFile(recipePath,
+		[]byte("[package]\nname = \"jq\"\nversion = \"1.7\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -470,27 +472,23 @@ func TestInstallRecipesWithVersionErrors(t *testing.T) {
 		installRecipe = savedRecipe
 	}()
 
-	installRecipes = recipesDir
+	installRecipes = ""
+	installRecipe = recipePath
 	installGlobal = true
 	installProject = false
 	installPath = ""
 	installGit = false
 	installBuild = false
-	installRecipe = ""
 
-	// "jq@1.8.1" — @version specified while --recipes is also set.
 	err := installCmd.RunE(installCmd, []string{"jq@1.8.1"})
 	if err == nil {
-		t.Error("install --recipes jq@1.8.1 must return an error: " +
-			"@version is incompatible with --recipes")
-		return
+		t.Fatal("install --recipe jq.toml jq@1.8.1 must " +
+			"return an error: @version is incompatible with --recipe")
 	}
-	// The error must explicitly identify the incompatibility —
-	// not just a generic "recipe not found" from the empty dir.
 	msg := err.Error()
-	if !strings.Contains(msg, "version") && !strings.Contains(msg, "recipes") {
-		t.Errorf("error %q does not mention version/recipes incompatibility — "+
-			"install --recipes must explicitly reject @version pins", msg)
+	if !strings.Contains(msg, "version") || !strings.Contains(msg, "--recipe") {
+		t.Errorf("error %q does not mention version + --recipe "+
+			"incompatibility", msg)
 	}
 }
 
