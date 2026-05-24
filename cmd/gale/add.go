@@ -51,7 +51,10 @@ var addCmd = &cobra.Command{
 		}
 
 		for _, arg := range args {
-			name, version := parsePackageArg(arg)
+			name, version, err := parsePackageArg(arg)
+			if err != nil {
+				return err
+			}
 
 			// If @version specified, trust the user.
 			if version == "" {

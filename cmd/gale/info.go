@@ -6,7 +6,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"strings"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/recipe"
@@ -56,21 +55,17 @@ func runInfo(w io.Writer, arg string) error {
 		return err
 	}
 
-	name, version := parsePackageArg(arg)
-
-	// "name@" / "name@@" — parsePackageArg returns version=""
-	// for both, which would silently fall through to the
-	// "latest" branch. Reject explicitly so the user sees the
-	// real problem.
-	if strings.Contains(arg, "@") && version == "" {
-		return fmt.Errorf(
-			"invalid argument %q: expected <name>[@version]", arg)
+	name, version, err := parsePackageArg(arg)
+	if err != nil {
+		return err
 	}
 
-	// Pin the validation contract here too — `info` is the
+	// Pin the name validation contract here — `info` is the
 	// canonical reproducer for audit/readonly/bad-input/0002
 	// and pre-validating gives a clean error before any config
-	// lookups touch the filesystem.
+	// lookups touch the filesystem. parsePackageArg now rejects
+	// malformed @version segments at the parser level (F-1), so
+	// the previous "name@"/"name@@" workaround is gone.
 	if err := registry.ValidName(name); err != nil {
 		return err
 	}

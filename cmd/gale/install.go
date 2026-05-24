@@ -38,7 +38,10 @@ var installCmd = &cobra.Command{
 			return err
 		}
 
-		name, version := parsePackageArg(args[0])
+		name, version, err := parsePackageArg(args[0])
+		if err != nil {
+			return err
+		}
 		out := newCmdOutput(cmd)
 
 		if installRecipes != "" && version != "" {
@@ -420,11 +423,56 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 }
 
 // parsePackageArg splits "name@version" into name and version.
-func parsePackageArg(arg string) (string, string) {
-	if i := strings.LastIndex(arg, "@"); i > 0 {
-		return arg[:i], arg[i+1:]
+//
+// Strict-parse rules (see finding F-1):
+//   - No "@" in arg or "@" at index 0 → (arg, "", nil). Name
+//     validation happens elsewhere via registry.ValidName.
+//   - Multiple "@" characters → error. Recipe names never
+//     contain "@", so a stray second one is always user error.
+//   - Empty version segment ("name@", "name@@") → error.
+//     Previously fell through to the "latest" branch and
+//     silently ignored the user's pin.
+//   - Whitespace, control characters, or shell metacharacters
+//     in the version segment → error. Tightening here means a
+//     malformed pin gets caught before it reaches the registry
+//     URL or the store path.
+//
+// Allowed version characters: letters, digits, ".", "-", "_",
+// "+". This matches every existing recipe version we ship
+// (semver-ish with optional Debian "-N" revision suffix).
+func parsePackageArg(arg string) (string, string, error) {
+	i := strings.LastIndex(arg, "@")
+	if i <= 0 {
+		// Either no "@" (bare name) or arg starts with "@"
+		// (caller's name validator handles that case).
+		return arg, "", nil
 	}
-	return arg, ""
+	name := arg[:i]
+	version := arg[i+1:]
+	if strings.Contains(name, "@") {
+		return "", "", fmt.Errorf(
+			"invalid argument %q: multiple '@' separators", arg)
+	}
+	if version == "" {
+		return "", "", fmt.Errorf(
+			"invalid argument %q: empty version after '@'", arg)
+	}
+	for _, r := range version {
+		switch {
+		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
+			return "", "", fmt.Errorf(
+				"invalid argument %q: whitespace in version", arg)
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case r == '.' || r == '-' || r == '_' || r == '+':
+		default:
+			return "", "", fmt.Errorf(
+				"invalid argument %q: invalid character %q in version",
+				arg, r)
+		}
+	}
+	return name, version, nil
 }
 
 // resolveConfigPath returns the gale.toml path to write to.

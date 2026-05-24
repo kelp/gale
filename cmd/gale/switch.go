@@ -114,7 +114,10 @@ func parseSwitchArgs(args []string) (name, version string, err error) {
 	case 2:
 		return args[0], args[1], nil
 	case 1:
-		n, v := parsePackageArg(args[0])
+		n, v, err := parsePackageArg(args[0])
+		if err != nil {
+			return "", "", err
+		}
 		if v == "" {
 			return "", "", fmt.Errorf(
 				"missing version: use 'gale switch %s <version>' "+

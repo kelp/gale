@@ -22,11 +22,22 @@ func TestParsePackageArg(t *testing.T) {
 		{"python@3.11", "python", "3.11"},
 		{"node@20", "node", "20"},
 		{"ripgrep@latest", "ripgrep", "latest"},
+		// Leading "@" without a separator after it has no
+		// version segment — the caller's name validation
+		// (registry.ValidName) rejects this downstream. The
+		// parser must not invent a version.
 		{"@invalid", "@invalid", ""},
+		// Revision suffix is part of the version segment.
+		{"hello@1.0-1", "hello", "1.0-1"},
 	}
 
 	for _, tt := range tests {
-		name, version := parsePackageArg(tt.input)
+		name, version, err := parsePackageArg(tt.input)
+		if err != nil {
+			t.Errorf("parsePackageArg(%q) returned error: %v",
+				tt.input, err)
+			continue
+		}
 		if name != tt.wantName {
 			t.Errorf("parsePackageArg(%q) name = %q, want %q",
 				tt.input, name, tt.wantName)
@@ -34,6 +45,49 @@ func TestParsePackageArg(t *testing.T) {
 		if version != tt.wantVersion {
 			t.Errorf("parsePackageArg(%q) version = %q, want %q",
 				tt.input, version, tt.wantVersion)
+		}
+	}
+}
+
+// TestParsePackageArgRejectsBadInput pins the parser's
+// strict contract for malformed <name>[@version] strings.
+// Each case in this table previously fell through to the
+// "latest" branch in install/update/info, silently ignoring
+// the user's pin. See finding F-1.
+func TestParsePackageArgRejectsBadInput(t *testing.T) {
+	tests := []struct {
+		input string
+		// substr must appear somewhere in the returned error
+		// so callers and users see the actual problem.
+		substr string
+	}{
+		{"name@", "empty version"},
+		// Multiple "@" wins over the empty-version check since
+		// it indicates a more fundamental shape problem.
+		{"name@@", "multiple"},
+		{"name@@1.0", "multiple"},
+		{"foo@bar@baz", "multiple"},
+		{"name@1 0", "whitespace"},
+		{"name@1\t0", "whitespace"},
+		{"name@1\n0", "whitespace"},
+		{"name@1;rm", "invalid character"},
+		{"name@1|cat", "invalid character"},
+		{"name@1&", "invalid character"},
+		{"name@1$x", "invalid character"},
+		{"name@1`x`", "invalid character"},
+		{"name@1\x00", "invalid character"},
+	}
+
+	for _, tt := range tests {
+		_, _, err := parsePackageArg(tt.input)
+		if err == nil {
+			t.Errorf("parsePackageArg(%q) = nil error, want error containing %q",
+				tt.input, tt.substr)
+			continue
+		}
+		if !strings.Contains(err.Error(), tt.substr) {
+			t.Errorf("parsePackageArg(%q) error = %q, want substring %q",
+				tt.input, err.Error(), tt.substr)
 		}
 	}
 }

@@ -127,7 +127,10 @@ var updateCmd = &cobra.Command{
 
 		if len(args) > 0 {
 			for _, arg := range args {
-				name, ver := parsePackageArg(arg)
+				name, ver, err := parsePackageArg(arg)
+				if err != nil {
+					return err
+				}
 				current, ok := cfg.Packages[name]
 				if !ok {
 					out.Warn(fmt.Sprintf(
