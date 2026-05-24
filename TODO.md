@@ -562,3 +562,164 @@ pure `[binary.<platform>]` with no `[build]` block.
   builds and binary installs
 - [ ] Rebuild all GHCR binaries with pkg-config fixup
   so prebuilt packages have correct .pc files
+
+## Performance & Distribution
+
+Added 2026-05-24. Gale install + sync feel noticeably slower
+than Homebrew on the same packages. Anecdotally: serial
+per-package fetches, redundant GHCR token exchanges, GitHub raw
+URLs for recipes (no CDN, no compression), and disk-buffered
+extraction. Two angles to attack: gale-side code wins (cheap,
+no infra changes) and distribution/infrastructure changes
+(harder, bigger ceiling).
+
+Threat model is *user patience*: the cumulative pain of slow
+multi-package operations (`gale sync` over a project's
+gale.toml, `gale outdated` on 20 declared packages) and slow
+cold installs. The single-package cold install on a slow
+connection is the most visible case but probably not the most
+impactful in aggregate.
+
+### Tier 0 — Measure first
+
+Optimisation without numbers picks the wrong target. Do these
+two before anything else.
+
+- [ ] **Phase timing under --verbose.** Instrument the install
+  pipeline so verbose mode prints elapsed time per phase:
+  recipe fetch, registry resolution, GHCR token exchange,
+  binary download, SHA256 verify, tar extract, generation
+  rebuild, lockfile write. Files: `internal/installer/`,
+  `internal/registry/`, `internal/download/`. Cheap, makes
+  every subsequent optimization legible. Without this, we're
+  guessing.
+
+- [ ] **Baseline benchmark vs Homebrew.** Pick 5–10 packages
+  both managers carry (jq, fd, ripgrep, bat, eza). Time cold
+  install + warm reinstall + multi-package sync. Capture
+  numbers in `docs/dev/perf-baseline.md` so we can measure
+  regressions and gains against a fixed reference.
+
+### Tier 1 — Gale-side wins (no infra changes)
+
+Implementable today against the existing distribution model.
+Expected gain: 2–5× on multi-package operations; 10–30% on
+single-package installs.
+
+- [ ] **Parallelise per-package operations.** Today `sync`,
+  `outdated`, and `sbom` iterate `cfg.Packages` serially.
+  Bound a worker pool (8 in-flight is plenty for HTTP-bound
+  work) and dispatch fetches concurrently. Most direct win
+  for `gale sync` over a project's full gale.toml. Files:
+  `cmd/gale/sync.go`, `cmd/gale/outdated.go`, possibly a
+  shared `internal/parallel/` helper.
+
+- [ ] **Reuse the GHCR anonymous token within a session.**
+  `internal/ghcr/` currently exchanges a token per binary
+  install. Cache the token in memory for the lifetime of the
+  process (and respect its expiry header). Saves one HTTP
+  roundtrip per package on bulk installs.
+
+- [ ] **HTTP/2 connection reuse across registry + GHCR
+  requests.** Verify `http.DefaultTransport` is used (or a
+  shared, configured Transport) so connections to
+  `raw.githubusercontent.com`, `ghcr.io`, and `pkg-containers.
+  githubusercontent.com` are kept alive across multiple
+  requests in the same gale invocation. Probably already
+  partially in place — needs an audit.
+
+- [ ] **Streaming tar extraction.** Today we download to
+  disk, verify SHA256 (re-read), then extract (re-read).
+  Pipe download → tee(sha256-hash, tar-reader) so we hash
+  and extract in one pass. Halves disk I/O on the install
+  path. Files: `internal/download/`, `internal/installer/`.
+
+- [ ] **Eager dep resolution.** When the user runs
+  `gale install foo`, eagerly fetch foo's deps' recipes in
+  parallel rather than discovering them serially during
+  build. Bigger win once Tier 2 ships the bundled index.
+
+### Tier 2 — Recipe pipeline
+
+Today every recipe fetch is a separate HTTPS GET to
+`raw.githubusercontent.com`, uncompressed, no CDN.
+`.versions` files help with version resolution but you still
+make one request per recipe.
+
+- [ ] **Bundled recipe index.** Periodically (CI) build a
+  single `index.tar.zst` of all recipes + a manifest mapping
+  name → contents. `gale sync`-style operations fetch the
+  bundle once, read locally. Per-recipe fetch path still
+  works as a fallback for cache misses or fresh recipes
+  between bundle rebuilds. Roughly the `apt update` model.
+  Repo: gale-recipes (build) + gale (consume).
+
+- [ ] **HTTP compression on recipe fetches.**
+  `raw.githubusercontent.com` doesn't serve `Content-Encoding:
+  gzip` consistently. Recipes are small TOML — gzip is 5–10×.
+  Solved naturally if we move recipe distribution off raw.
+  githubusercontent.com (see Tier 3).
+
+- [ ] **Local "registry mirror" model.** `gale update`
+  (separate from `gale update <pkg>` — naming conflict to
+  resolve) fetches the bundled index and writes it to
+  `~/.gale/cache/registry/`. Subsequent commands consult the
+  local copy first. Apt-style. Cuts steady-state recipe
+  fetches to zero. Pair with TTL-based auto-refresh.
+
+### Tier 3 — Binary distribution infrastructure
+
+GHCR works but it's slow, requires an anonymous-token dance,
+and isn't designed for fast public CDN delivery. Two of these
+become tractable once the security-side OIDC keyless work
+ships (Layer 6 Tier 2) — at that point the OCI registry
+isn't carrying signing semantics, just bytes.
+
+- [ ] **Cloudflare R2 (or similar) for binary hosting.** Zero
+  egress fees, CDN-backed, no token dance, HTTP/2 native.
+  At gale's scale ~$5/mo. Migrate gale-recipes CI to push to
+  R2 alongside GHCR initially (parallel), then cut GHCR over
+  after a soak period. Expected gain: 1.5–3× on binary
+  download depending on user geography. Repo: gale-recipes
+  (CI changes) + gale (alternate URL resolution).
+
+- [ ] **Precompiled-recipe bundle on CDN.** Same R2 / CDN
+  endpoint as binaries. Bundle + binaries from the same
+  origin means one connection pool, one TLS handshake.
+
+- [ ] **HTTP/2 multiplexing across the binary fetch.** If a
+  package ships as multiple layered blobs (current archives
+  are a single tar.zst, so this is mostly future-proofing
+  for if we move to OCI-layer-style distribution).
+
+### Tier 4 — Speculative
+
+- [ ] **Async warmup on `gale install`.** Background-fetch
+  the dep closure's recipes while the user is downloading
+  the requested package's binary. Hides recipe latency on
+  the deps almost entirely.
+
+- [ ] **Binary deduplication via the shared dylib farm.**
+  Already exists for source-built dylibs. Investigate
+  whether binary-installed packages with shared deps could
+  hardlink-share dylibs at install time. Saves disk on
+  heavy projects.
+
+- [ ] **Resume partial downloads.** GHCR / R2 both support
+  HTTP Range. On a flaky connection, resume rather than
+  restart. Cheap once a range-aware HTTP client exists.
+
+### Comparison reference
+
+Why Homebrew feels fast, when audited honestly:
+- Bottles on GitHub Packages with aggressive CDN caching.
+- Per-package parallelism on multi-install.
+- HTTP/2 multiplexing.
+- Formulae cached locally via the cloned core repo (zero
+  network for recipe lookup in steady state).
+- Bottles for nearly everything — no source fallback.
+
+Gale will not match the "nearly everything" axis at our
+recipe count, and we don't want to (curated registry is the
+security story). The other four are matchable, and Tier 1 +
+Tier 2 + Tier 3 cover them.
