@@ -246,19 +246,33 @@ No git clone needed for installation.
 ## Registry Cache
 
 Recipe TOML and `index.tsv` responses are cached under
-`~/.gale/cache/registry/<sha256(url)>/{body,etag}`. The cache
-is a documented optimization, not silent state. Rules:
+`~/.gale/cache/registry/<sha256(url)>/{body,etag,not_found}`.
+The cache is a documented optimization, not silent state.
+Rules:
 
 - **First fetch** writes body + ETag. Subsequent fetches send
   `If-None-Match` and accept 304 to skip the body transfer.
-- **`--dry-run`** suppresses cache writes. The body is still
-  returned to the caller, but no files are persisted.
-- **`GALE_OFFLINE=1`** suppresses network entirely. A cached
-  entry is served; a cache miss returns
-  `GALE_OFFLINE=1 and no cached entry for <url>`.
+- **`--dry-run`** suppresses cache writes (positive and
+  negative). The body is still returned to the caller, but no
+  files are persisted.
+- **`GALE_OFFLINE=1`** suppresses network entirely. Precedence:
+  positive cache (body), then a fresh negative marker
+  (replays as `HTTP 404`), then `GALE_OFFLINE=1 and no cached
+  entry for <url>`.
 - **Stale-on-error**: when the network errors out (DNS,
   ECONNREFUSED, deadline, context cancel), the cached body is
-  served if present. The cache is NOT rewritten in this path.
+  served if present, then any negative marker is replayed as
+  `HTTP 404`. The cache is NOT rewritten in this path.
+- **Negative cache (404)**: a 404 response writes a `not_found`
+  marker holding an RFC3339Nano timestamp. While the marker is
+  younger than `negativeCacheTTL` (1 hour), repeat fetches
+  short-circuit to `HTTP 404` without a wire trip. The TTL is
+  long enough to dedupe back-to-back read-only command runs
+  (`outdated`, `sbom`, `doctor`) and short enough that a freshly
+  published recipe shows up without manual cache surgery. The
+  marker is pruned lazily on read once it expires; only 404s
+  are negatively cached (other non-200 responses surface as
+  real errors). A subsequent 200 OK supersedes the marker.
 
 Implementation lives in `internal/registry/cache.go`. All HTTP
 fetches (`FetchRecipe`, `FetchRecipeVersion`, `fetchBinaries`,
