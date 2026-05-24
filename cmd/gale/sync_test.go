@@ -94,7 +94,7 @@ func TestFinishSyncRebuildsOnFailure(t *testing.T) {
 	// packages that did install land on PATH. The failure
 	// error still propagates so the exit code is non-zero.
 	called := false
-	err := finishSync(false, 1, 0, func() error {
+	err := finishSync(false, 1, 0, false, func() error {
 		called = true
 		return nil
 	})
@@ -112,7 +112,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 	// discarded. The install count tells the user which package
 	// broke; the rebuild error tells them the PATH may be stale.
 	rebuildErr := errors.New("rebuild boom")
-	err := finishSync(false, 2, 0, func() error {
+	err := finishSync(false, 2, 0, false, func() error {
 		return rebuildErr
 	})
 	if err == nil {
@@ -125,7 +125,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 
 func TestFinishSyncReturnsRebuildError(t *testing.T) {
 	errBoom := errors.New("boom")
-	err := finishSync(false, 0, 1, func() error {
+	err := finishSync(false, 0, 1, false, func() error {
 		return errBoom
 	})
 	if !errors.Is(err, errBoom) {
@@ -139,7 +139,7 @@ func TestFinishSyncReturnsRebuildError(t *testing.T) {
 // the rebuild error was silently discarded when failed > 0.
 func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 	rebuildErr := errors.New("generation build failed")
-	err := finishSync(false, 1, 0, func() error { return rebuildErr })
+	err := finishSync(false, 1, 0, false, func() error { return rebuildErr })
 	if err == nil {
 		t.Fatal("finishSync must return error when failed > 0")
 	}
@@ -150,7 +150,7 @@ func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 
 func TestFinishSyncSkipsRebuildInDryRun(t *testing.T) {
 	called := false
-	err := finishSync(true, 0, 1, func() error {
+	err := finishSync(true, 0, 1, false, func() error {
 		called = true
 		return nil
 	})
@@ -196,7 +196,7 @@ func TestFinishSyncFailurePreservesPartialProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = finishSync(false, 1, 0, func() error {
+	err = finishSync(false, 1, 0, false, func() error {
 		return rebuildGenerationLenient(galeDir, storeRoot, configPath)
 	})
 	if err == nil {
@@ -255,7 +255,7 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 // Fix: add an `installed int` parameter and skip rebuild when installed == 0.
 func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
 	rebuilt := false
-	err := finishSync(false, 0, 0, func() error {
+	err := finishSync(false, 0, 0, false, func() error {
 		rebuilt = true
 		return nil
 	})
@@ -264,6 +264,89 @@ func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
 	}
 	if rebuilt {
 		t.Error("finishSync must not call rebuild when installed == 0")
+	}
+}
+
+// TestFinishSyncRebuildsWhenConfigChanged pins the fix for the
+// removed-symlink regression: when nothing needs (re)installing but
+// gale.toml has dropped a package, sync must still rebuild so the
+// stale symlink leaves current/bin. Skipping rebuild on
+// installed == 0 was leaving the old generation active.
+func TestFinishSyncRebuildsWhenConfigChanged(t *testing.T) {
+	rebuilt := false
+	err := finishSync(false, 0, 0, true, func() error {
+		rebuilt = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("finishSync returned unexpected error: %v", err)
+	}
+	if !rebuilt {
+		t.Error("finishSync must rebuild when configChanged is true")
+	}
+}
+
+// TestFinishSyncDropsRemovedPackageSymlink is the behavioural
+// pin for the sync_cleans_removed_symlink regression. After a
+// package is removed from gale.toml and sync runs with nothing
+// to install, the new generation must omit the removed
+// package's symlink.
+func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+	configPath := filepath.Join(t.TempDir(), "gale.toml")
+
+	s := store.NewStore(storeRoot)
+	for _, name := range []string{"keep", "drop"} {
+		pkgDir, err := s.Create(name, "1.0.0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		binDir := filepath.Join(pkgDir, "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(binDir, name),
+			[]byte("#!/bin/sh\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Initial config: both packages. Build the generation so
+	// drop's symlink lands in current/bin.
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  keep = \"1.0.0\"\n  drop = \"1.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := rebuildGenerationLenient(galeDir, storeRoot, configPath); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "drop")); err != nil {
+		t.Fatalf("drop symlink missing before removal: %v", err)
+	}
+
+	// Hand-edit config to remove drop, then drive finishSync as
+	// runSync would: nothing was installed, nothing failed, but
+	// the config no longer matches the active generation.
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  keep = \"1.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := finishSync(false, 0, 0, true, func() error {
+		return rebuildGenerationLenient(galeDir, storeRoot, configPath)
+	})
+	if err != nil {
+		t.Fatalf("finishSync after config edit: %v", err)
+	}
+
+	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "drop")); !os.IsNotExist(err) {
+		t.Fatalf("drop symlink must be gone after sync; err=%v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "keep")); err != nil {
+		t.Fatalf("keep symlink must remain: %v", err)
 	}
 }
 

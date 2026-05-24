@@ -8,6 +8,7 @@ import (
 	"runtime"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/spf13/cobra"
@@ -225,7 +226,9 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		installed++
 	}
 
-	if err := finishSync(dryRun, failed, installed, ctx.RebuildGenerationLenient); err != nil {
+	configChanged := generationDrifted(ctx.GaleDir, ctx.StoreRoot, cfg.Packages)
+
+	if err := finishSync(dryRun, failed, installed, configChanged, ctx.RebuildGenerationLenient); err != nil {
 		if failed > 0 {
 			out.Warn(fmt.Sprintf(
 				"Sync finished with %d error(s)", failed))
@@ -241,17 +244,48 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	return nil
 }
 
+// generationDrifted reports whether the active generation's
+// package set differs from the config. Used by sync to decide
+// whether to rebuild when no installs were performed —
+// rebuilding regardless would bump the generation counter on
+// every no-op sync; skipping when packages have been removed
+// would leave the dropped package's symlink in current/bin.
+func generationDrifted(galeDir, storeRoot string, want map[string]string) bool {
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		// On read error, prefer to rebuild — better a wasted
+		// gen than a stale PATH. The rebuild itself will
+		// surface a follow-on error if the state is broken.
+		return true
+	}
+	if len(active) != len(want) {
+		return true
+	}
+	for name, version := range want {
+		if active[name] != version {
+			return true
+		}
+	}
+	return false
+}
+
 // finishSync rebuilds the generation so packages that did
 // install land on PATH, then surfaces any install failure.
 // Issue #20: a single broken recipe used to leave the user
 // with no current symlink at all. Rebuilding first keeps
 // partial progress usable; the failure error still
 // propagates so the exit code is non-zero.
-func finishSync(dryRun bool, failed int, installed int, rebuild func() error) error {
+//
+// configChanged signals that the active generation no longer
+// matches the config (e.g., a package was removed from
+// gale.toml). The rebuild must run even when nothing was
+// installed; otherwise the removed package's symlink stays
+// active in current/bin.
+func finishSync(dryRun bool, failed int, installed int, configChanged bool, rebuild func() error) error {
 	if dryRun {
 		return nil
 	}
-	if installed == 0 && failed == 0 {
+	if installed == 0 && failed == 0 && !configChanged {
 		return nil // nothing changed — skip rebuild
 	}
 	rebuildErr := rebuild()

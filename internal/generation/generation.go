@@ -155,6 +155,25 @@ func previousGenVersions(prevGenDir, storeRoot string) map[string]string {
 	return out
 }
 
+// CurrentVersions returns the package name → version map of
+// the active generation by reading its symlinks. Returns an
+// empty map (no error) when no generation is active yet.
+// Used by sync to detect whether gale.toml has drifted from
+// the active generation — drift means the rebuild must run
+// even if no installs happened, so removed packages drop off
+// PATH.
+func CurrentVersions(galeDir, storeRoot string) (map[string]string, error) {
+	cur, err := Current(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	if cur == 0 {
+		return map[string]string{}, nil
+	}
+	prevGenDir := filepath.Join(galeDir, "gen", strconv.Itoa(cur))
+	return previousGenVersions(prevGenDir, storeRoot), nil
+}
+
 // ActiveStoreDirs resolves each (name, version) in pkgs to
 // its on-disk store dir. Returned in an arbitrary order.
 // Used by Build to populate the shared dylib farm, and by

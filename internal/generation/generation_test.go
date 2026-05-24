@@ -1284,3 +1284,40 @@ func TestRollbackDoesNotClobberConcurrentTempLink(t *testing.T) {
 		t.Errorf("Rollback clobbered another process's temp link: %v", err)
 	}
 }
+
+// TestCurrentVersionsReadsActiveGeneration confirms the
+// exported helper returns the (name → version) map of the
+// active generation. Sync uses this to detect when gale.toml
+// has dropped a package that's still active in current/bin.
+func TestCurrentVersionsReadsActiveGeneration(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+
+	createStoreEntry(t, storeRoot, "alpha", "1.0", []string{"alpha"})
+	createStoreEntry(t, storeRoot, "beta", "2.0", []string{"beta"})
+
+	pkgs := map[string]string{"alpha": "1.0", "beta": "2.0"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	got, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("CurrentVersions: %v", err)
+	}
+	if got["alpha"] != "1.0" || got["beta"] != "2.0" {
+		t.Errorf("CurrentVersions = %v, want alpha=1.0, beta=2.0", got)
+	}
+}
+
+// TestCurrentVersionsReturnsEmptyWhenNoGeneration covers the
+// fresh-install case where no current symlink exists yet.
+func TestCurrentVersionsReturnsEmptyWhenNoGeneration(t *testing.T) {
+	got, err := CurrentVersions(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("CurrentVersions: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("CurrentVersions = %v, want empty", got)
+	}
+}
