@@ -9,6 +9,17 @@ exec gale install hello -g --recipes=$WORK/recipes
 exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
 exists $HOME/.gale/current/bin/hello
 
+# The integration's hello binary payload is hand-crafted,
+# not produced by `gale build`, so it doesn't ship the
+# .gale-deps.toml that real CI-built tarballs include.
+# Doctor's stale-installs check treats a missing metadata
+# file as "predates the revision system → stale" (see
+# installer.IsStale). Drop an empty metadata file in to
+# represent the same state a real zero-dep build install
+# produces, otherwise the healthy fixture trips the
+# soft-migration warning.
+exec touch $HOME/.gale/pkg/hello/1.0-1/.gale-deps.toml
+
 # Doctor exits 1 if PATH doesn't include current/bin,
 # which is normal in a sandbox. Accept the exit and
 # check the structural signals instead: no orphan
