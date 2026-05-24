@@ -107,7 +107,8 @@ func init() {
 	buildCmd.Flags().BoolVar(&buildRelease, "release", false,
 		"Build with release flags (overrides recipe debug)")
 	buildCmd.Flags().StringVar(&buildRecipes, "recipes", "",
-		"Use local recipes directory (default: ../gale-recipes/)")
+		"Resolve recipes from a local directory instead of the registry "+
+			"(bare --recipes uses ../gale-recipes/)")
 	buildCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	rootCmd.AddCommand(buildCmd)
 }

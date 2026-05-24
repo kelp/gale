@@ -119,7 +119,8 @@ func init() {
 	addCmd.Flags().BoolVarP(&addProject, "project", "p",
 		false, "Add to project config")
 	addCmd.Flags().StringVar(&addRecipes, "recipes", "",
-		"Use local recipes directory (default: ../gale-recipes/)")
+		"Resolve recipes from a local directory instead of the registry "+
+			"(bare --recipes uses ../gale-recipes/)")
 	addCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	addCmd.Flags().StringVar(&addHost, "host", "",
 		"Write under [hosts.<host>.packages] "+

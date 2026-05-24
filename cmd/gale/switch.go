@@ -135,7 +135,8 @@ func init() {
 	switchCmd.Flags().BoolVarP(&switchProject, "project", "p",
 		false, "Switch in project config")
 	switchCmd.Flags().StringVar(&switchRecipes, "recipes", "",
-		"Use local recipes directory (default: ../gale-recipes/)")
+		"Resolve recipes from a local directory instead of the registry "+
+			"(bare --recipes uses ../gale-recipes/)")
 	switchCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	switchCmd.Flags().BoolVar(&switchBuild, "build", false,
 		"Build from source (skip prebuilt binary)")

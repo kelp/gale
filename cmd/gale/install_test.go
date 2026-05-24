@@ -217,6 +217,53 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 	}
 }
 
+
+// TestRecipesFlagWordingIsAccurate verifies the --recipes
+// flag description across every command that exposes it. The
+// previous wording — "Use local recipes directory (default:
+// ../gale-recipes/)" — was inaccurate: with no flag, recipes
+// resolve through the remote registry, not a sibling. The
+// sibling path only applies when --recipes is passed bare.
+//
+// See finding F-2 (and the original fix on outdated in
+// commit 4a54c9e).
+func TestRecipesFlagWordingIsAccurate(t *testing.T) {
+	cmds := map[string]*cobra.Command{
+		"install":  installCmd,
+		"add":      addCmd,
+		"update":   updateCmd,
+		"sync":     syncCmd,
+		"outdated": outdatedCmd,
+		"gc":       gcCmd,
+		"inspect":  inspectCmd,
+		"switch":   switchCmd,
+		"build":    buildCmd,
+	}
+
+	for name, cmd := range cmds {
+		t.Run(name, func(t *testing.T) {
+			f := cmd.Flags().Lookup("recipes")
+			if f == nil {
+				t.Fatalf("%s: --recipes flag not found", name)
+			}
+			// The old wording implied the sibling path was the
+			// default with no flag, which it is not. Reject it.
+			if strings.Contains(f.Usage,
+				"Use local recipes directory (default:") {
+				t.Errorf("%s: --recipes still uses the old "+
+					"misleading wording: %q", name, f.Usage)
+			}
+			// The new wording must say "instead of the registry"
+			// so it is clear what the default behavior is.
+			if !strings.Contains(f.Usage, "instead of the registry") {
+				t.Errorf("%s: --recipes usage %q does not "+
+					"clarify it overrides the registry",
+					name, f.Usage)
+			}
+		})
+	}
+}
+
 func TestPathFlagReplacesSource(t *testing.T) {
 	cmds := map[string]*cobra.Command{
 		"install": installCmd,

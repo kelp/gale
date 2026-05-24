@@ -43,7 +43,8 @@ func init() {
 	inspectCmd.Flags().BoolVar(&inspectJSON, "json", false,
 		"Emit machine-readable JSON instead of text")
 	inspectCmd.Flags().StringVar(&inspectRecipes, "recipes", "",
-		"Use local recipes directory (default: ../gale-recipes/)")
+		"Resolve recipes from a local directory instead of the registry "+
+			"(bare --recipes uses ../gale-recipes/)")
 	inspectCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	rootCmd.AddCommand(inspectCmd)
 }

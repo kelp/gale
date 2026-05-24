@@ -271,7 +271,8 @@ func init() {
 	syncCmd.Flags().BoolVarP(&syncProject, "project", "p",
 		false, "Sync project packages")
 	syncCmd.Flags().StringVar(&syncRecipes, "recipes", "",
-		"Use local recipes directory (default: ../gale-recipes/)")
+		"Resolve recipes from a local directory instead of the registry "+
+			"(bare --recipes uses ../gale-recipes/)")
 	syncCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
 	syncCmd.Flags().BoolVar(&syncBuild, "build", false,
 		"Build all packages from source (skip prebuilt binaries)")
