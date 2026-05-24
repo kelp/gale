@@ -43,7 +43,10 @@ use_gale() {
   fi
 
   # Export project variables from [vars] in gale.toml.
-  eval "$(gale env --vars-only 2>/dev/null)" || true
+  # Errors (e.g. malformed [vars]) surface to the user and
+  # fail direnv activation rather than silently exporting
+  # nothing.
+  eval "$(gale env --vars-only)"
 }
 `
 }
