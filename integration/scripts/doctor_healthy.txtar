@@ -9,22 +9,20 @@ exec gale install hello -g --recipes=$WORK/recipes
 exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
 exists $HOME/.gale/current/bin/hello
 
-# The integration's hello binary payload is hand-crafted,
-# not produced by `gale build`, so it doesn't ship the
-# .gale-deps.toml that real CI-built tarballs include.
-# Doctor's stale-installs check treats a missing metadata
-# file as "predates the revision system → stale" (see
-# installer.IsStale). Drop an empty metadata file in to
-# represent the same state a real zero-dep build install
-# produces, otherwise the healthy fixture trips the
-# soft-migration warning.
-exec touch $HOME/.gale/pkg/hello/1.0-1/.gale-deps.toml
-
 # Doctor exits 1 if PATH doesn't include current/bin,
 # which is normal in a sandbox. Accept the exit and
 # check the structural signals instead: no orphan
 # report, store view aligned with config.
-! exec gale doctor
+#
+# --check-registry forces the stale-installs probe to
+# actually run instead of emitting the "skipped" message;
+# the installer now records an empty .gale-deps.toml for
+# zero-dep binary installs so this check confirms
+# "No stale installs". The registry probe is best-effort
+# in airplane mode — unresolved recipes are skipped, not
+# flagged stale.
+env GALE_OFFLINE=1
+! exec gale doctor --check-registry
 ! stderr 'orphan'
 stderr 'No stale installs'
 stderr 'All packages installed'
