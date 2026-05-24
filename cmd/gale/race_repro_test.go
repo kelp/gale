@@ -243,7 +243,7 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 	}
 	if !gen1Gone {
 		t.Errorf(
-			"gc did not reap old gen/1 (n < curGen=2); "+
+			"gc did not reap old gen/1 (n < curGen=2); " +
 				"expected it to be removed but it still exists")
 	}
 	if curAfter != 2 {
@@ -504,4 +504,3 @@ func TestAudit_GaleTomlReadModifyWriteAcrossLockBoundary(t *testing.T) {
 		"remove.go:58 decide based on the snapshot before " +
 		"crossing into config.UpsertPackage's lock.")
 }
-
