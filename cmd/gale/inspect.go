@@ -8,6 +8,7 @@ import (
 	"sort"
 
 	"github.com/kelp/gale/internal/inspect"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/spf13/cobra"
 )
@@ -156,8 +157,21 @@ func printHumanIssues(
 	issues []inspect.Issue,
 	scanned []target,
 ) {
-	out := newCmdOutput(cmd)
+	printHumanIssuesTo(newCmdOutput(cmd), issues, scanned)
+}
 
+// printHumanIssuesTo is the testable core: it writes the data
+// (package headers) to stdout via fmt.Println and routes
+// status lines (per-issue severity prefix, trailing tally)
+// through the supplied *output.Output, which honours
+// --no-color / --plain / --quiet. Splitting it out lets tests
+// substitute a buffer-backed Output without intercepting
+// os.Stderr.
+func printHumanIssuesTo(
+	out *output.Output,
+	issues []inspect.Issue,
+	scanned []target,
+) {
 	if len(issues) == 0 {
 		if len(scanned) == 1 {
 			out.Success(fmt.Sprintf(
@@ -195,9 +209,12 @@ func printHumanIssues(
 		}
 	}
 
-	fmt.Fprintf(os.Stderr,
-		"\n%d issue(s) across %d package(s)\n",
-		len(issues), len(byPkg))
+	// The tally is status, not data — route it through the
+	// helper so --no-color and --plain take effect, instead
+	// of bypassing both with a raw Fprintf to stderr.
+	out.Info(fmt.Sprintf(
+		"%d issue(s) across %d package(s)",
+		len(issues), len(byPkg)))
 }
 
 func formatIssueLine(iss inspect.Issue) string {
