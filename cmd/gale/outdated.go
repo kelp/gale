@@ -2,11 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/registry"
 	ver "github.com/kelp/gale/internal/version"
 	"github.com/spf13/cobra"
 )
@@ -61,6 +63,14 @@ var outdatedCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+
+		// --no-refresh isn't just about taps: it also forces the
+		// per-package recipe fetch onto the cache. Promote the
+		// flag (and GALE_OFFLINE=1 for symmetry with the cache
+		// contract) into registry.Offline so cachedGet serves
+		// the cached body and never touches the network.
+		applyOutdatedNoRefresh(ctx.Registry,
+			tapsOfflineMode(outdatedNoRefresh))
 
 		cfg, err := ctx.LoadConfig()
 		if err != nil {
@@ -194,13 +204,54 @@ func summarizeOutdated(
 }
 
 // formatOutdated formats outdated items as lines of text.
+// The separator between current and latest is the Unicode
+// arrow `→` when the locale advertises UTF-8, otherwise `->`
+// — falling back to ASCII keeps the output legible under
+// LANG=C / LC_ALL=C terminals that would render the arrow
+// as `?` or mojibake.
 func formatOutdated(items []outdatedItem) []string {
+	sep := "→"
+	if !supportsUnicode() {
+		sep = "->"
+	}
 	lines := make([]string, len(items))
 	for i, item := range items {
-		lines[i] = fmt.Sprintf("%s %s → %s",
-			item.Name, item.Current, item.Latest)
+		lines[i] = fmt.Sprintf("%s %s %s %s",
+			item.Name, item.Current, sep, item.Latest)
 	}
 	return lines
+}
+
+// supportsUnicode reports whether the active locale can
+// render multi-byte UTF-8 glyphs. We inspect LC_ALL first
+// (POSIX precedence) and fall back to LANG. A locale string
+// counts as UTF-8 when it carries a `.UTF-8` or `.utf8`
+// charset suffix (case-insensitive); the bare names "C" /
+// "POSIX" and an unset environment imply ASCII-only.
+func supportsUnicode() bool {
+	val := os.Getenv("LC_ALL")
+	if val == "" {
+		val = os.Getenv("LANG")
+	}
+	if val == "" {
+		return false
+	}
+	lower := strings.ToLower(val)
+	return strings.HasSuffix(lower, ".utf-8") ||
+		strings.HasSuffix(lower, ".utf8")
+}
+
+// applyOutdatedNoRefresh flips the registry into Offline mode
+// when --no-refresh (or GALE_OFFLINE=1) is in effect. The
+// outdated command lifts the flag into the cache contract so
+// the per-package recipe fetch reuses the cached body
+// instead of opening a fresh HTTP connection per package.
+// Nil-safe for `--recipes`, which has no registry attached.
+func applyOutdatedNoRefresh(reg *registry.Registry, noRefresh bool) {
+	if !noRefresh || reg == nil {
+		return
+	}
+	reg.Offline = true
 }
 
 func init() {
