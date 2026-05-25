@@ -4,6 +4,33 @@
 
 ### Added
 
+- `-g`/`-p` scope flags on read-only commands (`list`, `info`,
+  `sbom`, `outdated`, `env`, `which`, `verify`, `audit`,
+  `generations` and its subcommands). Inventory commands gain
+  `--all` / `-a` for cross-scope output: `gale list -a` prints
+  `Project:` and `Global:` sections; `gale sbom -a` emits a
+  `scope` field on each entry (and a `SCOPE` column in the
+  table form). `gale info -g <pkg>` from inside a project now
+  consults `~/.gale/gale.toml` directly instead of silently
+  shadowing it with the project's view.
+- `gale doctor --check-registry` opt-in for network probes.
+  The default `doctor` run is airplane-mode by design now —
+  no HTTP requests, no cache writes. Pass `--check-registry`
+  to re-enable the stale-install / registry probes.
+- Registry cache contract is now documented and explicit
+  (`docs/dev/design.md`). `--dry-run` suppresses cache writes;
+  `GALE_OFFLINE=1` skips the network entirely (cache hits
+  serve, cache misses return a clear "no cached entry" error);
+  network failure with a warm cache serves stale. Negative
+  cache for `HTTP 404` responses (1-hour TTL) — `outdated` /
+  `sbom` / `doctor` / `info` runs against locally-developed
+  packages absent from the central registry no longer re-fetch
+  404s every invocation.
+- Strict registry name validation
+  (`^[a-z0-9][a-z0-9-]{0,63}$`, verified against all 192
+  recipes). Injection attempts (`%2e%2e/etc`, names with
+  shell metachars, etc.) are rejected before any HTTP
+  request.
 - `gale switch <pkg> <version>` (or `gale switch <pkg>@<version>`)
   moves a managed package to a specific version — typically a
   rollback to a known-good release. Updates `gale.toml` and
@@ -51,8 +78,129 @@
   warning surfaces the redundant shared entry so it can be
   cleaned up if unintentional.
 
+### Changed
+
+- `--help` writes to stdout (was stderr). The custom help
+  template now lists inherited global flags (`--no-color`,
+  `--plain`, `--verbose`, `--quiet`, `--dry-run`,
+  `--error-format`) which previously appeared on no
+  subcommand's `--help`. `NO_COLOR` environment variable is
+  honored per https://no-color.org alongside the existing
+  `--no-color` flag.
+- `gale list` uses one stable always-grouped schema
+  (`Shared:` / `Host (X):`) regardless of whether any
+  `[hosts.*]` overlays exist — shell pipelines no longer
+  break the day a user adds their first overlay. Marks
+  declared-but-not-installed packages with `(not installed)`.
+  Empty-state message goes to stderr; stdout stays clean.
+- `gale sbom --json` emits `[]` on empty (was `null`). Empty
+  and missing-config cases exit 0 with a stderr notice.
+  Tabwriter renders empty `License` / `Source` / `Method`
+  cells as `-` instead of producing ragged columns.
+- `gale outdated` is offline-correct: exits non-zero when
+  any package fails to resolve, short-circuits after the
+  first transport-level error (DNS, refused, timeout) instead
+  of running N×30s serially against an unreachable registry.
+  `--no-refresh` now actually skips the per-package recipe
+  fetch (previously only skipped git tap refresh).
+  Deterministically sorted by name. Renders the version
+  arrow as ASCII `->` under `LANG=C` / `LC_ALL=C`.
+- `gale search` exits non-zero on no match (matches
+  `info` / `which` / `verify` / `audit` semantics) and
+  rejects empty / whitespace queries. Now goes through the
+  ETag cache like every other registry consumer.
+- `gale env` surfaces parse errors on malformed `gale.toml`
+  instead of silently exiting 0 with empty output — `eval
+  "$(gale env)"` fails cleanly now. Falls back to global
+  `[vars]` when no project config is present. The direnv
+  hook (`gale hook direnv`) no longer suppresses these
+  errors via `2>/dev/null` / `|| true`.
+- `gale doctor` writes its final summary (`OK: N checks
+  passed` or `PROBLEMS: M issue(s) of N checks`) to stdout;
+  per-check progress stays on stderr. Catches a dangling
+  `~/.gale/current` symlink as a problem (previously silently
+  passed) via a new strict `generation.Resolve()` API.
+- `gale hook` only accepts `direnv` via cobra
+  `OnlyValidArgs` (was a runtime check producing a misleading
+  error message). `gale audit` short help now matches the
+  long description ("Rebuild a package and compare its hash").
+- `--recipes` flag description corrected across `install`,
+  `add`, `sync`, `update`, `gc`, `inspect`, `switch`, `build`,
+  `outdated`: now reads "Resolve recipes from a local
+  directory instead of the registry (bare --recipes uses
+  ../gale-recipes/)". A regression test pins the wording.
+- `cobra.ExactArgs(0)` on `list` and `doctor`: friendlier
+  `accepts 0 arg(s), received 1` instead of cobra's default
+  `unknown command "extraarg" for "gale list"`.
+
 ### Fixed
 
+- `gale sync` re-installed already-installed packages every
+  run when the recipe declared zero deps and the binary
+  archive shipped without `.gale-deps.toml`. Installer now
+  writes an empty `.gale-deps.toml` for fresh zero-dep
+  installs, distinguishing them from legacy installs of
+  unknown deps state.
+- `gale sync` did not rebuild the generation when a package
+  was *removed* from `gale.toml` (no install / no failure
+  → no-op missed the config-drift case). Removed packages
+  now drop their symlinks from `current/bin` as expected.
+- File-system races fixed across `installer.Install`,
+  `InstallLocal`, `InstallGit`, `store.Remove`,
+  `gc.cleanOldGenerations`, `generation.Rollback`, and
+  `context.removeLockEntry`, plus a unified gen-lock on the
+  store-rooted path. Concurrent gale invocations (direnv
+  hooks firing in parallel shells, manual install during
+  active sync) could previously leave the generation
+  half-built or the lockfile inconsistent.
+- `parsePackageArg` is strict on malformed `@version` —
+  `name@`, `name@@`, multiple `@`, whitespace or shell
+  metachars in the version segment all error out instead of
+  silently falling through to "latest".
+- `--recipes` (plural, recipes directory) now accepts
+  `@version`. Only `--recipe` (singular, recipe file)
+  rejects it. Previously a one-character bug rejected both.
+- `gale info`, `gale verify`, `gale audit`, and `gale sbom`
+  all uniformly parse `<pkg>@<version>` rather than treating
+  it as part of the package name. `gale info` also validates
+  the recipe name before formatting it into the registry URL
+  (closes a low-grade SSRF / arbitrary-fetch surface).
+- `gale info <pkg>@<version>` resolves the recipe at the
+  requested version via the versioned registry; previously
+  fell through to an HTTP 404.
+- `gale inspect` issue tally goes through the output helper
+  now — was bypassing color/TTY discipline with a raw
+  `fmt.Fprintf(os.Stderr, ...)`.
+- `gale audit`, `gale lint`, and registry callers route
+  their output through `internal/output/` consistently
+  (color/TTY/quiet are uniformly honored).
+- Doubled `reading config:` wrap in `sbom`'s error chain
+  on config-read failure.
+- Manpage (`gale.1`) synced with the current CLI surface:
+  scope flag enumerations, `--recipes` clarifications,
+  `outdated --no-refresh` semantics, audit reproducibility
+  caveats.
+- Three integration fixtures realigned with post-audit
+  output (`global_flags_documented`,
+  `hook_rejects_unsupported_shell`, `search_no_match`).
+- Binary installs no longer fall back to a slow source build
+  when an older `gh` on PATH lacks the `attestation`
+  subcommand (gh < 2.49.0 — still shipped by current Debian).
+  Two changes: gale now prefers its own bundled
+  `~/.gale/current/bin/gh` over `PATH` when locating the
+  CLI, and the availability probe actually checks for the
+  `attestation` subcommand instead of trusting that any gh
+  on PATH will do. When attestation is unavailable — gh
+  missing OR too old — gale prints a one-time stderr
+  warning naming the path and the fix (`gale install gh`)
+  and continues with the existing SHA256 check. Previously
+  the old-gh case surfaced as `binary install for <pkg>
+  failed: attestation: attestation verification failed:
+  unknown command "attestation" for "gh"` followed by a
+  source build; the no-gh case skipped attestation
+  silently. Both now warn explicitly. `gale verify` reports
+  the specific reason (missing vs. too old) via the new
+  `Verifier.UnavailableReason()`.
 - `gale add --dry-run` now honors the flag and skips writing
   to `gale.toml`. Previously the persistent `-n` flag was
   ignored and the config was mutated as if dry-run were not
