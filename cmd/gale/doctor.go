@@ -73,7 +73,11 @@ var doctorChecks = []doctorCheck{
 var doctorCmd = &cobra.Command{
 	Use:   "doctor",
 	Short: "Check your gale installation for problems",
-	Args:  cobra.NoArgs,
+	// ExactArgs(0) over NoArgs: NoArgs emits the confusing
+	// "unknown command" message for a stray positional, but
+	// doctor has no subcommands. ExactArgs(0) keeps the
+	// error literal: "accepts 0 arg(s), received 1".
+	Args: cobra.ExactArgs(0),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		galeDir, err := galeConfigDir()
 		if err != nil {

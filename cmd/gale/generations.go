@@ -19,7 +19,12 @@ var (
 var generationsCmd = &cobra.Command{
 	Use:   "generations",
 	Short: "List and manage generations",
-	Args:  cobra.NoArgs,
+	// ExactArgs(0): bare `gale generations` lists; the diff /
+	// rollback children handle their own arg shapes. Falling
+	// through to here with an unrecognised positional (e.g.
+	// `gale generations nosuchcmd`) must reject it cleanly
+	// rather than echo cobra's stock "unknown command" line.
+	Args: cobra.ExactArgs(0),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(generationsGlobal, generationsProject); err != nil {
 			return err

@@ -275,17 +275,34 @@ func outputTable(w io.Writer, entries []sbomEntry, showScope bool) {
 		fmt.Fprintln(tw, "PACKAGE\tVERSION\tLICENSE\tSOURCE\tMETHOD")
 	}
 	for _, e := range entries {
-		source := shortenURL(e.SourceURL)
+		// Empty License / Source / Method happen when recipe
+		// resolution failed mid-collect; rendering a "-" keeps
+		// tabwriter padding aligned instead of producing
+		// awkward double-space gaps mid-row.
+		license := dashIfEmpty(e.License)
+		source := dashIfEmpty(shortenURL(e.SourceURL))
+		method := dashIfEmpty(e.Method)
 		if showScope {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
-				e.Scope, e.Name, e.Version, e.License,
-				source, e.Method)
+				e.Scope, e.Name, e.Version, license,
+				source, method)
 		} else {
 			fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\n",
-				e.Name, e.Version, e.License, source, e.Method)
+				e.Name, e.Version, license, source, method)
 		}
 	}
 	tw.Flush()
+}
+
+// dashIfEmpty substitutes "-" for an empty value so SBOM
+// table rows align even when recipe metadata is missing.
+// The placeholder is well-understood across CLI tools (apt,
+// brew, ls -l), avoiding a custom glyph.
+func dashIfEmpty(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
 }
 
 // shortenURL extracts just the hostname from a URL.

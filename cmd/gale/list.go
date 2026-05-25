@@ -28,7 +28,12 @@ var listCmd = &cobra.Command{
 		"global). Entries not yet present in the store are " +
 		"flagged with (not installed). Use `gale sbom` for a " +
 		"store-rooted view of what is actually installed.",
-	Args: cobra.NoArgs,
+	// ExactArgs(0) over NoArgs: cobra.NoArgs emits the
+	// confusing "unknown command" message when called with a
+	// positional like `gale list pkgname` — list has no
+	// subcommands.  ExactArgs(0) emits the straightforward
+	// "accepts 0 arg(s), received 1".
+	Args: cobra.ExactArgs(0),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runList(cmd.OutOrStdout(), cmd.ErrOrStderr())
 	},
