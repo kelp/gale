@@ -197,3 +197,13 @@ natural groupings are:
 
 Update README and re-run if these are real gaps; otherwise just
 note them as out-of-scope.
+
+## Curation + RO-K
+
+See [CURATION.md](CURATION.md) for the post-pipeline walk-through
+of speculative TODOs in the `state.md` files: 11 closed
+incidentally by the main pipeline, 6 promoted to **cluster RO-K**
+(small polish: outdated `--no-refresh`, LANG=C arrow, inspect
+stream discipline, sbom doubled wrap, sbom tabwriter empty
+fields, `cobra.NoArgs` on no-arg commands), and ~50 parked.
+When RO-K lands the read-only audit is closed.
