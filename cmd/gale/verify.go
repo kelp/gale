@@ -29,8 +29,8 @@ var verifyCmd = &cobra.Command{
 		v := attestation.NewVerifier()
 		if !v.Available() {
 			return fmt.Errorf(
-				"gh CLI is required for attestation verification\n" +
-					"  Install: https://cli.github.com")
+				"attestation verification unavailable: %s",
+				v.UnavailableReason())
 		}
 
 		// Resolve context first so lockfile uses the same
