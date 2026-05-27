@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os"
 	"time"
+
+	"github.com/kelp/gale/internal/timing"
 )
 
 // BlobURL returns the full GHCR blob URL for a given base
@@ -37,6 +39,8 @@ func Token(repository string) (string, error) {
 	if tok := os.Getenv("GALE_GITHUB_TOKEN"); tok != "" {
 		return tok, nil
 	}
+
+	defer timing.Phase("ghcr-token " + repository)()
 
 	scope := fmt.Sprintf("repository:%s:pull", repository)
 	reqURL := fmt.Sprintf("%s?service=%s&scope=%s",

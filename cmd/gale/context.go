@@ -17,6 +17,7 @@ import (
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
+	"github.com/kelp/gale/internal/timing"
 )
 
 // cmdContext holds resolved config, store, and installer
@@ -359,6 +360,7 @@ func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, 
 // entry, and writes it back. The file lock serializes
 // concurrent read-modify-write operations.
 func updateLockfile(lockPath, name, version, sha256 string) error {
+	defer timing.Phase("lockfile-write " + name)()
 	return filelock.With(lockPath+".lock", func() error {
 		lf, err := lockfile.Read(lockPath)
 		if err != nil {
@@ -538,6 +540,7 @@ func (ctx *cmdContext) RebuildGeneration() error {
 // tolerates missing store dirs (see
 // rebuildGenerationLenient). Sync uses this.
 func (ctx *cmdContext) RebuildGenerationLenient() error {
+	defer timing.Phase("generation-rebuild")()
 	return rebuildGenerationLenient(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath)
 }
 

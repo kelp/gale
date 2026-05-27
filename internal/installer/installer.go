@@ -17,6 +17,7 @@ import (
 	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
+	"github.com/kelp/gale/internal/timing"
 )
 
 var renameDir = os.Rename
@@ -525,24 +526,35 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 
 	displayName := fmt.Sprintf("%s-%s.tar.zst", name, version)
 
+	pkgID := name + "@" + version
+
 	if isGHCR(bin.URL) {
 		repo := repoFromURL(bin.URL)
 		token, err := ghcr.Token(repo)
 		if err != nil {
 			return fmt.Errorf("ghcr auth: %w", err)
 		}
+		dlDone := timing.Phase("binary-download " + pkgID)
 		if err := download.FetchWithAuthNamed(bin.URL, tmpFile, token, displayName); err != nil {
+			dlDone()
 			return fmt.Errorf("fetch binary: %w", err)
 		}
+		dlDone()
 	} else {
+		dlDone := timing.Phase("binary-download " + pkgID)
 		if err := download.FetchNamed(bin.URL, tmpFile, displayName); err != nil {
+			dlDone()
 			return fmt.Errorf("fetch binary: %w", err)
 		}
+		dlDone()
 	}
 
+	verifyDone := timing.Phase("binary-verify " + pkgID)
 	if err := download.VerifySHA256(tmpFile, bin.SHA256); err != nil {
+		verifyDone()
 		return fmt.Errorf("verify binary: %w", err)
 	}
+	verifyDone()
 
 	// Attestation verification fires only when the recipe's
 	// trust policy requires it (sigstore — the default) AND
@@ -572,9 +584,12 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// block a concurrent sync.
 	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
 	finalize := func() error {
+		extractDone := timing.Phase("binary-extract " + pkgID)
 		if err := download.ExtractTarZstd(tmpFile, extractDir); err != nil {
+			extractDone()
 			return fmt.Errorf("extract binary: %w", err)
 		}
+		extractDone()
 
 		// Rewrite .pc files so pkg-config resolves from
 		// the store dir, not the original build prefix.

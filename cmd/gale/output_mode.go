@@ -7,6 +7,7 @@ import (
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/timing"
 	"github.com/mattn/go-isatty"
 	"github.com/spf13/cobra"
 )
@@ -109,4 +110,5 @@ func configureSubsystemOutput(out *output.Output, mode outputMode) {
 	build.SetOutput(out)
 	download.ProgressPrefix = out.StepPrefix()
 	download.SetProgressEnabled(mode.progress)
+	timing.SetOutput(out)
 }

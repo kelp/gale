@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/timing"
 )
 
 // validCommitHash matches a lowercase hex string 7-40 chars long.
@@ -189,6 +190,8 @@ func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe,
 		return nil, fmt.Errorf("fetch recipe: %w", err)
 	}
 
+	defer timing.Phase("recipe-fetch " + name)()
+
 	bucket := string(name[0])
 	url := fmt.Sprintf("%s/recipes/%s/%s.toml",
 		r.BaseURL, bucket, name)
@@ -227,6 +230,8 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	if err := ValidName(name); err != nil {
 		return nil, err
 	}
+
+	defer timing.Phase(fmt.Sprintf("recipe-fetch %s@%s", name, version))()
 
 	// Fetch the versions index.
 	bucket := string(name[0])
