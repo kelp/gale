@@ -1,8 +1,8 @@
 package registry
 
 import (
+	"context"
 	"fmt"
-	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -23,8 +23,9 @@ type SearchResult struct {
 func (r *Registry) Search(query string) ([]SearchResult, error) {
 	url := r.BaseURL + "/index.tsv"
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	cr, err := r.cachedGet(client, url)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cr, err := r.cachedGet(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch index: %w", err)
 	}

@@ -1,8 +1,8 @@
 package registry
 
 import (
+	"context"
 	"fmt"
-	"net/http"
 	"net/url"
 	"os"
 	"regexp"
@@ -196,8 +196,9 @@ func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe,
 	url := fmt.Sprintf("%s/recipes/%s/%s.toml",
 		r.BaseURL, bucket, name)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	cr, err := r.cachedGet(client, url)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cr, err := r.cachedGet(ctx, url)
 	if err != nil {
 		return nil, fmt.Errorf("fetch recipe %s: %w", name, err)
 	}
@@ -238,8 +239,9 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	indexURL := fmt.Sprintf("%s/recipes/%s/%s.versions",
 		r.BaseURL, bucket, name)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	cr, err := r.cachedGet(client, indexURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cr, err := r.cachedGet(ctx, indexURL)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"fetch version index for %s: %w", name, err)
@@ -265,7 +267,10 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
 		r.repoBase(), commit, bucket, name)
 
-	rcr, err := r.cachedGet(client, recipeURL)
+	// Reuse the same context — both fetches share the 30s budget,
+	// which is intentional: a slow versions-index fetch should not
+	// extend the per-call deadline for the follow-up recipe fetch.
+	rcr, err := r.cachedGet(ctx, recipeURL)
 	if err != nil {
 		return nil, fmt.Errorf(
 			"fetch %s@%s recipe: %w", name, version, err)
@@ -289,8 +294,9 @@ func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 	url := fmt.Sprintf("%s/recipes/%s/%s.binaries.toml",
 		r.BaseURL, bucket, name)
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	cr, err := r.cachedGet(client, url)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cr, err := r.cachedGet(ctx, url)
 	if err != nil {
 		// 404 → graceful nil, everything else → warn + nil.
 		// cachedGet wraps the status in the error text so we

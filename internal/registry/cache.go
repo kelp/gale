@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -10,6 +11,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/kelp/gale/internal/httpclient"
 )
 
 // Cache layout on disk:
@@ -85,7 +88,7 @@ func defaultCacheDir() string {
 // Non-200/304 responses return an error wrapping the status
 // code; the caller owns HTTP-specific handling like 404-is-not-
 // fatal for the .binaries.toml path (see fetchBinaries).
-func (r *Registry) cachedGet(client *http.Client, url string) (cacheResult, error) {
+func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, error) {
 	// No cache configured — plain fetch, unless offline.
 	if r.CacheDir == "" {
 		if r.Offline {
@@ -93,7 +96,7 @@ func (r *Registry) cachedGet(client *http.Client, url string) (cacheResult, erro
 				"GALE_OFFLINE=1 and no cache directory configured for %s",
 				url)
 		}
-		body, err := plainGet(client, url)
+		body, err := plainGet(ctx, url)
 		return cacheResult{Body: body}, err
 	}
 
@@ -128,7 +131,7 @@ func (r *Registry) cachedGet(client *http.Client, url string) (cacheResult, erro
 		return cacheResult{}, errHTTP404
 	}
 
-	req, err := http.NewRequest(http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return cacheResult{}, err
 	}
@@ -137,7 +140,7 @@ func (r *Registry) cachedGet(client *http.Client, url string) (cacheResult, erro
 		req.Header.Set("If-None-Match", string(etag))
 	}
 
-	resp, err := client.Do(req)
+	resp, err := httpclient.Default().Do(req)
 	if err != nil {
 		// Stale-on-error: transport-level failure. Serve the
 		// cached body if it exists, then fall back to the
@@ -160,7 +163,7 @@ func (r *Registry) cachedGet(client *http.Client, url string) (cacheResult, erro
 		if rerr != nil {
 			// Cache disappeared between request and read. Fall
 			// back to a fresh fetch without the conditional.
-			body, perr := plainGet(client, url)
+			body, perr := plainGet(ctx, url)
 			return cacheResult{Body: body}, perr
 		}
 		return cacheResult{Body: body}, nil
@@ -230,9 +233,15 @@ func writeNegativeMarker(entryDir, markerPath string) {
 }
 
 // plainGet is an uncached GET. Returns the body on 200, an
-// error (wrapping the status code) otherwise.
-func plainGet(client *http.Client, url string) ([]byte, error) {
-	resp, err := client.Get(url)
+// error (wrapping the status code) otherwise. The context
+// carries the per-request timeout; the shared httpclient
+// has no per-client timeout.
+func plainGet(ctx context.Context, url string) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := httpclient.Default().Do(req)
 	if err != nil {
 		return nil, err
 	}

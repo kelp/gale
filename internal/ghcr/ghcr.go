@@ -1,6 +1,7 @@
 package ghcr
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -9,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kelp/gale/internal/httpclient"
 	"github.com/kelp/gale/internal/timing"
 )
 
@@ -158,8 +160,13 @@ func fetchToken(repository string) (string, time.Time, error) {
 		url.QueryEscape("ghcr.io"),
 		url.QueryEscape(scope))
 
-	client := &http.Client{Timeout: 30 * time.Second}
-	resp, err := client.Get(reqURL)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("build ghcr token request: %w", err)
+	}
+	resp, err := httpclient.Default().Do(req)
 	if err != nil {
 		return "", time.Time{}, fmt.Errorf("fetch ghcr token: %w", err)
 	}
