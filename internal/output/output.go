@@ -9,23 +9,25 @@ import (
 
 // Options controls output behavior.
 type Options struct {
-	Color bool
-	Steps bool
-	Quiet bool
+	Color   bool
+	Steps   bool
+	Quiet   bool
+	Verbose bool
 }
 
 // Output handles colored terminal output.
 // The caller decides whether to enable color (by checking
 // NO_COLOR, TTY status, etc.) and passes the decision in.
 type Output struct {
-	w      io.Writer
-	color  bool
-	steps  bool
-	quiet  bool
-	cyan   *color.Color
-	green  *color.Color
-	yellow *color.Color
-	red    *color.Color
+	w       io.Writer
+	color   bool
+	steps   bool
+	quiet   bool
+	verbose bool
+	cyan    *color.Color
+	green   *color.Color
+	yellow  *color.Color
+	red     *color.Color
 }
 
 // New creates an Output that writes to w.
@@ -37,10 +39,11 @@ func New(w io.Writer, useColor bool) *Output {
 // NewWithOptions creates an Output with explicit behavior.
 func NewWithOptions(w io.Writer, opts Options) *Output {
 	o := &Output{
-		w:     w,
-		color: opts.Color,
-		steps: opts.Steps,
-		quiet: opts.Quiet,
+		w:       w,
+		color:   opts.Color,
+		steps:   opts.Steps,
+		quiet:   opts.Quiet,
+		verbose: opts.Verbose,
 	}
 	if opts.Color {
 		o.cyan = color.New(color.FgCyan)
@@ -96,6 +99,21 @@ func (o *Output) writeMsg(c *color.Color, prefix, msg string) {
 	} else {
 		fmt.Fprintf(o.w, "%s%s\n", prefix, msg)
 	}
+}
+
+// Verbose reports whether verbose output is enabled.
+func (o *Output) Verbose() bool {
+	return o.verbose
+}
+
+// Verbosef writes a diagnostic line when verbose mode is on.
+// Suppressed by quiet mode. Caller controls formatting; no
+// prefix is added.
+func (o *Output) Verbosef(format string, args ...any) {
+	if o.quiet || !o.verbose {
+		return
+	}
+	fmt.Fprintf(o.w, format+"\n", args...)
 }
 
 // StepPrefix returns the colored prefix string for use in

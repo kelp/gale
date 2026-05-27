@@ -443,3 +443,53 @@ func TestErrorStillPrintsInQuietMode(t *testing.T) {
 		t.Errorf("output = %q, want error text in quiet mode", got)
 	}
 }
+
+// --- Behavior: verbose-only output ---
+// Verbosef is the channel for diagnostic detail (timing, phase
+// breakdowns, low-level fetch info) that should only appear when
+// --verbose is on. Default-off keeps normal runs uncluttered.
+
+func TestVerboseSilentByDefault(t *testing.T) {
+	var buf bytes.Buffer
+	o := New(&buf, false)
+	o.Verbosef("phase=%s elapsed=%dms", "fetch", 42)
+
+	if got := buf.String(); got != "" {
+		t.Errorf("output = %q, want empty when verbose is off", got)
+	}
+}
+
+func TestVerboseWritesWhenEnabled(t *testing.T) {
+	var buf bytes.Buffer
+	o := NewWithOptions(&buf, Options{Verbose: true})
+	o.Verbosef("phase=%s elapsed=%dms", "fetch", 42)
+
+	got := buf.String()
+	if !strings.Contains(got, "phase=fetch") {
+		t.Errorf("output = %q, want formatted message", got)
+	}
+	if !strings.HasSuffix(got, "\n") {
+		t.Errorf("output = %q, want trailing newline", got)
+	}
+}
+
+func TestVerboseSuppressedInQuietMode(t *testing.T) {
+	var buf bytes.Buffer
+	o := NewWithOptions(&buf, Options{Verbose: true, Quiet: true})
+	o.Verbosef("phase=%s", "fetch")
+
+	if got := buf.String(); got != "" {
+		t.Errorf("output = %q, want empty when quiet is on, even with verbose", got)
+	}
+}
+
+func TestVerboseGetterReflectsOption(t *testing.T) {
+	off := NewWithOptions(&bytes.Buffer{}, Options{})
+	if off.Verbose() {
+		t.Error("Verbose() = true on default Output, want false")
+	}
+	on := NewWithOptions(&bytes.Buffer{}, Options{Verbose: true})
+	if !on.Verbose() {
+		t.Error("Verbose() = false after Options{Verbose: true}, want true")
+	}
+}

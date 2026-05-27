@@ -21,11 +21,10 @@ type outputModeInput struct {
 }
 
 type outputMode struct {
-	color    bool
-	steps    bool
-	progress bool
-	quiet    bool
-	// TODO: wire to output.Output once it supports verbose mode.
+	color       bool
+	steps       bool
+	progress    bool
+	quiet       bool
 	verbose     bool
 	errorFormat string
 }
@@ -86,11 +85,11 @@ func applyNoColorEnv(in *outputModeInput) {
 
 func newOutputForWriter(w io.Writer) *output.Output {
 	mode := currentOutputMode()
-	// mode.verbose is stored but not yet forwarded; see TODO on outputMode.verbose.
 	out := output.NewWithOptions(w, output.Options{
-		Color: mode.color,
-		Steps: mode.steps,
-		Quiet: mode.quiet,
+		Color:   mode.color,
+		Steps:   mode.steps,
+		Quiet:   mode.quiet,
+		Verbose: mode.verbose,
 	})
 	if w == os.Stderr {
 		configureSubsystemOutput(out, mode)
