@@ -1,13 +1,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/registry"
 	ver "github.com/kelp/gale/internal/version"
 	"github.com/spf13/cobra"
@@ -93,13 +96,19 @@ var outdatedCmd = &cobra.Command{
 	},
 }
 
-// checkOutdated iterates the sorted package list and queries
-// the resolver once per entry. On the first transport-level
-// resolver error we stop probing further packages — every
-// subsequent call would fail with the same 30s timeout, and
-// the user wants a useful answer in <10s, not 30s × N. The
-// short-circuit case is recorded as one error per skipped
-// package so callers can report both the cause and the count.
+// checkOutdated dispatches resolver calls in parallel under a
+// bounded worker pool. On the first transport-level resolver
+// error a shared atomic flag is raised; workers that have not
+// yet started skip their resolver call entirely and surface a
+// "skipped after earlier network error" entry. In-flight workers
+// run to completion (no goroutine kill) but the per-request
+// context timeout (in the registry layer) bounds the wait. The
+// net effect on a dead registry is roughly one worker-pool-cycle
+// of timeouts instead of N × 30s.
+//
+// Warnings and the result aggregation happen sequentially after
+// the worker barrier so output order matches sorted package
+// order, not goroutine completion order.
 func checkOutdated(
 	pkgs map[string]string,
 	resolver installer.RecipeResolver,
@@ -111,43 +120,61 @@ func checkOutdated(
 	}
 	sort.Strings(names)
 
+	type query struct {
+		name, version string
+	}
+	type probe struct {
+		latest  string
+		err     error
+		skipped bool
+	}
+
+	queries := make([]query, len(names))
+	for i, name := range names {
+		queries[i] = query{name: name, version: pkgs[name]}
+	}
+
+	var hardStop atomic.Bool
+	probes, _ := parallel.Map(context.Background(), queries, 8,
+		func(_ context.Context, q query) (probe, error) {
+			if hardStop.Load() {
+				return probe{skipped: true}, nil
+			}
+			r, err := resolver(q.name)
+			if err != nil {
+				if isTransportError(err) {
+					hardStop.Store(true)
+				}
+				return probe{err: err}, nil
+			}
+			return probe{latest: r.Package.Full()}, nil
+		})
+
 	var result outdatedResult
-	var hardStop bool
-	for _, name := range names {
-		version := pkgs[name]
-		if hardStop {
+	for i, q := range queries {
+		p := probes[i]
+		switch {
+		case p.skipped:
 			result.Skipped++
 			result.Errors = append(result.Errors,
 				fmt.Errorf("%s: skipped after earlier network error",
-					name))
-			continue
-		}
-		r, err := resolver(name)
-		if err != nil {
-			out.Warn(fmt.Sprintf("Skipping %s: %v", name, err))
+					q.name))
+		case p.err != nil:
+			out.Warn(fmt.Sprintf("Skipping %s: %v", q.name, p.err))
 			result.Skipped++
 			result.Errors = append(result.Errors,
-				fmt.Errorf("%s: %w", name, err))
-			if isTransportError(err) {
-				// First transport-level error wins — assume the
-				// registry is unreachable and skip the rest.
-				hardStop = true
+				fmt.Errorf("%s: %w", q.name, p.err))
+		default:
+			// Compare via Full() so a revision bump (recipe
+			// revision 1 → 2 with unchanged upstream version)
+			// still shows as outdated.
+			if ver.IsNewer(p.latest, q.version) {
+				result.Items = append(result.Items, outdatedItem{
+					Name:    q.name,
+					Current: q.version,
+					Latest:  p.latest,
+				})
 			}
-			continue
-		}
-
-		// Compare via Full() so a revision bump (e.g.
-		// recipe revision 1 → 2 with unchanged upstream
-		// version) still shows as outdated. Raw Package.Version
-		// only carries the upstream triple, which drops the
-		// revision entirely.
-		latest := r.Package.Full()
-		if ver.IsNewer(latest, version) {
-			result.Items = append(result.Items, outdatedItem{
-				Name:    name,
-				Current: version,
-				Latest:  latest,
-			})
 		}
 	}
 	return result

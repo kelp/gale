@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/parallel"
 	"github.com/spf13/cobra"
 )
 
@@ -217,31 +219,50 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 			packages = map[string]string{filter: ver}
 		}
 
+		// Snapshot the lockfile state per package and dispatch
+		// recipe resolution in parallel. The resolver is the only
+		// slow part (per-package HTTP); the surrounding work is
+		// pure data assembly. Worker pool of 8 matches the bound
+		// used by sync/outdated.
+		type item struct {
+			name, version string
+			lockedSHA     string
+			hasLock       bool
+		}
+		items := make([]item, 0, len(packages))
 		for name, version := range packages {
-			e := sbomEntry{
-				Name:    name,
-				Version: version,
-				Scope:   sc.scope,
-				Method:  "source",
-			}
-			if locked, ok := lf.Packages[name]; ok {
-				e.ArchiveSHA256 = locked.SHA256
-			}
-			r, err := ctx.ResolveVersionedRecipe(name, version)
-			if err == nil {
-				e.SourceURL = r.Source.URL
-				e.SourceSHA256 = r.Source.SHA256
-				e.License = r.Package.License
-				e.Homepage = r.Package.Homepage
-				if bin := r.BinaryForPlatform(
-					runtime.GOOS, runtime.GOARCH); bin != nil {
-					if e.ArchiveSHA256 == bin.SHA256 {
-						e.Method = "binary"
+			locked, ok := lf.Packages[name]
+			items = append(items, item{
+				name: name, version: version,
+				lockedSHA: locked.SHA256, hasLock: ok,
+			})
+		}
+		results, _ := parallel.Map(context.Background(), items, 8,
+			func(_ context.Context, p item) (sbomEntry, error) {
+				e := sbomEntry{
+					Name:    p.name,
+					Version: p.version,
+					Scope:   sc.scope,
+					Method:  "source",
+				}
+				if p.hasLock {
+					e.ArchiveSHA256 = p.lockedSHA
+				}
+				if r, err := ctx.ResolveVersionedRecipe(p.name, p.version); err == nil {
+					e.SourceURL = r.Source.URL
+					e.SourceSHA256 = r.Source.SHA256
+					e.License = r.Package.License
+					e.Homepage = r.Package.Homepage
+					if bin := r.BinaryForPlatform(
+						runtime.GOOS, runtime.GOARCH); bin != nil {
+						if e.ArchiveSHA256 == bin.SHA256 {
+							e.Method = "binary"
+						}
 					}
 				}
-			}
-			entries = append(entries, e)
-		}
+				return e, nil
+			})
+		entries = append(entries, results...)
 	}
 	return entries, nil
 }
