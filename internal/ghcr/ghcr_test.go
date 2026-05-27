@@ -12,6 +12,7 @@ import (
 // --- Behavior 1: Fetches anonymous token ---
 
 func TestTokenReturnsTokenFromEndpoint(t *testing.T) {
+	t.Cleanup(func() { ResetTokenCacheForTest() })
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -38,6 +39,7 @@ func TestTokenReturnsTokenFromEndpoint(t *testing.T) {
 // --- Behavior 2: Parses token from JSON response ---
 
 func TestTokenParsesTokenField(t *testing.T) {
+	t.Cleanup(func() { ResetTokenCacheForTest() })
 	want := "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.sub.sig"
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -76,6 +78,7 @@ func TestTokenErrorsOnNon200(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			t.Cleanup(func() { ResetTokenCacheForTest() })
 			srv := httptest.NewServer(http.HandlerFunc(
 				func(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "error", tt.status)
@@ -98,6 +101,7 @@ func TestTokenErrorsOnNon200(t *testing.T) {
 // --- Behavior 4: Errors on malformed JSON ---
 
 func TestTokenErrorsOnMalformedJSON(t *testing.T) {
+	t.Cleanup(func() { ResetTokenCacheForTest() })
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -116,6 +120,7 @@ func TestTokenErrorsOnMalformedJSON(t *testing.T) {
 }
 
 func TestTokenErrorsOnMissingTokenField(t *testing.T) {
+	t.Cleanup(func() { ResetTokenCacheForTest() })
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -138,6 +143,7 @@ func TestTokenErrorsOnMissingTokenField(t *testing.T) {
 // --- Behavior 5: Uses GALE_GITHUB_TOKEN env var ---
 
 func TestTokenUsesEnvVarWhenSet(t *testing.T) {
+	t.Cleanup(func() { ResetTokenCacheForTest() })
 	var called atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
@@ -170,6 +176,7 @@ func TestTokenUsesEnvVarWhenSet(t *testing.T) {
 }
 
 func TestTokenIgnoresEmptyEnvVar(t *testing.T) {
+	t.Cleanup(func() { ResetTokenCacheForTest() })
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
@@ -208,6 +215,7 @@ func TestBlobURL(t *testing.T) {
 }
 
 func TestTokenSendsCorrectRequest(t *testing.T) {
+	t.Cleanup(func() { ResetTokenCacheForTest() })
 	type reqInfo struct {
 		method  string
 		service string
