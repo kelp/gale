@@ -237,6 +237,9 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 				lockedSHA: locked.SHA256, hasLock: ok,
 			})
 		}
+		// 8 workers: per-item work is I/O-bound (store reads);
+		// covers typical package list sizes without goroutine overhead.
+		// Errors slice is always nil — sbomEntry captures errors in fields.
 		results, _ := parallel.Map(context.Background(), items, 8,
 			func(_ context.Context, p item) (sbomEntry, error) {
 				e := sbomEntry{

@@ -1,16 +1,19 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/parallel"
 	"github.com/spf13/cobra"
 )
 
@@ -101,129 +104,76 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		return fmt.Errorf("reading lockfile: %w", err)
 	}
 
-	var installed, failed int
-	for name, version := range cfg.Packages {
-		// Track whether this iteration is a stale reinstall
-		// so we can route through Reinstall (skip cache) rather
-		// than Install (which would cache-hit on a bare dir).
-		stale := false
-		if ctx.Installer.Store.IsInstalled(name, version) {
-			if storeDir, ok := ctx.Installer.Store.StorePath(name, version); ok {
-				// Missing .gale-deps.toml means the install
-				// predates the revision system. Flag it stale
-				// without needing the recipe, so soft migration
-				// still works when the installed version is no
-				// longer in the registry's .versions index.
-				if !installer.HasDepsMetadata(storeDir) {
-					stale = true
-				} else if r, err := ctx.ResolveVersionedRecipe(name, version); err == nil {
-					if s, err := installer.IsStale(storeDir, r, ctx.Resolver); err == nil {
-						stale = s
-					}
-				}
-			}
-			if !stale {
-				if dryRun {
-					out.Info(fmt.Sprintf(
-						"skip %s@%s (up to date)",
-						name, version))
-				} else {
-					out.Info(fmt.Sprintf(
-						"%s@%s up to date", name, version))
-				}
-				continue
-			}
-		}
+	items := sortedSyncItems(cfg.Packages)
+	// syncWorkers: per-package work is HTTP-bound (recipe fetch +
+	// binary download); 8 covers typical sync sizes comfortably
+	// without adding goroutine overhead for small package lists.
+	const syncWorkers = 8
+	// Errors slice is always nil — runSyncOne captures all errors in
+	// syncOutcome fields, never returns one.
+	outcomes, _ := parallel.Map(context.Background(), items, syncWorkers,
+		func(_ context.Context, w syncItem) (syncOutcome, error) {
+			return runSyncOne(ctx, lf, w, dryRun), nil
+		})
 
-		if dryRun {
+	var installed, failed int
+	for _, o := range outcomes {
+		name := o.name
+		version := o.version
+		switch {
+		case o.upToDate:
+			if dryRun {
+				out.Info(fmt.Sprintf(
+					"skip %s@%s (up to date)",
+					name, version))
+			} else {
+				out.Info(fmt.Sprintf(
+					"%s@%s up to date", name, version))
+			}
+		case dryRun:
 			out.Info(fmt.Sprintf(
 				"install %s@%s (stale)", name, version))
 			installed++
-			continue
-		}
-
-		if stale {
-			out.Info(fmt.Sprintf(
-				"%s@%s stale — deps changed; reinstalling",
-				name, version))
-		}
-
-		// Not in store — fetch recipe for pinned version.
-		r, err := ctx.ResolveVersionedRecipe(
-			name, version)
-		if err != nil {
+		case o.resolveErr != nil:
 			out.Warn(fmt.Sprintf(
 				"%s@%s: %v. "+
 					"Run 'gale update %s' to install latest.",
-				name, version, err, name))
+				name, version, o.resolveErr, name))
 			failed++
-			continue
-		}
-
-		// Versions match — install.
-		out.Info(fmt.Sprintf("Installing %s@%s...",
-			name, version))
-
-		var result *installer.InstallResult
-		if stale {
-			result, err = ctx.Installer.Reinstall(r)
-		} else {
-			result, err = ctx.Installer.Install(r)
-		}
-		if err != nil {
-			if errors.Is(err, build.ErrUnsupportedPlatform) {
+		case o.installErr != nil:
+			if errors.Is(o.installErr, build.ErrUnsupportedPlatform) {
 				out.Warn(fmt.Sprintf(
 					"%s does not support %s/%s",
 					name, runtime.GOOS, runtime.GOARCH))
 			} else {
 				out.Warn(fmt.Sprintf(
-					"Failed to install %s: %v", name, err))
+					"Failed to install %s: %v", name, o.installErr))
 			}
 			failed++
-			continue
-		}
-
-		// Compare against the lockfile. The install has
-		// already been verified against the recipe's
-		// expected SHA256, so a disagreement here only
-		// means the recipe (or the built output) has
-		// changed since the last install on this machine.
-		// Warn, update the cache, and keep the install —
-		// evicting a freshly-verified package is
-		// destructive and the user doesn't gain anything
-		// from it.
-		locked, hasLock := lf.Packages[name]
-		if hasLock && locked.SHA256 != "" &&
-			result.SHA256 != "" &&
-			locked.SHA256 != result.SHA256 {
-			out.Warn(fmt.Sprintf(
-				"%s@%s SHA256 changed since last sync "+
-					"(lock: %s..., got: %s...) — "+
-					"updating lockfile",
-				name, version,
-				locked.SHA256[:12],
-				result.SHA256[:12]))
-		}
-
-		reportResult(out, result, "Installed", "built from source")
-
-		// Update lockfile with the SHA256 from install.
-		// Use the canonical version form (e.g. "1.8.1-1") so
-		// IsStale can match it against the bare toml version.
-		if result.SHA256 != "" {
-			lp, lpErr := lockfilePath(ctx.GalePath)
-			if lpErr != nil {
-				out.Warn(fmt.Sprintf(
-					"resolving lockfile path for %s: %v",
-					name, lpErr))
-			} else if err := updateLockfile(
-				lp, name, r.Package.Full(), result.SHA256); err != nil {
-				out.Warn(fmt.Sprintf(
-					"updating lockfile for %s: %v", name, err))
+		default:
+			if o.stale {
+				out.Info(fmt.Sprintf(
+					"%s@%s stale — deps changed; reinstalling",
+					name, version))
 			}
+			out.Info(fmt.Sprintf("Installing %s@%s...",
+				name, version))
+			if o.shaChanged {
+				out.Warn(fmt.Sprintf(
+					"%s@%s SHA256 changed since last sync "+
+						"(lock: %s..., got: %s...) — "+
+						"updating lockfile",
+					name, version,
+					shortSHA(o.priorSHA),
+					shortSHA(o.result.SHA256)))
+			}
+			reportResult(out, o.result, "Installed", "built from source")
+			if o.lockfileErr != nil {
+				out.Warn(fmt.Sprintf(
+					"updating lockfile for %s: %v", name, o.lockfileErr))
+			}
+			installed++
 		}
-
-		installed++
 	}
 
 	configChanged := generationDrifted(ctx.GaleDir, ctx.StoreRoot, cfg.Packages)
@@ -297,6 +247,128 @@ func finishSync(dryRun bool, failed int, installed int, configChanged bool, rebu
 		return fmt.Errorf("%d package(s) could not be synced", failed)
 	}
 	return rebuildErr
+}
+
+// syncItem is the per-package unit of work passed to runSyncOne.
+type syncItem struct {
+	name, version string
+}
+
+// syncOutcome is the result of one runSyncOne call. It is
+// pure data — the caller emits all user-visible output after
+// the parallel worker barrier so lines are printed in a
+// deterministic order.
+type syncOutcome struct {
+	name, version string
+	upToDate      bool
+	stale         bool
+	resolveErr    error
+	installErr    error
+	result        *installer.InstallResult
+	shaChanged    bool
+	priorSHA      string
+	lockfileErr   error
+}
+
+// sortedSyncItems converts cfg.Packages to a syncItem slice
+// ordered by name. Used by runSync so per-package output is
+// emitted in a stable order across runs regardless of which
+// worker finished first.
+func sortedSyncItems(pkgs map[string]string) []syncItem {
+	names := make([]string, 0, len(pkgs))
+	for name := range pkgs {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	items := make([]syncItem, len(names))
+	for i, name := range names {
+		items[i] = syncItem{name: name, version: pkgs[name]}
+	}
+	return items
+}
+
+// runSyncOne is the per-package body of sync, extracted so the
+// outer loop can dispatch it under a parallel worker pool.
+// Pure with respect to output (no fmt.Println / out.Info calls);
+// caller emits user-visible lines after the worker barrier.
+func runSyncOne(ctx *cmdContext, lf *lockfile.LockFile, w syncItem, dryRun bool) syncOutcome {
+	outcome := syncOutcome{name: w.name, version: w.version}
+
+	// Step a/b: check if already installed and whether stale.
+	if ctx.Installer.Store.IsInstalled(w.name, w.version) {
+		if storeDir, ok := ctx.Installer.Store.StorePath(w.name, w.version); ok {
+			if !installer.HasDepsMetadata(storeDir) {
+				// Pre-revision install — soft migration: mark stale.
+				outcome.stale = true
+			} else if r, err := ctx.ResolveVersionedRecipe(w.name, w.version); err == nil {
+				if s, err := installer.IsStale(storeDir, r, ctx.Resolver); err == nil {
+					outcome.stale = s
+				}
+			}
+		}
+
+		// Step c: not stale — up to date, no install.
+		if !outcome.stale {
+			outcome.upToDate = true
+			return outcome
+		}
+	}
+
+	// Step d: dry-run with something to do — return without installing.
+	if dryRun {
+		return outcome
+	}
+
+	// Step e: resolve recipe.
+	r, err := ctx.ResolveVersionedRecipe(w.name, w.version)
+	if err != nil {
+		outcome.resolveErr = err
+		return outcome
+	}
+
+	// Step f: install or reinstall.
+	var result *installer.InstallResult
+	if outcome.stale {
+		result, err = ctx.Installer.Reinstall(r)
+	} else {
+		result, err = ctx.Installer.Install(r)
+	}
+	if err != nil {
+		outcome.installErr = err
+		return outcome
+	}
+	outcome.result = result
+
+	// Step g: compare lockfile SHA.
+	if locked, ok := lf.Packages[w.name]; ok &&
+		locked.SHA256 != "" &&
+		result.SHA256 != "" &&
+		locked.SHA256 != result.SHA256 {
+		outcome.shaChanged = true
+		outcome.priorSHA = locked.SHA256
+	}
+
+	// Step h: write lockfile (non-fatal).
+	if result.SHA256 != "" {
+		lp, lpErr := lockfilePath(ctx.GalePath)
+		if lpErr != nil {
+			outcome.lockfileErr = lpErr
+		} else if wErr := updateLockfile(lp, w.name, r.Package.Full(), result.SHA256); wErr != nil {
+			outcome.lockfileErr = wErr
+		}
+	}
+
+	return outcome
+}
+
+// shortSHA returns the first 12 characters of a SHA256 hex string for
+// display. If s is shorter than 12 (e.g. due to truncation or a bug),
+// it returns s unchanged rather than panicking.
+func shortSHA(s string) string {
+	if len(s) < 12 {
+		return s
+	}
+	return s[:12]
 }
 
 func init() {

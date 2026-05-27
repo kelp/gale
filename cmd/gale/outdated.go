@@ -135,6 +135,9 @@ func checkOutdated(
 	}
 
 	var hardStop atomic.Bool
+	// 8 workers: per-package work is HTTP-bound (registry fetch);
+	// covers typical package list sizes without goroutine overhead.
+	// Errors slice is always nil — probe captures errors in its fields.
 	probes, _ := parallel.Map(context.Background(), queries, 8,
 		func(_ context.Context, q query) (probe, error) {
 			if hardStop.Load() {
