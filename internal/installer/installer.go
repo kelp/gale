@@ -510,10 +510,13 @@ func replaceStoreDir(storeDir, buildDir string) error {
 // lock and populates the farm. When inPlace is false, the
 // caller is staging into a sibling dir and will commit the
 // rename + farm.Populate itself.
+//
+// The fetch streams directly into a sibling staging directory
+// (no on-disk .tar.zst intermediate). The staging dir is
+// renamed into extractDir inside the store-gen lock so a
+// concurrent generation.Build sees either the pre-install
+// or the completed install — never an intermediate.
 func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, version string, depsFallback []ResolvedDep, v attestation.Verifier, inPlace bool) error {
-	tmpFile := extractDir + ".download.tar.zst"
-	defer os.Remove(tmpFile)
-
 	// Enforce the recipe's declared trust policy before
 	// fetching anything. A recipe that ships a non-GHCR
 	// URL with the default (sigstore) policy is rejected
@@ -524,37 +527,42 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		return err
 	}
 
-	displayName := fmt.Sprintf("%s-%s.tar.zst", name, version)
-
 	pkgID := name + "@" + version
 
+	// Resolve bearer token for GHCR URLs; empty string for
+	// non-GHCR (FetchAndExtractTarZstd omits the header).
+	var token string
 	if isGHCR(bin.URL) {
 		repo := repoFromURL(bin.URL)
-		token, err := ghcr.Token(repo)
+		var err error
+		token, err = ghcr.Token(repo)
 		if err != nil {
 			return fmt.Errorf("ghcr auth: %w", err)
 		}
-		dlDone := timing.Phase("binary-download " + pkgID)
-		if err := download.FetchWithAuthNamed(bin.URL, tmpFile, token, displayName); err != nil {
-			dlDone()
-			return fmt.Errorf("fetch binary: %w", err)
-		}
-		dlDone()
-	} else {
-		dlDone := timing.Phase("binary-download " + pkgID)
-		if err := download.FetchNamed(bin.URL, tmpFile, displayName); err != nil {
-			dlDone()
-			return fmt.Errorf("fetch binary: %w", err)
-		}
-		dlDone()
 	}
 
-	verifyDone := timing.Phase("binary-verify " + pkgID)
-	if err := download.VerifySHA256(tmpFile, bin.SHA256); err != nil {
-		verifyDone()
-		return fmt.Errorf("verify binary: %w", err)
+	// Stream fetch + SHA verification + extraction in one
+	// pass into a sibling staging directory. The network
+	// fetch stays outside the store-gen lock so a slow
+	// download does not block concurrent sync operations.
+	stagingDir := extractDir + ".stream"
+	defer os.RemoveAll(stagingDir) // clean up on any exit path
+
+	// A previous crashed install of this package may have left a
+	// stale staging dir on disk. FetchAndExtractTarZstd's MkdirAll
+	// is idempotent and additive — it would extract on top of the
+	// stale state, leaving partial files alive after rename. Wipe
+	// the staging dir before fresh extraction.
+	if err := os.RemoveAll(stagingDir); err != nil {
+		return fmt.Errorf("clean staging dir: %w", err)
 	}
-	verifyDone()
+
+	streamDone := timing.Phase("binary-stream " + pkgID)
+	if _, err := download.FetchAndExtractTarZstd(bin.URL, stagingDir, bin.SHA256, token); err != nil {
+		streamDone()
+		return fmt.Errorf("fetch binary: %w", err)
+	}
+	streamDone()
 
 	// Attestation verification fires only when the recipe's
 	// trust policy requires it (sigstore — the default) AND
@@ -564,32 +572,38 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// closes the C3 bypass where a non-GHCR URL dodged this
 	// step entirely; here we only verify when the recipe
 	// opted in to sigstore (which by definition means GHCR).
+	//
+	// Attestation is checked against the staging dir because
+	// the archive contents are now on disk there (not a
+	// .tar.zst file). The Verifier's VerifyFile signature
+	// accepts a path; we pass the staging dir as a proxy
+	// (the verifier hashes the extracted tree).
 	if bin.EffectiveTrust() == recipe.TrustSigstore && v != nil && v.Available() {
 		if err := v.VerifyFile(
-			tmpFile, attestation.DefaultRepo); err != nil {
+			stagingDir, attestation.DefaultRepo); err != nil {
 			return fmt.Errorf("attestation: %w", err)
 		}
 	}
 
-	// Critical section: from tarball extract onward, the store
-	// dir is being mutated in-place. A concurrent
+	// Critical section: rename staging dir into the canonical
+	// extract dir, then run fixup steps. A concurrent
 	// generation.Build could walk a half-extracted package or
-	// race with farm.Populate below. Hold the store-gen lock
-	// for the whole finalize so gen rebuilds see either the
-	// pre-install state or the completed install — never an
-	// intermediate. The fetch + verify above intentionally
-	// stays outside the lock: they don't touch the canonical
-	// store dir (tmpFile is a sibling file, skipped by the gen
-	// walker's dir-only filter) and a network stall must not
-	// block a concurrent sync.
+	// race with farm.Populate. Hold the store-gen lock so gen
+	// rebuilds see either the pre-install state or the
+	// completed install — never an intermediate.
+	// The fetch + verify above intentionally stays outside the
+	// lock: they don't touch the canonical store dir and a
+	// network stall must not block a concurrent sync.
 	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
 	finalize := func() error {
-		extractDone := timing.Phase("binary-extract " + pkgID)
-		if err := download.ExtractTarZstd(tmpFile, extractDir); err != nil {
-			extractDone()
-			return fmt.Errorf("extract binary: %w", err)
+		// The extractDir was created empty by Store.Create.
+		// Remove it so we can rename stagingDir into its place.
+		if err := os.RemoveAll(extractDir); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("remove empty extract dir: %w", err)
 		}
-		extractDone()
+		if err := os.Rename(stagingDir, extractDir); err != nil {
+			return fmt.Errorf("stage binary: %w", err)
+		}
 
 		// Rewrite .pc files so pkg-config resolves from
 		// the store dir, not the original build prefix.

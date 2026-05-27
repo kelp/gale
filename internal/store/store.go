@@ -33,13 +33,15 @@ func NewStore(root string) *Store {
 
 // isTransientStoreEntry reports whether a sibling under
 // <root>/<name>/ is a transient artifact of a forced reinstall
-// rather than a real installed version. Both ".build-*" staging
-// dirs and "<version>.bak" backups can appear briefly while
-// commitStaged / replaceStoreDir runs, and non-locking readers
-// must skip them.
+// rather than a real installed version. ".build-*" staging dirs,
+// "<version>.bak" backups, and "<version>.stream" streaming-extract
+// staging dirs can appear briefly while commitStaged /
+// replaceStoreDir / FetchAndExtractTarZstd runs, and non-locking
+// readers must skip them.
 func isTransientStoreEntry(name string) bool {
 	return strings.HasPrefix(name, ".build-") ||
-		strings.HasSuffix(name, ".bak")
+		strings.HasSuffix(name, ".bak") ||
+		strings.HasSuffix(name, ".stream")
 }
 
 // Create creates the directory for a package version.

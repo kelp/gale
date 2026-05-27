@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/bzip2"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -697,6 +698,76 @@ func copyFileToTar(tw *tar.Writer, path, rel string) error {
 		return fmt.Errorf("write file content %s: %w", rel, err)
 	}
 	return nil
+}
+
+// FetchAndExtractTarZstd streams a .tar.zst HTTP response
+// directly through a SHA-256 hasher and a tar.zst extractor in
+// one pass — no on-disk intermediate file. Verifies the computed
+// hash against expectedSHA256 at end of stream; on mismatch the
+// partially-extracted destDir is cleaned up before returning the
+// error. token is an optional Bearer authorization header value
+// (empty string = no Authorization header sent). Returns the
+// computed hex SHA-256 on success.
+func FetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token string) (string, error) {
+	if token != "" {
+		u, err := url.Parse(rawURL)
+		if err != nil {
+			return "", fmt.Errorf("parse URL: %w", err)
+		}
+		if u.Scheme != "https" {
+			return "", fmt.Errorf(
+				"refusing to send bearer token over %s (https required)",
+				u.Scheme)
+		}
+	}
+
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
+	if err != nil {
+		return "", fmt.Errorf("create request: %w", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("fetch %s: %w", rawURL, err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		_ = os.RemoveAll(destDir)
+		return "", fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
+	}
+
+	if err := os.MkdirAll(destDir, 0o755); err != nil {
+		return "", fmt.Errorf("create destination directory: %w", err)
+	}
+
+	hasher := sha256.New()
+	teed := io.TeeReader(resp.Body, hasher)
+
+	zr, err := zstd.NewReader(teed)
+	if err != nil {
+		_ = os.RemoveAll(destDir)
+		return "", fmt.Errorf("create zstd reader: %w", err)
+	}
+	defer zr.Close()
+
+	tr := tar.NewReader(zr)
+	if err := extractTar(tr, destDir); err != nil {
+		_ = os.RemoveAll(destDir)
+		return "", fmt.Errorf("extract: %w", err)
+	}
+
+	computed := fmt.Sprintf("%x", hasher.Sum(nil))
+	if !strings.EqualFold(computed, expectedSHA256) {
+		_ = os.RemoveAll(destDir)
+		return "", fmt.Errorf("sha256 mismatch: expected %s, got %s",
+			expectedSHA256, computed)
+	}
+
+	return computed, nil
 }
 
 // writeFile creates a file at path, copies content from r,
