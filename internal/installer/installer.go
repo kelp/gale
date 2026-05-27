@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"net/url"
@@ -15,6 +16,7 @@ import (
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
+	"github.com/kelp/gale/internal/prewarm"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/kelp/gale/internal/timing"
@@ -158,6 +160,9 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	if binaryViable {
 		depPaths, err = inst.InstallRuntimeDeps(r)
 	} else {
+		if len(r.Dependencies.Build) > 0 {
+			prewarm.PrewarmRecipeDeps(context.Background(), r.Dependencies.Build, inst.Resolver)
+		}
 		depPaths, err = inst.InstallBuildDeps(r)
 	}
 	if err != nil {
@@ -283,6 +288,9 @@ func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*
 	defer os.RemoveAll(buildDir) // clean up on any exit path
 
 	// Resolve and install build deps.
+	if len(r.Dependencies.Build) > 0 {
+		prewarm.PrewarmRecipeDeps(context.Background(), r.Dependencies.Build, inst.Resolver)
+	}
 	depPaths, err := inst.InstallBuildDeps(r)
 	if err != nil {
 		return nil, fmt.Errorf("install build deps: %w", err)
@@ -352,6 +360,9 @@ func (inst *Installer) installGitPrepare(r *recipe.Recipe) (*build.BuildResult, 
 	noop := func() {}
 
 	// Resolve and install build deps.
+	if len(r.Dependencies.Build) > 0 {
+		prewarm.PrewarmRecipeDeps(context.Background(), r.Dependencies.Build, inst.Resolver)
+	}
 	depPaths, err := inst.InstallBuildDeps(r)
 	if err != nil {
 		return nil, "", nil, noop, fmt.Errorf("install build deps: %w", err)
