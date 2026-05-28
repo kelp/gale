@@ -105,6 +105,163 @@ func TestRebuildGenerationOverManyPackagesSymlinksAll(t *testing.T) {
 	}
 }
 
+// TestFinalizeInstallRotatesGenOnRevisionBump is a regression
+// test for issue #23 (install --recipe leaves the new revision
+// off PATH). The user-facing contract of `gale install` is
+// "this package is now on PATH" — if a bumped revision lands
+// in the store and the lockfile but the current generation
+// still points at the old revision, the install silently lied.
+//
+// Sequence:
+//  1. Stage gh@2.92.0-2 in the store and build gen/1 with it.
+//     current → gen/1, gen/1/bin/gh → pkg/gh/2.92.0-2/bin/gh.
+//  2. A `gale install --recipe gh.toml` for revision 3 stages
+//     pkg/gh/2.92.0-3/ (we simulate that).
+//  3. Call finalizeInstall with the exact arguments
+//     installFromRecipeFile uses: name="gh", configVersion
+//     ="2.92.0" (bare), lockVersion="2.92.0-3", sha="deadbeef".
+//
+// Expected: no error; current advances to gen/2; the new
+// symlink resolves under 2.92.0-3.
+//
+// The original issue was a v0.12.3 gale binary running inside
+// the gale repo (its resolver appended "-1" unconditionally and
+// silently skipped ENOENT — the root cause of the gen/308
+// incident, fixed in 773c051). This test pins the modern
+// resolver's contract so a future regression of the same
+// shape gets caught immediately.
+func TestFinalizeInstallRotatesGenOnRevisionBump(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+	lockPath := filepath.Join(galeDir, "gale.lock")
+
+	mkRev := func(rev string) {
+		t.Helper()
+		binDir := filepath.Join(storeRoot, "gh", rev, "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", binDir, err)
+		}
+		if err := os.WriteFile(filepath.Join(binDir, "gh"),
+			[]byte("#!/bin/sh\n# "+rev+"\n"), 0o755); err != nil {
+			t.Fatalf("write %s: %v", binDir, err)
+		}
+	}
+
+	mkRev("2.92.0-2")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  gh = \"2.92.0\"\n"), 0o644); err != nil {
+		t.Fatalf("write gale.toml: %v", err)
+	}
+	if err := lockfile.Write(lockPath, &lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"gh": {Version: "2.92.0-2", SHA256: "old"},
+		},
+	}); err != nil {
+		t.Fatalf("write initial lockfile: %v", err)
+	}
+	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+		t.Fatalf("initial rebuildGeneration: %v", err)
+	}
+
+	gen1Link := filepath.Join(galeDir, "gen", "1", "bin", "gh")
+	if t1, err := os.Readlink(gen1Link); err != nil {
+		t.Fatalf("gen/1 sanity readlink: %v", err)
+	} else if !strings.HasSuffix(t1, filepath.Join("gh", "2.92.0-2", "bin", "gh")) {
+		t.Fatalf("gen/1/bin/gh → %s, want suffix gh/2.92.0-2/bin/gh", t1)
+	}
+
+	mkRev("2.92.0-3")
+	if err := finalizeInstall(galeDir, storeRoot, configPath, "",
+		"gh", "2.92.0", "2.92.0-3", "deadbeef"); err != nil {
+		t.Fatalf("finalizeInstall on revision bump: %v", err)
+	}
+
+	current, err := os.Readlink(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("read current after finalize: %v", err)
+	}
+	if filepath.Base(current) != "2" {
+		t.Errorf("current → %s, want gen/2 (rotation failed)", current)
+	}
+
+	target, err := os.Readlink(filepath.Join(galeDir, "gen", "2", "bin", "gh"))
+	if err != nil {
+		t.Fatalf("readlink gen/2/bin/gh: %v", err)
+	}
+	wantSuffix := filepath.Join("gh", "2.92.0-3", "bin", "gh")
+	if !strings.HasSuffix(target, wantSuffix) {
+		t.Errorf("gen/2/bin/gh → %s, want suffix %s", target, wantSuffix)
+	}
+}
+
+// TestFinalizeInstallWithMissingOtherPkgInConfig is the
+// diagnostic test for hypothesis H1 of issue #23: when
+// gale.toml lists ANOTHER package whose store dir is absent,
+// strict rebuildGeneration errors and the install — though
+// successful in the store and lockfile — fails to rotate the
+// generation. The user sees no "Installed" line and the new
+// revision never reaches PATH.
+//
+// This test pins the current behavior so it's visible. If we
+// later decide install should be lenient (matching sync), this
+// is the test that flips: assertion changes from "error returned"
+// to "rotation succeeded with a warning."
+func TestFinalizeInstallWithMissingOtherPkgInConfig(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+	lockPath := filepath.Join(galeDir, "gale.lock")
+
+	binDir := filepath.Join(storeRoot, "gh", "2.92.0-2", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir gh: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gh"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write gh: %v", err)
+	}
+
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  gh = \"2.92.0\"\n  missing = \"1.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatalf("write gale.toml: %v", err)
+	}
+	if err := lockfile.Write(lockPath, &lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"gh": {Version: "2.92.0-2", SHA256: "old"},
+		},
+	}); err != nil {
+		t.Fatalf("write lockfile: %v", err)
+	}
+
+	newBin := filepath.Join(storeRoot, "gh", "2.92.0-3", "bin")
+	if err := os.MkdirAll(newBin, 0o755); err != nil {
+		t.Fatalf("mkdir gh-3: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(newBin, "gh"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write gh-3: %v", err)
+	}
+
+	err := finalizeInstall(galeDir, storeRoot, configPath, "",
+		"gh", "2.92.0", "2.92.0-3", "deadbeef")
+	if err == nil {
+		t.Fatal("finalizeInstall returned nil; expected error " +
+			"about `missing` store dir (strict rebuild semantics)")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "missing") {
+		t.Errorf("error %q should name the missing package", msg)
+	}
+
+	if _, statErr := os.Lstat(filepath.Join(galeDir, "current")); statErr == nil {
+		current, _ := os.Readlink(filepath.Join(galeDir, "current"))
+		t.Errorf("current was created (→ %s) despite rebuild "+
+			"failure; install state is inconsistent", current)
+	}
+}
+
 // TestFinalizeInstallPreservesAllDeclaredPackages exercises the
 // EXACT path `just install` takes: write a gale.toml with N
 // pre-existing packages, stage their store dirs, then call
