@@ -21,8 +21,13 @@ import (
 // to an exact match, and finally to a bare "<v>" (legacy
 // pre-revision install). A "<v>-1" request also falls
 // back to a bare "<v>" when the suffixed one is absent.
+//
+// "Bare" means no trailing "-<digits>" revision suffix —
+// a dash from a semver pre-release/dev tag like
+// "0.16.2-dev.70+676b646" still counts as bare, because
+// the revision goes on the END (e.g. "...-1").
 func resolveStoreDir(storeRoot, name, version string) string {
-	if !strings.Contains(version, "-") {
+	if !hasNumericRevisionSuffix(version) {
 		if rev, ok := highestRevisionOnDisk(storeRoot, name, version); ok {
 			return filepath.Join(storeRoot, name, rev)
 		}
@@ -39,6 +44,28 @@ func resolveStoreDir(storeRoot, name, version string) string {
 		}
 	}
 	return dir
+}
+
+// hasNumericRevisionSuffix reports whether version ends in a
+// "-<digits>" revision suffix. Distinguishes a bare semver-with-
+// dev-tag like "0.16.2-dev.70+676b646" (no revision) from an
+// explicit pinned form like "0.16.2-dev.70+676b646-1" (revision 1).
+// Used by resolveStoreDir and highestRevisionOnDisk to decide
+// whether to scan for the highest revision on disk (bare → scan)
+// or treat the version as an exact-match request (numeric suffix
+// → exact). Mirrors cmd/gale/context.go's stripNumericRevision
+// classification.
+func hasNumericRevisionSuffix(version string) bool {
+	i := strings.LastIndex(version, "-")
+	if i < 0 || i == len(version)-1 {
+		return false
+	}
+	for _, r := range version[i+1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // highestRevisionOnDisk returns the directory name with the
@@ -234,6 +261,20 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 
 		genDir := filepath.Join(
 			galeDir, "gen", strconv.Itoa(next))
+
+		// Tear down any pre-existing gen dir at this number
+		// before populating. Without this, symlinkDir's
+		// skip-if-dst-exists logic merges new content into the
+		// stale layout, shipping a gen with the wrong store
+		// revisions or with leftover symlinks for packages no
+		// longer in pkgs. validateGenerationSymlinks doesn't
+		// catch this — stale links still resolve, just to the
+		// wrong place. Reached when a prior Build's cleanup
+		// didn't fire (process killed) or when current was
+		// rolled back behind the highest-built gen.
+		if err := os.RemoveAll(genDir); err != nil {
+			return fmt.Errorf("clean stale generation dir: %w", err)
+		}
 
 		// Always create bin/ — it's the minimum required
 		// directory (user adds it to PATH).

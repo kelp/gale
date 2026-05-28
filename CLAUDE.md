@@ -170,6 +170,26 @@ Also exports `[vars]` from gale.toml. `gale run` and
 - `docs/dev/releasing.md` — release flow (immutable
   releases; `just tag` + `just release` drive CI)
 
+## Releasing
+
+`just tag <ver>` then `just release <ver>` drives CI.
+Full details in `docs/dev/releasing.md`.
+
+After the release is live, bump TWO `gale.toml` files:
+
+- `../gale-recipes/recipes/g/gale.toml` — so users on
+  any machine pick up the new version.
+- `./gale.toml` (this repo's project gale.toml) — so
+  the dev env inside this repo activates the new
+  version. If you forget, `just install` runs a stale
+  binary from `.gale/current/bin/gale` and behaves like
+  the pre-release. The gen/308 regression on
+  2026-05-28 was exactly this — a v0.12.3-era binary
+  resolved bare versions to `<v>-1` only and silently
+  skipped packages without a `-1` revision on disk,
+  producing a partial generation. The `tag`/`release`
+  justfile targets print both reminders.
+
 ## Principles
 
 - Everything from source. GHCR binaries are a cache,

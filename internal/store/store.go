@@ -100,7 +100,10 @@ func (s *Store) resolveVersion(name, version string) (string, bool) {
 // Broken out so callers that already hold the listing (e.g. future
 // batch lookups) can reuse the logic without a redundant syscall.
 func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, bool) {
-	hasDash := strings.Contains(version, "-")
+	// "Bare" means no trailing "-<digits>" revision suffix. A
+	// dash from a semver pre-release/dev tag like "0.16.2-dev.70+sha"
+	// still counts as bare; the revision goes on the END.
+	hasNumericRev := hasNumericRevisionSuffix(version)
 	prefix := version + "-"
 
 	hasExact := false
@@ -127,7 +130,7 @@ func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, b
 		if bare != "" && n == bare {
 			hasBareForDashOne = true
 		}
-		if !hasDash && strings.HasPrefix(n, prefix) {
+		if !hasNumericRev && strings.HasPrefix(n, prefix) {
 			rev, err := strconv.Atoi(n[len(prefix):])
 			if err == nil && rev >= 0 && rev > bestRev {
 				bestRev = rev
@@ -137,7 +140,7 @@ func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, b
 	}
 
 	// Bare request: highest "<v>-<N>" wins over bare "<v>".
-	if !hasDash && bestRev >= 0 {
+	if !hasNumericRev && bestRev >= 0 {
 		return bestName, true
 	}
 	// Exact match.
@@ -149,6 +152,27 @@ func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, b
 		return bare, true
 	}
 	return version, false
+}
+
+// hasNumericRevisionSuffix reports whether version ends in a
+// "-<digits>" revision suffix. Distinguishes a bare semver-with-
+// dev-tag like "0.16.2-dev.70+676b646" (no revision) from an
+// explicit pinned form like "0.16.2-dev.70+676b646-1" (revision 1).
+// resolveVersionFromEntries uses this to decide whether to scan
+// for the highest revision on disk (bare → scan) or treat the
+// version as an exact-match request (numeric suffix → exact).
+// Kept in sync with the identical helper in internal/generation.
+func hasNumericRevisionSuffix(version string) bool {
+	i := strings.LastIndex(version, "-")
+	if i < 0 || i == len(version)-1 {
+		return false
+	}
+	for _, r := range version[i+1:] {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // IsInstalled checks if a package version exists in the store.

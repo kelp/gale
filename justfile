@@ -49,9 +49,14 @@ integration-slow:
 # Run all checks (test + lint + format + integration)
 check: test lint fmt-check integration
 
-# Install gale from local source using gale itself
-install:
-    gale install --path . -g gale
+# Install gale from local source using a freshly-built local
+# binary. Always uses ./gale (just rebuilt) rather than whatever
+# is on PATH — direnv's `use gale` activates this repo's pinned
+# project gale, which may be older than current source and lack
+# the resolver/install changes we're testing. See CLAUDE.md
+# "Stale Local gale Binary".
+install: build
+    ./gale install --path . -g gale
 
 # Bootstrap gale (first-time: build with go, then self-install)
 bootstrap: build
@@ -72,7 +77,12 @@ tag version: fmt check
     git commit -m "Release v{{version}}"
     git tag "v{{version}}"
     echo "Tagged v{{version}} — run 'just release {{version}}' to publish"
-    echo "Reminder: bump gale-recipes/recipes/g/gale.toml to v{{version}} after the release is published."
+    echo "Reminder: after the release is published, bump:"
+    echo "  - gale-recipes/recipes/g/gale.toml  (so users get v{{version}})"
+    echo "  - gale/gale.toml                    (so this repo's dev env"
+    echo "                                       activates v{{version}}; otherwise"
+    echo "                                       'just install' runs a stale binary"
+    echo "                                       — see CLAUDE.md 'Stale Local gale Binary')"
 
 # Push tag — the release workflow builds, drafts, and publishes
 release version:
@@ -90,7 +100,12 @@ release version:
     git push origin main "v{{version}}"
     echo "Pushed v{{version}}. Release workflow will build, draft, and publish."
     echo "Watch: https://github.com/kelp/gale/actions/workflows/release.yml"
-    echo "Reminder: bump gale-recipes/recipes/g/gale.toml to v{{version}} once the release is live."
+    echo "Reminder: once the release is live, bump:"
+    echo "  - gale-recipes/recipes/g/gale.toml  (so users get v{{version}})"
+    echo "  - gale/gale.toml                    (so this repo's dev env"
+    echo "                                       activates v{{version}}; otherwise"
+    echo "                                       'just install' runs a stale binary"
+    echo "                                       — see CLAUDE.md 'Stale Local gale Binary')"
 
 # Retry a failed release run (e.g. matrix flake) without re-tagging
 release-retry version:

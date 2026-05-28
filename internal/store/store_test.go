@@ -549,6 +549,39 @@ func TestIsInstalledFindsHigherRevisionForBareVersion(t *testing.T) {
 	}
 }
 
+// TestIsInstalledFindsRevisionForBareDevVersion verifies that a
+// "bare" dev version with embedded dashes from a pre-release/dev
+// tag (e.g. "0.16.2-dev.70+676b646") still resolves to the
+// highest "<v>-<N>" revision on disk. The previous heuristic
+// classified ANY dashed version as already-revisioned and only
+// did exact-match lookups, which always missed because the
+// canonical store dir is suffixed with "-1".
+//
+// This is the failure mode that bit the gen/308 follow-up install:
+// `gale install --path . -g gale` stores the binary at
+// "<root>/gale/0.16.2-dev.70+676b646-1/" but writes the bare form
+// (no -1) to gale.toml. Without this fix, subsequent IsInstalled
+// / StorePath lookups against gale.toml's entry returned false,
+// cascading into a recipe-lookup failure on the next sync.
+func TestIsInstalledFindsRevisionForBareDevVersion(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+
+	dir := filepath.Join(root, "gale", "0.16.2-dev.70+676b646-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "marker"), []byte("x"), 0o644); err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	if !s.IsInstalled("gale", "0.16.2-dev.70+676b646") {
+		t.Error("IsInstalled = false, want true — bare dev version " +
+			"should resolve to <v>-1 dir on disk")
+	}
+}
+
 // TestStorePathReturnsHighestRevisionForBareVersion verifies that when
 // multiple revisions are on disk and no -1/bare exists, StorePath
 // returns the highest-numbered revision dir.

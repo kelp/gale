@@ -111,8 +111,12 @@ cut a patch version.
 
 ## Post-release
 
-After the release is live, bump the recipe in
-`gale-recipes`:
+After the release is live, bump TWO files. Both are
+load-bearing — skipping either leaves users (or the dev
+env in this very repo) on the old version.
+
+**1. The recipe in `gale-recipes`** — so users get the
+new version on install / sync:
 
 ```sh
 # In ../gale-recipes/
@@ -125,6 +129,26 @@ git push
 The recipes CI will build the new version, push binaries
 to GHCR, and `gale install gale` from any machine will
 pick up the update.
+
+**2. This repo's own `gale/gale.toml`** — so direnv's
+`use gale` activates the new version inside the gale dev
+env. If you skip this, the project's pinned `.gale/current/bin/gale`
+stays on the previous release, so `just install` (and any
+bare `gale` invocation inside this repo) runs the stale
+binary. That's how the gen/308 regression on 2026-05-28
+happened: a v0.12.3 binary was on PATH and produced a
+partial generation against a modern store layout.
+
+```sh
+# In ./gale/
+$EDITOR gale.toml                # set gale = "0.16.0"
+git add gale.toml
+git commit -m "gale.toml: pin dev env to v0.16.0"
+git push
+```
+
+After this push, `direnv reload` in the repo will
+activate the new gale.
 
 ## CHANGELOG conventions
 

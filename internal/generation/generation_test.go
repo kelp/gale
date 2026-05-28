@@ -1322,6 +1322,113 @@ func TestCurrentVersionsReturnsEmptyWhenNoGeneration(t *testing.T) {
 	}
 }
 
+// TestBuildResolvesBareDevVersionToHighestRevision pins the
+// contract that a version with embedded dashes from a dev tag
+// (e.g. "0.16.2-dev.70+676b646") is still treated as "bare" —
+// resolveStoreDir must scan for the highest "<v>-<N>" on disk
+// and return that. The previous heuristic checked for ANY dash
+// in the version string, which incorrectly classified dev
+// versions as already-revisioned and forced an exact-match
+// lookup that always missed.
+//
+// This is the failure mode that bit the gen/308 follow-up
+// install: the install pipeline writes the bare dev version to
+// gale.toml ("0.16.2-dev.70+676b646") with no -1 suffix, while
+// the store holds the canonical revision form
+// ("0.16.2-dev.70+676b646-1"). Without this fix, every
+// subsequent rebuild errors out with "missing from the store".
+func TestBuildResolvesBareDevVersionToHighestRevision(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "gale",
+		"0.16.2-dev.70+676b646-1", []string{"gale"})
+
+	pkgs := map[string]string{"gale": "0.16.2-dev.70+676b646"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	target, err := os.Readlink(
+		filepath.Join(galeDir, "gen", "1", "bin", "gale"))
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	wantFragment := filepath.Join(
+		"gale", "0.16.2-dev.70+676b646-1", "bin", "gale")
+	if !strings.Contains(target, wantFragment) {
+		t.Errorf("gale symlink target = %q, want fragment %q",
+			target, wantFragment)
+	}
+}
+
+// TestBuildClearsStaleGenDirBeforePopulating is a regression
+// test for the secondary corruption observed during the
+// gen/308 incident: when Build's target gen number already
+// exists (a prior Build's cleanup didn't fire, or a rollback
+// put current behind the highest-built gen), populateGeneration
+// merges into the leftover dir because symlinkDir skips
+// destinations that already have a symlink. Result: the new
+// gen ships stale symlinks from the old attempt and
+// validateGenerationSymlinks doesn't catch them because the
+// stale targets still resolve.
+//
+// Build must tear down the gen dir before populating so the
+// new gen reflects the declared pkgs map exactly.
+func TestBuildClearsStaleGenDirBeforePopulating(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "1.0", []string{"jq"})
+	createStoreEntry(t, storeRoot, "jq", "2.0", []string{"jq"})
+	createStoreEntry(t, storeRoot, "obsolete", "1.0", []string{"obsolete"})
+
+	// Plant a stale gen/1 simulating a prior bad Build:
+	//   - jq points at the OLD revision (1.0), not the 2.0 we'll
+	//     declare next
+	//   - "obsolete" is for a package not in the new pkgs map
+	// Both targets are real store dirs so validateGenerationSymlinks
+	// wouldn't catch the staleness on its own — the swap would
+	// otherwise succeed and the user gets a corrupt gen.
+	genBin := filepath.Join(galeDir, "gen", "1", "bin")
+	if err := os.MkdirAll(genBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(storeRoot, "jq", "1.0", "bin", "jq"),
+		filepath.Join(genBin, "jq"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(storeRoot, "obsolete", "1.0", "bin", "obsolete"),
+		filepath.Join(genBin, "obsolete"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// No prior current symlink, so next == 1 and Build lands
+	// on the pre-existing gen/1.
+	pkgs := map[string]string{"jq": "2.0"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	target, err := os.Readlink(filepath.Join(genBin, "jq"))
+	if err != nil {
+		t.Fatalf("readlink jq: %v", err)
+	}
+	wantFragment := filepath.Join("jq", "2.0")
+	if !strings.Contains(target, wantFragment) {
+		t.Errorf("jq symlink points at stale store dir: got %q, want target containing %q",
+			target, wantFragment)
+	}
+
+	if _, err := os.Lstat(filepath.Join(genBin, "obsolete")); !os.IsNotExist(err) {
+		t.Errorf("obsolete symlink should not survive rebuild, err=%v", err)
+	}
+}
+
 // TestBuildSymlinksAllDeclaredPackages is a regression test for
 // an observed production failure: a user with 44 declared
 // packages ended up with only ~23 binaries in current/bin after
@@ -1339,26 +1446,26 @@ func TestBuildSymlinksAllDeclaredPackages(t *testing.T) {
 	// 20 packages, one binary each, names chosen to span the
 	// alphabet like a real gale.toml.
 	pkgs := map[string]string{
-		"atuin":      "1.0",
-		"autossh":    "1.0",
-		"btop":       "1.0",
-		"chezmoi":    "1.0",
-		"curl":       "1.0",
-		"direnv":     "1.0",
-		"fish":       "1.0",
-		"fzf":        "1.0",
-		"gale":       "1.0",
-		"gh":         "1.0",
-		"git":        "1.0",
-		"glow":       "1.0",
-		"jq":         "1.0",
-		"just":       "1.0",
-		"lazygit":    "1.0",
-		"mise":       "1.0",
-		"neovim":     "1.0",
-		"ripgrep":    "1.0",
-		"starship":   "1.0",
-		"zmx":        "1.0",
+		"atuin":    "1.0",
+		"autossh":  "1.0",
+		"btop":     "1.0",
+		"chezmoi":  "1.0",
+		"curl":     "1.0",
+		"direnv":   "1.0",
+		"fish":     "1.0",
+		"fzf":      "1.0",
+		"gale":     "1.0",
+		"gh":       "1.0",
+		"git":      "1.0",
+		"glow":     "1.0",
+		"jq":       "1.0",
+		"just":     "1.0",
+		"lazygit":  "1.0",
+		"mise":     "1.0",
+		"neovim":   "1.0",
+		"ripgrep":  "1.0",
+		"starship": "1.0",
+		"zmx":      "1.0",
 	}
 	for name, version := range pkgs {
 		createStoreEntry(t, storeRoot, name, version, []string{name})
