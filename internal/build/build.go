@@ -171,10 +171,28 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		Env:       buildCfg.Env,
 		Deps:      deps,
 	}
+
+	// One env (toolsDir, buildHome, buildTmp) shared across
+	// every step in this build. Per-step recreation broke
+	// meson recipes (gale#22): `meson setup` baked the
+	// absolute path of the sccache wrapper inside
+	// gale-tools-<id-A>/ into build.ninja, then the next
+	// step's `meson compile` ran under gale-tools-<id-B>/
+	// — the old dir was already torn down, ninja got
+	// ENOENT on the launcher, every meson recipe failed
+	// with exit 127. Hoisting the env up here keeps the
+	// tool symlinks (and HOME, and TMPDIR) stable for the
+	// duration of the build.
+	env, cleanup, err := buildEnv(bc)
+	if err != nil {
+		return nil, fmt.Errorf("build environment: %w", err)
+	}
+	defer cleanup()
+
 	for i, step := range buildCfg.Steps {
 		out.Step(fmt.Sprintf("[%d/%d] %s",
 			i+1, len(buildCfg.Steps), step))
-		if err := runStep(bc, step); err != nil {
+		if err := runStep(bc, env, step); err != nil {
 			return nil, err
 		}
 	}
@@ -298,17 +316,13 @@ func detectSourceRoot(srcDir string) (string, error) {
 	return srcDir, nil
 }
 
-// runStep executes a single build step using sh -c with PREFIX
-// and JOBS environment variables set. Uses a clean environment
-// with only essential variables to avoid interference from the
-// host environment (e.g., nix coreutils aliases).
-func runStep(bc *BuildContext, step string) error {
-	env, cleanup, err := buildEnv(bc)
-	if err != nil {
-		return fmt.Errorf("build environment: %w", err)
-	}
-	defer cleanup()
-
+// runStep executes a single build step using sh -c. The env
+// slice (with PREFIX, JOBS, PATH, dep search paths, etc.) is
+// built once per build by the caller and shared across every
+// step so configure-time absolute paths captured by one step
+// (e.g. meson's compiler-launcher path in build.ninja) stay
+// valid for the rest of the build. See gale#22.
+func runStep(bc *BuildContext, env []string, step string) error {
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = bc.SourceDir
 	cmd.Env = env

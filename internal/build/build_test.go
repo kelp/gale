@@ -167,6 +167,49 @@ func TestBuildStepMultipleStepsRunInOrder(t *testing.T) {
 	}
 }
 
+// TestBuildToolsDirStableAcrossSteps is a regression test for
+// gale#22. Build steps must share the same gale-tools-* dir so
+// configure-time tool paths captured by one step (notably
+// meson's compiler-launcher absolute path baked into
+// build.ninja) remain valid in subsequent steps. The previous
+// per-step buildEnv() created and tore down a fresh dir for
+// each step, so the path captured in step 1 was gone by
+// step 2 ("/bin/sh: 1: .../sccache: not found", exit 127 on
+// every meson recipe in CI).
+func TestBuildToolsDirStableAcrossSteps(t *testing.T) {
+	tarball, hash := createSourceTarGz(t, map[string]string{
+		"testpkg-1.0/README": "hello",
+	})
+	srv := serveFile(t, tarball)
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/testpkg-1.0.tar.gz",
+			SHA256: hash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				// Step 1: stash the toolsDir (first PATH
+				// entry, set by buildPath in build.go).
+				`mkdir -p $PREFIX && echo "$PATH" | cut -d: -f1 > $PREFIX/tools.txt`,
+				// Step 2: assert the same dir is still first
+				// on PATH (toolsDir survived) AND still
+				// exists on disk (cleanup didn't fire
+				// between steps).
+				`first=$(echo "$PATH" | cut -d: -f1); stashed=$(cat $PREFIX/tools.txt); ` +
+					`[ "$first" = "$stashed" ] || { echo "PATH[0] changed: was $stashed, now $first" >&2; exit 1; }; ` +
+					`test -d "$stashed" || { echo "stashed toolsDir $stashed no longer exists" >&2; exit 1; }`,
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	if _, err := Build(r, outputDir, false, nil); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+}
+
 // --- Behavior 3: Build step failure ---
 
 func TestBuildStepFailureReturnsError(t *testing.T) {
