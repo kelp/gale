@@ -3,6 +3,7 @@ package generation
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1494,5 +1495,90 @@ func TestBuildSymlinksAllDeclaredPackages(t *testing.T) {
 	}
 	if len(got) != len(pkgs) {
 		t.Errorf("gen/1/bin has %d entries, want %d", len(got), len(pkgs))
+	}
+}
+
+// TestBuildMultiRevisionPicksHighest models the regression in
+// gen/308: store layout has packages with multiple coexisting
+// revisions ("<version>-1" alongside "<version>-6"), AND packages
+// with a single non-1 revision ("<version>-2" only). gale.toml
+// declares the BARE version. Build must:
+//   - link to the HIGHEST revision when multiples exist, NOT -1
+//   - include the package when only a non-1 revision exists
+//
+// In production gen/308: glib's symlinks went to 2.88.1-1 even
+// though 2.88.1-6 existed; atuin@18.13.6 was skipped entirely
+// even though 18.13.6-2 existed. This test would fail with
+// either of those misbehaviours.
+func TestBuildMultiRevisionPicksHighest(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	// glib has BOTH 2.88.1-1 (old, like a May-5 install) AND
+	// 2.88.1-6 (new, like a streaming-extract install).
+	// Each has its own binary file with the rev in the content
+	// so we can tell which one the symlink resolves to.
+	mkRev := func(name, version string, rev int) {
+		t.Helper()
+		dir := filepath.Join(storeRoot, name, version+"-"+strconv.Itoa(rev), "bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+		path := filepath.Join(dir, name)
+		content := []byte("rev=" + strconv.Itoa(rev))
+		if err := os.WriteFile(path, content, 0o755); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+
+	mkRev("glib", "2.88.1", 1)
+	mkRev("glib", "2.88.1", 6)
+	// atuin has ONLY 18.13.6-2 — no -1 sibling.
+	mkRev("atuin", "18.13.6", 2)
+	// zmx has -1 AND -2 — pick -2.
+	mkRev("zmx", "0.6.0", 1)
+	mkRev("zmx", "0.6.0", 2)
+
+	pkgs := map[string]string{
+		"glib":  "2.88.1",
+		"atuin": "18.13.6",
+		"zmx":   "0.6.0",
+	}
+
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	cases := []struct {
+		name    string
+		wantRev int
+	}{
+		{"glib", 6},
+		{"atuin", 2},
+		{"zmx", 2},
+	}
+	for _, c := range cases {
+		linkPath := filepath.Join(galeDir, "gen", "1", "bin", c.name)
+		target, err := os.Readlink(linkPath)
+		if err != nil {
+			t.Errorf("readlink %s: %v", c.name, err)
+			continue
+		}
+		// The target should point into <storeRoot>/<name>/<version>-<wantRev>/bin/<name>.
+		wantSuffix := filepath.Join(c.name, pkgs[c.name]+"-"+strconv.Itoa(c.wantRev), "bin", c.name)
+		if !strings.HasSuffix(target, wantSuffix) {
+			t.Errorf("%s symlink → %s, want suffix %s",
+				c.name, target, wantSuffix)
+		}
+		// And the resolved file content carries the right rev.
+		data, err := os.ReadFile(linkPath)
+		if err != nil {
+			t.Errorf("read through symlink for %s: %v", c.name, err)
+			continue
+		}
+		if string(data) != "rev="+strconv.Itoa(c.wantRev) {
+			t.Errorf("%s content = %q, want rev=%d",
+				c.name, string(data), c.wantRev)
+		}
 	}
 }
