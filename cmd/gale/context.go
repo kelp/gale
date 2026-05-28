@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/kelp/gale/internal/attestation"
@@ -158,7 +159,11 @@ func rebuildGeneration(galeDir, storeRoot, configPath string) error {
 	if err != nil {
 		return err
 	}
-	return generation.Build(pkgs, galeDir, storeRoot)
+	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
+		return err
+	}
+	autoPruneGenerations(galeDir, storeRoot)
+	return nil
 }
 
 // rebuildGenerationLenient is rebuildGeneration but
@@ -171,7 +176,98 @@ func rebuildGenerationLenient(galeDir, storeRoot, configPath string) error {
 	if err != nil {
 		return err
 	}
-	return generation.BuildLenient(pkgs, galeDir, storeRoot)
+	if err := generation.BuildLenient(pkgs, galeDir, storeRoot); err != nil {
+		return err
+	}
+	autoPruneGenerations(galeDir, storeRoot)
+	return nil
+}
+
+// autoPruneGenerations is the post-Build hook that bounds gen
+// dir accumulation. Every command that creates a generation
+// (install, update, sync, add, remove, recipe install, ...)
+// routes through rebuildGeneration / rebuildGenerationLenient,
+// so a single hook here covers all of them. Reads the keep
+// count from ~/.gale/config.toml [generation] keep, defaults
+// to DefaultGenerationKeep when unset, treats negative as
+// "disabled."
+//
+// Errors during prune are surfaced as warnings, not failures —
+// the install / sync that triggered this already succeeded and
+// must not regress because of a cleanup hiccup. Removed gen
+// numbers are reported on stderr so users see what happened.
+func autoPruneGenerations(galeDir, storeRoot string) {
+	keep := loadGenerationKeep(galeDir)
+	if keep <= 0 {
+		return
+	}
+	removed, err := generation.PruneOldGenerations(galeDir, storeRoot, keep)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"auto-gc: prune failed: %v\n", err)
+		return
+	}
+	if len(removed) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr,
+		"auto-gc: pruned %d old generation(s) (kept last %d): %s\n",
+		len(removed), keep, formatGenList(removed))
+}
+
+// loadGenerationKeep returns the auto-gc retention from
+// ~/.gale/config.toml [generation] keep. Missing or unreadable
+// config falls back to DefaultGenerationKeep so a user who
+// has never created config.toml still gets bounded gen growth.
+//
+// The config path is the global one regardless of galeDir
+// (which may be project-scoped) since gen retention is an
+// app-level concern, not per-project.
+func loadGenerationKeep(_ string) int {
+	dir, err := galeConfigDir()
+	if err != nil {
+		return config.DefaultGenerationKeep
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "config.toml"))
+	if err != nil {
+		return config.DefaultGenerationKeep
+	}
+	cfg, err := config.ParseAppConfig(string(data))
+	if err != nil {
+		return config.DefaultGenerationKeep
+	}
+	return cfg.Generation.EffectiveGenerationKeep()
+}
+
+// formatGenList renders a sorted ascending slice of gen numbers
+// as a comma-separated list, collapsing runs of consecutive ids
+// into "lo-hi" ranges so a busy auto-gc message stays readable
+// when pruning, say, 30 sequential gens.
+func formatGenList(nums []int) string {
+	if len(nums) == 0 {
+		return ""
+	}
+	var parts []string
+	start := nums[0]
+	prev := nums[0]
+	for _, n := range nums[1:] {
+		if n == prev+1 {
+			prev = n
+			continue
+		}
+		parts = append(parts, formatRange(start, prev))
+		start = n
+		prev = n
+	}
+	parts = append(parts, formatRange(start, prev))
+	return strings.Join(parts, ", ")
+}
+
+func formatRange(lo, hi int) string {
+	if lo == hi {
+		return strconv.Itoa(lo)
+	}
+	return strconv.Itoa(lo) + "-" + strconv.Itoa(hi)
 }
 
 func readConfigPackages(configPath string) (map[string]string, error) {

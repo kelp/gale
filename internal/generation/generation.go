@@ -348,6 +348,92 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 	})
 }
 
+// skipTopLevelDirs lists store-dir subdirectories that
+// populateGeneration must NOT mirror into the generation.
+// Nothing on PATH or in any dynamic-linker / man / locale
+// path reads through gen/<N>/<dir>/ for these — packages
+// still ship them in the store, and tools that need them
+// (e.g. Go reading $GOROOT/src) resolve to the store path
+// via the binary's actual location, not the gen symlink.
+//
+// Mirroring these was always dead weight; for Go's stdlib
+// it accounted for ~45% of a gen's inode count.
+var skipTopLevelDirs = map[string]bool{
+	"src":  true,
+	"api":  true,
+	"pkg":  true,
+	"doc":  true,
+	"misc": true,
+}
+
+// PruneOldGenerations removes generation directories older than
+// (curGen - keep + 1), preserving the most recent `keep` gens
+// (including the current one). Anything at or above curGen —
+// including any in-flight gen/curGen+1 a concurrent Build may
+// have created — is preserved. Holds the store-rooted gen lock
+// for its critical section so it serializes with Build.
+//
+// Returns the removed gen numbers in ascending order so the
+// caller can report them. keep<=0 or no current symlink is a
+// no-op (returns nil).
+//
+// Intended as an auto-gc hook after Build: callers pass the
+// user-configured retention (default 10) so per-install gen
+// accumulation can't drown the filesystem in inodes (the dev-
+// host incident with ~3M gen/ inodes across 33 untouched gens).
+func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
+	if keep <= 0 {
+		return nil, nil
+	}
+	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
+	var removed []int
+	err := filelock.With(lockPath, func() error {
+		curGen, err := Current(galeDir)
+		if err != nil {
+			return fmt.Errorf("read current: %w", err)
+		}
+		if curGen == 0 {
+			return nil
+		}
+		cutoff := curGen - keep + 1
+		if cutoff <= 1 {
+			return nil
+		}
+		genRoot := filepath.Join(galeDir, "gen")
+		entries, err := os.ReadDir(genRoot)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return fmt.Errorf("read gen dir: %w", err)
+		}
+		var doomed []int
+		for _, e := range entries {
+			if !e.IsDir() {
+				continue
+			}
+			n, err := strconv.Atoi(e.Name())
+			if err != nil {
+				continue
+			}
+			if n < cutoff {
+				doomed = append(doomed, n)
+			}
+		}
+		sort.Ints(doomed)
+		for _, n := range doomed {
+			if err := os.RemoveAll(
+				filepath.Join(genRoot, strconv.Itoa(n))); err != nil {
+				return fmt.Errorf(
+					"remove gen %d: %w", n, err)
+			}
+			removed = append(removed, n)
+		}
+		return nil
+	})
+	return removed, err
+}
+
 // populateGeneration symlinks each package's store
 // contents into genDir. Packages are sorted
 // alphabetically so the first package wins on
@@ -394,6 +480,9 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 		}
 		for _, e := range entries {
 			if e.IsDir() {
+				if skipTopLevelDirs[e.Name()] {
+					continue
+				}
 				srcDir := filepath.Join(pkgDir, e.Name())
 				dstDir := filepath.Join(genDir, e.Name())
 				if err := os.MkdirAll(dstDir, 0o755); err != nil {

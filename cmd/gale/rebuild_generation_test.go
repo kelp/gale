@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -101,6 +102,75 @@ func TestRebuildGenerationOverManyPackagesSymlinksAll(t *testing.T) {
 		if !found {
 			t.Errorf("gen/1/bin missing %q (have %d/%d): %v",
 				name, len(got), len(want), got)
+		}
+	}
+}
+
+// TestRebuildGenerationAutoPrunesOldGens pins the auto-gc
+// behavior: every successful rebuildGeneration call triggers
+// generation.PruneOldGenerations with the configured keep
+// count. Without this, gens accumulate per-install and chew
+// through inodes — the dev-host incident hit ~3M inodes for
+// 33 untouched gens before manual gc.
+//
+// Default retention is config.DefaultGenerationKeep (10), so
+// staging 15 pre-existing gens plus a fresh Build (which
+// makes #16) should result in gens 1..6 removed, gens 7..16
+// preserved.
+func TestRebuildGenerationAutoPrunesOldGens(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Single package staged in the store so Build has something
+	// real to link. The pre-existing gen dirs are empty stubs —
+	// auto-gc only cares about their numeric names.
+	binDir := filepath.Join(storeRoot, "jq", "1.0.0", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "jq"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  jq = \"1.0.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stage gens 1..15 as stub dirs. current → gen/15 so the
+	// next Build produces gen/16.
+	for i := 1; i <= 15; i++ {
+		if err := os.MkdirAll(
+			filepath.Join(galeDir, "gen", strconv.Itoa(i), "bin"),
+			0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join("gen", "15"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+		t.Fatalf("rebuildGeneration: %v", err)
+	}
+
+	// Build advanced current to gen/16. Auto-gc keeps the last
+	// 10 (gens 7..16), prunes 1..6.
+	for i := 1; i <= 6; i++ {
+		if _, err := os.Stat(
+			filepath.Join(galeDir, "gen", strconv.Itoa(i))); !os.IsNotExist(err) {
+			t.Errorf("gen/%d should have been auto-pruned (err=%v)", i, err)
+		}
+	}
+	for i := 7; i <= 16; i++ {
+		if _, err := os.Stat(
+			filepath.Join(galeDir, "gen", strconv.Itoa(i))); err != nil {
+			t.Errorf("gen/%d should be preserved: %v", i, err)
 		}
 	}
 }

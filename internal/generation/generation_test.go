@@ -1582,3 +1582,191 @@ func TestBuildMultiRevisionPicksHighest(t *testing.T) {
 		}
 	}
 }
+
+// TestPruneOldGenerationsKeepsLastN pins the auto-gc retention
+// policy: gen dirs with number strictly less than (curGen-keep+1)
+// are removed, anything >= that threshold (including curGen and
+// in-flight gen/curGen+1) is preserved. Returns the removed gen
+// numbers in ascending order so the caller can print them.
+func TestPruneOldGenerationsKeepsLastN(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Stage gens 1..15 (just empty dirs — Prune doesn't read
+	// content). current → gen/15.
+	genRoot := filepath.Join(galeDir, "gen")
+	for i := 1; i <= 15; i++ {
+		if err := os.MkdirAll(filepath.Join(genRoot, strconv.Itoa(i), "bin"), 0o755); err != nil {
+			t.Fatalf("stage gen/%d: %v", i, err)
+		}
+	}
+	if err := os.Symlink(filepath.Join("gen", "15"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatalf("link current: %v", err)
+	}
+
+	removed, err := PruneOldGenerations(galeDir, storeRoot, 10)
+	if err != nil {
+		t.Fatalf("PruneOldGenerations: %v", err)
+	}
+
+	wantRemoved := []int{1, 2, 3, 4, 5}
+	if len(removed) != len(wantRemoved) {
+		t.Fatalf("removed = %v, want %v", removed, wantRemoved)
+	}
+	for i, n := range wantRemoved {
+		if removed[i] != n {
+			t.Errorf("removed[%d] = %d, want %d", i, removed[i], n)
+		}
+	}
+
+	// On disk: 1-5 gone, 6-15 still present, current still gen/15.
+	for i := 1; i <= 5; i++ {
+		if _, err := os.Stat(filepath.Join(genRoot, strconv.Itoa(i))); !os.IsNotExist(err) {
+			t.Errorf("gen/%d should have been removed (err=%v)", i, err)
+		}
+	}
+	for i := 6; i <= 15; i++ {
+		if _, err := os.Stat(filepath.Join(genRoot, strconv.Itoa(i))); err != nil {
+			t.Errorf("gen/%d should be preserved: %v", i, err)
+		}
+	}
+}
+
+// TestPruneOldGenerationsNoOpUnderThreshold: when total gens
+// is <= keep, nothing is removed.
+func TestPruneOldGenerationsNoOpUnderThreshold(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	for i := 1; i <= 5; i++ {
+		if err := os.MkdirAll(filepath.Join(galeDir, "gen", strconv.Itoa(i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join("gen", "5"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := PruneOldGenerations(galeDir, storeRoot, 10)
+	if err != nil {
+		t.Fatalf("PruneOldGenerations: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed = %v, want no removals when under threshold", removed)
+	}
+}
+
+// TestPruneOldGenerationsNoCurrentIsNoop: with no current
+// symlink, there's no defined "newest gen" to anchor against —
+// be conservative and do nothing.
+func TestPruneOldGenerationsNoCurrentIsNoop(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(galeDir, "gen", "1"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := PruneOldGenerations(galeDir, storeRoot, 1)
+	if err != nil {
+		t.Fatalf("PruneOldGenerations: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed = %v, want no removals when no current symlink", removed)
+	}
+	if _, err := os.Stat(filepath.Join(galeDir, "gen", "1")); err != nil {
+		t.Errorf("gen/1 should be preserved: %v", err)
+	}
+}
+
+// TestPruneOldGenerationsKeepZeroIsNoop: keep<=0 means "the
+// caller didn't ask for auto-gc"; do nothing rather than wipe.
+func TestPruneOldGenerationsKeepZeroIsNoop(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 5; i++ {
+		if err := os.MkdirAll(filepath.Join(galeDir, "gen", strconv.Itoa(i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join("gen", "5"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	removed, err := PruneOldGenerations(galeDir, storeRoot, 0)
+	if err != nil {
+		t.Fatalf("PruneOldGenerations: %v", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("keep=0 should remove nothing, got %v", removed)
+	}
+}
+
+// TestBuildSkipsNonFunctionalTopLevelDirs pins the inode budget
+// for a gen: top-level dirs that no consumer reads through the
+// gen path (src/, api/, pkg/, doc/, misc/) must not be mirrored.
+// Packages still ship these in their store dir, and tools like
+// Go's compiler read them from GOROOT — which resolves to the
+// store path (via dirname twice on the resolved binary path),
+// not the gen — so mirroring them was always dead weight.
+//
+// The motivating example: Go ships ~12K files under src/. That
+// single dir was ~45% of a typical gen's inode count and was
+// invisible to PATH. Skipping it (and the other dead dirs) is
+// nearly two orders of magnitude inode reduction per gen.
+//
+// The functional dirs (bin/, lib/, share/, include/, libexec/,
+// etc/) MUST still mirror per-file so multiple packages can
+// contribute to a unified namespace and conflicts get caught
+// by symlinkDir's first-pkg-wins.
+func TestBuildSkipsNonFunctionalTopLevelDirs(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	pkgDir := filepath.Join(storeRoot, "go", "1.0.0")
+	for _, sub := range []string{"bin", "lib", "share", "include",
+		"libexec", "etc", "src", "api", "pkg", "doc", "misc"} {
+		if err := os.MkdirAll(filepath.Join(pkgDir, sub), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", sub, err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(pkgDir, sub, "marker"),
+			[]byte("from "+sub), 0o644); err != nil {
+			t.Fatalf("write marker in %s: %v", sub, err)
+		}
+	}
+
+	if err := Build(map[string]string{"go": "1.0.0"}, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	gen := filepath.Join(galeDir, "gen", "1")
+
+	for _, sub := range []string{"bin", "lib", "share", "include", "libexec", "etc"} {
+		if _, err := os.Stat(filepath.Join(gen, sub, "marker")); err != nil {
+			t.Errorf("functional dir %s missing from gen: %v", sub, err)
+		}
+	}
+
+	for _, sub := range []string{"src", "api", "pkg", "doc", "misc"} {
+		if _, err := os.Stat(filepath.Join(gen, sub)); err == nil {
+			t.Errorf("skipped dir %s should not be mirrored into gen", sub)
+		} else if !os.IsNotExist(err) {
+			t.Errorf("unexpected stat error for %s: %v", sub, err)
+		}
+	}
+}

@@ -21,15 +21,43 @@ type Repo struct {
 
 // AppConfig represents ~/.gale/config.toml (app-level settings).
 type AppConfig struct {
-	Repos     []Repo         `toml:"repos"`
-	Build     BuildConfig    `toml:"build"`
-	Anthropic AIConfig       `toml:"anthropic"`
-	Registry  RegistryConfig `toml:"registry"`
+	Repos      []Repo           `toml:"repos"`
+	Build      BuildConfig      `toml:"build"`
+	Anthropic  AIConfig         `toml:"anthropic"`
+	Registry   RegistryConfig   `toml:"registry"`
+	Generation GenerationConfig `toml:"generation"`
 }
 
 // BuildConfig holds build-related settings.
 type BuildConfig struct {
 	Debug bool `toml:"debug,omitempty"`
+}
+
+// GenerationConfig holds gen-retention settings. Keep is the
+// number of recent generations (including the current one)
+// preserved after each rebuild's auto-gc pass. Default 10 when
+// unset or non-positive; set to a negative value to disable
+// auto-gc entirely.
+type GenerationConfig struct {
+	Keep int `toml:"keep,omitempty"`
+}
+
+// DefaultGenerationKeep is the number of generations preserved
+// when config.toml has no [generation] section. Sized to cover
+// a typical week of installs while keeping inode usage bounded:
+// at ~28K inodes per gen, 10 gens ≈ 280K inodes total, two
+// orders of magnitude under typical ext4 default budgets.
+const DefaultGenerationKeep = 10
+
+// EffectiveGenerationKeep returns the configured Keep value
+// when positive, otherwise DefaultGenerationKeep. A negative
+// value (the "disabled" sentinel) is returned as-is so the
+// caller can short-circuit auto-gc.
+func (g GenerationConfig) EffectiveGenerationKeep() int {
+	if g.Keep == 0 {
+		return DefaultGenerationKeep
+	}
+	return g.Keep
 }
 
 // AIConfig holds Anthropic API settings.
