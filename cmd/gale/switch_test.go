@@ -206,10 +206,18 @@ func TestSwitchWritesPinWhenLocalRecipeMatches(t *testing.T) {
 
 	// Pre-populate the store with jq@1.7.0-1 so Install
 	// short-circuits as a cache hit. IsInstalled requires
-	// a bin/ subdirectory.
+	// a bin/ subdirectory and finalizeInstall's
+	// post-rebuild contract check requires at least one
+	// symlinkable file so the package appears in the
+	// active generation.
 	storeRoot := defaultStoreRoot()
 	pkgDir := filepath.Join(storeRoot, "jq", "1.7.0-1", "bin")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(pkgDir, "jq"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {

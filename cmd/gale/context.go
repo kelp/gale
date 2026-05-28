@@ -345,13 +345,42 @@ func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha2
 // finalizeInstall adds a package to gale.toml, updates
 // gale.lock, and rebuilds the generation. See
 // writeConfigAndLock for host semantics.
+//
+// Uses lenient rebuild so unrelated missing store dirs in
+// gale.toml don't block this install from landing on PATH —
+// the common fresh-clone-on-new-host scenario (gh#23):
+// gale.toml lists packages this host hasn't installed yet,
+// strict rebuild errors on them, and the silent side-effect
+// is "lockfile updated, store populated, gen never rotated,
+// `which <pkg>` still resolves the prior revision." Sync
+// already uses lenient for the same reason.
+//
+// Lenient on its own can mask the install actually failing
+// to land — populateGeneration's `continue` on ErrNotExist
+// could silently skip OUR package too if (e.g.) the store
+// dir gets removed between Install and rebuild. The
+// post-rebuild check below enforces the contract: this
+// install must put the package on PATH, or surface a clear
+// error.
 func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, lockVersion, sha256 string) error {
 	if err := writeConfigAndLock(
 		configPath, host, name, configVersion, lockVersion, sha256); err != nil {
 		return fmt.Errorf("writing config and lock: %w", err)
 	}
-	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGenerationLenient(galeDir, storeRoot, configPath); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
+	}
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		return fmt.Errorf(
+			"verify install landed on PATH: %w", err)
+	}
+	if _, ok := active[name]; !ok {
+		return fmt.Errorf(
+			"%s@%s installed to store but did not land in the "+
+				"active generation; the store dir may have been "+
+				"removed mid-install",
+			name, lockVersion)
 	}
 	return nil
 }

@@ -207,11 +207,19 @@ func TestWriteConfigAndLockPreservesHashOnSameVersionCache(t *testing.T) {
 	}
 }
 
-// H5: finalizeInstall uses the strict (Build) rebuild path.
-// A configured package whose store dir is missing surfaces
-// as an error — the user learns about the corruption
-// instead of getting a silently-incomplete generation.
-func TestFinalizeInstallErrorsOnMissingConfiguredPackage(t *testing.T) {
+// finalizeInstall (post-gh#23) is lenient about unrelated
+// missing packages in gale.toml — the install for the
+// target package must land on PATH even if other entries
+// reference store dirs not yet on this host (the
+// fresh-clone-on-new-host scenario). This test pins that
+// contract: with awscli configured but its store dir
+// absent, installing gale must still succeed and rotate
+// the gen so gale's bin/ appears in the active generation.
+//
+// The "fail loud on missing target" half of the contract
+// is exercised separately via
+// TestFinalizeInstallErrorsWhenTargetMissing below.
+func TestFinalizeInstallTolerantOfUnrelatedMissingPackage(t *testing.T) {
 	tmp := t.TempDir()
 	galeDir := filepath.Join(tmp, ".gale")
 	storeRoot := filepath.Join(tmp, "pkg")
@@ -247,11 +255,55 @@ func TestFinalizeInstallErrorsOnMissingConfiguredPackage(t *testing.T) {
 
 	err = finalizeInstall(galeDir, storeRoot, configPath, "",
 		"gale", "0.11.1", "0.11.1", "newhash")
-	if err == nil {
-		t.Fatal("expected finalizeInstall error for missing awscli store dir")
+	if err != nil {
+		t.Fatalf("finalizeInstall should tolerate unrelated "+
+			"missing awscli store dir; got error: %v", err)
 	}
-	if !strings.Contains(err.Error(), "awscli") {
-		t.Errorf("error %q does not mention awscli", err)
+
+	currentTarget, err := os.Readlink(
+		filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("current symlink missing: %v", err)
+	}
+	if currentTarget != filepath.Join("gen", "1") {
+		t.Errorf("current = %q, want gen/1", currentTarget)
+	}
+	if _, err := os.Lstat(
+		filepath.Join(galeDir, "gen", "1", "bin", "gale")); err != nil {
+		t.Errorf("gale symlink missing in gen/1: %v", err)
+	}
+}
+
+// TestFinalizeInstallErrorsWhenTargetMissing pins the other
+// half of the gh#23 fix: while finalizeInstall is now
+// lenient about unrelated packages, it MUST still fail
+// loud when the target package itself doesn't land in the
+// active generation. Without this, lenient rebuild would
+// silently swallow the case where the target's store dir
+// went missing between install and rebuild, leaving the
+// user with a stale PATH and a "success" message.
+func TestFinalizeInstallErrorsWhenTargetMissing(t *testing.T) {
+	tmp := t.TempDir()
+	galeDir := filepath.Join(tmp, ".gale")
+	storeRoot := filepath.Join(tmp, "pkg")
+	configPath := filepath.Join(tmp, "gale.toml")
+
+	// gale.toml carries the target but the store does NOT
+	// have the corresponding dir — simulates the
+	// race-or-deletion scenario the contract check
+	// guards against.
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := finalizeInstall(galeDir, storeRoot, configPath, "",
+		"gale", "0.11.1", "0.11.1-1", "newhash")
+	if err == nil {
+		t.Fatal("expected finalizeInstall error for missing target store dir")
+	}
+	if !strings.Contains(err.Error(), "gale") {
+		t.Errorf("error %q does not mention the target package", err)
 	}
 }
 

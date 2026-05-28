@@ -492,6 +492,210 @@ func TestInstallRecipeFileWithVersionErrors(t *testing.T) {
 	}
 }
 
+// TestInstallFromRecipeFileRotatesGeneration is a regression
+// test for gale#22 [sic: gh#23]: `gale install -g <name>
+// --recipe <file>` must rotate the active generation so
+// current/bin/<name> resolves to the freshly installed
+// revision. Before the fix, the lockfile got updated but
+// the gen was left untouched — silent stale-PATH bug.
+//
+// Uses the MethodCached path (pre-populated store) so the
+// test doesn't depend on a real build: install returns a
+// "cached" result with empty SHA256, finalize runs anyway,
+// and we assert generation.Build was reached and produced
+// gen/1.
+func TestInstallFromRecipeFileRotatesGeneration(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	// Recipe file (letter-bucketed so resolverForRecipe
+	// recognizes it as a recipes-repo recipe).
+	recipesDir := filepath.Join(tmp, "gale-recipes", "recipes", "t")
+	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipePath := filepath.Join(recipesDir, "testpkg.toml")
+	// Source URL/SHA are required by recipe.Parse but never
+	// fetched in this test — the pre-populated store dir
+	// triggers MethodCached.
+	recipeTOML := strings.Join([]string{
+		`[package]`,
+		`name = "testpkg"`,
+		`version = "1.0.0"`,
+		`revision = 1`,
+		``,
+		`[source]`,
+		`url = "https://example.invalid/testpkg-1.0.0.tar.gz"`,
+		`sha256 = "0000000000000000000000000000000000000000000000000000000000000000"`,
+		``,
+		`[build]`,
+		`steps = ["true"]`,
+	}, "\n")
+	if err := os.WriteFile(recipePath,
+		[]byte(recipeTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-populate the store at <version>-1/bin/testpkg so
+	// IsInstalled returns true and install short-circuits
+	// to MethodCached. Avoids needing a real source tarball.
+	galeDir := filepath.Join(tmp, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	pkgBin := filepath.Join(storeRoot, "testpkg", "1.0.0-1", "bin")
+	if err := os.MkdirAll(pkgBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(pkgBin, "testpkg"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// Bootstrap an empty gale.toml.
+	configPath := filepath.Join(galeDir, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := output.New(os.Stderr, false)
+	ctx := &cmdContext{
+		GalePath:  configPath,
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+	}
+
+	if err := installFromRecipeFile(ctx, recipePath, out); err != nil {
+		t.Fatalf("installFromRecipeFile: %v", err)
+	}
+
+	// Contract: a new generation was built and current points
+	// at it. Before the fix this was silently skipped.
+	currentTarget, err := os.Readlink(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("readlink current: %v — install did not rotate the generation", err)
+	}
+	if currentTarget != filepath.Join("gen", "1") {
+		t.Errorf("current = %q, want gen/1", currentTarget)
+	}
+
+	// And bin/testpkg in the new gen resolves to the store.
+	symlinkPath := filepath.Join(galeDir, "gen", "1", "bin", "testpkg")
+	target, err := os.Readlink(symlinkPath)
+	if err != nil {
+		t.Fatalf("readlink testpkg: %v", err)
+	}
+	wantSuffix := filepath.Join("testpkg", "1.0.0-1", "bin", "testpkg")
+	if !strings.Contains(target, wantSuffix) {
+		t.Errorf("testpkg symlink = %q, want suffix %q",
+			target, wantSuffix)
+	}
+}
+
+// TestInstallFromRecipeFileRotatesGenWhenOtherPackagesMissing
+// is the precise repro for gh#23: the user runs
+// `gale install -g <name> --recipe <file>` against a
+// machine whose gale.toml lists OTHER packages whose store
+// dirs aren't on this host yet (a fresh-clone-on-new-host
+// scenario). Strict generation.Build errors on those, so
+// the install for the target package "succeeds" in store
+// + lockfile but the active generation is never rotated.
+// User-visible: lockfile updated, store has new revision,
+// but `which <name>` resolves the prior revision (or in
+// the gen/308 case, a broken binary that segfaults).
+//
+// Fix: the install path uses lenient rebuild and verifies
+// the target package landed on PATH. Other packages with
+// missing store dirs no longer block this install from
+// rotating the gen.
+func TestInstallFromRecipeFileRotatesGenWhenOtherPackagesMissing(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	// Recipe file for the target package.
+	recipesDir := filepath.Join(tmp, "gale-recipes", "recipes", "t")
+	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipePath := filepath.Join(recipesDir, "testpkg.toml")
+	recipeTOML := strings.Join([]string{
+		`[package]`,
+		`name = "testpkg"`,
+		`version = "1.0.0"`,
+		`revision = 1`,
+		``,
+		`[source]`,
+		`url = "https://example.invalid/testpkg-1.0.0.tar.gz"`,
+		`sha256 = "0000000000000000000000000000000000000000000000000000000000000000"`,
+		``,
+		`[build]`,
+		`steps = ["true"]`,
+	}, "\n")
+	if err := os.WriteFile(recipePath,
+		[]byte(recipeTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-populate the store for testpkg so install short-
+	// circuits to MethodCached.
+	galeDir := filepath.Join(tmp, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	pkgBin := filepath.Join(storeRoot, "testpkg", "1.0.0-1", "bin")
+	if err := os.MkdirAll(pkgBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(pkgBin, "testpkg"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// gale.toml lists testpkg AND another package whose
+	// store dir is INTENTIONALLY missing — mirrors the
+	// fresh-host scenario described in #23.
+	configPath := filepath.Join(galeDir, "gale.toml")
+	cfgTOML := strings.Join([]string{
+		`[packages]`,
+		`  testpkg = "1.0.0"`,
+		`  missingpkg = "9.9.9"`,
+		``,
+	}, "\n")
+	if err := os.WriteFile(configPath,
+		[]byte(cfgTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	out := output.New(os.Stderr, false)
+	ctx := &cmdContext{
+		GalePath:  configPath,
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+	}
+
+	if err := installFromRecipeFile(ctx, recipePath, out); err != nil {
+		t.Fatalf("installFromRecipeFile: %v\n\n"+
+			"This is the gh#23 failure: strict rebuild errors on "+
+			"the unrelated missing 'missingpkg' store dir, blocking "+
+			"the gen rotation that would put testpkg on PATH.",
+			err)
+	}
+
+	// After the fix, current points to the new gen and
+	// testpkg's symlink is there.
+	currentTarget, err := os.Readlink(filepath.Join(galeDir, "current"))
+	if err != nil {
+		t.Fatalf("readlink current: %v — install did not rotate generation", err)
+	}
+	if currentTarget != filepath.Join("gen", "1") {
+		t.Errorf("current = %q, want gen/1", currentTarget)
+	}
+
+	if _, err := os.Lstat(
+		filepath.Join(galeDir, "gen", "1", "bin", "testpkg")); err != nil {
+		t.Errorf("testpkg symlink missing in gen/1: %v", err)
+	}
+}
+
 func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
 	tmp := t.TempDir()
 
