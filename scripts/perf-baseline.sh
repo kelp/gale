@@ -33,6 +33,7 @@ BREW="${BREW:-brew}"
 DRY_RUN=0
 YES=0
 WITH_BREW=0
+ALLOW_SOURCE=0
 
 usage() {
     cat <<EOF
@@ -48,6 +49,13 @@ Flags:
   --with-brew   Also benchmark 'brew reinstall <pkg>' for each
                 package. NEVER uninstalls — your real brew state
                 is preserved.
+  --allow-source Skip the binary-install preflight. By default
+                 the harness refuses to benchmark a package whose
+                 install path would fall back to source build —
+                 compile time (especially for Rust packages
+                 pulling in the toolchain) drowns the signal we
+                 care about. Pass this when you genuinely want
+                 source-build numbers.
   -h, --help    Show this message.
 
 Env:
@@ -60,11 +68,12 @@ EOF
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dry-run)    DRY_RUN=1; shift ;;
-        --yes)        YES=1; shift ;;
-        --with-brew)  WITH_BREW=1; shift ;;
-        -h|--help)    usage; exit 0 ;;
-        *)            echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
+        --dry-run)      DRY_RUN=1; shift ;;
+        --yes)          YES=1; shift ;;
+        --with-brew)    WITH_BREW=1; shift ;;
+        --allow-source) ALLOW_SOURCE=1; shift ;;
+        -h|--help)      usage; exit 0 ;;
+        *)              echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
@@ -159,6 +168,47 @@ wipe_iso_home() {
     silent_run rm -rf "$ISO_HOME/.gale"
 }
 
+# preflight_binary_only: verify a package's install path resolves
+# to a prebuilt binary, not a source build. If gale hits the
+# "warning: binary install for X@Y failed: …; falling back to
+# source build" path, the eventual benchmark would measure
+# compile time (especially bad for Rust packages — the toolchain
+# bootstrap alone is multiple minutes). Refuse to benchmark in
+# that case unless ALLOW_SOURCE is set.
+#
+# Uses the isolated HOME and wipes between checks. Returns 0 on
+# binary-install success, non-zero on source fallback or any
+# other failure shape.
+preflight_binary_only() {
+    local pkg=$1
+    local out
+    if [ "$DRY_RUN" -eq 1 ]; then
+        announce "preflight $pkg (dry-run, skipped)"
+        return 0
+    fi
+    announce "preflight $pkg"
+    wipe_iso_home
+    if ! out=$(gale_iso install -g "$pkg" 2>&1); then
+        echo "preflight FAILED: $pkg install errored" >&2
+        echo "  Last 5 lines:" >&2
+        printf '%s\n' "$out" | tail -5 >&2
+        return 1
+    fi
+    if printf '%s\n' "$out" | grep -qF "falling back to source"; then
+        echo "preflight FAILED: $pkg falls back to source build" >&2
+        echo "  Reason:" >&2
+        printf '%s\n' "$out" | grep -F "warning: binary install" | head -3 >&2
+        return 1
+    fi
+    if ! printf '%s\n' "$out" | grep -qF "from binary"; then
+        echo "preflight FAILED: $pkg did not install from binary" >&2
+        echo "  Last 5 lines of gale output:" >&2
+        printf '%s\n' "$out" | tail -5 >&2
+        return 1
+    fi
+    return 0
+}
+
 # bench_cold_gale: $RUNS cold install measurements for $1.
 # Wipes the isolated cache between each run.
 bench_cold_gale() {
@@ -204,6 +254,35 @@ PACKAGES_ARR=($PACKAGES)
 GALE_COLD=()
 GALE_WARM=()
 BREW_REINST=()
+
+# Preflight: refuse to benchmark anything that would source-build
+# (would mix compile time into the binary-install signal). Runs
+# before any timing so failures surface fast.
+if [ "$DRY_RUN" -eq 0 ]; then
+    echo "Preflighting packages (verifying binary-install path)..." >&2
+    PREFLIGHT_FAILED=()
+    for pkg in "${PACKAGES_ARR[@]}"; do
+        if ! preflight_binary_only "$pkg"; then
+            PREFLIGHT_FAILED+=("$pkg")
+        fi
+    done
+    if [ "${#PREFLIGHT_FAILED[@]}" -gt 0 ]; then
+        echo "" >&2
+        if [ "$ALLOW_SOURCE" -eq 1 ]; then
+            echo "WARNING: ${#PREFLIGHT_FAILED[@]} package(s) will source-build:" >&2
+            echo "  ${PREFLIGHT_FAILED[*]}" >&2
+            echo "Continuing because --allow-source is set." >&2
+        else
+            echo "ERROR: ${#PREFLIGHT_FAILED[@]} package(s) would source-build:" >&2
+            echo "  ${PREFLIGHT_FAILED[*]}" >&2
+            echo "" >&2
+            echo "Remove them via PACKAGES env, fix the missing binary in" >&2
+            echo "gale-recipes, or pass --allow-source to benchmark source" >&2
+            echo "builds (numbers will then mix compile + install)." >&2
+            exit 1
+        fi
+    fi
+fi
 
 for i in "${!PACKAGES_ARR[@]}"; do
     pkg="${PACKAGES_ARR[$i]}"
