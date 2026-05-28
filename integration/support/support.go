@@ -208,10 +208,20 @@ func WriteFakeGH(t *testing.T, workDir string) *FakeGH {
 		t.Fatal(err)
 	}
 	script := filepath.Join(dir, "gh")
+	// `gh attestation --help` is the availability probe in
+	// internal/attestation.probe(). Always succeed for that
+	// invocation so tests can drive only the verify-call
+	// behaviour via gale-gh-returns. Otherwise a
+	// gale-gh-returns exit=1 trips the probe first and
+	// `gale verify` short-circuits to "verification
+	// unavailable" before ever invoking attestation verify.
 	body := "#!/bin/sh\n" +
 		"state=\"" + state + "\"\n" +
 		"log=\"" + filepath.Join(dir, "log") + "\"\n" +
 		"printf '%s\\n' \"$*\" >> \"$log\"\n" +
+		"if [ \"$1\" = \"attestation\" ] && [ \"$2\" = \"--help\" ]; then\n" +
+		"  exit 0\n" +
+		"fi\n" +
 		"exitcode=$(sed -n '1p' \"$state\")\n" +
 		"stdout=$(sed -n '2p' \"$state\")\n" +
 		"stderr=$(sed -n '3p' \"$state\")\n" +
