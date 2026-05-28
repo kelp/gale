@@ -1321,3 +1321,71 @@ func TestCurrentVersionsReturnsEmptyWhenNoGeneration(t *testing.T) {
 		t.Errorf("CurrentVersions = %v, want empty", got)
 	}
 }
+
+// TestBuildSymlinksAllDeclaredPackages is a regression test for
+// an observed production failure: a user with 44 declared
+// packages ended up with only ~23 binaries in current/bin after
+// `just install`. Each package had a unique single-binary store
+// entry; the generation builder should symlink every one.
+//
+// This is a unit test against generation.Build with no install
+// pipeline. If it passes, the bug is upstream (something
+// constructs an incomplete pkgs map). If it fails, the bug is
+// here.
+func TestBuildSymlinksAllDeclaredPackages(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	// 20 packages, one binary each, names chosen to span the
+	// alphabet like a real gale.toml.
+	pkgs := map[string]string{
+		"atuin":      "1.0",
+		"autossh":    "1.0",
+		"btop":       "1.0",
+		"chezmoi":    "1.0",
+		"curl":       "1.0",
+		"direnv":     "1.0",
+		"fish":       "1.0",
+		"fzf":        "1.0",
+		"gale":       "1.0",
+		"gh":         "1.0",
+		"git":        "1.0",
+		"glow":       "1.0",
+		"jq":         "1.0",
+		"just":       "1.0",
+		"lazygit":    "1.0",
+		"mise":       "1.0",
+		"neovim":     "1.0",
+		"ripgrep":    "1.0",
+		"starship":   "1.0",
+		"zmx":        "1.0",
+	}
+	for name, version := range pkgs {
+		createStoreEntry(t, storeRoot, name, version, []string{name})
+	}
+
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	genBinDir := filepath.Join(galeDir, "gen", "1", "bin")
+	entries, err := os.ReadDir(genBinDir)
+	if err != nil {
+		t.Fatalf("read gen bin: %v", err)
+	}
+
+	got := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		got[e.Name()] = true
+	}
+
+	for name := range pkgs {
+		if !got[name] {
+			t.Errorf("gen/1/bin missing symlink for %q (have %d/%d binaries)",
+				name, len(got), len(pkgs))
+		}
+	}
+	if len(got) != len(pkgs) {
+		t.Errorf("gen/1/bin has %d entries, want %d", len(got), len(pkgs))
+	}
+}
