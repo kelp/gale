@@ -66,7 +66,8 @@ var installCmd = &cobra.Command{
 		if installPath != "" {
 			if dryRun {
 				out.Info(fmt.Sprintf(
-					"install %s (from source)", name))
+					"install %s (from source)", name,
+				))
 				return nil
 			}
 			return installFromLocalSource(ctx, name, installRecipe,
@@ -77,7 +78,8 @@ var installCmd = &cobra.Command{
 		if installGit {
 			if dryRun {
 				out.Info(fmt.Sprintf(
-					"install %s (from git)", name))
+					"install %s (from git)", name,
+				))
 				return nil
 			}
 			return installFromGit(ctx, name, installRecipe, out)
@@ -87,7 +89,8 @@ var installCmd = &cobra.Command{
 		if installRecipe != "" {
 			if dryRun {
 				out.Info(fmt.Sprintf(
-					"install %s (from recipe)", name))
+					"install %s (from recipe)", name,
+				))
 				return nil
 			}
 			return installFromRecipeFile(ctx, installRecipe, out)
@@ -186,7 +189,8 @@ func init() {
 func validateInstallFlags(global, project bool) error {
 	if global && project {
 		return fmt.Errorf(
-			"cannot use both --global and --project")
+			"cannot use both --global and --project",
+		)
 	}
 	return nil
 }
@@ -236,7 +240,8 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 
 	if r.Source.Repo == "" {
 		return fmt.Errorf(
-			"recipe for %s has no source.repo — cannot build from git", name)
+			"recipe for %s has no source.repo — cannot build from git", name,
+		)
 	}
 
 	inst := &installer.Installer{
@@ -390,7 +395,8 @@ func resolveRecipePath(name, recipePath, sourceDir string) (string, error) {
 	}
 
 	return "", fmt.Errorf(
-		"no recipe found for %q — use --recipe to specify a recipe file", name)
+		"no recipe found for %q — use --recipe to specify a recipe file", name,
+	)
 }
 
 // resolverForRecipe returns a RecipeResolver for the given
@@ -469,17 +475,20 @@ func parsePackageArg(arg string) (string, string, error) {
 	version := arg[i+1:]
 	if strings.Contains(name, "@") {
 		return "", "", fmt.Errorf(
-			"invalid argument %q: multiple '@' separators", arg)
+			"invalid argument %q: multiple '@' separators", arg,
+		)
 	}
 	if version == "" {
 		return "", "", fmt.Errorf(
-			"invalid argument %q: empty version after '@'", arg)
+			"invalid argument %q: empty version after '@'", arg,
+		)
 	}
 	for _, r := range version {
 		switch {
 		case r == ' ' || r == '\t' || r == '\n' || r == '\r':
 			return "", "", fmt.Errorf(
-				"invalid argument %q: whitespace in version", arg)
+				"invalid argument %q: whitespace in version", arg,
+			)
 		case r >= 'a' && r <= 'z':
 		case r >= 'A' && r <= 'Z':
 		case r >= '0' && r <= '9':
@@ -487,7 +496,8 @@ func parsePackageArg(arg string) (string, string, error) {
 		default:
 			return "", "", fmt.Errorf(
 				"invalid argument %q: invalid character %q in version",
-				arg, r)
+				arg, r,
+			)
 		}
 	}
 	return name, version, nil

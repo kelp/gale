@@ -31,7 +31,8 @@ var syncCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if syncGlobal && syncProject {
 			return fmt.Errorf(
-				"cannot use both --global and --project")
+				"cannot use both --global and --project",
+			)
 		}
 		return runSync(syncRecipes, syncBuild, syncGlobal,
 			syncProject, "")
@@ -125,36 +126,43 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 			if dryRun {
 				out.Info(fmt.Sprintf(
 					"skip %s@%s (up to date)",
-					name, version))
+					name, version,
+				))
 			} else {
 				out.Info(fmt.Sprintf(
-					"%s@%s up to date", name, version))
+					"%s@%s up to date", name, version,
+				))
 			}
 		case dryRun:
 			out.Info(fmt.Sprintf(
-				"install %s@%s (stale)", name, version))
+				"install %s@%s (stale)", name, version,
+			))
 			installed++
 		case o.resolveErr != nil:
 			out.Warn(fmt.Sprintf(
 				"%s@%s: %v. "+
 					"Run 'gale update %s' to install latest.",
-				name, version, o.resolveErr, name))
+				name, version, o.resolveErr, name,
+			))
 			failed++
 		case o.installErr != nil:
 			if errors.Is(o.installErr, build.ErrUnsupportedPlatform) {
 				out.Warn(fmt.Sprintf(
 					"%s does not support %s/%s",
-					name, runtime.GOOS, runtime.GOARCH))
+					name, runtime.GOOS, runtime.GOARCH,
+				))
 			} else {
 				out.Warn(fmt.Sprintf(
-					"Failed to install %s: %v", name, o.installErr))
+					"Failed to install %s: %v", name, o.installErr,
+				))
 			}
 			failed++
 		default:
 			if o.stale {
 				out.Info(fmt.Sprintf(
 					"%s@%s stale — deps changed; reinstalling",
-					name, version))
+					name, version,
+				))
 			}
 			out.Info(fmt.Sprintf("Installing %s@%s...",
 				name, version))
@@ -165,12 +173,14 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 						"updating lockfile",
 					name, version,
 					shortSHA(o.priorSHA),
-					shortSHA(o.result.SHA256)))
+					shortSHA(o.result.SHA256),
+				))
 			}
 			reportResult(out, o.result, "Installed", "built from source")
 			if o.lockfileErr != nil {
 				out.Warn(fmt.Sprintf(
-					"updating lockfile for %s: %v", name, o.lockfileErr))
+					"updating lockfile for %s: %v", name, o.lockfileErr,
+				))
 			}
 			installed++
 		}
@@ -181,7 +191,8 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	if err := finishSync(dryRun, failed, installed, configChanged, ctx.RebuildGenerationLenient); err != nil {
 		if failed > 0 {
 			out.Warn(fmt.Sprintf(
-				"Sync finished with %d error(s)", failed))
+				"Sync finished with %d error(s)", failed,
+			))
 			return err
 		}
 		return fmt.Errorf("rebuild generation: %w", err)
@@ -190,7 +201,8 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	out.Success(fmt.Sprintf(
 		"Sync complete: %d installed, %d up to date",
 		installed,
-		len(cfg.Packages)-installed))
+		len(cfg.Packages)-installed,
+	))
 	return nil
 }
 

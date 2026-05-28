@@ -155,7 +155,8 @@ func Diff(galeDir, storeRoot string, from, to int) (*GenDiff, error) {
 // lock so it serializes with Build.
 func Rollback(galeDir, storeRoot string, target int) error {
 	genDir := filepath.Join(
-		galeDir, "gen", strconv.Itoa(target))
+		galeDir, "gen", strconv.Itoa(target),
+	)
 	if _, err := os.Stat(genDir); err != nil {
 		return fmt.Errorf("generation %d does not exist: %w",
 			target, err)

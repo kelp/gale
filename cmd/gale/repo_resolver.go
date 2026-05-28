@@ -33,7 +33,8 @@ func composeResolvers(resolvers ...installer.RecipeResolver) installer.RecipeRes
 		}
 		if lastErr == nil {
 			return nil, fmt.Errorf(
-				"no resolver returned a result for %q", name)
+				"no resolver returned a result for %q", name,
+			)
 		}
 		return nil, lastErr
 	}

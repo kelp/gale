@@ -161,20 +161,39 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 
 	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
 	bc := &BuildContext{
-		PrefixDir: prefixDir,
-		SourceDir: sourceDir,
-		Jobs:      strconv.Itoa(runtime.NumCPU()),
-		Version:   r.Package.Version,
-		System:    buildCfg.System,
-		Toolchain: buildCfg.Toolchain,
-		Debug:     debug,
-		Env:       buildCfg.Env,
-		Deps:      deps,
+		PrefixDir:       prefixDir,
+		SourceDir:       sourceDir,
+		Jobs:            strconv.Itoa(runtime.NumCPU()),
+		Version:         r.Package.Version,
+		System:          buildCfg.System,
+		Toolchain:       buildCfg.Toolchain,
+		Debug:           debug,
+		Env:             buildCfg.Env,
+		Deps:            deps,
+		SourceDateEpoch: sourceDateEpoch(r).Unix(),
 	}
+
+	// One env (toolsDir, buildHome, buildTmp) shared across
+	// every step in this build. Per-step recreation broke
+	// meson recipes (gale#22): `meson setup` baked the
+	// absolute path of the sccache wrapper inside
+	// gale-tools-<id-A>/ into build.ninja, then the next
+	// step's `meson compile` ran under gale-tools-<id-B>/
+	// — the old dir was already torn down, ninja got
+	// ENOENT on the launcher, every meson recipe failed
+	// with exit 127. Hoisting the env up here keeps the
+	// tool symlinks (and HOME, and TMPDIR) stable for the
+	// duration of the build.
+	env, cleanup, err := buildEnv(bc)
+	if err != nil {
+		return nil, fmt.Errorf("build environment: %w", err)
+	}
+	defer cleanup()
+
 	for i, step := range buildCfg.Steps {
 		out.Step(fmt.Sprintf("[%d/%d] %s",
 			i+1, len(buildCfg.Steps), step))
-		if err := runStep(bc, step); err != nil {
+		if err := runStep(bc, env, step); err != nil {
 			return nil, err
 		}
 	}
@@ -298,17 +317,13 @@ func detectSourceRoot(srcDir string) (string, error) {
 	return srcDir, nil
 }
 
-// runStep executes a single build step using sh -c with PREFIX
-// and JOBS environment variables set. Uses a clean environment
-// with only essential variables to avoid interference from the
-// host environment (e.g., nix coreutils aliases).
-func runStep(bc *BuildContext, step string) error {
-	env, cleanup, err := buildEnv(bc)
-	if err != nil {
-		return fmt.Errorf("build environment: %w", err)
-	}
-	defer cleanup()
-
+// runStep executes a single build step using sh -c. The env
+// slice (with PREFIX, JOBS, PATH, dep search paths, etc.) is
+// built once per build by the caller and shared across every
+// step so configure-time absolute paths captured by one step
+// (e.g. meson's compiler-launcher path in build.ninja) stay
+// valid for the rest of the build. See gale#22.
+func runStep(bc *BuildContext, env []string, step string) error {
 	cmd := exec.Command("sh", "-c", step)
 	cmd.Dir = bc.SourceDir
 	cmd.Env = env
@@ -342,6 +357,16 @@ type BuildContext struct {
 	Debug     bool
 	Env       map[string]string // extra env vars from recipe [build] env
 	Deps      *BuildDeps
+
+	// SourceDateEpoch is the deterministic Unix timestamp
+	// exported to build steps as SOURCE_DATE_EPOCH. Set by
+	// buildFromDir from sourceDateEpoch(r). Recipes that
+	// honour it (flit_core, dh_strip_nondeterminism,
+	// cmake's CPack, etc.) use it for embedded timestamps
+	// in archives and wheels. Clamped to >= 1980-01-01
+	// (the ZIP epoch floor) so Python 3.14's strict
+	// zipfile.from_file doesn't reject wheels (gh#21).
+	SourceDateEpoch int64
 }
 
 // SystemDeps returns implicit build dependencies for
@@ -408,7 +433,8 @@ func llvmToolchainFlags(goos, llvmDir string) (cppflags, cxxflags, ldflags strin
 
 	var ldParts []string
 	if _, err := os.Stat(libDir); err == nil {
-		ldParts = append(ldParts,
+		ldParts = append(
+			ldParts,
 			"-L"+libDir,
 			"-Wl,-rpath,"+libDir,
 		)
@@ -522,7 +548,8 @@ func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS strin
 	// DEP_<NAME>=<store_dir>.
 	for name, dir := range deps.NamedDirs {
 		key := "DEP_" + strings.ToUpper(
-			strings.ReplaceAll(name, "-", "_"))
+			strings.ReplaceAll(name, "-", "_"),
+		)
 		env = append(env, key+"="+dir)
 	}
 
@@ -530,7 +557,8 @@ func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS strin
 	var pyPaths []string
 	for _, d := range deps.StoreDirs {
 		matches, _ := filepath.Glob(
-			filepath.Join(d, "lib", "python*", "site-packages"))
+			filepath.Join(d, "lib", "python*", "site-packages"),
+		)
 		pyPaths = append(pyPaths, matches...)
 	}
 	if len(pyPaths) > 0 {
@@ -727,6 +755,18 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 		env = append(env, k+"="+v)
 	}
 
+	// Deterministic build-time epoch for tools that honour
+	// SOURCE_DATE_EPOCH (flit_core, hatchling, poetry-core,
+	// dh_strip_nondeterminism, GNU tools' --mtime defaults,
+	// etc.). Set via setDefault so a recipe-declared value
+	// wins. The bc.SourceDateEpoch contract guarantees a
+	// value >= 1980-01-01 — without that, Python 3.14's
+	// strict zipfile rejects the wheel (gh#21).
+	if bc.SourceDateEpoch > 0 {
+		setDefault(&env, "SOURCE_DATE_EPOCH",
+			strconv.FormatInt(bc.SourceDateEpoch, 10))
+	}
+
 	// Narrow opt-in: sccache. Only wires up when the binary
 	// is on the host PATH — recipe-declared values above
 	// already won via setDefault, so an explicit recipe
@@ -859,14 +899,29 @@ func resolveTools(toolsDir string, toolPaths []string) {
 	}
 }
 
+// zipEpochFloor is 1980-01-01 00:00:00 UTC — the earliest
+// timestamp ZIP can encode. Python 3.14's
+// zipfile.ZipInfo.from_file raises ValueError on
+// pre-1980 mtimes instead of clamping (the 3.13 behaviour),
+// so any wheel-builder downstream (flit_core, hatchling,
+// poetry-core, ...) breaks when source files carry pre-1980
+// stamps. We clamp here so the fallback is universally
+// safe; reproducibility is preserved because the clamped
+// value is still deterministic. See gh#21.
+var zipEpochFloor = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // sourceDateEpoch returns the deterministic timestamp
-// used to stamp extracted sources before archiving.
-// Prefers the recipe's source.released_at (YYYY-MM-DD,
-// UTC) and falls back to the Unix epoch. time.Now() is
-// intentionally never used here — any wall-clock input
-// would leak the build-run time into tarball mtimes and
-// make byte-identical source produce different-hash
-// archives (see gale-project TODO.md, finding H3).
+// used to stamp extracted sources before archiving and
+// exported as SOURCE_DATE_EPOCH to build steps. Prefers
+// the recipe's source.released_at (YYYY-MM-DD, UTC) and
+// falls back to the ZIP epoch floor (1980-01-01). The
+// fallback was the Unix epoch (1970-01-01) before gh#21
+// landed — that broke wheel builders under Python 3.14.
+// time.Now() is intentionally never used here — any
+// wall-clock input would leak the build-run time into
+// tarball mtimes and make byte-identical source produce
+// different-hash archives (see gale-project TODO.md,
+// finding H3).
 func sourceDateEpoch(r *recipe.Recipe) time.Time {
 	if r != nil && r.Source.ReleasedAt != "" {
 		// Recipes use YYYY-MM-DD across the catalog;
@@ -874,11 +929,15 @@ func sourceDateEpoch(r *recipe.Recipe) time.Time {
 		// back to the sentinel rather than silently using
 		// time.Now().
 		if t, err := time.ParseInLocation(
-			"2006-01-02", r.Source.ReleasedAt, time.UTC); err == nil {
+			"2006-01-02", r.Source.ReleasedAt, time.UTC,
+		); err == nil {
+			if t.Before(zipEpochFloor) {
+				return zipEpochFloor
+			}
 			return t
 		}
 	}
-	return time.Unix(0, 0).UTC()
+	return zipEpochFloor
 }
 
 // touchAll sets every file's atime/mtime under dir to
@@ -1016,7 +1075,8 @@ func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
 				return nil
 			}
 			newData := strings.ReplaceAll(
-				string(data), prefixDir, replacement)
+				string(data), prefixDir, replacement,
+			)
 			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
 		})
 		if err != nil {
@@ -1064,7 +1124,8 @@ func RestorePrefixPlaceholderTo(rootDir, replacement string) error {
 				return nil
 			}
 			newData := strings.ReplaceAll(
-				string(data), PrefixPlaceholder, replacement)
+				string(data), PrefixPlaceholder, replacement,
+			)
 			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
 		})
 		if err != nil {

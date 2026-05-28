@@ -48,7 +48,8 @@ func runList(stdout, stderr io.Writer) error {
 	case "all", "shared", "host":
 	default:
 		return fmt.Errorf(
-			"invalid --scope %q: want all|shared|host", listScope)
+			"invalid --scope %q: want all|shared|host", listScope,
+		)
 	}
 	if err := validateScopeFlags(listGlobal, listProject); err != nil {
 		return err
@@ -86,7 +87,8 @@ func runListAll(stdout, stderr io.Writer) error {
 		if _, statErr := os.Stat(projectPath); statErr == nil {
 			fmt.Fprintln(stdout, "Project:")
 			if err := printConfigList(
-				stdout, stderr, projectPath, "  "); err != nil {
+				stdout, stderr, projectPath, "  ",
+			); err != nil {
 				return err
 			}
 			wrote = true
@@ -98,7 +100,8 @@ func runListAll(stdout, stderr io.Writer) error {
 		}
 		fmt.Fprintln(stdout, "Global:")
 		if err := printConfigList(
-			stdout, stderr, globalPath, "  "); err != nil {
+			stdout, stderr, globalPath, "  ",
+		); err != nil {
 			return err
 		}
 		wrote = true

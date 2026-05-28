@@ -57,7 +57,8 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	if !inspectAll && len(args) == 0 {
 		return fmt.Errorf(
 			"specify a package name or pass --all\n" +
-				"  usage: gale inspect <package>  |  gale inspect --all")
+				"  usage: gale inspect <package>  |  gale inspect --all",
+		)
 	}
 
 	ctx, err := newCmdContext(inspectRecipes, false, false)
@@ -95,7 +96,8 @@ func runInspect(cmd *cobra.Command, args []string) error {
 		}
 		if !found {
 			return fmt.Errorf(
-				"%s is not installed — nothing to inspect", name)
+				"%s is not installed — nothing to inspect", name,
+			)
 		}
 	}
 
@@ -109,21 +111,25 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	var allIssues []inspect.Issue
 	for _, t := range targets {
 		prefix := filepath.Join(
-			ctx.StoreRoot, t.name, t.version)
+			ctx.StoreRoot, t.name, t.version,
+		)
 
 		var r *recipe.Recipe
 		if resolved, err := resolveVersionedRecipe(
-			ctx, t.name, t.version); err == nil {
+			ctx, t.name, t.version,
+		); err == nil {
 			r = resolved
 		}
 		// If recipe resolution fails, keep going — the
 		// rpath-only checks don't need it.
 
 		issues, err := inspect.ScanInstalled(
-			prefix, t.name, t.version, r)
+			prefix, t.name, t.version, r,
+		)
 		if err != nil {
 			return fmt.Errorf(
-				"scanning %s@%s: %w", t.name, t.version, err)
+				"scanning %s@%s: %w", t.name, t.version, err,
+			)
 		}
 		allIssues = append(allIssues, issues...)
 	}
@@ -176,11 +182,13 @@ func printHumanIssuesTo(
 		if len(scanned) == 1 {
 			out.Success(fmt.Sprintf(
 				"%s@%s: no issues",
-				scanned[0].name, scanned[0].version))
+				scanned[0].name, scanned[0].version,
+			))
 		} else {
 			out.Success(fmt.Sprintf(
 				"Scanned %d package(s): no issues",
-				len(scanned)))
+				len(scanned),
+			))
 		}
 		return
 	}
@@ -214,7 +222,8 @@ func printHumanIssuesTo(
 	// of bypassing both with a raw Fprintf to stderr.
 	out.Info(fmt.Sprintf(
 		"%d issue(s) across %d package(s)",
-		len(issues), len(byPkg)))
+		len(issues), len(byPkg),
+	))
 }
 
 func formatIssueLine(iss inspect.Issue) string {

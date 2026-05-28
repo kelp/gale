@@ -38,7 +38,8 @@ func TestEnvSurfacesMalformedProjectConfig(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(proj, "gale.toml"),
 		[]byte("this is = not [ valid toml\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	chdirTo(t, proj)
@@ -68,7 +69,8 @@ func TestEnvVarsOnlySurfacesMalformedConfig(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(proj, "gale.toml"),
 		[]byte("[packages\njq = not_quoted\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	chdirTo(t, proj)
@@ -101,7 +103,8 @@ func TestEnvExportsGlobalVarsWhenNoProjectConfig(t *testing.T) {
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n\n[vars]\n"+
 			"GLOBAL_VAR = \"world\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -162,7 +165,8 @@ func TestEnvVarsUseShellQuoting(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "gale.toml")
 	if err := os.WriteFile(configPath, []byte(
-		"[packages]\n\n[vars]\nFOO = \"hello world\"\n"),
+		"[packages]\n\n[vars]\nFOO = \"hello world\"\n",
+	),
 		0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -189,7 +193,8 @@ func TestEnvVarsUseShellQuoting(t *testing.T) {
 		"export FOO='hello world'") {
 		t.Errorf(
 			"expected single-quoted export, got:\n%s",
-			output)
+			output,
+		)
 	}
 }
 
@@ -199,7 +204,8 @@ func TestEnvVarsEscapeEmbeddedSingleQuotes(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "gale.toml")
 	if err := os.WriteFile(configPath, []byte(
-		"[packages]\n\n[vars]\nMSG = \"it's fine\"\n"),
+		"[packages]\n\n[vars]\nMSG = \"it's fine\"\n",
+	),
 		0o644); err != nil {
 		t.Fatal(err)
 	}

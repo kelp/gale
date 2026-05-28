@@ -18,7 +18,8 @@ func TestHookUseReflectsActualAcceptedArgs(t *testing.T) {
 			"hookCmd.Use = %q suggests any shell name works; "+
 				"only `direnv` is accepted. Use a concrete "+
 				"value (e.g. `hook direnv`) instead.",
-			hookCmd.Use)
+			hookCmd.Use,
+		)
 	}
 }
 
@@ -44,7 +45,8 @@ func TestHookRejectsInvalidShellAtCobraLayer(t *testing.T) {
 				t.Errorf(
 					"hookCmd.Args accepted %q — expected "+
 						"rejection via OnlyValidArgs",
-					shell)
+					shell,
+				)
 			}
 		})
 	}

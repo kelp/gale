@@ -68,7 +68,8 @@ func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
 					}
 					mu.Unlock()
 					fmt.Fprint(w, validTOML)
-				}))
+				},
+			))
 			defer srv.Close()
 
 			reg := testRegistry(srv.URL)
@@ -91,7 +92,8 @@ func TestFetchRecipeParsesValidTOML(t *testing.T) {
 	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/t/testpkg.toml": validTOML,
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -119,7 +121,8 @@ func TestFetchRecipeErrorsOn404(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found",
 				http.StatusNotFound)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -136,7 +139,8 @@ func TestFetchRecipeErrorsOnMalformedTOML(t *testing.T) {
 	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/b/badpkg.toml": malformed,
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -171,7 +175,8 @@ func TestFetchRecipeUsesCustomBaseURL(t *testing.T) {
 			called = true
 			mu.Unlock()
 			inner.ServeHTTP(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -308,7 +313,8 @@ func TestFetchRecipeVersion(t *testing.T) {
 		map[string]string{
 			"/recipes/j/jq.versions":            versionsBody,
 			"/" + commit + "/recipes/j/jq.toml": validTOML,
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -337,7 +343,8 @@ func TestFetchRecipeVersionStripsTrailingRefFromBaseURL(t *testing.T) {
 		map[string]string{
 			"/main/recipes/j/jq.versions":       versionsBody,
 			"/" + commit + "/recipes/j/jq.toml": validTOML,
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL + "/main")
@@ -357,7 +364,8 @@ func TestFetchRecipeVersionNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, versionsBody)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -420,7 +428,8 @@ func TestFetchRecipeErrorsOnConnectionFailure(t *testing.T) {
 	// Start a server then immediately close it to get an
 	// address that refuses connections.
 	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {}))
+		func(w http.ResponseWriter, r *http.Request) {},
+	))
 	addr := srv.URL
 	srv.Close()
 
@@ -459,7 +468,8 @@ func TestFetchRecipeMergesBinariesToml(t *testing.T) {
 		map[string]string{
 			"/recipes/j/jq.toml":          recipeNoBinaries,
 			"/recipes/j/jq.binaries.toml": binariesToml,
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -480,7 +490,8 @@ func TestFetchRecipeBinaries404NoError(t *testing.T) {
 	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/j/jq.toml": recipeNoBinaries,
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -498,7 +509,8 @@ func TestFetchBinariesNetworkErrorLogsWarning(t *testing.T) {
 	// Start a server and close it to cause a connection
 	// error when fetching .binaries.toml.
 	binSrv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {}))
+		func(w http.ResponseWriter, r *http.Request) {},
+	))
 	brokenAddr := binSrv.URL
 	binSrv.Close()
 
@@ -551,7 +563,8 @@ sha256 = "inline123"
 				binariesFetched = true
 			}
 			inner.ServeHTTP(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -624,7 +637,8 @@ func TestSearchHappyPath(t *testing.T) {
 				return
 			}
 			fmt.Fprint(w, index)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := &Registry{BaseURL: srv.URL}
@@ -679,7 +693,8 @@ func TestSearchNoResults(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, index)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := &Registry{BaseURL: srv.URL}
@@ -699,7 +714,8 @@ func TestSearchHTTPError(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "server error",
 				http.StatusInternalServerError)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := &Registry{BaseURL: srv.URL}
@@ -713,7 +729,8 @@ func TestSearchHTTPError(t *testing.T) {
 
 func TestSearchConnectionFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {}))
+		func(w http.ResponseWriter, r *http.Request) {},
+	))
 	addr := srv.URL
 	srv.Close()
 
@@ -731,7 +748,8 @@ func TestFetchRecipeVersionBadIndex(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			// Return malformed data: three fields per line.
 			fmt.Fprint(w, "1.0.0 abc123 extra-field\n")
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -756,7 +774,8 @@ func TestFetchRecipeVersionRecipeFetchFails(t *testing.T) {
 				// The recipe at the commit URL is not found.
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -772,7 +791,8 @@ func TestFetchRecipeVersionIndex404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -797,7 +817,8 @@ sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 		map[string]string{
 			"/recipes/j/jq.toml":          recipeNoBinaries,
 			"/recipes/j/jq.binaries.toml": staleBinaries,
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -834,7 +855,8 @@ sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 		map[string]string{
 			"/recipes/j/jq.toml":          revisionedRecipe,
 			"/recipes/j/jq.binaries.toml": staleBinaries,
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -959,7 +981,8 @@ func TestFetchRecipeRejectsInjectionNames(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Fatalf("unexpected HTTP request for invalid name: %s", r.URL.Path)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	cases := []string{
@@ -999,7 +1022,8 @@ func TestFetchRecipeVersionRejectsInjectionNames(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Fatalf("unexpected HTTP request for invalid name: %s", r.URL.Path)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	cases := []string{
@@ -1064,7 +1088,8 @@ func TestFetchRecipeMetadataSkipsBinariesFetch(t *testing.T) {
 				return
 			}
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
@@ -1117,7 +1142,8 @@ func TestSearchResultsSortedByScore(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, index)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := &Registry{BaseURL: srv.URL}
@@ -1148,7 +1174,8 @@ func TestSearchResultsSortedByScore(t *testing.T) {
 
 func TestFetchRecipeVersionConnectionFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {}))
+		func(w http.ResponseWriter, r *http.Request) {},
+	))
 	addr := srv.URL
 	srv.Close()
 

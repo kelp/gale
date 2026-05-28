@@ -130,7 +130,8 @@ func StartFakeGHCR(t *testing.T, payloads *Payloads) *FakeGHCR {
 			} {
 				fg.Register(
 					fmt.Sprintf("/blobs/%s/1.0-%s/%s", name, rev, plat),
-					name)
+					name,
+				)
 			}
 		}
 	}
@@ -188,8 +189,8 @@ func (fg *FakeGHCR) handle(w http.ResponseWriter, r *http.Request) {
 // FakeGH is the mocked gh CLI used for attestation paths.
 // Scripts rewrite its behavior via gale-gh-returns.
 type FakeGH struct {
-	Dir    string // prepend to PATH; contains the gh binary
-	state  string // script reads exit code/stdout/stderr from here
+	Dir   string // prepend to PATH; contains the gh binary
+	state string // script reads exit code/stdout/stderr from here
 }
 
 // WriteFakeGH creates a shell script named "gh" in a new
@@ -207,10 +208,20 @@ func WriteFakeGH(t *testing.T, workDir string) *FakeGH {
 		t.Fatal(err)
 	}
 	script := filepath.Join(dir, "gh")
+	// `gh attestation --help` is the availability probe in
+	// internal/attestation.probe(). Always succeed for that
+	// invocation so tests can drive only the verify-call
+	// behaviour via gale-gh-returns. Otherwise a
+	// gale-gh-returns exit=1 trips the probe first and
+	// `gale verify` short-circuits to "verification
+	// unavailable" before ever invoking attestation verify.
 	body := "#!/bin/sh\n" +
 		"state=\"" + state + "\"\n" +
 		"log=\"" + filepath.Join(dir, "log") + "\"\n" +
 		"printf '%s\\n' \"$*\" >> \"$log\"\n" +
+		"if [ \"$1\" = \"attestation\" ] && [ \"$2\" = \"--help\" ]; then\n" +
+		"  exit 0\n" +
+		"fi\n" +
 		"exitcode=$(sed -n '1p' \"$state\")\n" +
 		"stdout=$(sed -n '2p' \"$state\")\n" +
 		"stderr=$(sed -n '3p' \"$state\")\n" +

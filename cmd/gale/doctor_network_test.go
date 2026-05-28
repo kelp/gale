@@ -22,7 +22,8 @@ func TestDoctorDoesNotHitRegistryByDefault(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			atomic.AddInt32(&hits, 1)
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	// Point gale at our server via config.toml.
@@ -36,13 +37,15 @@ func TestDoctorDoesNotHitRegistryByDefault(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "config.toml"),
 		[]byte("[registry]\nurl = \""+srv.URL+"\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\njq = \"1.7.1\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -69,7 +72,8 @@ func TestDoctorCheckRegistryFlagEnablesNetwork(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			atomic.AddInt32(&hits, 1)
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	home := t.TempDir()
@@ -82,13 +86,15 @@ func TestDoctorCheckRegistryFlagEnablesNetwork(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "config.toml"),
 		[]byte("[registry]\nurl = \""+srv.URL+"\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\njq = \"1.7.1\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 

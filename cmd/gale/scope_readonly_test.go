@@ -117,7 +117,8 @@ func TestListAllShowsBothScopes(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  globalpkg = \"1.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -129,7 +130,8 @@ func TestListAllShowsBothScopes(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
 		[]byte("[packages]\n  projpkg = \"2.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -175,7 +177,8 @@ func TestListGlobalFromInsideProject(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  globalpkg = \"1.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -187,7 +190,8 @@ func TestListGlobalFromInsideProject(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
 		[]byte("[packages]\n  projpkg = \"2.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -224,7 +228,8 @@ func TestInfoGlobalOverridesProjectShadow(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.7\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -236,7 +241,8 @@ func TestInfoGlobalOverridesProjectShadow(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -273,7 +279,8 @@ func TestEnvGlobalFromInsideProjectExportsGlobalVars(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n\n[vars]\nGLOBAL_VAR = \"yes\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", home)
@@ -285,7 +292,8 @@ func TestEnvGlobalFromInsideProjectExportsGlobalVars(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
 		[]byte("[packages]\n\n[vars]\nPROJECT_VAR = \"yes\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -364,7 +372,8 @@ func TestResolveReadOnlyConfigPathGlobalForced(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
-		[]byte("[packages]\n"), 0o644); err != nil {
+		[]byte("[packages]\n"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 

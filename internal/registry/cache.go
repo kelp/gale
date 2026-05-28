@@ -94,7 +94,8 @@ func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, erro
 		if r.Offline {
 			return cacheResult{}, fmt.Errorf(
 				"GALE_OFFLINE=1 and no cache directory configured for %s",
-				url)
+				url,
+			)
 		}
 		body, err := plainGet(ctx, url)
 		return cacheResult{Body: body}, err
@@ -123,7 +124,8 @@ func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, erro
 			return cacheResult{}, errHTTP404
 		}
 		return cacheResult{}, fmt.Errorf(
-			"GALE_OFFLINE=1 and no cached entry for %s", url)
+			"GALE_OFFLINE=1 and no cached entry for %s", url,
+		)
 	}
 
 	// Fresh negative cache short-circuits before the wire.

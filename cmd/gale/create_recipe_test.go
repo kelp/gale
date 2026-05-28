@@ -9,7 +9,8 @@ import (
 
 func TestParseMissingDepValid(t *testing.T) {
 	name, repo, ok := parseMissingDep(
-		"MISSING_DEP openssl openssl/openssl")
+		"MISSING_DEP openssl openssl/openssl",
+	)
 	if !ok {
 		t.Fatal("expected ok=true")
 	}
@@ -23,7 +24,8 @@ func TestParseMissingDepValid(t *testing.T) {
 
 func TestParseMissingDepWhitespace(t *testing.T) {
 	name, repo, ok := parseMissingDep(
-		"  MISSING_DEP zlib madler/zlib  \n")
+		"  MISSING_DEP zlib madler/zlib  \n",
+	)
 	if !ok {
 		t.Fatal("expected ok=true for trimmed input")
 	}

@@ -72,7 +72,8 @@ func TestSwitchDryRunDoesNotWriteOrInstall(t *testing.T) {
 		[]byte("[package]\nname = \"jq\"\nversion = \"1.7.0\"\n\n"+
 			"[source]\nurl = \"https://example.invalid/jq.tar.gz\"\n"+
 			"sha256 = \"deadbeef\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -88,7 +89,8 @@ func TestSwitchDryRunDoesNotWriteOrInstall(t *testing.T) {
 	})
 
 	if err := switchCmd.RunE(
-		switchCmd, []string{"jq", "1.7.0"}); err != nil {
+		switchCmd, []string{"jq", "1.7.0"},
+	); err != nil {
 		t.Fatalf("switch --dry-run failed: %v", err)
 	}
 
@@ -126,7 +128,8 @@ func TestSwitchAcceptsAtVersionForm(t *testing.T) {
 		[]byte("[package]\nname = \"jq\"\nversion = \"1.7.0\"\n\n"+
 			"[source]\nurl = \"https://example.invalid/jq.tar.gz\"\n"+
 			"sha256 = \"deadbeef\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -143,7 +146,8 @@ func TestSwitchAcceptsAtVersionForm(t *testing.T) {
 
 	// Single-arg @version form — dry-run skips the install.
 	if err := switchCmd.RunE(
-		switchCmd, []string{"jq@1.7.0"}); err != nil {
+		switchCmd, []string{"jq@1.7.0"},
+	); err != nil {
 		t.Fatalf("switch jq@1.7.0 failed: %v", err)
 	}
 }
@@ -159,7 +163,8 @@ func TestSwitchRequiresVersion(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -200,16 +205,26 @@ func TestSwitchWritesPinWhenLocalRecipeMatches(t *testing.T) {
 		[]byte("[package]\nname = \"jq\"\nversion = \"1.7.0\"\n\n"+
 			"[source]\nurl = \"https://example.invalid/jq.tar.gz\"\n"+
 			"sha256 = \"deadbeef\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
 	// Pre-populate the store with jq@1.7.0-1 so Install
 	// short-circuits as a cache hit. IsInstalled requires
-	// a bin/ subdirectory.
+	// a bin/ subdirectory and finalizeInstall's
+	// post-rebuild contract check requires at least one
+	// symlinkable file so the package appears in the
+	// active generation.
 	storeRoot := defaultStoreRoot()
 	pkgDir := filepath.Join(storeRoot, "jq", "1.7.0-1", "bin")
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(pkgDir, "jq"),
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -224,7 +239,8 @@ func TestSwitchWritesPinWhenLocalRecipeMatches(t *testing.T) {
 	t.Cleanup(func() { switchRecipes = "" })
 
 	if err := switchCmd.RunE(
-		switchCmd, []string{"jq", "1.7.0"}); err != nil {
+		switchCmd, []string{"jq", "1.7.0"},
+	); err != nil {
 		t.Fatalf("switch failed: %v", err)
 	}
 

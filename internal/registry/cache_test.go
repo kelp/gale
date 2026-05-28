@@ -223,7 +223,8 @@ func TestFetchRecipeWithoutETagStillWorks(t *testing.T) {
 			default:
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := cachedTestRegistry(t, srv.URL)

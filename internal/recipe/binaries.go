@@ -152,7 +152,8 @@ func MergeBinaries(r *Recipe, idx *BinaryIndex, ghcrBase string) {
 		r.Binary[platform] = Binary{
 			URL: fmt.Sprintf(
 				"https://ghcr.io/v2/%s/%s/blobs/sha256:%s",
-				ghcrBase, r.Package.Name, sha),
+				ghcrBase, r.Package.Name, sha,
+			),
 			SHA256: sha,
 			Trust:  TrustSigstore,
 		}

@@ -20,7 +20,8 @@ func setupBareRepo(t *testing.T) string {
 	run(t, workDir, "git", "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(
 		filepath.Join(workDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	run(t, workDir, "git", "add", "README")
@@ -61,7 +62,8 @@ func TestCloneCreatesDirectory(t *testing.T) {
 
 	// Verify README exists in clone.
 	if _, err := os.Stat(
-		filepath.Join(destDir, "README")); err != nil {
+		filepath.Join(destDir, "README"),
+	); err != nil {
 		t.Errorf("README not found in clone: %v", err)
 	}
 }

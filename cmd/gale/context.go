@@ -60,7 +60,8 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		if !useGlobal {
 			if _, err := projectConfigPath(cwd); err != nil {
 				return nil, fmt.Errorf(
-					"no project found — run 'gale init' first")
+					"no project found — run 'gale init' first",
+				)
 			}
 		}
 		galePath, err = resolveConfigPath(useGlobal)
@@ -412,11 +413,13 @@ func lockfilePath(configPath string) (string, error) {
 func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha256 string) error {
 	if host != "" {
 		if err := config.AddPackage(
-			configPath, host, name, configVersion); err != nil {
+			configPath, host, name, configVersion,
+		); err != nil {
 			return fmt.Errorf("adding to config: %w", err)
 		}
 	} else if err := config.UpsertPackage(
-		configPath, config.CurrentHost(), name, configVersion); err != nil {
+		configPath, config.CurrentHost(), name, configVersion,
+	); err != nil {
 		return fmt.Errorf("adding to config: %w", err)
 	}
 	lp, err := lockfilePath(configPath)
@@ -441,13 +444,45 @@ func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha2
 // finalizeInstall adds a package to gale.toml, updates
 // gale.lock, and rebuilds the generation. See
 // writeConfigAndLock for host semantics.
+//
+// Uses lenient rebuild so unrelated missing store dirs in
+// gale.toml don't block this install from landing on PATH —
+// the common fresh-clone-on-new-host scenario (gh#23):
+// gale.toml lists packages this host hasn't installed yet,
+// strict rebuild errors on them, and the silent side-effect
+// is "lockfile updated, store populated, gen never rotated,
+// `which <pkg>` still resolves the prior revision." Sync
+// already uses lenient for the same reason.
+//
+// Lenient on its own can mask the install actually failing
+// to land — populateGeneration's `continue` on ErrNotExist
+// could silently skip OUR package too if (e.g.) the store
+// dir gets removed between Install and rebuild. The
+// post-rebuild check below enforces the contract: this
+// install must put the package on PATH, or surface a clear
+// error.
 func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, lockVersion, sha256 string) error {
 	if err := writeConfigAndLock(
-		configPath, host, name, configVersion, lockVersion, sha256); err != nil {
+		configPath, host, name, configVersion, lockVersion, sha256,
+	); err != nil {
 		return fmt.Errorf("writing config and lock: %w", err)
 	}
-	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGenerationLenient(galeDir, storeRoot, configPath); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
+	}
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		return fmt.Errorf(
+			"verify install landed on PATH: %w", err,
+		)
+	}
+	if _, ok := active[name]; !ok {
+		return fmt.Errorf(
+			"%s@%s installed to store but did not land in the "+
+				"active generation; the store dir may have been "+
+				"removed mid-install",
+			name, lockVersion,
+		)
 	}
 	return nil
 }
@@ -519,13 +554,15 @@ func addToConfig(name, version, host string, global, project bool) (string, erro
 	}
 	if host != "" {
 		if err := config.AddPackage(
-			configPath, host, name, version); err != nil {
+			configPath, host, name, version,
+		); err != nil {
 			return "", fmt.Errorf("adding %s to config: %w", name, err)
 		}
 		return configPath, nil
 	}
 	if err := config.UpsertPackage(
-		configPath, config.CurrentHost(), name, version); err != nil {
+		configPath, config.CurrentHost(), name, version,
+	); err != nil {
 		return "", fmt.Errorf("adding %s to config: %w", name, err)
 	}
 	return configPath, nil
@@ -553,7 +590,8 @@ func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Reci
 	if ctx.Registry != nil {
 		var pinned *recipe.Recipe
 		pinned, vErr = ctx.Registry.FetchRecipeVersion(
-			name, version)
+			name, version,
+		)
 		if vErr == nil {
 			return pinned, nil
 		}
@@ -561,16 +599,19 @@ func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Reci
 
 	if err != nil {
 		return nil, fmt.Errorf(
-			"resolving %s@%s: %w", name, version, err)
+			"resolving %s@%s: %w", name, version, err,
+		)
 	}
 	if vErr != nil {
 		return nil, fmt.Errorf(
 			"%s@%s not found (registry has %s): %w",
-			name, version, r.Package.Version, vErr)
+			name, version, r.Package.Version, vErr,
+		)
 	}
 	return nil, fmt.Errorf(
 		"%s@%s not found (registry has %s)",
-		name, version, r.Package.Version)
+		name, version, r.Package.Version,
+	)
 }
 
 // reportResult prints the install/update result message.
@@ -597,7 +638,8 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256 string) error {
 	return finalizeInstall(
 		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, ctx.Host,
-		name, configVersion, lockVersion, sha256)
+		name, configVersion, lockVersion, sha256,
+	)
 }
 
 // FinalizeRecipeInstall is FinalizeInstall for the
@@ -607,7 +649,8 @@ func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256 
 // canonical `<v>-<N>` goes to gale.lock for exact pin.
 func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe, sha256 string) error {
 	return ctx.FinalizeInstall(
-		r.Package.Name, r.Package.Version, r.Package.Full(), sha256)
+		r.Package.Name, r.Package.Version, r.Package.Full(), sha256,
+	)
 }
 
 // WriteConfigAndLock adds a package to gale.toml and
@@ -616,14 +659,16 @@ func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe, sha256 string) er
 // writeConfigAndLock).
 func (ctx *cmdContext) WriteConfigAndLock(name, configVersion, lockVersion, sha256 string) error {
 	return writeConfigAndLock(
-		ctx.GalePath, ctx.Host, name, configVersion, lockVersion, sha256)
+		ctx.GalePath, ctx.Host, name, configVersion, lockVersion, sha256,
+	)
 }
 
 // WriteConfigAndLockForRecipe is WriteConfigAndLock for
 // the recipe-in-hand case. See FinalizeRecipeInstall.
 func (ctx *cmdContext) WriteConfigAndLockForRecipe(r *recipe.Recipe, sha256 string) error {
 	return ctx.WriteConfigAndLock(
-		r.Package.Name, r.Package.Version, r.Package.Full(), sha256)
+		r.Package.Name, r.Package.Version, r.Package.Full(), sha256,
+	)
 }
 
 // RebuildGeneration reads gale.toml and rebuilds the

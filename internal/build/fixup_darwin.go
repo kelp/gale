@@ -115,7 +115,8 @@ func FixupBinaries(prefixDir string) error {
 			if err := run("install_name_tool", "-change",
 				dep, "@rpath/"+base, file); err != nil {
 				return fmt.Errorf(
-					"change %s in %s: %w", dep, file, err)
+					"change %s in %s: %w", dep, file, err,
+				)
 			}
 			changed = true
 		}
@@ -249,7 +250,8 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 
 			// Skip libs in the package's own lib dir.
 			if _, err := os.Stat(
-				filepath.Join(ownLib, libName)); err == nil {
+				filepath.Join(ownLib, libName),
+			); err == nil {
 				continue
 			}
 

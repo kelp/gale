@@ -75,7 +75,8 @@ func TestFetchAndExtractTarZstdStreamsCorrectContents(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Write(archiveBytes)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "pkg")
@@ -120,7 +121,8 @@ func TestFetchAndExtractTarZstdBadSHACleansUpDest(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(archiveBytes)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	// Pre-create dest with a sentinel file so that a stub that does
@@ -161,7 +163,8 @@ func TestFetchAndExtractTarZstdHTTP404ReturnsError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	// Pre-create dest with a sentinel file so that a stub that does
@@ -205,7 +208,8 @@ func TestFetchAndExtractTarZstdSendsBearerTokenWhenProvided(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			capturedAuth = r.Header.Get("Authorization")
 			w.Write(archiveBytes) //nolint:errcheck
-		}))
+		},
+	))
 	defer srv.Close()
 
 	// Make the package-level HTTP client trust the test server's
@@ -241,7 +245,8 @@ func TestFetchAndExtractTarZstdNoAuthHeaderWhenTokenEmpty(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			capturedAuth = r.Header.Get("Authorization")
 			w.Write(archiveBytes)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "pkg")
@@ -277,7 +282,8 @@ func TestFetchAndExtractTarZstdCreatesDestDirIfAbsent(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(archiveBytes)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	// Use a path that does NOT yet exist.
@@ -314,7 +320,8 @@ func TestFetchAndExtractTarZstdLeavesNoIntermediateTarZstFile(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(archiveBytes)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "pkg")
@@ -363,7 +370,8 @@ func TestFetchAndExtractTarZstdReturnsSHA256OfArchiveBytes(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(archiveBytes)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "pkg")
@@ -422,7 +430,8 @@ func TestFetchAndExtractTarZstdTruncatedStreamReturnsErrorAndCleansUp(t *testing
 					_ = conn.Close()
 				}
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "pkg")
@@ -460,13 +469,15 @@ func TestFetchAndExtractTarZstdDistinctArchivesProduceDistinctSHAs(t *testing.T)
 	srvA := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(archiveA)
-		}))
+		},
+	))
 	defer srvA.Close()
 
 	srvB := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(archiveB)
-		}))
+		},
+	))
 	defer srvB.Close()
 
 	destA := filepath.Join(t.TempDir(), "pkgA")

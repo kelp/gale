@@ -82,7 +82,8 @@ func FetchNamed(rawURL, destPath, displayName string) error {
 			fmt.Fprintf(os.Stderr,
 				"  > Mirror fallback: %s\n", alt)
 			if ferr := fetchOnce(
-				alt, destPath, displayName); ferr == nil {
+				alt, destPath, displayName,
+			); ferr == nil {
 				fmt.Fprintf(os.Stderr,
 					"  > Mirror fetched from: %s\n", alt)
 				return nil
@@ -128,7 +129,8 @@ func FetchWithAuthNamed(rawURL, destPath, bearerToken, displayName string) error
 	if u.Scheme != "https" {
 		return fmt.Errorf(
 			"refusing to send bearer token over %s (https required)",
-			u.Scheme)
+			u.Scheme,
+		)
 	}
 
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
@@ -317,7 +319,8 @@ func VerifySHA256(path, expected string) error {
 	if actual != expected {
 		return fmt.Errorf(
 			"sha256 mismatch: expected %s, got %s",
-			expected, actual)
+			expected, actual,
+		)
 	}
 	return nil
 }
@@ -371,10 +374,12 @@ func ExtractZip(archivePath, destDir string) error {
 		}
 
 		if err := os.MkdirAll(
-			filepath.Dir(target), 0o755); err != nil {
+			filepath.Dir(target), 0o755,
+		); err != nil {
 			return fmt.Errorf(
 				"create parent directory for %s: %w",
-				zf.Name, err)
+				zf.Name, err,
+			)
 		}
 
 		rc, err := zf.Open()
@@ -465,7 +470,8 @@ func ExtractSource(archivePath, destDir string) error {
 		return ExtractZip(archivePath, destDir)
 	default:
 		return fmt.Errorf(
-			"unsupported archive format: %s", archivePath)
+			"unsupported archive format: %s", archivePath,
+		)
 	}
 }
 
@@ -498,10 +504,12 @@ func extractTar(tr *tar.Reader, destDir string) error {
 			}
 		case tar.TypeReg:
 			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755); err != nil {
+				filepath.Dir(target), 0o755,
+			); err != nil {
 				return fmt.Errorf(
 					"create parent directory for %s: %w",
-					hdr.Name, err)
+					hdr.Name, err,
+				)
 			}
 			if err := writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
 				return fmt.Errorf("extract %s: %w",
@@ -524,10 +532,12 @@ func extractTar(tr *tar.Reader, destDir string) error {
 			}
 
 			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755); err != nil {
+				filepath.Dir(target), 0o755,
+			); err != nil {
 				return fmt.Errorf(
 					"create parent directory for %s: %w",
-					hdr.Name, err)
+					hdr.Name, err,
+				)
 			}
 			os.Remove(target)
 			if err := os.Symlink(hdr.Linkname, target); err != nil {
@@ -540,10 +550,12 @@ func extractTar(tr *tar.Reader, destDir string) error {
 				return fmt.Errorf("illegal hard link target in archive: %s", hdr.Linkname)
 			}
 			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755); err != nil {
+				filepath.Dir(target), 0o755,
+			); err != nil {
 				return fmt.Errorf(
 					"create parent directory for %s: %w",
-					hdr.Name, err)
+					hdr.Name, err,
+				)
 			}
 			os.Remove(target)
 			if err := os.Link(linkTarget, target); err != nil {
@@ -717,7 +729,8 @@ func FetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token string) (stri
 		if u.Scheme != "https" {
 			return "", fmt.Errorf(
 				"refusing to send bearer token over %s (https required)",
-				u.Scheme)
+				u.Scheme,
+			)
 		}
 	}
 

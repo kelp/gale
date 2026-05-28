@@ -34,7 +34,8 @@ func jqRecipe(version string) string {
 			"\n[source]\nurl = \"https://example.com/jq.tar.gz\"\n"+
 			"sha256 = \"0000000000000000000000000000000000000000000000000000000000000000\"\n"+
 			"\n[build]\nsteps = [\"true\"]\n",
-		version)
+		version,
+	)
 }
 
 // --- composeResolvers ---
@@ -110,7 +111,8 @@ func setupTapCache(t *testing.T, galeDir, tapName string, recipes map[string]str
 	for fname, body := range recipes {
 		letter := string(fname[0])
 		dir := filepath.Join(
-			galeDir, "repos", tapName, "recipes", letter)
+			galeDir, "repos", tapName, "recipes", letter,
+		)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatalf("mkdir tap recipes: %v", err)
 		}
@@ -278,7 +280,8 @@ func TestResolveRecipeResolverWithRecipesFlagSkipsTaps(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(letterDir, "jq.toml"),
 		[]byte(jqRecipe("1.2.3")),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatalf("write flag recipe: %v", err)
 	}
 

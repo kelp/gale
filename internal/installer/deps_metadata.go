@@ -125,7 +125,8 @@ func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, 
 			c, cerr := recipe.ParseConstraint(expr)
 			if cerr != nil {
 				return false, fmt.Errorf(
-					"parse constraint for %s: %w", name, cerr)
+					"parse constraint for %s: %w", name, cerr,
+				)
 			}
 			if !c.Satisfies(recorded.Version, recorded.Revision) {
 				return true, nil

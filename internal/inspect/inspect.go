@@ -20,7 +20,8 @@ import (
 // storeRe matches the trailing .gale/pkg/<name>/<version>
 // in a path. Works for any home prefix.
 var storeRe = regexp.MustCompile(
-	`\.gale[/\\]pkg[/\\]([^/\\]+)[/\\]([^/\\]+)`)
+	`\.gale[/\\]pkg[/\\]([^/\\]+)[/\\]([^/\\]+)`,
+)
 
 // binaryRefs holds what we extracted from one binary file.
 type binaryRefs struct {
@@ -236,10 +237,12 @@ func expandRpaths(rpaths []string, loaderDir string) []string {
 		switch {
 		case strings.HasPrefix(rp, "@loader_path"):
 			out[i] = filepath.Clean(filepath.Join(
-				loaderDir, strings.TrimPrefix(rp, "@loader_path")))
+				loaderDir, strings.TrimPrefix(rp, "@loader_path"),
+			))
 		case strings.HasPrefix(rp, "@executable_path"):
 			out[i] = filepath.Clean(filepath.Join(
-				loaderDir, strings.TrimPrefix(rp, "@executable_path")))
+				loaderDir, strings.TrimPrefix(rp, "@executable_path"),
+			))
 		default:
 			out[i] = rp
 		}

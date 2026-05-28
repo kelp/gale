@@ -30,7 +30,8 @@ var verifyCmd = &cobra.Command{
 		if !v.Available() {
 			return fmt.Errorf(
 				"attestation verification unavailable: %s",
-				v.UnavailableReason())
+				v.UnavailableReason(),
+			)
 		}
 
 		// Resolve context first so lockfile uses the same
@@ -52,25 +53,30 @@ var verifyCmd = &cobra.Command{
 		pkg, ok := lf.Packages[name]
 		if !ok {
 			return fmt.Errorf(
-				"%s not found in lockfile — install it first", name)
+				"%s not found in lockfile — install it first", name,
+			)
 		}
 
 		platform := runtime.GOOS + "-" + runtime.GOARCH
 		tag := pkg.Version + "-" + platform
 		ociURI := fmt.Sprintf(
 			"oci://ghcr.io/%s/%s:%s",
-			localGHCRBase, name, tag)
+			localGHCRBase, name, tag,
+		)
 
 		out.Step(fmt.Sprintf(
-			"Verifying attestation for %s@%s...", name, pkg.Version))
+			"Verifying attestation for %s@%s...", name, pkg.Version,
+		))
 
 		if err := attestation.VerifyOCI(
-			ociURI, attestation.DefaultRepo); err != nil {
+			ociURI, attestation.DefaultRepo,
+		); err != nil {
 			return fmt.Errorf("verification failed: %w", err)
 		}
 
 		out.Success(fmt.Sprintf(
-			"%s@%s attestation verified", name, pkg.Version))
+			"%s@%s attestation verified", name, pkg.Version,
+		))
 		return nil
 	},
 }

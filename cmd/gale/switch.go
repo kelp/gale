@@ -60,12 +60,14 @@ Unlike 'gale update', switch:
 			return fmt.Errorf(
 				"%s is not in gale.toml — use "+
 					"'gale install %s@%s' to add it",
-				name, name, version)
+				name, name, version,
+			)
 		}
 
 		if current == version {
 			out.Info(fmt.Sprintf(
-				"%s is already at %s", name, version))
+				"%s is already at %s", name, version,
+			))
 			return nil
 		}
 
@@ -96,7 +98,8 @@ Unlike 'gale update', switch:
 			if errors.Is(err, build.ErrUnsupportedPlatform) {
 				out.Warn(fmt.Sprintf(
 					"%s does not support %s/%s",
-					name, runtime.GOOS, runtime.GOARCH))
+					name, runtime.GOOS, runtime.GOARCH,
+				))
 			}
 			return fmt.Errorf("install failed: %w", err)
 		}
@@ -121,7 +124,8 @@ func parseSwitchArgs(args []string) (name, version string, err error) {
 		if v == "" {
 			return "", "", fmt.Errorf(
 				"missing version: use 'gale switch %s <version>' "+
-					"or 'gale switch %s@<version>'", n, n)
+					"or 'gale switch %s@<version>'", n, n,
+			)
 		}
 		return n, v, nil
 	default:

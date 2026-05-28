@@ -44,7 +44,8 @@ func TestOutdatedNoRefreshSkipsRecipeFetch(t *testing.T) {
 			w.Header().Set("ETag", `"abc"`)
 			w.WriteHeader(http.StatusOK)
 			_, _ = w.Write([]byte(validOutdatedRecipeTOML))
-		}))
+		},
+	))
 	defer srv.Close()
 
 	// Warm the cache against the live server.
@@ -85,7 +86,8 @@ func TestOutdatedNoRefreshWithoutCacheSurfacesError(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Fatalf("--no-refresh must not hit the server: %s",
 				r.URL.Path)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := &registry.Registry{

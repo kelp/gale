@@ -76,7 +76,8 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 		dir, err = os.Getwd()
 		if err != nil {
 			out.Warn(fmt.Sprintf(
-				"sync: getting working dir: %v", err))
+				"sync: getting working dir: %v", err,
+			))
 			return
 		}
 	}
@@ -87,26 +88,30 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
 		out.Warn(fmt.Sprintf(
-			"sync: reading config: %v", err))
+			"sync: reading config: %v", err,
+		))
 		return
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
 		out.Warn(fmt.Sprintf(
-			"sync: parsing config: %v", err))
+			"sync: parsing config: %v", err,
+		))
 		return
 	}
 	cfg.ApplyHost(config.CurrentHost())
 	lp, lpErr := lockfilePath(configPath)
 	if lpErr != nil {
 		out.Warn(fmt.Sprintf(
-			"sync: lockfile path: %v", lpErr))
+			"sync: lockfile path: %v", lpErr,
+		))
 		return
 	}
 	stale, err := lockfile.IsStale(configPath, lp, cfg.Packages)
 	if err != nil {
 		out.Warn(fmt.Sprintf(
-			"sync: checking lockfile: %v", err))
+			"sync: checking lockfile: %v", err,
+		))
 		return
 	}
 	if !stale {

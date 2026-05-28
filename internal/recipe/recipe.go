@@ -215,7 +215,8 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 		if len(bad) > 0 {
 			return nil, fmt.Errorf(
 				"unknown recipe field(s): %s",
-				strings.Join(bad, ", "))
+				strings.Join(bad, ", "),
+			)
 		}
 	}
 
@@ -267,7 +268,8 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 		default:
 			return nil, fmt.Errorf(
 				"binary.%s: invalid trust value %q (want %q or %q)",
-				platform, bin.Trust, TrustSigstore, TrustSHA256Only)
+				platform, bin.Trust, TrustSigstore, TrustSHA256Only,
+			)
 		}
 	}
 	return r, nil

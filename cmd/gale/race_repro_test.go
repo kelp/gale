@@ -185,7 +185,8 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 		_ = filelock.With(lockPath, func() error {
 			// Create gen/3/bin as if Build is mid-populate.
 			if mkErr := os.MkdirAll(filepath.Join(
-				galeDir, "gen", "3", "bin"), 0o755); mkErr != nil {
+				galeDir, "gen", "3", "bin",
+			), 0o755); mkErr != nil {
 				// Can't use t.Fatal in a goroutine; log and
 				// signal so the test proceeds to check state.
 				t.Logf("simulated Build: MkdirAll: %v", mkErr)
@@ -239,17 +240,20 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 			"CONFIRMED: cleanOldGenerations deleted in-flight "+
 				"gen/3 while Build held the generation lock "+
 				"(curGen=2, symlink not yet swapped). "+
-				"stat err: %v", errGen3)
+				"stat err: %v", errGen3,
+		)
 	}
 	if !gen1Gone {
 		t.Errorf(
 			"gc did not reap old gen/1 (n < curGen=2); " +
-				"expected it to be removed but it still exists")
+				"expected it to be removed but it still exists",
+		)
 	}
 	if curAfter != 2 {
 		t.Errorf(
 			"current symlink moved: expected gen/2, got gen/%d",
-			curAfter)
+			curAfter,
+		)
 	}
 }
 
@@ -334,7 +338,8 @@ func TestAudit_GcVsInstall_WindowBetweenStoreWriteAndConfigWrite(t *testing.T) {
 				"because store.Remove does not acquire "+
 				"<storeRoot>/<name>/<version>.lock before "+
 				"os.RemoveAll.",
-			elapsed, minBlock, lockPath)
+			elapsed, minBlock, lockPath,
+		)
 	}
 }
 
@@ -376,7 +381,8 @@ func TestAudit_ProjectGenLockNotSharedWithStoreGenLock(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(jqBinDir, "jq"), []byte("fake"), 0o755); err != nil {
+		filepath.Join(jqBinDir, "jq"), []byte("fake"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	pkgs := map[string]string{"jq": "1.8.1"}
@@ -387,7 +393,8 @@ func TestAudit_ProjectGenLockNotSharedWithStoreGenLock(t *testing.T) {
 	// in installer.go:1060, and the same path generation.Build
 	// must acquire after the fix.
 	storeGenLock := filepath.Join(
-		filepath.Dir(storeRoot), "generation.lock")
+		filepath.Dir(storeRoot), "generation.lock",
+	)
 
 	// Sanity: storeGenLock must NOT be inside projectGaleDir.
 	projGenLock := filepath.Join(projectGaleDir, "generation.lock")
@@ -436,7 +443,8 @@ func TestAudit_ProjectGenLockNotSharedWithStoreGenLock(t *testing.T) {
 				"at %s. A concurrent global install holds that "+
 				"lock; the project sync does not serialize "+
 				"against it. Documented in installer.go:1051.",
-			elapsed, minBlock, storeGenLock)
+			elapsed, minBlock, storeGenLock,
+		)
 	}
 }
 

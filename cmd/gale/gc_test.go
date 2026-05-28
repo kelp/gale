@@ -18,7 +18,8 @@ func TestCollectReferencedPackages(t *testing.T) {
 	globalDir := t.TempDir()
 	globalCfg := filepath.Join(globalDir, "gale.toml")
 	if err := os.WriteFile(globalCfg, []byte(
-		"[packages]\njq = \"1.7\"\nfd = \"9.0\"\n"),
+		"[packages]\njq = \"1.7\"\nfd = \"9.0\"\n",
+	),
 		0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -28,7 +29,8 @@ func TestCollectReferencedPackages(t *testing.T) {
 	projDir := t.TempDir()
 	projCfg := filepath.Join(projDir, "gale.toml")
 	if err := os.WriteFile(projCfg, []byte(
-		"[packages]\njq = \"1.6\"\nripgrep = \"14.1\"\n"),
+		"[packages]\njq = \"1.6\"\nripgrep = \"14.1\"\n",
+	),
 		0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -62,7 +64,8 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 	globalDir := t.TempDir()
 	globalCfg := filepath.Join(globalDir, "gale.toml")
 	if err := os.WriteFile(globalCfg, []byte(
-		"[packages]\njq = \"1.7\"\n"),
+		"[packages]\njq = \"1.7\"\n",
+	),
 		0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -90,7 +93,8 @@ func TestCollectReferencedPackagesResolvesBareToCanonical(t *testing.T) {
 	storeRoot := t.TempDir()
 	if err := os.MkdirAll(
 		filepath.Join(storeRoot, "jq", "1.8.1-3", "bin"),
-		0o755); err != nil {
+		0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -126,7 +130,8 @@ func TestRemoveUnreferencedVersions(t *testing.T) {
 		{"ripgrep", "14.1"},
 	} {
 		dir := filepath.Join(
-			storeRoot, pkg.name, pkg.ver, "bin")
+			storeRoot, pkg.name, pkg.ver, "bin",
+		)
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +145,8 @@ func TestRemoveUnreferencedVersions(t *testing.T) {
 
 	// Dry run — nothing removed.
 	n, _ := removeUnreferencedVersions(
-		s, referenced, true, out)
+		s, referenced, true, out,
+	)
 	if n != 2 {
 		t.Errorf("dry-run: want 2 flagged, got %d", n)
 	}
@@ -153,7 +159,8 @@ func TestRemoveUnreferencedVersions(t *testing.T) {
 
 	// Real run.
 	n, _ = removeUnreferencedVersions(
-		s, referenced, false, out)
+		s, referenced, false, out,
+	)
 	if n != 2 {
 		t.Errorf("want 2 removed, got %d", n)
 	}
@@ -181,7 +188,8 @@ func TestRemoveUnreferencedVersionsNoneToRemove(t *testing.T) {
 	referenced := map[string]bool{"jq@1.7": true}
 
 	n, _ := removeUnreferencedVersions(
-		s, referenced, false, out)
+		s, referenced, false, out,
+	)
 	if n != 0 {
 		t.Errorf("want 0 removed, got %d", n)
 	}
@@ -223,12 +231,14 @@ func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 		t.Errorf("want 1 removed, got %d", n)
 	}
 	if _, err := os.Stat(filepath.Join(
-		storeRoot, "jq", "1.8.1-2")); err != nil {
+		storeRoot, "jq", "1.8.1-2",
+	)); err != nil {
 		t.Errorf("jq/1.8.1-2 must survive — canonical match "+
 			"for bare jq@1.8.1: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(
-		storeRoot, "jq", "1.7.1-1")); !os.IsNotExist(err) {
+		storeRoot, "jq", "1.7.1-1",
+	)); !os.IsNotExist(err) {
 		t.Errorf("jq/1.7.1-1 should have been removed")
 	}
 }
@@ -265,12 +275,14 @@ func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
 		t.Errorf("want 1 removed, got %d", n)
 	}
 	if _, err := os.Stat(filepath.Join(
-		storeRoot, "jq", "1.8.1-3")); err != nil {
+		storeRoot, "jq", "1.8.1-3",
+	)); err != nil {
 		t.Errorf("jq/1.8.1-3 should survive (highest rev = "+
 			"canonical for bare jq@1.8.1): %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(
-		storeRoot, "jq", "1.8.1-2")); !os.IsNotExist(err) {
+		storeRoot, "jq", "1.8.1-2",
+	)); !os.IsNotExist(err) {
 		t.Errorf("jq/1.8.1-2 should be removed")
 	}
 }
@@ -304,11 +316,13 @@ func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
 		t.Errorf("want 1 removed, got %d", n)
 	}
 	if _, err := os.Stat(filepath.Join(
-		storeRoot, "jq", "1.8.1-2")); err != nil {
+		storeRoot, "jq", "1.8.1-2",
+	)); err != nil {
 		t.Errorf("jq/1.8.1-2 should survive (explicit pin): %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(
-		storeRoot, "jq", "1.8.1-3")); !os.IsNotExist(err) {
+		storeRoot, "jq", "1.8.1-3",
+	)); !os.IsNotExist(err) {
 		t.Errorf("jq/1.8.1-3 should be removed")
 	}
 }
@@ -356,7 +370,8 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	// generation.Build creates).
 	currentPath := filepath.Join(galeDir, "current")
 	if err := os.Symlink(
-		filepath.Join("gen", "3"), currentPath); err != nil {
+		filepath.Join("gen", "3"), currentPath,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -372,7 +387,8 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	// All dirs still exist.
 	for _, n := range []string{"1", "2", "3"} {
 		if _, err := os.Stat(
-			filepath.Join(genRoot, n)); err != nil {
+			filepath.Join(genRoot, n),
+		); err != nil {
 			t.Errorf("dry-run: gen/%s should still exist", n)
 		}
 	}
@@ -386,12 +402,14 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 
 	// gen/3 must survive, gen/1 and gen/2 must be gone.
 	if _, err := os.Stat(
-		filepath.Join(genRoot, "3")); err != nil {
+		filepath.Join(genRoot, "3"),
+	); err != nil {
 		t.Error("gen/3 should still exist")
 	}
 	for _, n := range []string{"1", "2"} {
 		if _, err := os.Stat(
-			filepath.Join(genRoot, n)); !os.IsNotExist(err) {
+			filepath.Join(genRoot, n),
+		); !os.IsNotExist(err) {
 			t.Errorf("gen/%s should have been removed", n)
 		}
 	}
@@ -415,7 +433,8 @@ func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
 	// Set up the store with an unreferenced package.
 	storeRoot := filepath.Join(projDir, "store")
 	pkgDir := filepath.Join(
-		storeRoot, "oldpkg", "0.1", "bin")
+		storeRoot, "oldpkg", "0.1", "bin",
+	)
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -430,7 +449,8 @@ func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
 	}
 	if err := os.Symlink(
 		filepath.Join("gen", "2"),
-		filepath.Join(galeDir, "current")); err != nil {
+		filepath.Join(galeDir, "current"),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -521,7 +541,8 @@ func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
 	} {
 		if err := os.MkdirAll(
 			filepath.Join(storeRoot, d.n, d.v, "bin"),
-			0o755); err != nil {
+			0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -545,7 +566,8 @@ func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
 	})
 
 	ref := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, out)
+		globalDir, "", s, resolver, out,
+	)
 
 	if !ref["postgresql@17.2-1"] {
 		t.Errorf("missing postgresql@17.2-1: %v", ref)
@@ -573,7 +595,8 @@ func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
 	} {
 		if err := os.MkdirAll(
 			filepath.Join(storeRoot, d.n, d.v, "lib"),
-			0o755); err != nil {
+			0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -598,7 +621,8 @@ func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
 	})
 
 	ref := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, out)
+		globalDir, "", s, resolver, out,
+	)
 
 	for _, k := range []string{
 		"curl@8.19.0-1", "openssl@3.6.1-2", "zlib@1.3.2-2",
@@ -618,12 +642,14 @@ func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
 	storeRoot := t.TempDir()
 	if err := os.MkdirAll(
 		filepath.Join(storeRoot, "curl", "8.19.0-1", "bin"),
-		0o755); err != nil {
+		0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(
 		filepath.Join(storeRoot, "openssl", "3.6.1-2", "lib"),
-		0o755); err != nil {
+		0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -639,7 +665,8 @@ func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
 	out := output.New(os.Stderr, false)
 
 	ref := collectReferencedPackagesWithResolver(
-		globalDir, "", s, nil, out)
+		globalDir, "", s, nil, out,
+	)
 
 	if !ref["curl@8.19.0-1"] {
 		t.Errorf("curl missing: %v", ref)
@@ -735,7 +762,8 @@ func TestRemoveUnreferencedVersionsReturnsFailureCount(t *testing.T) {
 	// Empty referenced set — jq@1.7.1 is unreferenced and
 	// should be removed, but the read-only dirs will cause failure.
 	_, failed := removeUnreferencedVersions(
-		s, map[string]bool{}, false, out)
+		s, map[string]bool{}, false, out,
+	)
 	if failed == 0 {
 		t.Error("expected failure count > 0 when store removal fails")
 	}

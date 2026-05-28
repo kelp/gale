@@ -148,7 +148,8 @@ func readFileTool() Tool {
 
 			url := fmt.Sprintf(
 				"https://raw.githubusercontent.com/%s/HEAD/%s",
-				args.Repo, args.Path)
+				args.Repo, args.Path,
+			)
 
 			client := &http.Client{Timeout: 15 * time.Second}
 			resp, err := client.Get(url) //nolint:gosec
@@ -200,7 +201,8 @@ func listFilesTool() Tool {
 
 			url := fmt.Sprintf(
 				"https://api.github.com/repos/%s/contents/",
-				args.Repo)
+				args.Repo,
+			)
 
 			client := &http.Client{Timeout: 15 * time.Second}
 			resp, err := client.Get(url) //nolint:gosec
@@ -274,7 +276,8 @@ func checkRecipeTool(exists func(string) bool) Tool {
 
 func homebrewFormulaTool() Tool {
 	return homebrewFormulaToolWithURL(
-		"https://raw.githubusercontent.com/Homebrew/homebrew-core/master")
+		"https://raw.githubusercontent.com/Homebrew/homebrew-core/master",
+	)
 }
 
 func homebrewFormulaToolWithURL(baseURL string) Tool {
@@ -318,7 +321,8 @@ func homebrewFormulaToolWithURL(baseURL string) Tool {
 			if resp.StatusCode == http.StatusNotFound {
 				return "", fmt.Errorf(
 					"formula not found: %s (not in Homebrew)",
-					args.Name)
+					args.Name,
+				)
 			}
 			if resp.StatusCode != http.StatusOK {
 				return "", fmt.Errorf("HTTP %d", resp.StatusCode)
@@ -326,7 +330,8 @@ func homebrewFormulaToolWithURL(baseURL string) Tool {
 
 			// Limit to 20KB.
 			data, err := io.ReadAll(
-				io.LimitReader(resp.Body, 20480))
+				io.LimitReader(resp.Body, 20480),
+			)
 			if err != nil {
 				return "", fmt.Errorf("read: %w", err)
 			}
@@ -420,7 +425,8 @@ func lintRecipeTool(allowedDir string) Tool {
 				cleanPath != cleanDir {
 				return "", fmt.Errorf(
 					"path %q is outside allowed directory",
-					args.Path)
+					args.Path,
+				)
 			}
 
 			data, err := os.ReadFile(cleanPath)
@@ -457,7 +463,8 @@ func fetchGitHubInfo(repo string) (string, error) {
 
 	// Fetch repo info.
 	repoURL := fmt.Sprintf(
-		"https://api.github.com/repos/%s", repo)
+		"https://api.github.com/repos/%s", repo,
+	)
 	repoResp, err := client.Get(repoURL)
 	if err != nil {
 		return "", fmt.Errorf("fetch repo: %w", err)
@@ -482,7 +489,8 @@ func fetchGitHubInfo(repo string) (string, error) {
 
 	// Fetch latest release.
 	releaseURL := fmt.Sprintf(
-		"https://api.github.com/repos/%s/releases/latest", repo)
+		"https://api.github.com/repos/%s/releases/latest", repo,
+	)
 	releaseResp, err := client.Get(releaseURL)
 	if err != nil {
 		return "", fmt.Errorf("fetch release: %w", err)

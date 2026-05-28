@@ -50,21 +50,26 @@ var gcCmd = &cobra.Command{
 		// match canonical revision dirs on disk, and include
 		// runtime deps (not build deps) transitively.
 		referenced := collectReferencedPackagesWithResolver(
-			globalDir, projPath, s, resolver, out)
+			globalDir, projPath, s, resolver, out,
+		)
 		removedPkgs, failedPkgs := removeUnreferencedVersions(
-			s, referenced, dryRun, out)
+			s, referenced, dryRun, out,
+		)
 
 		// Clean up old generations.
 		var removedGens int
 		if globalDir != "" {
 			removedGens += cleanOldGenerations(
-				globalDir, storeRoot, dryRun)
+				globalDir, storeRoot, dryRun,
+			)
 		}
 		if projPath != "" {
 			projGaleDir := filepath.Join(
-				filepath.Dir(projPath), ".gale")
+				filepath.Dir(projPath), ".gale",
+			)
 			removedGens += cleanOldGenerations(
-				projGaleDir, storeRoot, dryRun)
+				projGaleDir, storeRoot, dryRun,
+			)
 		}
 
 		if removedPkgs == 0 && removedGens == 0 && failedPkgs == 0 {
@@ -76,7 +81,8 @@ var gcCmd = &cobra.Command{
 			out.Info(fmt.Sprintf(
 				"%d version(s) and %d generation(s) "+
 					"would be removed",
-				removedPkgs, removedGens))
+				removedPkgs, removedGens,
+			))
 			return nil
 		}
 
@@ -89,22 +95,26 @@ var gcCmd = &cobra.Command{
 			if err := rebuildGeneration(projGaleDir,
 				storeRoot, projPath); err != nil {
 				return fmt.Errorf(
-					"rebuild project generation: %w", err)
+					"rebuild project generation: %w", err,
+				)
 			}
 		}
 		if globalDir != "" {
 			globalConfig := filepath.Join(
-				globalDir, "gale.toml")
+				globalDir, "gale.toml",
+			)
 			if err := rebuildGeneration(globalDir,
 				storeRoot, globalConfig); err != nil {
 				return fmt.Errorf(
-					"rebuild global generation: %w", err)
+					"rebuild global generation: %w", err,
+				)
 			}
 		}
 
 		out.Success(fmt.Sprintf(
 			"Removed %d version(s) and %d generation(s)",
-			removedPkgs, removedGens))
+			removedPkgs, removedGens,
+		))
 		if failedPkgs > 0 {
 			return fmt.Errorf("%d package version(s) could not be removed", failedPkgs)
 		}
@@ -146,20 +156,24 @@ func removeUnreferencedVersions(
 		if dry {
 			out.Info(fmt.Sprintf(
 				"Would remove %s@%s",
-				pkg.Name, pkg.Version))
+				pkg.Name, pkg.Version,
+			))
 			removed++
 		} else {
 			if err := s.Remove(
-				pkg.Name, pkg.Version); err != nil {
+				pkg.Name, pkg.Version,
+			); err != nil {
 				out.Warn(fmt.Sprintf(
 					"Failed to remove %s@%s: %v",
-					pkg.Name, pkg.Version, err))
+					pkg.Name, pkg.Version, err,
+				))
 				failed++
 				continue
 			}
 			out.Success(fmt.Sprintf(
 				"Removed %s@%s",
-				pkg.Name, pkg.Version))
+				pkg.Name, pkg.Version,
+			))
 			removed++
 		}
 	}
@@ -175,7 +189,8 @@ func collectReferencedPackages(
 	s *store.Store, out *output.Output,
 ) map[string]bool {
 	return collectReferencedPackagesWithResolver(
-		globalDir, projPath, s, nil, out)
+		globalDir, projPath, s, nil, out,
+	)
 }
 
 // collectReferencedPackagesWithResolver merges all
@@ -201,7 +216,8 @@ func collectReferencedPackagesWithResolver(
 	if globalDir != "" {
 		mergeConfig(
 			filepath.Join(globalDir, "gale.toml"),
-			s, referenced, out)
+			s, referenced, out,
+		)
 	}
 	if projPath != "" {
 		mergeConfig(projPath, s, referenced, out)
@@ -281,16 +297,19 @@ func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 			genPath := filepath.Join(genRoot, e.Name())
 			if dry {
 				out.Info(fmt.Sprintf(
-					"Would remove generation %d", n))
+					"Would remove generation %d", n,
+				))
 			} else {
 				if err := os.RemoveAll(genPath); err != nil {
 					out.Warn(fmt.Sprintf(
 						"Failed to remove generation %d: %v",
-						n, err))
+						n, err,
+					))
 					continue
 				}
 				out.Success(fmt.Sprintf(
-					"Removed generation %d", n))
+					"Removed generation %d", n,
+				))
 			}
 			removed++
 		}

@@ -35,12 +35,14 @@ func TestResolveWhich(t *testing.T) {
 		// Create current → gen/1
 		if err := os.Symlink(
 			filepath.Join(galeDir, "gen", "1"),
-			filepath.Join(galeDir, "current")); err != nil {
+			filepath.Join(galeDir, "current"),
+		); err != nil {
 			t.Fatal(err)
 		}
 
 		name, version, resolved, err := resolveWhich(
-			"jq", galeDir, storeRoot)
+			"jq", galeDir, storeRoot,
+		)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -70,12 +72,14 @@ func TestResolveWhich(t *testing.T) {
 		}
 		if err := os.Symlink(
 			filepath.Join(galeDir, "gen", "1"),
-			filepath.Join(galeDir, "current")); err != nil {
+			filepath.Join(galeDir, "current"),
+		); err != nil {
 			t.Fatal(err)
 		}
 
 		_, _, _, err := resolveWhich(
-			"nonexistent", galeDir, storeRoot)
+			"nonexistent", galeDir, storeRoot,
+		)
 		if err == nil {
 			t.Fatal("expected error for missing binary")
 		}
@@ -97,12 +101,14 @@ func TestResolveWhich(t *testing.T) {
 		}
 		if err := os.Symlink(
 			filepath.Join(galeDir, "gen", "1"),
-			filepath.Join(galeDir, "current")); err != nil {
+			filepath.Join(galeDir, "current"),
+		); err != nil {
 			t.Fatal(err)
 		}
 
 		_, _, _, err := resolveWhich(
-			"broken", galeDir, storeRoot)
+			"broken", galeDir, storeRoot,
+		)
 		if err == nil {
 			t.Fatal("expected error for broken symlink")
 		}
@@ -121,13 +127,15 @@ func TestResolveWhich(t *testing.T) {
 		}
 		binPath := filepath.Join(badDir, "jq")
 		if err := os.WriteFile(
-			binPath, []byte("fake"), 0o755); err != nil {
+			binPath, []byte("fake"), 0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 
 		// Create generation pointing to the bad path.
 		genBinDir := filepath.Join(
-			galeDir, "gen", "1", "bin")
+			galeDir, "gen", "1", "bin",
+		)
 		if err := os.MkdirAll(genBinDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -137,12 +145,14 @@ func TestResolveWhich(t *testing.T) {
 		}
 		if err := os.Symlink(
 			filepath.Join(galeDir, "gen", "1"),
-			filepath.Join(galeDir, "current")); err != nil {
+			filepath.Join(galeDir, "current"),
+		); err != nil {
 			t.Fatal(err)
 		}
 
 		_, _, _, err := resolveWhich(
-			"jq", galeDir, storeRoot)
+			"jq", galeDir, storeRoot,
+		)
 		if err == nil {
 			t.Fatal("expected error for path missing bin/ segment")
 		}
@@ -155,13 +165,15 @@ func TestResolveWhich(t *testing.T) {
 
 		// Create store with git hash version.
 		binDir := filepath.Join(
-			storeRoot, "gale", "d871cf2", "bin")
+			storeRoot, "gale", "d871cf2", "bin",
+		)
 		if err := os.MkdirAll(binDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		binPath := filepath.Join(binDir, "gale")
 		if err := os.WriteFile(
-			binPath, []byte("fake"), 0o755); err != nil {
+			binPath, []byte("fake"), 0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 
@@ -175,12 +187,14 @@ func TestResolveWhich(t *testing.T) {
 		}
 		if err := os.Symlink(
 			filepath.Join(galeDir, "gen", "1"),
-			filepath.Join(galeDir, "current")); err != nil {
+			filepath.Join(galeDir, "current"),
+		); err != nil {
 			t.Fatal(err)
 		}
 
 		name, version, _, err := resolveWhich(
-			"gale", galeDir, storeRoot)
+			"gale", galeDir, storeRoot,
+		)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}

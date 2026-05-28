@@ -99,16 +99,19 @@ func resolveEnvScope(global, project bool) (galeDir, configPath string, err erro
 		projectCfg, err := config.FindGaleConfig(cwd)
 		if err != nil {
 			return "", "", fmt.Errorf(
-				"no project found — run 'gale init' first")
+				"no project found — run 'gale init' first",
+			)
 		}
 		return filepath.Join(
-			filepath.Dir(projectCfg), ".gale"), projectCfg, nil
+			filepath.Dir(projectCfg), ".gale",
+		), projectCfg, nil
 	}
 
 	// Auto: project preferred when it exists.
 	if projectCfg, err := config.FindGaleConfig(cwd); err == nil {
 		return filepath.Join(
-			filepath.Dir(projectCfg), ".gale"), projectCfg, nil
+			filepath.Dir(projectCfg), ".gale",
+		), projectCfg, nil
 	}
 	galeDir, err = galeConfigDir()
 	if err != nil {
@@ -141,7 +144,8 @@ func resolveGaleDir() (string, error) {
 	projectConfig, err := config.FindGaleConfig(cwd)
 	if err == nil {
 		return filepath.Join(
-			filepath.Dir(projectConfig), ".gale"), nil
+			filepath.Dir(projectConfig), ".gale",
+		), nil
 	}
 
 	// Fall back to global.

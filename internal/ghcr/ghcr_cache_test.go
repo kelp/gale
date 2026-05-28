@@ -36,7 +36,8 @@ func TestCacheHitReturnsSameTokenWithoutReissuingHTTP(t *testing.T) {
 				"token":      "cached-token-abc",
 				"expires_in": 300,
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	prevEndpoint := SetTokenEndpoint(srv.URL)
@@ -82,7 +83,8 @@ func TestDifferentRepositoriesCacheIndependently(t *testing.T) {
 				"token":      tok,
 				"expires_in": 300,
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	prevEndpoint := SetTokenEndpoint(srv.URL)
@@ -140,7 +142,8 @@ func TestExpiresInHonouredForCacheTTL(t *testing.T) {
 				"token":      fmt.Sprintf("ttl-token-%d", hits.Load()),
 				"expires_in": 10, // 10-second TTL
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	prevEndpoint := SetTokenEndpoint(srv.URL)
@@ -212,7 +215,8 @@ func TestDefaultTTLFiveMinutesWhenExpiresInAbsent(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]any{
 				"token": fmt.Sprintf("default-ttl-token-%d", hits.Load()),
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	prevEndpoint := SetTokenEndpoint(srv.URL)
@@ -298,7 +302,8 @@ func TestEnvTokenBypassesCacheAndHTTP(t *testing.T) {
 				"token":      "server-cached-token",
 				"expires_in": 300, // 5-minute TTL
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	prevEndpoint := SetTokenEndpoint(srv.URL)
@@ -391,7 +396,8 @@ func TestConcurrentTokenCallsCoalesceIntoOneHTTPRequest(t *testing.T) {
 				"token":      "coalesced-token-xyz",
 				"expires_in": 300,
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	prevEndpoint := SetTokenEndpoint(srv.URL)
@@ -473,7 +479,8 @@ func TestConcurrentTokenCallsPropagateErrorToWaiters(t *testing.T) {
 				time.Sleep(5 * time.Millisecond)
 			}
 			http.Error(w, "internal server error", http.StatusInternalServerError)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	prevEndpoint := SetTokenEndpoint(srv.URL)

@@ -269,13 +269,15 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 		// errors on that case instead.
 		if lenient && prev > 0 {
 			pkgs = carryForwardMissingVersions(
-				pkgs, storeRoot, galeDir, prev)
+				pkgs, storeRoot, galeDir, prev,
+			)
 		}
 
 		next := prev + 1
 
 		genDir := filepath.Join(
-			galeDir, "gen", strconv.Itoa(next))
+			galeDir, "gen", strconv.Itoa(next),
+		)
 
 		// Tear down any pre-existing gen dir at this number
 		// before populating. Without this, symlinkDir's
@@ -294,7 +296,8 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 		// Always create bin/ — it's the minimum required
 		// directory (user adds it to PATH).
 		if err := os.MkdirAll(
-			filepath.Join(genDir, "bin"), 0o755); err != nil {
+			filepath.Join(genDir, "bin"), 0o755,
+		); err != nil {
 			return fmt.Errorf("create generation dir: %w", err)
 		}
 
@@ -334,7 +337,8 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 		// invalidate the generation swap.
 		active := ActiveStoreDirs(pkgs, storeRoot)
 		if err := farm.Rebuild(
-			active, farm.Dir(galeDir)); err != nil {
+			active, farm.Dir(galeDir),
+		); err != nil {
 			fmt.Fprintf(os.Stderr,
 				"farm: rebuild after gen swap: %v\n", err)
 		}
@@ -342,7 +346,8 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 		// Write README (best effort, world-readable).
 		_ = os.WriteFile(
 			filepath.Join(galeDir, "README.md"),
-			galeReadme, 0o644)
+			galeReadme, 0o644,
+		)
 
 		return nil
 	})
@@ -472,7 +477,8 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 					return fmt.Errorf(
 						"%s@%s is missing from the store (%s); "+
 							"run `gale install %s` or `gale sync` to restore",
-						name, version, pkgDir, name)
+						name, version, pkgDir, name,
+					)
 				}
 				continue
 			}
@@ -487,11 +493,13 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 				dstDir := filepath.Join(genDir, e.Name())
 				if err := os.MkdirAll(dstDir, 0o755); err != nil {
 					return fmt.Errorf(
-						"create gen %s dir: %w", e.Name(), err)
+						"create gen %s dir: %w", e.Name(), err,
+					)
 				}
 				if err := symlinkDir(srcDir, dstDir); err != nil {
 					return fmt.Errorf(
-						"symlink %s/%s: %w", name, e.Name(), err)
+						"symlink %s/%s: %w", name, e.Name(), err,
+					)
 				}
 				continue
 			}
@@ -505,7 +513,8 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 			}
 			if err := os.Symlink(src, dst); err != nil {
 				return fmt.Errorf(
-					"symlink %s/%s: %w", name, e.Name(), err)
+					"symlink %s/%s: %w", name, e.Name(), err,
+				)
 			}
 		}
 	}
@@ -535,7 +544,8 @@ func validateGenerationSymlinks(genDir string) error {
 				return fmt.Errorf(
 					"generation has dangling symlink %s -> %s; "+
 						"store mutated during rebuild",
-					path, target)
+					path, target,
+				)
 			}
 			return fmt.Errorf("stat %s: %w", path, statErr)
 		}
@@ -560,7 +570,8 @@ func Current(galeDir string) (int, error) {
 	n, err := strconv.Atoi(numStr)
 	if err != nil {
 		return 0, fmt.Errorf(
-			"parse generation number %q: %w", numStr, err)
+			"parse generation number %q: %w", numStr, err,
+		)
 	}
 	return n, nil
 }
@@ -589,7 +600,8 @@ func Resolve(galeDir string) (int, string, error) {
 	n, err := strconv.Atoi(numStr)
 	if err != nil {
 		return 0, target, fmt.Errorf(
-			"parse generation number %q: %w", numStr, err)
+			"parse generation number %q: %w", numStr, err,
+		)
 	}
 
 	// Resolve relative targets against galeDir so Stat hits
@@ -603,10 +615,12 @@ func Resolve(galeDir string) (int, string, error) {
 		if errors.Is(err, os.ErrNotExist) {
 			return n, target, fmt.Errorf(
 				"current symlink points at %s but that "+
-					"generation directory does not exist", target)
+					"generation directory does not exist", target,
+			)
 		}
 		return n, target, fmt.Errorf(
-			"stat current target %s: %w", target, err)
+			"stat current target %s: %w", target, err,
+		)
 	}
 	return n, target, nil
 }

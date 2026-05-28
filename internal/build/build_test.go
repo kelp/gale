@@ -167,6 +167,49 @@ func TestBuildStepMultipleStepsRunInOrder(t *testing.T) {
 	}
 }
 
+// TestBuildToolsDirStableAcrossSteps is a regression test for
+// gale#22. Build steps must share the same gale-tools-* dir so
+// configure-time tool paths captured by one step (notably
+// meson's compiler-launcher absolute path baked into
+// build.ninja) remain valid in subsequent steps. The previous
+// per-step buildEnv() created and tore down a fresh dir for
+// each step, so the path captured in step 1 was gone by
+// step 2 ("/bin/sh: 1: .../sccache: not found", exit 127 on
+// every meson recipe in CI).
+func TestBuildToolsDirStableAcrossSteps(t *testing.T) {
+	tarball, hash := createSourceTarGz(t, map[string]string{
+		"testpkg-1.0/README": "hello",
+	})
+	srv := serveFile(t, tarball)
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/testpkg-1.0.tar.gz",
+			SHA256: hash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				// Step 1: stash the toolsDir (first PATH
+				// entry, set by buildPath in build.go).
+				`mkdir -p $PREFIX && echo "$PATH" | cut -d: -f1 > $PREFIX/tools.txt`,
+				// Step 2: assert the same dir is still first
+				// on PATH (toolsDir survived) AND still
+				// exists on disk (cleanup didn't fire
+				// between steps).
+				`first=$(echo "$PATH" | cut -d: -f1); stashed=$(cat $PREFIX/tools.txt); ` +
+					`[ "$first" = "$stashed" ] || { echo "PATH[0] changed: was $stashed, now $first" >&2; exit 1; }; ` +
+					`test -d "$stashed" || { echo "stashed toolsDir $stashed no longer exists" >&2; exit 1; }`,
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	if _, err := Build(r, outputDir, false, nil); err != nil {
+		t.Fatalf("Build failed: %v", err)
+	}
+}
+
 // --- Behavior 3: Build step failure ---
 
 func TestBuildStepFailureReturnsError(t *testing.T) {
@@ -504,7 +547,8 @@ func createSourceTarGz(t *testing.T, files map[string]string) (string, string) {
 		// Emit directory entries for each ancestor path.
 		if dir := filepath.Dir(name); dir != "." {
 			parts := strings.Split(
-				filepath.ToSlash(dir), "/")
+				filepath.ToSlash(dir), "/",
+			)
 			for i := range parts {
 				d := strings.Join(parts[:i+1], "/") + "/"
 				if !dirs[d] {
@@ -582,7 +626,8 @@ func createSourceTarXz(t *testing.T, files map[string]string) (string, string) {
 	for _, name := range names {
 		if dir := filepath.Dir(name); dir != "." {
 			parts := strings.Split(
-				filepath.ToSlash(dir), "/")
+				filepath.ToSlash(dir), "/",
+			)
 			for i := range parts {
 				d := strings.Join(parts[:i+1], "/") + "/"
 				if !dirs[d] {
@@ -643,7 +688,8 @@ func serveFile(t *testing.T, filePath string) *httptest.Server {
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Write(data)
-		}))
+		},
+	))
 	t.Cleanup(srv.Close)
 
 	return srv
@@ -692,11 +738,13 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 	// Extract and verify mytool was found.
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
-		result.Archive, extractDir); err != nil {
+		result.Archive, extractDir,
+	); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	data, err := os.ReadFile(
-		filepath.Join(extractDir, "bin", "output.txt"))
+		filepath.Join(extractDir, "bin", "output.txt"),
+	)
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}
@@ -712,7 +760,8 @@ func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "hello.sh"),
-		[]byte("#!/bin/sh\necho hello"), 0o644); err != nil {
+		[]byte("#!/bin/sh\necho hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -755,7 +804,8 @@ func TestBuildLocalDoesNotRequireSourceSection(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -814,7 +864,8 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -838,11 +889,13 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
-		result.Archive, extractDir); err != nil {
+		result.Archive, extractDir,
+	); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	data, err := os.ReadFile(
-		filepath.Join(extractDir, "bin", "output.txt"))
+		filepath.Join(extractDir, "bin", "output.txt"),
+	)
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}
@@ -861,7 +914,8 @@ func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -900,7 +954,8 @@ func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
-		result.Archive, extractDir); err != nil {
+		result.Archive, extractDir,
+	); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	md, err := depsmeta.Read(extractDir)
@@ -930,7 +985,8 @@ func TestBuildLocalSkipsDepsMetadataWhenNoDeps(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -951,7 +1007,8 @@ func TestBuildLocalSkipsDepsMetadataWhenNoDeps(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
-		result.Archive, extractDir); err != nil {
+		result.Archive, extractDir,
+	); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	if depsmeta.Has(extractDir) {
@@ -970,13 +1027,15 @@ func TestResolveToolsCreatesSymlinks(t *testing.T) {
 	// Fake tool binary.
 	if err := os.WriteFile(
 		filepath.Join(fakeBin, "fakecargo"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// Decoy that should NOT be linked.
 	if err := os.WriteFile(
 		filepath.Join(fakeBin, "ls"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -987,14 +1046,66 @@ func TestResolveToolsCreatesSymlinks(t *testing.T) {
 
 	// fakecargo should be symlinked.
 	if _, err := os.Lstat(
-		filepath.Join(toolsDir, "fakecargo")); err != nil {
+		filepath.Join(toolsDir, "fakecargo"),
+	); err != nil {
 		t.Errorf("expected fakecargo symlink: %v", err)
 	}
 
 	// ls should NOT be in the tools dir.
 	if _, err := os.Lstat(
-		filepath.Join(toolsDir, "ls")); err == nil {
+		filepath.Join(toolsDir, "ls"),
+	); err == nil {
 		t.Error("ls should not be in isolated tools dir")
+	}
+}
+
+// TestBuildEnvExportsSourceDateEpoch is a regression test
+// for gh#21: Python 3.14's zipfile raises ValueError on
+// pre-1980 mtimes instead of clamping, breaking flit_core
+// wheel builds (e.g. awscli). buildEnv must export
+// SOURCE_DATE_EPOCH so wheel builders use a stable
+// timestamp >= 1980-01-01 (315532800) without each recipe
+// author having to set it.
+func TestBuildEnvExportsSourceDateEpoch(t *testing.T) {
+	env, cleanup, _ := buildEnv(&BuildContext{
+		PrefixDir:       "/tmp/prefix",
+		Jobs:            "4",
+		Version:         "1.0.0",
+		SourceDateEpoch: 315532800, // 1980-01-01 UTC
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	envMap := envToMap(env)
+	val, ok := envMap["SOURCE_DATE_EPOCH"]
+	if !ok {
+		t.Fatal("SOURCE_DATE_EPOCH missing from buildEnv — " +
+			"flit_core wheels will fail on Python 3.14 " +
+			"(see gh#21)")
+	}
+	if val != "315532800" {
+		t.Errorf("SOURCE_DATE_EPOCH = %q, want %q",
+			val, "315532800")
+	}
+}
+
+// TestBuildEnvSourceDateEpochClampedToZipFloor pins the
+// invariant that SOURCE_DATE_EPOCH (and the underlying
+// touchAll stamp it's derived from) is never below
+// 1980-01-01. ZIP can't represent pre-1980; Python 3.14
+// + flit_core enforce this with a hard error. The
+// sourceDateEpoch fallback used to be 1970 — that was
+// the actual root cause of gh#21 for recipes lacking
+// source.released_at.
+func TestBuildEnvSourceDateEpochClampedToZipFloor(t *testing.T) {
+	r := &recipe.Recipe{}
+	got := sourceDateEpoch(r).Unix()
+	const zipFloor int64 = 315532800
+	if got < zipFloor {
+		t.Errorf("sourceDateEpoch fallback = %d, want >= %d (1980-01-01); "+
+			"pre-1980 stamps break ZIP-based wheel builders",
+			got, zipFloor)
 	}
 }
 
@@ -1039,12 +1150,14 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 		val, ok := envMap["DYLD_FALLBACK_LIBRARY_PATH"]
 		if !ok {
 			t.Fatal(
-				"expected DYLD_FALLBACK_LIBRARY_PATH on darwin")
+				"expected DYLD_FALLBACK_LIBRARY_PATH on darwin",
+			)
 		}
 		if val != envMap["LIBRARY_PATH"] {
 			t.Errorf(
 				"DYLD_FALLBACK_LIBRARY_PATH = %q, want %q",
-				val, envMap["LIBRARY_PATH"])
+				val, envMap["LIBRARY_PATH"],
+			)
 		}
 	}
 }
@@ -1059,15 +1172,18 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 	if _, ok := envMap["DYLD_FALLBACK_LIBRARY_PATH"]; ok {
 		t.Error(
 			"DYLD_FALLBACK_LIBRARY_PATH should not be set " +
-				"without deps")
+				"without deps",
+		)
 	}
 	if _, ok := envMap["CMAKE_LIBRARY_PATH"]; ok {
 		t.Error(
-			"CMAKE_LIBRARY_PATH should not be set without deps")
+			"CMAKE_LIBRARY_PATH should not be set without deps",
+		)
 	}
 	if _, ok := envMap["CMAKE_INCLUDE_PATH"]; ok {
 		t.Error(
-			"CMAKE_INCLUDE_PATH should not be set without deps")
+			"CMAKE_INCLUDE_PATH should not be set without deps",
+		)
 	}
 }
 
@@ -2402,7 +2518,8 @@ func TestRestorePrefixPlaceholderSkipsBinaries(t *testing.T) {
 	binFile := filepath.Join(binDir, "tool")
 	binData := append(
 		[]byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0, 0, 0, 0, 0},
-		[]byte(PrefixPlaceholder+"/share")...)
+		[]byte(PrefixPlaceholder+"/share")...,
+	)
 	if err := os.WriteFile(binFile, binData, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2419,7 +2536,8 @@ func TestRestorePrefixPlaceholderSkipsBinaries(t *testing.T) {
 		t.Errorf(
 			"binary was rewritten (len %d → %d); "+
 				"isTextContent guard missing",
-			len(binData), len(got))
+			len(binData), len(got),
+		)
 	}
 }
 

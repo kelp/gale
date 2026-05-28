@@ -29,7 +29,8 @@ func galeDirForConfig(configPath string) (string, error) {
 		return globalDir, nil
 	}
 	return filepath.Join(
-		filepath.Dir(configPath), ".gale"), nil
+		filepath.Dir(configPath), ".gale",
+	), nil
 }
 
 func defaultStoreRoot() string {

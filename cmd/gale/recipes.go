@@ -79,7 +79,8 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				return nil, fmt.Errorf(
-					"no local recipe for %q", name)
+					"no local recipe for %q", name,
+				)
 			}
 			return nil, fmt.Errorf("reading recipe %q: %w", name, err)
 		}
@@ -92,14 +93,17 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 		// separate .binaries.toml file.
 		if len(rec.Binary) == 0 {
 			binPath := filepath.Join(
-				recipesDir, letter, name+".binaries.toml")
+				recipesDir, letter, name+".binaries.toml",
+			)
 			binData, readErr := os.ReadFile(binPath)
 			if readErr == nil {
 				idx, parseErr := recipe.ParseBinaryIndex(
-					string(binData))
+					string(binData),
+				)
 				if parseErr == nil {
 					recipe.MergeBinaries(
-						rec, idx, localGHCRBase)
+						rec, idx, localGHCRBase,
+					)
 				}
 			}
 		}
@@ -134,7 +138,8 @@ func findLocalRecipesDir(dir, override string) (string, error) {
 	recipesDir := filepath.Join(filepath.Dir(absDir), "gale-recipes", "recipes")
 	if _, err := os.Stat(recipesDir); err != nil {
 		return "", fmt.Errorf(
-			"no sibling gale-recipes found next to %s", absDir)
+			"no sibling gale-recipes found next to %s", absDir,
+		)
 	}
 	return recipesDir, nil
 }

@@ -97,7 +97,8 @@ func (v *GHVerifier) probe() {
 		v.reason = fmt.Sprintf(
 			"gh at %s lacks 'attestation' subcommand "+
 				"(need gh >= 2.49.0); install a current gh "+
-				"with `gale install gh`", ghPath)
+				"with `gale install gh`", ghPath,
+		)
 		return
 	}
 	v.available = true
@@ -126,7 +127,8 @@ func VerifyOCI(ociURI, repo string) error {
 func findGh() (string, error) {
 	if home, err := os.UserHomeDir(); err == nil {
 		bundled := filepath.Join(
-			home, ".gale", "current", "bin", "gh")
+			home, ".gale", "current", "bin", "gh",
+		)
 		if info, err := os.Stat(bundled); err == nil && !info.IsDir() {
 			return bundled, nil
 		}
@@ -149,7 +151,8 @@ func runVerify(subject, repo string) error {
 			return fmt.Errorf(
 				"gh at %s lacks 'attestation' (need gh >= 2.49.0); "+
 					"install a current gh with: gale install gh",
-				ghPath)
+				ghPath,
+			)
 		}
 		return fmt.Errorf("attestation verification failed: %s", msg)
 	}

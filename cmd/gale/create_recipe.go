@@ -15,7 +15,8 @@ import (
 
 // validRepoPattern matches a GitHub owner/repo string.
 var validRepoPattern = regexp.MustCompile(
-	`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`)
+	`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`,
+)
 
 // loadAIClient creates an AI client from config.toml, or nil
 // if no API key is configured.
@@ -60,7 +61,8 @@ to stdout. Use -o <dir> to specify an output directory.`,
 		if client == nil {
 			return fmt.Errorf(
 				"create-recipe requires an AI API key in " +
-					"~/.gale/config.toml")
+					"~/.gale/config.toml",
+			)
 		}
 
 		var promptFile string
@@ -72,7 +74,8 @@ to stdout. Use -o <dir> to specify an output directory.`,
 		maxDepth := createRecipeMaxDepth
 		return runCreateRecipe(
 			repo, client, promptFile, outputDir, out,
-			0, maxDepth, nil)
+			0, maxDepth, nil,
+		)
 	},
 }
 
@@ -182,7 +185,8 @@ func runCreateRecipe(
 	} else {
 		out.Info(fmt.Sprintf(
 			"Creating dependency recipe for %s (depth %d/%d)...",
-			repo, depth, maxDepth))
+			repo, depth, maxDepth,
+		))
 	}
 
 	checker := buildRecipeChecker(outputDir)
@@ -199,7 +203,8 @@ func runCreateRecipe(
 				"write the recipe, and lint it. "+
 				"When done, respond with ONLY the path to the recipe "+
 				"file, nothing else.",
-			repo),
+			repo,
+		),
 		tools,
 		15,
 	)
@@ -213,7 +218,8 @@ func runCreateRecipe(
 			return fmt.Errorf(
 				"dependency %q not found; use -o to specify "+
 					"an output directory for recursive creation",
-				name)
+				name,
+			)
 		}
 		if depth >= maxDepth {
 			return fmt.Errorf(
@@ -221,24 +227,28 @@ func runCreateRecipe(
 					"Create the bottom dependency first:\n\n"+
 					"  gale create-recipe %s\n\n"+
 					"Or increase the limit with --max-depth %d",
-				maxDepth, depRepo, maxDepth+2)
+				maxDepth, depRepo, maxDepth+2,
+			)
 		}
 		if err := checkDepCycle(name, depRepo, seen); err != nil {
 			return err
 		}
 		out.Info(fmt.Sprintf(
 			"Dependency %q not found, creating from %s...",
-			name, depRepo))
+			name, depRepo,
+		))
 		if err := runCreateRecipe(
 			depRepo, client, promptFile,
-			outputDir, out, depth+1, maxDepth, seen); err != nil {
+			outputDir, out, depth+1, maxDepth, seen,
+		); err != nil {
 			return fmt.Errorf("creating dependency %s: %w",
 				name, err)
 		}
 		// Retry the original recipe at the same depth.
 		return runCreateRecipe(
 			repo, client, promptFile,
-			outputDir, out, depth, maxDepth, seen)
+			outputDir, out, depth, maxDepth, seen,
+		)
 	}
 
 	// Find the generated recipe file in tmpDir.
@@ -246,7 +256,8 @@ func runCreateRecipe(
 	if recipePath == "" {
 		return fmt.Errorf(
 			"agent did not produce a recipe file:\n%s",
-			result)
+			result,
+		)
 	}
 
 	if outputDir != "" {
@@ -299,7 +310,8 @@ func warnMissingDeps(
 			out.Warn(fmt.Sprintf(
 				"Dependency %q has no recipe — "+
 					"create it with: gale create-recipe <repo>",
-				dep))
+				dep,
+			))
 		}
 	}
 }
@@ -322,7 +334,8 @@ func warnNoRelease(recipePath string, out *output.Output) {
 		out.Warn(fmt.Sprintf(
 			"Recipe for %s uses a branch archive (no release "+
 				"found) — may need manual review",
-			r.Package.Name))
+			r.Package.Name,
+		))
 	}
 }
 
@@ -340,7 +353,8 @@ func buildRecipeChecker(outputDir string) func(string) bool {
 			}
 			letter := string(name[0])
 			path := filepath.Join(
-				outputDir, letter, name+".toml")
+				outputDir, letter, name+".toml",
+			)
 			_, err := os.Stat(path) //nolint:gosec // G703 — name from recipe deps, not user input
 			return err == nil
 		}
@@ -359,7 +373,8 @@ func checkDepCycle(name, depRepo string, seen map[string]bool) error {
 	if seen[depRepo] {
 		return fmt.Errorf(
 			"dependency cycle detected: %s (%s) already visited",
-			name, depRepo)
+			name, depRepo,
+		)
 	}
 	seen[depRepo] = true
 	return nil

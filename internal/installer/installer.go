@@ -181,7 +181,8 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 		if ferr != nil {
 			os.RemoveAll(storeDir)
 			return nil, fmt.Errorf(
-				"resolve deps for metadata: %w", ferr)
+				"resolve deps for metadata: %w", ferr,
+			)
 		}
 		if berr := installBinaryTo(bin, storeDir, canonicalDir, name, version, fallback, inst.Verifier, !staged); berr == nil {
 			method = MethodBinary
@@ -203,18 +204,21 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 				name, version, berr)
 			if err := os.RemoveAll(storeDir); err != nil {
 				return nil, fmt.Errorf(
-					"clean store dir for source fallback: %w", err)
+					"clean store dir for source fallback: %w", err,
+				)
 			}
 			if err := os.MkdirAll(storeDir, 0o755); err != nil {
 				return nil, fmt.Errorf(
-					"recreate store dir for source fallback: %w", err)
+					"recreate store dir for source fallback: %w", err,
+				)
 			}
 			// Top up with the build-only deps we skipped.
 			buildOnly, derr := inst.InstallBuildOnlyDeps(r)
 			if derr != nil {
 				os.RemoveAll(storeDir)
 				return nil, fmt.Errorf(
-					"install build deps for source fallback: %w", derr)
+					"install build deps for source fallback: %w", derr,
+				)
 			}
 			depPaths = mergeBuildDeps(depPaths, buildOnly)
 		}
@@ -591,7 +595,8 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// (the verifier hashes the extracted tree).
 	if bin.EffectiveTrust() == recipe.TrustSigstore && v != nil && v.Available() {
 		if err := v.VerifyFile(
-			stagingDir, attestation.DefaultRepo); err != nil {
+			stagingDir, attestation.DefaultRepo,
+		); err != nil {
 			return fmt.Errorf("attestation: %w", err)
 		}
 	}
@@ -728,13 +733,15 @@ func checkBinaryTrustPolicy(bin *recipe.Binary) error {
 			return fmt.Errorf(
 				"binary trust policy: %q requires a ghcr.io URL "+
 					"(got %q); set trust = %q to opt out",
-				recipe.TrustSigstore, bin.URL, recipe.TrustSHA256Only)
+				recipe.TrustSigstore, bin.URL, recipe.TrustSHA256Only,
+			)
 		}
 		return nil
 	default:
 		return fmt.Errorf(
 			"binary trust policy: unknown trust value %q",
-			bin.Trust)
+			bin.Trust,
+		)
 	}
 }
 
@@ -778,7 +785,8 @@ func repoFromURL(rawURL string) string {
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
 	deps := withSystemDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
-		r.Build.System)
+		r.Build.System,
+	)
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
 	return inst.installDepsInner(rCopy, seen)
@@ -809,7 +817,8 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
 	deps := withSystemDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
-		r.Build.System)
+		r.Build.System,
+	)
 	deps.Runtime = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
@@ -830,7 +839,8 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]ResolvedDep, error
 	}
 	deps := withSystemDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
-		r.Build.System)
+		r.Build.System,
+	)
 	names := make([]string, 0,
 		len(deps.Build)+len(deps.Runtime))
 	seen := make(map[string]bool)
@@ -851,11 +861,13 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]ResolvedDep, error
 		dr, err := inst.Resolver(name)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"resolve dep %q: %w", name, err)
+				"resolve dep %q: %w", name, err,
+			)
 		}
 		if dr == nil {
 			return nil, fmt.Errorf(
-				"no recipe found for dependency %q", name)
+				"no recipe found for dependency %q", name,
+			)
 		}
 		resolved = append(resolved, ResolvedDep{
 			Name:     name,
@@ -927,7 +939,8 @@ func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recip
 	var platformCopy map[string]recipe.PlatformBuild
 	if r.Build.Platform != nil {
 		platformCopy = make(
-			map[string]recipe.PlatformBuild, len(r.Build.Platform))
+			map[string]recipe.PlatformBuild, len(r.Build.Platform),
+		)
 		for k, v := range r.Build.Platform {
 			platformCopy[k] = v
 		}
@@ -936,7 +949,8 @@ func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recip
 	var binaryCopy map[string]recipe.Binary
 	if r.Binary != nil {
 		binaryCopy = make(
-			map[string]recipe.Binary, len(r.Binary))
+			map[string]recipe.Binary, len(r.Binary),
+		)
 		for k, v := range r.Binary {
 			binaryCopy[k] = v
 		}
@@ -1012,7 +1026,8 @@ func (inst *Installer) installDepsInner(
 		}
 		if depRecipe == nil {
 			return nil, fmt.Errorf(
-				"no recipe found for dependency %q", dep)
+				"no recipe found for dependency %q", dep,
+			)
 		}
 
 		// C4: enforce any version constraint the parent recipe
@@ -1030,7 +1045,8 @@ func (inst *Installer) installDepsInner(
 			if cerr != nil {
 				return nil, fmt.Errorf(
 					"dep %q: invalid version constraint %q: %w",
-					dep, expr, cerr)
+					dep, expr, cerr,
+				)
 			}
 			if !c.Satisfies(
 				depRecipe.Package.Version,
@@ -1040,7 +1056,8 @@ func (inst *Installer) installDepsInner(
 					"dep %q: resolved version %s does not "+
 						"satisfy constraint %q (declared in %s)",
 					dep, depRecipe.Package.Full(), expr,
-					r.Package.Name)
+					r.Package.Name,
+				)
 			}
 		}
 
@@ -1054,11 +1071,13 @@ func (inst *Installer) installDepsInner(
 		// also falls back to a bare <version>/ dir for
 		// pre-revision installs.
 		storeDir, ok := inst.Store.StorePath(
-			dep, depRecipe.Package.Full())
+			dep, depRecipe.Package.Full(),
+		)
 		if !ok {
 			return nil, fmt.Errorf(
 				"dep %q at %s not in store after install",
-				dep, depRecipe.Package.Full())
+				dep, depRecipe.Package.Full(),
+			)
 		}
 		result.StoreDirs = append(result.StoreDirs, storeDir)
 		if result.NamedDirs == nil {
@@ -1078,9 +1097,11 @@ func (inst *Installer) installDepsInner(
 				dep, err)
 		}
 		result.BinDirs = append(
-			result.BinDirs, transitive.BinDirs...)
+			result.BinDirs, transitive.BinDirs...,
+		)
 		result.StoreDirs = append(
-			result.StoreDirs, transitive.StoreDirs...)
+			result.StoreDirs, transitive.StoreDirs...,
+		)
 		for k, v := range transitive.NamedDirs {
 			if result.NamedDirs == nil {
 				result.NamedDirs = make(map[string]string)
@@ -1201,7 +1222,8 @@ func lockPackage(storeRoot, name, version string) (func(), error) {
 // a concurrent global install.
 func storeGenLockPath(storeRoot string) string {
 	return filepath.Join(
-		filepath.Dir(storeRoot), "generation.lock")
+		filepath.Dir(storeRoot), "generation.lock",
+	)
 }
 
 // withStoreGenLock runs fn while holding the store-gen lock

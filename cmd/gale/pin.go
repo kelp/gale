@@ -42,7 +42,8 @@ var pinCmd = &cobra.Command{
 			v, ok := cfg.Packages[name]
 			if !ok {
 				return fmt.Errorf(
-					"%s is not in gale.toml", name)
+					"%s is not in gale.toml", name,
+				)
 			}
 			pkgVer = v
 		} else {
@@ -50,7 +51,8 @@ var pinCmd = &cobra.Command{
 			if !ok {
 				return fmt.Errorf(
 					"%s is not in [hosts.%s.packages]",
-					name, host)
+					name, host,
+				)
 			}
 			pkgVer = v
 		}
@@ -90,7 +92,8 @@ var unpinCmd = &cobra.Command{
 		}
 
 		if err := config.UnpinPackage(
-			configPath, host, name); err != nil {
+			configPath, host, name,
+		); err != nil {
 			return fmt.Errorf("unpinning %s: %w", name, err)
 		}
 

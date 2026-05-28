@@ -43,7 +43,8 @@ func ValidName(name string) error {
 	if !validRecipeName.MatchString(name) {
 		return fmt.Errorf(
 			"invalid package name %q: must match [a-z0-9][a-z0-9-]*",
-			name)
+			name,
+		)
 	}
 	return nil
 }
@@ -244,19 +245,22 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	cr, err := r.cachedGet(ctx, indexURL)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"fetch version index for %s: %w", name, err)
+			"fetch version index for %s: %w", name, err,
+		)
 	}
 
 	idx, err := parseVersionIndex(string(cr.Body))
 	if err != nil {
 		return nil, fmt.Errorf(
-			"parse version index for %s: %w", name, err)
+			"parse version index for %s: %w", name, err,
+		)
 	}
 
 	resolved, ok := pickVersion(idx, version)
 	if !ok {
 		return nil, fmt.Errorf(
-			"%s@%s: version not found in registry", name, version)
+			"%s@%s: version not found in registry", name, version,
+		)
 	}
 	commit := idx[resolved]
 
@@ -273,13 +277,15 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	rcr, err := r.cachedGet(ctx, recipeURL)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"fetch %s@%s recipe: %w", name, version, err)
+			"fetch %s@%s recipe: %w", name, version, err,
+		)
 	}
 
 	rec, err := recipe.Parse(string(rcr.Body))
 	if err != nil {
 		return nil, fmt.Errorf(
-			"parse %s@%s recipe: %w", name, version, err)
+			"parse %s@%s recipe: %w", name, version, err,
+		)
 	}
 
 	return rec, nil
@@ -408,11 +414,13 @@ func parseVersionIndex(data string) (map[string]string, error) {
 		parts := strings.Fields(line)
 		if len(parts) != 2 {
 			return nil, fmt.Errorf(
-				"malformed version line: %q", line)
+				"malformed version line: %q", line,
+			)
 		}
 		if !validCommitHash.MatchString(parts[1]) {
 			return nil, fmt.Errorf(
-				"invalid commit hash: %q", parts[1])
+				"invalid commit hash: %q", parts[1],
+			)
 		}
 		idx[parts[0]] = parts[1]
 	}

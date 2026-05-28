@@ -49,11 +49,13 @@ tampering.`,
 		pkg, ok := lf.Packages[name]
 		if !ok {
 			return fmt.Errorf(
-				"%s not found in lockfile — install it first", name)
+				"%s not found in lockfile — install it first", name,
+			)
 		}
 		if pkg.SHA256 == "" {
 			return fmt.Errorf(
-				"%s has no SHA256 in lockfile — reinstall it", name)
+				"%s has no SHA256 in lockfile — reinstall it", name,
+			)
 		}
 		r, err := ctx.ResolveVersionedRecipe(name, pkg.Version)
 		if err != nil {
@@ -69,7 +71,8 @@ tampering.`,
 
 		// Rebuild from source.
 		out.Info(fmt.Sprintf(
-			"Rebuilding %s@%s from source...", name, pkg.Version))
+			"Rebuilding %s@%s from source...", name, pkg.Version,
+		))
 		tmpDir := build.TmpDir()
 		result, err := build.Build(r, tmpDir, r.Build.Debug, deps)
 		if err != nil {
@@ -85,13 +88,15 @@ tampering.`,
 		stdout := cmd.OutOrStdout()
 		if result.SHA256 == pkg.SHA256 {
 			out.Success(fmt.Sprintf(
-				"%s@%s: build is reproducible", name, pkg.Version))
+				"%s@%s: build is reproducible", name, pkg.Version,
+			))
 			out.Step(fmt.Sprintf("sha256: %s", pkg.SHA256))
 			fmt.Fprintln(stdout, pkg.SHA256)
 		} else {
 			out.Error(fmt.Sprintf(
 				"%s@%s: build differs from installed binary",
-				name, pkg.Version))
+				name, pkg.Version,
+			))
 			out.Step(fmt.Sprintf("installed: %s", pkg.SHA256))
 			out.Step(fmt.Sprintf("rebuilt:   %s", result.SHA256))
 			fmt.Fprintln(stdout, pkg.SHA256)
