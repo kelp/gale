@@ -86,10 +86,12 @@ if [ "$DRY_RUN" -eq 0 ]; then
     fi
 fi
 
-# dry_preview: print `+ cmd args` to stderr. Stderr because
-# stdout is reserved for the final Markdown report — keeping
-# previews and status off stdout lets the user pipe to a file.
-dry_preview() {
+# announce: print `+ cmd args` to stderr so the user can see
+# what's running. Stderr because stdout is reserved for the
+# final Markdown report — keeping previews and status off
+# stdout lets the user pipe to a file. Used by both dry-run
+# (preview only) and real-run (announce then execute).
+announce() {
     {
         printf '+ '
         printf '%q ' "$@"
@@ -98,15 +100,18 @@ dry_preview() {
 }
 
 # time_cmd: prints elapsed seconds (integer) to stdout. In
-# real-run mode the timed command's own output is suppressed.
+# real-run mode the command itself is announced to stderr,
+# then executed with its own stdout/stderr suppressed (the
+# user wants to see what we ran, not pages of install spam).
 # Whole-second precision is enough — installs are 5-60s and
 # sub-second noise doesn't matter for baseline tracking.
 time_cmd() {
     if [ "$DRY_RUN" -eq 1 ]; then
-        dry_preview "$@"
+        announce "$@"
         echo 0
         return
     fi
+    announce "$@"
     local start end
     start=$(date +%s)
     "$@" >/dev/null 2>&1 || true
@@ -115,13 +120,13 @@ time_cmd() {
 }
 
 # silent_run: in dry-run mode, print the command preview. In
-# real-run mode, execute with stdout and stderr suppressed.
-# Used for the wipe/uninstall steps where we don't care about
-# the command's output, only that it ran.
+# real-run mode, announce + execute with stdout and stderr
+# suppressed. Used for the wipe/uninstall steps where we
+# don't care about the command's own output but the user
+# still wants to see what ran.
 silent_run() {
-    if [ "$DRY_RUN" -eq 1 ]; then
-        dry_preview "$@"
-    else
+    announce "$@"
+    if [ "$DRY_RUN" -eq 0 ]; then
         "$@" >/dev/null 2>&1 || true
     fi
 }
@@ -207,7 +212,7 @@ done
 
 GALE_SYNC=$(
     if [ "$DRY_RUN" -eq 1 ]; then
-        dry_preview "$GALE" sync "(in $SYNC_DIR)"
+        announce "$GALE" sync "(in $SYNC_DIR)"
         echo 0
     else
         start=$(date +%s)
