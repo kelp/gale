@@ -166,15 +166,26 @@ bench_warm() {
     median "${samples[@]}"
 }
 
-declare -A GALE_COLD BREW_COLD GALE_WARM BREW_WARM
+# macOS ships bash 3.2 which has no associative arrays. Use four
+# indexed arrays in lockstep, all sharing the same index space as
+# PACKAGES_ARR. The script's shebang is `#!/usr/bin/env bash` so
+# users can override via brew bash if they want, but we should
+# work on whatever bash is on PATH.
+# shellcheck disable=SC2206
+PACKAGES_ARR=($PACKAGES)
+GALE_COLD=()
+BREW_COLD=()
+GALE_WARM=()
+BREW_WARM=()
 
-for pkg in $PACKAGES; do
+for i in "${!PACKAGES_ARR[@]}"; do
+    pkg="${PACKAGES_ARR[$i]}"
     echo "Benchmarking $pkg..." >&2
 
-    GALE_COLD[$pkg]=$(bench_cold "$GALE remove -g $pkg"          "$GALE install -g $pkg")
-    GALE_WARM[$pkg]=$(bench_warm                                  "$GALE install -g $pkg")
-    BREW_COLD[$pkg]=$(bench_cold "$BREW uninstall --force $pkg"  "$BREW install $pkg")
-    BREW_WARM[$pkg]=$(bench_warm                                  "$BREW reinstall $pkg")
+    GALE_COLD[$i]=$(bench_cold "$GALE remove -g $pkg"          "$GALE install -g $pkg")
+    GALE_WARM[$i]=$(bench_warm                                  "$GALE install -g $pkg")
+    BREW_COLD[$i]=$(bench_cold "$BREW uninstall --force $pkg"  "$BREW install $pkg")
+    BREW_WARM[$i]=$(bench_warm                                  "$BREW reinstall $pkg")
 done
 
 # Multi-package sync: gale sync over a temp gale.toml vs brew
@@ -237,15 +248,15 @@ cat <<EOF
 | package | gale cold | brew cold | gale warm | brew warm |
 |---------|-----------|-----------|-----------|-----------|
 EOF
-for pkg in $PACKAGES; do
+for i in "${!PACKAGES_ARR[@]}"; do
     printf "| %-7s | %9s | %9s | %9s | %9s |\n" \
-        "$pkg" "${GALE_COLD[$pkg]}" "${BREW_COLD[$pkg]}" \
-        "${GALE_WARM[$pkg]}" "${BREW_WARM[$pkg]}"
+        "${PACKAGES_ARR[$i]}" "${GALE_COLD[$i]}" "${BREW_COLD[$i]}" \
+        "${GALE_WARM[$i]}" "${BREW_WARM[$i]}"
 done
 
 cat <<EOF
 
-### Multi-package install (seconds, single run, $(echo "$PACKAGES" | wc -w | tr -d ' ') packages)
+### Multi-package install (seconds, single run, ${#PACKAGES_ARR[@]} packages)
 
 | operation               | seconds |
 |-------------------------|---------|
