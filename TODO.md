@@ -585,20 +585,16 @@ impactful in aggregate.
 Optimisation without numbers picks the wrong target. Do these
 two before anything else.
 
-- [ ] **Phase timing under --verbose.** Instrument the install
-  pipeline so verbose mode prints elapsed time per phase:
-  recipe fetch, registry resolution, GHCR token exchange,
-  binary download, SHA256 verify, tar extract, generation
-  rebuild, lockfile write. Files: `internal/installer/`,
-  `internal/registry/`, `internal/download/`. Cheap, makes
-  every subsequent optimization legible. Without this, we're
-  guessing.
+- [x] **Phase timing under --verbose.** `timing.Phase` calls
+  wired through `internal/ghcr/`, `internal/installer/`,
+  `internal/download/`. `--verbose` install/sync prints
+  `[timing] phase=… elapsed=…` lines per phase.
 
-- [ ] **Baseline benchmark vs Homebrew.** Pick 5–10 packages
-  both managers carry (jq, fd, ripgrep, bat, eza). Time cold
-  install + warm reinstall + multi-package sync. Capture
-  numbers in `docs/dev/perf-baseline.md` so we can measure
-  regressions and gains against a fixed reference.
+- [x] **Baseline benchmark vs Homebrew.** Harness at
+  `scripts/perf-baseline.sh` (HOME-isolated, opt-in
+  `--with-brew`). Template at `docs/dev/perf-baseline.md`.
+  *Numbers still need to be captured on a Mac — the harness
+  is in place but no reference run has been recorded.*
 
 ### Tier 1 — Gale-side wins (no infra changes)
 
@@ -606,38 +602,33 @@ Implementable today against the existing distribution model.
 Expected gain: 2–5× on multi-package operations; 10–30% on
 single-package installs.
 
-- [ ] **Parallelise per-package operations.** Today `sync`,
-  `outdated`, and `sbom` iterate `cfg.Packages` serially.
-  Bound a worker pool (8 in-flight is plenty for HTTP-bound
-  work) and dispatch fetches concurrently. Most direct win
-  for `gale sync` over a project's full gale.toml. Files:
-  `cmd/gale/sync.go`, `cmd/gale/outdated.go`, possibly a
-  shared `internal/parallel/` helper.
+- [x] **Parallelise per-package operations.** 8-worker pool
+  in `internal/parallel/`. `cmd/gale/sync.go`,
+  `cmd/gale/outdated.go`, `cmd/gale/sbom.go` all use
+  `parallel.Map`. Output collected and emitted in stable
+  order after the barrier.
 
-- [ ] **Reuse the GHCR anonymous token within a session.**
-  `internal/ghcr/` currently exchanges a token per binary
-  install. Cache the token in memory for the lifetime of the
-  process (and respect its expiry header). Saves one HTTP
-  roundtrip per package on bulk installs.
+- [x] **Reuse the GHCR anonymous token within a session.**
+  In-process `tokenCache` in `internal/ghcr/ghcr.go` with
+  TTL honouring the response's `expires_in` (5-min default
+  fallback).
 
-- [ ] **HTTP/2 connection reuse across registry + GHCR
-  requests.** Verify `http.DefaultTransport` is used (or a
-  shared, configured Transport) so connections to
-  `raw.githubusercontent.com`, `ghcr.io`, and `pkg-containers.
-  githubusercontent.com` are kept alive across multiple
-  requests in the same gale invocation. Probably already
-  partially in place — needs an audit.
+- [x] **HTTP/2 connection reuse across registry + GHCR
+  requests.** Shared `*http.Client` in `internal/httpclient/`,
+  consumed by registry, GHCR, and download. Connections
+  to `ghcr.io`, `raw.githubusercontent.com`, and
+  `pkg-containers.githubusercontent.com` are kept alive.
 
-- [ ] **Streaming tar extraction.** Today we download to
-  disk, verify SHA256 (re-read), then extract (re-read).
-  Pipe download → tee(sha256-hash, tar-reader) so we hash
-  and extract in one pass. Halves disk I/O on the install
-  path. Files: `internal/download/`, `internal/installer/`.
+- [x] **Streaming tar extraction.** `FetchAndExtractTarZstd`
+  in `internal/download/download.go` pipes the HTTP body
+  through `io.TeeReader` to sha256 and a zstd→tar chain in
+  one pass — no on-disk `.tar.zst` intermediate.
 
-- [ ] **Eager dep resolution.** When the user runs
-  `gale install foo`, eagerly fetch foo's deps' recipes in
-  parallel rather than discovering them serially during
-  build. Bigger win once Tier 2 ships the bundled index.
+- [x] **Eager dep resolution.** `internal/prewarm/` warms
+  the registry's ETag cache for a recipe's deps concurrently
+  before the serial `InstallBuildDeps` walk. Fire-and-forget;
+  errors are swallowed so the real fetch surfaces persistent
+  failures.
 
 ### Tier 2 — Recipe pipeline
 
