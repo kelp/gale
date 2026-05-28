@@ -1,18 +1,21 @@
 #!/usr/bin/env bash
-# perf-baseline.sh — capture gale vs Homebrew install timings.
+# perf-baseline.sh — capture gale install/sync timings.
 #
-# Authored for the performance-and-distribution loop (Tier 0,
-# baseline measurement). Produces a Markdown block suitable for
-# pasting into docs/dev/perf-baseline.md.
+# Runs in an ISOLATED gale environment (HOME pointed at a tmpdir
+# that's wiped on exit). Your real ~/.gale/, ~/.gale/gale.toml,
+# and installed packages are NOT touched. Earlier versions of
+# this script mutated the user's real global gale.toml; that
+# was a design bug and is fixed.
 #
-# This script is destructive: it removes and reinstalls each
-# package multiple times via both gale and brew. It refuses to
-# run without --yes; use --dry-run to preview the commands it
-# would execute.
+# Optionally compares against Homebrew via --with-brew. We only
+# use `brew reinstall` — never `brew uninstall` — so your real
+# brew state is preserved (reinstall is roughly cold-install time
+# for bottled packages anyway).
 #
 # Usage:
-#   scripts/perf-baseline.sh --dry-run
-#   scripts/perf-baseline.sh --yes
+#   scripts/perf-baseline.sh --dry-run            # preview only
+#   scripts/perf-baseline.sh --yes                # gale-only baseline
+#   scripts/perf-baseline.sh --yes --with-brew    # also benchmark brew
 #
 # Optional environment:
 #   PACKAGES   — space-separated list (default: "jq fd ripgrep bat eza")
@@ -29,46 +32,48 @@ BREW="${BREW:-brew}"
 
 DRY_RUN=0
 YES=0
+WITH_BREW=0
 
 usage() {
     cat <<EOF
-Usage: $0 [--dry-run | --yes]
+Usage: $0 [--dry-run | --yes] [--with-brew]
 
-Captures cold and warm install times for each package via both
-gale and brew, plus a multi-package sync comparison. Prints a
-Markdown table to stdout.
+Times cold and warm gale installs in an isolated gale HOME (your
+real ~/.gale/ is untouched). Prints a Markdown table to stdout.
 
 Flags:
-  --dry-run   Print commands without running anything.
-  --yes       Acknowledge the destructive nature and run.
-  -h, --help  Show this message.
+  --dry-run     Print commands without running anything.
+  --yes         Acknowledge the script will spin up a temp HOME
+                and download recipes/binaries into it.
+  --with-brew   Also benchmark 'brew reinstall <pkg>' for each
+                package. NEVER uninstalls — your real brew state
+                is preserved.
+  -h, --help    Show this message.
 
 Env:
-  PACKAGES    Override package list (default: "jq fd ripgrep bat eza").
-  RUNS        Runs per scenario (default: 3).
-  GALE        Path to gale binary.
-  BREW        Path to brew binary.
+  PACKAGES      Override package list (default: "jq fd ripgrep bat eza").
+  RUNS          Runs per scenario (default: 3).
+  GALE          Path to gale binary.
+  BREW          Path to brew binary.
 EOF
 }
 
 while [ $# -gt 0 ]; do
     case "$1" in
-        --dry-run) DRY_RUN=1; shift ;;
-        --yes)     YES=1; shift ;;
-        -h|--help) usage; exit 0 ;;
-        *)         echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
+        --dry-run)    DRY_RUN=1; shift ;;
+        --yes)        YES=1; shift ;;
+        --with-brew)  WITH_BREW=1; shift ;;
+        -h|--help)    usage; exit 0 ;;
+        *)            echo "unknown flag: $1" >&2; usage >&2; exit 2 ;;
     esac
 done
 
 if [ "$DRY_RUN" -eq 0 ] && [ "$YES" -eq 0 ]; then
-    echo "Refusing to mutate package state without --yes." >&2
-    echo "Use --dry-run to preview the commands first." >&2
+    echo "Refusing to run without --yes (this script downloads recipes" >&2
+    echo "and binaries into a temp dir; pass --dry-run to preview)." >&2
     exit 2
 fi
 
-# OS detection — Homebrew bottles differ between platforms; warn
-# when running on Linux so readers know the brew numbers aren't
-# directly comparable to macOS numbers.
 OS=$(uname -s)
 if [ "$OS" != "Darwin" ]; then
     echo "NOTE: not on macOS ($OS). Homebrew bottle behaviour may differ;" >&2
@@ -80,17 +85,32 @@ if [ "$DRY_RUN" -eq 0 ]; then
         echo "gale not found on PATH (set GALE= to override)" >&2
         exit 1
     fi
-    if ! command -v "$BREW" >/dev/null 2>&1; then
-        echo "brew not found on PATH (set BREW= to override)" >&2
+    if [ "$WITH_BREW" -eq 1 ] && ! command -v "$BREW" >/dev/null 2>&1; then
+        echo "brew not found on PATH (set BREW= to override or drop --with-brew)" >&2
         exit 1
     fi
 fi
 
+# Isolated HOME for every gale invocation. gale uses
+# os.UserHomeDir(), which honours $HOME on Unix, so this redirects
+# its ~/.gale/ to $ISO_HOME/.gale/. Your real ~/.gale/ stays
+# untouched. We DON'T copy your real gale.toml in — the point is
+# a fresh measurement against the actual install pipeline (cold
+# cache, no prior state).
+ISO_HOME=$(mktemp -d -t gale-perf-baseline.XXXXXX)
+trap 'rm -rf "$ISO_HOME"' EXIT
+echo "Isolated gale HOME: $ISO_HOME (auto-cleaned on exit)" >&2
+
+# gale_iso runs gale with HOME overridden. Use this for every
+# gale invocation in this script — direct `gale` calls would hit
+# the user's real ~/.gale/.
+gale_iso() {
+    HOME="$ISO_HOME" "$GALE" "$@"
+}
+
 # announce: print `+ cmd args` to stderr so the user can see
 # what's running. Stderr because stdout is reserved for the
-# final Markdown report — keeping previews and status off
-# stdout lets the user pipe to a file. Used by both dry-run
-# (preview only) and real-run (announce then execute).
+# final Markdown report.
 announce() {
     {
         printf '+ '
@@ -99,19 +119,15 @@ announce() {
     } >&2
 }
 
-# time_cmd: prints elapsed seconds (integer) to stdout. In
-# real-run mode the command itself is announced to stderr,
-# then executed with its own stdout/stderr suppressed (the
-# user wants to see what we ran, not pages of install spam).
-# Whole-second precision is enough — installs are 5-60s and
-# sub-second noise doesn't matter for baseline tracking.
+# time_cmd: print announcement, run command (output silenced),
+# emit elapsed seconds to stdout. Whole-second precision is
+# enough for install times of 5-60s.
 time_cmd() {
+    announce "$@"
     if [ "$DRY_RUN" -eq 1 ]; then
-        announce "$@"
         echo 0
         return
     fi
-    announce "$@"
     local start end
     start=$(date +%s)
     "$@" >/dev/null 2>&1 || true
@@ -119,11 +135,9 @@ time_cmd() {
     echo $((end - start))
 }
 
-# silent_run: in dry-run mode, print the command preview. In
-# real-run mode, announce + execute with stdout and stderr
-# suppressed. Used for the wipe/uninstall steps where we
-# don't care about the command's own output but the user
-# still wants to see what ran.
+# silent_run: announce + run, ignoring output. Used for setup/
+# teardown steps (wipe isolated HOME, set up fixtures) where
+# the command's output isn't interesting.
 silent_run() {
     announce "$@"
     if [ "$DRY_RUN" -eq 0 ]; then
@@ -131,114 +145,102 @@ silent_run() {
     fi
 }
 
-# median of $RUNS integer numbers passed as args. Uses sort then
-# picks the middle value. Assumes RUNS is odd; for even RUNS the
-# lower middle is returned (good enough — we default to 3).
+# median of N integers passed as args. RUNS defaults to 3 →
+# sorted middle is index 2 (1-indexed). For even RUNS this
+# returns the lower middle.
 median() {
     printf '%s\n' "$@" | sort -n | awk -v n="$#" 'NR==int((n+1)/2) {print; exit}'
 }
 
-# Per-scenario timer: runs the wipe + install N times, returns
-# median elapsed. Wipe is run once before each timed install so
-# we measure cold installs.
-bench_cold() {
-    # Args come in as two whitespace-joined command strings so
-    # callers can construct them inline without arrays. Split
-    # back into argv via word-splitting — these are trusted
-    # constants from the caller (package names + flags), not
-    # user-supplied paths, so splitting is safe.
-    # shellcheck disable=SC2206
-    local wipe=($1) install=($2)
+# wipe_iso_home blows away $ISO_HOME/.gale so the next install
+# starts from a cold isolated cache. Safe — it only touches the
+# tempdir.
+wipe_iso_home() {
+    silent_run rm -rf "$ISO_HOME/.gale"
+}
+
+# bench_cold_gale: $RUNS cold install measurements for $1.
+# Wipes the isolated cache between each run.
+bench_cold_gale() {
+    local pkg=$1
     local samples=() i elapsed
     for i in $(seq 1 "$RUNS"); do
-        silent_run "${wipe[@]}"
-        elapsed=$(time_cmd "${install[@]}")
+        wipe_iso_home
+        elapsed=$(time_cmd gale_iso install -g "$pkg")
         samples+=("$elapsed")
     done
     median "${samples[@]}"
 }
 
-# Warm install: assume the package is already present from the
-# preceding cold run. Just time the install command N times.
-bench_warm() {
-    # shellcheck disable=SC2206
-    local install=($1)
+# bench_warm_gale: $RUNS warm install measurements for $1.
+# Assumes the package is already installed from a preceding cold
+# run — no wipe between runs.
+bench_warm_gale() {
+    local pkg=$1
     local samples=() i elapsed
     for i in $(seq 1 "$RUNS"); do
-        elapsed=$(time_cmd "${install[@]}")
+        elapsed=$(time_cmd gale_iso install -g "$pkg")
         samples+=("$elapsed")
     done
     median "${samples[@]}"
 }
 
-# macOS ships bash 3.2 which has no associative arrays. Use four
-# indexed arrays in lockstep, all sharing the same index space as
-# PACKAGES_ARR. The script's shebang is `#!/usr/bin/env bash` so
-# users can override via brew bash if they want, but we should
-# work on whatever bash is on PATH.
+# bench_brew_reinstall: $RUNS `brew reinstall` measurements.
+# Brew reinstall = uninstall + install internally but leaves
+# the brew state at its starting point afterward, so this is
+# safe to run on a real dev machine.
+bench_brew_reinstall() {
+    local pkg=$1
+    local samples=() i elapsed
+    for i in $(seq 1 "$RUNS"); do
+        elapsed=$(time_cmd "$BREW" reinstall "$pkg")
+        samples+=("$elapsed")
+    done
+    median "${samples[@]}"
+}
+
 # shellcheck disable=SC2206
 PACKAGES_ARR=($PACKAGES)
 GALE_COLD=()
-BREW_COLD=()
 GALE_WARM=()
-BREW_WARM=()
+BREW_REINST=()
 
 for i in "${!PACKAGES_ARR[@]}"; do
     pkg="${PACKAGES_ARR[$i]}"
     echo "Benchmarking $pkg..." >&2
-
-    GALE_COLD[$i]=$(bench_cold "$GALE remove -g $pkg"          "$GALE install -g $pkg")
-    GALE_WARM[$i]=$(bench_warm                                  "$GALE install -g $pkg")
-    BREW_COLD[$i]=$(bench_cold "$BREW uninstall --force $pkg"  "$BREW install $pkg")
-    BREW_WARM[$i]=$(bench_warm                                  "$BREW reinstall $pkg")
+    GALE_COLD[$i]=$(bench_cold_gale "$pkg")
+    GALE_WARM[$i]=$(bench_warm_gale "$pkg")
+    if [ "$WITH_BREW" -eq 1 ]; then
+        BREW_REINST[$i]=$(bench_brew_reinstall "$pkg")
+    fi
 done
 
-# Multi-package sync: gale sync over a temp gale.toml vs brew
-# install all 5 at once. Wipe both first so cold.
-SYNC_DIR=$(mktemp -d)
-trap 'rm -rf "$SYNC_DIR"' EXIT
+# Multi-package sync: wipe the isolated cache, write a gale.toml
+# with all packages, then time `gale sync -g`. Measures the
+# parallel-install win (T1.2).
+echo "Benchmarking multi-package sync ($PACKAGES)..." >&2
+wipe_iso_home
+mkdir -p "$ISO_HOME/.gale"
 {
     echo "[packages]"
-    for pkg in $PACKAGES; do
+    for pkg in "${PACKAGES_ARR[@]}"; do
         echo "$pkg = \"latest\""
     done
-} > "$SYNC_DIR/gale.toml"
+} > "$ISO_HOME/.gale/gale.toml"
 
-# Wipe everything once.
-for pkg in $PACKAGES; do
-    silent_run "$GALE" remove -g "$pkg"
-    silent_run "$BREW" uninstall --force "$pkg"
-done
+GALE_SYNC=$(time_cmd gale_iso sync -g)
 
-GALE_SYNC=$(
-    if [ "$DRY_RUN" -eq 1 ]; then
-        announce "$GALE" sync "(in $SYNC_DIR)"
-        echo 0
-    else
-        start=$(date +%s)
-        ( cd "$SYNC_DIR" && "$GALE" sync >/dev/null 2>&1 ) || true
-        echo $(( $(date +%s) - start ))
-    fi
-)
-
-# Wipe brew side again before the multi-install timing.
-for pkg in $PACKAGES; do
-    silent_run "$BREW" uninstall --force "$pkg"
-done
-
-BREW_SYNC=$(time_cmd "$BREW" install $PACKAGES)
-
-# Capture --verbose phase timing for one cold install. Use the
-# first package as the sample. Strip everything except [timing]
-# lines so the output is paste-ready.
-echo "Capturing --verbose phase timing for $(echo "$PACKAGES" | awk '{print $1}')..." >&2
-SAMPLE=$(echo "$PACKAGES" | awk '{print $1}')
+# Verbose phase timing capture for the first package's cold
+# install. Strip everything except [timing] lines so the output
+# is paste-ready.
+SAMPLE="${PACKAGES_ARR[0]}"
+echo "Capturing --verbose phase timing for $SAMPLE..." >&2
 PHASE_TIMING=""
 if [ "$DRY_RUN" -eq 1 ]; then
-    PHASE_TIMING="(dry-run: would capture from '$GALE --verbose install -g $SAMPLE')"
+    PHASE_TIMING="(dry-run: would capture from 'gale --verbose install -g $SAMPLE')"
 else
-    "$GALE" remove -g "$SAMPLE" >/dev/null 2>&1 || true
-    PHASE_TIMING=$("$GALE" --verbose install -g "$SAMPLE" 2>&1 | grep '^\[timing\]' || true)
+    wipe_iso_home
+    PHASE_TIMING=$(gale_iso --verbose install -g "$SAMPLE" 2>&1 | grep '^\[timing\]' || true)
     if [ -z "$PHASE_TIMING" ]; then
         PHASE_TIMING="(no [timing] lines captured — confirm --verbose is wired)"
     fi
@@ -250,23 +252,35 @@ fi
 cat <<EOF
 ### Per-package install (seconds, median of $RUNS)
 
-| package | gale cold | brew cold | gale warm | brew warm |
-|---------|-----------|-----------|-----------|-----------|
 EOF
-for i in "${!PACKAGES_ARR[@]}"; do
-    printf "| %-7s | %9s | %9s | %9s | %9s |\n" \
-        "${PACKAGES_ARR[$i]}" "${GALE_COLD[$i]}" "${BREW_COLD[$i]}" \
-        "${GALE_WARM[$i]}" "${BREW_WARM[$i]}"
-done
+if [ "$WITH_BREW" -eq 1 ]; then
+    cat <<EOF
+| package | gale cold | gale warm | brew reinstall |
+|---------|-----------|-----------|----------------|
+EOF
+    for i in "${!PACKAGES_ARR[@]}"; do
+        printf "| %-7s | %9s | %9s | %14s |\n" \
+            "${PACKAGES_ARR[$i]}" "${GALE_COLD[$i]}" \
+            "${GALE_WARM[$i]}" "${BREW_REINST[$i]}"
+    done
+else
+    cat <<EOF
+| package | gale cold | gale warm |
+|---------|-----------|-----------|
+EOF
+    for i in "${!PACKAGES_ARR[@]}"; do
+        printf "| %-7s | %9s | %9s |\n" \
+            "${PACKAGES_ARR[$i]}" "${GALE_COLD[$i]}" "${GALE_WARM[$i]}"
+    done
+fi
 
 cat <<EOF
 
-### Multi-package install (seconds, single run, ${#PACKAGES_ARR[@]} packages)
+### Multi-package gale sync (seconds, single run, ${#PACKAGES_ARR[@]} packages)
 
 | operation               | seconds |
 |-------------------------|---------|
-| gale sync               | $GALE_SYNC |
-| brew install (all pkgs) | $BREW_SYNC |
+| gale sync (cold)        | $GALE_SYNC |
 
 ### Phase timing breakdown ($SAMPLE cold install, --verbose)
 
