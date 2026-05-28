@@ -62,6 +62,7 @@ var doctorChecks = []doctorCheck{
 	{"packages installed", checkPackagesInstalled},
 	{"generation", checkGeneration},
 	{"symlinks", checkSymlinks},
+	{"revision drift", checkRevisionDrift},
 	{"lib farm", checkFarm},
 	{"stale installs", checkStaleInstalls},
 	{"PATH", checkPATH},
@@ -398,6 +399,66 @@ func checkSymlinks(ctx *doctorContext) bool {
 	ctx.out.Success(fmt.Sprintf(
 		"Symlinks intact (%d binaries)", len(entries)))
 	return true
+}
+
+// checkRevisionDrift compares each declared package's
+// active-generation symlink target against the revision a fresh
+// Build would pick. A mismatch means the gen carries a stale
+// link to an older revision while a higher one exists in the
+// store — the silent corruption case behind the gen/308
+// regression. validateGenerationSymlinks accepts these because
+// the stale targets still resolve; only this check surfaces
+// them. Repair: `gale doctor --repair`, which rebuilds the gen
+// from current config + store state.
+func checkRevisionDrift(ctx *doctorContext) bool {
+	if len(ctx.globalPkgs) == 0 {
+		ctx.out.Success("Revision drift (no global packages declared)")
+		return true
+	}
+	actual, err := generation.CurrentVersions(ctx.galeDir, ctx.storeRoot)
+	if err != nil {
+		// checkGeneration already surfaces a broken current
+		// symlink; stay quiet here to avoid a double-error.
+		ctx.out.Success(
+			"Revision drift (current generation unreadable; see above)")
+		return true
+	}
+	expected := generation.ActiveVersions(ctx.globalPkgs, ctx.storeRoot)
+	var drift []string
+	for name, want := range expected {
+		got, ok := actual[name]
+		if !ok {
+			// checkPackagesInstalled handles the missing case.
+			continue
+		}
+		if got != want {
+			drift = append(drift, fmt.Sprintf(
+				"%s: gen has %s, store has %s", name, got, want))
+		}
+	}
+	if len(drift) == 0 {
+		ctx.out.Success("Revision drift (none)")
+		return true
+	}
+	sort.Strings(drift)
+	const maxShown = 5
+	msg := fmt.Sprintf(
+		"Revision drift in current generation (%d package(s))",
+		len(drift))
+	shown := drift
+	if len(shown) > maxShown {
+		shown = shown[:maxShown]
+	}
+	for _, d := range shown {
+		msg += "\n  " + d
+	}
+	if len(drift) > maxShown {
+		msg += fmt.Sprintf(
+			"\n  ... %d more", len(drift)-maxShown)
+	}
+	msg += "\n  Run: gale doctor --repair"
+	ctx.out.Error(msg)
+	return false
 }
 
 // checkFarm verifies the shared dylib farm at

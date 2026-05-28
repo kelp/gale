@@ -213,6 +213,21 @@ func ActiveStoreDirs(pkgs map[string]string, storeRoot string) []string {
 	return active
 }
 
+// ActiveVersions resolves each (name, version) in pkgs to the
+// store-dir basename ("<version>-<revision>", or a bare
+// "<version>" for legacy pre-revision installs) that a fresh
+// Build would link against. Used by `gale doctor` to compare
+// against CurrentVersions — which reads the active gen's
+// actual symlink targets — and surface revision drift when
+// the gen carries a stale link to an older revision.
+func ActiveVersions(pkgs map[string]string, storeRoot string) map[string]string {
+	out := make(map[string]string, len(pkgs))
+	for name, version := range pkgs {
+		out[name] = filepath.Base(resolveStoreDir(storeRoot, name, version))
+	}
+	return out
+}
+
 //go:embed gale-readme.md
 var galeReadme []byte
 

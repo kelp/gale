@@ -365,6 +365,113 @@ func TestCheckGenerationPassesWhenTargetExists(t *testing.T) {
 	}
 }
 
+// TestCheckRevisionDriftDetectsStaleSymlink verifies that the
+// revision-drift check fails when the active generation has a
+// bin symlink pointing at an older revision while a higher one
+// exists in the store. This is the silent corruption case that
+// surfaced as gen/308: validateGenerationSymlinks passed because
+// the stale target still resolved, so users had wrong revisions
+// on PATH with no signal.
+func TestCheckRevisionDriftDetectsStaleSymlink(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	// Stage two revisions of glib. resolveStoreDir should pick -2.
+	for _, rev := range []string{"1.0.0-1", "1.0.0-2"} {
+		binDir := filepath.Join(storeRoot, "glib", rev, "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(binDir, "glib"),
+			[]byte("#!/bin/sh\n# rev="+rev+"\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Build a gen/1 whose glib symlink points at the OLDER
+	// revision. This mirrors the gen/308 production state.
+	genBin := filepath.Join(galeDir, "gen", "1", "bin")
+	if err := os.MkdirAll(genBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	staleTarget := filepath.Join(storeRoot, "glib", "1.0.0-1", "bin", "glib")
+	if err := os.Symlink(staleTarget, filepath.Join(genBin, "glib")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("gen", "1"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir:    galeDir,
+		storeRoot:  storeRoot,
+		cwd:        home,
+		globalPkgs: map[string]string{"glib": "1.0.0"},
+		out:        output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if checkRevisionDrift(ctx) {
+		t.Fatalf("checkRevisionDrift should fail when current gen "+
+			"points at older revision; output: %q", buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "glib") {
+		t.Errorf("expected glib named in drift message; got: %q", out)
+	}
+	if !strings.Contains(out, "gale doctor --repair") {
+		t.Errorf("expected actionable --repair hint; got: %q", out)
+	}
+}
+
+// TestCheckRevisionDriftPassesWhenInSync verifies the happy path:
+// when current gen's symlinks already resolve to the highest
+// on-disk revision for each declared package, the check is green.
+func TestCheckRevisionDriftPassesWhenInSync(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	// Single revision -2 — that's also the highest, so no drift.
+	binDir := filepath.Join(storeRoot, "glib", "1.0.0-2", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "glib"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	genBin := filepath.Join(galeDir, "gen", "1", "bin")
+	if err := os.MkdirAll(genBin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(storeRoot, "glib", "1.0.0-2", "bin", "glib")
+	if err := os.Symlink(target, filepath.Join(genBin, "glib")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join("gen", "1"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir:    galeDir,
+		storeRoot:  storeRoot,
+		cwd:        home,
+		globalPkgs: map[string]string{"glib": "1.0.0"},
+		out:        output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if !checkRevisionDrift(ctx) {
+		t.Fatalf("checkRevisionDrift should pass when current gen "+
+			"resolves to highest revision; output: %q", buf.String())
+	}
+}
+
 // TestDoctorRunWritesSummaryToStdout pins the stdout discipline:
 // per-check progress lines go to stderr (an Output writer), but
 // the final summary block ("OK" or "N issues") goes to stdout
