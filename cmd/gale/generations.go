@@ -30,7 +30,8 @@ var generationsCmd = &cobra.Command{
 			return err
 		}
 		galeDir, err := resolveGenerationsGaleDir(
-			generationsGlobal, generationsProject)
+			generationsGlobal, generationsProject,
+		)
 		if err != nil {
 			return err
 		}
@@ -70,7 +71,8 @@ var genDiffCmd = &cobra.Command{
 			return err
 		}
 		galeDir, err := resolveGenerationsGaleDir(
-			generationsGlobal, generationsProject)
+			generationsGlobal, generationsProject,
+		)
 		if err != nil {
 			return err
 		}
@@ -97,7 +99,8 @@ var genDiffCmd = &cobra.Command{
 			}
 			if cur < 2 {
 				return fmt.Errorf(
-					"only one generation exists")
+					"only one generation exists",
+				)
 			}
 			from = cur - 1
 			to = cur
@@ -114,7 +117,8 @@ var genDiffCmd = &cobra.Command{
 			from, err = strconv.Atoi(args[0])
 			if err != nil {
 				return fmt.Errorf(
-					"invalid generation number: %w", err)
+					"invalid generation number: %w", err,
+				)
 			}
 			to = cur
 		case 2:
@@ -124,17 +128,20 @@ var genDiffCmd = &cobra.Command{
 			from, err = strconv.Atoi(args[0])
 			if err != nil {
 				return fmt.Errorf(
-					"invalid from generation: %w", err)
+					"invalid from generation: %w", err,
+				)
 			}
 			to, err = strconv.Atoi(args[1])
 			if err != nil {
 				return fmt.Errorf(
-					"invalid to generation: %w", err)
+					"invalid to generation: %w", err,
+				)
 			}
 		}
 
 		d, err := generation.Diff(
-			galeDir, storeRoot, from, to)
+			galeDir, storeRoot, from, to,
+		)
 		if err != nil {
 			return fmt.Errorf("diffing generations: %w", err)
 		}
@@ -160,7 +167,8 @@ var genRollbackCmd = &cobra.Command{
 			return err
 		}
 		galeDir, err := resolveGenerationsGaleDir(
-			generationsGlobal, generationsProject)
+			generationsGlobal, generationsProject,
+		)
 		if err != nil {
 			return err
 		}
@@ -179,34 +187,40 @@ var genRollbackCmd = &cobra.Command{
 		if len(args) == 0 {
 			if cur < 2 {
 				return fmt.Errorf(
-					"only one generation exists")
+					"only one generation exists",
+				)
 			}
 			target = cur - 1
 		} else {
 			target, err = strconv.Atoi(args[0])
 			if err != nil {
 				return fmt.Errorf(
-					"invalid generation number: %w", err)
+					"invalid generation number: %w", err,
+				)
 			}
 			if target <= 0 {
 				return fmt.Errorf(
-					"generation number must be positive")
+					"generation number must be positive",
+				)
 			}
 		}
 
 		if dryRun {
 			out.Info(fmt.Sprintf(
-				"Would rollback to generation %d", target))
+				"Would rollback to generation %d", target,
+			))
 			return nil
 		}
 
 		if err := generation.Rollback(
-			galeDir, defaultStoreRoot(), target); err != nil {
+			galeDir, defaultStoreRoot(), target,
+		); err != nil {
 			return fmt.Errorf("rollback: %w", err)
 		}
 
 		out.Success(fmt.Sprintf(
-			"Rolled back to generation %d", target))
+			"Rolled back to generation %d", target,
+		))
 		return nil
 	},
 }
@@ -226,7 +240,8 @@ func resolveGenerationsGaleDir(global, project bool) (string, error) {
 		projPath, err := config.FindGaleConfig(cwd)
 		if err != nil {
 			return "", fmt.Errorf(
-				"no project found — run 'gale init' first")
+				"no project found — run 'gale init' first",
+			)
 		}
 		return filepath.Join(filepath.Dir(projPath), ".gale"), nil
 	}

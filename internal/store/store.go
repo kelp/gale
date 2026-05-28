@@ -308,7 +308,8 @@ func cleanupEmptyNameDir(root, name string) error {
 			!errors.Is(err, os.ErrNotExist) &&
 			!errors.Is(err, syscall.ENOTEMPTY) {
 			return fmt.Errorf(
-				"remove empty name directory: %w", err)
+				"remove empty name directory: %w", err,
+			)
 		}
 	}
 	return nil

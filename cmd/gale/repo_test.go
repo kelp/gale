@@ -59,7 +59,8 @@ func TestRepoRemoveUpdatesConfig(t *testing.T) {
 	initial := "[[repos]]\nname = \"test-repo\"\n" +
 		"url = \"https://example.com/recipes\"\n"
 	if err := os.WriteFile(
-		configPath, []byte(initial), 0o644); err != nil {
+		configPath, []byte(initial), 0o644,
+	); err != nil {
 		t.Fatalf("writing initial config: %v", err)
 	}
 

@@ -110,7 +110,8 @@ func TestCheckHostOverridesReportsShadowedShared(t *testing.T) {
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  ripgrep = \"15.0\"\n\n"+
 			"[hosts.h1.packages]\n  ripgrep = \"14.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -148,7 +149,8 @@ func TestCheckHostOverridesSilentWhenNoOverlap(t *testing.T) {
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  ripgrep = \"15.0\"\n\n"+
 			"[hosts.h1.packages]\n  fzf = \"0.50\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -186,7 +188,8 @@ func TestCheckOrphansIgnoresResolvedRevisions(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  bat = \"0.26.1\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -196,12 +199,14 @@ func TestCheckOrphansIgnoresResolvedRevisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(
-		filepath.Join(pkgDir, "bin"), 0o755); err != nil {
+		filepath.Join(pkgDir, "bin"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(pkgDir, "bin", "bat"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -245,7 +250,8 @@ func TestCheckOrphansCountsOldRevisions(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8.1\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -258,12 +264,14 @@ func TestCheckOrphansCountsOldRevisions(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := os.MkdirAll(
-			filepath.Join(d, "bin"), 0o755); err != nil {
+			filepath.Join(d, "bin"), 0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(
 			filepath.Join(d, "bin", "jq"),
-			[]byte("#!/bin/sh\n"), 0o755); err != nil {
+			[]byte("#!/bin/sh\n"), 0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -340,7 +348,8 @@ func TestCheckGenerationPassesWhenTargetExists(t *testing.T) {
 	home := t.TempDir()
 	galeDir := filepath.Join(home, ".gale")
 	if err := os.MkdirAll(
-		filepath.Join(galeDir, "gen", "1", "bin"), 0o755); err != nil {
+		filepath.Join(galeDir, "gen", "1", "bin"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(

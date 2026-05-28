@@ -144,7 +144,8 @@ func TestWriteConfigAndLockUpdatesLockfileOnCachedInstall(t *testing.T) {
 
 	// Simulate a cached install to v2.0.0 (sha256 is empty).
 	if err := writeConfigAndLock(
-		configPath, "", "mypkg", "2.0.0", "2.0.0", ""); err != nil {
+		configPath, "", "mypkg", "2.0.0", "2.0.0", "",
+	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -191,7 +192,8 @@ func TestWriteConfigAndLockPreservesHashOnSameVersionCache(t *testing.T) {
 
 	// Cached install of the same version (sha256 empty).
 	if err := writeConfigAndLock(
-		configPath, "", "mypkg", "1.0.0", "1.0.0", ""); err != nil {
+		configPath, "", "mypkg", "1.0.0", "1.0.0", "",
+	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -261,7 +263,8 @@ func TestFinalizeInstallTolerantOfUnrelatedMissingPackage(t *testing.T) {
 	}
 
 	currentTarget, err := os.Readlink(
-		filepath.Join(galeDir, "current"))
+		filepath.Join(galeDir, "current"),
+	)
 	if err != nil {
 		t.Fatalf("current symlink missing: %v", err)
 	}
@@ -269,7 +272,8 @@ func TestFinalizeInstallTolerantOfUnrelatedMissingPackage(t *testing.T) {
 		t.Errorf("current = %q, want gen/1", currentTarget)
 	}
 	if _, err := os.Lstat(
-		filepath.Join(galeDir, "gen", "1", "bin", "gale")); err != nil {
+		filepath.Join(galeDir, "gen", "1", "bin", "gale"),
+	); err != nil {
 		t.Errorf("gale symlink missing in gen/1: %v", err)
 	}
 }
@@ -508,7 +512,8 @@ func TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion(t *testing.T) {
 
 	// Cached install with canonical lockVersion and empty sha256.
 	if err := writeConfigAndLock(
-		configPath, "", "mypkg", "1.8.1", "1.8.1-1", ""); err != nil {
+		configPath, "", "mypkg", "1.8.1", "1.8.1-1", "",
+	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 

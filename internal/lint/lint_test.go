@@ -396,7 +396,8 @@ steps = ["cargo install --path . --root ${PREFIX}"]
 			strings.Contains(issue.Message, "not in build deps") {
 			t.Errorf(
 				"false positive: cargo install matched as go install: %s",
-				issue.Message)
+				issue.Message,
+			)
 		}
 	}
 }
@@ -446,7 +447,8 @@ steps = [
 	if hasWarning(issues, "gnumake") {
 		t.Errorf(
 			"should not warn about gnumake with ./configure, got %v",
-			issues)
+			issues,
+		)
 	}
 }
 
@@ -696,7 +698,8 @@ steps = ["cd src && ./make.bash"]
 	if hasWarning(issues, "does not match") {
 		t.Errorf(
 			"should not warn when URL is on a different host, got %v",
-			issues)
+			issues,
+		)
 	}
 }
 
@@ -719,7 +722,8 @@ steps = ["./configure --prefix=${PREFIX}", "make install"]
 	if hasWarning(issues, "does not match") {
 		t.Errorf(
 			"should not check full URL repos, got %v",
-			issues)
+			issues,
+		)
 	}
 }
 
@@ -877,7 +881,8 @@ func hasError(issues []Issue, substr string) bool {
 	for _, i := range issues {
 		if i.Level == "error" &&
 			strings.Contains(
-				strings.ToLower(i.Message), substr) {
+				strings.ToLower(i.Message), substr,
+			) {
 			return true
 		}
 	}
@@ -888,7 +893,8 @@ func hasWarning(issues []Issue, substr string) bool {
 	for _, i := range issues {
 		if i.Level == "warning" &&
 			strings.Contains(
-				strings.ToLower(i.Message), substr) {
+				strings.ToLower(i.Message), substr,
+			) {
 			return true
 		}
 	}

@@ -433,7 +433,8 @@ func llvmToolchainFlags(goos, llvmDir string) (cppflags, cxxflags, ldflags strin
 
 	var ldParts []string
 	if _, err := os.Stat(libDir); err == nil {
-		ldParts = append(ldParts,
+		ldParts = append(
+			ldParts,
 			"-L"+libDir,
 			"-Wl,-rpath,"+libDir,
 		)
@@ -547,7 +548,8 @@ func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS strin
 	// DEP_<NAME>=<store_dir>.
 	for name, dir := range deps.NamedDirs {
 		key := "DEP_" + strings.ToUpper(
-			strings.ReplaceAll(name, "-", "_"))
+			strings.ReplaceAll(name, "-", "_"),
+		)
 		env = append(env, key+"="+dir)
 	}
 
@@ -555,7 +557,8 @@ func (bc *BuildContext) perDepEnv() (env []string, depCPPFLAGS, depLDFLAGS strin
 	var pyPaths []string
 	for _, d := range deps.StoreDirs {
 		matches, _ := filepath.Glob(
-			filepath.Join(d, "lib", "python*", "site-packages"))
+			filepath.Join(d, "lib", "python*", "site-packages"),
+		)
 		pyPaths = append(pyPaths, matches...)
 	}
 	if len(pyPaths) > 0 {
@@ -926,7 +929,8 @@ func sourceDateEpoch(r *recipe.Recipe) time.Time {
 		// back to the sentinel rather than silently using
 		// time.Now().
 		if t, err := time.ParseInLocation(
-			"2006-01-02", r.Source.ReleasedAt, time.UTC); err == nil {
+			"2006-01-02", r.Source.ReleasedAt, time.UTC,
+		); err == nil {
 			if t.Before(zipEpochFloor) {
 				return zipEpochFloor
 			}
@@ -1071,7 +1075,8 @@ func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
 				return nil
 			}
 			newData := strings.ReplaceAll(
-				string(data), prefixDir, replacement)
+				string(data), prefixDir, replacement,
+			)
 			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
 		})
 		if err != nil {
@@ -1119,7 +1124,8 @@ func RestorePrefixPlaceholderTo(rootDir, replacement string) error {
 				return nil
 			}
 			newData := strings.ReplaceAll(
-				string(data), PrefixPlaceholder, replacement)
+				string(data), PrefixPlaceholder, replacement,
+			)
 			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
 		})
 		if err != nil {

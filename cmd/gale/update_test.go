@@ -50,7 +50,8 @@ func TestIsGitHash(t *testing.T) {
 			if got != tt.want {
 				t.Errorf(
 					"isGitHash(%q) = %v, want %v",
-					tt.input, got, tt.want)
+					tt.input, got, tt.want,
+				)
 			}
 		})
 	}
@@ -111,7 +112,8 @@ func TestIsNewerVersion(t *testing.T) {
 			if got != tt.want {
 				t.Errorf(
 					"isNewerVersion(%q, %q) = %v, want %v",
-					tt.candidate, tt.current, got, tt.want)
+					tt.candidate, tt.current, got, tt.want,
+				)
 			}
 		})
 	}
@@ -181,7 +183,8 @@ func TestUpdateAction(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			ver, skip := updateAction(
-				tt.candidate, tt.current, tt.inStore)
+				tt.candidate, tt.current, tt.inStore,
+			)
 			if ver != tt.wantVer {
 				t.Errorf("version = %q, want %q",
 					ver, tt.wantVer)
@@ -488,6 +491,7 @@ func TestUpdatePathRespectsDryRun(t *testing.T) {
 		t.Errorf(
 			"update --path --dry-run returned error %v; "+
 				"want nil (dry-run must not attempt real install)",
-			err)
+			err,
+		)
 	}
 }

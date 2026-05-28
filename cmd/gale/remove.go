@@ -26,7 +26,8 @@ var removeCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if removeGlobal && removeProject {
 			return fmt.Errorf(
-				"cannot use both --global and --project")
+				"cannot use both --global and --project",
+			)
 		}
 
 		name := args[0]
@@ -42,7 +43,8 @@ var removeCmd = &cobra.Command{
 				"refusing to remove gale itself — " +
 					"use the bootstrap script " +
 					"(`just upgrade` from the umbrella) to " +
-					"manage the active install")
+					"manage the active install",
+			)
 		}
 
 		out := newCmdOutput(cmd)
@@ -64,12 +66,14 @@ var removeCmd = &cobra.Command{
 		version, ok := cfg.Packages[name]
 		if !ok {
 			return fmt.Errorf(
-				"%s is not in %s", name, ctx.GalePath)
+				"%s is not in %s", name, ctx.GalePath,
+			)
 		}
 
 		if dryRun {
 			out.Info(fmt.Sprintf(
-				"remove %s@%s", name, version))
+				"remove %s@%s", name, version,
+			))
 			return nil
 		}
 
@@ -86,11 +90,13 @@ var removeCmd = &cobra.Command{
 			sections = []string{host}
 		} else {
 			sections = locatePackageSections(
-				ctx.GalePath, name, config.CurrentHost())
+				ctx.GalePath, name, config.CurrentHost(),
+			)
 		}
 		for _, section := range sections {
 			if err := config.RemovePackage(
-				ctx.GalePath, section, name); err != nil {
+				ctx.GalePath, section, name,
+			); err != nil {
 				return fmt.Errorf("removing from config: %w",
 					err)
 			}
@@ -98,13 +104,15 @@ var removeCmd = &cobra.Command{
 		out.Info(fmt.Sprintf(
 			"Removed %s from %s (%s)",
 			name, ctx.GalePath,
-			formatSections(sections)))
+			formatSections(sections),
+		))
 
 		// Remove from lockfile. Warn on error but continue
 		// since the main operation (config + store) succeeded.
 		if err := ctx.RemoveLockEntry(name); err != nil {
 			out.Warn(fmt.Sprintf(
-				"Failed to update lockfile: %v", err))
+				"Failed to update lockfile: %v", err,
+			))
 		}
 
 		// Rebuild the generation for this scope. Do this
@@ -129,14 +137,16 @@ var removeCmd = &cobra.Command{
 			if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
 				if err := farm.Depopulate(storeDir, farmDir); err != nil {
 					out.Warn(fmt.Sprintf(
-						"farm depopulate: %v", err))
+						"farm depopulate: %v", err,
+					))
 				}
 			}
 			out.Info(fmt.Sprintf("Removed %s@%s from store",
 				name, version))
 		} else {
 			out.Warn(fmt.Sprintf(
-				"%s@%s not found in store", name, version))
+				"%s@%s not found in store", name, version,
+			))
 		}
 
 		out.Success(fmt.Sprintf("Removed %s", name))

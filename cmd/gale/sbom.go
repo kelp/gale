@@ -212,7 +212,8 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 			if !ok {
 				if len(configs) == 1 {
 					return nil, fmt.Errorf(
-						"%s not found in gale.toml", filter)
+						"%s not found in gale.toml", filter,
+					)
 				}
 				continue
 			}
@@ -257,7 +258,8 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 					e.License = r.Package.License
 					e.Homepage = r.Package.Homepage
 					if bin := r.BinaryForPlatform(
-						runtime.GOOS, runtime.GOARCH); bin != nil {
+						runtime.GOOS, runtime.GOARCH,
+					); bin != nil {
 						if e.ArchiveSHA256 == bin.SHA256 {
 							e.Method = "binary"
 						}

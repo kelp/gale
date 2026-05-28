@@ -309,7 +309,8 @@ func TestTouchAllStampsFilesWithFixedTime(t *testing.T) {
 // and H4 together guarantee: byte-identical inputs
 // produce byte-identical output.
 func TestBuildWithReleasedAtProducesIdenticalArchiveHash(t *testing.T) {
-	tarball, hash := createSourceTarGz(t,
+	tarball, hash := createSourceTarGz(
+		t,
 		map[string]string{
 			"testpkg-1.0/README":        "hello\n",
 			"testpkg-1.0/include/hdr.h": "int v;\n",
@@ -379,7 +380,8 @@ func TestTouchAllTolerantOfBrokenSymlinks(t *testing.T) {
 	// Broken symlink — target does not exist.
 	if err := os.Symlink(
 		filepath.Join(dir, "does-not-exist"),
-		filepath.Join(dir, "broken")); err != nil {
+		filepath.Join(dir, "broken"),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -407,7 +409,8 @@ func TestTouchAllPropagatesWalkErrors(t *testing.T) {
 	// Put a file inside so Walk has something to try to
 	// visit.
 	if err := os.WriteFile(
-		filepath.Join(sub, "hidden"), []byte("x"), 0o644); err != nil {
+		filepath.Join(sub, "hidden"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// Drop read+execute so the Walk descent fails with

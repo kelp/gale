@@ -60,7 +60,8 @@ func TestRepoRemoveDryRunDoesNotMutate(t *testing.T) {
 	t.Cleanup(func() { dryRun = false })
 
 	if err := repoRemoveCmd.RunE(
-		repoRemoveCmd, []string{"mytap"}); err != nil {
+		repoRemoveCmd, []string{"mytap"},
+	); err != nil {
 		t.Fatalf("repo remove failed: %v", err)
 	}
 
@@ -90,7 +91,8 @@ func TestRepoInitDryRunDoesNotCreateDir(t *testing.T) {
 	t.Cleanup(func() { dryRun = false })
 
 	if err := repoInitCmd.RunE(
-		repoInitCmd, []string{"newrepo"}); err != nil {
+		repoInitCmd, []string{"newrepo"},
+	); err != nil {
 		t.Fatalf("repo init failed: %v", err)
 	}
 

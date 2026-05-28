@@ -56,7 +56,8 @@ func TestGenDiffEmptyStateMatchesList(t *testing.T) {
 	projDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
-		[]byte("[packages]\n"), 0o644); err != nil {
+		[]byte("[packages]\n"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -71,7 +72,8 @@ func TestGenDiffEmptyStateMatchesList(t *testing.T) {
 		t.Errorf(
 			"generations diff with no generations should exit 0 "+
 				"to match the parent listing command, got error: %v",
-			err)
+			err,
+		)
 	}
 }
 
@@ -84,7 +86,8 @@ func TestGenDiffExplicitArgsDoNotRequireCurrent(t *testing.T) {
 	projDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
-		[]byte("[packages]\n"), 0o644); err != nil {
+		[]byte("[packages]\n"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -101,7 +104,8 @@ func TestGenDiffExplicitArgsDoNotRequireCurrent(t *testing.T) {
 	if strings.Contains(err.Error(), "no current generation") {
 		t.Errorf(
 			"explicit args should not require a current "+
-				"generation; got: %v", err)
+				"generation; got: %v", err,
+		)
 	}
 }
 
@@ -112,7 +116,8 @@ func TestGenRollbackRejectsZeroAndNegative(t *testing.T) {
 	projDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
-		[]byte("[packages]\n"), 0o644); err != nil {
+		[]byte("[packages]\n"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	galeDir := filepath.Join(projDir, ".gale")
@@ -122,7 +127,8 @@ func TestGenRollbackRejectsZeroAndNegative(t *testing.T) {
 	}
 	if err := os.Symlink(
 		filepath.Join("gen", "1"),
-		filepath.Join(galeDir, "current")); err != nil {
+		filepath.Join(galeDir, "current"),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -144,7 +150,8 @@ func TestGenRollbackRejectsZeroAndNegative(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.arg, func(t *testing.T) {
 			err := genRollbackCmd.RunE(
-				genRollbackCmd, []string{tt.arg})
+				genRollbackCmd, []string{tt.arg},
+			)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}

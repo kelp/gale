@@ -26,7 +26,8 @@ func TestRebuildGenerationProjectDoesNotTouchGlobal(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(binDir, "testpkg"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -43,7 +44,8 @@ func TestRebuildGenerationProjectDoesNotTouchGlobal(t *testing.T) {
 
 	// Build an empty global generation.
 	if err := rebuildGeneration(
-		globalDir, storeRoot, globalConfig); err != nil {
+		globalDir, storeRoot, globalConfig,
+	); err != nil {
 		t.Fatalf("rebuild global: %v", err)
 	}
 
@@ -59,20 +61,23 @@ func TestRebuildGenerationProjectDoesNotTouchGlobal(t *testing.T) {
 
 	// Build project generation.
 	if err := rebuildGeneration(
-		projGaleDir, storeRoot, projConfig); err != nil {
+		projGaleDir, storeRoot, projConfig,
+	); err != nil {
 		t.Fatalf("rebuild project: %v", err)
 	}
 
 	// Project should have testpkg.
 	projBin := filepath.Join(
-		projGaleDir, "current", "bin", "testpkg")
+		projGaleDir, "current", "bin", "testpkg",
+	)
 	if _, err := os.Lstat(projBin); err != nil {
 		t.Errorf("project should have testpkg: %v", err)
 	}
 
 	// Global should NOT have testpkg.
 	globalBin := filepath.Join(
-		globalDir, "current", "bin", "testpkg")
+		globalDir, "current", "bin", "testpkg",
+	)
 	if _, err := os.Lstat(globalBin); err == nil {
 		t.Error("global should not have testpkg")
 	}
@@ -203,7 +208,8 @@ func TestRebuildGenerationGlobalDoesNotTouchProject(t *testing.T) {
 		}
 		if err := os.WriteFile(
 			filepath.Join(binDir, name),
-			[]byte("#!/bin/sh\n"), 0o755); err != nil {
+			[]byte("#!/bin/sh\n"), 0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -218,13 +224,15 @@ func TestRebuildGenerationGlobalDoesNotTouchProject(t *testing.T) {
 	}
 	projGaleDir := filepath.Join(projRoot, ".gale")
 	if err := rebuildGeneration(
-		projGaleDir, storeRoot, projConfig); err != nil {
+		projGaleDir, storeRoot, projConfig,
+	); err != nil {
 		t.Fatal(err)
 	}
 
 	// Verify project has projpkg.
 	projBin := filepath.Join(
-		projGaleDir, "current", "bin", "projpkg")
+		projGaleDir, "current", "bin", "projpkg",
+	)
 	if _, err := os.Lstat(projBin); err != nil {
 		t.Fatalf("project should have projpkg: %v", err)
 	}
@@ -241,7 +249,8 @@ func TestRebuildGenerationGlobalDoesNotTouchProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := rebuildGeneration(
-		globalDir, storeRoot, globalConfig); err != nil {
+		globalDir, storeRoot, globalConfig,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -252,7 +261,8 @@ func TestRebuildGenerationGlobalDoesNotTouchProject(t *testing.T) {
 
 	// Project should NOT have globalpkg.
 	projGlobal := filepath.Join(
-		projGaleDir, "current", "bin", "globalpkg")
+		projGaleDir, "current", "bin", "globalpkg",
+	)
 	if _, err := os.Lstat(projGlobal); err == nil {
 		t.Error("project should not have globalpkg")
 	}

@@ -24,12 +24,14 @@ import (
 // darwinVersioned matches libFOO.N.dylib, libFOO.N.M.dylib,
 // libFOO.N.M.P.dylib.
 var darwinVersioned = regexp.MustCompile(
-	`^lib[A-Za-z0-9_+\-]+\.[0-9]+(\.[0-9]+)*\.dylib$`)
+	`^lib[A-Za-z0-9_+\-]+\.[0-9]+(\.[0-9]+)*\.dylib$`,
+)
 
 // linuxVersioned matches libFOO.so.N, libFOO.so.N.M,
 // libFOO.so.N.M.P.
 var linuxVersioned = regexp.MustCompile(
-	`^lib[A-Za-z0-9_+\-]+\.so\.[0-9]+(\.[0-9]+)*$`)
+	`^lib[A-Za-z0-9_+\-]+\.so\.[0-9]+(\.[0-9]+)*$`,
+)
 
 // Dir returns the farm directory for a given gale dir.
 // Typically ~/.gale/lib/.
@@ -113,11 +115,13 @@ func Populate(storeDir, farmDir string) error {
 				continue
 			}
 			existingPkg := packageName(filepath.Dir(
-				filepath.Dir(existing)))
+				filepath.Dir(existing),
+			))
 			if existingPkg != "" && existingPkg != pkgName {
 				return fmt.Errorf(
 					"farm conflict: %s claimed by both %q and %q",
-					name, existingPkg, pkgName)
+					name, existingPkg, pkgName,
+				)
 			}
 			// Same package, different version: overwrite.
 			fmt.Fprintf(os.Stderr,
@@ -132,7 +136,8 @@ func Populate(storeDir, farmDir string) error {
 			if _, statErr := os.Lstat(link); statErr == nil {
 				return fmt.Errorf(
 					"farm path %q exists but is not a symlink",
-					link)
+					link,
+				)
 			}
 		}
 
@@ -224,13 +229,15 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 		info, err := os.Stat(link) // follows symlink
 		if err != nil {
 			issues = append(issues, fmt.Sprintf(
-				"broken symlink: %s", e.Name()))
+				"broken symlink: %s", e.Name(),
+			))
 			continue
 		}
 		if !info.Mode().IsRegular() {
 			issues = append(issues, fmt.Sprintf(
 				"symlink target is not a regular file: %s",
-				e.Name()))
+				e.Name(),
+			))
 		}
 	}
 
@@ -262,21 +269,24 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 			if err != nil {
 				issues = append(issues, fmt.Sprintf(
 					"missing farm entry for %s@%s: %s",
-					pkgName, pkgVer, l.Name()))
+					pkgName, pkgVer, l.Name(),
+				))
 				continue
 			}
 			// If the symlink points elsewhere, the basename
 			// is claimed by another package — surface it.
 			if filepath.Clean(target) != lp {
 				pkgPrefix := filepath.Clean(filepath.Join(
-					pkgRoot, pkgName)) + string(filepath.Separator)
+					pkgRoot, pkgName,
+				)) + string(filepath.Separator)
 				if !strings.HasPrefix(
 					filepath.Clean(target)+string(filepath.Separator),
 					pkgPrefix,
 				) {
 					issues = append(issues, fmt.Sprintf(
 						"%s claimed by another package (farm -> %s)",
-						l.Name(), target))
+						l.Name(), target,
+					))
 				}
 			}
 		}

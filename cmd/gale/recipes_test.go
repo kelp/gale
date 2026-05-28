@@ -58,7 +58,8 @@ func TestFindLocalRecipesDirAutoDetect(t *testing.T) {
 	// Create sibling structure: parent/gale-recipes/recipes/
 	parent := t.TempDir()
 	recipesDir := filepath.Join(
-		parent, "gale-recipes", "recipes")
+		parent, "gale-recipes", "recipes",
+	)
 	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
 		t.Fatal(err)
 	}

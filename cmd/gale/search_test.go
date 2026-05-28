@@ -21,7 +21,8 @@ func newSearchTestRegistry(
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, index)
-		}))
+		},
+	))
 	t.Cleanup(srv.Close)
 	return &registry.Registry{BaseURL: srv.URL}
 }
@@ -44,12 +45,14 @@ func TestSearchNoMatchExitsNonZero(t *testing.T) {
 	if stdout.Len() != 0 {
 		t.Errorf(
 			"no-match should leave stdout empty, got: %q",
-			stdout.String())
+			stdout.String(),
+		)
 	}
 	if !strings.Contains(err.Error(), "no packages found") {
 		t.Errorf(
 			"expected error message to mention 'no packages "+
-				"found', got: %v", err)
+				"found', got: %v", err,
+		)
 	}
 }
 

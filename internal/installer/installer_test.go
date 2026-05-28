@@ -32,7 +32,8 @@ func TestInstallFromSourceCreatesBinary(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -101,7 +102,8 @@ func TestInstallResultFields(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -140,7 +142,8 @@ func TestInstallUpgradeMovesSymlink(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -209,7 +212,8 @@ func TestInstallBinaryFromURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(blobData)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	restore := download.SetHTTPClient(srv.Client())
@@ -279,7 +283,8 @@ func TestInstallResolvesBuildDeps(t *testing.T) {
 			default:
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -503,7 +508,8 @@ func TestInstallBinaryPreservesArchiveDepsMetadata(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(blobData)
-		}))
+		},
+	))
 	defer srv.Close()
 	restore := download.SetHTTPClient(srv.Client())
 	defer restore()
@@ -564,7 +570,8 @@ func TestInstallBinaryWritesEmptyDepsForZeroDepRecipe(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(blobData)
-		}))
+		},
+	))
 	defer srv.Close()
 	restore := download.SetHTTPClient(srv.Client())
 	defer restore()
@@ -657,7 +664,8 @@ func TestInstallBinaryNonGHCR(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(blobData)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -721,7 +729,8 @@ func TestInstallBinaryFailureLoggedToFallbackWriter(t *testing.T) {
 				return
 			}
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	var logBuf bytes.Buffer
@@ -805,7 +814,8 @@ func TestInstallBinaryBadHashFallsBackToSource(t *testing.T) {
 			default:
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -865,7 +875,8 @@ func TestInstallLocalRebuildsWhenAlreadyInstalled(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -897,7 +908,8 @@ func TestInstallLocalBuildsFromSource(t *testing.T) {
 	sourceDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(sourceDir, "README"),
-		[]byte("local source"), 0o644); err != nil {
+		[]byte("local source"), 0o644,
+	); err != nil {
 		t.Fatalf("write README: %v", err)
 	}
 
@@ -1052,7 +1064,8 @@ func TestInstallResultSHA256Populated(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(blobData)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -1241,7 +1254,8 @@ func TestInstallSourceOnlySkipsBinary(t *testing.T) {
 				return
 			}
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -1294,7 +1308,8 @@ func TestInstallNoBinarySectionBuildsSource(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -1343,7 +1358,8 @@ func TestInstallBuildDepsDeepCopiesMaps(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(cmakeBin, "cmake"),
-		[]byte("fake"), 0o755); err != nil {
+		[]byte("fake"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1496,7 +1512,8 @@ func TestInstallBlocksOnStoreGenLock(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	// Place the store under a parent dir so filepath.Dir
@@ -1547,7 +1564,8 @@ func TestInstallBlocksOnStoreGenLock(t *testing.T) {
 	select {
 	case err := <-done:
 		t.Fatalf(
-			"Install completed while store-gen lock held: %v", err)
+			"Install completed while store-gen lock held: %v", err,
+		)
 	case <-time.After(500 * time.Millisecond):
 		// Install is blocked on the lock. Good.
 	}
@@ -1556,10 +1574,12 @@ func TestInstallBlocksOnStoreGenLock(t *testing.T) {
 	// the gen lock is held — the critical section covers
 	// extract + finalize.
 	binPath := filepath.Join(
-		storeRoot, "testpkg", "1.0-1", "bin", "testpkg")
+		storeRoot, "testpkg", "1.0-1", "bin", "testpkg",
+	)
 	if _, err := os.Stat(binPath); err == nil {
 		t.Fatal(
-			"install wrote bin/testpkg while store-gen lock held")
+			"install wrote bin/testpkg while store-gen lock held",
+		)
 	}
 
 	unlock()
@@ -1591,7 +1611,8 @@ func TestInstallReleasesStoreGenLock(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	galeDir := t.TempDir()
@@ -1656,7 +1677,8 @@ func TestInstallLocalBlocksOnStoreGenLock(t *testing.T) {
 	// Write a trivial source that produces bin/testpkg.
 	if err := os.WriteFile(
 		filepath.Join(sourceDir, "README"),
-		[]byte("placeholder"), 0o644); err != nil {
+		[]byte("placeholder"), 0o644,
+	); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 
@@ -1690,7 +1712,8 @@ func TestInstallLocalBlocksOnStoreGenLock(t *testing.T) {
 	case err := <-done:
 		t.Fatalf(
 			"InstallLocal completed while store-gen lock held: %v",
-			err)
+			err,
+		)
 	case <-time.After(500 * time.Millisecond):
 		// Install is blocked on the lock. Good.
 	}
@@ -1698,10 +1721,12 @@ func TestInstallLocalBlocksOnStoreGenLock(t *testing.T) {
 	// The canonical store dir must not be populated with
 	// bin/ while the lock is held.
 	binPath := filepath.Join(
-		storeRoot, "testpkg", "1.0-1", "bin", "testpkg")
+		storeRoot, "testpkg", "1.0-1", "bin", "testpkg",
+	)
 	if _, err := os.Stat(binPath); err == nil {
 		t.Fatal(
-			"InstallLocal wrote bin/testpkg while store-gen lock held")
+			"InstallLocal wrote bin/testpkg while store-gen lock held",
+		)
 	}
 
 	unlock()
@@ -1788,7 +1813,8 @@ func TestReinstallRebuildsWhenCanonicalPopulated(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -1803,7 +1829,8 @@ func TestReinstallRebuildsWhenCanonicalPopulated(t *testing.T) {
 	}
 	staleMarker := filepath.Join(canonicalDir, "STALE-MARKER")
 	if err := os.WriteFile(
-		staleMarker, []byte("stale"), 0o644); err != nil {
+		staleMarker, []byte("stale"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1847,7 +1874,8 @@ func TestReinstallPreservesExistingStoreOnBuildFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -1889,7 +1917,8 @@ func TestReinstallPreservesExistingStoreOnReplaceFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -1947,7 +1976,8 @@ func TestReinstallBlocksOnStoreGenLockBeforeReplace(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, srcTar)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	galeDir := t.TempDir()
@@ -2068,7 +2098,8 @@ func TestInstallBinaryNonGHCRDefaultTrustFails(t *testing.T) {
 			default:
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	var logBuf bytes.Buffer
@@ -2142,7 +2173,8 @@ func TestInstallBinaryNonGHCRSha256OnlyAccepted(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write(blobData)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	storeRoot := t.TempDir()
@@ -2282,7 +2314,8 @@ func TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds(t *testing.T) {
 			default:
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	restore := download.SetHTTPClient(srv.Client())
@@ -2407,7 +2440,8 @@ func TestInstallInstallsBuildOnlyDepsOnSourceFallback(t *testing.T) {
 				// failure → source fallback.
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	restore := download.SetHTTPClient(srv.Client())
@@ -2523,7 +2557,8 @@ func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
 				return
 			}
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	restore := download.SetHTTPClient(srv.Client())
@@ -2635,7 +2670,8 @@ func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 			default:
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	restore := download.SetHTTPClient(srv.Client())
@@ -2923,7 +2959,8 @@ func TestInstallLocalWithFinalize_HoldsLockAcrossFinalize(t *testing.T) {
 	sourceDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(sourceDir, "README"),
-		[]byte("placeholder"), 0o644); err != nil {
+		[]byte("placeholder"), 0o644,
+	); err != nil {
 		t.Fatalf("write source: %v", err)
 	}
 
@@ -3123,7 +3160,8 @@ func makeLocalBareRepo(t *testing.T) string {
 	gitRun(t, workDir, "git", "config", "commit.gpgsign", "false")
 	if err := os.WriteFile(
 		filepath.Join(workDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	gitRun(t, workDir, "git", "add", "README")

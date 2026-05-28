@@ -77,7 +77,8 @@ func ResetTokenCacheForTest() {
 func BlobURL(base, name, sha256 string) string {
 	return fmt.Sprintf(
 		"https://ghcr.io/v2/%s/%s/blobs/sha256:%s",
-		base, name, sha256)
+		base, name, sha256,
+	)
 }
 
 // tokenEndpoint is the base URL for the GHCR token service.
@@ -174,7 +175,8 @@ func fetchToken(repository string) (string, time.Time, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		return "", time.Time{}, fmt.Errorf(
-			"fetch ghcr token: HTTP %d", resp.StatusCode)
+			"fetch ghcr token: HTTP %d", resp.StatusCode,
+		)
 	}
 
 	var body struct {
@@ -187,7 +189,8 @@ func fetchToken(repository string) (string, time.Time, error) {
 
 	if body.Token == "" {
 		return "", time.Time{}, fmt.Errorf(
-			"ghcr token response: missing token field")
+			"ghcr token response: missing token field",
+		)
 	}
 
 	var expiresAt time.Time

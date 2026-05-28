@@ -15,7 +15,8 @@ func TestDownloadAndHashTool(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte(content))
-		}))
+		},
+	))
 	defer srv.Close()
 
 	tmpDir := t.TempDir()
@@ -59,7 +60,8 @@ func TestDownloadAndHashToolUniqueFilenames(t *testing.T) {
 			} else {
 				w.Write([]byte("content-beta"))
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	tmpDir := t.TempDir()
@@ -218,7 +220,8 @@ func TestReadFileTool(t *testing.T) {
 			} else {
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	// Can't easily test the real GitHub URL, but we
@@ -274,7 +277,8 @@ func TestListFilesTool(t *testing.T) {
 				{"name": "README.md", "type": "file"},
 				{"name": "LICENSE", "type": "file"}
 			]`))
-		}))
+		},
+	))
 	defer srv.Close()
 
 	tool := listFilesTool()
@@ -399,7 +403,8 @@ end
 			} else {
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	tool := homebrewFormulaToolWithURL(srv.URL)
@@ -443,7 +448,8 @@ func TestHomebrewFormulaToolNotFound(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	tool := homebrewFormulaToolWithURL(srv.URL)

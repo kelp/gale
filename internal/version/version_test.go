@@ -50,7 +50,8 @@ func TestIsNewer(t *testing.T) {
 			if got != tt.want {
 				t.Errorf(
 					"IsNewer(%q, %q) = %v, want %v",
-					tt.candidate, tt.current, got, tt.want)
+					tt.candidate, tt.current, got, tt.want,
+				)
 			}
 		})
 	}
@@ -77,7 +78,8 @@ func TestSplitRevision(t *testing.T) {
 			if base != tt.wantBase || rev != tt.wantRev {
 				t.Errorf(
 					"splitRevision(%q) = (%q, %d), want (%q, %d)",
-					tt.v, base, rev, tt.wantBase, tt.wantRev)
+					tt.v, base, rev, tt.wantBase, tt.wantRev,
+				)
 			}
 		})
 	}

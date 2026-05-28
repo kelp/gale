@@ -168,7 +168,8 @@ func runDoctor(d *doctorIO) error {
 func checkGaleHome(ctx *doctorContext) bool {
 	if _, err := os.Stat(ctx.galeDir); err != nil {
 		ctx.out.Error(
-			"~/.gale/ does not exist\n  Run: gale install <pkg>")
+			"~/.gale/ does not exist\n  Run: gale install <pkg>",
+		)
 		return false
 	}
 	ctx.out.Success("Gale home (~/.gale/)")
@@ -186,12 +187,14 @@ func checkGlobalConfig(ctx *doctorContext) bool {
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
 		ctx.out.Error(fmt.Sprintf(
-			"Global gale.toml parse error: %v", err))
+			"Global gale.toml parse error: %v", err,
+		))
 		return false
 	}
 	cfg.ApplyHost(config.CurrentHost())
 	ctx.out.Success(fmt.Sprintf(
-		"Global config (%d packages)", len(cfg.Packages)))
+		"Global config (%d packages)", len(cfg.Packages),
+	))
 	ctx.globalPkgs = cfg.Packages
 	return true
 }
@@ -209,12 +212,14 @@ func checkProjectConfig(ctx *doctorContext) bool {
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
 		ctx.out.Error(fmt.Sprintf(
-			"Project gale.toml parse error: %v", err))
+			"Project gale.toml parse error: %v", err,
+		))
 		return false
 	}
 	cfg.ApplyHost(config.CurrentHost())
 	ctx.out.Success(fmt.Sprintf(
-		"Project config (%d packages)", len(cfg.Packages)))
+		"Project config (%d packages)", len(cfg.Packages),
+	))
 	ctx.projPkgs = cfg.Packages
 	return true
 }
@@ -228,7 +233,8 @@ func checkProjectConfig(ctx *doctorContext) bool {
 func checkHostOverrides(ctx *doctorContext) bool {
 	host := config.CurrentHost()
 	overrides := loadHostOverrides(
-		filepath.Join(ctx.galeDir, "gale.toml"), host)
+		filepath.Join(ctx.galeDir, "gale.toml"), host,
+	)
 	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
 		overrides = append(overrides,
 			loadHostOverrides(projPath, host)...)
@@ -243,7 +249,8 @@ func checkHostOverrides(ctx *doctorContext) bool {
 		shown = shown[:maxShown]
 	}
 	msg := fmt.Sprintf(
-		"Host overlay shadows %d shared package(s):", len(overrides))
+		"Host overlay shadows %d shared package(s):", len(overrides),
+	)
 	for _, line := range shown {
 		msg += "\n  " + line
 	}
@@ -286,7 +293,8 @@ func loadHostOverrides(configPath, host string) []string {
 			}
 			lines = append(lines, fmt.Sprintf(
 				"%s: shared %s overridden by [hosts.%s] %s",
-				name, sharedVer, key, hostVer))
+				name, sharedVer, key, hostVer,
+			))
 		}
 	}
 	sort.Strings(lines)
@@ -303,7 +311,8 @@ func checkStore(ctx *doctorContext) bool {
 	}
 	ctx.installed = installed
 	ctx.out.Success(fmt.Sprintf(
-		"Store (%d versions in %s)", len(installed), ctx.storeRoot))
+		"Store (%d versions in %s)", len(installed), ctx.storeRoot,
+	))
 	return true
 }
 
@@ -339,7 +348,8 @@ func checkPackagesInstalled(ctx *doctorContext) bool {
 				"  Run: gale sync          (to reinstall)\n"+
 				"  Or:  gale remove %s (to delete from config)",
 			strings.Join(missing, ", "),
-			strings.Join(names, " ")))
+			strings.Join(names, " "),
+		))
 		return false
 	}
 	if len(allPkgs) > 0 {
@@ -362,16 +372,19 @@ func checkGeneration(ctx *doctorContext) bool {
 		// raw error so the user can see what's wrong, and
 		// point at the only safe remediation.
 		ctx.out.Error(fmt.Sprintf(
-			"Generation broken: %v\n  Run: gale sync", err))
+			"Generation broken: %v\n  Run: gale sync", err,
+		))
 		return false
 	}
 	if gen == 0 {
 		ctx.out.Error(
-			"No active generation\n  Run: gale sync")
+			"No active generation\n  Run: gale sync",
+		)
 		return false
 	}
 	ctx.out.Success(fmt.Sprintf(
-		"Generation (current -> %s)", target))
+		"Generation (current -> %s)", target,
+	))
 	return true
 }
 
@@ -392,11 +405,13 @@ func checkSymlinks(ctx *doctorContext) bool {
 	if len(broken) > 0 {
 		ctx.out.Error(fmt.Sprintf(
 			"Broken symlinks: %s\n  Run: gale sync",
-			strings.Join(broken, ", ")))
+			strings.Join(broken, ", "),
+		))
 		return false
 	}
 	ctx.out.Success(fmt.Sprintf(
-		"Symlinks intact (%d binaries)", len(entries)))
+		"Symlinks intact (%d binaries)", len(entries),
+	))
 	return true
 }
 
@@ -408,7 +423,8 @@ func checkSymlinks(ctx *doctorContext) bool {
 func checkFarm(ctx *doctorContext) bool {
 	farmDir := farm.Dir(ctx.galeDir)
 	activePkgs := make(
-		map[string]string, len(ctx.globalPkgs)+len(ctx.projPkgs))
+		map[string]string, len(ctx.globalPkgs)+len(ctx.projPkgs),
+	)
 	for k, v := range ctx.globalPkgs {
 		activePkgs[k] = v
 	}
@@ -423,7 +439,8 @@ func checkFarm(ctx *doctorContext) bool {
 	}
 	if len(issues) == 0 {
 		ctx.out.Success(fmt.Sprintf(
-			"Lib farm (%s)", farmDir))
+			"Lib farm (%s)", farmDir,
+		))
 		return true
 	}
 	// Cap the printed list so a very out-of-sync farm
@@ -462,7 +479,8 @@ func checkFarm(ctx *doctorContext) bool {
 func checkStaleInstalls(ctx *doctorContext) bool {
 	if !doctorCheckRegistry {
 		ctx.out.Success(
-			"Stale installs (skipped — pass --check-registry to probe)")
+			"Stale installs (skipped — pass --check-registry to probe)",
+		)
 		return true
 	}
 	if ctx.cmdCtx == nil || ctx.store == nil {
@@ -486,12 +504,14 @@ func checkStaleInstalls(ctx *doctorContext) bool {
 			continue
 		}
 		r, err := ctx.cmdCtx.ResolveVersionedRecipe(
-			pkg.Name, pkg.Version)
+			pkg.Name, pkg.Version,
+		)
 		if err != nil {
 			continue
 		}
 		isStale, err := installer.IsStale(
-			storeDir, r, ctx.cmdCtx.Resolver)
+			storeDir, r, ctx.cmdCtx.Resolver,
+		)
 		if err != nil {
 			continue
 		}
@@ -510,7 +530,8 @@ func checkStaleInstalls(ctx *doctorContext) bool {
 	}
 	msg := fmt.Sprintf(
 		"Stale installs (%d) — deps changed since built:",
-		len(stale))
+		len(stale),
+	)
 	for _, s := range shown {
 		msg += "\n  " + s
 	}
@@ -539,18 +560,21 @@ func checkPATH(ctx *doctorContext) bool {
 		ctx.out.Error(fmt.Sprintf(
 			"PATH missing %s\n  Add to shell config: "+
 				"export PATH=\"%s:$PATH\"",
-			galeBin, galeBin))
+			galeBin, galeBin,
+		))
 		return false
 	}
 	ctx.out.Success(fmt.Sprintf(
-		"PATH includes %s", galeBin))
+		"PATH includes %s", galeBin,
+	))
 	return true
 }
 
 // checkDirenvIntegration checks direnv setup when .envrc exists.
 func checkDirenvIntegration(ctx *doctorContext) bool {
 	if _, err := os.Stat(
-		filepath.Join(ctx.cwd, ".envrc")); err != nil {
+		filepath.Join(ctx.cwd, ".envrc"),
+	); err != nil {
 		return true // no .envrc, skip
 	}
 
@@ -582,7 +606,8 @@ func checkDirenvIntegration(ctx *doctorContext) bool {
 	}
 	// Also check ~/.direnvrc.
 	if data, err := os.ReadFile(
-		filepath.Join(home, ".direnvrc")); err == nil {
+		filepath.Join(home, ".direnvrc"),
+	); err == nil {
 		if strings.Contains(string(data), "use_gale") ||
 			strings.Contains(string(data), "gale hook direnv") {
 			ctx.out.Success("Direnv integration configured")
@@ -619,7 +644,8 @@ func checkOrphans(ctx *doctorContext) bool {
 	}
 	referenced := collectReferencedPackagesWithResolver(
 		filepath.Dir(globalConfig), projPath,
-		ctx.store, resolver, ctx.out)
+		ctx.store, resolver, ctx.out,
+	)
 
 	var orphaned int
 	for _, pkg := range ctx.installed {
@@ -629,7 +655,8 @@ func checkOrphans(ctx *doctorContext) bool {
 	}
 	if orphaned > 0 {
 		ctx.out.Warn(fmt.Sprintf(
-			"%d orphaned version(s) (run gale gc)", orphaned))
+			"%d orphaned version(s) (run gale gc)", orphaned,
+		))
 	}
 	return true // orphans are a warning, not a failure
 }
@@ -643,7 +670,8 @@ func checkGhCLI(ctx *doctorContext) bool {
 		return true // warn, not a failure
 	}
 	ctx.out.Success(
-		"gh CLI available (attestation verification)")
+		"gh CLI available (attestation verification)",
+	)
 	return true
 }
 
@@ -679,11 +707,13 @@ func repairDoctor(ctx *doctorContext) error {
 		if err := build.EnsureCodeSigned(storeDir); err != nil {
 			return fmt.Errorf(
 				"ensure code signed %s@%s: %w",
-				pkg.Name, pkg.Version, err)
+				pkg.Name, pkg.Version, err,
+			)
 		}
 	}
 	ctx.out.Success(fmt.Sprintf(
-		"Re-signed Mach-Os in %d package(s)", len(installed)))
+		"Re-signed Mach-Os in %d package(s)", len(installed),
+	))
 	return nil
 }
 

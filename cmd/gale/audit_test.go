@@ -42,7 +42,8 @@ func TestAuditShortMatchesLongFraming(t *testing.T) {
 			"audit Short = %q should describe the mechanism "+
 				"(rebuild + compare hash), not aspirational "+
 				"semantics most builds don't satisfy",
-			auditCmd.Short)
+			auditCmd.Short,
+		)
 	}
 	if strings.Contains(short, "reproducibly") ||
 		strings.Contains(short, "reproducible") {
@@ -50,7 +51,8 @@ func TestAuditShortMatchesLongFraming(t *testing.T) {
 			"audit Short = %q over-claims; the Long string "+
 				"explicitly says most builds are not "+
 				"deterministic",
-			auditCmd.Short)
+			auditCmd.Short,
+		)
 	}
 }
 
@@ -98,7 +100,8 @@ func TestAuditDoesNotUseFprintfStderrDirectly(t *testing.T) {
 				"audit.go calls fmt.%s(os.Stderr, ...) — "+
 					"route through internal/output helpers "+
 					"so quiet/color modes are respected",
-				sel.Sel.Name)
+				sel.Sel.Name,
+			)
 		}
 		return true
 	})
@@ -125,7 +128,8 @@ func assertNoStandaloneResolveConfigPath(t *testing.T, file string) {
 			t.Errorf(
 				"%s should not call resolveConfigPath "+
 					"— derive lockfile from ctx.GalePath",
-				file)
+				file,
+			)
 		}
 		return true
 	})

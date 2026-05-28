@@ -31,14 +31,16 @@ func TestRemoveConfigBeforeStore(t *testing.T) {
 	}
 	if err := os.Symlink(
 		filepath.Join("gen", "1"),
-		filepath.Join(galeDir, "current")); err != nil {
+		filepath.Join(galeDir, "current"),
+	); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create the package in the real store.
 	storeRoot := defaultStoreRoot()
 	pkgDir := filepath.Join(
-		storeRoot, "testpkg", "1.0", "bin")
+		storeRoot, "testpkg", "1.0", "bin",
+	)
 	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -70,7 +72,8 @@ func TestRemoveConfigBeforeStore(t *testing.T) {
 	// The store entry must still exist because config
 	// failed first.
 	if _, statErr := os.Stat(
-		filepath.Join(storeRoot, "testpkg", "1.0")); statErr != nil {
+		filepath.Join(storeRoot, "testpkg", "1.0"),
+	); statErr != nil {
 		t.Error("store entry was deleted despite config " +
 			"write failure — operations are in wrong order")
 	}
@@ -107,7 +110,8 @@ func TestRemoveDeletesLockfileEntry(t *testing.T) {
 	}
 	if err := os.Symlink(
 		filepath.Join("gen", "1"),
-		filepath.Join(galeDir, "current")); err != nil {
+		filepath.Join(galeDir, "current"),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -143,7 +147,8 @@ func TestRemoveRefusesGale(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
 		[]byte("[packages]\n  gale = \"0.0.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("HOME", projDir)
@@ -167,7 +172,8 @@ func TestRemoveRefusesGale(t *testing.T) {
 
 	// Guard must refuse *before* touching the config.
 	data, readErr := os.ReadFile(
-		filepath.Join(projDir, "gale.toml"))
+		filepath.Join(projDir, "gale.toml"),
+	)
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
@@ -205,14 +211,16 @@ func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 	}
 	if err := os.Symlink(
 		filepath.Join("gen", "1"),
-		filepath.Join(galeDir, "current")); err != nil {
+		filepath.Join(galeDir, "current"),
+	); err != nil {
 		t.Fatal(err)
 	}
 
 	// Empty isolated store; matches the layout
 	// defaultStoreRoot() expects under HOME.
 	if err := os.MkdirAll(
-		filepath.Join(projDir, ".gale", "pkg"), 0o755); err != nil {
+		filepath.Join(projDir, ".gale", "pkg"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -252,7 +260,8 @@ func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 	if !strings.Contains(stderr, "not found in store") {
 		t.Errorf(
 			"expected warning about missing store entry, "+
-				"stderr = %q", stderr)
+				"stderr = %q", stderr,
+		)
 	}
 }
 
@@ -292,7 +301,8 @@ func TestRemoveCleansHostOverlayAndShared(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(storePkgDir, "foo"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -305,7 +315,8 @@ func TestRemoveCleansHostOverlayAndShared(t *testing.T) {
 	}
 	if err := os.Symlink(
 		filepath.Join("gen", "1"),
-		filepath.Join(galeDir, "current")); err != nil {
+		filepath.Join(galeDir, "current"),
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -346,12 +357,14 @@ func TestRemoveCleansHostOverlayAndShared(t *testing.T) {
 	if _, err := os.Lstat(currentBin); err == nil {
 		t.Errorf(
 			"current generation still has bin/foo symlink — " +
-				"effective config wasn't fully cleaned before rebuild")
+				"effective config wasn't fully cleaned before rebuild",
+		)
 	}
 
 	// Store dir for the removed version must be gone.
 	if _, err := os.Stat(
-		filepath.Join(storeRoot, "foo", "2.0")); err == nil {
+		filepath.Join(storeRoot, "foo", "2.0"),
+	); err == nil {
 		t.Error("store entry foo@2.0 was not removed")
 	}
 }

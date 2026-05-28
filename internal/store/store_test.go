@@ -66,7 +66,8 @@ func TestIsInstalledReturnsTrueWhenExists(t *testing.T) {
 
 	dir := filepath.Join(root, "jq", "1.7.1")
 	if err := os.MkdirAll(
-		filepath.Join(dir, "bin"), 0o755); err != nil {
+		filepath.Join(dir, "bin"), 0o755,
+	); err != nil {
 		t.Fatalf("failed to create directory: %v", err)
 	}
 
@@ -325,7 +326,8 @@ func TestIsInstalledExactMatch(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+		filepath.Join(dir, "foo"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -347,7 +349,8 @@ func TestIsInstalledFallsBackToBareVersionForRevisionOne(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+		filepath.Join(dir, "foo"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -369,7 +372,8 @@ func TestIsInstalledDoesNotFallBackForRevisionTwo(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+		filepath.Join(dir, "foo"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -390,7 +394,8 @@ func TestRemoveFindsBareVersionWhenPassedRevisionOne(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(bare, "foo"), []byte("x"), 0o644); err != nil {
+		filepath.Join(bare, "foo"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -416,7 +421,8 @@ func TestRemoveReturnsErrNotInstalledForMissingRevisionTwo(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(bare, "foo"), []byte("x"), 0o644); err != nil {
+		filepath.Join(bare, "foo"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -443,7 +449,8 @@ func TestRemovePrefersExactDirWhenBothExist(t *testing.T) {
 			t.Fatalf("setup %s: %v", sub, err)
 		}
 		if err := os.WriteFile(
-			filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+			filepath.Join(dir, "foo"), []byte("x"), 0o644,
+		); err != nil {
 			t.Fatalf("setup %s: %v", sub, err)
 		}
 	}
@@ -512,7 +519,8 @@ func TestCreateThenFailedInstallAllowsRetry(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(binDir, "jq"),
-		[]byte("fake"), 0o755); err != nil {
+		[]byte("fake"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -539,7 +547,8 @@ func TestIsInstalledFindsHigherRevisionForBareVersion(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(dir, "foo"), []byte("x"), 0o644); err != nil {
+		filepath.Join(dir, "foo"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -572,7 +581,8 @@ func TestIsInstalledFindsRevisionForBareDevVersion(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(dir, "marker"), []byte("x"), 0o644); err != nil {
+		filepath.Join(dir, "marker"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 
@@ -651,7 +661,8 @@ func TestRemoveBareVersionRemovesBareDirNotHighestRevision(t *testing.T) {
 		}
 		if err := os.WriteFile(
 			filepath.Join(dir, "marker"),
-			[]byte("x"), 0o644); err != nil {
+			[]byte("x"), 0o644,
+		); err != nil {
 			t.Fatalf("setup %s: %v", sub, err)
 		}
 	}
@@ -708,7 +719,8 @@ func TestResolveVersionAllCasesOnFixedLayout(t *testing.T) {
 			continue
 		}
 		if err := os.WriteFile(
-			filepath.Join(d, "marker"), []byte("x"), 0o644); err != nil {
+			filepath.Join(d, "marker"), []byte("x"), 0o644,
+		); err != nil {
 			t.Fatalf("setup marker %s: %v", d, err)
 		}
 	}
@@ -783,7 +795,8 @@ func TestIsInstalledRevisionOneWinsOverBare(t *testing.T) {
 			t.Fatalf("setup %s: %v", sub, err)
 		}
 		if err := os.WriteFile(
-			filepath.Join(dir, "marker"), []byte("x"), 0o644); err != nil {
+			filepath.Join(dir, "marker"), []byte("x"), 0o644,
+		); err != nil {
 			t.Fatalf("setup %s: %v", sub, err)
 		}
 	}
@@ -821,7 +834,8 @@ func TestListIgnoresBackupAndBuildSiblings(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(live, "marker"), []byte("x"), 0o644); err != nil {
+		filepath.Join(live, "marker"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	for _, noise := range []string{
@@ -854,22 +868,26 @@ func TestStorePathIgnoresBuildTempAndLockSiblings(t *testing.T) {
 
 	// Real revision dir.
 	if err := os.MkdirAll(
-		filepath.Join(root, "foo", "1.0.0-2"), 0o755); err != nil {
+		filepath.Join(root, "foo", "1.0.0-2"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// Noise that must be ignored.
 	if err := os.MkdirAll(
-		filepath.Join(root, "foo", ".build-tmp-1.0.0-9"), 0o755); err != nil {
+		filepath.Join(root, "foo", ".build-tmp-1.0.0-9"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(root, "foo", "1.0.0-2.lock"),
-		[]byte(""), 0o644); err != nil {
+		[]byte(""), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(root, "foo", "1.0.0-99.lock"),
-		[]byte(""), 0o644); err != nil {
+		[]byte(""), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 

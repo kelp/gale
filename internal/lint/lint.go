@@ -141,7 +141,8 @@ func Lint(data, filePath string) []Issue {
 		}
 		addErr(fmt.Sprintf(
 			"unknown field %q — check for a typo or "+
-				"remove the field", key.String()))
+				"remove the field", key.String(),
+		))
 	}
 
 	for _, rule := range rules {
@@ -183,13 +184,15 @@ func lintSHA256Format(
 	if r.Source.SHA256 != "" && !hexRe.MatchString(r.Source.SHA256) {
 		addErr(fmt.Sprintf(
 			"source.sha256 is not valid 64-char hex: %q",
-			r.Source.SHA256))
+			r.Source.SHA256,
+		))
 	}
 	for platform, bin := range r.Binary {
 		if bin.SHA256 != "" && !hexRe.MatchString(bin.SHA256) {
 			addErr(fmt.Sprintf(
 				"binary.%s.sha256 is not valid 64-char hex: %q",
-				platform, bin.SHA256))
+				platform, bin.SHA256,
+			))
 		}
 	}
 }
@@ -233,7 +236,8 @@ func lintSourceRepo(
 	} else if !isValidRepo(r.Source.Repo) {
 		addWarn(fmt.Sprintf(
 			"source.repo should be owner/repo or a full URL: %q",
-			r.Source.Repo))
+			r.Source.Repo,
+		))
 	}
 
 	if r.Source.Repo != "" && r.Source.URL != "" {
@@ -251,7 +255,8 @@ func lintReleasedAt(
 			r.Source.ReleasedAt); err != nil {
 			addWarn(fmt.Sprintf(
 				"released_at is not YYYY-MM-DD: %q",
-				r.Source.ReleasedAt))
+				r.Source.ReleasedAt,
+			))
 		}
 	}
 }
@@ -286,7 +291,8 @@ func lintBuildSteps(
 			addWarn(
 				"autoreconf requires autoconf, automake, " +
 					"libtool, and m4; prefer a release tarball " +
-					"with pre-generated configure")
+					"with pre-generated configure",
+			)
 			break
 		}
 	}
@@ -319,7 +325,8 @@ func lintBinariesIndexRevision(
 		return
 	}
 	indexPath := filepath.Join(
-		filepath.Dir(filePath), r.Package.Name+".binaries.toml")
+		filepath.Dir(filePath), r.Package.Name+".binaries.toml",
+	)
 	data, err := os.ReadFile(indexPath) //nolint:gosec // path is recipe-derived
 	if err != nil {
 		return
@@ -339,7 +346,8 @@ func lintBinariesIndexRevision(
 			"rewrite as %q so prebuilt binaries are not skipped",
 		r.Package.Name+".binaries.toml",
 		idx.Version, r.Package.Revision,
-		expected))
+		expected,
+	))
 }
 
 // extractSteps pulls the "steps" array from the raw
@@ -434,7 +442,8 @@ func checkBuildDeps(
 					addWarn(fmt.Sprintf(
 						"build step uses %q but %q "+
 							"is not in build deps",
-						sub, pat.dep))
+						sub, pat.dep,
+					))
 					goto nextPattern
 				}
 			}
@@ -461,7 +470,8 @@ func checkBuildDeps(
 	if hasMake && !hasConfigure {
 		addWarn(
 			"build step uses \"make\" but \"gnumake\" " +
-				"is not in build deps")
+				"is not in build deps",
+		)
 	}
 }
 
@@ -488,7 +498,8 @@ func checkPlatforms(
 	for _, p := range platforms {
 		if !validPlatforms[p] {
 			addWarn(fmt.Sprintf(
-				"unrecognized platform %q", p))
+				"unrecognized platform %q", p,
+			))
 		}
 	}
 }
@@ -513,7 +524,8 @@ func checkRepoURL(repo, sourceURL string, addWarn func(string)) {
 	if !strings.Contains(sourceURL, expected) {
 		addWarn(fmt.Sprintf(
 			"source.url does not match source.repo %q",
-			repo))
+			repo,
+		))
 	}
 }
 
@@ -523,7 +535,8 @@ func checkFilePath(filePath, name string, addErr func(string)) {
 	if base != expectedBase {
 		addErr(fmt.Sprintf(
 			"file path %q does not match package name %q",
-			filePath, name))
+			filePath, name,
+		))
 		return
 	}
 
@@ -533,6 +546,7 @@ func checkFilePath(filePath, name string, addErr func(string)) {
 		addErr(fmt.Sprintf(
 			"file path letter bucket %q does not match "+
 				"package name %q (expected %q/)",
-			letter, name, string(name[0])))
+			letter, name, string(name[0]),
+		))
 	}
 }

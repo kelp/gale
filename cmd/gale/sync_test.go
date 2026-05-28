@@ -71,7 +71,8 @@ func TestSyncSHA256MismatchKeepsInstallAndUpdatesLockfile(t *testing.T) {
 
 	newHash := "newhashnewhashnewhashnewhashnewh"
 	if err := updateLockfile(
-		lockPath, "testpkg", "1.0.0", newHash); err != nil {
+		lockPath, "testpkg", "1.0.0", newHash,
+	); err != nil {
 		t.Fatalf("updateLockfile: %v", err)
 	}
 

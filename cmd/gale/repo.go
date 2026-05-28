@@ -219,7 +219,8 @@ func runRepoUpdate(out *output.Output, name string, fetch tapFetcher) error {
 	}
 	if failed > 0 {
 		out.Success(fmt.Sprintf(
-			"Refreshed %d tap(s), %d failed", succeeded, failed))
+			"Refreshed %d tap(s), %d failed", succeeded, failed,
+		))
 	} else {
 		out.Success(fmt.Sprintf("Refreshed %d tap(s)", succeeded))
 	}

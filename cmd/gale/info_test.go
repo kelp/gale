@@ -105,7 +105,8 @@ func TestInfoParsesAtVersion(t *testing.T) {
 			default:
 				http.NotFound(w, r)
 			}
-		}))
+		},
+	))
 	defer srv.Close()
 
 	withIsolatedHome(t)
@@ -133,7 +134,8 @@ func TestInfoRejectsInvalidName(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Fatalf("unexpected HTTP request for bad name: %s", r.URL.Path)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	withIsolatedHome(t)
@@ -167,7 +169,8 @@ func TestInfoWritesThroughCmdStdout(t *testing.T) {
 				return
 			}
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	withIsolatedHome(t)
@@ -204,7 +207,8 @@ func TestInfoMakesOneRequest(t *testing.T) {
 				return
 			}
 			http.NotFound(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	withIsolatedHome(t)
@@ -226,7 +230,8 @@ func TestInfoInstalledFromConfig(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Fatalf("unexpected HTTP request: %s", r.URL.Path)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	home := withIsolatedHome(t)

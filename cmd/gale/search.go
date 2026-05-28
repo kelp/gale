@@ -16,7 +16,8 @@ var searchCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		return runSearch(
-			cmd.OutOrStdout(), newRegistry(), args[0])
+			cmd.OutOrStdout(), newRegistry(), args[0],
+		)
 	},
 }
 
@@ -43,7 +44,8 @@ func runSearch(
 
 	if len(results) == 0 {
 		return fmt.Errorf(
-			"no packages found matching %q", query)
+			"no packages found matching %q", query,
+		)
 	}
 
 	for _, r := range results {

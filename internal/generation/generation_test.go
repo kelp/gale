@@ -647,7 +647,8 @@ func TestResolveSucceedsWhenTargetExists(t *testing.T) {
 	galeDir := t.TempDir()
 
 	if err := os.MkdirAll(
-		filepath.Join(galeDir, "gen", "4", "bin"), 0o755); err != nil {
+		filepath.Join(galeDir, "gen", "4", "bin"), 0o755,
+	); err != nil {
 		t.Fatalf("failed to create gen dir: %v", err)
 	}
 	if err := os.Symlink(
@@ -818,7 +819,8 @@ func TestBuildSymlinksRootLevelFiles(t *testing.T) {
 	// go.env and VERSION).
 	pkgDir := filepath.Join(storeRoot, "go", "1.26.1")
 	if err := os.MkdirAll(
-		filepath.Join(pkgDir, "bin"), 0o755); err != nil {
+		filepath.Join(pkgDir, "bin"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(pkgDir, "bin", "go"),
@@ -860,7 +862,8 @@ func TestBuildSymlinksLibDir(t *testing.T) {
 	pkgDir := filepath.Join(storeRoot, "pkgconf", "2.5.1")
 	for _, sub := range []string{"bin", "lib"} {
 		if err := os.MkdirAll(
-			filepath.Join(pkgDir, sub), 0o755); err != nil {
+			filepath.Join(pkgDir, sub), 0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -892,7 +895,8 @@ func TestBuildSymlinksManSubdirs(t *testing.T) {
 	pkgDir := filepath.Join(storeRoot, "jq", "1.8.1")
 	for _, sub := range []string{"bin", "man/man1"} {
 		if err := os.MkdirAll(
-			filepath.Join(pkgDir, sub), 0o755); err != nil {
+			filepath.Join(pkgDir, sub), 0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -929,13 +933,15 @@ func TestBuildDeterministicSymlinkOrder(t *testing.T) {
 
 		for _, name := range []string{"alpha", "beta"} {
 			binDir := filepath.Join(
-				storeRoot, name, "1.0", "bin")
+				storeRoot, name, "1.0", "bin",
+			)
 			if err := os.MkdirAll(binDir, 0o755); err != nil {
 				t.Fatal(err)
 			}
 			if err := os.WriteFile(
 				filepath.Join(binDir, "tool"),
-				[]byte(name), 0o755); err != nil {
+				[]byte(name), 0o755,
+			); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -950,7 +956,8 @@ func TestBuildDeterministicSymlinkOrder(t *testing.T) {
 		}
 
 		toolLink := filepath.Join(
-			galeDir, "current", "bin", "tool")
+			galeDir, "current", "bin", "tool",
+		)
 		target, err := os.Readlink(toolLink)
 		if err != nil {
 			t.Fatalf("iteration %d: readlink: %v", i, err)
@@ -959,7 +966,8 @@ func TestBuildDeterministicSymlinkOrder(t *testing.T) {
 		if !strings.Contains(target, "alpha") {
 			t.Fatalf(
 				"iteration %d: expected alpha to win "+
-					"conflict, got target %s", i, target)
+					"conflict, got target %s", i, target,
+			)
 		}
 	}
 }
@@ -1149,7 +1157,8 @@ func TestPopulateGenerationCreatesSymlinks(t *testing.T) {
 	// Create bin/ in the gen dir (Build always does this
 	// before calling populateGeneration).
 	if err := os.MkdirAll(
-		filepath.Join(genDir, "bin"), 0o755); err != nil {
+		filepath.Join(genDir, "bin"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1184,7 +1193,8 @@ func TestPopulateGenerationAlphabeticalConflictResolution(t *testing.T) {
 	genDir := t.TempDir()
 
 	if err := os.MkdirAll(
-		filepath.Join(genDir, "bin"), 0o755); err != nil {
+		filepath.Join(genDir, "bin"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1196,7 +1206,8 @@ func TestPopulateGenerationAlphabeticalConflictResolution(t *testing.T) {
 		}
 		if err := os.WriteFile(
 			filepath.Join(binDir, "tool"),
-			[]byte(name), 0o755); err != nil {
+			[]byte(name), 0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1208,7 +1219,8 @@ func TestPopulateGenerationAlphabeticalConflictResolution(t *testing.T) {
 	}
 
 	target, err := os.Readlink(
-		filepath.Join(genDir, "bin", "tool"))
+		filepath.Join(genDir, "bin", "tool"),
+	)
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
@@ -1222,14 +1234,16 @@ func TestPopulateGenerationRootLevelFiles(t *testing.T) {
 	genDir := t.TempDir()
 
 	if err := os.MkdirAll(
-		filepath.Join(genDir, "bin"), 0o755); err != nil {
+		filepath.Join(genDir, "bin"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
 	// Create package with root-level file.
 	pkgDir := filepath.Join(storeRoot, "go", "1.26.1")
 	if err := os.MkdirAll(
-		filepath.Join(pkgDir, "bin"), 0o755); err != nil {
+		filepath.Join(pkgDir, "bin"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	os.WriteFile(filepath.Join(pkgDir, "bin", "go"),
@@ -1350,12 +1364,14 @@ func TestBuildResolvesBareDevVersionToHighestRevision(t *testing.T) {
 	}
 
 	target, err := os.Readlink(
-		filepath.Join(galeDir, "gen", "1", "bin", "gale"))
+		filepath.Join(galeDir, "gen", "1", "bin", "gale"),
+	)
 	if err != nil {
 		t.Fatalf("readlink: %v", err)
 	}
 	wantFragment := filepath.Join(
-		"gale", "0.16.2-dev.70+676b646-1", "bin", "gale")
+		"gale", "0.16.2-dev.70+676b646-1", "bin", "gale",
+	)
 	if !strings.Contains(target, wantFragment) {
 		t.Errorf("gale symlink target = %q, want fragment %q",
 			target, wantFragment)

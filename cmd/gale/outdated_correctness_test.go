@@ -89,7 +89,8 @@ func TestCheckOutdatedStopsAfterFirstTransportError(t *testing.T) {
 		mu.Unlock()
 		// Simulate connection refused on every call.
 		return nil, errors.New(
-			"fetch recipe: connection refused")
+			"fetch recipe: connection refused",
+		)
 	}
 
 	pkgs := map[string]string{

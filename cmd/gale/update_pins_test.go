@@ -46,7 +46,8 @@ func TestUpdateNoInstallWritesPinSkipsBuild(t *testing.T) {
 	}, "\n")
 	if err := os.WriteFile(
 		filepath.Join(recipesDir, "jq.toml"),
-		[]byte(recipeBody), 0o644); err != nil {
+		[]byte(recipeBody), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -130,7 +131,8 @@ func TestUpdateNoInstallSkipsUpToDate(t *testing.T) {
 		[]byte("[package]\nname = \"jq\"\nversion = \"1.8.0\"\n\n"+
 			"[source]\nurl = \"https://example.invalid/jq.tar.gz\"\n"+
 			"sha256 = \"deadbeef\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 

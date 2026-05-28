@@ -37,7 +37,8 @@ var updateCmd = &cobra.Command{
 		// --path requires exactly one package name.
 		if updatePath != "" && len(args) != 1 {
 			return fmt.Errorf(
-				"--path requires exactly one package name")
+				"--path requires exactly one package name",
+			)
 		}
 
 		// --no-install only makes sense for the
@@ -45,7 +46,8 @@ var updateCmd = &cobra.Command{
 		// building, so combining them is a user error.
 		if updateNoInstall && (updatePath != "" || updateGit) {
 			return fmt.Errorf(
-				"--no-install cannot be combined with --path or --git")
+				"--no-install cannot be combined with --path or --git",
+			)
 		}
 
 		// Auto-refresh configured taps so a stale local clone
@@ -73,7 +75,8 @@ var updateCmd = &cobra.Command{
 		if updatePath != "" {
 			if dryRun {
 				out.Info(fmt.Sprintf(
-					"update %s (from local source)", args[0]))
+					"update %s (from local source)", args[0],
+				))
 				return nil
 			}
 			// Check membership in gale.toml — consistent with normal update path.
@@ -93,11 +96,13 @@ var updateCmd = &cobra.Command{
 		if updateGit {
 			if len(args) != 1 {
 				return fmt.Errorf(
-					"--git requires exactly one package name")
+					"--git requires exactly one package name",
+				)
 			}
 			if dryRun {
 				out.Info(fmt.Sprintf(
-					"update %s (from git HEAD)", args[0]))
+					"update %s (from git HEAD)", args[0],
+				))
 				return nil
 			}
 			// Check membership in gale.toml.
@@ -134,12 +139,14 @@ var updateCmd = &cobra.Command{
 				current, ok := cfg.Packages[name]
 				if !ok {
 					out.Warn(fmt.Sprintf(
-						"%s not in gale.toml, skipping", name))
+						"%s not in gale.toml, skipping", name,
+					))
 					continue
 				}
 				if cfg.Pinned[name] {
 					out.Info(fmt.Sprintf(
-						"skipping %s (pinned)", name))
+						"skipping %s (pinned)", name,
+					))
 					continue
 				}
 				targets[name] = target{current, ver}
@@ -148,7 +155,8 @@ var updateCmd = &cobra.Command{
 			for name, ver := range cfg.Packages {
 				if cfg.Pinned[name] {
 					out.Info(fmt.Sprintf(
-						"skipping %s (pinned)", name))
+						"skipping %s (pinned)", name,
+					))
 					continue
 				}
 				targets[name] = target{ver, ""}
@@ -180,7 +188,8 @@ var updateCmd = &cobra.Command{
 				r, err := ctx.Resolver(name)
 				if err != nil {
 					out.Warn(fmt.Sprintf(
-						"Skipping %s: %v", name, err))
+						"Skipping %s: %v", name, err,
+					))
 					continue
 				}
 				// Compare via Package.Full() so a revision bump
@@ -192,11 +201,14 @@ var updateCmd = &cobra.Command{
 				target, skip := updateAction(
 					candidate, t.current,
 					ctx.Installer.Store.IsInstalled(
-						name, t.current))
+						name, t.current,
+					),
+				)
 				if skip {
 					out.Info(fmt.Sprintf(
 						"%s@%s is up to date",
-						name, t.current))
+						name, t.current,
+					))
 					continue
 				}
 				newVersion = target
@@ -204,10 +216,12 @@ var updateCmd = &cobra.Command{
 
 			// Fetch the recipe for the target version.
 			r, err := ctx.ResolveVersionedRecipe(
-				name, newVersion)
+				name, newVersion,
+			)
 			if err != nil {
 				out.Warn(fmt.Sprintf(
-					"Skipping %s: %v", name, err))
+					"Skipping %s: %v", name, err,
+				))
 				continue
 			}
 
@@ -225,13 +239,15 @@ var updateCmd = &cobra.Command{
 			if updateNoInstall {
 				if err := config.UpsertPackage(
 					ctx.GalePath, config.CurrentHost(),
-					name, r.Package.Version); err != nil {
+					name, r.Package.Version,
+				); err != nil {
 					return fmt.Errorf("updating %s pin: %w",
 						name, err)
 				}
 				out.Success(fmt.Sprintf(
 					"Bumped %s %s → %s (run 'gale sync' to install)",
-					name, t.current, r.Package.Full()))
+					name, t.current, r.Package.Full(),
+				))
 				updated++
 				continue
 			}
@@ -245,7 +261,8 @@ var updateCmd = &cobra.Command{
 				})
 			if err != nil {
 				out.Warn(fmt.Sprintf(
-					"Failed to update %s: %v", name, err))
+					"Failed to update %s: %v", name, err,
+				))
 				failed++
 				continue
 			}
@@ -266,10 +283,12 @@ var updateCmd = &cobra.Command{
 		} else if updateNoInstall {
 			out.Success(fmt.Sprintf(
 				"Bumped %d pin(s) — run 'gale sync' to install",
-				updated))
+				updated,
+			))
 		} else {
 			out.Success(fmt.Sprintf(
-				"Updated %d package(s)", updated))
+				"Updated %d package(s)", updated,
+			))
 		}
 		return nil
 	},
@@ -302,12 +321,14 @@ func updateFromGit(name string, ctx *cmdContext, out *output.Output) error {
 	}
 	if r.Source.Repo == "" {
 		return fmt.Errorf(
-			"recipe for %s has no source.repo", name)
+			"recipe for %s has no source.repo", name,
+		)
 	}
 
 	// Check remote HEAD.
 	remoteHash, err := gitutil.RemoteHead(
-		r.Source.Repo, r.Source.Branch)
+		r.Source.Repo, r.Source.Branch,
+	)
 	if err != nil {
 		return fmt.Errorf("checking remote: %w", err)
 	}
@@ -321,7 +342,8 @@ func updateFromGit(name string, ctx *cmdContext, out *output.Output) error {
 	installed := cfg.Packages[name]
 	if isGitHash(installed) && installed == remoteHash {
 		out.Success(fmt.Sprintf(
-			"%s@%s is up to date", name, remoteHash))
+			"%s@%s is up to date", name, remoteHash,
+		))
 		return nil
 	}
 

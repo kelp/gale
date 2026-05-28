@@ -62,7 +62,8 @@ var outdatedCmd = &cobra.Command{
 		}
 
 		ctx, err := newCmdContext(
-			outdatedRecipes, outdatedGlobal, outdatedProject)
+			outdatedRecipes, outdatedGlobal, outdatedProject,
+		)
 		if err != nil {
 			return err
 		}
@@ -220,7 +221,8 @@ func summarizeOutdated(
 		return fmt.Errorf(
 			"could not check %d package(s); registry "+
 				"unreachable (see warnings above)",
-			result.Skipped)
+			result.Skipped,
+		)
 	case result.Skipped > 0:
 		// Some checked, some couldn't — surface a non-zero
 		// exit so scripts don't treat the partial result as
@@ -228,7 +230,8 @@ func summarizeOutdated(
 		return fmt.Errorf(
 			"checked partial result: %d outdated, %d "+
 				"unchecked (see warnings above)",
-			len(result.Items), result.Skipped)
+			len(result.Items), result.Skipped,
+		)
 	}
 	return nil
 }

@@ -37,7 +37,8 @@ func TestFetchWritesFileToDestPath(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, want)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "downloaded.txt")
@@ -164,7 +165,8 @@ func TestExtractTarGzPreservesRelativePaths(t *testing.T) {
 	}
 
 	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"))
+		filepath.Join(destDir, "subdir", "nested.txt"),
+	)
 	if err != nil {
 		t.Fatalf("failed to read extracted file: %v", err)
 	}
@@ -192,7 +194,8 @@ func TestExtractTarGzMultipleFiles(t *testing.T) {
 
 	for _, name := range []string{"a.txt", "b.txt"} {
 		if _, err := os.Stat(
-			filepath.Join(destDir, name)); err != nil {
+			filepath.Join(destDir, name),
+		); err != nil {
 			t.Errorf("expected file %q to exist: %v", name, err)
 		}
 	}
@@ -241,7 +244,8 @@ func TestExtractZipPreservesRelativePaths(t *testing.T) {
 	}
 
 	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"))
+		filepath.Join(destDir, "subdir", "nested.txt"),
+	)
 	if err != nil {
 		t.Fatalf("failed to read extracted file: %v", err)
 	}
@@ -269,7 +273,8 @@ func TestExtractZipMultipleFiles(t *testing.T) {
 
 	for _, name := range []string{"a.txt", "b.txt"} {
 		if _, err := os.Stat(
-			filepath.Join(destDir, name)); err != nil {
+			filepath.Join(destDir, name),
+		); err != nil {
 			t.Errorf("expected file %q to exist: %v", name, err)
 		}
 	}
@@ -281,7 +286,8 @@ func TestFetchReturnsErrorOn404(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "not found", http.StatusNotFound)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "output.bin")
@@ -302,7 +308,8 @@ func TestFetchReturnsErrorOn500(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "server error",
 				http.StatusInternalServerError)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "output.bin")
@@ -323,13 +330,15 @@ func TestFetchFallsBackToMirror(t *testing.T) {
 	primary := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "forbidden", http.StatusForbidden)
-		}))
+		},
+	))
 	defer primary.Close()
 
 	mirror := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("mirror-data"))
-		}))
+		},
+	))
 	defer mirror.Close()
 
 	// Register the primary as a mirror source with fallback.
@@ -365,20 +374,23 @@ func TestFetchLogsSucceedingMirrorURL(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "server error",
 				http.StatusInternalServerError)
-		}))
+		},
+	))
 	defer primary.Close()
 
 	failingMirror := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "server error",
 				http.StatusInternalServerError)
-		}))
+		},
+	))
 	defer failingMirror.Close()
 
 	winningMirror := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Write([]byte("payload"))
-		}))
+		},
+	))
 	defer winningMirror.Close()
 
 	oldMirrors := mirrors
@@ -396,7 +408,8 @@ func TestFetchLogsSucceedingMirrorURL(t *testing.T) {
 	out := captureStderr(t, func() {
 		if err := Fetch(
 			primary.URL+"/gnu/make/make-4.4.tar.gz",
-			dest); err != nil {
+			dest,
+		); err != nil {
 			t.Fatalf("expected fallback to succeed: %v", err)
 		}
 	})
@@ -416,7 +429,8 @@ func TestFetchNoFallbackForNonMirroredURL(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "forbidden", http.StatusForbidden)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "output.bin")
@@ -503,7 +517,8 @@ func TestFetchCreatesIntermediateDirectories(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, want)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "a", "b", "file.bin")
@@ -1140,7 +1155,8 @@ func writeTarEntries(t *testing.T, tw *tar.Writer, files map[string]string) {
 	for _, name := range names {
 		if dir := filepath.Dir(name); dir != "." {
 			parts := strings.Split(
-				filepath.ToSlash(dir), "/")
+				filepath.ToSlash(dir), "/",
+			)
 			for i := range parts {
 				d := strings.Join(parts[:i+1], "/") + "/"
 				if !dirs[d] {
@@ -1215,7 +1231,8 @@ func TestExtractTarZstdPreservesRelativePaths(t *testing.T) {
 	}
 
 	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"))
+		filepath.Join(destDir, "subdir", "nested.txt"),
+	)
 	if err != nil {
 		t.Fatalf("failed to read extracted file: %v", err)
 	}
@@ -1243,7 +1260,8 @@ func TestExtractTarZstdMultipleFiles(t *testing.T) {
 
 	for _, name := range []string{"a.txt", "b.txt"} {
 		if _, err := os.Stat(
-			filepath.Join(destDir, name)); err != nil {
+			filepath.Join(destDir, name),
+		); err != nil {
 			t.Errorf("expected file %q to exist: %v", name, err)
 		}
 	}
@@ -1312,7 +1330,8 @@ func TestCreateTarZstdNoWrapperDirectory(t *testing.T) {
 
 	if err := os.WriteFile(
 		filepath.Join(sourceDir, "file.txt"),
-		[]byte("data"), 0o644); err != nil {
+		[]byte("data"), 0o644,
+	); err != nil {
 		t.Fatalf("failed to write file: %v", err)
 	}
 
@@ -1368,7 +1387,8 @@ func TestCreateTarZstdClosesFilesEagerly(t *testing.T) {
 		name := fmt.Sprintf("file_%04d.txt", i)
 		path := filepath.Join(sourceDir, name)
 		if err := os.WriteFile(
-			path, []byte("data"), 0o644); err != nil {
+			path, []byte("data"), 0o644,
+		); err != nil {
 			t.Fatalf("write file %d: %v", i, err)
 		}
 	}
@@ -1443,12 +1463,14 @@ func TestCreateTarZstdPreservesExecutability(t *testing.T) {
 	// Create a regular file and an executable file.
 	if err := os.WriteFile(
 		filepath.Join(sourceDir, "normal.txt"),
-		[]byte("data"), 0o644); err != nil {
+		[]byte("data"), 0o644,
+	); err != nil {
 		t.Fatalf("failed to write file: %v", err)
 	}
 	if err := os.WriteFile(
 		filepath.Join(sourceDir, "run.sh"),
-		[]byte("#!/bin/sh"), 0o755); err != nil {
+		[]byte("#!/bin/sh"), 0o755,
+	); err != nil {
 		t.Fatalf("failed to write file: %v", err)
 	}
 
@@ -1496,7 +1518,8 @@ func TestCreateTarZstdDeterministic(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(binDir, "tool"),
-		[]byte("#!/bin/sh\necho hello"), 0o755); err != nil {
+		[]byte("#!/bin/sh\necho hello"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1545,7 +1568,8 @@ func TestCreateTarZstdDeterministic(t *testing.T) {
 	if filepath.IsAbs(target) {
 		t.Errorf(
 			"symlink target should be relative, got %q",
-			target)
+			target,
+		)
 	}
 }
 
@@ -1557,7 +1581,8 @@ func TestFetchWithAuthSendsAuthHeader(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			gotAuth = r.Header.Get("Authorization")
 			fmt.Fprint(w, "content")
-		}))
+		},
+	))
 	defer srv.Close()
 
 	restore := SetHTTPClient(srv.Client())
@@ -1579,7 +1604,8 @@ func TestFetchWithAuthWritesFile(t *testing.T) {
 	srv := httptest.NewTLSServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprint(w, want)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	restore := SetHTTPClient(srv.Client())
@@ -1602,7 +1628,8 @@ func TestFetchWithAuthWritesFile(t *testing.T) {
 func TestFetchWithAuthRejectsPlainHTTP(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "out.bin")
 	err := FetchWithAuth(
-		"http://example.com/blob", dest, "my-token")
+		"http://example.com/blob", dest, "my-token",
+	)
 	if err == nil {
 		t.Fatal("expected error for plain HTTP with bearer token")
 	}
@@ -1616,7 +1643,8 @@ func TestFetchWithAuthErrorsOnNon200(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "denied", http.StatusForbidden)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "out.bin")
@@ -1669,7 +1697,8 @@ func TestExtractTarXzPreservesRelativePaths(t *testing.T) {
 	}
 
 	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"))
+		filepath.Join(destDir, "subdir", "nested.txt"),
+	)
 	if err != nil {
 		t.Fatalf("failed to read extracted file: %v", err)
 	}
@@ -1722,7 +1751,8 @@ func TestExtractTarBz2PreservesRelativePaths(t *testing.T) {
 	}
 
 	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"))
+		filepath.Join(destDir, "subdir", "nested.txt"),
+	)
 	if err != nil {
 		t.Fatalf("failed to read extracted file: %v", err)
 	}
@@ -1752,7 +1782,8 @@ func TestExtractSourceDetectsFormat(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			archivePath := filepath.Join(
-				t.TempDir(), "archive"+tt.ext)
+				t.TempDir(), "archive"+tt.ext,
+			)
 			tt.create(t, archivePath, files)
 
 			destDir := filepath.Join(t.TempDir(), "extracted")
@@ -1765,7 +1796,8 @@ func TestExtractSourceDetectsFormat(t *testing.T) {
 			}
 
 			got, err := os.ReadFile(
-				filepath.Join(destDir, "data.txt"))
+				filepath.Join(destDir, "data.txt"),
+			)
 			if err != nil {
 				t.Fatalf("read extracted file: %v", err)
 			}

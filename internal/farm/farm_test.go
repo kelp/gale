@@ -80,7 +80,8 @@ func TestPopulateAddsVersionedDylibs(t *testing.T) {
 		t.Fatalf("expected symlink at %s: %v", versioned, err)
 	}
 	wantTarget := filepath.Join(
-		storeDir, "lib", versionedName("libcurl", "4"))
+		storeDir, "lib", versionedName("libcurl", "4"),
+	)
 	if target != wantTarget {
 		t.Errorf("target = %q, want %q", target, wantTarget)
 	}
@@ -126,12 +127,14 @@ func TestPopulateConflictSamePackageOverwrites(t *testing.T) {
 	}
 
 	got, err := os.Readlink(filepath.Join(
-		farmDir, versionedName("libcurl", "4")))
+		farmDir, versionedName("libcurl", "4"),
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantTarget := filepath.Join(
-		storeNew, "lib", versionedName("libcurl", "4"))
+		storeNew, "lib", versionedName("libcurl", "4"),
+	)
 	if got != wantTarget {
 		t.Errorf("target = %q, want %q (newer should win)",
 			got, wantTarget)
@@ -173,11 +176,13 @@ func TestDepopulateRemovesOnlyMatchingPackage(t *testing.T) {
 	}
 
 	if _, err := os.Lstat(filepath.Join(
-		farmDir, versionedName("libaaa", "1"))); err == nil {
+		farmDir, versionedName("libaaa", "1"),
+	)); err == nil {
 		t.Errorf("aaa symlink should have been removed")
 	}
 	if _, err := os.Lstat(filepath.Join(
-		farmDir, versionedName("libbbb", "1"))); err != nil {
+		farmDir, versionedName("libbbb", "1"),
+	)); err != nil {
 		t.Errorf("bbb symlink should still exist: %v", err)
 	}
 }
@@ -210,7 +215,8 @@ func TestRebuildFromActiveSet(t *testing.T) {
 	// intra-package duplicates.
 	captured := captureStderr(t, func() {
 		if err := Rebuild(
-			[]string{storeAaa, storeBbb}, farmDir); err != nil {
+			[]string{storeAaa, storeBbb}, farmDir,
+		); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -219,22 +225,26 @@ func TestRebuildFromActiveSet(t *testing.T) {
 		t.Errorf("stale entry should have been cleared")
 	}
 	if _, err := os.Lstat(filepath.Join(
-		farmDir, versionedName("libaaa", "1"))); err != nil {
+		farmDir, versionedName("libaaa", "1"),
+	)); err != nil {
 		t.Errorf("aaa symlink missing: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(
-		farmDir, versionedName("libbbb", "2"))); err != nil {
+		farmDir, versionedName("libbbb", "2"),
+	)); err != nil {
 		t.Errorf("bbb symlink missing: %v", err)
 	}
 	// The farm's libaaa entry must point at the active
 	// revision (1.0), not the older 0.9 still on disk.
 	got, err := os.Readlink(filepath.Join(
-		farmDir, versionedName("libaaa", "1")))
+		farmDir, versionedName("libaaa", "1"),
+	))
 	if err != nil {
 		t.Fatal(err)
 	}
 	wantTarget := filepath.Join(
-		storeAaa, "lib", versionedName("libaaa", "1"))
+		storeAaa, "lib", versionedName("libaaa", "1"),
+	)
 	if got != wantTarget {
 		t.Errorf("aaa target = %q, want %q", got, wantTarget)
 	}
@@ -264,7 +274,8 @@ func TestCheckDriftReportsMissingAndBroken(t *testing.T) {
 	}
 
 	issues, err := CheckDrift(
-		[]string{storeA, storeB}, farmDir)
+		[]string{storeA, storeB}, farmDir,
+	)
 	if err != nil {
 		t.Fatal(err)
 	}

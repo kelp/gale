@@ -59,7 +59,8 @@ func TestOfflineSkipsNetworkAndReturnsCachedBody(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			atomic.AddInt32(&hits, 1)
 			eh.ServeHTTP(w, r)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	cacheDir := t.TempDir()
@@ -102,7 +103,8 @@ func TestOfflineWithoutCacheErrors(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			t.Fatalf("offline mode must not make HTTP requests: %s",
 				r.URL.Path)
-		}))
+		},
+	))
 	defer srv.Close()
 
 	reg := &Registry{

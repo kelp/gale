@@ -13,7 +13,8 @@ import (
 func validateScopeFlags(global, project bool) error {
 	if global && project {
 		return fmt.Errorf(
-			"cannot use both --global and --project")
+			"cannot use both --global and --project",
+		)
 	}
 	return nil
 }
@@ -32,7 +33,8 @@ func validateScopeFlags(global, project bool) error {
 func resolveReadOnlyConfigPath(global, project bool) (string, error) {
 	if global && project {
 		return "", fmt.Errorf(
-			"cannot use both --global and --project")
+			"cannot use both --global and --project",
+		)
 	}
 	cwd, err := os.Getwd()
 	if err != nil {
@@ -45,7 +47,8 @@ func resolveReadOnlyConfigPath(global, project bool) (string, error) {
 		projectPath, err := projectConfigPath(cwd)
 		if err != nil {
 			return "", fmt.Errorf(
-				"no project found — run 'gale init' first")
+				"no project found — run 'gale init' first",
+			)
 		}
 		return projectPath, nil
 	}

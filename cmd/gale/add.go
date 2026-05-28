@@ -85,7 +85,8 @@ var addCmd = &cobra.Command{
 			}
 
 			configPath, err := addToConfig(
-				name, version, host, addGlobal, addProject)
+				name, version, host, addGlobal, addProject,
+			)
 			if err != nil {
 				return err
 			}

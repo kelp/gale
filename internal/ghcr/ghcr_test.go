@@ -19,7 +19,8 @@ func TestTokenReturnsTokenFromEndpoint(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]string{
 				"token": "test-bearer-token-123",
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	old := tokenEndpoint
@@ -46,8 +47,10 @@ func TestTokenParsesTokenField(t *testing.T) {
 			w.Header().Set("Content-Type",
 				"application/json")
 			json.NewEncoder(w).Encode(
-				map[string]string{"token": want})
-		}))
+				map[string]string{"token": want},
+			)
+		},
+	))
 	defer srv.Close()
 
 	old := tokenEndpoint
@@ -82,7 +85,8 @@ func TestTokenErrorsOnNon200(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(
 				func(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "error", tt.status)
-				}))
+				},
+			))
 			defer srv.Close()
 
 			old := tokenEndpoint
@@ -106,7 +110,8 @@ func TestTokenErrorsOnMalformedJSON(t *testing.T) {
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Write([]byte("this is not json"))
-		}))
+		},
+	))
 	defer srv.Close()
 
 	old := tokenEndpoint
@@ -127,7 +132,8 @@ func TestTokenErrorsOnMissingTokenField(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]string{
 				"not_token": "value",
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	old := tokenEndpoint
@@ -152,7 +158,8 @@ func TestTokenUsesEnvVarWhenSet(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]string{
 				"token": "should-not-use-this",
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	old := tokenEndpoint
@@ -183,7 +190,8 @@ func TestTokenIgnoresEmptyEnvVar(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]string{
 				"token": "fetched-token",
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	old := tokenEndpoint
@@ -233,7 +241,8 @@ func TestTokenSendsCorrectRequest(t *testing.T) {
 			json.NewEncoder(w).Encode(map[string]string{
 				"token": "tok",
 			})
-		}))
+		},
+	))
 	defer srv.Close()
 
 	old := tokenEndpoint

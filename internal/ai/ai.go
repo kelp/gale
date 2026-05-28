@@ -31,7 +31,8 @@ func NewClient(apiKey string) *Client {
 	c := &Client{apiKey: apiKey}
 	if apiKey != "" {
 		c.sdk = anthropic.NewClient(
-			option.WithAPIKey(apiKey))
+			option.WithAPIKey(apiKey),
+		)
 	}
 	return c
 }
@@ -50,9 +51,11 @@ func (c *Client) Complete(prompt string) (string, error) {
 			MaxTokens: defaultMaxTokens,
 			Messages: []anthropic.MessageParam{
 				anthropic.NewUserMessage(
-					anthropic.NewTextBlock(prompt)),
+					anthropic.NewTextBlock(prompt),
+				),
 			},
-		})
+		},
+	)
 	if err != nil {
 		return "", fmt.Errorf("ai: %w", err)
 	}
@@ -90,7 +93,8 @@ func (c *Client) RunAgent(
 
 	messages := []anthropic.MessageParam{
 		anthropic.NewUserMessage(
-			anthropic.NewTextBlock(userPrompt)),
+			anthropic.NewTextBlock(userPrompt),
+		),
 	}
 
 	for i := 0; i < maxIterations; i++ {
@@ -104,7 +108,8 @@ func (c *Client) RunAgent(
 				},
 				Messages: messages,
 				Tools:    toolParams,
-			})
+			},
+		)
 		if err != nil {
 			return "", fmt.Errorf("ai: %w", err)
 		}
@@ -137,7 +142,8 @@ func (c *Client) RunAgent(
 					anthropic.NewToolResultBlock(
 						block.ID,
 						fmt.Sprintf("unknown tool: %s", block.Name),
-						true))
+						true,
+					))
 				continue
 			}
 
@@ -145,11 +151,13 @@ func (c *Client) RunAgent(
 			if toolErr != nil {
 				toolResults = append(toolResults,
 					anthropic.NewToolResultBlock(
-						block.ID, toolErr.Error(), true))
+						block.ID, toolErr.Error(), true,
+					))
 			} else {
 				toolResults = append(toolResults,
 					anthropic.NewToolResultBlock(
-						block.ID, result, false))
+						block.ID, result, false,
+					))
 			}
 		}
 

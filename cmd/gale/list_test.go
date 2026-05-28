@@ -25,7 +25,8 @@ func TestListGroupsByScope(t *testing.T) {
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8\"\n\n"+
 			"[hosts.h1.packages]\n  actionlint = \"1.7\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -82,7 +83,8 @@ func TestListMarksOverriddenSharedEntry(t *testing.T) {
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  ripgrep = \"15.0\"\n\n"+
 			"[hosts.h1.packages]\n  ripgrep = \"14.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -127,7 +129,8 @@ func TestListScopeSharedHidesHostOverlay(t *testing.T) {
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8\"\n\n"+
 			"[hosts.h1.packages]\n  actionlint = \"1.7\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -170,7 +173,8 @@ func TestListScopeHostHidesShared(t *testing.T) {
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8\"\n\n"+
 			"[hosts.h1.packages]\n  actionlint = \"1.7\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -213,7 +217,8 @@ func TestListStableFormatWithoutHostOverlays(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8\"\n  ripgrep = \"15.0\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -290,7 +295,8 @@ func TestListEmptyStateWithEmptyConfig(t *testing.T) {
 	t.Setenv("HOME", home)
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"), []byte(""),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -332,7 +338,8 @@ func TestListMarksDeclaredButNotInstalled(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// No store entries — package is declared but not installed.
@@ -374,7 +381,8 @@ func TestListInstalledPackageHasNoMarker(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(galeDir, "gale.toml"),
 		[]byte("[packages]\n  jq = \"1.8\"\n"),
-		0o644); err != nil {
+		0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// Fake the store entry: a non-empty version dir is what
@@ -385,7 +393,8 @@ func TestListInstalledPackageHasNoMarker(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(pkgDir, "marker"), []byte("x"), 0o644); err != nil {
+		filepath.Join(pkgDir, "marker"), []byte("x"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// Sanity check: store agrees the pkg is installed.

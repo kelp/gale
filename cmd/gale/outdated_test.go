@@ -20,7 +20,8 @@ import (
 func TestOutdatedSortsByName(t *testing.T) {
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(
-		fset, "outdated.go", nil, 0)
+		fset, "outdated.go", nil, 0,
+	)
 	if err != nil {
 		t.Fatalf("parsing outdated.go: %v", err)
 	}
@@ -55,7 +56,8 @@ func TestOutdatedSortsByName(t *testing.T) {
 		t.Errorf(
 			"outdated.go iterates cfg.Packages (a map) without " +
 				"calling sort.* — output order will vary " +
-				"between runs. Build a sorted keys slice first.")
+				"between runs. Build a sorted keys slice first.",
+		)
 	}
 }
 

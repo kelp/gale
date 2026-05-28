@@ -277,7 +277,8 @@ func TestPathFlagReplacesSource(t *testing.T) {
 			if cmd.Flags().Lookup("source") != nil {
 				t.Errorf(
 					"%s: --source flag should not exist",
-					name)
+					name,
+				)
 			}
 		})
 	}
@@ -344,7 +345,8 @@ func TestNewInstallerForRecipe(t *testing.T) {
 	// attestation is checked for binary installs.
 	storeRoot := t.TempDir()
 	inst := newInstallerForRecipe(
-		"/tmp/recipes/j/jq.toml", storeRoot)
+		"/tmp/recipes/j/jq.toml", storeRoot,
+	)
 	if inst.Verifier == nil {
 		t.Fatal("Verifier is nil — attestation will be " +
 			"silently skipped")
@@ -547,7 +549,8 @@ func TestInstallFromRecipeFileRotatesGeneration(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(pkgBin, "testpkg"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -646,7 +649,8 @@ func TestInstallFromRecipeFileRotatesGenWhenOtherPackagesMissing(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(pkgBin, "testpkg"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -691,7 +695,8 @@ func TestInstallFromRecipeFileRotatesGenWhenOtherPackagesMissing(t *testing.T) {
 	}
 
 	if _, err := os.Lstat(
-		filepath.Join(galeDir, "gen", "1", "bin", "testpkg")); err != nil {
+		filepath.Join(galeDir, "gen", "1", "bin", "testpkg"),
+	); err != nil {
 		t.Errorf("testpkg symlink missing in gen/1: %v", err)
 	}
 }
@@ -749,7 +754,8 @@ func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
 	}
 	if err := os.WriteFile(
 		filepath.Join(pkgDir, "testpkg"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 

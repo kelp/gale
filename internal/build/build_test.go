@@ -547,7 +547,8 @@ func createSourceTarGz(t *testing.T, files map[string]string) (string, string) {
 		// Emit directory entries for each ancestor path.
 		if dir := filepath.Dir(name); dir != "." {
 			parts := strings.Split(
-				filepath.ToSlash(dir), "/")
+				filepath.ToSlash(dir), "/",
+			)
 			for i := range parts {
 				d := strings.Join(parts[:i+1], "/") + "/"
 				if !dirs[d] {
@@ -625,7 +626,8 @@ func createSourceTarXz(t *testing.T, files map[string]string) (string, string) {
 	for _, name := range names {
 		if dir := filepath.Dir(name); dir != "." {
 			parts := strings.Split(
-				filepath.ToSlash(dir), "/")
+				filepath.ToSlash(dir), "/",
+			)
 			for i := range parts {
 				d := strings.Join(parts[:i+1], "/") + "/"
 				if !dirs[d] {
@@ -686,7 +688,8 @@ func serveFile(t *testing.T, filePath string) *httptest.Server {
 		func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/octet-stream")
 			w.Write(data)
-		}))
+		},
+	))
 	t.Cleanup(srv.Close)
 
 	return srv
@@ -735,11 +738,13 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 	// Extract and verify mytool was found.
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
-		result.Archive, extractDir); err != nil {
+		result.Archive, extractDir,
+	); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	data, err := os.ReadFile(
-		filepath.Join(extractDir, "bin", "output.txt"))
+		filepath.Join(extractDir, "bin", "output.txt"),
+	)
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}
@@ -755,7 +760,8 @@ func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "hello.sh"),
-		[]byte("#!/bin/sh\necho hello"), 0o644); err != nil {
+		[]byte("#!/bin/sh\necho hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -798,7 +804,8 @@ func TestBuildLocalDoesNotRequireSourceSection(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -857,7 +864,8 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -881,11 +889,13 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
-		result.Archive, extractDir); err != nil {
+		result.Archive, extractDir,
+	); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	data, err := os.ReadFile(
-		filepath.Join(extractDir, "bin", "output.txt"))
+		filepath.Join(extractDir, "bin", "output.txt"),
+	)
 	if err != nil {
 		t.Fatalf("read output: %v", err)
 	}
@@ -904,7 +914,8 @@ func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -943,7 +954,8 @@ func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
-		result.Archive, extractDir); err != nil {
+		result.Archive, extractDir,
+	); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	md, err := depsmeta.Read(extractDir)
@@ -973,7 +985,8 @@ func TestBuildLocalSkipsDepsMetadataWhenNoDeps(t *testing.T) {
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
-		[]byte("hello"), 0o644); err != nil {
+		[]byte("hello"), 0o644,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -994,7 +1007,8 @@ func TestBuildLocalSkipsDepsMetadataWhenNoDeps(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
-		result.Archive, extractDir); err != nil {
+		result.Archive, extractDir,
+	); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 	if depsmeta.Has(extractDir) {
@@ -1013,13 +1027,15 @@ func TestResolveToolsCreatesSymlinks(t *testing.T) {
 	// Fake tool binary.
 	if err := os.WriteFile(
 		filepath.Join(fakeBin, "fakecargo"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 	// Decoy that should NOT be linked.
 	if err := os.WriteFile(
 		filepath.Join(fakeBin, "ls"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		[]byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
 		t.Fatal(err)
 	}
 
@@ -1030,13 +1046,15 @@ func TestResolveToolsCreatesSymlinks(t *testing.T) {
 
 	// fakecargo should be symlinked.
 	if _, err := os.Lstat(
-		filepath.Join(toolsDir, "fakecargo")); err != nil {
+		filepath.Join(toolsDir, "fakecargo"),
+	); err != nil {
 		t.Errorf("expected fakecargo symlink: %v", err)
 	}
 
 	// ls should NOT be in the tools dir.
 	if _, err := os.Lstat(
-		filepath.Join(toolsDir, "ls")); err == nil {
+		filepath.Join(toolsDir, "ls"),
+	); err == nil {
 		t.Error("ls should not be in isolated tools dir")
 	}
 }
@@ -1132,12 +1150,14 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 		val, ok := envMap["DYLD_FALLBACK_LIBRARY_PATH"]
 		if !ok {
 			t.Fatal(
-				"expected DYLD_FALLBACK_LIBRARY_PATH on darwin")
+				"expected DYLD_FALLBACK_LIBRARY_PATH on darwin",
+			)
 		}
 		if val != envMap["LIBRARY_PATH"] {
 			t.Errorf(
 				"DYLD_FALLBACK_LIBRARY_PATH = %q, want %q",
-				val, envMap["LIBRARY_PATH"])
+				val, envMap["LIBRARY_PATH"],
+			)
 		}
 	}
 }
@@ -1152,15 +1172,18 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 	if _, ok := envMap["DYLD_FALLBACK_LIBRARY_PATH"]; ok {
 		t.Error(
 			"DYLD_FALLBACK_LIBRARY_PATH should not be set " +
-				"without deps")
+				"without deps",
+		)
 	}
 	if _, ok := envMap["CMAKE_LIBRARY_PATH"]; ok {
 		t.Error(
-			"CMAKE_LIBRARY_PATH should not be set without deps")
+			"CMAKE_LIBRARY_PATH should not be set without deps",
+		)
 	}
 	if _, ok := envMap["CMAKE_INCLUDE_PATH"]; ok {
 		t.Error(
-			"CMAKE_INCLUDE_PATH should not be set without deps")
+			"CMAKE_INCLUDE_PATH should not be set without deps",
+		)
 	}
 }
 
@@ -2495,7 +2518,8 @@ func TestRestorePrefixPlaceholderSkipsBinaries(t *testing.T) {
 	binFile := filepath.Join(binDir, "tool")
 	binData := append(
 		[]byte{0x7f, 'E', 'L', 'F', 0, 0, 0, 0, 0, 0, 0, 0},
-		[]byte(PrefixPlaceholder+"/share")...)
+		[]byte(PrefixPlaceholder+"/share")...,
+	)
 	if err := os.WriteFile(binFile, binData, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -2512,7 +2536,8 @@ func TestRestorePrefixPlaceholderSkipsBinaries(t *testing.T) {
 		t.Errorf(
 			"binary was rewritten (len %d → %d); "+
 				"isTextContent guard missing",
-			len(binData), len(got))
+			len(binData), len(got),
+		)
 	}
 }
 

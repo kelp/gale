@@ -80,7 +80,8 @@ func runInfo(w io.Writer, arg string) error {
 	// only affect the unversioned lookup.
 	if version == "" && (infoGlobal || infoProject) {
 		configPath, err := resolveReadOnlyConfigPath(
-			infoGlobal, infoProject)
+			infoGlobal, infoProject,
+		)
 		if err != nil {
 			return err
 		}
@@ -106,7 +107,8 @@ func runInfo(w io.Writer, arg string) error {
 		// Check project config first.
 		if projectPath, pErr := config.FindGaleConfig(cwd); pErr == nil {
 			if found, err := printConfigInfo(
-				w, name, projectPath, "project"); err != nil {
+				w, name, projectPath, "project",
+			); err != nil {
 				return err
 			} else if found {
 				return nil
@@ -120,7 +122,8 @@ func runInfo(w io.Writer, arg string) error {
 		}
 		globalPath := filepath.Join(globalDir, "gale.toml")
 		if found, err := printConfigInfo(
-			w, name, globalPath, "global"); err != nil {
+			w, name, globalPath, "global",
+		); err != nil {
 			return err
 		} else if found {
 			return nil

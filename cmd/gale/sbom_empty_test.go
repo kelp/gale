@@ -20,7 +20,8 @@ func sbomTestSetup(t *testing.T, home, projectConfig, globalConfig string) {
 		}
 		if err := os.WriteFile(
 			filepath.Join(galeDir, "gale.toml"),
-			[]byte(globalConfig), 0o644); err != nil {
+			[]byte(globalConfig), 0o644,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -31,7 +32,8 @@ func sbomTestSetup(t *testing.T, home, projectConfig, globalConfig string) {
 	if projectConfig != "" {
 		if err := os.WriteFile(
 			filepath.Join(cwd, "gale.toml"),
-			[]byte(projectConfig), 0o644); err != nil {
+			[]byte(projectConfig), 0o644,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}

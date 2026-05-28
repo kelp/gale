@@ -31,7 +31,8 @@ steps = ["make install PREFIX=${PREFIX}"]
 `
 	path := filepath.Join(t.TempDir(), "test.toml")
 	if err := os.WriteFile(
-		path, []byte(data), 0o644); err != nil {
+		path, []byte(data), 0o644,
+	); err != nil {
 		t.Fatalf("writing test recipe: %v", err)
 	}
 
@@ -55,13 +56,15 @@ steps = ["make install PREFIX=${PREFIX}"]
 	if !strings.Contains(got, "!!! ") {
 		t.Errorf(
 			"warning-level lint issues should use warn output "+
-				"(!!! prefix), got: %s", strings.TrimSpace(got))
+				"(!!! prefix), got: %s", strings.TrimSpace(got),
+		)
 	}
 	if strings.Contains(got, "--> ") {
 		t.Errorf(
 			"warning-level lint issues should not use info "+
 				"output (--> prefix), got: %s",
-			strings.TrimSpace(got))
+			strings.TrimSpace(got),
+		)
 	}
 }
 
@@ -83,7 +86,8 @@ steps = ["make install PREFIX=${PREFIX}"]
 	dir := t.TempDir()
 	path := filepath.Join(dir, "test.toml")
 	if err := os.WriteFile(
-		path, []byte(data), 0o644); err != nil {
+		path, []byte(data), 0o644,
+	); err != nil {
 		t.Fatalf("writing test recipe: %v", err)
 	}
 
@@ -124,12 +128,14 @@ steps = ["make install PREFIX=${PREFIX}"]
 		t.Errorf(
 			"error-level lint issues should use error output "+
 				"(xxx prefix), not warning output (!!!): %s",
-			strings.TrimSpace(got))
+			strings.TrimSpace(got),
+		)
 	}
 	if !strings.Contains(got, "xxx ") {
 		t.Errorf(
 			"expected error output (xxx prefix) for error-level "+
 				"issues, got: %s",
-			strings.TrimSpace(got))
+			strings.TrimSpace(got),
+		)
 	}
 }
