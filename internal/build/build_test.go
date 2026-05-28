@@ -1041,6 +1041,56 @@ func TestResolveToolsCreatesSymlinks(t *testing.T) {
 	}
 }
 
+// TestBuildEnvExportsSourceDateEpoch is a regression test
+// for gh#21: Python 3.14's zipfile raises ValueError on
+// pre-1980 mtimes instead of clamping, breaking flit_core
+// wheel builds (e.g. awscli). buildEnv must export
+// SOURCE_DATE_EPOCH so wheel builders use a stable
+// timestamp >= 1980-01-01 (315532800) without each recipe
+// author having to set it.
+func TestBuildEnvExportsSourceDateEpoch(t *testing.T) {
+	env, cleanup, _ := buildEnv(&BuildContext{
+		PrefixDir:       "/tmp/prefix",
+		Jobs:            "4",
+		Version:         "1.0.0",
+		SourceDateEpoch: 315532800, // 1980-01-01 UTC
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+
+	envMap := envToMap(env)
+	val, ok := envMap["SOURCE_DATE_EPOCH"]
+	if !ok {
+		t.Fatal("SOURCE_DATE_EPOCH missing from buildEnv — " +
+			"flit_core wheels will fail on Python 3.14 " +
+			"(see gh#21)")
+	}
+	if val != "315532800" {
+		t.Errorf("SOURCE_DATE_EPOCH = %q, want %q",
+			val, "315532800")
+	}
+}
+
+// TestBuildEnvSourceDateEpochClampedToZipFloor pins the
+// invariant that SOURCE_DATE_EPOCH (and the underlying
+// touchAll stamp it's derived from) is never below
+// 1980-01-01. ZIP can't represent pre-1980; Python 3.14
+// + flit_core enforce this with a hard error. The
+// sourceDateEpoch fallback used to be 1970 — that was
+// the actual root cause of gh#21 for recipes lacking
+// source.released_at.
+func TestBuildEnvSourceDateEpochClampedToZipFloor(t *testing.T) {
+	r := &recipe.Recipe{}
+	got := sourceDateEpoch(r).Unix()
+	const zipFloor int64 = 315532800
+	if got < zipFloor {
+		t.Errorf("sourceDateEpoch fallback = %d, want >= %d (1980-01-01); "+
+			"pre-1980 stamps break ZIP-based wheel builders",
+			got, zipFloor)
+	}
+}
+
 // --- Behavior 10: Dynamic linker paths in buildEnv ---
 
 func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {

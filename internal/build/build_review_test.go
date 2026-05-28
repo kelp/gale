@@ -229,16 +229,21 @@ func TestSourceDateEpochFromReleasedAt(t *testing.T) {
 	}
 }
 
-// TestSourceDateEpochFallbackIsUnixZero falls back to
-// the Unix epoch when no released_at is available. Any
-// other sentinel (time.Now, build start) would reintroduce
-// the determinism leak H3 closes.
-func TestSourceDateEpochFallbackIsUnixZero(t *testing.T) {
+// TestSourceDateEpochFallbackIsZipFloor falls back to
+// 1980-01-01 (the ZIP-encoding floor) when no
+// released_at is available. The previous fallback was
+// the Unix epoch (1970), which broke wheel builders
+// under Python 3.14 — see gh#21 and zipEpochFloor's
+// docstring. Any wall-clock sentinel would still
+// reintroduce the determinism leak H3 closes, so this
+// fallback stays deterministic — just shifted forward
+// by ten years.
+func TestSourceDateEpochFallbackIsZipFloor(t *testing.T) {
 	r := &recipe.Recipe{}
 	got := sourceDateEpoch(r)
-	want := time.Unix(0, 0).UTC()
+	want := time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
-		t.Errorf("sourceDateEpoch(empty) = %v, want Unix 0 (%v)",
+		t.Errorf("sourceDateEpoch(empty) = %v, want 1980-01-01 (%v)",
 			got, want)
 	}
 }
@@ -246,17 +251,17 @@ func TestSourceDateEpochFallbackIsUnixZero(t *testing.T) {
 // TestSourceDateEpochIgnoresMalformed guards against a
 // malformed released_at silently falling back to
 // time.Now(). A garbage date must fail closed to the
-// Unix-epoch sentinel so the archive still hashes
-// deterministically.
+// deterministic sentinel (now the ZIP floor) so the
+// archive still hashes deterministically.
 func TestSourceDateEpochIgnoresMalformed(t *testing.T) {
 	r := &recipe.Recipe{
 		Source: recipe.Source{ReleasedAt: "garbage"},
 	}
 	got := sourceDateEpoch(r)
-	want := time.Unix(0, 0).UTC()
+	want := time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
 	if !got.Equal(want) {
 		t.Errorf("sourceDateEpoch(garbage) = %v, want "+
-			"Unix 0 (%v)", got, want)
+			"1980-01-01 (%v)", got, want)
 	}
 }
 

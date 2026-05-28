@@ -161,15 +161,16 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 
 	buildCfg := r.BuildForPlatform(runtime.GOOS, runtime.GOARCH)
 	bc := &BuildContext{
-		PrefixDir: prefixDir,
-		SourceDir: sourceDir,
-		Jobs:      strconv.Itoa(runtime.NumCPU()),
-		Version:   r.Package.Version,
-		System:    buildCfg.System,
-		Toolchain: buildCfg.Toolchain,
-		Debug:     debug,
-		Env:       buildCfg.Env,
-		Deps:      deps,
+		PrefixDir:       prefixDir,
+		SourceDir:       sourceDir,
+		Jobs:            strconv.Itoa(runtime.NumCPU()),
+		Version:         r.Package.Version,
+		System:          buildCfg.System,
+		Toolchain:       buildCfg.Toolchain,
+		Debug:           debug,
+		Env:             buildCfg.Env,
+		Deps:            deps,
+		SourceDateEpoch: sourceDateEpoch(r).Unix(),
 	}
 
 	// One env (toolsDir, buildHome, buildTmp) shared across
@@ -356,6 +357,16 @@ type BuildContext struct {
 	Debug     bool
 	Env       map[string]string // extra env vars from recipe [build] env
 	Deps      *BuildDeps
+
+	// SourceDateEpoch is the deterministic Unix timestamp
+	// exported to build steps as SOURCE_DATE_EPOCH. Set by
+	// buildFromDir from sourceDateEpoch(r). Recipes that
+	// honour it (flit_core, dh_strip_nondeterminism,
+	// cmake's CPack, etc.) use it for embedded timestamps
+	// in archives and wheels. Clamped to >= 1980-01-01
+	// (the ZIP epoch floor) so Python 3.14's strict
+	// zipfile.from_file doesn't reject wheels (gh#21).
+	SourceDateEpoch int64
 }
 
 // SystemDeps returns implicit build dependencies for
@@ -741,6 +752,18 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 		env = append(env, k+"="+v)
 	}
 
+	// Deterministic build-time epoch for tools that honour
+	// SOURCE_DATE_EPOCH (flit_core, hatchling, poetry-core,
+	// dh_strip_nondeterminism, GNU tools' --mtime defaults,
+	// etc.). Set via setDefault so a recipe-declared value
+	// wins. The bc.SourceDateEpoch contract guarantees a
+	// value >= 1980-01-01 — without that, Python 3.14's
+	// strict zipfile rejects the wheel (gh#21).
+	if bc.SourceDateEpoch > 0 {
+		setDefault(&env, "SOURCE_DATE_EPOCH",
+			strconv.FormatInt(bc.SourceDateEpoch, 10))
+	}
+
 	// Narrow opt-in: sccache. Only wires up when the binary
 	// is on the host PATH — recipe-declared values above
 	// already won via setDefault, so an explicit recipe
@@ -873,14 +896,29 @@ func resolveTools(toolsDir string, toolPaths []string) {
 	}
 }
 
+// zipEpochFloor is 1980-01-01 00:00:00 UTC — the earliest
+// timestamp ZIP can encode. Python 3.14's
+// zipfile.ZipInfo.from_file raises ValueError on
+// pre-1980 mtimes instead of clamping (the 3.13 behaviour),
+// so any wheel-builder downstream (flit_core, hatchling,
+// poetry-core, ...) breaks when source files carry pre-1980
+// stamps. We clamp here so the fallback is universally
+// safe; reproducibility is preserved because the clamped
+// value is still deterministic. See gh#21.
+var zipEpochFloor = time.Date(1980, 1, 1, 0, 0, 0, 0, time.UTC)
+
 // sourceDateEpoch returns the deterministic timestamp
-// used to stamp extracted sources before archiving.
-// Prefers the recipe's source.released_at (YYYY-MM-DD,
-// UTC) and falls back to the Unix epoch. time.Now() is
-// intentionally never used here — any wall-clock input
-// would leak the build-run time into tarball mtimes and
-// make byte-identical source produce different-hash
-// archives (see gale-project TODO.md, finding H3).
+// used to stamp extracted sources before archiving and
+// exported as SOURCE_DATE_EPOCH to build steps. Prefers
+// the recipe's source.released_at (YYYY-MM-DD, UTC) and
+// falls back to the ZIP epoch floor (1980-01-01). The
+// fallback was the Unix epoch (1970-01-01) before gh#21
+// landed — that broke wheel builders under Python 3.14.
+// time.Now() is intentionally never used here — any
+// wall-clock input would leak the build-run time into
+// tarball mtimes and make byte-identical source produce
+// different-hash archives (see gale-project TODO.md,
+// finding H3).
 func sourceDateEpoch(r *recipe.Recipe) time.Time {
 	if r != nil && r.Source.ReleasedAt != "" {
 		// Recipes use YYYY-MM-DD across the catalog;
@@ -889,10 +927,13 @@ func sourceDateEpoch(r *recipe.Recipe) time.Time {
 		// time.Now().
 		if t, err := time.ParseInLocation(
 			"2006-01-02", r.Source.ReleasedAt, time.UTC); err == nil {
+			if t.Before(zipEpochFloor) {
+				return zipEpochFloor
+			}
 			return t
 		}
 	}
-	return time.Unix(0, 0).UTC()
+	return zipEpochFloor
 }
 
 // touchAll sets every file's atime/mtime under dir to
