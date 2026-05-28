@@ -130,7 +130,8 @@ func StartFakeGHCR(t *testing.T, payloads *Payloads) *FakeGHCR {
 			} {
 				fg.Register(
 					fmt.Sprintf("/blobs/%s/1.0-%s/%s", name, rev, plat),
-					name)
+					name,
+				)
 			}
 		}
 	}
@@ -188,8 +189,8 @@ func (fg *FakeGHCR) handle(w http.ResponseWriter, r *http.Request) {
 // FakeGH is the mocked gh CLI used for attestation paths.
 // Scripts rewrite its behavior via gale-gh-returns.
 type FakeGH struct {
-	Dir    string // prepend to PATH; contains the gh binary
-	state  string // script reads exit code/stdout/stderr from here
+	Dir   string // prepend to PATH; contains the gh binary
+	state string // script reads exit code/stdout/stderr from here
 }
 
 // WriteFakeGH creates a shell script named "gh" in a new
