@@ -142,6 +142,15 @@ func runVerify(subject, repo string) error {
 		return fmt.Errorf("gh CLI not found")
 	}
 
+	if !strings.HasPrefix(subject, "oci://") {
+		if info, err := os.Stat(subject); err == nil && info.IsDir() {
+			return fmt.Errorf(
+				"attestation subject is a directory, expected a file: %s",
+				subject,
+			)
+		}
+	}
+
 	cmd := exec.Command(ghPath, "attestation", "verify",
 		subject, "--repo", repo)
 	out, err := cmd.CombinedOutput()
