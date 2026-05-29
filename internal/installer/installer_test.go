@@ -3192,13 +3192,13 @@ func gitRun(t *testing.T, dir string, args ...string) {
 // It returns nil (success) so the install continues; the test
 // asserts the recorded values after Install returns.
 type recordingVerifier struct {
-	called      bool
+	called        bool
 	capturedIsDir bool
-	capturedSHA string
-	statErr     error
+	capturedSHA   string
+	statErr       error
 }
 
-func (rv *recordingVerifier) Available() bool          { return true }
+func (rv *recordingVerifier) Available() bool           { return true }
 func (rv *recordingVerifier) UnavailableReason() string { return "" }
 
 func (rv *recordingVerifier) VerifyFile(filePath, repo string) error {
@@ -3206,7 +3206,10 @@ func (rv *recordingVerifier) VerifyFile(filePath, repo string) error {
 	info, err := os.Stat(filePath)
 	if err != nil {
 		rv.statErr = err
-		return nil
+		// Intentionally succeed: the fake records the stat error
+		// for the test to assert on, and the install must proceed
+		// so we can inspect what path VerifyFile was handed.
+		return nil //nolint:nilerr
 	}
 	rv.capturedIsDir = info.IsDir()
 

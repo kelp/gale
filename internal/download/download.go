@@ -721,6 +721,23 @@ func copyFileToTar(tw *tar.Writer, path, rel string) error {
 // (empty string = no Authorization header sent). Returns the
 // computed hex SHA-256 on success.
 func FetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token string) (string, error) {
+	return fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, "")
+}
+
+// FetchAndExtractTarZstdWithArchive is like FetchAndExtractTarZstd
+// but also writes the raw compressed archive bytes to archiveOut
+// (when non-empty) as they stream. The caller owns the file's
+// lifecycle (creation and deletion); this function only writes to it.
+func FetchAndExtractTarZstdWithArchive(rawURL, destDir, expectedSHA256, token, archiveOut string) (string, error) {
+	return fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut)
+}
+
+// fetchAndExtractTarZstd is the shared implementation used by both
+// FetchAndExtractTarZstd and FetchAndExtractTarZstdWithArchive.
+// When archiveOut is non-empty the raw (compressed) bytes are also
+// written to that file as they stream, enabling callers to verify
+// the archive digest (e.g. Sigstore attestation) after extraction.
+func fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut string) (string, error) {
 	if token != "" {
 		u, err := url.Parse(rawURL)
 		if err != nil {
@@ -758,7 +775,17 @@ func FetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token string) (stri
 	}
 
 	hasher := sha256.New()
-	teed := io.TeeReader(resp.Body, hasher)
+	sinks := []io.Writer{hasher}
+	if archiveOut != "" {
+		af, err := os.Create(archiveOut)
+		if err != nil {
+			_ = os.RemoveAll(destDir)
+			return "", fmt.Errorf("create archive copy: %w", err)
+		}
+		defer af.Close()
+		sinks = append(sinks, af)
+	}
+	teed := io.TeeReader(resp.Body, io.MultiWriter(sinks...))
 
 	zr, err := zstd.NewReader(teed)
 	if err != nil {

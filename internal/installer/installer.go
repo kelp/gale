@@ -572,8 +572,27 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		return fmt.Errorf("clean staging dir: %w", err)
 	}
 
+	// When sigstore attestation is needed, tee the raw archive
+	// bytes to a unique tempfile. gh attestation verify computes
+	// the digest by reading the subject as a file, so we verify
+	// the teed copy of the downloaded archive (the exact bytes the
+	// attestation covers) and delete it after via defer. Binary
+	// installs run 8-way parallel, so the tempfile must be
+	// collision-free (os.CreateTemp guarantees this).
+	needAttest := bin.EffectiveTrust() == recipe.TrustSigstore && v != nil && v.Available()
+	var archiveOut string
+	if needAttest {
+		af, err := os.CreateTemp(build.TmpDir(), "gale-verify-*.tar.zst")
+		if err != nil {
+			return fmt.Errorf("create attestation tempfile: %w", err)
+		}
+		archiveOut = af.Name()
+		af.Close()
+		defer os.Remove(archiveOut)
+	}
+
 	streamDone := timing.Phase("binary-stream " + pkgID)
-	if _, err := download.FetchAndExtractTarZstd(bin.URL, stagingDir, bin.SHA256, token); err != nil {
+	if _, err := download.FetchAndExtractTarZstdWithArchive(bin.URL, stagingDir, bin.SHA256, token, archiveOut); err != nil {
 		streamDone()
 		return fmt.Errorf("fetch binary: %w", err)
 	}
@@ -587,16 +606,8 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// closes the C3 bypass where a non-GHCR URL dodged this
 	// step entirely; here we only verify when the recipe
 	// opted in to sigstore (which by definition means GHCR).
-	//
-	// Attestation is checked against the staging dir because
-	// the archive contents are now on disk there (not a
-	// .tar.zst file). The Verifier's VerifyFile signature
-	// accepts a path; we pass the staging dir as a proxy
-	// (the verifier hashes the extracted tree).
-	if bin.EffectiveTrust() == recipe.TrustSigstore && v != nil && v.Available() {
-		if err := v.VerifyFile(
-			stagingDir, attestation.DefaultRepo,
-		); err != nil {
+	if needAttest {
+		if err := v.VerifyFile(archiveOut, attestation.DefaultRepo); err != nil {
 			return fmt.Errorf("attestation: %w", err)
 		}
 	}
