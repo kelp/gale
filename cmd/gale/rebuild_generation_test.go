@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
 )
 
@@ -268,18 +269,13 @@ func TestFinalizeInstallRotatesGenOnRevisionBump(t *testing.T) {
 	}
 }
 
-// TestFinalizeInstallWithMissingOtherPkgInConfig is the
-// diagnostic test for hypothesis H1 of issue #23: when
-// gale.toml lists ANOTHER package whose store dir is absent,
-// strict rebuildGeneration errors and the install — though
-// successful in the store and lockfile — fails to rotate the
-// generation. The user sees no "Installed" line and the new
-// revision never reaches PATH.
-//
-// This test pins the current behavior so it's visible. If we
-// later decide install should be lenient (matching sync), this
-// is the test that flips: assertion changes from "error returned"
-// to "rotation succeeded with a warning."
+// TestFinalizeInstallWithMissingOtherPkgInConfig verifies that
+// finalizeInstall is lenient: installing one package succeeds
+// and lands on PATH even when gale.toml lists another package
+// whose store dir is absent. The uninstalled package is skipped
+// silently — it is installed later via `gale sync`. gale.toml
+// records intent; a single `gale install` only installs the
+// requested package.
 func TestFinalizeInstallWithMissingOtherPkgInConfig(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
@@ -319,19 +315,23 @@ func TestFinalizeInstallWithMissingOtherPkgInConfig(t *testing.T) {
 
 	err := finalizeInstall(galeDir, storeRoot, configPath, "",
 		"gh", "2.92.0", "2.92.0-3", "deadbeef")
-	if err == nil {
-		t.Fatal("finalizeInstall returned nil; expected error " +
-			"about `missing` store dir (strict rebuild semantics)")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "missing") {
-		t.Errorf("error %q should name the missing package", msg)
+	if err != nil {
+		t.Fatalf("finalizeInstall should be lenient (skip uninstalled config pkgs) and succeed, got: %v", err)
 	}
 
-	if _, statErr := os.Lstat(filepath.Join(galeDir, "current")); statErr == nil {
-		current, _ := os.Readlink(filepath.Join(galeDir, "current"))
-		t.Errorf("current was created (→ %s) despite rebuild "+
-			"failure; install state is inconsistent", current)
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("CurrentVersions: %v", err)
+	}
+	if v, ok := active["gh"]; !ok || v != "2.92.0-3" {
+		t.Errorf("active[gh] = %q (present=%v), want 2.92.0-3", v, ok)
+	}
+	if _, ok := active["missing"]; ok {
+		t.Errorf("active[missing] = %q, want absent (uninstalled pkg should be skipped)", active["missing"])
+	}
+
+	if _, statErr := os.Lstat(filepath.Join(galeDir, "current")); statErr != nil {
+		t.Errorf("current symlink should exist after lenient rebuild: %v", statErr)
 	}
 }
 
