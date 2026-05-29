@@ -146,7 +146,8 @@ func TestRebuildGenerationAutoPrunesOldGens(t *testing.T) {
 	for i := 1; i <= 15; i++ {
 		if err := os.MkdirAll(
 			filepath.Join(galeDir, "gen", strconv.Itoa(i), "bin"),
-			0o755); err != nil {
+			0o755,
+		); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -163,13 +164,15 @@ func TestRebuildGenerationAutoPrunesOldGens(t *testing.T) {
 	// 10 (gens 7..16), prunes 1..6.
 	for i := 1; i <= 6; i++ {
 		if _, err := os.Stat(
-			filepath.Join(galeDir, "gen", strconv.Itoa(i))); !os.IsNotExist(err) {
+			filepath.Join(galeDir, "gen", strconv.Itoa(i)),
+		); !os.IsNotExist(err) {
 			t.Errorf("gen/%d should have been auto-pruned (err=%v)", i, err)
 		}
 	}
 	for i := 7; i <= 16; i++ {
 		if _, err := os.Stat(
-			filepath.Join(galeDir, "gen", strconv.Itoa(i))); err != nil {
+			filepath.Join(galeDir, "gen", strconv.Itoa(i)),
+		); err != nil {
 			t.Errorf("gen/%d should be preserved: %v", i, err)
 		}
 	}

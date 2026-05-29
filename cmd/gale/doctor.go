@@ -435,7 +435,8 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 		// checkGeneration already surfaces a broken current
 		// symlink; stay quiet here to avoid a double-error.
 		ctx.out.Success(
-			"Revision drift (current generation unreadable; see above)")
+			"Revision drift (current generation unreadable; see above)",
+		)
 		return true
 	}
 	expected := generation.ActiveVersions(ctx.globalPkgs, ctx.storeRoot)
@@ -448,7 +449,8 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 		}
 		if got != want {
 			drift = append(drift, fmt.Sprintf(
-				"%s: gen has %s, store has %s", name, got, want))
+				"%s: gen has %s, store has %s", name, got, want,
+			))
 		}
 	}
 	if len(drift) == 0 {
@@ -459,7 +461,8 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 	const maxShown = 5
 	msg := fmt.Sprintf(
 		"Revision drift in current generation (%d package(s))",
-		len(drift))
+		len(drift),
+	)
 	shown := drift
 	if len(shown) > maxShown {
 		shown = shown[:maxShown]
@@ -469,7 +472,8 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 	}
 	if len(drift) > maxShown {
 		msg += fmt.Sprintf(
-			"\n  ... %d more", len(drift)-maxShown)
+			"\n  ... %d more", len(drift)-maxShown,
+		)
 	}
 	msg += "\n  Run: gale doctor --repair"
 	ctx.out.Error(msg)

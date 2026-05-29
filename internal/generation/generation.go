@@ -428,9 +428,11 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 		sort.Ints(doomed)
 		for _, n := range doomed {
 			if err := os.RemoveAll(
-				filepath.Join(genRoot, strconv.Itoa(n))); err != nil {
+				filepath.Join(genRoot, strconv.Itoa(n)),
+			); err != nil {
 				return fmt.Errorf(
-					"remove gen %d: %w", n, err)
+					"remove gen %d: %w", n, err,
+				)
 			}
 			removed = append(removed, n)
 		}

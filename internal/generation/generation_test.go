@@ -1754,14 +1754,17 @@ func TestBuildSkipsNonFunctionalTopLevelDirs(t *testing.T) {
 	storeRoot := t.TempDir()
 
 	pkgDir := filepath.Join(storeRoot, "go", "1.0.0")
-	for _, sub := range []string{"bin", "lib", "share", "include",
-		"libexec", "etc", "src", "api", "pkg", "doc", "misc"} {
+	for _, sub := range []string{
+		"bin", "lib", "share", "include",
+		"libexec", "etc", "src", "api", "pkg", "doc", "misc",
+	} {
 		if err := os.MkdirAll(filepath.Join(pkgDir, sub), 0o755); err != nil {
 			t.Fatalf("mkdir %s: %v", sub, err)
 		}
 		if err := os.WriteFile(
 			filepath.Join(pkgDir, sub, "marker"),
-			[]byte("from "+sub), 0o644); err != nil {
+			[]byte("from "+sub), 0o644,
+		); err != nil {
 			t.Fatalf("write marker in %s: %v", sub, err)
 		}
 	}
