@@ -48,6 +48,48 @@ it saturates network and CPU.
 Fill these in once captured. Keep older runs in their own subsections
 so trends are visible.
 
+### Run: 2026-05-28 on Linux cloud VM (gale-only)
+
+- Date: 2026-05-28
+- Machine: Debian 13 (trixie) cloud VM, x86_64, 4 cores, 15.3 GiB RAM
+- gale version: `0.16.2-dev.94+92ee79e` (built from HEAD by the harness)
+- Platform: `Linux/x86_64`
+- Homebrew: n/a (Linux — brew comparison skipped, low signal)
+- Network: cloud VM egress
+- Notes: First valid run after the attestation fix (binary installs no
+  longer source-fall-back) and the harness HEAD-build + sync-resolution
+  fixes. All 5 packages installed from prebuilt binaries (preflight
+  passed). bat/eza cold times include pulling their dependency-binary
+  chains (rust, cmake, libgit2, openssl, …) into the cold store.
+
+#### Per-package install (seconds, median of 3)
+
+| package | gale cold | gale warm |
+|---------|-----------|-----------|
+| jq      |         6 |       0   |
+| fd      |         6 |       0   |
+| ripgrep |        11 |       0   |
+| bat     |        42 |       0   |
+| eza     |        37 |       0   |
+
+#### Multi-package gale sync (seconds, single run, 5 packages)
+
+| operation        | seconds |
+|------------------|---------|
+| gale sync (cold) |   41    |
+
+Sync ≈ the slowest single package (bat, 42s) rather than the sum of all
+five (~102s), confirming the parallel-install path (T1.2) is working.
+
+#### Phase timing breakdown (jq cold install, `gale --verbose`)
+
+```
+[timing] recipe-fetch jq elapsed=326ms
+[timing] ghcr-token kelp/gale-recipes/jq elapsed=598ms
+[timing] binary-stream jq@1.8.1 elapsed=591ms
+[timing] lockfile-write jq elapsed=0s
+```
+
 ### Run: <YYYY-MM-DD> on <machine>
 
 - Date: YYYY-MM-DD
