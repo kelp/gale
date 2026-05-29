@@ -3184,3 +3184,192 @@ func gitRun(t *testing.T, dir string, args ...string) {
 		t.Fatalf("%v failed: %s: %v", args, out, err)
 	}
 }
+
+// --- Regression: installBinaryTo must pass archive FILE to VerifyFile ---
+
+// recordingVerifier is a test-local Verifier that records the
+// stat and content-hash of the path it receives at call time.
+// It returns nil (success) so the install continues; the test
+// asserts the recorded values after Install returns.
+type recordingVerifier struct {
+	called      bool
+	capturedIsDir bool
+	capturedSHA string
+	statErr     error
+}
+
+func (rv *recordingVerifier) Available() bool          { return true }
+func (rv *recordingVerifier) UnavailableReason() string { return "" }
+
+func (rv *recordingVerifier) VerifyFile(filePath, repo string) error {
+	rv.called = true
+	info, err := os.Stat(filePath)
+	if err != nil {
+		rv.statErr = err
+		return nil
+	}
+	rv.capturedIsDir = info.IsDir()
+
+	// Hash the file bytes so we can compare to the expected
+	// archive SHA256. Reading a directory here would fail,
+	// which is the actual bug: production code passes the
+	// staging DIRECTORY, not the archive file.
+	if !rv.capturedIsDir {
+		f, err := os.Open(filePath)
+		if err == nil {
+			h := sha256.New()
+			io.Copy(h, f) //nolint:errcheck
+			f.Close()
+			rv.capturedSHA = fmt.Sprintf("%x", h.Sum(nil))
+		}
+	}
+	return nil
+}
+
+// hostRewrite is a round-tripper that rewrites every request to
+// target the given host, keeping the path/query intact. Used to
+// redirect ghcr.io URLs to a local TLS test server.
+type hostRewrite struct {
+	base http.RoundTripper
+	host string
+}
+
+func (h hostRewrite) RoundTrip(r *http.Request) (*http.Response, error) {
+	r2 := r.Clone(r.Context())
+	r2.URL.Scheme = "https"
+	r2.URL.Host = h.host
+	return h.base.RoundTrip(r2)
+}
+
+// TestInstallBinaryVerifiesArchiveFile asserts that installBinaryTo
+// hands VerifyFile a real archive FILE (with the correct bytes),
+// not the staging DIRECTORY it extracts into.
+//
+// Regression: after the streaming-extract refactor, the code passes
+// stagingDir (a directory) to VerifyFile instead of a tempfile
+// containing the raw archive bytes. This causes every sigstore-trust
+// binary install to fail attestation (gh attestation verify needs a
+// file to compute a SHA256 digest) and silently fall back to a source
+// build.
+//
+// The fix will tee the archive bytes to a tempfile and pass that
+// file to VerifyFile. Until fixed, the recording fake captures
+// capturedIsDir == true (a directory was passed) and/or
+// capturedSHA is empty (couldn't read a directory as a file).
+func TestInstallBinaryVerifiesArchiveFile(t *testing.T) {
+	// Isolate build.TmpDir() under a throwaway HOME so we can
+	// glob for leaked gale-verify-* tempfiles after the install.
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Build a tar.zst with a known binary.
+	binContent := "#!/bin/sh\necho from-sigstore-binary"
+	tarzst := createTestTarZstd(t, "bin/testpkg", binContent)
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	// Serve over TLS — FetchAndExtractTarZstd rejects sending a
+	// bearer token over plain HTTP.
+	srv := httptest.NewTLSServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData) //nolint:errcheck
+		},
+	))
+	defer srv.Close()
+
+	// Redirect https://ghcr.io/... to the test server. The
+	// host-rewrite round-tripper injects the TLS test server's
+	// address without touching the logical URL the production
+	// code sees (ghcr.io).
+	restore := download.SetHTTPClient(&http.Client{
+		Transport: hostRewrite{
+			base: srv.Client().Transport,
+			host: srv.Listener.Addr().String(),
+		},
+	})
+	defer restore()
+
+	// Make ghcr.Token return a fake token without a network
+	// call. FetchAndExtractTarZstd requires TLS when a token
+	// is present, which is why we need the TLS server above.
+	t.Setenv("GALE_GITHUB_TOKEN", "fake-token-for-test")
+
+	// Wire the recording verifier.
+	rv := &recordingVerifier{}
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store:    store.NewStore(storeRoot),
+		Verifier: rv,
+	}
+
+	// Recipe uses a ghcr.io URL with default (sigstore) trust,
+	// which is the path that triggers VerifyFile.
+	blobURL := fmt.Sprintf(
+		"https://ghcr.io/v2/owner/repo/testpkg/blobs/sha256:%s",
+		hash,
+	)
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    blobURL,
+				SHA256: hash,
+				Trust:  recipe.TrustSigstore,
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+	if result.Method != MethodBinary {
+		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
+	}
+
+	// The recording verifier must have been called.
+	if !rv.called {
+		t.Fatal("VerifyFile was never called; " +
+			"Verifier not wired into install path")
+	}
+
+	// The path handed to VerifyFile must be a FILE, not a directory.
+	// Today (bug present): it receives the staging dir → IsDir == true.
+	if rv.statErr != nil {
+		t.Fatalf("VerifyFile received an inaccessible path: %v",
+			rv.statErr)
+	}
+	if rv.capturedIsDir {
+		t.Errorf("VerifyFile received a DIRECTORY, not a file — " +
+			"installBinaryTo is passing the staging dir instead " +
+			"of the archive tempfile")
+	}
+
+	// The file's bytes must be the raw compressed archive
+	// (the same bytes FetchAndExtractTarZstd tees). This
+	// ensures gh attestation verify can compute the correct
+	// SHA256 digest of the artifact.
+	if rv.capturedSHA != hash {
+		t.Errorf("VerifyFile received file with SHA256 = %q, "+
+			"want archive SHA256 = %q; "+
+			"the tempfile must contain the raw archive bytes",
+			rv.capturedSHA, hash)
+	}
+
+	// Secondary assertion: no gale-verify-* tempfile should
+	// leak under build.TmpDir() after a successful install.
+	// The fix must clean up the tempfile via defer.
+	tmpDir := build.TmpDir()
+	if tmpDir != "" {
+		pattern := filepath.Join(tmpDir, "gale-verify-*")
+		leaked, err := filepath.Glob(pattern)
+		if err == nil && len(leaked) > 0 {
+			t.Errorf("leaked tempfile(s) under %s: %v", tmpDir, leaked)
+		}
+	}
+}
