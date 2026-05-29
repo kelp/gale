@@ -242,6 +242,26 @@ func TestFindGhFallsBackToPath(t *testing.T) {
 	}
 }
 
+func TestVerifyFileRejectsDirectory(t *testing.T) {
+	isolate(t)
+	mock := writeMockGH(t, mockOpts{verifyExit: 0})
+	orig := lookPath
+	lookPath = func(name string) (string, error) {
+		return mock, nil
+	}
+	defer func() { lookPath = orig }()
+
+	dir := t.TempDir()
+	v := &GHVerifier{}
+	err := v.VerifyFile(dir, "owner/repo")
+	if err == nil {
+		t.Fatal("expected error for directory subject, got nil")
+	}
+	if !strings.Contains(err.Error(), "directory") {
+		t.Errorf("error %q should mention 'directory'", err)
+	}
+}
+
 func TestNewVerifierReturnsGHVerifier(t *testing.T) {
 	v := NewVerifier()
 	if _, ok := v.(*GHVerifier); !ok {
