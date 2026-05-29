@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/kelp/gale/internal/farm"
 )
 
 // Mach-O magic numbers.
@@ -196,46 +194,24 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		return nil
 	}
 
-	// Build a map: library basename → dep lib dir.
-	// e.g. "libpcre2-8.dylib" → "~/.gale/pkg/pcre2/10.44/lib"
-	libDirMap := make(map[string]string)
-	for _, storeDir := range depStoreDirs {
-		libDir := filepath.Join(storeDir, "lib")
-		entries, err := os.ReadDir(libDir)
-		if err != nil {
-			continue
-		}
-		for _, e := range entries {
-			if strings.HasSuffix(e.Name(), ".dylib") {
-				libDirMap[e.Name()] = libDir
-			}
-		}
-	}
-
-	// Derive the shared-lib farm dir from the first dep;
-	// used to also add an rpath to ~/.gale/lib/ so binaries
-	// survive dep upgrades that preserve the SONAME.
-	farmDir := farm.DirFromStoreDir(depStoreDirs[0])
-
-	ownLib := filepath.Join(prefixDir, "lib")
-
 	for _, file := range files {
 		deps, err := otoolDeps(file)
 		if err != nil {
 			continue
 		}
 
-		// Collect unique dep lib dirs needed by this
-		// binary.
-		needed := make(map[string]bool)
+		// A Mach-O needs the shared-lib farm rpath when it
+		// references at least one @rpath/ dep. Self-contained
+		// binaries (system libs only) get nothing — adding an
+		// rpath on stripped Mach-O headers would just produce
+		// noise.
 		hasRpathDep := false
 		for _, dep := range deps {
 			if !strings.HasPrefix(dep, "@rpath/") {
-				// Warn on non-@rpath dep references
-				// that point outside system locations.
-				// This usually means a dep dylib was
-				// built without FixupBinaries, which
-				// violates the invariant above.
+				// Warn on non-@rpath dep references that point
+				// outside system locations. This usually means
+				// a dep dylib was built without FixupBinaries,
+				// which violates the invariant above.
 				if isSuspiciousDepRef(dep, depStoreDirs) {
 					fmt.Fprintf(os.Stderr,
 						"warning: %s references %s with a"+
@@ -246,73 +222,92 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 				continue
 			}
 			hasRpathDep = true
-			libName := strings.TrimPrefix(dep, "@rpath/")
-
-			// Skip libs in the package's own lib dir.
-			if _, err := os.Stat(
-				filepath.Join(ownLib, libName),
-			); err == nil {
-				continue
-			}
-
-			if dir, ok := libDirMap[libName]; ok {
-				needed[dir] = true
-			}
 		}
-
-		// Add the farm rpath alongside per-dep rpaths so
-		// binaries can find versioned dylibs via the
-		// stable ~/.gale/lib/ path. Only meaningful when
-		// the binary has at least one @rpath/ dep —
-		// self-contained binaries (system libs only) get
-		// nothing to resolve via the farm and adding the
-		// rpath on stripped Mach-O headers would just
-		// produce noise.
-		if farmDir != "" && hasRpathDep {
-			needed[farmDir] = true
-		}
-
-		if len(needed) == 0 {
+		if !hasRpathDep {
 			continue
 		}
 
-		// Get existing rpaths to avoid duplicates.
-		existing := existingRpaths(file)
-
-		changed := false
-		for dir := range needed {
-			if existing[dir] {
-				continue
-			}
-			err := run("install_name_tool",
-				"-add_rpath", dir, file)
-			if err != nil {
-				// Header too small — strip signature to
-				// free space, then retry.
-				_ = run("codesign", "--remove-signature",
-					file)
-				if retryErr := run("install_name_tool",
-					"-add_rpath", dir, file); retryErr != nil {
-					fmt.Fprintf(os.Stderr,
-						"warning: cannot add rpath %s to %s: "+
-							"not enough header space (link with "+
-							"-Wl,-headerpad_max_install_names)\n",
-						dir, filepath.Base(file))
-					continue
-				}
-			}
-			changed = true
+		// Add the farm rpath RELATIVE, so the shipped binary
+		// resolves its deps via ~/.gale/lib at any gale-home
+		// location and needs no install-time rewrite. This is
+		// what lets `gale install` place the attested artifact
+		// byte-for-byte instead of mutating + re-signing it.
+		// See docs/dev/relocatable-binaries.md. dyld resolves
+		// the @loader_path form to the farm dir even when a
+		// dylib is reached through the farm's symlinks.
+		rpath := relativeFarmRpath(prefixDir, file)
+		if existingRpaths(file)[rpath] {
+			continue
 		}
-
-		if changed {
-			if err := run("codesign", "--force", "--sign",
-				"-", file); err != nil {
-				return fmt.Errorf("codesign %s: %w",
-					filepath.Base(file), err)
-			}
+		if err := addRpathRetry(file, rpath); err != nil {
+			// addRpathRetry already warned; skip this file
+			// rather than fail the whole build.
+			continue
+		}
+		if err := run("codesign", "--force", "--sign",
+			"-", file); err != nil {
+			return fmt.Errorf("codesign %s: %w",
+				filepath.Base(file), err)
 		}
 	}
 
+	return nil
+}
+
+// relativeFarmRpath returns the @loader_path/@executable_path-
+// anchored rpath that points from a Mach-O at `file` (under the
+// build prefix `prefixDir`) to the shared-lib farm at
+// <galeDir>/lib. A package prefix maps to
+// <galeDir>/pkg/<name>/<version-revision>, a fixed three levels
+// below <galeDir>, so the farm is reachable with no absolute
+// path baked in — the binary relocates to any gale home.
+//
+// Executables are loaded by their real store path and anchor on
+// @executable_path. Dylibs anchor on @loader_path; this covers
+// loads via the dylib's own store path, complementing the bare
+// @loader_path FixupBinaries adds for loads via the farm
+// symlink.
+func relativeFarmRpath(prefixDir, file string) string {
+	anchor := "@executable_path"
+	if strings.HasPrefix(file,
+		filepath.Join(prefixDir, "lib")+string(filepath.Separator)) {
+		anchor = "@loader_path"
+	}
+	rel, err := filepath.Rel(prefixDir, file)
+	if err != nil {
+		rel = filepath.Base(file)
+	}
+	// Directory components between the prefix root and the file
+	// (bin/exe → 1; libexec/git-core/git → 2).
+	n := 0
+	if dir := filepath.Dir(rel); dir != "." {
+		n = len(strings.Split(dir, string(filepath.Separator)))
+	}
+	// 3 levels (pkg/<name>/<ver-rev>) + n up to <galeDir>, +lib.
+	return anchor + "/" + strings.Repeat("../", 3+n) + "lib"
+}
+
+// addRpathRetry adds an LC_RPATH to a Mach-O, stripping the
+// ad-hoc signature and retrying once if the header lacks space.
+// Returns an error (after warning) only if the rpath still won't
+// fit, so callers can skip the file instead of aborting. The
+// caller re-signs after a successful add.
+func addRpathRetry(file, rpath string) error {
+	if err := run("install_name_tool",
+		"-add_rpath", rpath, file); err == nil {
+		return nil
+	}
+	// Header too small — strip signature to free space, retry.
+	_ = run("codesign", "--remove-signature", file)
+	if err := run("install_name_tool",
+		"-add_rpath", rpath, file); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"warning: cannot add rpath %s to %s: not enough "+
+				"header space (link with "+
+				"-Wl,-headerpad_max_install_names)\n",
+			rpath, filepath.Base(file))
+		return err
+	}
 	return nil
 }
 

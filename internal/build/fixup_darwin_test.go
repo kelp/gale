@@ -3,6 +3,7 @@
 package build
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -349,10 +350,22 @@ func TestAddDepRpathsAddsRpathForDepLib(t *testing.T) {
 		t.Fatalf("AddDepRpaths error: %v", err)
 	}
 
-	// After: should have LC_RPATH for the dep lib dir.
+	// After: the binary must resolve its dep via a RELATIVE
+	// farm rpath, so the shipped artifact needs no
+	// install-time rewrite (see
+	// docs/dev/relocatable-binaries.md). An executable in
+	// bin/ sits four levels above the farm
+	// (<galeDir>/pkg/<name>/<ver-rev>/bin -> <galeDir>/lib).
 	after := otoolOutput(t, binPath)
-	if !strings.Contains(after, depLib) {
-		t.Errorf("expected LC_RPATH %s in:\n%s", depLib, after)
+	if !strings.Contains(after, "@executable_path/../../../../lib") {
+		t.Errorf("expected relative farm rpath "+
+			"@executable_path/../../../../lib in:\n%s", after)
+	}
+	// And it must NOT bake any absolute dep/store path — that
+	// is the mutation-at-install bug this design removes.
+	if strings.Contains(after, "path "+depLib) {
+		t.Errorf("binary baked absolute dep path %s:\n%s",
+			depLib, after)
 	}
 }
 
@@ -536,6 +549,49 @@ func TestRelocateStaleRpathsLeavesValidRpathsAlone(t *testing.T) {
 	rpaths := existingRpaths(bin)
 	if !rpaths[validRpath] {
 		t.Errorf("valid rpath %q should be preserved, got %v", validRpath, rpaths)
+	}
+}
+
+func TestRelocateStaleRpathsLeavesRelativeRpathBinaryByteIdentical(t *testing.T) {
+	// A binary built under the relocatable design carries only
+	// relative rpaths (@executable_path/...), so there is
+	// nothing for RelocateStaleRpaths to rewrite. It must then
+	// leave the file BYTE-IDENTICAL — no gratuitous re-sign —
+	// so the installed artifact still matches what was verified
+	// and attested. See docs/dev/relocatable-binaries.md.
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	os.MkdirAll(binDir, 0o755)
+	bin := compileWithHeaderpad(t, binDir, "dummy")
+
+	relRpath := "@executable_path/../../../../lib"
+	if err := exec.Command("install_name_tool",
+		"-add_rpath", relRpath, bin).Run(); err != nil {
+		t.Fatalf("add relative rpath: %v", err)
+	}
+	// Ad-hoc sign, mimicking a CI-shipped binary.
+	if err := exec.Command("codesign", "--force", "--sign",
+		"-", bin).Run(); err != nil {
+		t.Fatalf("codesign: %v", err)
+	}
+
+	before, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RelocateStaleRpaths(dir, "/Users/tcole/.gale/pkg"); err != nil {
+		t.Fatalf("RelocateStaleRpaths: %v", err)
+	}
+
+	after, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("RelocateStaleRpaths mutated a relative-rpath "+
+			"binary (%d -> %d bytes); it must not touch a file "+
+			"with no stale rpath to rewrite", len(before), len(after))
 	}
 }
 

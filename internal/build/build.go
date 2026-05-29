@@ -746,6 +746,19 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	// host — see compilerFlags docs for the rationale.
 	env = append(env, bc.compilerFlags(depCPPFLAGS, depLDFLAGS)...)
 
+	// cargo/rustc ignore LDFLAGS, so the headerpad that
+	// compilerFlags adds there never reaches a Rust link. On
+	// macOS, pass it through RUSTFLAGS instead so the
+	// post-build install_name_tool fixup has room to add the
+	// relative farm rpath — otherwise a cargo binary with a
+	// dylib dep can't be relocated and falls back to a source
+	// build at install. Keeps cargo recipes trivial. A recipe
+	// [build] env RUSTFLAGS is applied later and wins.
+	if bc.System == "cargo" && runtime.GOOS == "darwin" {
+		setDefault(&env, "RUSTFLAGS",
+			"-C link-arg=-Wl,-headerpad_max_install_names")
+	}
+
 	// Recipe-defined env vars (from [build] env = {...}).
 	// Expand ${PREFIX}, ${VERSION}, ${JOBS} placeholders.
 	for k, v := range bc.Env {

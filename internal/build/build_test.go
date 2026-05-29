@@ -1293,6 +1293,44 @@ func TestSystemDepsReturnsCorrectDeps(t *testing.T) {
 	}
 }
 
+func TestBuildEnvCargoSetsRustflagsHeaderpadOnDarwin(t *testing.T) {
+	// cargo/rustc ignore LDFLAGS, so the headerpad that
+	// compilerFlags injects via LDFLAGS never reaches a Rust
+	// link. Without headerpad the post-build install_name_tool
+	// fixup can't add the farm rpath and the binary falls back
+	// to a source build at install. gale must inject the
+	// headerpad via RUSTFLAGS for cargo builds so recipes stay
+	// trivial (`cargo install --path . --root ${PREFIX}`).
+	env, _, _ := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0",
+		System: "cargo", Debug: false, Deps: nil,
+	})
+	rustflags := envToMap(env)["RUSTFLAGS"]
+	want := "-C link-arg=-Wl,-headerpad_max_install_names"
+
+	if runtime.GOOS == "darwin" {
+		if !strings.Contains(rustflags, want) {
+			t.Errorf("RUSTFLAGS = %q, want it to contain %q",
+				rustflags, want)
+		}
+	} else if strings.Contains(rustflags, "headerpad") {
+		t.Errorf("RUSTFLAGS on %s = %q, headerpad is macOS-only",
+			runtime.GOOS, rustflags)
+	}
+}
+
+func TestBuildEnvNonCargoDoesNotSetRustflags(t *testing.T) {
+	// Headerpad-via-RUSTFLAGS is cargo-specific; a C/autotools
+	// build (which honours LDFLAGS) must not get RUSTFLAGS.
+	env, _, _ := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0",
+		System: "", Debug: false, Deps: nil,
+	})
+	if rf := envToMap(env)["RUSTFLAGS"]; rf != "" {
+		t.Errorf("RUSTFLAGS = %q, want unset for non-cargo", rf)
+	}
+}
+
 func TestBuildEnvHeaderOnlyDepStillSetsIncludePath(t *testing.T) {
 	// A dep that ships only include/ (header-only library)
 	// alongside a bin-only dep (e.g. cmake, no lib/) must
