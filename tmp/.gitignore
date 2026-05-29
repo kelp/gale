@@ -1,0 +1,4 @@
+# Scratch / test dir (see CLAUDE.md "Scratch Space").
+# Track the directory itself, ignore everything in it.
+*
+!.gitignore

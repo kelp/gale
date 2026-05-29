@@ -8,9 +8,6 @@ gale.lock
 # Claude Code
 .claude/
 
-# Local scratch / test dir (see CLAUDE.md)
-/tmp/
-
 # Build artifacts
 *.tar.zst
 

@@ -31,13 +31,14 @@ just release 0.2.0 # push tag — CI builds and publishes
 
 ## Scratch Space
 
-`tmp/` at the repo root is gitignored, untracked scratch
-space for tests and experiments — isolated gale setups
-(`HOME=tmp/...`), throwaway recipes, captured output, etc.
-Prefer it over the system `/tmp` so artifacts stay with the
-repo and survive a reboot mid-task. Create it if absent
-(`mkdir -p tmp`). Clean up what you create when done —
-treat it as ephemeral, not a persistent store.
+`tmp/` at the repo root is scratch space for tests and
+experiments — isolated gale setups (`HOME=tmp/...`),
+throwaway recipes, captured output, etc. The directory is
+tracked (via `tmp/.gitignore`) so it always exists after a
+clone, but everything you put in it is ignored. Prefer it
+over the system `/tmp` so artifacts stay with the repo and
+survive a reboot mid-task. Clean up what you create when
+done — treat it as ephemeral, not a persistent store.
 
 ## Project Layout
 
