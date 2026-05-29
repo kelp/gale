@@ -20,15 +20,29 @@
 # Optional environment:
 #   PACKAGES   — space-separated list (default: "jq fd ripgrep bat eza")
 #   RUNS       — runs per scenario for median (default: 3)
-#   GALE       — path to gale binary (default: gale on PATH)
+#   GALE       — path to gale binary. Unset (default): build gale from
+#                HEAD and measure that. Set: use it as-is (skips the
+#                build; for VMs or release-vs-HEAD comparisons).
 #   BREW       — path to brew binary (default: brew on PATH)
 
 set -euo pipefail
 
 PACKAGES="${PACKAGES:-jq fd ripgrep bat eza}"
 RUNS="${RUNS:-3}"
-GALE="${GALE:-gale}"
 BREW="${BREW:-brew}"
+
+# GALE explicitly set by the caller? If so, honour it as-is (used by
+# VMs that pre-build and copy a binary in, or to compare a released
+# gale against HEAD). If not, we build gale from HEAD below and point
+# GALE at the freshly built binary — the baseline must never silently
+# measure a stale installed release.
+if [ -n "${GALE:-}" ]; then
+    GALE_EXPLICIT=1
+else
+    GALE_EXPLICIT=0
+fi
+
+REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
 
 DRY_RUN=0
 YES=0
@@ -61,7 +75,8 @@ Flags:
 Env:
   PACKAGES      Override package list (default: "jq fd ripgrep bat eza").
   RUNS          Runs per scenario (default: 3).
-  GALE          Path to gale binary.
+  GALE          Path to gale binary. Unset: build from HEAD and
+                measure that. Set: use as-is (skips the build).
   BREW          Path to brew binary.
 EOF
 }
@@ -83,21 +98,76 @@ if [ "$DRY_RUN" -eq 0 ] && [ "$YES" -eq 0 ]; then
     exit 2
 fi
 
-OS=$(uname -s)
-if [ "$OS" != "Darwin" ]; then
-    echo "NOTE: not on macOS ($OS). Homebrew bottle behaviour may differ;" >&2
+OSNAME=$(uname -s)
+ARCH=$(uname -m)
+if [ "$OSNAME" != "Darwin" ]; then
+    echo "NOTE: not on macOS ($OSNAME). Homebrew bottle behaviour may differ;" >&2
     echo "      gale numbers are still meaningful, brew numbers less so." >&2
 fi
 
-if [ "$DRY_RUN" -eq 0 ]; then
+# expected_dev_version: the version string a HEAD build embeds.
+# Mirrors the justfile — prefer `just _dev-version`, else fall back to
+# raw `git describe` (which the go-build fallback below embeds).
+expected_dev_version() {
+    if command -v just >/dev/null 2>&1; then
+        (cd "$REPO_ROOT" && just _dev-version 2>/dev/null)
+    else
+        (cd "$REPO_ROOT" && git describe --tags --always 2>/dev/null)
+    fi
+}
+
+# Resolve the gale binary under test. Build from HEAD unless the
+# caller pinned GALE explicitly. Runs even under --dry-run so the
+# preview reflects the exact version that would be measured.
+if [ "$GALE_EXPLICIT" -eq 1 ]; then
     if ! command -v "$GALE" >/dev/null 2>&1; then
-        echo "gale not found on PATH (set GALE= to override)" >&2
+        echo "GALE=$GALE not found or not executable" >&2
         exit 1
     fi
-    if [ "$WITH_BREW" -eq 1 ] && ! command -v "$BREW" >/dev/null 2>&1; then
-        echo "brew not found on PATH (set BREW= to override or drop --with-brew)" >&2
+    GALE_VERSION=$("$GALE" --version 2>&1 | head -1)
+    echo "Using caller-specified gale: $GALE ($GALE_VERSION)" >&2
+    case "$GALE_VERSION" in
+        *-dev.*) : ;; # looks like a HEAD build
+        *)
+            echo "WARNING: '$GALE_VERSION' has no -dev. marker — this may be" >&2
+            echo "         a released binary, not a build from HEAD." >&2
+            ;;
+    esac
+else
+    echo "Building gale from HEAD ($REPO_ROOT)..." >&2
+    if command -v just >/dev/null 2>&1 && command -v go >/dev/null 2>&1; then
+        (cd "$REPO_ROOT" && just build >&2) || {
+            echo "just build failed" >&2
+            exit 1
+        }
+    elif command -v go >/dev/null 2>&1; then
+        _ver=$(expected_dev_version)
+        _ver=${_ver:-dev}
+        (cd "$REPO_ROOT" && go build -ldflags "-X main.version=$_ver" -o gale ./cmd/gale/) || {
+            echo "go build failed" >&2
+            exit 1
+        }
+    else
+        echo "Cannot build gale: neither 'just'+'go' nor 'go' is available." >&2
+        echo "Install Go (and just), or set GALE= to a HEAD-built binary." >&2
         exit 1
     fi
+    GALE="$REPO_ROOT/gale"
+    GALE_VERSION=$("$GALE" --version 2>&1 | head -1)
+    # Assert the freshly built binary reports the HEAD version, so a
+    # botched build can't masquerade as a valid measurement.
+    EXPECTED=$(expected_dev_version)
+    if [ -n "$EXPECTED" ] && ! printf '%s' "$GALE_VERSION" | grep -qF "$EXPECTED"; then
+        echo "ERROR: built gale reports '$GALE_VERSION' but HEAD is" >&2
+        echo "       '$EXPECTED'. Refusing to measure a mismatched binary." >&2
+        exit 1
+    fi
+    echo "Built gale from HEAD: $GALE ($GALE_VERSION)" >&2
+fi
+
+if [ "$DRY_RUN" -eq 0 ] && [ "$WITH_BREW" -eq 1 ] && ! command -v "$BREW" >/dev/null 2>&1; then
+    echo "brew not found on PATH (set BREW= to override or drop --with-brew)" >&2
+    exit 1
 fi
 
 # Isolated HOME for every gale invocation. gale uses
@@ -109,6 +179,19 @@ fi
 ISO_HOME=$(mktemp -d -t gale-perf-baseline.XXXXXX)
 trap 'rm -rf "$ISO_HOME"' EXIT
 echo "Isolated gale HOME: $ISO_HOME (auto-cleaned on exit)" >&2
+
+# Bridge gh CLI credentials from the real HOME into the isolated
+# one. Without this, gale's attestation verifier (which shells
+# out to `gh attestation verify`) sees no auth, every binary
+# install fails attestation, and the harness measures source
+# builds instead of binary installs.
+#
+# Symlinks rather than copies so the real config keeps working
+# unchanged. ~/.config/gh holds hosts.yml + config.yml.
+if [ -d "$HOME/.config/gh" ]; then
+    mkdir -p "$ISO_HOME/.config"
+    ln -s "$HOME/.config/gh" "$ISO_HOME/.config/gh"
+fi
 
 # gale_iso runs gale with HOME overridden. Use this for every
 # gale invocation in this script — direct `gale` calls would hit
@@ -329,6 +412,9 @@ fi
 # point goes to stderr (status), so a `> baseline.md` redirect
 # captures just the report.
 cat <<EOF
+- gale version: \`$GALE_VERSION\`
+- platform: \`$OSNAME/$ARCH\`
+
 ### Per-package install (seconds, median of $RUNS)
 
 EOF

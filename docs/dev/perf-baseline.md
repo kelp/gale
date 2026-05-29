@@ -27,11 +27,21 @@ block. Redirect stdout to a file (or paste under "Results"):
 ```
 
 Status / progress output goes to stderr, so the captured stdout is
-paste-ready Markdown.
+paste-ready Markdown. The emitted block now stamps the **gale version
+and platform** (`OS/arch`) at the top, captured from the binary
+actually measured — so you no longer fill those in by hand.
 
-The harness is destructive — it uninstalls and reinstalls each
-package via both gale and brew. Don't run it on a workstation in the
-middle of real work.
+By default the harness **builds gale from HEAD** (`just build`) and
+measures that binary, asserting its reported version matches the
+working tree. Set `GALE=<path>` to skip the build and measure a
+specific binary (e.g. a released gale for a release-vs-HEAD
+comparison); it warns if that binary doesn't look like a HEAD build.
+
+All gale work happens in a throwaway isolated `$HOME`, so your real
+`~/.gale/` is untouched. With `--with-brew` it also runs `brew
+reinstall` (never uninstall), leaving brew state as it found it.
+Still, don't run it on a workstation in the middle of real work —
+it saturates network and CPU.
 
 ## Reference run
 
@@ -42,7 +52,7 @@ so trends are visible.
 
 - Date: YYYY-MM-DD
 - Machine: <model / chip / RAM>
-- gale version: `gale --version` →
+- gale version / platform: auto-stamped at the top of the emitted block
 - Homebrew version: `brew --version` →
 - Network: <e.g. residential 200 Mbps wired, fresh DNS cache>
 - Notes: <anything anomalous — VPN, throttled link, etc.>
