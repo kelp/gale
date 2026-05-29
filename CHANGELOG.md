@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.16.3 — 2026-05-29
 
 ### Added
 
@@ -135,6 +135,22 @@
 
 ### Fixed
 
+- Prebuilt binaries are now relocatable: gale bakes the
+  shared-lib farm rpath relative
+  (`@executable_path/../../../../lib`, `@loader_path`-anchored
+  for dylibs) at build time instead of the CI runner's
+  absolute home, and cargo builds get
+  `-Wl,-headerpad_max_install_names` via `RUSTFLAGS` (cargo
+  ignores `LDFLAGS`). Install no longer rewrites `LC_RPATH`
+  or re-signs the Mach-O, so the binary on disk matches the
+  artifact whose SHA256 and Sigstore attestation were
+  verified — and installs into a gale home with a long path
+  (longer than the CI builder's) no longer fail relocation
+  and fall back to a source build. Recipes stay trivial; no
+  recipe change. See `docs/dev/relocatable-binaries.md`.
+  (Takes effect for binaries rebuilt by gale-recipes CI on
+  this gale; existing prebuilts keep their relocate-or-
+  source-fallback path.)
 - `gale sync` re-installed already-installed packages every
   run when the recipe declared zero deps and the binary
   archive shipped without `.gale-deps.toml`. Installer now
