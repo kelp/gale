@@ -377,20 +377,37 @@ for i in "${!PACKAGES_ARR[@]}"; do
     fi
 done
 
-# Multi-package sync: wipe the isolated cache, write a gale.toml
-# with all packages, then time `gale sync -g`. Measures the
-# parallel-install win (T1.2).
+# Multi-package sync: wipe the isolated cache, build a gale.toml with
+# all packages, then time `gale sync -g`. Measures the parallel-install
+# win (T1.2).
+#
+# Build the config with `gale add` (which resolves each package to its
+# real registry version and writes the pin) rather than hand-writing
+# `pkg = "latest"`. The registry pins exact versions — it has no
+# "latest"/"*" alias — so a literal "latest" makes sync fail fast and
+# `time_cmd` (which swallows errors via `|| true`) would record a
+# bogus ~0s. `add` is setup, not timed; the `sync` below is the work.
 echo "Benchmarking multi-package sync ($PACKAGES)..." >&2
 wipe_iso_home
-mkdir -p "$ISO_HOME/.gale"
-{
-    echo "[packages]"
-    for pkg in "${PACKAGES_ARR[@]}"; do
-        echo "$pkg = \"latest\""
-    done
-} > "$ISO_HOME/.gale/gale.toml"
+for pkg in "${PACKAGES_ARR[@]}"; do
+    silent_run gale_iso add -g "$pkg"
+done
 
-GALE_SYNC=$(time_cmd gale_iso sync -g)
+# Time the sync ourselves (not via time_cmd) so a non-zero exit is
+# surfaced as FAILED instead of masquerading as a fast run.
+announce gale_iso sync -g
+if [ "$DRY_RUN" -eq 1 ]; then
+    GALE_SYNC=0
+else
+    _sync_start=$(date +%s)
+    if gale_iso sync -g >/dev/null 2>&1; then
+        GALE_SYNC=$(($(date +%s) - _sync_start))
+    else
+        GALE_SYNC="FAILED"
+        echo "WARNING: 'gale sync -g' returned non-zero — recording the" >&2
+        echo "         sync result as FAILED rather than a bogus time." >&2
+    fi
+fi
 
 # Verbose phase timing capture for the first package's cold
 # install. Strip everything except [timing] lines so the output
