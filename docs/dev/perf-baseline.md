@@ -48,6 +48,46 @@ it saturates network and CPU.
 Fill these in once captured. Keep older runs in their own subsections
 so trends are visible.
 
+### Run: 2026-05-29 on Linux cloud VM (gale-only), gale v0.16.3
+
+- Date: 2026-05-29
+- Machine: Debian 13 (trixie) cloud VM, x86_64, 4 cores, 15.3 GiB RAM
+- gale version: `0.16.3-dev.1+ba697a9` (built from HEAD by the harness)
+- Platform: `Linux/x86_64`
+- Homebrew: n/a (Linux — brew comparison skipped, low signal)
+- Network: cloud VM egress
+- Notes: After the v0.16.3 macOS rpath fix and the rebuild of
+  ripgrep/bat/eza to `-3` binaries (rpath fix). Re-run on Linux to
+  confirm no regression; all 5 still install from prebuilt binaries.
+  Timings are unchanged from the 2026-05-28 run within whole-second
+  resolution — expected, since the rpath fix is macOS-only and doesn't
+  touch the Linux install path.
+
+#### Per-package install (seconds, median of 3)
+
+| package | gale cold | gale warm |
+|---------|-----------|-----------|
+| jq      |         6 |       0   |
+| fd      |         6 |       0   |
+| ripgrep |        11 |       0   |
+| bat     |        42 |       0   |
+| eza     |        37 |       0   |
+
+#### Multi-package gale sync (seconds, single run, 5 packages)
+
+| operation        | seconds |
+|------------------|---------|
+| gale sync (cold) |   44    |
+
+#### Phase timing breakdown (jq cold install, `gale --verbose`)
+
+```
+[timing] recipe-fetch jq elapsed=318ms
+[timing] ghcr-token kelp/gale-recipes/jq elapsed=648ms
+[timing] binary-stream jq@1.8.1 elapsed=624ms
+[timing] lockfile-write jq elapsed=0s
+```
+
 ### Run: 2026-05-28 on Linux cloud VM (gale-only)
 
 - Date: 2026-05-28
