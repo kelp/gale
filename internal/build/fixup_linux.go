@@ -8,8 +8,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-
-	"github.com/kelp/gale/internal/farm"
 )
 
 // ELF magic bytes.
@@ -88,10 +86,38 @@ func FixupBinaries(prefixDir string) error {
 	return nil
 }
 
-// AddDepRpaths adds dep library directories to the ELF
-// RUNPATH of all binaries under prefixDir. This ensures
-// that shared libraries from gale deps are found at
-// runtime without LD_LIBRARY_PATH.
+// relativeFarmRpathLinux returns the $ORIGIN-anchored rpath
+// that points from an ELF at `file` (under the build prefix
+// `prefixDir`) to the shared-lib farm at <galeDir>/lib. A
+// package prefix maps to <galeDir>/pkg/<name>/<version-revision>,
+// a fixed three levels below <galeDir>, so the farm is reachable
+// with no absolute path baked in — the binary relocates to any
+// gale home. This is the Linux mirror of relativeFarmRpath in
+// fixup_darwin.go. See docs/dev/relocatable-binaries.md.
+func relativeFarmRpathLinux(prefixDir, file string) string {
+	rel, err := filepath.Rel(prefixDir, file)
+	if err != nil {
+		rel = filepath.Base(file)
+	}
+	// Directory components between the prefix root and the file
+	// (bin/exe -> 1; libexec/git-core/git -> 2).
+	n := 0
+	if dir := filepath.Dir(rel); dir != "." {
+		n = len(strings.Split(dir, string(filepath.Separator)))
+	}
+	// 3 levels (pkg/<name>/<ver-rev>) + n up to <galeDir>, +lib.
+	return "$ORIGIN/" + strings.Repeat("../", 3+n) + "lib"
+}
+
+// AddDepRpaths sets the ELF RUNPATH of binaries under prefixDir
+// so shared libraries from gale deps resolve at runtime without
+// LD_LIBRARY_PATH. The dep dylibs are reached through the shared
+// lib farm via a RELATIVE ($ORIGIN-anchored) rpath, so the
+// shipped artifact needs no install-time rewrite and installs
+// byte-for-byte with what CI built and attested. No absolute
+// .gale/pkg or .gale/lib path is baked in. This mirrors the
+// darwin AddDepRpaths design — see
+// docs/dev/relocatable-binaries.md.
 func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 	if len(depStoreDirs) == 0 {
 		return nil
@@ -102,30 +128,22 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		return nil //nolint:nilerr // patchelf not available
 	}
 
-	// Collect dep lib dirs that exist.
-	var depLibDirs []string
+	// Only bother if at least one dep actually ships a lib dir;
+	// otherwise there is nothing for the farm rpath to find.
+	hasDepLib := false
 	for _, storeDir := range depStoreDirs {
-		libDir := filepath.Join(storeDir, "lib")
-		if _, err := os.Stat(libDir); err == nil {
-			depLibDirs = append(depLibDirs, libDir)
+		if _, err := os.Stat(filepath.Join(storeDir, "lib")); err == nil {
+			hasDepLib = true
+			break
 		}
 	}
-	if len(depLibDirs) == 0 {
+	if !hasDepLib {
 		return nil
 	}
 
-	// Build the rpath string: $ORIGIN/../lib, the shared
-	// lib farm, then all per-dep lib dirs. The farm rpath
-	// gives binaries a stable lookup for versioned dylibs
-	// across dep upgrades that preserve the SONAME.
-	rpathParts := []string{"$ORIGIN/../lib"}
-	if farmDir := farm.DirFromStoreDir(depStoreDirs[0]); farmDir != "" {
-		rpathParts = append(rpathParts, farmDir)
-	}
-	rpathParts = append(rpathParts, depLibDirs...)
-	rpath := strings.Join(rpathParts, ":")
-
-	// Walk bin/ and lib/ for ELF files.
+	// Walk bin/ and lib/ for ELF files. The farm rpath is
+	// computed per file so deeper layouts (libexec/.../bin) get
+	// the right $ORIGIN depth.
 	for _, subdir := range []string{"bin", "lib"} {
 		dir := filepath.Join(prefixDir, subdir)
 		if _, err := os.Stat(dir); err != nil {
@@ -139,6 +157,11 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 				if !isELF(path) {
 					return nil
 				}
+				// $ORIGIN/../lib reaches the package's own libs;
+				// the relative farm rpath reaches dep dylibs via
+				// <galeDir>/lib. Both relative — nothing absolute.
+				rpath := "$ORIGIN/../lib:" +
+					relativeFarmRpathLinux(prefixDir, path)
 				cmd := exec.Command(patchelf,
 					"--set-rpath", rpath, path)
 				_ = cmd.Run() // skip errors (static binaries)
