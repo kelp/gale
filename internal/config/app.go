@@ -26,7 +26,22 @@ type AppConfig struct {
 	Anthropic  AIConfig         `toml:"anthropic"`
 	Registry   RegistryConfig   `toml:"registry"`
 	Generation GenerationConfig `toml:"generation"`
+	Sync       SyncConfig       `toml:"sync"`
 }
+
+// SyncConfig controls sync/download behavior. Parallelism is the
+// number of concurrent downloads; default DefaultParallelism when
+// unset or non-positive.
+type SyncConfig struct {
+	Parallelism int `toml:"parallelism,omitempty"`
+}
+
+// DefaultParallelism is the fallback download parallelism when
+// nothing is configured via GALE_JOBS or [sync] parallelism.
+const DefaultParallelism = 8
+
+// ResolveParallelism returns the effective download parallelism.
+func ResolveParallelism(cfg *AppConfig) int { return 0 } // stub — wrong on purpose
 
 // BuildConfig holds build-related settings.
 type BuildConfig struct {
