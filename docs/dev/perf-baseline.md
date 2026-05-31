@@ -68,10 +68,14 @@ so trends are visible.
   rows; the lighter tools (jq/fd/ripgrep) land in 5-10s. gale numbers
   track the 2026-05-29 Linux run within whole-second resolution despite
   different hardware, because the cost is GHCR fetch + attestation +
-  extraction, not local CPU. On the heavy-closure packages gale cold
-  (40/35s) is **slower** than brew cold (19/18s) — brew's bottle
-  closure re-fetch beats gale's per-component GHCR-token + attestation
-  round-trips; that gap is the thing the perf loop is meant to close.
+  extraction, not local CPU. gale cold is **slower than brew cold
+  across the board** — jq/fd/ripgrep 5/5/10s vs brew's flat 2s, and
+  widest on the heavy closures (40/35s vs 19/18s for bat/eza). brew's
+  bottle-closure re-fetch beats gale's per-component attestation
+  verification (`gh attestation verify` shellouts) plus per-blob GHCR
+  fetch/extract; the GHCR token itself is cached per process (T1.0),
+  so it is not the cost. That gap is the thing the perf loop is meant
+  to close.
   This run also depends on the harness gh-token fix (commit 48f234f):
   the isolated `$HOME` left `gh` unable to reach its keychain-stored
   token, so attestation failed and prebuilts source-fell-back (eza
