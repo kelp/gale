@@ -48,11 +48,10 @@ it saturates network and CPU.
 These are the numbers to beat. They were captured on **gale v0.16.3**,
 *after* the Tier-0/Tier-1 perf work (verbose timing, GHCR token
 caching, shared HTTP client, parallel install, streaming extract,
-eager dep resolution — T0.0 through T1.4) had already landed. We have
-no pre-Tier-1 snapshot to diff against, so this is the fixed starting
-line for all subsequent optimization (Tier 2+). When you make a change
-that should move install performance, re-run the harness and add a new
-dated run below — do not overwrite these.
+eager dep resolution — T0.0 through T1.4) had already landed. This is
+the fixed starting line for all subsequent optimization (Tier 2+).
+When you make a change that should move install performance, re-run
+the harness and add a new dated run below — do not overwrite these.
 
 gale cold install, seconds (median of 3); full detail in the dated
 runs below:
@@ -70,6 +69,27 @@ gale warm is ~0s on both (idempotent skip). The honest gale-vs-brew
 comparison lives in the macOS run; headline: **gale cold is slower
 than brew cold across the board** — that gap is what Tier 2+ exists to
 close.
+
+### What Tier-0/Tier-1 already bought (retroactive)
+
+We had no baseline from *before* the Tier-1 work, so we built the
+pre-Tier-1 commit (`fd7ac90`, the parent of T0.0) and ran it against
+today's registry on the same Linux VM — holding the registry/binaries
+constant so the delta isolates gale's client-side changes. Full run
+recorded below under the 2026-05-24-code subsection.
+
+| | jq | fd | ripgrep | bat | eza | **sync** |
+|---|---|---|---|---|---|---|
+| pre-Tier-1 (`fd7ac90`) | 6 | 6 | 10 | 42 | 38 | **68** |
+| post-Tier-1 (v0.16.3)  | 6 | 6 | 11 | 42 | 37 | **44** |
+
+The whole win landed on **multi-package sync: 68s → 44s (~35%)** —
+parallel install (T1.2) + token caching (T1.0) + connection reuse
+(T1.1) compounding, so sync now tracks the slowest single package
+instead of a serial-ish sum. **Single-package cold install is
+unchanged** — Tier-1 didn't touch the per-install network +
+attestation cost, which is the same cost that keeps gale cold above
+brew cold. That per-install path is the Tier-2 target.
 
 ## Reference runs
 
@@ -227,6 +247,52 @@ five (~102s), confirming the parallel-install path (T1.2) is working.
 [timing] ghcr-token kelp/gale-recipes/jq elapsed=598ms
 [timing] binary-stream jq@1.8.1 elapsed=591ms
 [timing] lockfile-write jq elapsed=0s
+```
+
+### Run: 2026-05-24-code (pre-Tier-1, commit fd7ac90), Linux — retroactive
+
+- Date run: 2026-05-30 (the *binary* is the 2026-05-24 commit `fd7ac90`,
+  the parent of T0.0 — built in a throwaway worktree and pinned via
+  `GALE=`)
+- Machine: Debian 13 (trixie) cloud VM, x86_64, 4 cores, 15.3 GiB RAM
+  (same VM as the 2026-05-29 run)
+- gale version: `0.16.2-pretier1+fd7ac90`
+- Platform: `Linux/x86_64`
+- Homebrew: n/a
+- Purpose: recover a *before* point for the Tier-0/Tier-1 work. Run
+  against **today's** registry/binaries (held constant vs the
+  2026-05-29 v0.16.3 run), so the delta isolates gale's client-side
+  changes, not registry drift. All 5 installed from binary (preflight
+  passed). The `--verbose` phase capture is empty because this commit
+  predates T0.1 (the timing instrumentation) — itself confirmation
+  that the genuinely pre-Tier-1 binary ran.
+- Caveat: sync is a single run (not a median), but the 68→44 gap is far
+  outside the ~3s single-run noise seen across the Linux v0.16.3 runs.
+
+#### Per-package install (seconds, median of 3)
+
+| package | gale cold | gale warm |
+|---------|-----------|-----------|
+| jq      |         6 |       0   |
+| fd      |         6 |       0   |
+| ripgrep |        10 |       0   |
+| bat     |        42 |       0   |
+| eza     |        38 |       0   |
+
+#### Multi-package gale sync (seconds, single run, 5 packages)
+
+| operation        | seconds |
+|------------------|---------|
+| gale sync (cold) |   68    |
+
+vs v0.16.3's 44s — the Tier-1 parallel/caching win. Per-package cold is
+identical to v0.16.3, so the gain is entirely in the multi-package
+path.
+
+#### Phase timing breakdown
+
+```
+(none — this commit predates the --verbose [timing] instrumentation)
 ```
 
 ### Run: <YYYY-MM-DD> on <machine>
