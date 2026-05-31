@@ -9,8 +9,10 @@
 #
 # Optionally compares against Homebrew via --with-brew. We only
 # use `brew reinstall` — never `brew uninstall` — so your real
-# brew state is preserved (reinstall is roughly cold-install time
-# for bottled packages anyway).
+# brew state is preserved. brew cold clears the download cache for
+# the package and its full dependency closure and reinstalls the
+# whole closure (forces a network re-fetch, the honest analog to
+# gale cold); brew warm reinstalls the leaf with its bottle cached.
 #
 # Usage:
 #   scripts/perf-baseline.sh --dry-run            # preview only
@@ -60,9 +62,12 @@ Flags:
   --dry-run     Print commands without running anything.
   --yes         Acknowledge the script will spin up a temp HOME
                 and download recipes/binaries into it.
-  --with-brew   Also benchmark 'brew reinstall <pkg>' for each
-                package. NEVER uninstalls — your real brew state
-                is preserved.
+  --with-brew   Also benchmark brew for each package: a cold pass
+                (clear the cache for the package + its closure, then
+                reinstall the whole closure — forces a network
+                re-fetch) and a warm pass (leaf reinstall, bottle
+                cached). NEVER uninstalls — your real brew state is
+                preserved.
   --allow-source Skip the binary-install preflight. By default
                  the harness refuses to benchmark a package whose
                  install path would fall back to source build —
@@ -340,11 +345,44 @@ bench_warm_gale() {
     median "${samples[@]}"
 }
 
-# bench_brew_reinstall: $RUNS `brew reinstall` measurements.
-# Brew reinstall = uninstall + install internally but leaves
-# the brew state at its starting point afterward, so this is
-# safe to run on a real dev machine.
-bench_brew_reinstall() {
+# brew_closure: echo a package's full runtime dependency closure plus
+# the package itself, space-separated. `brew deps` (no --include-build)
+# is transitive and runtime-only — bottles need no build deps at
+# install time — which mirrors what gale pulls into the store.
+brew_closure() {
+    local pkg=$1 deps
+    deps=$("$BREW" deps "$pkg" 2>/dev/null | tr '\n' ' ')
+    echo "$deps $pkg"
+}
+
+# bench_brew_cold: honest cold-install analog to gale cold. For each
+# run, clears the download cache of the package AND its whole closure,
+# then `brew reinstall`s the entire closure so every bottle is
+# re-fetched over the network and relinked — matching gale cold, which
+# pulls the full closure into an empty store. Uses reinstall only
+# (never uninstall), so brew ends in the same state it started.
+bench_brew_cold() {
+    local pkg=$1
+    local samples=() i elapsed closure f c
+    closure=$(brew_closure "$pkg")
+    for i in $(seq 1 "$RUNS"); do
+        for f in $closure; do
+            c=$("$BREW" --cache "$f" 2>/dev/null || true)
+            [ -n "$c" ] && silent_run rm -f "$c"
+        done
+        # shellcheck disable=SC2086
+        elapsed=$(time_cmd "$BREW" reinstall $closure)
+        samples+=("$elapsed")
+    done
+    median "${samples[@]}"
+}
+
+# bench_brew_warm: reinstall the leaf with its bottle already cached
+# (relink only) — the warm-cache cost, comparable to gale warm. Runs
+# after the cold pass, so the bottle is back in the cache. gale warm
+# is an idempotent skip (~0s) while brew reinstall always relinks, so
+# expect brew warm > gale warm even though both are "warm".
+bench_brew_warm() {
     local pkg=$1
     local samples=() i elapsed
     for i in $(seq 1 "$RUNS"); do
@@ -358,7 +396,8 @@ bench_brew_reinstall() {
 PACKAGES_ARR=($PACKAGES)
 GALE_COLD=()
 GALE_WARM=()
-BREW_REINST=()
+BREW_COLD=()
+BREW_WARM=()
 
 # Preflight: refuse to benchmark anything that would source-build
 # (would mix compile time into the binary-install signal). Runs
@@ -395,7 +434,10 @@ for i in "${!PACKAGES_ARR[@]}"; do
     GALE_COLD[$i]=$(bench_cold_gale "$pkg")
     GALE_WARM[$i]=$(bench_warm_gale "$pkg")
     if [ "$WITH_BREW" -eq 1 ]; then
-        BREW_REINST[$i]=$(bench_brew_reinstall "$pkg")
+        # Cold first (clears + re-downloads the closure), then warm
+        # (the closure's bottles are now cached again).
+        BREW_COLD[$i]=$(bench_brew_cold "$pkg")
+        BREW_WARM[$i]=$(bench_brew_warm "$pkg")
     fi
 done
 
@@ -459,14 +501,25 @@ cat <<EOF
 EOF
 if [ "$WITH_BREW" -eq 1 ]; then
     cat <<EOF
-| package | gale cold | gale warm | brew reinstall |
-|---------|-----------|-----------|----------------|
+| package | gale cold | gale warm | brew cold | brew warm |
+|---------|-----------|-----------|-----------|-----------|
 EOF
     for i in "${!PACKAGES_ARR[@]}"; do
-        printf "| %-7s | %9s | %9s | %14s |\n" \
-            "${PACKAGES_ARR[$i]}" "${GALE_COLD[$i]}" \
-            "${GALE_WARM[$i]}" "${BREW_REINST[$i]}"
+        printf "| %-7s | %9s | %9s | %9s | %9s |\n" \
+            "${PACKAGES_ARR[$i]}" "${GALE_COLD[$i]}" "${GALE_WARM[$i]}" \
+            "${BREW_COLD[$i]}" "${BREW_WARM[$i]}"
     done
+    cat <<EOF
+
+\`brew cold\` clears the download cache for the package **and its full
+dependency closure**, then \`brew reinstall\`s the whole closure — every
+bottle is re-fetched over the network and relinked, the honest analog
+to gale cold (which pulls the closure into an empty store). \`brew warm\`
+reinstalls the leaf with its bottle already cached (relink only). Note
+gale warm is an idempotent skip (~0s) whereas brew reinstall always
+relinks, so brew warm > gale warm is expected. Neither brew path ever
+uninstalls — brew ends in the state it started.
+EOF
 else
     cat <<EOF
 | package | gale cold | gale warm |
