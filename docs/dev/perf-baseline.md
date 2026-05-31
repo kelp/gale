@@ -43,10 +43,37 @@ reinstall` (never uninstall), leaving brew state as it found it.
 Still, don't run it on a workstation in the middle of real work —
 it saturates network and CPU.
 
-## Reference run
+## Current baseline (compare future work against this)
 
-Fill these in once captured. Keep older runs in their own subsections
-so trends are visible.
+These are the numbers to beat. They were captured on **gale v0.16.3**,
+*after* the Tier-0/Tier-1 perf work (verbose timing, GHCR token
+caching, shared HTTP client, parallel install, streaming extract,
+eager dep resolution — T0.0 through T1.4) had already landed. We have
+no pre-Tier-1 snapshot to diff against, so this is the fixed starting
+line for all subsequent optimization (Tier 2+). When you make a change
+that should move install performance, re-run the harness and add a new
+dated run below — do not overwrite these.
+
+gale cold install, seconds (median of 3); full detail in the dated
+runs below:
+
+| package | macOS (M3 Max) | Linux (4-core VM) |
+|---------|----------------|-------------------|
+| jq      |  5 |  6 |
+| fd      |  5 |  6 |
+| ripgrep | 10 | 11 |
+| bat     | 40 | 42 |
+| eza     | 35 | 37 |
+| **sync (5 pkgs, cold)** | **39** | **44** |
+
+gale warm is ~0s on both (idempotent skip). The honest gale-vs-brew
+comparison lives in the macOS run; headline: **gale cold is slower
+than brew cold across the board** — that gap is what Tier 2+ exists to
+close.
+
+## Reference runs
+
+Keep older runs in their own subsections so trends are visible.
 
 ### Run: 2026-05-30 on MacBook Pro 16" M3 Max, gale v0.16.3
 
