@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 
 	"github.com/BurntSushi/toml"
 
@@ -41,7 +42,19 @@ type SyncConfig struct {
 const DefaultParallelism = 8
 
 // ResolveParallelism returns the effective download parallelism.
-func ResolveParallelism(cfg *AppConfig) int { return 0 } // stub — wrong on purpose
+// Precedence: GALE_JOBS env var, then [sync] parallelism, then
+// DefaultParallelism. The result is always >= 1.
+func ResolveParallelism(cfg *AppConfig) int {
+	if env := os.Getenv("GALE_JOBS"); env != "" {
+		if n, err := strconv.Atoi(env); err == nil && n >= 1 {
+			return n
+		}
+	}
+	if cfg != nil && cfg.Sync.Parallelism >= 1 {
+		return cfg.Sync.Parallelism
+	}
+	return DefaultParallelism
+}
 
 // BuildConfig holds build-related settings.
 type BuildConfig struct {
