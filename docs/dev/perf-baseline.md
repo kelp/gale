@@ -53,56 +53,66 @@ so trends are visible.
 - Date: 2026-05-30
 - Machine: MacBook Pro 16" (Mac15,9), Apple M3 Max, 16 cores
   (12 performance + 4 efficiency), 48 GiB RAM, macOS 26.5 (25F71)
-- gale version: `0.16.3-dev.2+54c23b1` (built from HEAD by the harness)
+- gale version: `0.16.3-dev.5+a26e188` (built from HEAD by the harness)
 - Platform: `Darwin/arm64`
 - Homebrew: 5.1.14
 - Network: Wi-Fi
-- Notes: First macOS run, and the first with the `--with-brew`
-  comparison. All 5 packages installed from prebuilt binaries
-  (preflight passed; verified zero source/compile activity in the
-  timed runs). eza cold (35s) and bat cold (38s) pull their full
+- Notes: First macOS run, and the first with the honest brew cold/warm
+  comparison (`--with-brew` after the harness reworked the brew passes).
+  All 5 packages installed from prebuilt binaries (preflight passed;
+  verified zero source/compile activity in the timed runs — confirmed a
+  cold `bat` install streams its whole closure as `binary-stream` with
+  zero build output). eza cold (35s) and bat cold (40s) pull their full
   binary dependency closure into the cold store (openssl, libgit2,
-  libssh2, oniguruma, cmake, zlib, pkgconf), which dominates those
-  two rows; the lighter tools (jq/fd/ripgrep) land in 4-10s. Numbers
-  track the 2026-05-29 Linux run within whole-second resolution
-  despite different hardware, because the cost is GHCR fetch +
-  attestation + extraction, not local CPU. This run also required a
-  harness fix: the isolated `$HOME` left `gh` unable to reach its
-  keychain-stored token, so attestation failed and prebuilts
-  source-fell-back; the harness now resolves `gh auth token` under
-  the real HOME and exports `GH_TOKEN` to every isolated gale call.
+  libssh2, oniguruma, cmake, zlib, pkgconf), which dominates those two
+  rows; the lighter tools (jq/fd/ripgrep) land in 5-10s. gale numbers
+  track the 2026-05-29 Linux run within whole-second resolution despite
+  different hardware, because the cost is GHCR fetch + attestation +
+  extraction, not local CPU. On the heavy-closure packages gale cold
+  (40/35s) is **slower** than brew cold (19/18s) — brew's bottle
+  closure re-fetch beats gale's per-component GHCR-token + attestation
+  round-trips; that gap is the thing the perf loop is meant to close.
+  This run also depends on the harness gh-token fix (commit 48f234f):
+  the isolated `$HOME` left `gh` unable to reach its keychain-stored
+  token, so attestation failed and prebuilts source-fell-back (eza
+  cascaded into a full rustc-toolchain compile); the harness now
+  resolves `gh auth token` under the real HOME and exports `GH_TOKEN`
+  to every isolated gale call.
 
 #### Per-package install (seconds, median of 3)
 
-| package | gale cold | gale warm | brew reinstall |
-|---------|-----------|-----------|----------------|
-| jq      |         5 |         0 |              1 |
-| fd      |         4 |         0 |              1 |
-| ripgrep |        10 |         0 |              1 |
-| bat     |        38 |         0 |              2 |
-| eza     |        35 |         0 |              1 |
+| package | gale cold | gale warm | brew cold | brew warm |
+|---------|-----------|-----------|-----------|-----------|
+| jq      |         5 |         0 |         2 |         1 |
+| fd      |         5 |         0 |         2 |         1 |
+| ripgrep |        10 |         0 |         2 |         1 |
+| bat     |        40 |         0 |        19 |         2 |
+| eza     |        35 |         0 |        18 |         2 |
 
-brew `reinstall` (not first-time install) is the warm-cache cost of
-re-laying-down an already-downloaded bottle; it is not comparable to
-gale cold (which fetches over the network). The honest gale-vs-brew
-comparison is gale warm (0s) vs brew reinstall (1-2s).
+`brew cold` clears the download cache for the package and its full
+dependency closure, then reinstalls the whole closure — every bottle
+re-fetched over the network and relinked, the honest analog to gale
+cold (which pulls the closure into an empty store). `brew warm`
+reinstalls the leaf with its bottle cached (relink only). gale warm is
+an idempotent skip (~0s) whereas brew always relinks, so brew warm >
+gale warm is expected. Neither brew path ever uninstalls.
 
 #### Multi-package gale sync (seconds, single run, 5 packages)
 
 | operation        | seconds |
 |------------------|---------|
-| gale sync (cold) |   38    |
+| gale sync (cold) |   39    |
 
-Sync (38s) ≈ the slowest single package (bat, 38s) rather than the sum
-of all five (~92s), confirming the parallel-install path (T1.2) holds
+Sync (39s) ≈ the slowest single package (bat, 40s) rather than the sum
+of all five (~95s), confirming the parallel-install path (T1.2) holds
 on macOS too.
 
 #### Phase timing breakdown (jq cold install, `gale --verbose`)
 
 ```
-[timing] recipe-fetch jq elapsed=44ms
-[timing] ghcr-token kelp/gale-recipes/jq elapsed=880ms
-[timing] binary-stream jq@1.8.1 elapsed=5.439s
+[timing] recipe-fetch jq elapsed=46ms
+[timing] ghcr-token kelp/gale-recipes/jq elapsed=330ms
+[timing] binary-stream jq@1.8.1 elapsed=243ms
 [timing] lockfile-write jq elapsed=5ms
 ```
 
