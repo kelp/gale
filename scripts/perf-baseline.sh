@@ -180,24 +180,46 @@ ISO_HOME=$(mktemp -d -t gale-perf-baseline.XXXXXX)
 trap 'rm -rf "$ISO_HOME"' EXIT
 echo "Isolated gale HOME: $ISO_HOME (auto-cleaned on exit)" >&2
 
-# Bridge gh CLI credentials from the real HOME into the isolated
-# one. Without this, gale's attestation verifier (which shells
-# out to `gh attestation verify`) sees no auth, every binary
-# install fails attestation, and the harness measures source
-# builds instead of binary installs.
+# Bridge gh CLI credentials into the isolated HOME. gale's
+# attestation verifier shells out to `gh attestation verify`;
+# without auth, every attested binary fails verification and the
+# harness measures a source build instead of a binary install.
 #
-# Symlinks rather than copies so the real config keeps working
-# unchanged. ~/.config/gh holds hosts.yml + config.yml.
+# Two layers, because each alone is insufficient on macOS:
+#   1. Symlink ~/.config/gh so gh knows which host/account exists
+#      (hosts.yml). config only — keeps the real setup unchanged.
+#   2. Resolve the actual token via `gh auth token` and pass it as
+#      GH_TOKEN. On macOS the token lives in the login keychain,
+#      NOT in hosts.yml, so the symlink alone leaves gh unable to
+#      reach the credential from the isolated HOME. Resolving it
+#      here (real HOME, keychain accessible) and exporting GH_TOKEN
+#      bypasses the keychain entirely for every gale_iso call.
 if [ -d "$HOME/.config/gh" ]; then
     mkdir -p "$ISO_HOME/.config"
     ln -s "$HOME/.config/gh" "$ISO_HOME/.config/gh"
 fi
 
+# Capture under the REAL HOME (keychain reachable). Respect an
+# already-set GH_TOKEN/GH_ENTERPRISE_TOKEN if the caller exported
+# one (e.g. CI). Empty is non-fatal but means attested prebuilts
+# will source-build — warn loudly so numbers aren't trusted blind.
+GH_AUTH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+if [ -z "$GH_AUTH_TOKEN" ] && command -v gh >/dev/null 2>&1; then
+    GH_AUTH_TOKEN=$(gh auth token 2>/dev/null || true)
+fi
+if [ "$DRY_RUN" -eq 0 ] && [ -z "$GH_AUTH_TOKEN" ]; then
+    echo "WARNING: no gh token resolved (gh auth token failed and" >&2
+    echo "         GH_TOKEN unset). Attestation will fail and" >&2
+    echo "         prebuilts will source-build, contaminating" >&2
+    echo "         timings. Run 'gh auth login' or set GH_TOKEN." >&2
+fi
+
 # gale_iso runs gale with HOME overridden. Use this for every
 # gale invocation in this script — direct `gale` calls would hit
-# the user's real ~/.gale/.
+# the user's real ~/.gale/. GH_TOKEN is exported so the isolated
+# attestation check authenticates without touching the keychain.
 gale_iso() {
-    HOME="$ISO_HOME" "$GALE" "$@"
+    HOME="$ISO_HOME" GH_TOKEN="$GH_AUTH_TOKEN" "$GALE" "$@"
 }
 
 # announce: print `+ cmd args` to stderr so the user can see
