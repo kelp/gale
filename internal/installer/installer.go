@@ -43,7 +43,9 @@ type Installer struct {
 	// is always reported because reaching this branch means a
 	// binary was advertised in the recipe and could not be
 	// fetched/verified. Tests inject a buffer to assert on
-	// the message.
+	// the message. Because dep installs run in parallel, this
+	// writer may receive concurrent writes; callers injecting a
+	// non-os.Stderr writer must make it concurrency-safe.
 	BinaryFallbackLog io.Writer
 
 	// Downloads bounds the number of concurrent binary network
@@ -603,11 +605,14 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// attestation/commit steps, so no install ever holds a slot
 	// while waiting on a child dep — that would risk a deadlock.
 	// A nil limiter is unbounded.
-	dl.Acquire()
-	streamDone := timing.Phase("binary-stream " + pkgID)
-	_, fetchErr := download.FetchAndExtractTarZstdWithArchive(bin.URL, stagingDir, bin.SHA256, token, archiveOut)
-	streamDone()
-	dl.Release()
+	fetchErr := func() error {
+		dl.Acquire()
+		defer dl.Release()
+		streamDone := timing.Phase("binary-stream " + pkgID)
+		defer streamDone()
+		_, err := download.FetchAndExtractTarZstdWithArchive(bin.URL, stagingDir, bin.SHA256, token, archiveOut)
+		return err
+	}()
 	if fetchErr != nil {
 		return fmt.Errorf("fetch binary: %w", fetchErr)
 	}
