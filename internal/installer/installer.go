@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
@@ -813,7 +814,7 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, err
 	)
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, seen)
+	return inst.installDepsInner(rCopy, seen, &sync.Mutex{})
 }
 
 // InstallRuntimeDeps installs only the runtime-tagged
@@ -829,7 +830,7 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 	deps.Build = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, seen)
+	return inst.installDepsInner(rCopy, seen, &sync.Mutex{})
 }
 
 // InstallBuildOnlyDeps installs only the build-tagged
@@ -846,7 +847,7 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 	deps.Runtime = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, seen)
+	return inst.installDepsInner(rCopy, seen, &sync.Mutex{})
 }
 
 // ResolveDirectDeps returns the (name, version, revision)
@@ -1028,6 +1029,7 @@ func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recip
 func (inst *Installer) installDepsInner(
 	r *recipe.Recipe,
 	seen map[string]bool,
+	seenMu *sync.Mutex,
 ) (*build.BuildDeps, error) {
 	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
 	allDeps := append([]string{}, deps.Build...)
@@ -1038,101 +1040,128 @@ func (inst *Installer) installDepsInner(
 	}
 
 	var result build.BuildDeps
-	for _, dep := range allDeps {
-		if seen[dep] {
-			continue
-		}
-		seen[dep] = true
+	// seenMu (shared across every recursion level) guards the seen
+	// map for cycle/diamond dedup; resMu guards every write into
+	// this level's result. The dep loop now fans out: each dep
+	// installs in its own goroutine so their leaf network fetches
+	// overlap, bounded by the Installer's Downloads limiter inside
+	// installBinaryTo. No limiter or store-gen lock is held across
+	// the wait on child goroutines, so the nested recursion cannot
+	// deadlock against the fan-out.
+	var resMu sync.Mutex
 
-		depRecipe, err := inst.Resolver(dep)
-		if err != nil {
-			return nil, fmt.Errorf("resolve dep %q: %w", dep, err)
-		}
-		if depRecipe == nil {
-			return nil, fmt.Errorf(
-				"no recipe found for dependency %q", dep,
-			)
-		}
+	errs := parallel.ForEach(
+		context.Background(), allDeps, len(allDeps),
+		func(_ context.Context, dep string) error {
+			// Claim the dep before installing so two goroutines
+			// never both install the same shared (diamond) dep.
+			seenMu.Lock()
+			if seen[dep] {
+				seenMu.Unlock()
+				return nil
+			}
+			seen[dep] = true
+			seenMu.Unlock()
 
-		// C4: enforce any version constraint the parent recipe
-		// declared on this dep. The constraint was parsed and
-		// stored at recipe load time but was previously only
-		// consulted by IsStale — the resolver silently accepted
-		// whatever version the registry said was latest. Now a
-		// constraint mismatch fails the install with a clear
-		// message naming the dep, required constraint, and
-		// resolved version. Bare-string deps have no entry in
-		// Constraints and skip this check, preserving today's
-		// "resolve to latest" behavior.
-		if expr, has := r.Dependencies.Constraints[dep]; has && expr != "" {
-			c, cerr := recipe.ParseConstraint(expr)
-			if cerr != nil {
-				return nil, fmt.Errorf(
-					"dep %q: invalid version constraint %q: %w",
-					dep, expr, cerr,
+			depRecipe, err := inst.Resolver(dep)
+			if err != nil {
+				return fmt.Errorf("resolve dep %q: %w", dep, err)
+			}
+			if depRecipe == nil {
+				return fmt.Errorf(
+					"no recipe found for dependency %q", dep,
 				)
 			}
-			if !c.Satisfies(
-				depRecipe.Package.Version,
-				depRecipe.Package.Revision,
-			) {
-				return nil, fmt.Errorf(
-					"dep %q: resolved version %s does not "+
-						"satisfy constraint %q (declared in %s)",
-					dep, depRecipe.Package.Full(), expr,
-					r.Package.Name,
-				)
+
+			// C4: enforce any version constraint the parent recipe
+			// declared on this dep. The constraint was parsed and
+			// stored at recipe load time but was previously only
+			// consulted by IsStale — the resolver silently accepted
+			// whatever version the registry said was latest. Now a
+			// constraint mismatch fails the install with a clear
+			// message naming the dep, required constraint, and
+			// resolved version. Bare-string deps have no entry in
+			// Constraints and skip this check, preserving today's
+			// "resolve to latest" behavior.
+			if expr, has := r.Dependencies.Constraints[dep]; has && expr != "" {
+				c, cerr := recipe.ParseConstraint(expr)
+				if cerr != nil {
+					return fmt.Errorf(
+						"dep %q: invalid version constraint %q: %w",
+						dep, expr, cerr,
+					)
+				}
+				if !c.Satisfies(
+					depRecipe.Package.Version,
+					depRecipe.Package.Revision,
+				) {
+					return fmt.Errorf(
+						"dep %q: resolved version %s does not "+
+							"satisfy constraint %q (declared in %s)",
+						dep, depRecipe.Package.Full(), expr,
+						r.Package.Name,
+					)
+				}
 			}
-		}
 
-		// Install the dep (will be cached if already present).
-		if _, err := inst.Install(depRecipe); err != nil {
-			return nil, fmt.Errorf("install dep %q: %w", dep, err)
-		}
+			// Install the dep (will be cached if already present).
+			if _, err := inst.Install(depRecipe); err != nil {
+				return fmt.Errorf("install dep %q: %w", dep, err)
+			}
 
-		// Resolve the dep's actual store path. Install wrote
-		// to <name>/<version>-<revision>/, but Store.StorePath
-		// also falls back to a bare <version>/ dir for
-		// pre-revision installs.
-		storeDir, ok := inst.Store.StorePath(
-			dep, depRecipe.Package.Full(),
-		)
-		if !ok {
-			return nil, fmt.Errorf(
-				"dep %q at %s not in store after install",
+			// Resolve the dep's actual store path. Install wrote
+			// to <name>/<version>-<revision>/, but Store.StorePath
+			// also falls back to a bare <version>/ dir for
+			// pre-revision installs.
+			storeDir, ok := inst.Store.StorePath(
 				dep, depRecipe.Package.Full(),
 			)
-		}
-		result.StoreDirs = append(result.StoreDirs, storeDir)
-		if result.NamedDirs == nil {
-			result.NamedDirs = make(map[string]string)
-		}
-		result.NamedDirs[dep] = storeDir
+			if !ok {
+				return fmt.Errorf(
+					"dep %q at %s not in store after install",
+					dep, depRecipe.Package.Full(),
+				)
+			}
 
-		binDir := filepath.Join(storeDir, "bin")
-		if _, err := os.Stat(binDir); err == nil {
-			result.BinDirs = append(result.BinDirs, binDir)
-		}
+			binDir := filepath.Join(storeDir, "bin")
+			_, binErr := os.Stat(binDir)
 
-		// Recurse for transitive deps.
-		transitive, err := inst.installDepsInner(depRecipe, seen)
-		if err != nil {
-			return nil, fmt.Errorf("transitive deps of %q: %w",
-				dep, err)
-		}
-		result.BinDirs = append(
-			result.BinDirs, transitive.BinDirs...,
-		)
-		result.StoreDirs = append(
-			result.StoreDirs, transitive.StoreDirs...,
-		)
-		for k, v := range transitive.NamedDirs {
+			// Recurse for transitive deps before recording this
+			// dep, so the merged result keeps the dep ahead of its
+			// own transitive closure as the serial loop did.
+			transitive, err := inst.installDepsInner(depRecipe, seen, seenMu)
+			if err != nil {
+				return fmt.Errorf("transitive deps of %q: %w",
+					dep, err)
+			}
+
+			resMu.Lock()
+			defer resMu.Unlock()
+			result.StoreDirs = append(result.StoreDirs, storeDir)
 			if result.NamedDirs == nil {
 				result.NamedDirs = make(map[string]string)
 			}
-			if _, exists := result.NamedDirs[k]; !exists {
-				result.NamedDirs[k] = v
+			result.NamedDirs[dep] = storeDir
+			if binErr == nil {
+				result.BinDirs = append(result.BinDirs, binDir)
 			}
+			result.BinDirs = append(
+				result.BinDirs, transitive.BinDirs...,
+			)
+			result.StoreDirs = append(
+				result.StoreDirs, transitive.StoreDirs...,
+			)
+			for k, v := range transitive.NamedDirs {
+				if _, exists := result.NamedDirs[k]; !exists {
+					result.NamedDirs[k] = v
+				}
+			}
+			return nil
+		},
+	)
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
 		}
 	}
 	return &result, nil
