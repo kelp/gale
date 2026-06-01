@@ -91,9 +91,79 @@ unchanged** — Tier-1 didn't touch the per-install network +
 attestation cost, which is the same cost that keeps gale cold above
 brew cold. That per-install path is the Tier-2 target.
 
+### Tier-2: parallel dependency closure (configurable) — wall-clock neutral here
+
+Tier-2 parallelized the per-package dependency-closure downloads
+(previously serial) and exposed one knob: `GALE_JOBS` env > `[sync]
+parallelism` in config.toml > default 8. A/B on the **same HEAD binary**
+(`0.16.3-dev.17+5525b34`), same Linux VM, back-to-back, varying only
+`GALE_JOBS` (full detail under the 2026-05-31 run below):
+
+| | jq | fd | ripgrep | bat | eza | sync |
+|---|---|---|---|---|---|---|
+| `GALE_JOBS=1` (serial) | 6 | 6 | 16 | 35 | 32 | 59 |
+| default (8, parallel)  | 6 | 6 | 12 | 32 | 33 | 34 |
+
+Honest reading — the mechanism works, but the wall-clock win is **not
+measurable on this VM**:
+
+- The unit/integration tests prove the closure downloads actually run
+  concurrently (peak ≥ 2 in-flight, bounded by the limiter). The knob
+  demonstrably controls concurrency.
+- **Single-package gain is within noise.** The clean isolation of the
+  closure effect is single-package cold (no package-level parallelism
+  in play): bat 35→32, eza 32→33. But **ripgrep — which has no deps and
+  cannot benefit — moved 16→12 (4s)**, so the noise floor is ~4s and
+  bat's 3s sits inside it. Consistent with the heavy deps (rust,
+  openssl, libgit2, …) being **bandwidth-bound**: splitting big
+  downloads across one pipe doesn't cut wall-clock.
+- **The sync 59→34 conflates two levels.** `GALE_JOBS` drives *both*
+  the package pool and the closure, so `GALE_JOBS=1` serialized
+  everything; most of that gap is the package-level parallelism that
+  already existed in Tier-1, not the new closure parallelism.
+
+Net: correct, race-free, configurable, and genuinely parallel — but on
+a bandwidth-bound cloud VM the closure parallelism is wall-clock
+neutral for single heavy installs. Expect a real win where closures
+are latency-bound (many small artifacts) or on higher-bandwidth links.
+
 ## Reference runs
 
 Keep older runs in their own subsections so trends are visible.
+
+### Run: 2026-05-31 — Tier-2 parallel-closure A/B (Linux), gale 0.16.3-dev.17
+
+- Date: 2026-05-31
+- Machine: Debian 13 (trixie) cloud VM, x86_64, 4 cores, 15.3 GiB RAM
+- gale version: `0.16.3-dev.17+5525b34` (built from HEAD by the harness)
+- Platform: `Linux/x86_64`
+- Homebrew: n/a
+- Purpose: isolate the Tier-2 parallel-dependency-closure feature by
+  running the SAME binary twice, back-to-back, varying only `GALE_JOBS`
+  (the new parallelism knob). `GALE_JOBS=1` forces fully serial
+  installs; unset uses the default of 8.
+- Caveat: `GALE_JOBS` controls both the package-level sync pool and the
+  closure, so the serial run serializes both levels — the sync delta is
+  not a clean closure-only measurement. The single-package columns are
+  the cleaner isolation, and there the gain sits within the ~4s noise
+  floor (ripgrep, which has no deps, itself varied 16→12). See the
+  "Tier-2" analysis under Current baseline for the full honest reading.
+
+#### Per-package install (seconds, median of 3)
+
+| package | serial `GALE_JOBS=1` | default (8) |
+|---------|----------------------|-------------|
+| jq      |          6 |  6 |
+| fd      |          6 |  6 |
+| ripgrep |         16 | 12 |
+| bat     |         35 | 32 |
+| eza     |         32 | 33 |
+
+#### Multi-package gale sync (seconds, single run, 5 packages)
+
+| operation        | serial `GALE_JOBS=1` | default (8) |
+|------------------|----------------------|-------------|
+| gale sync (cold) |          59 | 34 |
 
 ### Run: 2026-05-30 on MacBook Pro 16" M3 Max, gale v0.16.3
 
