@@ -16,6 +16,7 @@ import (
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
+	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/prewarm"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
@@ -43,6 +44,11 @@ type Installer struct {
 	// fetched/verified. Tests inject a buffer to assert on
 	// the message.
 	BinaryFallbackLog io.Writer
+
+	// Downloads bounds the number of concurrent binary network
+	// fetches across all installs sharing this Installer. A nil
+	// limiter (the zero value) is unbounded.
+	Downloads *parallel.Limiter
 }
 
 // InstallMethod represents how a package was installed.
@@ -184,7 +190,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 				"resolve deps for metadata: %w", ferr,
 			)
 		}
-		if berr := installBinaryTo(bin, storeDir, canonicalDir, name, version, fallback, inst.Verifier, !staged); berr == nil {
+		if berr := installBinaryTo(bin, storeDir, canonicalDir, name, version, fallback, inst.Verifier, !staged, inst.Downloads); berr == nil {
 			method = MethodBinary
 			sha256 = bin.SHA256
 		} else {
@@ -531,7 +537,7 @@ func replaceStoreDir(storeDir, buildDir string) error {
 // renamed into extractDir inside the store-gen lock so a
 // concurrent generation.Build sees either the pre-install
 // or the completed install — never an intermediate.
-func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, version string, depsFallback []ResolvedDep, v attestation.Verifier, inPlace bool) error {
+func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, version string, depsFallback []ResolvedDep, v attestation.Verifier, inPlace bool, dl *parallel.Limiter) error {
 	// Enforce the recipe's declared trust policy before
 	// fetching anything. A recipe that ships a non-GHCR
 	// URL with the default (sigstore) policy is rejected
@@ -591,12 +597,19 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		defer os.Remove(archiveOut)
 	}
 
+	// Bound the number of concurrent network fetches. The slot is
+	// held ONLY around the leaf fetch and released before the
+	// attestation/commit steps, so no install ever holds a slot
+	// while waiting on a child dep — that would risk a deadlock.
+	// A nil limiter is unbounded.
+	dl.Acquire()
 	streamDone := timing.Phase("binary-stream " + pkgID)
-	if _, err := download.FetchAndExtractTarZstdWithArchive(bin.URL, stagingDir, bin.SHA256, token, archiveOut); err != nil {
-		streamDone()
-		return fmt.Errorf("fetch binary: %w", err)
-	}
+	_, fetchErr := download.FetchAndExtractTarZstdWithArchive(bin.URL, stagingDir, bin.SHA256, token, archiveOut)
 	streamDone()
+	dl.Release()
+	if fetchErr != nil {
+		return fmt.Errorf("fetch binary: %w", fetchErr)
+	}
 
 	// Attestation verification fires only when the recipe's
 	// trust policy requires it (sigstore — the default) AND
