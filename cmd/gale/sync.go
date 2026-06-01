@@ -106,10 +106,11 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	}
 
 	items := sortedSyncItems(cfg.Packages)
-	// syncWorkers: per-package work is HTTP-bound (recipe fetch +
-	// binary download); 8 covers typical sync sizes comfortably
-	// without adding goroutine overhead for small package lists.
-	const syncWorkers = 8
+	// Per-package work is HTTP-bound (recipe fetch + binary
+	// download). The same resolved parallelism bounds the
+	// Installer's Downloads limiter, so package-level fan-out and
+	// per-package dep downloads share one configured ceiling.
+	syncWorkers := ctx.Parallelism
 	// Errors slice is always nil — runSyncOne captures all errors in
 	// syncOutcome fields, never returns one.
 	outcomes, _ := parallel.Map(context.Background(), items, syncWorkers,

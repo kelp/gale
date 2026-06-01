@@ -15,6 +15,7 @@ import (
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
@@ -30,6 +31,12 @@ type cmdContext struct {
 	Resolver  installer.RecipeResolver
 	Installer *installer.Installer
 	Registry  *registry.Registry // nil when --recipes
+
+	// Parallelism is the resolved download/sync concurrency
+	// (GALE_JOBS > [sync] parallelism > default). It sizes both
+	// the Installer's Downloads limiter and sync's worker pool,
+	// so one configured number bounds total in-flight downloads.
+	Parallelism int
 
 	// Host force-writes the package to
 	// [hosts.<Host>.packages] when finalize runs. Empty
@@ -93,19 +100,27 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		return nil, resolveErr
 	}
 
+	// Resolve download/sync concurrency once. A failure to read
+	// config.toml (e.g. absent on first run) is not fatal:
+	// ResolveParallelism falls back to GALE_JOBS or the default.
+	appCfg, _ := loadAppConfig()
+	n := config.ResolveParallelism(appCfg)
+
 	inst := &installer.Installer{
-		Store:    store.NewStore(storeRoot),
-		Resolver: resolver,
-		Verifier: attestation.NewVerifier(),
+		Store:     store.NewStore(storeRoot),
+		Resolver:  resolver,
+		Verifier:  attestation.NewVerifier(),
+		Downloads: parallel.NewLimiter(n),
 	}
 
 	return &cmdContext{
-		GalePath:  galePath,
-		GaleDir:   galeDir,
-		StoreRoot: storeRoot,
-		Resolver:  resolver,
-		Installer: inst,
-		Registry:  reg,
+		GalePath:    galePath,
+		GaleDir:     galeDir,
+		StoreRoot:   storeRoot,
+		Resolver:    resolver,
+		Installer:   inst,
+		Registry:    reg,
+		Parallelism: n,
 	}, nil
 }
 

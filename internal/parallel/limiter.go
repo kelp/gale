@@ -17,6 +17,16 @@ func NewLimiter(n int) *Limiter {
 	return &Limiter{sem: make(chan struct{}, n)}
 }
 
+// Cap reports the configured concurrency ceiling. A nil or
+// unbounded limiter reports 0 (no bound). Used by callers and
+// tests that need to verify the limiter was sized as configured.
+func (l *Limiter) Cap() int {
+	if l == nil {
+		return 0
+	}
+	return cap(l.sem)
+}
+
 // Acquire takes a slot, blocking until one is available. A nil
 // limiter or an unbounded limiter returns immediately.
 func (l *Limiter) Acquire() {
