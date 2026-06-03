@@ -22,9 +22,11 @@ import (
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/filelock"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
+	"github.com/kelp/gale/internal/timing"
 	"github.com/klauspost/compress/zstd"
 )
 
@@ -3377,6 +3379,96 @@ func TestInstallBinaryVerifiesArchiveFile(t *testing.T) {
 		if err == nil && len(leaked) > 0 {
 			t.Errorf("leaked tempfile(s) under %s: %v", tmpDir, leaked)
 		}
+	}
+}
+
+// TestInstallBinaryEmitsAttestationTimingPhase asserts that
+// installBinaryTo wraps the attestation VerifyFile call in a
+// timing.Phase so that --verbose surfaces attestation cost.
+//
+// Today the binary-stream phase is timed but the VerifyFile call
+// right after it is not, so no "[timing] attestation" line ever
+// appears. The substring assertion below is the RED reason: it
+// fails until the attestation phase is added.
+func TestInstallBinaryEmitsAttestationTimingPhase(t *testing.T) {
+	// No t.Parallel(): timing.SetOutput is a process-global sink.
+
+	// Capture timing output via a verbose sink.
+	var buf bytes.Buffer
+	timing.SetOutput(output.NewWithOptions(&buf, output.Options{Verbose: true}))
+	defer timing.SetOutput(nil)
+
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+
+	// Build a tar.zst with a known binary.
+	binContent := "#!/bin/sh\necho from-sigstore-binary"
+	tarzst := createTestTarZstd(t, "bin/testpkg", binContent)
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData) //nolint:errcheck
+		},
+	))
+	defer srv.Close()
+
+	restore := download.SetHTTPClient(&http.Client{
+		Transport: hostRewrite{
+			base: srv.Client().Transport,
+			host: srv.Listener.Addr().String(),
+		},
+	})
+	defer restore()
+
+	t.Setenv("GALE_GITHUB_TOKEN", "fake-token-for-test")
+
+	// VerifyFile returns nil so needAttest fires and the install
+	// succeeds via the binary path.
+	rv := &recordingVerifier{}
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store:    store.NewStore(storeRoot),
+		Verifier: rv,
+	}
+
+	blobURL := fmt.Sprintf(
+		"https://ghcr.io/v2/owner/repo/testpkg/blobs/sha256:%s",
+		hash,
+	)
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    blobURL,
+				SHA256: hash,
+				Trust:  recipe.TrustSigstore,
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+	if result.Method != MethodBinary {
+		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
+	}
+	if !rv.called {
+		t.Fatal("VerifyFile was never called; " +
+			"Verifier not wired into install path")
+	}
+
+	if !strings.Contains(buf.String(), "[timing] attestation") {
+		t.Errorf("expected a \"[timing] attestation\" line in timing "+
+			"output, but the attestation VerifyFile call is not wrapped "+
+			"in timing.Phase.\ntiming output:\n%s", buf.String())
 	}
 }
 
