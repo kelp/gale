@@ -626,7 +626,10 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// step entirely; here we only verify when the recipe
 	// opted in to sigstore (which by definition means GHCR).
 	if needAttest {
-		if err := v.VerifyFile(archiveOut, attestation.DefaultRepo); err != nil {
+		attestDone := timing.Phase("attestation " + pkgID)
+		err := v.VerifyFile(archiveOut, attestation.DefaultRepo)
+		attestDone()
+		if err != nil {
 			return fmt.Errorf("attestation: %w", err)
 		}
 	}
