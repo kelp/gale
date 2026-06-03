@@ -592,9 +592,14 @@ two before anything else.
 
 - [x] **Baseline benchmark vs Homebrew.** Harness at
   `scripts/perf-baseline.sh` (HOME-isolated, opt-in
-  `--with-brew`). Template at `docs/dev/perf-baseline.md`.
-  *Numbers still need to be captured on a Mac — the harness
-  is in place but no reference run has been recorded.*
+  `--with-brew`; builds gale from HEAD and asserts the
+  version). Reference runs recorded in
+  `docs/dev/perf-baseline.md`: Linux v0.16.3, macOS M3 Max
+  v0.16.3 (with an honest brew cold/warm comparison), a
+  retroactive pre-Tier-1 run (`fd7ac90`) isolating the
+  Tier-1 delta, and the Tier-2 parallel-closure A/B. Headline:
+  gale cold still loses to brew cold, dominated by the
+  per-install GHCR fetch + attestation cost.
 
 ### Tier 1 — Gale-side wins (no infra changes)
 
@@ -607,6 +612,19 @@ single-package installs.
   `cmd/gale/outdated.go`, `cmd/gale/sbom.go` all use
   `parallel.Map`. Output collected and emitted in stable
   order after the barrier.
+
+- [x] **Parallelise the dependency closure + configurable
+  parallelism.** `installDepsInner` now fans out the dep
+  install loop (mutex-guarded `seen` map; downloads bounded by
+  a shared `parallel.Limiter` acquired around the leaf fetch in
+  `installBinaryTo`, so the limit never deadlocks against the
+  package pool). One knob sizes both the sync pool and the
+  closure limiter: `GALE_JOBS` env > `[sync] parallelism` in
+  config.toml > default 8 (`config.ResolveParallelism`).
+  Correct and race-free, but the A/B (`docs/dev/perf-baseline.md`,
+  2026-05-31) shows it is **wall-clock neutral for single heavy
+  installs** — the closures are bandwidth-bound, not latency-
+  bound, so parallel download over one pipe doesn't cut time.
 
 - [x] **Reuse the GHCR anonymous token within a session.**
   In-process `tokenCache` in `internal/ghcr/ghcr.go` with
@@ -629,6 +647,18 @@ single-package installs.
   before the serial `InstallBuildDeps` walk. Fire-and-forget;
   errors are swallowed so the real fetch surfaces persistent
   failures.
+
+**Tier 1 is exhausted.** The cheap gale-side wins are all in,
+and the measurements say the client is no longer the bottleneck:
+multi-package sync now tracks the slowest package, and the
+remaining cold-install cost is the per-artifact GHCR fetch +
+`gh attestation verify` round-trips, which are bandwidth/latency
+bound to GitHub's infrastructure. More client-side parallelism
+won't move it (the closure A/B proved that). The next real lever
+is **distribution** — Tier 2 (compression, bundled index to
+collapse per-recipe GETs) and especially Tier 3 (a CDN/R2 origin
+for binaries). Those are infra decisions and deserve their own
+planning round before any code.
 
 ### Tier 2 — Recipe pipeline
 
