@@ -70,6 +70,46 @@ comparison lives in the macOS run; headline: **gale cold is slower
 than brew cold across the board** — that gap is what Tier 2+ exists to
 close.
 
+### Where single-install time actually goes: attestation (measured 2026-06-02)
+
+`--verbose` now times the attestation step (commit `11b0287`). For `jq`
+(no deps) on the Linux VM:
+
+```
+recipe-fetch   0.57s
+ghcr-token     0.60s
+binary-stream  0.71s
+attestation    5.01s   ← 73% of the install
+lockfile       0s
+```
+
+Per-artifact attestation — `gh attestation verify`, a Sigstore/Rekor
+provenance check — is **~4–5s and by far the dominant cost**, and it
+recurs once per binary in a closure (bat's ~8 deps each pay it). A
+direct serial-vs-concurrent battery on one captured artifact:
+
+| `gh attestation verify` | wall |
+|-------------------------|------|
+| 1×                      | 4.1s |
+| 8× serial               | 34.1s |
+| 4× concurrent           | 4.7s |
+| 8× concurrent           | 4.6s |
+
+So it is **network-latency-bound and parallelizes near-perfectly** — 8
+concurrent ≈ 1× on a 4-core VM (not CPU-bound), with no per-call
+caching (3× serial = 12.1s = exactly 3×4.0s). Verifying a whole closure
+at once is essentially free.
+
+This **corrects two earlier guesses in this doc**: the single-package
+cost is *not* bandwidth-bound (it's attestation latency), and the next
+lever is *not* primarily distribution infra. The highest-value perf
+work is **gale-side attestation handling**: (1) cache verification per
+store artifact so shared deps / reinstalls skip it; (2) verify a
+closure's artifacts concurrently (gh proves this is ~free). Open
+question: whether gale's current closure parallelism already overlaps
+attestation, or whether `bat`'s residual cost is the large `rust`
+toolchain download — needs a timestamped real-install trace.
+
 ### What Tier-0/Tier-1 already bought (retroactive)
 
 We had no baseline from *before* the Tier-1 work, so we built the

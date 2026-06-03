@@ -648,17 +648,30 @@ single-package installs.
   errors are swallowed so the real fetch surfaces persistent
   failures.
 
-**Tier 1 is exhausted.** The cheap gale-side wins are all in,
-and the measurements say the client is no longer the bottleneck:
-multi-package sync now tracks the slowest package, and the
-remaining cold-install cost is the per-artifact GHCR fetch +
-`gh attestation verify` round-trips, which are bandwidth/latency
-bound to GitHub's infrastructure. More client-side parallelism
-won't move it (the closure A/B proved that). The next real lever
-is **distribution** — Tier 2 (compression, bundled index to
-collapse per-recipe GETs) and especially Tier 3 (a CDN/R2 origin
-for binaries). Those are infra decisions and deserve their own
-planning round before any code.
+**The #1 cost is attestation — and it's a gale-side win (measured
+2026-06-02).** `--verbose` now times `gh attestation verify`
+(commit `11b0287`). It is **~4–5s per artifact and ~73% of a
+single install** (jq: 5.0s of 6.9s), recurring once per binary in a
+closure. Crucially, `gh attestation verify` is network-latency-bound
+and **parallelizes near-perfectly**: 1×=4.1s, 8× serial=34s, 8×
+concurrent=**4.6s** (no per-call caching). So verifying a whole
+closure at once is essentially free — yet a real `bat` install spends
+~7×4s on it. That makes the highest-value perf work **gale-side
+attestation handling**, ahead of any distribution change:
+
+- [ ] **Cache attestation per store artifact.** Once a binary at a
+  given sha256 is verified, record it; shared deps and reinstalls
+  skip re-verification entirely.
+- [ ] **Verify a closure's artifacts concurrently.** gh proves N
+  concurrent verifies ≈ 1×. Confirm whether the existing closure
+  parallelism already overlaps the verify step (timestamped trace),
+  and if not, make it.
+- [ ] **(Stretch) in-process Sigstore verification** to drop the
+  per-artifact `gh` subprocess spawn entirely.
+
+This corrects the earlier read that distribution infra (Tier 2/3)
+was the next lever — it isn't, until attestation is addressed. The
+client is *not* yet at its floor.
 
 ### Tier 2 — Recipe pipeline
 
