@@ -19,7 +19,9 @@ import (
 
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/timing"
 	"github.com/ulikunitz/xz"
 )
 
@@ -69,6 +71,52 @@ func TestBuildSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 	}
 	if info.Size() == 0 {
 		t.Error("archive file is empty")
+	}
+}
+
+// TestBuildEmitsSourceBuildTimingPhase pins that a build from
+// source wraps the package build in a timing.Phase so that
+// `gale --verbose install` shows the ~15s source-build step
+// rather than an invisible gap. The build runs inside
+// buildFromDir, which is currently un-instrumented.
+func TestBuildEmitsSourceBuildTimingPhase(t *testing.T) {
+	tarball, hash := createSourceTarGz(t, map[string]string{
+		"testpkg-1.0/README": "hello",
+	})
+	srv := serveFile(t, tarball)
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{
+			Name:    "testpkg",
+			Version: "1.0",
+		},
+		Source: recipe.Source{
+			URL:    srv.URL + "/testpkg-1.0.tar.gz",
+			SHA256: hash,
+		},
+		Build: recipe.Build{
+			Steps: []string{
+				"mkdir -p $PREFIX/bin && echo '#!/bin/sh' > $PREFIX/bin/hello && chmod +x $PREFIX/bin/hello",
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	timing.SetOutput(output.NewWithOptions(&buf, output.Options{Verbose: true}))
+	defer timing.SetOutput(nil)
+
+	outputDir := t.TempDir()
+	result, err := Build(r, outputDir, false, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if !strings.Contains(buf.String(), "[timing] source-build") {
+		t.Fatalf("expected a [timing] source-build line, got:\n%s",
+			buf.String())
 	}
 }
 
