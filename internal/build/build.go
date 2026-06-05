@@ -19,6 +19,7 @@ import (
 	"github.com/kelp/gale/internal/gitutil"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/timing"
 )
 
 // out is the build output writer. Initialized to colored
@@ -154,6 +155,8 @@ func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, debug bool, deps 
 // buildFromDir runs build steps, fixes binaries, and packages
 // the result. Shared by Build and BuildLocal.
 func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debug bool, deps *BuildDeps) (*BuildResult, error) {
+	defer timing.Phase("source-build " + r.Package.Name)()
+
 	prefixDir := filepath.Join(workspace, "prefix")
 	if err := os.MkdirAll(prefixDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create prefix directory: %w", err)
