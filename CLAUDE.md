@@ -268,8 +268,18 @@ Key rules:
 - Check `context.go` for shared helpers before
   writing new CLI code
 - Commits MUST be signed. Never use `--no-gpg-sign`
-  or `commit.gpgsign=false`. If signing fails, stop
-  and wait for instructions.
+  or `commit.gpgsign=false`.
+- When `git commit -S` fails (`agent refused operation`,
+  `Couldn't get agent socket`, signing timeout), it is
+  ALWAYS the same cause: the user is away from their
+  computer, so Secretive can't authorize the key. Do NOT
+  diagnose it, retry it, probe `/tmp` ssh-agent sockets,
+  test-sign, or hunt for a working `SSH_AUTH_SOCK` — none
+  of that ever helps and it burns tokens every time. The
+  instant a signed commit fails: STOP. Leave the change
+  staged (don't pile on more edits), tell the user signing
+  needs them back at their machine, and move on / wait.
+  Resume only when they say signing is back.
 
 ## Gotchas
 
