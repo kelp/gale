@@ -13,15 +13,16 @@ and per-project environments.
 ## Build & Test
 
 ```
-just              # test + lint (default)
+just              # test + lint + fmt-check (default)
 just build        # build binary (ldflags version)
 just test         # all tests
 just test-pkg foo # single package tests
 just check        # test + lint + format check
 just cover        # test coverage per package
-just fmt          # fix formatting with gofumpt
+just fmt          # fix formatting (gofumpt: cmd internal integration)
 just lint         # golangci-lint + go vet
-just bootstrap    # first-time: go build + self-install
+just hooks        # install pre-commit gofumpt hook (once per clone)
+just bootstrap    # first-time: go build + self-install + hooks
 just install      # rebuild gale from current source
 just tag 0.2.0    # run checks, update CHANGELOG, tag
 just release 0.2.0 # push tag — CI builds and publishes
@@ -264,7 +265,10 @@ Key rules:
 
 - TDD: write the failing test first
 - Error wrapping: `fmt.Errorf("context: %w", err)`
-- Format with gofumpt, lint with golangci-lint
+- Format with gofumpt, lint with golangci-lint.
+  Run `just hooks` once per clone to enable the
+  pre-commit gofumpt gate (mirrors CI's format check
+  so unformatted code never reaches main).
 - Check `context.go` for shared helpers before
   writing new CLI code
 - Commits MUST be signed. Never use `--no-gpg-sign`
