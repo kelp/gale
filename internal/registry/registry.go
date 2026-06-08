@@ -270,6 +270,21 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 			}
 		}
 	}
+
+	// Version-skew fallback: the resolved-latest version has no binary
+	// at its pinned commit or at ref-tip. .versions lists a version
+	// ahead of what main currently ships (a reverted release, or a
+	// binary never built). Rather than source-build a phantom-latest
+	// (a regression vs the pre-commit-pin client), fall back to the
+	// main-tip recipe+binary — the version main actually ships — and
+	// record the skew for a once-per-command summary (drained via
+	// TakeSkewed).
+	if len(rec.Binary) == 0 {
+		if tipRec, ferr := r.fetchRecipe(name, true); ferr == nil && len(tipRec.Binary) > 0 {
+			recordSkew(name)
+			return tipRec, nil
+		}
+	}
 	return rec, nil
 }
 

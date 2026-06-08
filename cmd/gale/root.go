@@ -32,6 +32,9 @@ Projects get isolated environments, activated automatically on cd.`,
 		if names := registry.TakeMispinned(); len(names) > 0 {
 			newOutput().Warn(registry.MispinSummary(names))
 		}
+		if names := registry.TakeSkewed(); len(names) > 0 {
+			newOutput().Warn(registry.SkewSummary(names))
+		}
 	},
 }
 
