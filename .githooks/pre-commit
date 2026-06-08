@@ -14,7 +14,11 @@ if ! command -v gofumpt >/dev/null 2>&1; then
 fi
 
 # Staged Go files that still exist (added/copied/modified/renamed).
-mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+# Portable read loop — macOS ships bash 3.2, which has no `mapfile`.
+files=()
+while IFS= read -r f; do
+	files+=("$f")
+done < <(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
 [ "${#files[@]}" -eq 0 ] && exit 0
 
 unformatted=$(gofumpt -l "${files[@]}")
