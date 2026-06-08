@@ -252,15 +252,26 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 	// atomicity guarantee, but no regression); once CI rewrites
 	// .versions to point at the binaries commit, the pinned fetch
 	// matches and this fallback never fires.
-	// Silent — this is exactly the pre-commit-pin behavior
-	// (ref-tip binaries), so it adds no atomicity guarantee but
-	// also no regression and no per-package warning spam. Once CI
-	// rewrites .versions to point at the binaries commit, the
-	// pinned fetch above matches and this never fires.
+	// This is the pre-commit-pin behavior (ref-tip binaries), so it
+	// adds no atomicity guarantee but also no regression. When it
+	// actually rescues a binary the pinned commit lacked, we warn
+	// once: .versions likely pins a commit whose .binaries.toml
+	// doesn't carry the matching binary (a mispin). Once CI rewrites
+	// .versions to point at the binaries commit, the pinned fetch
+	// above matches and this never fires.
 	if len(rec.Binary) == 0 {
 		idx, ferr := r.fetchBinaries(name)
 		if ferr == nil && idx != nil {
 			recipe.MergeBinaries(rec, idx, ghcrBaseFromURL(r.BaseURL))
+			if len(rec.Binary) > 0 {
+				r.warn(
+					"%s: .versions pins commit %s but its "+
+						".binaries.toml there has no matching binary; "+
+						"using ref-tip binaries instead (.versions may "+
+						"be mispinned)",
+					name, commit,
+				)
+			}
 		}
 	}
 	return rec, nil
@@ -513,8 +524,7 @@ func pickVersion(idx map[string]string, requested string) (string, bool) {
 	//    pre-revision .versions entries record the bare
 	//    version; revision 1 is the implicit default, so a
 	//    "-1" lookup should still find them.
-	if strings.HasSuffix(requested, "-1") {
-		bare := strings.TrimSuffix(requested, "-1")
+	if bare, ok := strings.CutSuffix(requested, "-1"); ok {
 		if _, ok := idx[bare]; ok {
 			return bare, true
 		}
@@ -567,7 +577,7 @@ func hasRevisionSuffix(v string) bool {
 // version→commit map. Each line is "version commit-hash".
 func parseVersionIndex(data string) (map[string]string, error) {
 	idx := make(map[string]string)
-	for _, line := range strings.Split(data, "\n") {
+	for line := range strings.SplitSeq(data, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
