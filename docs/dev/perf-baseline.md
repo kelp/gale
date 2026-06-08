@@ -171,6 +171,52 @@ are latency-bound (many small artifacts) or on higher-bandwidth links.
 
 Keep older runs in their own subsections so trends are visible.
 
+### Run: 2026-06-08 — commit-pin skew fallback (Linux), gale 0.16.3-dev.33
+
+- Date: 2026-06-08
+- Machine: Debian 13 (trixie) cloud VM, x86_64, 4 cores, 15.3 GiB RAM
+- gale version: `0.16.3-dev.33+66dc211` (built from HEAD)
+- Platform: `Linux/x86_64`
+- Homebrew: n/a
+- Purpose: verify the fix for a regression introduced by the atomic
+  commit-pin resolver. `pickLatest` picks the highest version in a
+  recipe's `.versions` index, which can sit AHEAD of what main ships
+  when a release was reverted (openssl 4.0.0 → 3.6.1-3) or its binary
+  was never built (sqlite, postgresql, doggo). That phantom-latest has
+  no binary at its pinned commit or at ref-tip, so it silently
+  SOURCE-BUILT. openssl source-building 3m52s dragged bat and eza
+  (both in its TLS dependency chain) to ~255s.
+- Fix: `fetchLatestPinned` now falls back to the main-tip recipe+binary
+  (the shipped version) when the resolved-latest has no binary, and
+  records a once-per-command skew summary. openssl resolves 3.6.1 from
+  binary again.
+- Caveat: single cold install each (not median-of-3). The automated
+  harness could not finish a full clean run — the day's heavy testing
+  exhausted GitHub's attestation-verify quota (HTTP 403), whose source
+  fallback then filled the `/tmp` tmpfs. Both environmental, not gale.
+  The numbers match the healthy 2026-05-31 baseline, confirming the fix
+  restored binary resolution.
+
+#### Per-package install (seconds, single cold run, post-fix)
+
+| package | gale cold | pre-fix |
+|---------|-----------|---------|
+| jq      |   5 | 5 (unaffected)            |
+| fd      |   6 | 6 (unaffected)            |
+| ripgrep |  12 | 12 (unaffected)           |
+| bat     |  35 | 255 (openssl source-built)|
+| eza     |  36 | 253 (openssl source-built)|
+
+#### Phase timing breakdown (jq cold install, `gale --verbose`)
+
+```
+[timing] recipe-fetch jq elapsed=319ms
+[timing] ghcr-token kelp/gale-recipes/jq elapsed=569ms
+[timing] binary-stream jq@1.8.1 elapsed=692ms
+[timing] attestation jq@1.8.1 elapsed=3.519s
+[timing] lockfile-write jq elapsed=0s
+```
+
 ### Run: 2026-05-31 — Tier-2 parallel-closure A/B (Linux), gale 0.16.3-dev.17
 
 - Date: 2026-05-31
