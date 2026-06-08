@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Block commits that contain gofumpt-unformatted Go files.
+#
+# Installed via `just hooks` (sets core.hooksPath to .githooks).
+# Mirrors the CI "Format check" so unformatted code never reaches
+# main. Uses the gofumpt on PATH — in this repo that is the
+# gale-pinned version from gale.toml (via direnv `use gale`).
+set -euo pipefail
+
+if ! command -v gofumpt >/dev/null 2>&1; then
+	echo "pre-commit: gofumpt not on PATH; skipping format check." >&2
+	echo "  run 'direnv allow' / 'gale sync' to get the pinned gofumpt." >&2
+	exit 0
+fi
+
+# Staged Go files that still exist (added/copied/modified/renamed).
+mapfile -t files < <(git diff --cached --name-only --diff-filter=ACMR -- '*.go')
+[ "${#files[@]}" -eq 0 ] && exit 0
+
+unformatted=$(gofumpt -l "${files[@]}")
+if [ -n "$unformatted" ]; then
+	echo "pre-commit: these staged files need gofumpt formatting:" >&2
+	echo "$unformatted" | sed 's/^/  /' >&2
+	echo >&2
+	echo "Fix with: just fmt   (then 'git add' the files and commit again)" >&2
+	exit 1
+fi

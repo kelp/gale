@@ -1,5 +1,5 @@
-# Default: run tests and lint
-default: test lint
+# Default: run tests, lint, and format check
+default: test lint fmt-check
 
 # Build the binary
 build:
@@ -22,13 +22,25 @@ lint:
     golangci-lint run ./...
     go vet ./...
 
-# Check formatting
+# Check formatting (fails if any file needs formatting)
 fmt-check:
-    gofumpt -l cmd internal
+    #!/usr/bin/env bash
+    set -euo pipefail
+    unformatted=$(gofumpt -l cmd internal integration)
+    if [ -n "$unformatted" ]; then
+      echo "Files need formatting (run 'just fmt'):" >&2
+      echo "$unformatted" >&2
+      exit 1
+    fi
 
 # Fix formatting
 fmt:
-    gofumpt -w cmd internal
+    gofumpt -w cmd internal integration
+
+# Install git hooks (pre-commit gofumpt check). Run once per clone.
+hooks:
+    git config core.hooksPath .githooks
+    @echo "Installed git hooks (core.hooksPath=.githooks)"
 
 # Show test coverage per package
 cover:
@@ -58,8 +70,8 @@ check: test lint fmt-check integration
 install: build
     ./gale install --path . -g gale
 
-# Bootstrap gale (first-time: build with go, then self-install)
-bootstrap: build
+# Bootstrap gale (first-time: build with go, self-install, install hooks)
+bootstrap: build hooks
     ./gale install --path . -g gale
 
 # Tag a release (formats, runs checks first)
