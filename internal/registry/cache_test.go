@@ -263,22 +263,32 @@ func TestFetchRecipe304ReturnsExactCachedBody(t *testing.T) {
 	// Corrupt the cached body to prove the second fetch reads
 	// from the cache file, not memory. After a 304 the recipe
 	// should parse from the corrupt bytes and fail.
+	//
+	// FetchRecipe caches several entries (.versions, .toml,
+	// .binaries.toml); after a 304 the recipe may be served from
+	// any of them, and the httptest server's random port
+	// randomizes their cache-key order. Corrupt EVERY cached body
+	// so the recipe is re-read as corrupt regardless of which
+	// entry serves it — otherwise the test is flaky.
 	root := filepath.Join(reg.CacheDir, "registry")
-	var bodyPath string
+	var corrupted int
 	err = filepath.Walk(root, func(path string, info os.FileInfo, err error) error {
-		if err == nil && !info.IsDir() && filepath.Base(path) == "body" {
-			bodyPath = path
+		if err != nil {
+			return err
+		}
+		if !info.IsDir() && filepath.Base(path) == "body" {
+			if werr := os.WriteFile(path, []byte("[[[ not toml"), 0o644); werr != nil {
+				return werr
+			}
+			corrupted++
 		}
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("walk: %v", err)
-	}
-	if bodyPath == "" {
-		t.Fatal("no cached body found")
-	}
-	if err := os.WriteFile(bodyPath, []byte("[[[ not toml"), 0o644); err != nil {
 		t.Fatalf("corrupt cache: %v", err)
+	}
+	if corrupted == 0 {
+		t.Fatal("no cached body found")
 	}
 
 	_, err = reg.FetchRecipe("testpkg")
