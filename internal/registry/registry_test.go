@@ -1708,3 +1708,93 @@ func TestMispinSummary(t *testing.T) {
 		}
 	}
 }
+
+// --- Version-skew fallback ---
+
+// TestFetchLatestPinnedSkewFallsBackToTipRecipe pins the phantom-latest
+// failure mode: .versions lists a version (2.0.0) AHEAD of what main
+// currently ships (1.8.1) — a reverted release, or one whose binary was
+// never built. The phantom-latest recipe parses, but has NO binary at
+// its pinned commit and NONE at ref-tip (the ref-tip binaries index is
+// the prior 1.8.1, a different version). Pinning there would silently
+// source-build, a regression vs the old main-tip client. The resolver
+// must fall back to the legacy main-tip recipe (version 1.8.1, with its
+// matching binaries) and RECORD a skew — separate from mispin.
+func TestFetchLatestPinnedSkewFallsBackToTipRecipe(t *testing.T) {
+	// Drain leaked state before we start.
+	TakeSkewed()
+	TakeMispinned()
+
+	const tipCommit = "1111111111111111111111111111111111111111"
+	const newCommit = "2222222222222222222222222222222222222222"
+
+	// recipeNoBinaries is version 1.8.1; build a phantom-latest at
+	// 2.0.0 by substituting the version string.
+	if !strings.Contains(recipeNoBinaries, "1.8.1") {
+		t.Fatalf("recipeNoBinaries no longer contains 1.8.1; adjust test")
+	}
+	recipeV2 := strings.Replace(recipeNoBinaries, "1.8.1", "2.0.0", 1)
+
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			// pickLatest → 2.0.0 → newCommit.
+			"/recipes/j/jq.versions": "1.8.1 " + tipCommit +
+				"\n2.0.0 " + newCommit + "\n",
+			// Phantom-latest recipe at the pinned commit, version 2.0.0.
+			"/" + newCommit + "/recipes/j/jq.toml": recipeV2,
+			// DELIBERATELY no pinned .binaries.toml at newCommit → 404.
+			// Main tip: the shipped recipe + matching binaries (1.8.1).
+			"/recipes/j/jq.toml":          recipeNoBinaries,
+			"/recipes/j/jq.binaries.toml": binariesToml,
+		},
+	))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.8.1" {
+		t.Errorf("Version = %q, want 1.8.1 (should fall back to "+
+			"main-tip shipped version, not phantom 2.0.0)",
+			rec.Package.Version)
+	}
+	if len(rec.Binary) != 2 {
+		t.Errorf("Binary count = %d, want 2 (should get the tip binary)",
+			len(rec.Binary))
+	}
+
+	skewed := TakeSkewed()
+	if len(skewed) != 1 || skewed[0] != "jq" {
+		t.Errorf("TakeSkewed() = %v, want exactly [jq]", skewed)
+	}
+	// This is a skew, not a mispin: the ref-tip binary was a different
+	// version (1.8.1 vs phantom 2.0.0) and never rescued the pin.
+	if mis := TakeMispinned(); len(mis) != 0 {
+		t.Errorf("TakeMispinned() = %v, want empty (skew is not a mispin)",
+			mis)
+	}
+}
+
+// TestSkewSummary verifies the one-line skew summary formatter: empty
+// for no names, and a single line naming the count, each package, and
+// the "no binary" cause for any non-empty set.
+func TestSkewSummary(t *testing.T) {
+	if got := SkewSummary(nil); got != "" {
+		t.Errorf("SkewSummary(nil) = %q, want empty", got)
+	}
+	if got := SkewSummary([]string{}); got != "" {
+		t.Errorf("SkewSummary([]) = %q, want empty", got)
+	}
+
+	got := SkewSummary([]string{"openssl", "sqlite"})
+	if got == "" {
+		t.Fatalf("SkewSummary([openssl sqlite]) = empty, want a summary line")
+	}
+	for _, want := range []string{"2", "openssl", "sqlite", "no binary"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary %q missing %q", got, want)
+		}
+	}
+}

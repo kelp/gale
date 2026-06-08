@@ -48,6 +48,25 @@ func TakeMispinned() []string {
 	return out
 }
 
+// TakeSkewed returns the accumulated skewed package names (sorted and
+// deduped) and clears the recorded state. A skew is distinct from a
+// mispin: it fires when the resolved-latest version has no binary at
+// its pinned commit AND none at ref-tip, forcing a fall back to the
+// legacy main-tip recipe.
+//
+// STUB: returns nil so all skew tests fail against the stub.
+func TakeSkewed() []string {
+	return nil
+}
+
+// SkewSummary formats a one-line summary of skewed packages, or "" for
+// empty input.
+//
+// STUB: returns "" so the summary test fails against the stub.
+func SkewSummary(names []string) string {
+	return ""
+}
+
 // MispinSummary formats a one-line summary of mispinned packages, or
 // "" for empty input.
 func MispinSummary(names []string) string {
