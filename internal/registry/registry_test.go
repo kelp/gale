@@ -1581,3 +1581,89 @@ func TestFetchRecipeFallsBackToTipBinariesOnPinnedMismatch(t *testing.T) {
 			len(rec.Binary))
 	}
 }
+
+// pinnedCommit is a valid 40-char lowercase hex commit SHA used by
+// the ref-tip-fallback warning tests. parseVersionIndex rejects
+// non-hex commits, so it must be real hex.
+const pinnedCommit = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
+
+// TestFetchLatestPinnedWarnsOnRefTipFallback asserts that when the
+// pinned commit has no binary index and the ref-tip .binaries.toml
+// rescues a binary the pinned commit lacked, the registry emits
+// exactly one warning naming the package and signaling a possible
+// mispin in .versions.
+func TestFetchLatestPinnedWarnsOnRefTipFallback(t *testing.T) {
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			"/recipes/j/jq.versions": "1.8.1 " + pinnedCommit + "\n",
+			"/" + pinnedCommit + "/recipes/j/jq.toml": recipeNoBinaries,
+			// DELIBERATELY no pinned .binaries.toml → 404.
+			// Ref-tip binaries are the fallback source.
+			"/recipes/j/jq.binaries.toml": binariesToml,
+		},
+	))
+	defer srv.Close()
+
+	var warnings []string
+	reg := testRegistry(srv.URL)
+	reg.warnf = func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	}
+
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2 (ref-tip fallback should rescue binaries)",
+			len(rec.Binary))
+	}
+	if len(warnings) < 1 {
+		t.Fatalf("expected >= 1 warning when ref-tip fallback rescues a binary, got %d: %v",
+			len(warnings), warnings)
+	}
+	found := false
+	for _, w := range warnings {
+		if strings.Contains(w, "jq") &&
+			(strings.Contains(w, "mispinned") || strings.Contains(w, ".versions")) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no warning mentions both %q and a mispin signal (%q or %q): %v",
+			"jq", "mispinned", ".versions", warnings)
+	}
+}
+
+// TestFetchLatestPinnedNoWarnWhenPinnedHasBinary asserts the
+// happy path stays silent: when the pinned commit already yields a
+// binary, no ref-tip fallback fires and no warning is emitted.
+func TestFetchLatestPinnedNoWarnWhenPinnedHasBinary(t *testing.T) {
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			"/recipes/j/jq.versions": "1.8.1 " + pinnedCommit + "\n",
+			"/" + pinnedCommit + "/recipes/j/jq.toml": recipeNoBinaries,
+			"/" + pinnedCommit + "/recipes/j/jq.binaries.toml": binariesToml,
+			"/recipes/j/jq.binaries.toml":                      binariesToml,
+		},
+	))
+	defer srv.Close()
+
+	var warnings []string
+	reg := testRegistry(srv.URL)
+	reg.warnf = func(format string, args ...any) {
+		warnings = append(warnings, fmt.Sprintf(format, args...))
+	}
+
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
+	}
+	if len(warnings) != 0 {
+		t.Errorf("expected no warnings on happy path, got %d: %v",
+			len(warnings), warnings)
+	}
+}
