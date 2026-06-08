@@ -1598,7 +1598,7 @@ func TestFetchLatestPinnedRecordsMispinOnRefTipFallback(t *testing.T) {
 
 	srv := httptest.NewServer(fileHandler(
 		map[string]string{
-			"/recipes/j/jq.versions": "1.8.1 " + pinnedCommit + "\n",
+			"/recipes/j/jq.versions":                  "1.8.1 " + pinnedCommit + "\n",
 			"/" + pinnedCommit + "/recipes/j/jq.toml": recipeNoBinaries,
 			// DELIBERATELY no pinned .binaries.toml → 404.
 			// Ref-tip binaries are the fallback source.
@@ -1641,7 +1641,7 @@ func TestFetchLatestPinnedNoMispinWhenPinnedHasBinary(t *testing.T) {
 	// (not just a no-op stub returning nil).
 	mispinSrv := httptest.NewServer(fileHandler(
 		map[string]string{
-			"/recipes/j/jq.versions": "1.8.1 " + pinnedCommit + "\n",
+			"/recipes/j/jq.versions":                  "1.8.1 " + pinnedCommit + "\n",
 			"/" + pinnedCommit + "/recipes/j/jq.toml": recipeNoBinaries,
 			"/recipes/j/jq.binaries.toml":             binariesToml,
 		},
@@ -1661,8 +1661,8 @@ func TestFetchLatestPinnedNoMispinWhenPinnedHasBinary(t *testing.T) {
 	// fallback fires and nothing new is recorded.
 	srv := httptest.NewServer(fileHandler(
 		map[string]string{
-			"/recipes/j/jq.versions": "1.8.1 " + pinnedCommit + "\n",
-			"/" + pinnedCommit + "/recipes/j/jq.toml": recipeNoBinaries,
+			"/recipes/j/jq.versions":                           "1.8.1 " + pinnedCommit + "\n",
+			"/" + pinnedCommit + "/recipes/j/jq.toml":          recipeNoBinaries,
 			"/" + pinnedCommit + "/recipes/j/jq.binaries.toml": binariesToml,
 			"/recipes/j/jq.binaries.toml":                      binariesToml,
 		},
