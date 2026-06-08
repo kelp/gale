@@ -1587,12 +1587,15 @@ func TestFetchRecipeFallsBackToTipBinariesOnPinnedMismatch(t *testing.T) {
 // non-hex commits, so it must be real hex.
 const pinnedCommit = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
 
-// TestFetchLatestPinnedWarnsOnRefTipFallback asserts that when the
-// pinned commit has no binary index and the ref-tip .binaries.toml
-// rescues a binary the pinned commit lacked, the registry emits
-// exactly one warning naming the package and signaling a possible
-// mispin in .versions.
-func TestFetchLatestPinnedWarnsOnRefTipFallback(t *testing.T) {
+// TestFetchLatestPinnedRecordsMispinOnRefTipFallback asserts that when
+// the pinned commit has no binary index and the ref-tip .binaries.toml
+// rescues a binary the pinned commit lacked, the registry records the
+// package as mispinned (drainable via TakeMispinned) instead of
+// emitting a per-package warning.
+func TestFetchLatestPinnedRecordsMispinOnRefTipFallback(t *testing.T) {
+	// Drain any state leaked by other tests before we start.
+	TakeMispinned()
+
 	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/j/jq.versions": "1.8.1 " + pinnedCommit + "\n",
@@ -1604,10 +1607,11 @@ func TestFetchLatestPinnedWarnsOnRefTipFallback(t *testing.T) {
 	))
 	defer srv.Close()
 
-	var warnings []string
 	reg := testRegistry(srv.URL)
+	// The rescue must no longer emit a warning.
 	reg.warnf = func(format string, args ...any) {
-		warnings = append(warnings, fmt.Sprintf(format, args...))
+		t.Errorf("unexpected warning on ref-tip fallback: %s",
+			fmt.Sprintf(format, args...))
 	}
 
 	rec, err := reg.FetchRecipe("jq")
@@ -1618,27 +1622,43 @@ func TestFetchLatestPinnedWarnsOnRefTipFallback(t *testing.T) {
 		t.Fatalf("Binary count = %d, want 2 (ref-tip fallback should rescue binaries)",
 			len(rec.Binary))
 	}
-	if len(warnings) < 1 {
-		t.Fatalf("expected >= 1 warning when ref-tip fallback rescues a binary, got %d: %v",
-			len(warnings), warnings)
-	}
-	found := false
-	for _, w := range warnings {
-		if strings.Contains(w, "jq") &&
-			(strings.Contains(w, "mispinned") || strings.Contains(w, ".versions")) {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("no warning mentions both %q and a mispin signal (%q or %q): %v",
-			"jq", "mispinned", ".versions", warnings)
+
+	names := TakeMispinned()
+	if len(names) != 1 || names[0] != "jq" {
+		t.Fatalf("TakeMispinned() = %v, want exactly [jq]", names)
 	}
 }
 
-// TestFetchLatestPinnedNoWarnWhenPinnedHasBinary asserts the
-// happy path stays silent: when the pinned commit already yields a
-// binary, no ref-tip fallback fires and no warning is emitted.
-func TestFetchLatestPinnedNoWarnWhenPinnedHasBinary(t *testing.T) {
+// TestFetchLatestPinnedNoMispinWhenPinnedHasBinary asserts the happy
+// path records nothing: when the pinned commit already yields a binary,
+// no ref-tip fallback fires and no mispin is recorded.
+func TestFetchLatestPinnedNoMispinWhenPinnedHasBinary(t *testing.T) {
+	TakeMispinned()
+
+	// First, a fetch where the pinned commit lacks a binary and the
+	// ref-tip rescues it: this MUST record a mispin. Establishing that
+	// recording works here means the later empty drain is meaningful
+	// (not just a no-op stub returning nil).
+	mispinSrv := httptest.NewServer(fileHandler(
+		map[string]string{
+			"/recipes/j/jq.versions": "1.8.1 " + pinnedCommit + "\n",
+			"/" + pinnedCommit + "/recipes/j/jq.toml": recipeNoBinaries,
+			"/recipes/j/jq.binaries.toml":             binariesToml,
+		},
+	))
+	mispinReg := testRegistry(mispinSrv.URL)
+	mispinReg.warnf = func(string, ...any) {}
+	if _, err := mispinReg.FetchRecipe("jq"); err != nil {
+		mispinSrv.Close()
+		t.Fatalf("setup fetch failed: %v", err)
+	}
+	mispinSrv.Close()
+	if names := TakeMispinned(); len(names) != 1 || names[0] != "jq" {
+		t.Fatalf("setup: TakeMispinned() = %v, want [jq] (recording must work)", names)
+	}
+
+	// Now the happy path: pinned commit already has a binary, so no
+	// fallback fires and nothing new is recorded.
 	srv := httptest.NewServer(fileHandler(
 		map[string]string{
 			"/recipes/j/jq.versions": "1.8.1 " + pinnedCommit + "\n",
@@ -1649,10 +1669,10 @@ func TestFetchLatestPinnedNoWarnWhenPinnedHasBinary(t *testing.T) {
 	))
 	defer srv.Close()
 
-	var warnings []string
 	reg := testRegistry(srv.URL)
 	reg.warnf = func(format string, args ...any) {
-		warnings = append(warnings, fmt.Sprintf(format, args...))
+		t.Errorf("unexpected warning on happy path: %s",
+			fmt.Sprintf(format, args...))
 	}
 
 	rec, err := reg.FetchRecipe("jq")
@@ -1662,8 +1682,29 @@ func TestFetchLatestPinnedNoWarnWhenPinnedHasBinary(t *testing.T) {
 	if len(rec.Binary) != 2 {
 		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
 	}
-	if len(warnings) != 0 {
-		t.Errorf("expected no warnings on happy path, got %d: %v",
-			len(warnings), warnings)
+	if names := TakeMispinned(); len(names) != 0 {
+		t.Errorf("expected no mispins on happy path, got %v", names)
+	}
+}
+
+// TestMispinSummary verifies the one-line summary formatter: empty for
+// no names, and a single line naming the count, each package, and the
+// .versions source for any non-empty set.
+func TestMispinSummary(t *testing.T) {
+	if got := MispinSummary(nil); got != "" {
+		t.Errorf("MispinSummary(nil) = %q, want empty", got)
+	}
+	if got := MispinSummary([]string{}); got != "" {
+		t.Errorf("MispinSummary([]) = %q, want empty", got)
+	}
+
+	got := MispinSummary([]string{"jq", "fd"})
+	if got == "" {
+		t.Fatalf("MispinSummary([jq fd]) = empty, want a summary line")
+	}
+	for _, want := range []string{"2", "jq", "fd", ".versions"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("summary %q missing %q", got, want)
+		}
 	}
 }
