@@ -48,7 +48,8 @@ func TestAddDepRpathsLinuxUsesRelativeFarmRpath(t *testing.T) {
 		t.Fatal(err)
 	}
 	dylib := filepath.Join(depLib, "libdep.so")
-	if out, err := exec.Command("cc", "-shared", "-fPIC",
+	if out, err := exec.Command(
+		"cc", "-shared", "-fPIC",
 		"-Wl,-soname,libdep.so", "-o", dylib, libSrc,
 	).CombinedOutput(); err != nil {
 		t.Skipf("cc -shared failed: %v\n%s", err, out)
@@ -67,7 +68,8 @@ func TestAddDepRpathsLinuxUsesRelativeFarmRpath(t *testing.T) {
 		t.Fatal(err)
 	}
 	binPath := filepath.Join(binDir, "app")
-	if out, err := exec.Command("cc", "-o", binPath, mainSrc,
+	if out, err := exec.Command(
+		"cc", "-o", binPath, mainSrc,
 		"-L"+depLib, "-ldep",
 	).CombinedOutput(); err != nil {
 		t.Skipf("cc link failed: %v\n%s", err, out)
@@ -101,8 +103,8 @@ func TestAddDepRpathsLinuxUsesRelativeFarmRpath(t *testing.T) {
 func TestRelativeFarmRpathLinuxDepth(t *testing.T) {
 	prefix := "/tmp/pkg"
 	cases := map[string]string{
-		filepath.Join(prefix, "bin", "app"): "$ORIGIN/../../../../lib",
-		filepath.Join(prefix, "lib", "libfoo.so"): "$ORIGIN/../../../../lib",
+		filepath.Join(prefix, "bin", "app"):                 "$ORIGIN/../../../../lib",
+		filepath.Join(prefix, "lib", "libfoo.so"):           "$ORIGIN/../../../../lib",
 		filepath.Join(prefix, "libexec", "git-core", "git"): "$ORIGIN/../../../../../lib",
 	}
 	for file, want := range cases {
