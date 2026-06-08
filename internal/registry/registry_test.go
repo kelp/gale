@@ -56,16 +56,18 @@ func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var mu sync.Mutex
-			var gotPath string
-			var set bool
+			var paths []string
 
+			// The .versions probe runs first and is served the
+			// recipe body, which fails to parse as a version
+			// index, so FetchRecipe falls back to the ref-tip
+			// recipe fetch. We assert the correctly-bucketed
+			// .toml URL is among the requests rather than that
+			// it is the first one.
 			srv := httptest.NewServer(http.HandlerFunc(
 				func(w http.ResponseWriter, r *http.Request) {
 					mu.Lock()
-					if !set {
-						gotPath = r.URL.Path
-						set = true
-					}
+					paths = append(paths, r.URL.Path)
 					mu.Unlock()
 					fmt.Fprint(w, validTOML)
 				},
@@ -78,9 +80,15 @@ func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
 			mu.Lock()
 			defer mu.Unlock()
 
-			if gotPath != tt.wantPath {
-				t.Errorf("request path = %q, want %q",
-					gotPath, tt.wantPath)
+			found := false
+			for _, p := range paths {
+				if p == tt.wantPath {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("recipe path %q not requested; got %v",
+					tt.wantPath, paths)
 			}
 		})
 	}
@@ -1355,5 +1363,221 @@ func TestPickVersionMultiDigitRevisionNumericComparison(t *testing.T) {
 	}
 	if got != "8.19.0-10" {
 		t.Errorf("got %q, want %q", got, "8.19.0-10")
+	}
+}
+
+// --- Part 1: commit-pinned atomic resolution ---
+
+func TestPickLatest(t *testing.T) {
+	tests := []struct {
+		name string
+		idx  map[string]string
+		want string
+		ok   bool
+	}{
+		{
+			name: "highest semver wins",
+			idx: map[string]string{
+				"1.7.1": "aaaaaaa",
+				"1.8.1": "bbbbbbb",
+			},
+			want: "1.8.1",
+			ok:   true,
+		},
+		{
+			name: "revision beats bare same version",
+			idx: map[string]string{
+				"1.8.1":   "aaaaaaa",
+				"1.8.1-2": "bbbbbbb",
+			},
+			want: "1.8.1-2",
+			ok:   true,
+		},
+		{
+			name: "single entry",
+			idx:  map[string]string{"2.0.0": "ccccccc"},
+			want: "2.0.0",
+			ok:   true,
+		},
+		{
+			name: "empty index",
+			idx:  map[string]string{},
+			want: "",
+			ok:   false,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := pickLatest(tt.idx)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if got != tt.want {
+				t.Errorf("pickLatest = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestFetchRecipeCommitPinned proves the default resolver
+// reads recipe AND binaries from the single commit named by
+// the latest .versions entry — never from the mutable main
+// ref. The main-ref files are decoys with the WRONG version;
+// if FetchRecipe touched them the assertion would fail.
+func TestFetchRecipeCommitPinned(t *testing.T) {
+	const commit = "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.7.0 0000000000000000000000000000000000000000\n" +
+		"1.8.1 " + commit + "\n"
+
+	// Decoys served at the mutable main ref: an older recipe
+	// and a stale binaries index. Commit-pinning must ignore
+	// these.
+	staleRecipe := strings.Replace(recipeNoBinaries,
+		`version = "1.8.1"`, `version = "1.7.0"`, 1)
+	staleBinaries := strings.Replace(binariesToml,
+		`version = "1.8.1"`, `version = "1.7.0"`, 1)
+
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			"/recipes/j/jq.versions":                     versionsBody,
+			"/recipes/j/jq.toml":                         staleRecipe,
+			"/recipes/j/jq.binaries.toml":                staleBinaries,
+			"/" + commit + "/recipes/j/jq.toml":          recipeNoBinaries,
+			"/" + commit + "/recipes/j/jq.binaries.toml": binariesToml,
+		},
+	))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.8.1" {
+		t.Fatalf("Version = %q, want 1.8.1 (read the mutable main ref?)",
+			rec.Package.Version)
+	}
+	if len(rec.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2 (binaries not pinned to commit)",
+			len(rec.Binary))
+	}
+}
+
+// TestFetchRecipeFallsBackWhenNoVersions verifies that a
+// recipe without a .versions index still resolves via the
+// legacy two-file main-ref fetch.
+func TestFetchRecipeFallsBackWhenNoVersions(t *testing.T) {
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			// No .versions served -> 404 -> fallback.
+			"/recipes/j/jq.toml":          recipeNoBinaries,
+			"/recipes/j/jq.binaries.toml": binariesToml,
+		},
+	))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.8.1" {
+		t.Errorf("Version = %q, want 1.8.1", rec.Package.Version)
+	}
+	if len(rec.Binary) != 2 {
+		t.Errorf("Binary count = %d, want 2", len(rec.Binary))
+	}
+}
+
+// TestFetchRecipeVersionMergesBinaries verifies that the
+// pinned-version path now also fetches .binaries.toml at the
+// resolved commit and populates the binary map.
+func TestFetchRecipeVersionMergesBinaries(t *testing.T) {
+	const commit = "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.8.1 " + commit + "\n"
+
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			"/recipes/j/jq.versions":                     versionsBody,
+			"/" + commit + "/recipes/j/jq.toml":          recipeNoBinaries,
+			"/" + commit + "/recipes/j/jq.binaries.toml": binariesToml,
+		},
+	))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipeVersion("jq", "1.8.1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
+	}
+}
+
+// recipeRev4 is a revisioned recipe whose Full() is "1.8.1-4".
+const recipeRev4 = `[package]
+name = "jq"
+version = "1.8.1"
+revision = 4
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://example.com/jq-1.8.1.tar.gz"
+sha256 = "abc123"
+`
+
+// staleBinaries1_8_1 is the index as it exists at the recipe-BUMP
+// commit: version still the bare "1.8.1", before CI re-committed
+// the "1.8.1-4" entry. This is the real-world gale-recipes shape
+// (binaries committed a commit or two after the recipe bump).
+const staleBinaries1_8_1 = `version = "1.8.1"
+
+[darwin-arm64]
+sha256 = "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e"
+`
+
+// tipBinaries1_8_1_4 is the up-to-date index at the ref tip,
+// matching the rev-4 recipe.
+const tipBinaries1_8_1_4 = `version = "1.8.1-4"
+
+[darwin-arm64]
+sha256 = "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e"
+
+[linux-amd64]
+sha256 = "a903b0ca428c174e611ad78ee6508fefeab7a8b2eb60e55b554280679b2c07c6"
+`
+
+// TestFetchRecipeFallsBackToTipBinariesOnPinnedMismatch pins the
+// real gale-recipes failure mode: .versions maps the revisioned
+// version to the recipe-bump commit, where .binaries.toml is still
+// the prior (bare) version. Pinning binaries to that commit would
+// mismatch and silently source-build. The resolver must fall back
+// to the ref-tip binaries (which DO match) rather than regress.
+func TestFetchRecipeFallsBackToTipBinariesOnPinnedMismatch(t *testing.T) {
+	const commit = "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.8.1-4 " + commit + "\n"
+
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			"/recipes/j/jq.versions":                     versionsBody,
+			"/" + commit + "/recipes/j/jq.toml":          recipeRev4,
+			"/" + commit + "/recipes/j/jq.binaries.toml": staleBinaries1_8_1,
+			// ref-tip binaries: up to date, matches rev 4.
+			"/recipes/j/jq.binaries.toml": tipBinaries1_8_1_4,
+		},
+	))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(rec.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2 (should fall back to ref-tip binaries, not source-build)",
+			len(rec.Binary))
 	}
 }

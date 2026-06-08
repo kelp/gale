@@ -2,6 +2,7 @@ package registry
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/timing"
+	"github.com/kelp/gale/internal/version"
 )
 
 // validCommitHash matches a lowercase hex string 7-40 chars long.
@@ -167,10 +169,151 @@ func (r *Registry) warn(format string, args ...any) {
 }
 
 // FetchRecipe downloads and parses the recipe for the named
-// package from the registry. Uses an ETag-based HTTP cache
-// under r.CacheDir when set.
+// package, resolving it atomically. It reads the latest entry
+// from the package's .versions index and fetches BOTH the
+// recipe and its .binaries.toml from that single immutable
+// commit, so a caller never observes a new recipe paired with a
+// stale binary index (the mutable-main-ref race). When the
+// package has no usable .versions index, it falls back to the
+// legacy two-file fetch against the configured ref. Uses an
+// ETag-based HTTP cache under r.CacheDir when set.
 func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
-	return r.fetchRecipe(name, true)
+	rec, err := r.fetchLatestPinned(name)
+	if err == nil {
+		return rec, nil
+	}
+	if errors.Is(err, errNoVersionIndex) {
+		return r.fetchRecipe(name, true)
+	}
+	return nil, err
+}
+
+// errNoVersionIndex signals that a package has no usable
+// .versions index (absent, unparseable, or empty), so the
+// caller should fall back to the legacy ref-tip fetch.
+var errNoVersionIndex = errors.New("no version index")
+
+// fetchLatestPinned resolves the latest version from the
+// package's .versions index and fetches the recipe and its
+// .binaries.toml at that single commit — the atomic-resolution
+// path. Returns errNoVersionIndex when the index is absent,
+// unparseable, or empty so FetchRecipe can fall back.
+func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
+	if err := ValidName(name); err != nil {
+		return nil, fmt.Errorf("fetch recipe: %w", err)
+	}
+
+	defer timing.Phase("recipe-fetch " + name)()
+
+	bucket := string(name[0])
+	indexURL := fmt.Sprintf("%s/recipes/%s/%s.versions",
+		r.BaseURL, bucket, name)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cr, err := r.cachedGet(ctx, indexURL)
+	if err != nil {
+		// Missing index (404 for pre-.versions recipes) or any
+		// other fetch error → fall back to the legacy ref-tip
+		// path rather than hard-failing.
+		return nil, errNoVersionIndex
+	}
+
+	idx, err := parseVersionIndex(string(cr.Body))
+	if err != nil {
+		return nil, errNoVersionIndex
+	}
+	resolved, ok := pickLatest(idx)
+	if !ok {
+		return nil, errNoVersionIndex
+	}
+	commit := idx[resolved]
+
+	// Both fetches share the 30s budget and, crucially, the
+	// same immutable commit — the recipe and its binary index
+	// come from one frozen snapshot.
+	rec, err := r.fetchRecipeAtCommit(ctx, name, bucket, commit)
+	if err != nil {
+		return nil, err
+	}
+	if len(rec.Binary) == 0 {
+		if err := r.mergeBinariesAtCommit(ctx, rec, name, bucket, commit); err != nil {
+			return nil, err
+		}
+	}
+
+	// Fallback: if the pinned commit had no matching binary index
+	// (404, or a version/revision mismatch because .versions
+	// points at the recipe-bump commit whose .binaries.toml is
+	// still the prior version — the historical gale-recipes shape
+	// before CI pinned .versions at the binaries commit), fall
+	// back to the ref-tip binaries rather than regress to a source
+	// build. This degrades to the pre-commit-pin behavior (no
+	// atomicity guarantee, but no regression); once CI rewrites
+	// .versions to point at the binaries commit, the pinned fetch
+	// matches and this fallback never fires.
+	// Silent — this is exactly the pre-commit-pin behavior
+	// (ref-tip binaries), so it adds no atomicity guarantee but
+	// also no regression and no per-package warning spam. Once CI
+	// rewrites .versions to point at the binaries commit, the
+	// pinned fetch above matches and this never fires.
+	if len(rec.Binary) == 0 {
+		idx, ferr := r.fetchBinaries(name)
+		if ferr == nil && idx != nil {
+			recipe.MergeBinaries(rec, idx, ghcrBaseFromURL(r.BaseURL))
+		}
+	}
+	return rec, nil
+}
+
+// fetchRecipeAtCommit fetches and parses a recipe TOML pinned
+// to a specific commit.
+func (r *Registry) fetchRecipeAtCommit(
+	ctx context.Context, name, bucket, commit string,
+) (*recipe.Recipe, error) {
+	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
+		r.repoBase(), commit, bucket, name)
+	cr, err := r.cachedGet(ctx, recipeURL)
+	if err != nil {
+		return nil, fmt.Errorf("fetch recipe %s@%s: %w", name, commit, err)
+	}
+	rec, err := recipe.Parse(string(cr.Body))
+	if err != nil {
+		return nil, fmt.Errorf("parse recipe %s@%s: %w", name, commit, err)
+	}
+	return rec, nil
+}
+
+// mergeBinariesAtCommit fetches the .binaries.toml pinned to
+// the same commit as the recipe and merges it. A missing index
+// is non-fatal (the caller source-builds).
+func (r *Registry) mergeBinariesAtCommit(
+	ctx context.Context, rec *recipe.Recipe, name, bucket, commit string,
+) error {
+	binURL := fmt.Sprintf("%s/%s/recipes/%s/%s.binaries.toml",
+		r.repoBase(), commit, bucket, name)
+	idx, err := r.fetchBinariesURL(ctx, name, binURL)
+	if err != nil {
+		return err
+	}
+	if idx != nil {
+		recipe.MergeBinaries(rec, idx, ghcrBaseFromURL(r.BaseURL))
+	}
+	return nil
+}
+
+// pickLatest returns the newest version key in a version→commit
+// index, using gale's version ordering (semver plus a numeric
+// "-<N>" revision suffix). Returns ("", false) for an empty
+// index.
+func pickLatest(idx map[string]string) (string, bool) {
+	best := ""
+	for k := range idx {
+		if best == "" || version.IsNewer(k, best) {
+			best = k
+		}
+	}
+	return best, best != ""
 }
 
 // FetchRecipeMetadata is FetchRecipe without the secondary
@@ -288,13 +431,22 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 		)
 	}
 
+	// Fetch the binary index pinned to the same commit so a
+	// pinned-version install resolves a consistent recipe+binary
+	// pair instead of always source-building.
+	if len(rec.Binary) == 0 {
+		if err := r.mergeBinariesAtCommit(ctx, rec, name, bucket, commit); err != nil {
+			return nil, err
+		}
+	}
+
 	return rec, nil
 }
 
-// fetchBinaries fetches the .binaries.toml file for a
-// package. Returns nil (not error) if the file is not found
-// or the network is unreachable — the caller falls back to
-// source build. Uses the ETag cache when enabled.
+// fetchBinaries fetches the .binaries.toml file for a package
+// at the configured ref tip. Returns nil (not error) if the
+// file is not found or the network is unreachable — the caller
+// falls back to source build. Uses the ETag cache when enabled.
 func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 	bucket := string(name[0])
 	url := fmt.Sprintf("%s/recipes/%s/%s.binaries.toml",
@@ -302,6 +454,15 @@ func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	return r.fetchBinariesURL(ctx, name, url)
+}
+
+// fetchBinariesURL fetches and parses a .binaries.toml from an
+// explicit URL (ref tip or per-commit). A 404 or network error
+// is non-fatal: it returns (nil, nil) so the caller source-builds.
+func (r *Registry) fetchBinariesURL(
+	ctx context.Context, name, url string,
+) (*recipe.BinaryIndex, error) {
 	cr, err := r.cachedGet(ctx, url)
 	if err != nil {
 		// 404 → graceful nil, everything else → warn + nil.

@@ -280,13 +280,16 @@ func TestNegativeCachePersists404(t *testing.T) {
 
 	reg := cachedTestRegistry(t, srv.URL)
 
-	// First call: HTTP 404 wired through as an error.
+	// First call: HTTP 404 wired through as an error. Two
+	// network hits — the .versions probe (404 → fall back to the
+	// ref-tip path) and the recipe .toml — both 404, both
+	// negatively cached.
 	_, err := reg.FetchRecipe("ghost")
 	if err == nil {
 		t.Fatal("expected error for 404 response")
 	}
-	if h.count() != 1 {
-		t.Fatalf("first fetch: hits=%d, want 1", h.count())
+	if h.count() != 2 {
+		t.Fatalf("first fetch: hits=%d, want 2 (.versions probe + .toml)", h.count())
 	}
 
 	// Verify the on-disk marker exists.
@@ -307,8 +310,8 @@ func TestNegativeCachePersists404(t *testing.T) {
 			t.Errorf("call %d: error should mention HTTP 404: %v", i, err)
 		}
 	}
-	if h.count() != 1 {
-		t.Errorf("hits=%d, want 1 (negative cache should suppress repeats)",
+	if h.count() != 2 {
+		t.Errorf("hits=%d, want 2 (negative cache should suppress repeats)",
 			h.count())
 	}
 }
@@ -325,8 +328,9 @@ func TestNegativeCacheExpiresAfterTTL(t *testing.T) {
 	if _, err := reg.FetchRecipe("ghost"); err == nil {
 		t.Fatal("expected 404 error")
 	}
-	if h.count() != 1 {
-		t.Fatalf("populate: hits=%d, want 1", h.count())
+	// Two hits: the .versions probe and the recipe .toml.
+	if h.count() != 2 {
+		t.Fatalf("populate: hits=%d, want 2 (.versions probe + .toml)", h.count())
 	}
 
 	// Backdate the marker beyond the TTL.
@@ -338,11 +342,14 @@ func TestNegativeCacheExpiresAfterTTL(t *testing.T) {
 		t.Fatalf("backdate marker: %v", err)
 	}
 
+	// Only the .toml marker was backdated; the .versions marker
+	// is still fresh and served from the negative cache. So the
+	// re-check adds exactly one .toml network hit (2 → 3).
 	if _, err := reg.FetchRecipe("ghost"); err == nil {
 		t.Fatal("expected 404 error after TTL expiry")
 	}
-	if h.count() != 2 {
-		t.Errorf("hits=%d, want 2 (stale negative cache should be re-checked)",
+	if h.count() != 3 {
+		t.Errorf("hits=%d, want 3 (stale .toml negative cache should be re-checked)",
 			h.count())
 	}
 
