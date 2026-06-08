@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Recipe resolution is now atomic. Gale reads each package's
+  `.versions` index, picks the latest version, and fetches the
+  recipe and its binary index from one pinned commit — so an
+  install never pairs a new recipe with a stale binary index.
+  Packages without a `.versions` index fall back to the legacy
+  ref-tip fetch.
+
+### Added
+
+- Graceful binary-resolution fallbacks with a once-per-command
+  summary, so a stale or ahead-of-tip `.versions` index degrades
+  cleanly instead of silently building from source:
+  - when the pinned commit's binary index lacks the resolved
+    version, gale uses the ref-tip binaries (a "mispin") and
+    notes the affected packages once per command;
+  - when the resolved-latest version has no binary anywhere — a
+    reverted release (e.g. openssl 4.0.0 → 3.6.1) or a binary
+    never built — gale installs the version main actually ships
+    (a "skew"). This keeps openssl-dependent installs such as
+    `bat` and `eza` on the binary path (~35s) instead of
+    source-building openssl (~255s).
+
 ## v0.16.3 — 2026-05-29
 
 ### Added
