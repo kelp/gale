@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 
+	"github.com/kelp/gale/internal/registry"
 	"github.com/spf13/cobra"
 )
 
@@ -26,6 +27,11 @@ Projects get isolated environments, activated automatically on cd.`,
 		cmd.SilenceUsage = true
 		cmd.SilenceErrors = currentOutputMode().errorFormat == "json"
 		applyColorMode()
+	},
+	PersistentPostRun: func(cmd *cobra.Command, args []string) {
+		if names := registry.TakeMispinned(); len(names) > 0 {
+			newOutput().Warn(registry.MispinSummary(names))
+		}
 	},
 }
 

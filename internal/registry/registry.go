@@ -254,23 +254,19 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 	// matches and this fallback never fires.
 	// This is the pre-commit-pin behavior (ref-tip binaries), so it
 	// adds no atomicity guarantee but also no regression. When it
-	// actually rescues a binary the pinned commit lacked, we warn
-	// once: .versions likely pins a commit whose .binaries.toml
-	// doesn't carry the matching binary (a mispin). Once CI rewrites
-	// .versions to point at the binaries commit, the pinned fetch
-	// above matches and this never fires.
+	// actually rescues a binary the pinned commit lacked, we record
+	// the package silently: .versions likely pins a commit whose
+	// .binaries.toml doesn't carry the matching binary (a mispin).
+	// The rescue is collected for a once-per-command summary
+	// (drained via TakeMispinned) rather than warned per-package.
+	// Once CI rewrites .versions to point at the binaries commit,
+	// the pinned fetch above matches and this never fires.
 	if len(rec.Binary) == 0 {
 		idx, ferr := r.fetchBinaries(name)
 		if ferr == nil && idx != nil {
 			recipe.MergeBinaries(rec, idx, ghcrBaseFromURL(r.BaseURL))
 			if len(rec.Binary) > 0 {
-				r.warn(
-					"%s: .versions pins commit %s but its "+
-						".binaries.toml there has no matching binary; "+
-						"using ref-tip binaries instead (.versions may "+
-						"be mispinned)",
-					name, commit,
-				)
+				recordMispin(name)
 			}
 		}
 	}
