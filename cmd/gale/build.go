@@ -16,6 +16,7 @@ var (
 	buildDebug   bool
 	buildRelease bool
 	buildRecipes string
+	buildOutput  string
 )
 
 var buildCmd = &cobra.Command{
@@ -62,9 +63,9 @@ var buildCmd = &cobra.Command{
 			return fmt.Errorf("installing build deps: %w", err)
 		}
 
-		outputDir, err := os.Getwd()
+		outputDir, err := resolveBuildOutputDir(buildOutput)
 		if err != nil {
-			return fmt.Errorf("getting working dir: %w", err)
+			return err
 		}
 
 		// Resolve debug mode: CLI > recipe > config > default.
@@ -99,6 +100,24 @@ var buildCmd = &cobra.Command{
 	},
 }
 
+// resolveBuildOutputDir determines where the build archive
+// is written. An empty explicit value defaults to the current
+// working directory (preserving prior behavior). Otherwise the
+// given directory is created if missing and returned verbatim.
+func resolveBuildOutputDir(explicit string) (string, error) {
+	if explicit == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			return "", fmt.Errorf("getting working dir: %w", err)
+		}
+		return cwd, nil
+	}
+	if err := os.MkdirAll(explicit, 0o755); err != nil {
+		return "", fmt.Errorf("creating output dir: %w", err)
+	}
+	return explicit, nil
+}
+
 func init() {
 	buildCmd.Flags().BoolVar(&buildGit, "git", false,
 		"Clone and build from git repository instead of tarball")
@@ -110,5 +129,8 @@ func init() {
 		"Resolve recipes from a local directory instead of the registry "+
 			"(bare --recipes uses ../gale-recipes/)")
 	buildCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+	buildCmd.Flags().StringVarP(&buildOutput, "output", "o", "",
+		"Write the archive into this directory (created if "+
+			"missing; defaults to the current directory)")
 	rootCmd.AddCommand(buildCmd)
 }
