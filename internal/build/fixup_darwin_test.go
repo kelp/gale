@@ -11,6 +11,332 @@ import (
 	"testing"
 )
 
+// --- Issue #27: FixupBinaries must not re-sign binaries it
+// did not modify (preserve upstream entitlements, e.g. qemu) ---
+
+func TestFixupBinariesPreservesEntitlementOnUnmodifiedBinary(t *testing.T) {
+	// A binary outside lib/ with no prefix-internal deps is not
+	// modified by FixupBinaries. gale must NOT re-sign it: qemu
+	// self-signs its mains with the Hypervisor.framework
+	// entitlement, and an ad-hoc `codesign --force --sign -`
+	// re-sign STRIPS entitlements. This is the actual bug in
+	// issue #27.
+	//
+	// A byte-identical assertion would be tautological here: an
+	// ad-hoc re-sign of an unchanged Mach-O is byte-idempotent
+	// (a deterministic hash of the code pages, no timestamp; see
+	// docs/dev/relocatable-binaries.md), so the OLD unconditional
+	// re-sign would also leave the bytes equal and the test would
+	// pass without the fix. Asserting the entitlement SURVIVES is
+	// non-tautological: the old code strips it, the new code does
+	// not.
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := compileTinyBinary(t, binDir, "qemu-like")
+
+	// Self-sign with an entitlement, mimicking qemu's HVF mains.
+	signWithEntitlement(t, bin)
+
+	if got := binaryHasEntitlement(t, bin); !got {
+		t.Skipf("setup: entitlement did not stick after signing")
+	}
+
+	if err := FixupBinaries(dir); err != nil {
+		t.Fatalf("FixupBinaries error: %v", err)
+	}
+
+	if !binaryHasEntitlement(t, bin) {
+		t.Errorf("FixupBinaries stripped the upstream entitlement "+
+			"from an unmodified binary; it must leave untouched "+
+			"Mach-Os alone (issue #27). codesign --display "+
+			"--entitlements:\n%s", entitlementsDump(t, bin))
+	}
+}
+
+func TestAddDepRpathsPreservesEntitlementOnModifiedBinary(t *testing.T) {
+	// This is the REAL qemu path for issue #27. qemu-system-aarch64
+	// self-signs with the Hypervisor.framework entitlement AND has
+	// runtime deps (glib, pixman) whose dylibs carry @rpath/ install
+	// names. So in AddDepRpaths the binary has hasRpathDep == true:
+	// gale MUST add the shared-lib farm rpath, which means the
+	// binary genuinely changes and MUST be re-signed. resign() must
+	// PRESERVE the existing entitlement across that re-sign, or the
+	// shipped qemu loses HVF acceleration (issue #27, point 2).
+	//
+	// FixupBinaries' shouldResign gating does NOT protect this case:
+	// the dep dylib lives in a separate store dir, so FixupBinaries
+	// leaves the binary unchanged — but AddDepRpaths then modifies
+	// and re-signs it. A faithful regression test must drive the
+	// full FixupBinaries -> AddDepRpaths sequence the build uses.
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	if err := os.MkdirAll(depLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// A dep dylib with an @rpath/ install name, in a separate store
+	// dir (like glib/pixman relative to qemu).
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void) { return 7; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylibPath := filepath.Join(depLib, "libdep.dylib")
+	cmd := exec.Command("cc", "-shared",
+		"-install_name", "@rpath/libdep.dylib",
+		"-o", dylibPath, libSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	// The package's own main binary, linking the dep dylib via
+	// @rpath, with headerpad so install_name_tool can add an rpath.
+	pkgDir := t.TempDir()
+	binDir := filepath.Join(pkgDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := filepath.Join(pkgDir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int dep_func(void);\nint main() { return dep_func(); }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(binDir, "qemu-like")
+	cmd = exec.Command("cc", "-o", bin, mainSrc,
+		"-L"+depLib, "-ldep",
+		"-Wl,-headerpad_max_install_names")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// Self-sign with the HVF entitlement, mimicking qemu's mains.
+	signWithEntitlement(t, bin)
+	if !binaryHasEntitlement(t, bin) {
+		t.Skipf("setup: entitlement did not stick after signing")
+	}
+
+	// Drive the exact sequence build.go uses.
+	if err := FixupBinaries(pkgDir); err != nil {
+		t.Fatalf("FixupBinaries error: %v", err)
+	}
+	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+		t.Fatalf("AddDepRpaths error: %v", err)
+	}
+
+	// The farm rpath must have been added (the binary WAS modified,
+	// so resign ran). If it wasn't, this test isn't exercising the
+	// re-sign path and would give false confidence.
+	if !existingRpaths(bin)["@executable_path/../../../../lib"] {
+		t.Fatalf("setup: AddDepRpaths did not add the farm rpath, "+
+			"so resign was not exercised; otool -l:\n%s",
+			otoolOutput(t, bin))
+	}
+
+	// The entitlement MUST survive the modify+resign.
+	if !binaryHasEntitlement(t, bin) {
+		t.Errorf("AddDepRpaths stripped the HVF entitlement while "+
+			"adding the farm rpath; resign() must preserve "+
+			"entitlements (issue #27). codesign --display "+
+			"--entitlements:\n%s", entitlementsDump(t, bin))
+	}
+	// And it must still carry a valid signature.
+	if !isCodeSigned(t, bin) {
+		t.Errorf("AddDepRpaths left the binary with an invalid " +
+			"signature after re-sign")
+	}
+}
+
+func TestAddDepRpathsPreservesEntitlementWhenHeaderTooSmall(t *testing.T) {
+	// The header-too-small branch of issue #27, point 2. When a
+	// Mach-O has no spare load-command padding, addRpathRetry runs
+	// `codesign --remove-signature` to free space BEFORE the rpath
+	// is added — stripping the signature AND its entitlements. If
+	// resign() then extracts entitlements from the already-stripped
+	// binary it sees none and the HVF entitlement is permanently
+	// dropped. qemu mains are large and frequently lack padding, so
+	// this branch is the realistic failure path.
+	//
+	// Crucially this test links WITHOUT -headerpad_max_install_names
+	// and pads the header with extra rpaths so the first
+	// install_name_tool add fails, forcing addRpathRetry's
+	// strip-and-retry branch. The companion headerpad test never
+	// exercises that branch, so this is the only coverage for it.
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	if err := os.MkdirAll(depLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void) { return 7; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylibPath := filepath.Join(depLib, "libdep.dylib")
+	cmd := exec.Command("cc", "-shared",
+		"-install_name", "@rpath/libdep.dylib",
+		"-o", dylibPath, libSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	pkgDir := t.TempDir()
+	binDir := filepath.Join(pkgDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := filepath.Join(pkgDir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int dep_func(void);\nint main() { return dep_func(); }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(binDir, "qemu-like")
+	// No -headerpad_max_install_names: the default header padding is
+	// small, and we then consume it with long rpaths below so the
+	// farm-rpath add cannot fit without stripping the signature.
+	cmd = exec.Command("cc", "-o", bin, mainSrc,
+		"-L"+depLib, "-ldep")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// Consume any spare header padding with filler rpaths so the
+	// later farm-rpath add overflows the header and must strip the
+	// signature to retry. If even these don't fit we proceed anyway;
+	// the assertion below verifies the strip branch was reached.
+	for i := 0; i < 32; i++ {
+		filler := "/tmp/gale-test-filler-rpath-padding-" +
+			strings.Repeat("x", 40) + "-" + string(rune('a'+i%26))
+		_ = exec.Command("install_name_tool",
+			"-add_rpath", filler, bin).Run()
+	}
+
+	signWithEntitlement(t, bin)
+	if !binaryHasEntitlement(t, bin) {
+		t.Skipf("setup: entitlement did not stick after signing")
+	}
+
+	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+		t.Fatalf("AddDepRpaths error: %v", err)
+	}
+
+	// The farm rpath must have been added (so the modify+resign path
+	// ran). If addRpathRetry could not fit the rpath even after
+	// stripping, it skips the file and this test gives false
+	// confidence — fail loudly so the test stays meaningful.
+	if !existingRpaths(bin)["@executable_path/../../../../lib"] {
+		t.Fatalf("setup: farm rpath not added; addRpathRetry skipped "+
+			"the file so the strip-and-resign path was not "+
+			"exercised. otool -l:\n%s", otoolOutput(t, bin))
+	}
+
+	// The entitlement MUST survive even though addRpathRetry stripped
+	// the signature before resign ran. This fails with the old code,
+	// which extracts entitlements inside resign() AFTER the strip.
+	if !binaryHasEntitlement(t, bin) {
+		t.Errorf("AddDepRpaths dropped the HVF entitlement via the "+
+			"header-too-small strip-and-retry branch; entitlements "+
+			"must be captured BEFORE addRpathRetry strips the "+
+			"signature (issue #27, point 2). codesign --display "+
+			"--entitlements:\n%s", entitlementsDump(t, bin))
+	}
+	if !isCodeSigned(t, bin) {
+		t.Errorf("AddDepRpaths left the binary with an invalid " +
+			"signature after the strip-and-resign path")
+	}
+}
+
+func TestRelocateStaleRpathsPreservesEntitlement(t *testing.T) {
+	// A prebuilt entitled binary with a CI-baked (stale) rpath must
+	// keep its entitlement after RelocateStaleRpaths rewrites the
+	// rpath and re-signs. Without entitlement-preserving resign, the
+	// rewrite would strip the entitlement (issue #27).
+	dir := t.TempDir()
+	binDir := filepath.Join(dir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	bin := compileWithHeaderpad(t, binDir, "qemu-like")
+
+	staleRpath := "/Users/runner/.gale/pkg/glib/2.0/lib"
+	if err := exec.Command("install_name_tool",
+		"-add_rpath", staleRpath, bin).Run(); err != nil {
+		t.Fatalf("add stale rpath: %v", err)
+	}
+	// Sign with an entitlement AFTER adding the rpath, mimicking an
+	// upstream self-signed binary that CI then shipped.
+	signWithEntitlement(t, bin)
+	if !binaryHasEntitlement(t, bin) {
+		t.Skipf("setup: entitlement did not stick after signing")
+	}
+
+	if err := RelocateStaleRpaths(dir, "/Users/tcole/.gale/pkg"); err != nil {
+		t.Fatalf("RelocateStaleRpaths: %v", err)
+	}
+
+	// The stale rpath must have been rewritten (so resign ran).
+	if existingRpaths(bin)[staleRpath] {
+		t.Fatalf("setup: stale rpath not rewritten, resign path "+
+			"not exercised; rpaths: %v", existingRpaths(bin))
+	}
+	if !binaryHasEntitlement(t, bin) {
+		t.Errorf("RelocateStaleRpaths stripped the entitlement "+
+			"while rewriting a stale rpath; resign() must preserve "+
+			"entitlements (issue #27). codesign --display "+
+			"--entitlements:\n%s", entitlementsDump(t, bin))
+	}
+}
+
+// hvfEntitlementKey is the entitlement gale's tests sign binaries
+// with, mimicking qemu's Hypervisor.framework (HVF) mains. It is the
+// key binaryHasEntitlement looks for.
+const hvfEntitlementKey = "com.apple.security.hypervisor"
+
+// signWithEntitlement ad-hoc signs a Mach-O with the HVF entitlement
+// key set true, mimicking an upstream self-signed binary (e.g. qemu's
+// HVF mains).
+func signWithEntitlement(t *testing.T, bin string) {
+	t.Helper()
+	ent := filepath.Join(t.TempDir(), "ent.plist")
+	plist := `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict><key>` + hvfEntitlementKey +
+		`</key><true/></dict></plist>` + "\n"
+	if err := os.WriteFile(ent, []byte(plist), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command("codesign", "--force", "--sign", "-",
+		"--entitlements", ent, bin)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("codesign with entitlement failed: %v\n%s", err, out)
+	}
+}
+
+// binaryHasEntitlement reports whether the Mach-O carries any
+// entitlement (a non-empty entitlements blob).
+func binaryHasEntitlement(t *testing.T, bin string) bool {
+	t.Helper()
+	return strings.Contains(entitlementsDump(t, bin),
+		hvfEntitlementKey)
+}
+
+// entitlementsDump returns codesign's entitlement display for a
+// Mach-O, for assertions and failure messages.
+func entitlementsDump(t *testing.T, bin string) string {
+	t.Helper()
+	cmd := exec.Command("codesign", "--display", "--entitlements",
+		"-", bin)
+	out, _ := cmd.CombinedOutput()
+	return string(out)
+}
+
 // compileTinyBinary creates a minimal C binary at the given
 // path. Returns the path or skips the test if cc is not
 // available.
@@ -173,6 +499,83 @@ func TestFixupBinariesSetsRpathWhenDepsRewritten(t *testing.T) {
 	out, _ := cmd.CombinedOutput()
 	if !strings.Contains(string(out), "@executable_path/../lib") {
 		t.Error("expected @executable_path/../lib rpath")
+	}
+}
+
+func TestFixupBinariesResignsModifiedBinaryValidly(t *testing.T) {
+	// Behavioral coverage for resign()'s strip-first path (the
+	// second half of the issue #27 fix). A binary whose deps gale
+	// rewrites IS modified, so FixupBinaries re-signs it. resign()
+	// must first `codesign --remove-signature` and then
+	// `--sign -`, leaving a VALID signature. The original qemu
+	// failure was `codesign ... replacing existing signature` on a
+	// binary gale modified; dropping --remove-signature (or having
+	// resign leave the binary unsigned/invalid) would reintroduce
+	// it. Apple Silicon SIGKILLs unsigned Mach-Os on exec, so an
+	// invalid signature here is a shipping defect. Asserting
+	// isCodeSigned() after a real modify+resign closes the gap the
+	// rpath-presence checks miss.
+	dir := t.TempDir()
+	libDir := filepath.Join(dir, "lib")
+	binDir := filepath.Join(dir, "bin")
+	os.MkdirAll(libDir, 0o755)
+	os.MkdirAll(binDir, 0o755)
+
+	libSrc := filepath.Join(dir, "mylib.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int mylib_func(void) { return 42; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	libPath := filepath.Join(libDir, "libmylib.dylib")
+	cmd := exec.Command("cc", "-shared",
+		"-install_name", libDir+"/libmylib.dylib",
+		"-o", libPath, libSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	mainSrc := filepath.Join(dir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int mylib_func(void);\nint main() { return mylib_func(); }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "myapp")
+	cmd = exec.Command("cc", "-o", binPath, mainSrc,
+		"-L"+libDir, "-lmylib",
+		"-Wl,-headerpad_max_install_names")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// Pre-sign the binary so resign() exercises its strip-first
+	// path: this mirrors the qemu case where the binary already
+	// carried a signature before gale touched it.
+	if err := exec.Command("codesign", "--force", "--sign",
+		"-", binPath).Run(); err != nil {
+		t.Fatalf("pre-sign: %v", err)
+	}
+	if !isCodeSigned(t, binPath) {
+		t.Skipf("setup: pre-sign did not stick")
+	}
+
+	if err := FixupBinaries(dir); err != nil {
+		t.Fatalf("FixupBinaries error: %v", err)
+	}
+
+	// The dep path was rewritten, so the binary was modified.
+	// Confirm it really changed (otherwise resign's path is not
+	// exercised) and that the result is still validly signed.
+	after := otoolOutput(t, binPath)
+	if strings.Contains(after, libDir) {
+		t.Fatalf("setup: dep path not rewritten, resign path "+
+			"not exercised:\n%s", after)
+	}
+	if !isCodeSigned(t, binPath) {
+		t.Errorf("FixupBinaries left a modified binary with an " +
+			"invalid signature; resign() must strip then re-sign " +
+			"(issue #27)")
 	}
 }
 
