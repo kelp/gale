@@ -661,6 +661,25 @@ func (bc *BuildContext) depSearchPaths() (libPath, incPath, pcPath, cmakePath st
 	return libPath, incPath, pcPath, cmakePath
 }
 
+// depBinTool returns the path to an executable named tool found
+// in the dependency bin directories, or "" if none provides it.
+// Used to surface specific dep tools (e.g. m4) to build systems
+// like meson whose custom-command subprocesses do not resolve
+// gale's assembled dep-bin PATH (gh#28).
+func depBinTool(deps *BuildDeps, tool string) string {
+	if deps == nil {
+		return ""
+	}
+	for _, dir := range deps.BinDirs {
+		p := filepath.Join(dir, tool)
+		if info, err := os.Stat(p); err == nil &&
+			!info.IsDir() && info.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
+}
+
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
@@ -736,6 +755,31 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	// Per-dep env vars and dep compiler flags.
 	perDep, depCPPFLAGS, depLDFLAGS := bc.perDepEnv()
 	env = append(env, perDep...)
+
+	// gh#28: meson custom-command / generator subprocesses run
+	// with a sanitized PATH that does not resolve gale's dep-bin
+	// dirs, so flex (invoked by meson's pgflex custom command)
+	// cannot find a dep-provided m4 and fails ("exec of m4
+	// failed") unless m4 is installed system-wide. The fix rests
+	// on two upstream facts, both verified against source:
+	//   1. flex resolves m4 as `if (!(m4 = getenv("M4"))) m4 = M4;`
+	//      then execs that path directly (westes/flex src/main.c).
+	//      So $M4 takes precedence over the compiled-in fallback,
+	//      and the $M4 value is exec'd verbatim (not PATH-searched)
+	//      — a full path to the dep m4 is exactly what it wants.
+	//   2. postgres's pgflex wrapper runs flex via
+	//      subprocess.run(cmd) with no env= kwarg, so flex
+	//      inherits the build-step environment unmodified.
+	// The earlier "setting M4 on the meson step doesn't propagate"
+	// data point in the issue was a misdiagnosis: the step env is
+	// the same inherited env meson -> ninja -> pgflex -> flex see.
+	// Exporting M4 here reaches flex via that chain, as the
+	// end-to-end TestBuildSurfacesDepM4ToFlexCustomCommand proves.
+	// setDefault leaves a recipe-set [build] env M4 (applied
+	// later) as the winner.
+	if m4 := depBinTool(deps, "m4"); m4 != "" {
+		setDefault(&env, "M4", m4)
+	}
 
 	toolchainEnv, err := bc.toolchainEnv()
 	if err != nil {
