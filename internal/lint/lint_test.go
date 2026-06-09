@@ -452,6 +452,36 @@ steps = [
 	}
 }
 
+func TestLintCapitalConfigureMakeNoGnumakeWarning(t *testing.T) {
+	// openssl configures via `perl ./Configure` (capital C). The
+	// make->gnumake exemption must recognize it case-insensitively.
+	data := `
+[package]
+name = "openssl"
+version = "3.0.0"
+description = "TLS toolkit"
+license = "Apache-2.0"
+homepage = "https://openssl.org"
+[source]
+repo = "openssl/openssl"
+url = "https://example.com/openssl.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[build]
+steps = [
+  "perl ./Configure --prefix=${PREFIX}",
+  "make -j${JOBS}",
+  "make install",
+]
+`
+	issues := Lint(data, "")
+	if hasWarning(issues, "gnumake") {
+		t.Errorf(
+			"should not warn about gnumake with ./Configure, got %v",
+			issues,
+		)
+	}
+}
+
 // --- Warning: autoreconf usage ---
 
 func TestLintAutoreconfWarning(t *testing.T) {

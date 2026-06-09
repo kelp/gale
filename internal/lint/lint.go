@@ -459,7 +459,10 @@ func checkBuildDeps(
 	hasConfigure := false
 	hasMake := false
 	for _, step := range steps {
-		if strings.Contains(step, "./configure") {
+		// Case-insensitive: openssl uses `perl ./Configure`.
+		if strings.Contains(
+			strings.ToLower(step), "./configure",
+		) {
 			hasConfigure = true
 		}
 		if step == "make" ||
