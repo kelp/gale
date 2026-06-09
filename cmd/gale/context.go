@@ -442,15 +442,29 @@ func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha2
 		return fmt.Errorf("resolving lockfile path: %w", err)
 	}
 	if sha256 == "" {
-		// Cached install: preserve existing hash only if
-		// the lockfile version matches.
+		// Cached install: no new hash to record. Preserve the
+		// existing entry only when the stored version is
+		// EXACTLY the canonical lockVersion. A loose
+		// VersionMatches early-return drops the revision
+		// (gh#30): a bare "2.53.0" in the lock satisfies
+		// VersionMatches against the resolved "2.53.0-2", so
+		// the canonical form was never written and the bare
+		// pin stuck. Rewrite to lockVersion, carrying the old
+		// hash forward since none was computed this run.
 		lf, err := lockfile.Read(lp)
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
-		if existing, ok := lf.Packages[name]; ok &&
-			lockfile.VersionMatches(lockVersion, existing.Version) {
-			return nil // same version, keep existing hash
+		if existing, ok := lf.Packages[name]; ok {
+			if existing.Version == lockVersion {
+				return nil // identical pin, keep existing hash
+			}
+			if lockfile.VersionMatches(lockVersion, existing.Version) {
+				// Same upstream version, differing revision
+				// representation (bare vs canonical). Rewrite to
+				// the canonical lockVersion but keep the hash.
+				return updateLockfile(lp, name, lockVersion, existing.SHA256)
+			}
 		}
 	}
 	return updateLockfile(lp, name, lockVersion, sha256)
