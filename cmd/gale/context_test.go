@@ -170,6 +170,111 @@ func TestWriteConfigAndLockUpdatesLockfileOnCachedInstall(t *testing.T) {
 	}
 }
 
+// TestWriteConfigAndLockRewritesBareLockToCanonical reproduces
+// gh#30: when an update resolves a target carrying a revision
+// (e.g. "2.53.0-2") but the INPUT lock had a bare "2.53.0",
+// the rewritten lock must contain the canonical "2.53.0-2"
+// — never the bare form. The cached-install path (sha256
+// empty) used to early-return on VersionMatches and leave
+// the bare entry in place, silently dropping the -N.
+func TestWriteConfigAndLockRewritesBareLockToCanonical(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  git = \"2.53.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Input lock has a BARE version (pre-revision pin).
+	lockPath := filepath.Join(tmp, "gale.lock")
+	lf := &lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"git": {Version: "2.53.0", SHA256: "githash"},
+		},
+	}
+	if err := lockfile.Write(lockPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update resolves git to canonical 2.53.0-2. Cached
+	// install: sha256 is empty.
+	if err := writeConfigAndLock(
+		configPath, "", "git", "2.53.0", "2.53.0-2", "",
+	); err != nil {
+		t.Fatalf("writeConfigAndLock: %v", err)
+	}
+
+	got, err := lockfile.Read(lockPath)
+	if err != nil {
+		t.Fatalf("reading lockfile: %v", err)
+	}
+	if v := got.Packages["git"].Version; v != "2.53.0-2" {
+		t.Errorf("lockfile git = %q, want %q (canonical, not bare)",
+			v, "2.53.0-2")
+	}
+}
+
+// TestWriteConfigAndLockRewritesBareLockToCanonicalKeepsHash
+// guards the python row of the gh#30 table. The issue reports
+// python "downgraded" 3.14.4-3 -> 3.14.4, but every real caller
+// derives lockVersion from recipe.Package.Full(), which always
+// emits the canonical "<version>-<revision>" (revision defaults
+// to 1) — so writeConfigAndLock never receives a bare
+// lockVersion and cannot write a bare pin on its own. The
+// reachable root cause for python is therefore the SAME as
+// git/git-delta/httpie: a bare entry already in the input lock
+// (here 3.14.4) that the loose VersionMatches early-return left
+// untouched, so the canonical 3.14.4-3 the resolver computed was
+// never written. This case differs from the bare-git test by
+// carrying a sha256 on the input entry (the issue notes the
+// broken entries kept their sha256): the rewrite to canonical
+// must preserve that hash since no new hash is computed on a
+// cached install.
+func TestWriteConfigAndLockRewritesBareLockToCanonicalKeepsHash(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  python = \"3.14.4\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Input lock has a BARE version WITH a sha256 (mirrors the
+	// issue's note that the broken entries carried a hash).
+	lockPath := filepath.Join(tmp, "gale.lock")
+	lf := &lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"python": {Version: "3.14.4", SHA256: "pyhash"},
+		},
+	}
+	if err := lockfile.Write(lockPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Update resolves python to canonical 3.14.4-3. Cached
+	// install: sha256 is empty (no new hash this run).
+	if err := writeConfigAndLock(
+		configPath, "", "python", "3.14.4", "3.14.4-3", "",
+	); err != nil {
+		t.Fatalf("writeConfigAndLock: %v", err)
+	}
+
+	got, err := lockfile.Read(lockPath)
+	if err != nil {
+		t.Fatalf("reading lockfile: %v", err)
+	}
+	pkg := got.Packages["python"]
+	if pkg.Version != "3.14.4-3" {
+		t.Errorf("lockfile python = %q, want %q (canonical, not bare)",
+			pkg.Version, "3.14.4-3")
+	}
+	if pkg.SHA256 != "pyhash" {
+		t.Errorf("lockfile python sha256 = %q, want %q (preserved)",
+			pkg.SHA256, "pyhash")
+	}
+}
+
 func TestWriteConfigAndLockPreservesHashOnSameVersionCache(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "gale.toml")
