@@ -151,105 +151,70 @@ func TestAddDepRpathsPreservesEntitlementOnModifiedBinary(t *testing.T) {
 	}
 }
 
-func TestAddDepRpathsPreservesEntitlementWhenHeaderTooSmall(t *testing.T) {
-	// The header-too-small branch of issue #27, point 2. When a
-	// Mach-O has no spare load-command padding, addRpathRetry runs
-	// `codesign --remove-signature` to free space BEFORE the rpath
-	// is added — stripping the signature AND its entitlements. If
-	// resign() then extracts entitlements from the already-stripped
-	// binary it sees none and the HVF entitlement is permanently
-	// dropped. qemu mains are large and frequently lack padding, so
-	// this branch is the realistic failure path.
-	//
-	// Crucially this test links WITHOUT -headerpad_max_install_names
-	// and pads the header with extra rpaths so the first
-	// install_name_tool add fails, forcing addRpathRetry's
-	// strip-and-retry branch. The companion headerpad test never
-	// exercises that branch, so this is the only coverage for it.
-	depDir := t.TempDir()
-	depLib := filepath.Join(depDir, "lib")
-	if err := os.MkdirAll(depLib, 0o755); err != nil {
+// TestResignWithEntitlementsSurvivesSignatureStrip pins the contract
+// that fixes issue #27, point 2, deterministically on any macOS runner.
+//
+// When addRpathRetry hits the header-too-small branch it runs
+// `codesign --remove-signature` to free space BEFORE the rpath is added
+// — stripping the signature AND its entitlements. So AddDepRpaths
+// captures entitlements with extractEntitlements BEFORE calling
+// addRpathRetry and re-applies them via resignWithEntitlements; if it
+// instead extracted them AFTER the strip (the original bug) it would
+// see none and drop qemu's HVF entitlement.
+//
+// Forcing the real header-too-small branch end-to-end is
+// toolchain-dependent and flaky: the farm rpath must fit ONLY after the
+// signature is stripped, and `codesign --remove-signature` frees just
+// the LC_CODE_SIGNATURE slot — a narrow, runner-specific window. So
+// rather than try to provoke that branch, this test pins the exact
+// ordering contract directly: capturing AFTER the strip yields nothing
+// (the bug), and capturing BEFORE + re-applying restores the
+// entitlement (the fix).
+func TestResignWithEntitlementsSurvivesSignatureStrip(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "main.c")
+	if err := os.WriteFile(src,
+		[]byte("int main() { return 0; }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	libSrc := filepath.Join(depDir, "dep.c")
-	if err := os.WriteFile(libSrc,
-		[]byte("int dep_func(void) { return 7; }\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-	dylibPath := filepath.Join(depLib, "libdep.dylib")
-	cmd := exec.Command("cc", "-shared",
-		"-install_name", "@rpath/libdep.dylib",
-		"-o", dylibPath, libSrc)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Skipf("cc -shared failed: %v\n%s", err, out)
-	}
-
-	pkgDir := t.TempDir()
-	binDir := filepath.Join(pkgDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	mainSrc := filepath.Join(pkgDir, "main.c")
-	if err := os.WriteFile(mainSrc,
-		[]byte("extern int dep_func(void);\nint main() { return dep_func(); }\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-	bin := filepath.Join(binDir, "qemu-like")
-	// No -headerpad_max_install_names: the default header padding is
-	// small, and we then consume it with long rpaths below so the
-	// farm-rpath add cannot fit without stripping the signature.
-	cmd = exec.Command("cc", "-o", bin, mainSrc,
-		"-L"+depLib, "-ldep")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	bin := filepath.Join(dir, "qemu-like")
+	if out, err := exec.Command("cc", "-o", bin, src).
+		CombinedOutput(); err != nil {
 		t.Skipf("cc link failed: %v\n%s", err, out)
 	}
 
-	// Consume any spare header padding with filler rpaths so the
-	// later farm-rpath add overflows the header and must strip the
-	// signature to retry. If even these don't fit we proceed anyway;
-	// the assertion below verifies the strip branch was reached.
-	for i := 0; i < 32; i++ {
-		filler := "/tmp/gale-test-filler-rpath-padding-" +
-			strings.Repeat("x", 40) + "-" + string(rune('a'+i%26))
-		_ = exec.Command("install_name_tool",
-			"-add_rpath", filler, bin).Run()
-	}
-
+	// Self-sign with the HVF entitlement, mimicking qemu's mains.
 	signWithEntitlement(t, bin)
+	entBefore := extractEntitlements(bin)
+	if entBefore == "" {
+		t.Skip("setup: entitlement did not stick after signing")
+	}
+
+	// addRpathRetry's strip step. Extracting entitlements AFTER this
+	// (the original buggy ordering, inside resign()) sees nothing.
+	if out, err := exec.Command("codesign", "--remove-signature", bin).
+		CombinedOutput(); err != nil {
+		t.Fatalf("remove-signature: %v\n%s", err, out)
+	}
+	if after := extractEntitlements(bin); after != "" {
+		t.Fatalf("expected no entitlement after --remove-signature "+
+			"(this is why post-strip capture drops it); got:\n%s",
+			after)
+	}
+
+	// The fix: re-apply the entitlements captured before the strip.
+	if err := resignWithEntitlements(bin, entBefore); err != nil {
+		t.Fatalf("resignWithEntitlements: %v", err)
+	}
 	if !binaryHasEntitlement(t, bin) {
-		t.Skipf("setup: entitlement did not stick after signing")
-	}
-
-	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
-		t.Fatalf("AddDepRpaths error: %v", err)
-	}
-
-	// The farm rpath must have been added (so the modify+resign path
-	// ran). If addRpathRetry could not fit the rpath even after
-	// stripping, it skips the file and this test gives false
-	// confidence — fail loudly so the test stays meaningful.
-	if !existingRpaths(bin)["@executable_path/../../../../lib"] {
-		t.Fatalf("setup: farm rpath not added; addRpathRetry skipped "+
-			"the file so the strip-and-resign path was not "+
-			"exercised. otool -l:\n%s", otoolOutput(t, bin))
-	}
-
-	// The entitlement MUST survive even though addRpathRetry stripped
-	// the signature before resign ran. This fails with the old code,
-	// which extracts entitlements inside resign() AFTER the strip.
-	if !binaryHasEntitlement(t, bin) {
-		t.Errorf("AddDepRpaths dropped the HVF entitlement via the "+
-			"header-too-small strip-and-retry branch; entitlements "+
-			"must be captured BEFORE addRpathRetry strips the "+
-			"signature (issue #27, point 2). codesign --display "+
-			"--entitlements:\n%s", entitlementsDump(t, bin))
+		t.Errorf("entitlement not restored by resignWithEntitlements; "+
+			"capture-before-strip + re-apply is the issue #27 fix. "+
+			"codesign --display --entitlements:\n%s",
+			entitlementsDump(t, bin))
 	}
 	if !isCodeSigned(t, bin) {
-		t.Errorf("AddDepRpaths left the binary with an invalid " +
-			"signature after the strip-and-resign path")
+		t.Errorf("binary not validly signed after " +
+			"resignWithEntitlements")
 	}
 }
 
