@@ -14,7 +14,7 @@
 - [x] Environment management and shell hooks (fish/zsh/bash)
 - [x] Recipe repository clone/fetch/search
 - [x] Letter-bucketed recipe repo layout (recipes/j/jq.toml)
-- [x] ed25519 signing and verification
+- [x] ed25519 signing and verification (removed in v0.13.0 — see Layer 1 note below)
 - [x] Anthropic API client with graceful degradation
 - [x] Binary platform sections in recipe format
 - [x] Build-from-source module (download, verify, build,
@@ -313,31 +313,19 @@ and CI workflows. No code changes — GitHub settings.
   commits. Bot commits via GitHub API are signed by
   GitHub's key. Pushes are signed with SSH key.
 
-### Layer 1: Recipe signing
+### Layer 1: Recipe signing (removed in v0.13.0)
 
-Foundation for all client-side verification.
+This layer was implemented and then removed. The
+`internal/trust/` package, `pubkey.txt`, `.sig` files,
+and all `verifyRecipe`/`fetchSignature` logic were
+deleted. See CHANGELOG.md and commit a848195 for
+details. Layer 3 no longer depends on this layer.
 
-- [x] **Generate ed25519 keypair** — one-time setup.
-  Private key stored as `RECIPE_SIGNING_KEY` secret
-  in gale-recipes GitHub Actions. Public key embedded
-  in gale binary at `internal/trust/pubkey.txt`.
-- [x] **Sign recipes in CI** — gale-recipes CI signs
-  each recipe TOML with ed25519 on commit/merge.
-  Detached `.sig` files stored alongside recipes.
-  Scripts: `scripts/sign-file.go`,
-  `scripts/sign-recipes.sh`.
-- [x] **Embed public key in gale** — `go:embed` bakes
-  `pubkey.txt` into the binary.
-  `trust.RecipePublicKey()` exposes it.
-- [x] **Verify signatures on fetch** — registry
-  fetches `.sig` alongside recipe and binaries
-  index. Verifies with `trust.Verify()` before
-  parsing. Rejects unsigned or bad-signature
-  recipes. `FetchRecipe`, `FetchRecipeVersion`,
-  and `fetchBinaries` all verify.
-- [x] **Local recipes skip verification** — `--local`
-  and `--recipe` bypass the registry entirely, so
-  no signature check. No explicit flag needed.
+- ~~**Generate ed25519 keypair**~~
+- ~~**Sign recipes in CI**~~
+- ~~**Embed public key in gale**~~
+- ~~**Verify signatures on fetch**~~
+- ~~**Local recipes skip verification**~~
 
 ### Layer 2: Source URL validation
 
@@ -354,8 +342,7 @@ Foundation for all client-side verification.
 ### Layer 3: Binary attestation verification
 
 Proves prebuilt binaries were built by our CI from
-our source. Requires Layer 1 so we trust the recipe
-that tells us which binary to expect.
+our source.
 
 - [x] **Verify Sigstore attestations on install** —
   shells out to `gh attestation verify` after SHA256
