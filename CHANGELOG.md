@@ -21,6 +21,115 @@
 - The revision-resolution rules now live in one place
   (`internal/store`); generation, registry, and the CLI route
   through it instead of keeping divergent copies.
+- `gale add`/`gale install` with `--host current` and a dotted
+  hostname (e.g. `travis-macbook.local`) silently corrupted
+  gale.toml: the unquoted host key parsed as nested tables and the
+  package vanished from `list`, `sync`, and PATH. Host keys are now
+  quoted in section headers and round-trip correctly (#59).
+  Legacy configs written before the fix carry unquoted dotted
+  headers (`[hosts.travis-macbook.local.packages]`); install,
+  update, and remove now recognize those and rewrite the header
+  to the quoted form instead of appending a duplicate section or
+  reporting the package missing.
+- A `[packages]` header with a trailing comment or extra whitespace
+  (e.g. `[packages] # tools`) made `gale add`/`install` append a
+  duplicate section, breaking every later config read; `gale remove`
+  reported "package not found" for present packages. Section headers
+  are now parsed properly, tolerating comments, whitespace, and
+  quoted keys (#60).
+- Archive extraction can no longer escape the destination
+  directory via absolute symlinks. A symlink entry followed by a
+  regular-file or hard-link entry whose path traversed it could
+  write outside the sandbox before SHA256 verification; extraction
+  now rejects any path with a symlinked parent component and opens
+  files with `O_NOFOLLOW` (#40).
+- darwin: a failed rpath-add retry no longer leaves a Mach-O
+  unsigned in the build prefix — `addRpathRetry` restores the
+  ad-hoc signature it stripped, so source-built binaries are
+  never SIGKILLed on exec on Apple Silicon (#52).
+- darwin: `FixupBinaries` no longer misclassifies `libexec/`
+  and `lib64/` paths as `lib/`; executables there keep their
+  `@executable_path`-anchored rpaths instead of receiving
+  dylib-only fixups (#53).
+- darwin: `RelocateStaleRpaths` re-signs only files whose
+  rpaths it actually rewrote — untouched Mach-Os stay
+  byte-for-byte identical to the attested archive — and now
+  skips `.o` files and `.dSYM` bundles like every other
+  fixup pass (#54).
+- Linux rpath fixups now walk the whole install prefix, so ELF
+  helpers under `libexec/` and `sbin/` (e.g. git's
+  `libexec/git-core/`) get the same `$ORIGIN`-anchored own-lib
+  and farm RUNPATHs as `bin/` and `lib/` (#51).
+- Shebang rewriting preserves interpreter arguments: a script
+  with `#!<prefix>/bin/perl -w` now becomes
+  `#!/usr/bin/env -S perl -w` instead of the broken
+  `#!/usr/bin/env perl -w` (#56).
+- Prefix replacement, placeholder restore, and stale-path
+  relocation now also scan `include/`, so generated config
+  headers (e.g. nodejs `include/node/config.gypi`) no longer
+  ship raw build-tmp or CI-runner paths (#57).
+- A corrupt source-cache entry is evicted and the source
+  re-downloaded instead of failing every build with a
+  misleading `sha256 mismatch`; cache writes are now atomic
+  (write aside + rename) so interrupted copies cannot corrupt
+  the cache (#55).
+- `gale update --no-install` now writes the canonical
+  `<version>-<revision>` pin for a revision-only bump, so the
+  follow-up `gale sync` actually installs the new revision
+  instead of resolving the unchanged bare pin to the
+  already-installed one (#66).
+- `gale verify`: strip the revision suffix from the lockfile version
+  before constructing the OCI tag, so the tag matches the bare
+  `<version>-<platform>` form that gale-recipes CI pushes to GHCR
+  (issue #62).
+- `gale outdated` no longer reports git-installed packages (bare
+  short-hash versions) as always outdated. Packages whose installed
+  version is a git hash are skipped by the comparison; run
+  `gale update <pkg>` to rebuild from HEAD. (#63)
+- AI `write_recipe` tool now rejects LLM-supplied names that
+  escape the recipe temp dir (path traversal, absolute paths,
+  symlink escape); the same containment guards `lint_recipe`
+  and `download_and_hash` (#64).
+- `gale doctor` now checks each lib farm against its own
+  scope's packages — global farm vs global config, project
+  farm vs project config — instead of validating the global
+  farm against the merged set. This ends the persistent
+  false "Lib farm drift" that `--repair` could never fix
+  for project-only dylib packages, and makes real project
+  farm drift visible for the first time. When run from
+  inside `~/.gale` itself, doctor no longer mistakes the
+  global config for a project and probes a bogus
+  `~/.gale/.gale` farm. (#50)
+- `gale env --project` and `gale env` (auto) now accept a project
+  that has only a `.tool-versions` file (no `gale.toml`), matching
+  the behaviour of all other read-only `--project` commands (#80).
+- Docs drift (#82): TODO.md Layer 1 recipe signing
+  corrected to reflect removal in v0.13.0; CLAUDE.md
+  project layout and CLI commands tables updated to
+  include all current packages and commands; gale.1
+  `repo create` corrected to `repo init`, `repo add`
+  synopsis updated to two-argument form, `repo update`
+  added, and `update --no-install`/`--no-refresh` flags
+  documented; design.md store paths updated to
+  `name/version-revision/` format and atomic swap step 4
+  corrected to reflect that old generations are pruned
+  lazily; internal-supply-chain.md notes that BUG-4 and
+  BUG-5 are historical (trust package removed in v0.13.0).
+- `atomicfile.Write` now preserves the existing file's permission
+  bits when rewriting a file, and creates new files at 0644
+  (world-readable); previously it silently downgraded every config
+  and lock file to 0600 on first rewrite, breaking shared-checkout
+  and multi-user reads of `gale.toml`. (F13 / #81)
+- Registry cache `writeCacheEntry` now writes body and etag into a
+  staging directory and renames the whole directory atomically,
+  preventing concurrent writers from committing a mismatched
+  body/etag pair that a subsequent 304 would serve as authoritative.
+  (F42 / #81)
+- `writeCacheEntry` now promotes the staging directory via a
+  backup-rename dance instead of deleting the old entry first, so
+  a failed promotion can no longer discard the previously valid
+  body/etag pair that offline and stale-on-error reads depend on.
+  (F42 follow-up / #95)
 
 ### Changed
 
