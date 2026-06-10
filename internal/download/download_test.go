@@ -22,13 +22,11 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
-// --- Behavior 0: HTTP client has timeout ---
-
-func TestHTTPClientHasTimeout(t *testing.T) {
-	if httpClient.Timeout == 0 {
-		t.Fatal("httpClient.Timeout must be non-zero")
-	}
-}
+// Behavior 0 (HTTP client has a whole-transfer timeout) was
+// removed by gh#61: the 5-minute client Timeout aborted large
+// transfers mid-stream. The replacement invariant — the shared
+// no-timeout client from internal/httpclient — is asserted in
+// audit_fix_U12_test.go.
 
 // --- Behavior 1: Download file from URL ---
 

@@ -14,13 +14,27 @@ import (
 	"github.com/kelp/gale/internal/repo"
 )
 
+// recipeResolveError marks a resolver error as a real failure —
+// the recipe exists but could not be read or parsed — as opposed
+// to a not-found miss. composeResolvers stops the chain on these
+// instead of silently falling through to a lower-priority
+// resolver (gh#71): a corrupt tap override must surface, not be
+// shadowed by the registry's copy of the recipe.
+type recipeResolveError struct{ err error }
+
+func (e *recipeResolveError) Error() string { return e.err.Error() }
+func (e *recipeResolveError) Unwrap() error { return e.err }
+
 // composeResolvers returns a single RecipeResolver that consults
-// each input resolver in turn and returns the first hit. If every
-// resolver reports the package as missing, the error from the
-// last resolver is returned — this is deliberate: configured
-// repos run first as overrides, so the *fallback* resolver
-// (typically the registry) carries the most informative error
-// for a true cache-miss.
+// each input resolver in turn and returns the first hit. A
+// *recipeResolveError from any resolver — the recipe exists but
+// is corrupt or unreadable — stops the chain immediately so the
+// actionable error surfaces instead of a lower-priority copy
+// silently winning. If every resolver reports the package as
+// missing, the error from the last resolver is returned — this
+// is deliberate: configured repos run first as overrides, so the
+// *fallback* resolver (typically the registry) carries the most
+// informative error for a true cache-miss.
 func composeResolvers(resolvers ...installer.RecipeResolver) installer.RecipeResolver {
 	return func(name string) (*recipe.Recipe, error) {
 		var lastErr error
@@ -28,6 +42,10 @@ func composeResolvers(resolvers ...installer.RecipeResolver) installer.RecipeRes
 			rec, err := r(name)
 			if err == nil {
 				return rec, nil
+			}
+			var failure *recipeResolveError
+			if errors.As(err, &failure) {
+				return nil, err
 			}
 			lastErr = err
 		}

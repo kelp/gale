@@ -100,23 +100,15 @@ var installCmd = &cobra.Command{
 
 		var r *recipe.Recipe
 		switch {
-		case version != "" && version != "latest" && installRecipes == "":
-			// Specific version requested — fetch from
-			// versioned registry index.
-			reg := newRegistry()
-			r, err = reg.FetchRecipeVersion(name, version)
-			if err != nil {
-				return fmt.Errorf("fetching %s@%s: %w",
-					name, version, err)
-			}
-			// Use the registry for dep resolution too.
-			ctx.Resolver = reg.FetchRecipe
-			ctx.Installer.Resolver = reg.FetchRecipe
 		case version != "" && version != "latest":
-			// --recipes mode: resolve @version against the
-			// local recipes directory. ResolveVersionedRecipe
-			// compares against both bare Version and Full() so
-			// explicit revisions like "1.0-1" work too.
+			// Specific version requested — resolve through the
+			// same chain as every other version-aware command
+			// (gh#70): configured taps first, then the versioned
+			// registry index. In --recipes mode the registry is
+			// nil and the version resolves against the local
+			// recipes directory. ResolveVersionedRecipe compares
+			// against both bare Version and Full() so explicit
+			// revisions like "1.0-1" work too.
 			r, err = ctx.ResolveVersionedRecipe(name, version)
 			if err != nil {
 				return fmt.Errorf("fetching %s@%s: %w",
