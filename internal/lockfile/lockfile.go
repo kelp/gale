@@ -16,7 +16,7 @@ import (
 type LockedPackage struct {
 	Version        string `toml:"version"`
 	SHA256         string `toml:"sha256,omitempty"`
-	ManifestDigest string
+	ManifestDigest string `toml:"manifest_digest,omitempty"`
 }
 
 // LockFile represents a gale.lock file.
