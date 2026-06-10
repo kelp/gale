@@ -218,6 +218,37 @@ func TestResignWithEntitlementsSurvivesSignatureStrip(t *testing.T) {
 	}
 }
 
+// TestResignWithEntitlementsFailsWhenPlistCannotBeStaged guards the
+// silent-degradation path Cursor Bugbot flagged: when a non-empty
+// entitlement is supplied but the temp plist can't be created/written,
+// resignWithEntitlements must FAIL rather than sign without
+// --entitlements (which would drop the entitlement while the build
+// still succeeds — issue #27's failure mode).
+func TestResignWithEntitlementsFailsWhenPlistCannotBeStaged(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "main.c")
+	if err := os.WriteFile(src,
+		[]byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "qemu-like")
+	if out, err := exec.Command("cc", "-o", bin, src).
+		CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// Point TMPDIR at a nonexistent directory so os.CreateTemp (used
+	// to stage the entitlements plist) fails deterministically.
+	t.Setenv("TMPDIR", filepath.Join(dir, "no-such-dir"))
+
+	err := resignWithEntitlements(bin, "<plist>entitlement</plist>")
+	if err == nil {
+		t.Error("resignWithEntitlements signed without staging the " +
+			"entitlements plist; a staging failure must be fatal so " +
+			"the entitlement is never silently dropped (issue #27)")
+	}
+}
+
 func TestRelocateStaleRpathsPreservesEntitlement(t *testing.T) {
 	// A prebuilt entitled binary with a CI-baked (stale) rpath must
 	// keep its entitlement after RelocateStaleRpaths rewrites the

@@ -561,16 +561,28 @@ func resignWithEntitlements(file, ent string) error {
 	if ent != "" {
 		// Write the recovered entitlements to a temp plist and pass
 		// it to codesign so the new signature carries them too.
+		// Staging the plist MUST succeed: silently signing without
+		// --entitlements would drop the entitlement (e.g. qemu's HVF)
+		// while the build still "succeeds" — the exact failure mode
+		// issue #27 guards against. So a staging failure is fatal.
 		f, err := os.CreateTemp("", "gale-entitlements-*.plist")
-		if err == nil {
-			path := f.Name()
-			_, werr := f.WriteString(ent)
-			_ = f.Close()
-			if werr == nil {
-				defer os.Remove(path)
-				args = append(args, "--entitlements", path)
-			}
+		if err != nil {
+			return fmt.Errorf("stage entitlements for %s: %w",
+				filepath.Base(file), err)
 		}
+		path := f.Name()
+		defer os.Remove(path)
+		_, werr := f.WriteString(ent)
+		cerr := f.Close()
+		if werr != nil {
+			return fmt.Errorf("write entitlements for %s: %w",
+				filepath.Base(file), werr)
+		}
+		if cerr != nil {
+			return fmt.Errorf("write entitlements for %s: %w",
+				filepath.Base(file), cerr)
+		}
+		args = append(args, "--entitlements", path)
 	}
 	args = append(args, file)
 	return run("codesign", args...)
