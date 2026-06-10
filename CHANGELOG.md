@@ -2,14 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- `gale update --no-install` now writes the canonical
-  `<version>-<revision>` pin for a revision-only bump, so the
-  follow-up `gale sync` actually installs the new revision
-  instead of resolving the unchanged bare pin to the
-  already-installed one (#66).
-
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
