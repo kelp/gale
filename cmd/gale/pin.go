@@ -9,8 +9,12 @@ import (
 )
 
 var (
-	pinHost   string
-	unpinHost string
+	pinHost      string
+	pinGlobal    bool
+	pinProject   bool
+	unpinHost    string
+	unpinGlobal  bool
+	unpinProject bool
 )
 
 var pinCmd = &cobra.Command{
@@ -22,7 +26,9 @@ var pinCmd = &cobra.Command{
 		name := args[0]
 		host := resolveHostFlag(pinHost)
 
-		configPath, err := resolveConfigPath(false)
+		configPath, err := resolvePinConfigPath(
+			pinGlobal, pinProject,
+		)
 		if err != nil {
 			return err
 		}
@@ -81,7 +87,9 @@ var unpinCmd = &cobra.Command{
 		name := args[0]
 		host := resolveHostFlag(unpinHost)
 
-		configPath, err := resolveConfigPath(false)
+		configPath, err := resolvePinConfigPath(
+			unpinGlobal, unpinProject,
+		)
 		if err != nil {
 			return err
 		}
@@ -102,13 +110,38 @@ var unpinCmd = &cobra.Command{
 	},
 }
 
+// resolvePinConfigPath resolves the gale.toml that pin and
+// unpin mutate, honoring -g/-p like the other mutating
+// commands (install, add, remove). Pin used to hardcode
+// resolveConfigPath(false), so the global config could never
+// be targeted and a non-project cwd failed on a gale.toml
+// that never existed (gh#73).
+func resolvePinConfigPath(global, project bool) (string, error) {
+	if err := validateScopeFlags(global, project); err != nil {
+		return "", err
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("getting working dir: %w", err)
+	}
+	return resolveConfigPath(resolveScope(global, project, cwd))
+}
+
 func init() {
 	pinCmd.Flags().StringVar(&pinHost, "host", "",
 		"Pin in [hosts.<host>.pinned] "+
 			"(use 'current' for this machine)")
+	pinCmd.Flags().BoolVarP(&pinGlobal, "global", "g",
+		false, "Pin in the global config")
+	pinCmd.Flags().BoolVarP(&pinProject, "project", "p",
+		false, "Pin in the project config")
 	unpinCmd.Flags().StringVar(&unpinHost, "host", "",
 		"Unpin from [hosts.<host>.pinned] "+
 			"(use 'current' for this machine)")
+	unpinCmd.Flags().BoolVarP(&unpinGlobal, "global", "g",
+		false, "Unpin in the global config")
+	unpinCmd.Flags().BoolVarP(&unpinProject, "project", "p",
+		false, "Unpin in the project config")
 	rootCmd.AddCommand(pinCmd)
 	rootCmd.AddCommand(unpinCmd)
 }

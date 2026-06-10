@@ -102,16 +102,23 @@ func resolveEnvScope(global, project bool) (galeDir, configPath string, err erro
 				"no project found — run 'gale init' first",
 			)
 		}
-		return filepath.Join(
-			filepath.Dir(projectCfg), ".gale",
-		), projectCfg, nil
+		galeDir, err = galeDirForConfig(projectCfg)
+		if err != nil {
+			return "", "", err
+		}
+		return galeDir, projectCfg, nil
 	}
 
 	// Auto: project preferred when it exists.
+	// galeDirForConfig (not Dir(cfg)/.gale): under ~/.gale
+	// the found config is the GLOBAL one and the derived
+	// dir would be the bogus ~/.gale/.gale (gh#96).
 	if projectCfg, err := projectConfigPath(cwd); err == nil {
-		return filepath.Join(
-			filepath.Dir(projectCfg), ".gale",
-		), projectCfg, nil
+		galeDir, err = galeDirForConfig(projectCfg)
+		if err != nil {
+			return "", "", err
+		}
+		return galeDir, projectCfg, nil
 	}
 	galeDir, err = galeConfigDir()
 	if err != nil {
@@ -140,12 +147,13 @@ func resolveGaleDir() (string, error) {
 		return "", fmt.Errorf("getting working dir: %w", err)
 	}
 
-	// Check for project gale.toml.
+	// Check for project gale.toml. galeDirForConfig handles
+	// the cwd-under-~/.gale case, where FindGaleConfig
+	// resolves to the GLOBAL config and a naive
+	// Dir(cfg)/.gale would be bogus (gh#96).
 	projectConfig, err := config.FindGaleConfig(cwd)
 	if err == nil {
-		return filepath.Join(
-			filepath.Dir(projectConfig), ".gale",
-		), nil
+		return galeDirForConfig(projectConfig)
 	}
 
 	// Fall back to global.

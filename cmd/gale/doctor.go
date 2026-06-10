@@ -206,6 +206,13 @@ func checkProjectConfig(ctx *doctorContext) bool {
 	if err != nil {
 		return true // no project config is fine
 	}
+	if configInGaleDir(projPath, ctx.galeDir) {
+		// cwd is under the global gale home, so FindGaleConfig
+		// resolved to the GLOBAL config — already covered by
+		// checkGlobalConfig; reporting it again as "project"
+		// would double-count its packages (gh#96).
+		return true
+	}
 	data, err := os.ReadFile(projPath)
 	if err != nil {
 		return true
@@ -236,7 +243,11 @@ func checkHostOverrides(ctx *doctorContext) bool {
 	overrides := loadHostOverrides(
 		filepath.Join(ctx.galeDir, "gale.toml"), host,
 	)
-	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
+	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil &&
+		!configInGaleDir(projPath, ctx.galeDir) {
+		// configInGaleDir: from under ~/.gale the "project"
+		// path IS the global config already counted above —
+		// appending it again doubles every shadow (gh#96).
 		overrides = append(overrides,
 			loadHostOverrides(projPath, host)...)
 	}
@@ -494,36 +505,21 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 // farm by design.
 func checkFarm(ctx *doctorContext) bool {
 	ok := checkFarmScope(ctx, ctx.galeDir, ctx.globalPkgs)
-	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
-		// When cwd is under the global gale home,
-		// FindGaleConfig resolves to the GLOBAL gale.toml;
-		// deriving a project dir from it would yield the
-		// bogus <galeDir>/.gale and report drift --repair
-		// can never fix. The global farm was already
-		// checked above, so skip (same global-vs-project
-		// split as galeDirForConfig in paths.go).
-		projDir := filepath.Dir(projPath)
-		if !sameDir(projDir, ctx.galeDir) {
-			projGaleDir := filepath.Join(projDir, ".gale")
-			if !checkFarmScope(ctx, projGaleDir, ctx.projPkgs) {
-				ok = false
-			}
+	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil &&
+		!configInGaleDir(projPath, ctx.galeDir) {
+		// configInGaleDir: when cwd is under the global gale
+		// home, FindGaleConfig resolves to the GLOBAL
+		// gale.toml; deriving a project dir from it would
+		// yield the bogus <galeDir>/.gale and report drift
+		// --repair can never fix (gh#96). The global farm
+		// was already checked above.
+		projGaleDir, dirErr := galeDirForConfig(projPath)
+		if dirErr == nil &&
+			!checkFarmScope(ctx, projGaleDir, ctx.projPkgs) {
+			ok = false
 		}
 	}
 	return ok
-}
-
-// sameDir reports whether two paths name the same
-// directory, resolving symlinks first so macOS /var vs
-// /private/var spellings compare equal.
-func sameDir(a, b string) bool {
-	if ra, err := filepath.EvalSymlinks(a); err == nil {
-		a = ra
-	}
-	if rb, err := filepath.EvalSymlinks(b); err == nil {
-		b = rb
-	}
-	return a == b
 }
 
 // checkFarmScope validates one farm (galeDir/lib) against
@@ -740,7 +736,12 @@ func checkDirenvIntegration(ctx *doctorContext) bool {
 func checkOrphans(ctx *doctorContext) bool {
 	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
 	var projPath string
-	if p, err := config.FindGaleConfig(ctx.cwd); err == nil {
+	if p, err := config.FindGaleConfig(ctx.cwd); err == nil &&
+		!configInGaleDir(p, ctx.galeDir) {
+		// configInGaleDir: from under ~/.gale this would pass
+		// the global config as projPath. The referenced set
+		// dedupes, so it happened to be benign — but only by
+		// accident (gh#96).
 		projPath = p
 	}
 	var resolver installer.RecipeResolver
@@ -785,9 +786,16 @@ func repairDoctor(ctx *doctorContext) error {
 	if err := rebuildGeneration(ctx.galeDir, ctx.storeRoot, globalConfig); err != nil {
 		return fmt.Errorf("rebuild global generation: %w", err)
 	}
-	if projConfig, err := projectConfigPath(ctx.cwd); err == nil {
-		projDir := filepath.Dir(projConfig)
-		projGaleDir := filepath.Join(projDir, ".gale")
+	if projConfig, err := projectConfigPath(ctx.cwd); err == nil &&
+		!configInGaleDir(projConfig, ctx.galeDir) {
+		// configInGaleDir: from under ~/.gale the "project"
+		// config IS the global one rebuilt above; treating it
+		// as a project would CREATE the bogus ~/.gale/.gale
+		// directory on disk (gh#96).
+		projGaleDir, dirErr := galeDirForConfig(projConfig)
+		if dirErr != nil {
+			return fmt.Errorf("resolving project gale dir: %w", dirErr)
+		}
 		if err := rebuildGeneration(projGaleDir, ctx.storeRoot, projConfig); err != nil {
 			return fmt.Errorf("rebuild project generation: %w", err)
 		}
