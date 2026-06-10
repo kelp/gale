@@ -62,6 +62,16 @@ internal/ai/           Anthropic SDK integration
 internal/lint/         recipe TOML validation
 internal/attestation/  Sigstore attestation via gh CLI
 internal/gitutil/      git clone, ls-remote, URL expansion
+internal/atomicfile/   atomic file writes (write-then-rename)
+internal/depsmeta/     .gale-deps.toml format (build↔installer)
+internal/farm/         shared dylib farm at ~/.gale/lib/
+internal/filelock/     POSIX file locking for store writes
+internal/httpclient/   shared *http.Client for all fetches
+internal/inspect/      binary linkage auditing (@rpath checks)
+internal/parallel/     bounded worker pool for fan-out work
+internal/prewarm/      concurrent ETag cache pre-population
+internal/timing/       verbose phase-elapsed-time logging
+internal/version/      version comparison rules (update/outdated)
 ```
 
 ## Key Concepts
@@ -104,8 +114,13 @@ gale add <pkg> [pkg...]   Add to gale.toml without installing
 gale sync                 Install all packages in gale.toml
 gale update [pkg...]      Update packages to latest version
 gale switch <pkg> <ver>   Switch a managed package to a specific version
+gale pin <pkg>            Pin package to its current version
+gale unpin <pkg>          Remove pin, allow updates again
 gale list                 List packages in gale.toml
 gale info <pkg>           Show package information
+gale outdated             Show packages with newer versions available
+gale which <binary>       Show which package provides a binary
+gale inspect [pkg]        Audit installed package linkage
 gale gc                   Remove unused versions + generations
 gale doctor               Diagnose setup issues
 gale env                  Print export PATH for current scope
@@ -113,6 +128,7 @@ gale init                 Bootstrap project (gale.toml, .envrc)
 gale hook direnv          Print use_gale function for direnvrc
 gale build <recipe.toml>  Build recipe from source
 gale lint <recipe.toml>   Validate recipe files
+gale create-recipe <repo> Generate a recipe from a GitHub repo (AI)
 gale search <query>       Search for packages
 gale shell                Open shell with project environment
 gale run <cmd>            Run command in project environment
@@ -120,6 +136,12 @@ gale audit <pkg>         Rebuild and compare SHA256
 gale verify <pkg>        Check Sigstore attestation
 gale sbom [pkg]          Software bill of materials
 gale generations          List and manage generations
+gale repo add <name> <url>    Add a recipe repository
+gale repo remove <name>       Remove a recipe repository
+gale repo list                List configured recipe repositories
+gale repo init <name>         Create a new recipe repository
+gale repo update [name]       Update a recipe repository
+gale completion <shell>       Generate shell completion script
 ```
 
 ### Key Flags

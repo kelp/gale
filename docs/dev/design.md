@@ -67,8 +67,8 @@ not need multiple package managers.
   gen/            Generation snapshots
     2/bin/        Symlinks into pkg/
   pkg/            Package store (immutable)
-    jq/1.8.1/
-    fd/10.4.2/
+    jq/1.8.1-2/   <name>/<version>-<revision>/
+    fd/10.4.2-1/
   README.md       Auto-generated, explains this layout
 ```
 
@@ -78,7 +78,8 @@ not need multiple package managers.
 version gets its own directory. Once installed, a store
 entry is never modified — only deleted when the package
 is removed. Inspired by the Nix store, but simpler:
-no content-addressing, just `name/version/`.
+no content-addressing, just `name/version-revision/`
+(e.g. `jq/1.8.1-2/`).
 
 **Generation** (`gen/`): a numbered snapshot of symlinks
 pointing into the store. "Gen" is short for generation.
@@ -114,7 +115,9 @@ Updating the environment is a single `os.Rename` call:
 1. Build `gen/<N>/bin/` with symlinks to the store
 2. Create temp symlink: `current-new → gen/<N>`
 3. `os.Rename("current-new", "current")` — atomic
-4. Delete `gen/<N-1>/`
+4. Old generations accumulate; `gale gc` or
+   `PruneOldGenerations` removes them (default: keep 10).
+   This is required for `gale generations rollback`.
 
 Step 3 is one syscall. PATH never sees a broken or
 partially-built state.
@@ -126,11 +129,11 @@ Global and project environments use the same model:
 ```
 # Global
 ~/.gale/gale.toml    → ~/.gale/current/bin/
-~/.gale/gen/2/bin/jq → ~/.gale/pkg/jq/1.8.1/bin/jq
+~/.gale/gen/2/bin/jq → ~/.gale/pkg/jq/1.8.1-2/bin/jq
 
 # Project
 ./gale.toml          → ./.gale/current/bin/
-./.gale/gen/1/bin/jq → ~/.gale/pkg/jq/1.7.1/bin/jq
+./.gale/gen/1/bin/jq → ~/.gale/pkg/jq/1.7.1-1/bin/jq
 ```
 
 Both read a gale.toml manifest and produce a gen
