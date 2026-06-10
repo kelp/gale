@@ -166,26 +166,23 @@ func (ctx *cmdContext) loadToolVersionsFallback() (*config.GaleConfig, error) {
 }
 
 // rebuildGeneration reads the effective project/global
-// config and rebuilds the generation symlinks. Fails if a
-// referenced store dir is missing — callers that need to
-// tolerate partial install failures (only sync today)
-// should use rebuildGenerationLenient instead.
+// config and rebuilds the generation symlinks. Tolerates
+// packages whose store dir is missing (skip-with-warning):
+// gale.toml legitimately lists packages that aren't
+// installed locally — `gale add` without sync, a fresh
+// clone on a new host, an unsupported-platform skip — and
+// the previous strict rebuild let update/remove commit
+// their config+lock mutations while the generation never
+// rotated, desyncing PATH from config (gh#68). The skipped
+// package is reported on stderr by BuildLenient.
 func rebuildGeneration(galeDir, storeRoot, configPath string) error {
-	pkgs, err := readConfigPackages(configPath)
-	if err != nil {
-		return err
-	}
-	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
-		return err
-	}
-	autoPruneGenerations(galeDir, storeRoot)
-	return nil
+	return rebuildGenerationLenient(galeDir, storeRoot, configPath)
 }
 
-// rebuildGenerationLenient is rebuildGeneration but
-// silently skips packages whose store dir is missing.
-// Sync uses this so a batch where one install failed
-// still lands the successful installs on PATH — per
+// rebuildGenerationLenient rebuilds the generation,
+// skipping (with a warning) packages whose store dir is
+// missing. Sync uses this so a batch where one install
+// failed still lands the successful installs on PATH — per
 // Issue #20. The install failure is surfaced separately.
 func rebuildGenerationLenient(galeDir, storeRoot, configPath string) error {
 	pkgs, err := readConfigPackages(configPath)
@@ -727,9 +724,9 @@ func (ctx *cmdContext) RebuildGeneration() error {
 	return rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath)
 }
 
-// RebuildGenerationLenient is RebuildGeneration but
-// tolerates missing store dirs (see
-// rebuildGenerationLenient). Sync uses this.
+// RebuildGenerationLenient is RebuildGeneration plus a
+// timing phase (see rebuildGenerationLenient). Both
+// tolerate missing store dirs since gh#68. Sync uses this.
 func (ctx *cmdContext) RebuildGenerationLenient() error {
 	defer timing.Phase("generation-rebuild")()
 	return rebuildGenerationLenient(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath)

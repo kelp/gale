@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/store"
@@ -150,6 +151,54 @@ func ActiveVersions(pkgs map[string]string, storeRoot string) map[string]string 
 	return out
 }
 
+// FarmStoreDirs returns the store dirs whose versioned dylibs
+// belong in the shared farm: the resolved dir for every package
+// in pkgs plus the transitive dep closure recorded in each
+// dir's .gale-deps.toml. Runtime deps are farmed at install
+// time but never appear in gale.toml, so rebuilding the farm
+// from the config set alone deletes the entries dependents'
+// rpaths resolve through (gh#43). Dep dirs missing from the
+// store are skipped — the farm can only link what's on disk.
+// Visited dirs are not re-expanded, so dep cycles terminate.
+func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
+	queue := ActiveStoreDirs(pkgs, storeRoot)
+	seen := make(map[string]bool, len(queue))
+	for _, d := range queue {
+		seen[d] = true
+	}
+
+	out := make([]string, 0, len(queue))
+	for len(queue) > 0 {
+		dir := queue[0]
+		queue = queue[1:]
+		if _, err := os.Stat(dir); err != nil {
+			continue
+		}
+		out = append(out, dir)
+
+		md, err := depsmeta.Read(dir)
+		if err != nil {
+			// Best-effort: an unreadable metadata file must
+			// not fail the whole farm rebuild.
+			fmt.Fprintf(os.Stderr,
+				"farm: read deps metadata in %s: %v\n", dir, err)
+			continue
+		}
+		for _, dep := range md.Deps {
+			version := dep.Version
+			if dep.Revision > 0 {
+				version = fmt.Sprintf("%s-%d", dep.Version, dep.Revision)
+			}
+			depDir := resolveStoreDir(storeRoot, dep.Name, version)
+			if !seen[depDir] {
+				seen[depDir] = true
+				queue = append(queue, depDir)
+			}
+		}
+	}
+	return out
+}
+
 //go:embed gale-readme.md
 var galeReadme []byte
 
@@ -252,12 +301,13 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 		}
 
 		// Rebuild the shared-lib farm from this
-		// generation's packages. Older revisions may
-		// still be in the store (awaiting `gale gc`),
-		// but they aren't on PATH and must not leak into
-		// the farm. Best-effort — a farm error does not
-		// invalidate the generation swap.
-		active := ActiveStoreDirs(pkgs, storeRoot)
+		// generation's packages plus their recorded dep
+		// closure (gh#43). Older revisions may still be
+		// in the store (awaiting `gale gc`), but they
+		// aren't on PATH and must not leak into the farm.
+		// Best-effort — a farm error does not invalidate
+		// the generation swap.
+		active := FarmStoreDirs(pkgs, storeRoot)
 		if err := farm.Rebuild(
 			active, farm.Dir(galeDir),
 		); err != nil {
@@ -380,23 +430,18 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				// H5: strict (Build) callers come through
-				// rebuildGeneration with gale.toml-sourced
-				// packages, so a missing store dir is a real
-				// bug: the user expects the package to be on
-				// PATH. Fail loud — install/remove/update
-				// never commit a broken generation, and the
-				// user learns about the corruption
-				// immediately rather than discovering it when
-				// `<pkg>: command not found` fires later.
-				//
-				// Lenient (BuildLenient) callers deliberately
-				// tolerate this case. A sync batch where one
-				// install fails must still land the successful
-				// installs on PATH (Issue #20); the install
-				// error is surfaced via a separate channel.
-				// Warn instead of silently skipping so the
-				// user learns which package fell off PATH.
+				// All CLI rebuilds go through BuildLenient
+				// since gh#68: gale.toml legitimately lists
+				// packages that aren't installed locally
+				// (`gale add` without sync, a fresh clone),
+				// and failing the rebuild would desync PATH
+				// from config. Skip the package, but warn so
+				// the user learns which package fell off PATH
+				// — a sync batch where one install fails must
+				// still land the successful installs (Issue
+				// #20). Strict Build keeps the loud failure
+				// for callers that know every package should
+				// be present.
 				if !lenient {
 					return fmt.Errorf(
 						"%s@%s is missing from the store (%s); "+
