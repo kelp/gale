@@ -634,121 +634,155 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		}
 	}
 
-	// Critical section: rename staging dir into the canonical
-	// extract dir, then run fixup steps. A concurrent
-	// generation.Build could walk a half-extracted package or
-	// race with farm.Populate. Hold the store-gen lock so gen
-	// rebuilds see either the pre-install state or the
-	// completed install — never an intermediate.
-	// The fetch + verify above intentionally stays outside the
-	// lock: they don't touch the canonical store dir and a
-	// network stall must not block a concurrent sync.
+	// Run the whole fixup pipeline in the staging dir BEFORE
+	// the rename, so the canonical store dir only ever appears
+	// fully finalized (gh#41). A crash or error anywhere in
+	// the pipeline leaves only the transient ".stream" staging
+	// dir, which IsInstalled and the generation resolver
+	// already skip — a retry starts clean instead of trusting
+	// a broken-but-non-empty dir forever. Every fixup writes
+	// final paths (finalStoreDir / storeRoot), never staging
+	// paths, so the content is correct after the rename.
 	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
-	finalize := func() error {
-		// The extractDir was created empty by Store.Create.
-		// Remove it so we can rename stagingDir into its place.
+	if err := fixupExtracted(stagingDir, finalStoreDir, storeRoot); err != nil {
+		return err
+	}
+
+	// Record the dep closure the prebuilt expects at
+	// runtime so staleness can be detected when a dep's
+	// recipe changes. If the archive already shipped a
+	// .gale-deps.toml (built by `gale build` with full
+	// knowledge of the linked versions), keep that —
+	// it's the authoritative record. Otherwise write our
+	// locally-resolved closure, which is approximate but
+	// preserves backwards-compat with archives built
+	// before the build-time emit landed.
+	//
+	// The write happens even when depsFallback is empty:
+	// a zero-dep recipe must still record an empty file
+	// so doctor's "missing metadata = legacy install of
+	// unknown deps" heuristic doesn't flag a fresh
+	// install as stale. The legacy-stale path is
+	// preserved for installs that genuinely predate this
+	// metadata (no file on disk at all).
+	if !HasDepsMetadata(stagingDir) {
+		md := DepsMetadata{Deps: depsFallback}
+		if err := WriteDepsMetadata(stagingDir, md); err != nil {
+			return fmt.Errorf("write deps metadata: %w", err)
+		}
+	}
+
+	// Commit: rename the fully-finalized staging dir into the
+	// canonical extract dir (+ farm wiring when inPlace). The
+	// fetch + verify + fixups above intentionally stay outside
+	// the store-gen lock: they don't touch the canonical store
+	// dir, and a network stall must not block a concurrent sync.
+	return commitExtracted(stagingDir, extractDir, finalStoreDir, storeRoot, inPlace)
+}
+
+// fixupExtracted runs the post-extract fixup pipeline on dir,
+// rewriting content for its final home at finalStoreDir. dir is
+// always a staging dir: nothing here may assume the package is
+// visible in the store yet (gh#41 — the canonical dir must only
+// ever hold fully-finalized content).
+func fixupExtracted(dir, finalStoreDir, storeRoot string) error {
+	// Rewrite .pc files so pkg-config resolves from
+	// the store dir, not the original build prefix.
+	if err := build.FixupPkgConfig(dir); err != nil {
+		return fmt.Errorf("fixup pkg-config: %w", err)
+	}
+
+	// Replace @@GALE_PREFIX@@ placeholders with the
+	// actual store dir in scripts and text files.
+	if err := build.RestorePrefixPlaceholderTo(dir, finalStoreDir); err != nil {
+		return fmt.Errorf("restore prefix placeholders: %w", err)
+	}
+
+	// Rewrite CI-baked .gale/pkg/ paths in text files
+	// (scripts, .pc Libs.private, .la files, etc.) so
+	// they use the local store root.
+	if err := build.RelocateStalePathsInTextFiles(dir, storeRoot); err != nil {
+		return fmt.Errorf("relocate stale paths in text files: %w", err)
+	}
+
+	// Migrate legacy absolute rpaths in prebuilts published
+	// before the relative-rpath change: rewrite any RPATH
+	// referencing a foreign gale store root (CI-baked paths
+	// like /Users/runner/.gale/pkg/... or /home/runner/.gale)
+	// to the local store root. Runs on both darwin and linux.
+	// Current builds (since #26) ship $ORIGIN/@loader_path-
+	// relative rpaths that fall through this untouched, so a
+	// fresh-box install is byte-for-byte with the attested
+	// artifact and needs no patchelf at all.
+	//
+	// On linux the rewrite needs patchelf; if it is absent the
+	// step no-ops and returns nil — it does NOT error and does
+	// NOT trigger a source rebuild (the source fallback fires
+	// only when installBinaryTo returns a non-nil error).
+	// That gap only bites the obsolete pre-#26 prebuilts whose
+	// absolute CI rpath this step exists to repair; for them a
+	// patchelf-less box would install a binary with a stale
+	// rpath. Relative-rpath builds are unaffected.
+	if err := build.RelocateStaleRpaths(dir, storeRoot); err != nil {
+		return fmt.Errorf("relocate rpaths: %w", err)
+	}
+
+	// Ad-hoc sign any Mach-O that arrived unsigned — Apple
+	// Silicon kernels SIGKILL unsigned binaries on exec, and
+	// RelocateStaleRpaths only re-signs files whose rpaths
+	// were rewritten. No-op on Linux.
+	if err := build.EnsureCodeSigned(dir); err != nil {
+		return fmt.Errorf("ensure code signed: %w", err)
+	}
+
+	return nil
+}
+
+// commitExtracted promotes a fully-finalized staging dir into
+// the canonical store dir. The rename is the commit point: all
+// fixups already ran in stagingDir (gh#41), so a crash on
+// either side of the rename leaves the store consistent —
+// before: only a transient staging dir; after: a complete
+// install (at worst missing farm links, which farm.Rebuild
+// restores on the next gen swap).
+//
+// When inPlace is true, the swap and farm.Populate run under
+// the store-gen lock so a concurrent generation.Build sees
+// either the pre-install state or the completed install —
+// never an intermediate. When inPlace is false, the caller is
+// staging into a sibling dir and owns the final commit
+// (commitStaged), including the farm wiring.
+func commitExtracted(stagingDir, extractDir, finalStoreDir, storeRoot string, inPlace bool) error {
+	swap := func() error {
+		// extractDir was created empty by Store.Create (or is
+		// the caller's empty staging target). Remove it so the
+		// rename can land in its place.
 		if err := os.RemoveAll(extractDir); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove empty extract dir: %w", err)
 		}
-		if err := os.Rename(stagingDir, extractDir); err != nil {
-			return fmt.Errorf("stage binary: %w", err)
+		if err := renameDir(stagingDir, extractDir); err != nil {
+			return fmt.Errorf("promote staging dir: %w", err)
 		}
-
-		// Rewrite .pc files so pkg-config resolves from
-		// the store dir, not the original build prefix.
-		if err := build.FixupPkgConfig(extractDir); err != nil {
-			return fmt.Errorf("fixup pkg-config: %w", err)
+		if !inPlace {
+			return nil
 		}
-
-		// Replace @@GALE_PREFIX@@ placeholders with the
-		// actual store dir in scripts and text files.
-		if err := build.RestorePrefixPlaceholderTo(extractDir, finalStoreDir); err != nil {
-			return fmt.Errorf("restore prefix placeholders: %w", err)
-		}
-
-		// Rewrite CI-baked .gale/pkg/ paths in text files
-		// (scripts, .pc Libs.private, .la files, etc.) so
-		// they use the local store root.
-		if err := build.RelocateStalePathsInTextFiles(extractDir, storeRoot); err != nil {
-			return fmt.Errorf("relocate stale paths in text files: %w", err)
-		}
-
-		// Migrate legacy absolute rpaths in prebuilts published
-		// before the relative-rpath change: rewrite any RPATH
-		// referencing a foreign gale store root (CI-baked paths
-		// like /Users/runner/.gale/pkg/... or /home/runner/.gale)
-		// to the local store root. Runs on both darwin and linux.
-		// Current builds (since #26) ship $ORIGIN/@loader_path-
-		// relative rpaths that fall through this untouched, so a
-		// fresh-box install is byte-for-byte with the attested
-		// artifact and needs no patchelf at all.
-		//
-		// On linux the rewrite needs patchelf; if it is absent the
-		// step no-ops and returns nil — it does NOT error and does
-		// NOT trigger a source rebuild (the source fallback below
-		// fires only when installBinaryTo returns a non-nil error).
-		// That gap only bites the obsolete pre-#26 prebuilts whose
-		// absolute CI rpath this step exists to repair; for them a
-		// patchelf-less box would install a binary with a stale
-		// rpath. Relative-rpath builds are unaffected.
-		if err := build.RelocateStaleRpaths(extractDir, storeRoot); err != nil {
-			return fmt.Errorf("relocate rpaths: %w", err)
-		}
-
-		// Ad-hoc sign any Mach-O that arrived unsigned — Apple
-		// Silicon kernels SIGKILL unsigned binaries on exec, and
-		// RelocateStaleRpaths only re-signs files whose rpaths
-		// were rewritten. No-op on Linux.
-		if err := build.EnsureCodeSigned(extractDir); err != nil {
-			return fmt.Errorf("ensure code signed: %w", err)
-		}
-
 		// Populate the shared lib farm with symlinks to this
 		// package's versioned dylibs. A conflict (two packages
 		// claiming the same dylib) is a recipe bug — fail the
-		// install so the bad recipe gets fixed instead of
-		// silently shipping a farm where one package wins.
-		// Skipped when staging: the caller commits the farm
-		// after renaming the staging dir into place.
-		if inPlace {
-			if farmDir := farm.DirFromStoreDir(finalStoreDir); farmDir != "" {
-				if err := farm.Populate(finalStoreDir, farmDir); err != nil {
-					return fmt.Errorf("populate farm: %w", err)
-				}
+		// install on EVERY path (gh#42) so the bad recipe gets
+		// fixed instead of silently shipping a farm where one
+		// package wins.
+		if farmDir := farm.DirFromStoreDir(finalStoreDir); farmDir != "" {
+			if err := farm.Populate(finalStoreDir, farmDir); err != nil {
+				return fmt.Errorf("populate farm: %w", err)
 			}
 		}
-
-		// Record the dep closure the prebuilt expects at
-		// runtime so staleness can be detected when a dep's
-		// recipe changes. If the archive already shipped a
-		// .gale-deps.toml (built by `gale build` with full
-		// knowledge of the linked versions), keep that —
-		// it's the authoritative record. Otherwise write our
-		// locally-resolved closure, which is approximate but
-		// preserves backwards-compat with archives built
-		// before the build-time emit landed.
-		//
-		// The write happens even when depsFallback is empty:
-		// a zero-dep recipe must still record an empty file
-		// so doctor's "missing metadata = legacy install of
-		// unknown deps" heuristic doesn't flag a fresh
-		// install as stale. The legacy-stale path is
-		// preserved for installs that genuinely predate this
-		// metadata (no file on disk at all).
-		if HasDepsMetadata(extractDir) {
-			return nil
-		}
-		md := DepsMetadata{Deps: depsFallback}
-		if err := WriteDepsMetadata(extractDir, md); err != nil {
-			return fmt.Errorf("write deps metadata: %w", err)
-		}
-
 		return nil
 	}
 	if inPlace {
-		return withStoreGenLock(storeRoot, finalize)
+		return withStoreGenLock(storeRoot, swap)
 	}
-	return finalize()
+	return swap()
 }
 
 // checkBinaryTrustPolicy enforces the recipe-declared
@@ -1225,48 +1259,64 @@ func installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, dep
 // If deps is non-nil, writes .gale-deps.toml recording the
 // dep closure the build was linked against.
 //
-// H7: everything here mutates storeDir in place and touches
-// the shared farm. Hold the store-gen lock so a concurrent
-// generation.Build cannot observe a half-extracted package or
-// race with farm.Populate below. The archive is already on
-// disk (result.Archive in a tmp dir), so the lock covers only
-// the store-visible finalize — not the upstream build.
+// H7: the store-visible commit (rename + farm.Populate inside
+// commitExtracted) runs under the store-gen lock so a
+// concurrent generation.Build cannot observe a half-extracted
+// package or race with farm.Populate. Extraction itself
+// happens in a transient staging sibling outside the lock —
+// non-locking readers skip it (isTransientStoreEntry).
 func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps) error {
 	return extractBuildTo(result, storeDir, storeDir, deps, true)
 }
 
 // extractBuildTo extracts result.Archive into extractDir,
 // rewriting prefix placeholders to point at finalStoreDir.
-// When inPlace is true, the store-gen lock is held and the
-// farm is populated; otherwise the caller commits both.
+// When inPlace is true, the work happens in a staging sibling
+// that is promoted into extractDir under the store-gen lock
+// (with farm wiring); otherwise extractDir is the caller's own
+// staging dir and the caller commits both (commitStaged).
 func extractBuildTo(result *build.BuildResult, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) error {
 	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
-	finalize := func() error {
-		if err := download.ExtractTarZstd(result.Archive, extractDir); err != nil {
-			return fmt.Errorf("extract build output: %w", err)
+
+	// Extract + fix up in a transient staging sibling, then
+	// promote with a rename (gh#41). Extracting straight into
+	// the live canonical dir meant a crash mid-install left a
+	// partial-but-non-empty dir that IsInstalled trusted
+	// forever. The ".stream" suffix is in isTransientStoreEntry's
+	// skip set, so non-locking readers never see the staging dir.
+	workDir := extractDir
+	if inPlace {
+		workDir = extractDir + ".stream"
+		// A previous crashed install may have left stale
+		// staging debris; wipe before fresh extraction.
+		if err := os.RemoveAll(workDir); err != nil {
+			return fmt.Errorf("clean staging dir: %w", err)
 		}
-		if err := build.RestorePrefixPlaceholderTo(extractDir, finalStoreDir); err != nil {
-			return fmt.Errorf("restore prefix paths: %w", err)
+		// Pre-create the staging dir: an archive with no
+		// entries (legal for trivial recipes) would otherwise
+		// never create it and the metadata write below fails.
+		if err := os.MkdirAll(workDir, 0o755); err != nil {
+			return fmt.Errorf("create staging dir: %w", err)
 		}
-		if inPlace {
-			if farmDir := farm.DirFromStoreDir(finalStoreDir); farmDir != "" {
-				if err := farm.Populate(finalStoreDir, farmDir); err != nil {
-					fmt.Fprintf(os.Stderr, "farm: %v\n", err)
-				}
-			}
+		defer os.RemoveAll(workDir) // clean up on any exit path
+	}
+
+	if err := download.ExtractTarZstd(result.Archive, workDir); err != nil {
+		return fmt.Errorf("extract build output: %w", err)
+	}
+	if err := build.RestorePrefixPlaceholderTo(workDir, finalStoreDir); err != nil {
+		return fmt.Errorf("restore prefix paths: %w", err)
+	}
+	if deps != nil {
+		md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
+		if err := WriteDepsMetadata(workDir, md); err != nil {
+			return fmt.Errorf("write deps metadata: %w", err)
 		}
-		if deps != nil {
-			md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
-			if err := WriteDepsMetadata(extractDir, md); err != nil {
-				return fmt.Errorf("write deps metadata: %w", err)
-			}
-		}
+	}
+	if !inPlace {
 		return nil
 	}
-	if inPlace {
-		return withStoreGenLock(storeRoot, finalize)
-	}
-	return finalize()
+	return commitExtracted(workDir, extractDir, finalStoreDir, storeRoot, true)
 }
 
 // lockPackage acquires an exclusive file lock for a package
