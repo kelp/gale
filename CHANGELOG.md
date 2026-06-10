@@ -10,7 +10,10 @@
   farm against the merged set. This ends the persistent
   false "Lib farm drift" that `--repair` could never fix
   for project-only dylib packages, and makes real project
-  farm drift visible for the first time. (#50)
+  farm drift visible for the first time. When run from
+  inside `~/.gale` itself, doctor no longer mistakes the
+  global config for a project and probes a bogus
+  `~/.gale/.gale` farm. (#50)
 
 ### Changed
 

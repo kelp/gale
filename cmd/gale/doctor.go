@@ -495,12 +495,35 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 func checkFarm(ctx *doctorContext) bool {
 	ok := checkFarmScope(ctx, ctx.galeDir, ctx.globalPkgs)
 	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
-		projGaleDir := filepath.Join(filepath.Dir(projPath), ".gale")
-		if !checkFarmScope(ctx, projGaleDir, ctx.projPkgs) {
-			ok = false
+		// When cwd is under the global gale home,
+		// FindGaleConfig resolves to the GLOBAL gale.toml;
+		// deriving a project dir from it would yield the
+		// bogus <galeDir>/.gale and report drift --repair
+		// can never fix. The global farm was already
+		// checked above, so skip (same global-vs-project
+		// split as galeDirForConfig in paths.go).
+		projDir := filepath.Dir(projPath)
+		if !sameDir(projDir, ctx.galeDir) {
+			projGaleDir := filepath.Join(projDir, ".gale")
+			if !checkFarmScope(ctx, projGaleDir, ctx.projPkgs) {
+				ok = false
+			}
 		}
 	}
 	return ok
+}
+
+// sameDir reports whether two paths name the same
+// directory, resolving symlinks first so macOS /var vs
+// /private/var spellings compare equal.
+func sameDir(a, b string) bool {
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		a = ra
+	}
+	if rb, err := filepath.EvalSymlinks(b); err == nil {
+		b = rb
+	}
+	return a == b
 }
 
 // checkFarmScope validates one farm (galeDir/lib) against

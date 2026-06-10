@@ -111,6 +111,66 @@ func TestCheckFarmScopesGlobalFarmToGlobalPackages(t *testing.T) {
 	}
 }
 
+// TestCheckFarmSkipsProjectScopeUnderGaleHome pins the
+// false-positive found in review: when cwd is inside the
+// global gale home, config.FindGaleConfig resolves to the
+// GLOBAL gale.toml. Deriving the project gale dir from it
+// yields the bogus <galeDir>/.gale, and checkFarm then
+// reports drift that `gale doctor --repair` can never fix.
+// The project-scope check must be skipped when the found
+// config is the global one — the global farm was already
+// checked.
+func TestCheckFarmSkipsProjectScopeUnderGaleHome(t *testing.T) {
+	dylib := versionedDylibName(t)
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	target := fakelibStore(t, storeRoot, dylib)
+	cfg := "[packages]\nfakelib = \"1.0.0\"\n"
+	if err := os.WriteFile(filepath.Join(galeDir, "gale.toml"),
+		[]byte(cfg), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Global farm is in sync.
+	globalFarm := filepath.Join(galeDir, "lib")
+	if err := os.MkdirAll(globalFarm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(globalFarm, dylib)); err != nil {
+		t.Fatal(err)
+	}
+
+	// cwd is INSIDE the global gale home, so FindGaleConfig
+	// resolves to the global gale.toml. projPkgs mirrors what
+	// checkProjectConfig sets in that situation (the global
+	// packages, conflated as "project" packages).
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir:    galeDir,
+		storeRoot:  storeRoot,
+		cwd:        filepath.Join(galeDir, "pkg"),
+		globalPkgs: map[string]string{"fakelib": "1.0.0"},
+		projPkgs:   map[string]string{"fakelib": "1.0.0"},
+		out:        output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if !checkFarm(ctx) {
+		t.Fatalf("checkFarm must not report drift when cwd is "+
+			"under the global gale home; output: %q", buf.String())
+	}
+	bogus := filepath.Join(galeDir, ".gale")
+	if resolved, err := filepath.EvalSymlinks(galeDir); err == nil {
+		bogus = filepath.Join(resolved, ".gale")
+	}
+	if strings.Contains(buf.String(), bogus) ||
+		strings.Contains(buf.String(), filepath.Join(galeDir, ".gale")) {
+		t.Errorf("bogus farm path %q was checked; output: %q",
+			bogus, buf.String())
+	}
+}
+
 // TestCheckFarmDetectsProjectFarmDrift pins the other half of
 // issue #50: the project farm (<proj>/.gale/lib) was never
 // inspected, so real drift there was invisible. Here the
