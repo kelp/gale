@@ -2,26 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- Linux rpath fixups now walk the whole install prefix, so ELF
-  helpers under `libexec/` and `sbin/` (e.g. git's
-  `libexec/git-core/`) get the same `$ORIGIN`-anchored own-lib
-  and farm RUNPATHs as `bin/` and `lib/` (#51).
-- Shebang rewriting preserves interpreter arguments: a script
-  with `#!<prefix>/bin/perl -w` now becomes
-  `#!/usr/bin/env -S perl -w` instead of the broken
-  `#!/usr/bin/env perl -w` (#56).
-- Prefix replacement, placeholder restore, and stale-path
-  relocation now also scan `include/`, so generated config
-  headers (e.g. nodejs `include/node/config.gypi`) no longer
-  ship raw build-tmp or CI-runner paths (#57).
-- A corrupt source-cache entry is evicted and the source
-  re-downloaded instead of failing every build with a
-  misleading `sha256 mismatch`; cache writes are now atomic
-  (write aside + rename) so interrupted copies cannot corrupt
-  the cache (#55).
-
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
