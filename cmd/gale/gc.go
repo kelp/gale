@@ -5,7 +5,10 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
+	"time"
 
+	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
@@ -24,33 +27,50 @@ var gcCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newCmdOutput(cmd)
 
-		// Resolve config paths.
+		// Resolve config paths. The project gale dir is derived
+		// through galeDirForConfig so a config found inside
+		// ~/.gale/ maps to the global scope instead of a bogus
+		// nested ~/.gale/.gale dir (gh#96 site).
 		globalDir, _ := galeConfigDir()
-		var projPath string
+		var projPath, projGaleDir string
 		if cwd, err := os.Getwd(); err == nil {
 			projPath, _ = config.FindGaleConfig(cwd)
+		}
+		if projPath != "" {
+			dir, err := galeDirForConfig(projPath)
+			if err != nil || dir == globalDir {
+				// The "project" config is the global one —
+				// the global pass below already covers it.
+				projPath = ""
+			} else {
+				projGaleDir = dir
+			}
 		}
 
 		// Remove unreferenced package versions.
 		storeRoot := defaultStoreRoot()
 		s := store.NewStore(storeRoot)
 
-		// Best-effort resolver so gc can expand config
-		// packages' runtime deps. Build deps are reaped
-		// intentionally. If the recipes repo isn't
-		// available (nil resolver), gc falls back to
-		// config-only retention.
+		// Best-effort resolver so gc can top up retention with
+		// registry-resolved runtime deps. Build deps are reaped
+		// intentionally. If the recipes repo isn't available
+		// (nil resolver), the installed .gale-deps.toml walk in
+		// collectGCRetention still protects recorded deps.
 		var resolver installer.RecipeResolver
 		if ctx, cErr := newCmdContext(gcRecipes, false, false); cErr == nil {
 			resolver = ctx.Resolver
 		}
 
-		// Collect all referenced name@version pairs.
-		// Resolve through the store so bare config versions
-		// match canonical revision dirs on disk, and include
-		// runtime deps (not build deps) transitively.
-		referenced := collectReferencedPackagesWithResolver(
-			globalDir, projPath, s, resolver, out,
+		// Retention covers config pins across ALL hosts,
+		// everything the active generations link, and each
+		// retained package's installed dep closure. Anything
+		// retained can never be deleted below, so the active
+		// generation needs no rebuild after gc — which also
+		// means a `gale generations rollback` survives gc
+		// instead of being silently re-advanced to config
+		// state (gh#46, gh#47).
+		referenced := collectGCRetention(
+			globalDir, projPath, projGaleDir, s, resolver, out,
 		)
 		removedPkgs, failedPkgs := removeUnreferencedVersions(
 			s, referenced, dryRun, out,
@@ -63,63 +83,142 @@ var gcCmd = &cobra.Command{
 				globalDir, storeRoot, dryRun,
 			)
 		}
-		if projPath != "" {
-			projGaleDir := filepath.Join(
-				filepath.Dir(projPath), ".gale",
-			)
+		if projGaleDir != "" {
 			removedGens += cleanOldGenerations(
 				projGaleDir, storeRoot, dryRun,
 			)
 		}
 
-		if removedPkgs == 0 && removedGens == 0 && failedPkgs == 0 {
+		// Sweep crash leftovers: transient store entries,
+		// stale current-new.* swap symlinks, and ~/.gale/tmp
+		// build scratch (gh#78, gh#79).
+		sweptArtifacts := sweepCrashLeftovers(
+			s, globalDir, projGaleDir, dryRun,
+		)
+
+		if removedPkgs == 0 && removedGens == 0 &&
+			failedPkgs == 0 && sweptArtifacts == 0 {
 			out.Success("Nothing to clean up.")
 			return nil
 		}
 
 		if dryRun {
 			out.Info(fmt.Sprintf(
-				"%d version(s) and %d generation(s) "+
-					"would be removed",
-				removedPkgs, removedGens,
+				"%d version(s), %d generation(s), and "+
+					"%d leftover artifact(s) would be removed",
+				removedPkgs, removedGens, sweptArtifacts,
 			))
 			return nil
-		}
-
-		// Rebuild generation for the current scope.
-		// If in a project, rebuild the project generation.
-		// Always rebuild the global generation too.
-		if projPath != "" {
-			projRoot := filepath.Dir(projPath)
-			projGaleDir := filepath.Join(projRoot, ".gale")
-			if err := rebuildGeneration(projGaleDir,
-				storeRoot, projPath); err != nil {
-				return fmt.Errorf(
-					"rebuild project generation: %w", err,
-				)
-			}
-		}
-		if globalDir != "" {
-			globalConfig := filepath.Join(
-				globalDir, "gale.toml",
-			)
-			if err := rebuildGeneration(globalDir,
-				storeRoot, globalConfig); err != nil {
-				return fmt.Errorf(
-					"rebuild global generation: %w", err,
-				)
-			}
 		}
 
 		out.Success(fmt.Sprintf(
 			"Removed %d version(s) and %d generation(s)",
 			removedPkgs, removedGens,
 		))
+		if sweptArtifacts > 0 {
+			out.Success(fmt.Sprintf(
+				"Swept %d leftover build artifact(s)",
+				sweptArtifacts,
+			))
+		}
 		if failedPkgs > 0 {
 			return fmt.Errorf("%d package version(s) could not be removed", failedPkgs)
 		}
 		return nil
 	},
+}
+
+// collectGCRetention builds gc's full retention set:
+//
+//   - config pins across ALL hosts — the store is shared by
+//     synced configs, so another host's [hosts.*.packages]
+//     overlay must keep its store entry alive (gh#48);
+//   - everything the active global and project generations
+//     link, read from their symlink targets, so gc can never
+//     leave current/bin dangling (gh#46);
+//   - a best-effort registry runtime-dep top-up (the recipe's
+//     current version, when a resolver is available);
+//   - the transitive dep closure recorded in each retained
+//     package's .gale-deps.toml — the versions installed
+//     binaries actually link, which a recipe version bump or
+//     an offline resolver miss would otherwise leave
+//     unprotected (gh#48).
+func collectGCRetention(
+	globalDir, projPath, projGaleDir string,
+	s *store.Store,
+	resolver installer.RecipeResolver,
+	out *output.Output,
+) map[string]bool {
+	referenced := collectReferencedPackagesAllHosts(
+		globalDir, projPath, s, out,
+	)
+	addActiveGenerationRefs(globalDir, s, referenced)
+	addActiveGenerationRefs(projGaleDir, s, referenced)
+	if resolver != nil {
+		expandRuntimeDeps(s, resolver, referenced)
+	}
+	expandInstalledDeps(s, referenced)
+	return referenced
+}
+
+// addActiveGenerationRefs adds every name@version the active
+// generation under galeDir links to the referenced set. The
+// versions come straight from the gen's symlink targets, so
+// the keys match store.List output exactly. This protects
+// store dirs the live generation still serves — including
+// versions a rollback re-activated that no config mentions
+// (gh#46). Best-effort: an unreadable generation adds nothing.
+func addActiveGenerationRefs(
+	galeDir string, s *store.Store, referenced map[string]bool,
+) {
+	if galeDir == "" {
+		return
+	}
+	pkgs, err := generation.CurrentVersions(galeDir, s.Root)
+	if err != nil {
+		return
+	}
+	for name, version := range pkgs {
+		referenced[name+"@"+version] = true
+	}
+}
+
+// expandInstalledDeps adds the transitive dep closure recorded
+// in each retained package's .gale-deps.toml (gh#48). The
+// registry walk in expandRuntimeDeps retains deps at the
+// recipe's CURRENT version, but installed binaries have rpaths
+// into the versions recorded at build time — after a recipe
+// bump (or offline with a cold cache) only the installed
+// metadata knows them. generation.FarmStoreDirs already walks
+// that metadata for the dylib farm; reuse it per retained
+// package and key the resulting store dirs back into the set.
+func expandInstalledDeps(s *store.Store, referenced map[string]bool) {
+	keys := make([]string, 0, len(referenced))
+	for key := range referenced {
+		keys = append(keys, key)
+	}
+	for _, key := range keys {
+		at := lastIndex(key, '@')
+		if at < 0 {
+			continue
+		}
+		dirs := generation.FarmStoreDirs(
+			map[string]string{key[:at]: key[at+1:]}, s.Root,
+		)
+		for _, dir := range dirs {
+			rel, err := filepath.Rel(s.Root, dir)
+			if err != nil || strings.HasPrefix(rel, "..") {
+				continue
+			}
+			parts := strings.SplitN(
+				rel, string(filepath.Separator), 3,
+			)
+			if len(parts) < 2 {
+				continue
+			}
+			referenced[parts[0]+"@"+parts[1]] = true
+		}
+	}
 }
 
 // isReferenced reports whether a store entry is kept by
@@ -448,6 +547,131 @@ func expandRuntimeDeps(
 			}
 		}
 	}
+}
+
+// gcSweepGrace is the age guard for crash-leftover sweeps. An
+// entry younger than this may belong to an in-flight install
+// or build, so it is left for a future gc.
+const gcSweepGrace = time.Hour
+
+// gcScratchPrefixes are the ~/.gale/tmp entry name prefixes
+// gale's build paths create (see internal/build and
+// internal/installer). Only entries matching one of these are
+// swept — anything else in tmp is not provably gale-owned.
+var gcScratchPrefixes = []string{
+	"gale-build-", "gale-install-", "gale-tools-",
+	"gale-home-", "gale-tmp-",
+}
+
+// sweepCrashLeftovers reclaims artifacts a crashed or killed
+// process stranded: transient store entries (.build-*, *.bak,
+// *.stream — gh#78), stale current-new.<pid> swap symlinks,
+// and ~/.gale/tmp build scratch (gh#79). Everything is guarded
+// by gcSweepGrace; the store sweep additionally skips package
+// dirs whose lock is concurrently held, and the tmp sweep is
+// vetoed entirely while any install is in flight, since
+// scratch dirs cannot be attributed to a package. Returns the
+// number of entries swept (or flagged in dry-run mode).
+//
+// Deliberately count-only output: a machine that has crashed
+// through many builds can hold thousands of scratch dirs
+// (gh#79 reports ~5000), and a per-item line for each would
+// drown the rest of the gc report.
+func sweepCrashLeftovers(
+	s *store.Store, globalDir, projGaleDir string, dry bool,
+) int {
+	swept := len(s.SweepTransient(gcSweepGrace, dry))
+	swept += sweepStaleSwapLinks(globalDir, dry)
+	swept += sweepStaleSwapLinks(projGaleDir, dry)
+	swept += sweepBuildScratch(s, dry)
+	return swept
+}
+
+// sweepStaleSwapLinks removes current-new.<pid> symlinks under
+// galeDir left behind when a generation swap crashed between
+// creating the staging link and renaming it over current
+// (gh#78). A live swap completes in milliseconds, so anything
+// older than gcSweepGrace is debris.
+func sweepStaleSwapLinks(galeDir string, dry bool) int {
+	if galeDir == "" {
+		return 0
+	}
+	entries, err := os.ReadDir(galeDir)
+	if err != nil {
+		return 0
+	}
+	cutoff := time.Now().Add(-gcSweepGrace)
+	var swept int
+	for _, e := range entries {
+		if !strings.HasPrefix(e.Name(), "current-new.") {
+			continue
+		}
+		info, err := e.Info() // Lstat: the link's own mtime
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		if !dry {
+			if err := os.Remove(
+				filepath.Join(galeDir, e.Name()),
+			); err != nil {
+				continue
+			}
+		}
+		swept++
+	}
+	return swept
+}
+
+// sweepBuildScratch removes gale-owned scratch dirs under
+// ~/.gale/tmp older than gcSweepGrace (gh#79). Interrupted
+// builds skip their cleanup defers, so this is the only
+// reclamation path. The whole sweep is skipped while any
+// per-package store lock is held: a build in flight may have
+// scratch of any age here, and there is no way to map a
+// scratch dir back to the package that owns it.
+func sweepBuildScratch(s *store.Store, dry bool) int {
+	tmpDir := build.TmpDir()
+	if tmpDir == "" {
+		return 0
+	}
+	if s.AnyLockHeld() {
+		return 0 // an install or build is in flight
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		return 0
+	}
+	cutoff := time.Now().Add(-gcSweepGrace)
+	var swept int
+	for _, e := range entries {
+		if !hasScratchPrefix(e.Name()) {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil || info.ModTime().After(cutoff) {
+			continue
+		}
+		if !dry {
+			if err := os.RemoveAll(
+				filepath.Join(tmpDir, e.Name()),
+			); err != nil {
+				continue
+			}
+		}
+		swept++
+	}
+	return swept
+}
+
+// hasScratchPrefix reports whether name matches one of the
+// gale-owned scratch dir prefixes.
+func hasScratchPrefix(name string) bool {
+	for _, prefix := range gcScratchPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // lastIndex returns the position of the last occurrence of c
