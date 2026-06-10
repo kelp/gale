@@ -209,6 +209,90 @@ func TestRemovePackageDottedHost(t *testing.T) {
 	}
 }
 
+// Configs written before host keys were quoted contain legacy
+// unquoted dotted headers like [hosts.travis-macbook.local.packages]
+// (four bare segments). AddPackage must find that block, normalize
+// the header to the quoted form, and not append a duplicate section.
+func TestAddPackageLegacyUnquotedHostHeader(t *testing.T) {
+	const host = "travis-macbook.local"
+	path := writeTempGaleToml(t,
+		"[hosts.travis-macbook.local.packages]\nripgrep = \"14.1.0\"\n")
+
+	if err := AddPackage(path, host, "jq", "1.7.1"); err != nil {
+		t.Fatalf("AddPackage: %v", err)
+	}
+
+	out := readFileStr(t, path)
+	if n := strings.Count(out, "[hosts."); n != 1 {
+		t.Fatalf("expected 1 host section, found %d:\n%s", n, out)
+	}
+	cfg, err := ParseGaleConfig(out)
+	if err != nil {
+		t.Fatalf("result does not parse: %v\n%s", err, out)
+	}
+	h := cfg.Hosts[host]
+	if h.Packages["jq"] != "1.7.1" {
+		t.Errorf("jq missing from host section: %v\n%s", h.Packages, out)
+	}
+	if h.Packages["ripgrep"] != "14.1.0" {
+		t.Errorf("ripgrep lost: %v\n%s", h.Packages, out)
+	}
+}
+
+// UpsertPackage must update a package inside a legacy unquoted
+// dotted host section instead of moving it to shared [packages].
+func TestUpsertPackageLegacyUnquotedHostHeader(t *testing.T) {
+	const host = "travis-macbook.local"
+	path := writeTempGaleToml(t,
+		"[packages]\njq = \"1.7.1\"\n\n"+
+			"[hosts.travis-macbook.local.packages]\nripgrep = \"14.1.0\"\n")
+
+	if err := UpsertPackage(path, host, "ripgrep", "15.0.0"); err != nil {
+		t.Fatalf("UpsertPackage: %v", err)
+	}
+
+	out := readFileStr(t, path)
+	if n := strings.Count(out, "[hosts."); n != 1 {
+		t.Fatalf("expected 1 host section, found %d:\n%s", n, out)
+	}
+	cfg, err := ParseGaleConfig(out)
+	if err != nil {
+		t.Fatalf("result does not parse: %v\n%s", err, out)
+	}
+	if cfg.Hosts[host].Packages["ripgrep"] != "15.0.0" {
+		t.Errorf("host section not updated: %v\n%s",
+			cfg.Hosts[host].Packages, out)
+	}
+	if _, ok := cfg.Packages["ripgrep"]; ok {
+		t.Errorf("ripgrep leaked into shared [packages]:\n%s", out)
+	}
+}
+
+// RemovePackage must find a package inside a legacy unquoted dotted
+// host section instead of reporting package-not-found.
+func TestRemovePackageLegacyUnquotedHostHeader(t *testing.T) {
+	const host = "travis-macbook.local"
+	path := writeTempGaleToml(t,
+		"[hosts.travis-macbook.local.packages]\n"+
+			"ripgrep = \"14.1.0\"\njq = \"1.7.1\"\n")
+
+	if err := RemovePackage(path, host, "ripgrep"); err != nil {
+		t.Fatalf("RemovePackage: %v", err)
+	}
+
+	out := readFileStr(t, path)
+	cfg, err := ParseGaleConfig(out)
+	if err != nil {
+		t.Fatalf("result does not parse: %v\n%s", err, out)
+	}
+	if _, ok := cfg.Hosts[host].Packages["ripgrep"]; ok {
+		t.Errorf("ripgrep still present after remove:\n%s", out)
+	}
+	if cfg.Hosts[host].Packages["jq"] != "1.7.1" {
+		t.Errorf("jq lost: %v\n%s", cfg.Hosts[host].Packages, out)
+	}
+}
+
 // Glob/comma host keys contain characters that are not valid TOML
 // bare keys; they must be quoted and still round-trip.
 func TestAddPackageGlobHostKeyRoundTrip(t *testing.T) {

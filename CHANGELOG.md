@@ -9,6 +9,11 @@
   gale.toml: the unquoted host key parsed as nested tables and the
   package vanished from `list`, `sync`, and PATH. Host keys are now
   quoted in section headers and round-trip correctly (#59).
+  Legacy configs written before the fix carry unquoted dotted
+  headers (`[hosts.travis-macbook.local.packages]`); install,
+  update, and remove now recognize those and rewrite the header
+  to the quoted form instead of appending a duplicate section or
+  reporting the package missing.
 - A `[packages]` header with a trailing comment or extra whitespace
   (e.g. `[packages] # tools`) made `gale add`/`install` append a
   duplicate section, breaking every later config read; `gale remove`

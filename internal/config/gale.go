@@ -516,6 +516,52 @@ func hostPackagesPath(host string) []string {
 	return []string{"hosts", host, "packages"}
 }
 
+// legacyHostSectionLineIndex scans lines for a pre-quoting host
+// packages header: [hosts.h1.h2...hn.packages] where the bare
+// segments h1..hn joined with "." equal host. Such headers were
+// written before host keys were quoted (#59) and TOML reads them
+// as nested tables, hiding the packages from the loader. Returns
+// the line index or -1 if not found.
+func legacyHostSectionLineIndex(lines []string, host string) int {
+	for i, line := range lines {
+		segs, ok := parseSectionHeader(line)
+		if !ok || len(segs) < 4 {
+			continue
+		}
+		if segs[0] != "hosts" || segs[len(segs)-1] != "packages" {
+			continue
+		}
+		if strings.Join(segs[1:len(segs)-1], ".") == host {
+			return i
+		}
+	}
+	return -1
+}
+
+// normalizeLegacyHostHeader rewrites a legacy unquoted dotted host
+// header ([hosts.travis-macbook.local.packages]) to the canonical
+// quoted form ([hosts."travis-macbook.local".packages]) so both the
+// line editor and the TOML loader address the same section. Content
+// after the closing bracket (e.g. a trailing comment) is preserved.
+// Returns content unchanged when no legacy header matches host.
+func normalizeLegacyHostHeader(content []byte, host string) []byte {
+	if isBareKey(host) {
+		// An undotted host has identical legacy and canonical forms.
+		return content
+	}
+	lines := splitLines(content)
+	idx := legacyHostSectionLineIndex(lines, host)
+	if idx < 0 {
+		return content
+	}
+	line := lines[idx]
+	open := strings.IndexByte(line, '[')
+	end := strings.IndexByte(line, ']')
+	header := "[" + encodeSectionPath(hostPackagesPath(host)) + "]"
+	lines[idx] = line[:open] + header + line[end+1:]
+	return []byte(strings.Join(lines, "\n"))
+}
+
 // hostPinned returns the pinned map for cfg.Hosts[host],
 // creating the host entry if needed.
 func hostPinned(cfg *GaleConfig, host string) map[string]bool {
@@ -545,6 +591,7 @@ func UpsertPackage(path, host, name, version string) error {
 		}
 		section := packagesPath()
 		if host != "" {
+			content = normalizeLegacyHostHeader(content, host)
 			// Check if the package is already in the host section.
 			hostSection := hostPackagesPath(host)
 			lines := splitLines(content)
@@ -576,6 +623,9 @@ func AddPackage(path, host, name, version string) error {
 		if err != nil {
 			return err
 		}
+		if host != "" {
+			content = normalizeLegacyHostHeader(content, host)
+		}
 		content = setTOMLStringKey(content, section, name, version)
 		return atomicfile.Write(path, content)
 	})
@@ -594,6 +644,7 @@ func RemovePackage(path, host, name string) error {
 		section := packagesPath()
 		if host != "" {
 			section = hostPackagesPath(host)
+			content = normalizeLegacyHostHeader(content, host)
 		}
 		modified, found := deleteTOMLKey(content, section, name)
 		if !found {
