@@ -628,7 +628,7 @@ const gcSweepGrace = time.Hour
 // swept — anything else in tmp is not provably gale-owned.
 var gcScratchPrefixes = []string{
 	"gale-build-", "gale-install-", "gale-tools-",
-	"gale-home-", "gale-tmp-",
+	"gale-home-", "gale-tmp-", "gale-git-",
 }
 
 // sweepCrashLeftovers reclaims artifacts a crashed or killed

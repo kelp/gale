@@ -331,6 +331,7 @@ func TestGCSweepsBuildScratch(t *testing.T) {
 		filepath.Join(tmpDir, "gale-home-leak"),
 		filepath.Join(tmpDir, "gale-tmp-leak"),
 		filepath.Join(tmpDir, "gale-install-leak"),
+		filepath.Join(tmpDir, "gale-git-leak"),
 	}
 	for _, dir := range stale {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
