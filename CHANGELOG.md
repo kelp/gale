@@ -152,6 +152,61 @@
   a failed promotion can no longer discard the previously valid
   body/etag pair that offline and stale-on-error reads depend on.
   (F42 follow-up / #95)
+- `gale rollback` rebuilds the shared dylib farm from the
+  rolled-to generation's package set, so binaries no longer
+  resolve farm symlinks left by the rolled-from generation (#44).
+- Generation rebuilds populate the farm from the full active
+  closure — config packages plus runtime deps recorded in
+  `.gale-deps.toml` — instead of wiping the dep dylibs that
+  dependents' rpaths resolve through (#43).
+- `gale rollback` validates the target generation inside the
+  generation lock, closing the race where a concurrent prune
+  between check and swap left a dangling `current` symlink (#45).
+- Generation rebuild in `update`/`remove` now skips (with a
+  warning) packages listed in gale.toml but not installed,
+  instead of failing outright after the config mutation landed
+  and desyncing PATH from config (#68).
+- `gale doctor` farm check now validates against the full
+  active closure (config packages plus transitive runtime
+  deps from `.gale-deps.toml`) — the same set build and
+  rollback populate the farm from — so a farm missing dep
+  dylibs is reported as drift instead of passing silently.
+- `gale install` commits a package to the store only after the
+  full fixup pipeline succeeds: extraction and fixups run in a
+  transient staging dir and a single rename publishes the
+  result, so a crash mid-install no longer leaves a broken
+  store dir that install, sync, and doctor all report healthy
+  (#41).
+- In-place source installs treat a shared-farm dylib basename
+  conflict as a fatal error, matching the binary and staged
+  install paths instead of warning to stderr and reporting
+  success (#42).
+- `gale install --recipe` holds the per-package lock across
+  config/lockfile finalize, closing the window where a
+  concurrent `gale gc` could reap the just-installed package
+  before it landed in gale.toml (#69).
+- `store.Remove` no longer deletes lock files a concurrent
+  process holds via flock: residual lock files are swept only
+  after a non-blocking lock probe confirms they are unheld, so
+  a remove can no longer let two installers of the same
+  name@version run concurrently (#77).
+- `gale remove` keeps the shared store entry when another
+  scope's gale.toml still references it, so a project-scoped
+  remove no longer breaks binaries on the global PATH (or
+  another project's) without warning (#67).
+- `gale remove` resolves the canonical `<version>-<revision>`
+  store dir before farm cleanup, so `farm.Depopulate` actually
+  matches and dangling dylib symlinks no longer accumulate in
+  `~/.gale/lib` (#74).
+- `gale remove --host <other-host>` checks membership in the
+  targeted host's section instead of the current host's
+  flattened view, so entries declared for another machine can
+  be removed without hand-editing gale.toml, and store removal
+  uses that host's pinned version (#75).
+- `gale remove` cross-scope guard now counts pins under every
+  `[hosts.*.packages]` overlay, not just the current host's
+  flattened view — removing one host's entry no longer deletes
+  a shared store dir another host's pin still references.
 
 ### Changed
 
