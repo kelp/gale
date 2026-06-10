@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 )
 
@@ -151,19 +152,45 @@ func Diff(galeDir, storeRoot string, from, to int) (*GenDiff, error) {
 }
 
 // Rollback atomically swaps the current symlink to point
-// at the given generation number. Acquires the generation
-// lock so it serializes with Build.
+// at the given generation number and rebuilds the shared
+// dylib farm from that generation's package set. Acquires
+// the generation lock so it serializes with Build and
+// PruneOldGenerations.
 func Rollback(galeDir, storeRoot string, target int) error {
 	genDir := filepath.Join(
 		galeDir, "gen", strconv.Itoa(target),
 	)
-	if _, err := os.Stat(genDir); err != nil {
-		return fmt.Errorf("generation %d does not exist: %w",
-			target, err)
-	}
 
 	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
 	return filelock.With(lockPath, func() error {
-		return swapCurrentSymlink(galeDir, target)
+		// The existence check must run under the lock: a
+		// concurrent Build's auto-prune can delete the
+		// target gen while Rollback waits for the lock, and
+		// checking outside would let the swap land a
+		// dangling current symlink while reporting success
+		// (gh#45).
+		if _, err := os.Stat(genDir); err != nil {
+			return fmt.Errorf("generation %d does not exist: %w",
+				target, err)
+		}
+		if err := swapCurrentSymlink(galeDir, target); err != nil {
+			return err
+		}
+
+		// Rebuild the farm from the rolled-to generation's
+		// package set so binaries resolve the dylib
+		// revisions they were built against, not the ones
+		// the rolled-from generation installed (gh#44).
+		// Mirrors Build's post-swap farm rebuild.
+		// Best-effort — a farm error does not invalidate
+		// the swap.
+		pkgs := packagesFromGen(genDir, storeRoot)
+		if err := farm.Rebuild(
+			FarmStoreDirs(pkgs, storeRoot), farm.Dir(galeDir),
+		); err != nil {
+			fmt.Fprintf(os.Stderr,
+				"farm: rebuild after rollback: %v\n", err)
+		}
+		return nil
 	})
 }

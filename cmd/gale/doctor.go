@@ -527,12 +527,16 @@ func sameDir(a, b string) bool {
 }
 
 // checkFarmScope validates one farm (galeDir/lib) against
-// the package set generation.Build uses to populate it.
+// the same store-dir set generation.Build uses to populate
+// it: config packages plus the transitive runtime-dep
+// closure from .gale-deps.toml. Checking the config set
+// alone is blind to a farm missing dep dylibs — the exact
+// breakage FarmStoreDirs exists to prevent (gh#43).
 func checkFarmScope(
 	ctx *doctorContext, galeDir string, pkgs map[string]string,
 ) bool {
 	farmDir := farm.Dir(galeDir)
-	active := generation.ActiveStoreDirs(pkgs, ctx.storeRoot)
+	active := generation.FarmStoreDirs(pkgs, ctx.storeRoot)
 	issues, err := farm.CheckDrift(active, farmDir)
 	if err != nil {
 		ctx.out.Error(fmt.Sprintf("Farm check failed: %v", err))

@@ -1,15 +1,13 @@
-# H5 regression pin. When a package's store dir is
-# removed out-of-band, generation rebuild must surface
-# the corruption — not silently commit a generation
-# with missing packages.
-#
-# Strict rebuild (install / remove / update) fails loud
-# so the user learns about the corrupted store and can
-# run `gale install <pkg>` or `gale sync` to repair.
-# Sync uses BuildLenient so a partial-batch install
-# failure still lands the successful installs on PATH
-# (Issue #20); the missing-store case is swallowed
-# there.
+# gh#68 regression pin. gale.toml may legitimately list
+# packages whose store dir is absent — `gale add` without
+# sync, a fresh clone on a new host, an out-of-band store
+# wipe. The old strict rebuild made `gale remove` fail
+# outright in that state, after the config mutation had
+# already landed: gale.toml changed but the generation
+# never rotated, desyncing PATH from config. Generation
+# rebuild is now lenient everywhere — it skips the missing
+# package with a stderr warning, still commits the new
+# generation, and `gale sync` repairs the store.
 
 gale-fixture recipes $WORK/recipes
 
@@ -23,23 +21,19 @@ exists $HOME/.gale/pkg/hello-dep/1.0-1/bin/hello-dep
 rm $HOME/.gale/pkg/hello/1.0-1
 
 # `gale remove hello-dep` rebuilds the generation with
-# hello still in gale.toml. Pre-fix: silently skipped
-# and the user had no way to learn the store was
-# corrupted. Post-fix: the rebuild errors; the message
-# names the missing package and the recovery command.
-! exec gale remove hello-dep -g
-stderr 'hello@1\.0'
-stderr 'is missing'
-stderr 'gale install hello'
+# hello still in gale.toml. The rebuild succeeds, warns
+# that hello fell off PATH, and the new generation drops
+# hello-dep — config and PATH stay consistent (gh#68).
+exec gale remove hello-dep -g
+stderr 'generation: skipping hello@1\.0'
+stderr 'store dir missing'
+stderr 'gale sync'
+! exists $HOME/.gale/current/bin/hello-dep
 
-# Repair the store so we can reach a clean state before
-# exercising the lenient (sync) path.
-exec gale install hello -g --recipes=$WORK/recipes
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
-
-# Sync, by contrast, tolerates missing packages silently —
-# Issue #20 contract. Corrupt again and confirm sync
-# stays quiet.
-rm $HOME/.gale/pkg/hello/1.0-1
+# `gale sync` repairs the corruption: hello is still in
+# gale.toml, so sync reinstalls it and the generation is
+# whole again, with no skip warning.
 exec gale sync -g --recipes=$WORK/recipes
-! stderr 'is missing from the store'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+! stderr 'store dir missing'
