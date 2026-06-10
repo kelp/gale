@@ -32,9 +32,10 @@ type Recipe struct {
 //     Only the SHA256 is verified. Recipes must opt in
 //     explicitly.
 type Binary struct {
-	URL    string `toml:"url"`
-	SHA256 string `toml:"sha256"`
-	Trust  string `toml:"trust"`
+	URL            string `toml:"url"`
+	SHA256         string `toml:"sha256"`
+	Trust          string `toml:"trust"`
+	ManifestDigest string `toml:"manifest_digest,omitempty"`
 }
 
 // TrustSigstore requires a Sigstore attestation (default

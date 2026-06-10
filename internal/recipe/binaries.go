@@ -31,6 +31,10 @@ type BinaryIndex struct {
 	// built. Empty when the file was written before C4 landed,
 	// or when the build had no declared deps.
 	Deps map[string][]BinaryDep `toml:"-"`
+	// Digests maps platform key → "sha256:<64hex>" OCI manifest
+	// digest recorded by CI when the prebuilt was pushed. Empty
+	// when the file predates the field or the digest is absent.
+	Digests map[string]string `toml:"-"`
 }
 
 // ParseBinaryIndex parses a .binaries.toml string into a
@@ -45,6 +49,7 @@ func ParseBinaryIndex(data string) (*BinaryIndex, error) {
 	idx := &BinaryIndex{
 		Platforms: make(map[string]string),
 		Deps:      make(map[string][]BinaryDep),
+		Digests:   make(map[string]string),
 	}
 
 	// Extract the top-level version string.
