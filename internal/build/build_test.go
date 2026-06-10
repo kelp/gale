@@ -801,6 +801,186 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 	}
 }
 
+// gh#28: meson custom-command subprocesses (flex -> exec m4)
+// do not resolve dependency binaries through gale's assembled
+// PATH, so flex cannot find a dep-provided m4. flex (src/main.c)
+// resolves m4 with `if (!(m4 = getenv("M4"))) m4 = M4;` and then
+// execs that path directly — it consults $M4 before the
+// compiled-in fallback and never PATH-searches the $M4 value.
+// postgres's pgflex wrapper runs flex via subprocess.run with no
+// env= kwarg, so flex inherits the build-step environment. So
+// when a build dep exposes a bin/m4, gale must export M4 pointing
+// at it.
+func TestBuildEnvExportsM4FromDepBin(t *testing.T) {
+	binDir := t.TempDir()
+	m4Path := filepath.Join(binDir, "m4")
+	if err := os.WriteFile(m4Path,
+		[]byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("write fake m4: %v", err)
+	}
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix",
+		Jobs:      "4",
+		Version:   "1.0.0",
+		Deps:      &BuildDeps{BinDirs: []string{binDir}},
+	})
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	defer cleanup()
+
+	got := envToMap(env)["M4"]
+	if got != m4Path {
+		t.Errorf("M4 = %q, want %q (dep m4 must be surfaced "+
+			"so meson custom commands find it)", got, m4Path)
+	}
+}
+
+// End-to-end guard for the actual gh#28 failure mode: prove the
+// dep m4 reaches a flex-like custom command through gale's real
+// build-step execution path. A flex stub mimics flex exactly —
+// it reads $M4 (and ONLY $M4, never PATH, matching flex's
+// `getenv("M4")` + direct exec) and execs it. The dep m4 stub
+// lives in BinDirs but NOT on the host PATH and is NOT named so a
+// PATH lookup could ever find it; the only way the build succeeds
+// is if gale exports M4=<dep m4>. Without the buildEnv M4 export,
+// $M4 is empty, the flex stub fails, and the build step errors —
+// exactly the "exec of m4 failed" failure from the issue. This is
+// the test that fails if the fix is a no-op at the step-env layer.
+func TestBuildSurfacesDepM4ToFlexCustomCommand(t *testing.T) {
+	// Dep "m4": writes a marker proving the dep binary ran.
+	binDir := t.TempDir()
+	m4Path := filepath.Join(binDir, "m4")
+	if err := os.WriteFile(m4Path,
+		[]byte("#!/bin/sh\necho dep-m4-ran > \"$MARKER\"\n"),
+		0o755); err != nil {
+		t.Fatalf("write dep m4: %v", err)
+	}
+
+	// flex stub: resolve m4 the way flex does — $M4 only, then
+	// exec it. No PATH fallback, so a dep bin merely on PATH
+	// would NOT satisfy it; only an exported M4 does.
+	flexDir := t.TempDir()
+	flexPath := filepath.Join(flexDir, "flexstub")
+	flexScript := "#!/bin/sh\n" +
+		"if [ -z \"$M4\" ]; then\n" +
+		"  echo 'flexstub: fatal: exec of m4 failed' >&2\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"exec \"$M4\"\n"
+	if err := os.WriteFile(flexPath,
+		[]byte(flexScript), 0o755); err != nil {
+		t.Fatalf("write flex stub: %v", err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+
+	tarball, hash := createSourceTarGz(t, map[string]string{
+		"testpkg-1.0/README": "hello",
+	})
+	srv := serveFile(t, tarball)
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: srv.URL, SHA256: hash},
+		Build: recipe.Build{
+			Env: map[string]string{"MARKER": marker},
+			Steps: []string{
+				"mkdir -p $PREFIX/bin",
+				// Run the flex stub by absolute path so the
+				// test exercises only the M4 propagation, not
+				// PATH resolution of flex itself.
+				flexPath,
+			},
+		},
+	}
+
+	outputDir := t.TempDir()
+	_, err := Build(r, outputDir, false, &BuildDeps{
+		BinDirs: []string{binDir},
+	})
+	if err != nil {
+		t.Fatalf("Build error (dep m4 not surfaced to flex via "+
+			"$M4?): %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("dep m4 marker not written — flex stub did not "+
+			"exec the dep m4 via $M4: %v", err)
+	}
+	if !strings.Contains(string(data), "dep-m4-ran") {
+		t.Errorf("marker = %q, want dep-m4-ran", data)
+	}
+}
+
+// A recipe-set [build] env M4 must win over the auto-detected
+// dep m4, matching gale's setDefault precedence everywhere else.
+// Asserted end-to-end: the flex stub execs whatever $M4 resolves
+// to, and the recipe's M4 (a distinct marker) must be the one
+// that runs, not the dep bin/m4.
+func TestBuildRecipeM4WinsOverDepM4(t *testing.T) {
+	// Dep m4 stub: would write the WRONG marker if it ran.
+	binDir := t.TempDir()
+	depM4 := filepath.Join(binDir, "m4")
+	if err := os.WriteFile(depM4,
+		[]byte("#!/bin/sh\necho dep-m4 > \"$MARKER\"\n"),
+		0o755); err != nil {
+		t.Fatalf("write dep m4: %v", err)
+	}
+
+	// Recipe-chosen m4: writes the marker we expect.
+	recipeDir := t.TempDir()
+	recipeM4 := filepath.Join(recipeDir, "recipe-m4")
+	if err := os.WriteFile(recipeM4,
+		[]byte("#!/bin/sh\necho recipe-m4 > \"$MARKER\"\n"),
+		0o755); err != nil {
+		t.Fatalf("write recipe m4: %v", err)
+	}
+
+	flexDir := t.TempDir()
+	flexPath := filepath.Join(flexDir, "flexstub")
+	if err := os.WriteFile(flexPath,
+		[]byte("#!/bin/sh\nexec \"$M4\"\n"), 0o755); err != nil {
+		t.Fatalf("write flex stub: %v", err)
+	}
+
+	marker := filepath.Join(t.TempDir(), "marker")
+
+	tarball, hash := createSourceTarGz(t, map[string]string{
+		"testpkg-1.0/README": "hello",
+	})
+	srv := serveFile(t, tarball)
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: srv.URL, SHA256: hash},
+		Build: recipe.Build{
+			Env: map[string]string{
+				"MARKER": marker,
+				"M4":     recipeM4,
+			},
+			Steps: []string{flexPath},
+		},
+	}
+
+	if _, err := Build(r, t.TempDir(), false, &BuildDeps{
+		BinDirs: []string{binDir},
+	}); err != nil {
+		t.Fatalf("Build error: %v", err)
+	}
+
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read marker: %v", err)
+	}
+	if got := strings.TrimSpace(string(data)); got != "recipe-m4" {
+		t.Errorf("ran %q, want recipe-m4 (recipe M4 must win "+
+			"over dep bin/m4)", got)
+	}
+}
+
 // --- Behavior 8: BuildLocal uses local source directory ---
 
 func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {

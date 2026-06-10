@@ -442,15 +442,29 @@ func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha2
 		return fmt.Errorf("resolving lockfile path: %w", err)
 	}
 	if sha256 == "" {
-		// Cached install: preserve existing hash only if
-		// the lockfile version matches.
+		// Cached install: no new hash to record. Preserve the
+		// existing entry only when the stored version is
+		// EXACTLY the canonical lockVersion. A loose
+		// VersionMatches early-return drops the revision
+		// (gh#30): a bare "2.53.0" in the lock satisfies
+		// VersionMatches against the resolved "2.53.0-2", so
+		// the canonical form was never written and the bare
+		// pin stuck. Rewrite to lockVersion, carrying the old
+		// hash forward since none was computed this run.
 		lf, err := lockfile.Read(lp)
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
-		if existing, ok := lf.Packages[name]; ok &&
-			lockfile.VersionMatches(lockVersion, existing.Version) {
-			return nil // same version, keep existing hash
+		if existing, ok := lf.Packages[name]; ok {
+			if existing.Version == lockVersion {
+				return nil // identical pin, keep existing hash
+			}
+			if lockfile.VersionMatches(lockVersion, existing.Version) {
+				// Same upstream version, differing revision
+				// representation (bare vs canonical). Rewrite to
+				// the canonical lockVersion but keep the hash.
+				return updateLockfile(lp, name, lockVersion, existing.SHA256)
+			}
 		}
 	}
 	return updateLockfile(lp, name, lockVersion, sha256)
@@ -538,17 +552,11 @@ func removeLockEntry(configPath, name string) error {
 
 // stripNumericRevision removes a Debian-style "-N" suffix from
 // a version string when N is all decimal digits. Pre-release
-// tags like "1.0.0-rc1" are left unchanged.
+// tags like "1.0.0-rc1" are left unchanged. Delegates to the
+// canonical revision parser in internal/store.
 func stripNumericRevision(version string) string {
-	if i := strings.LastIndex(version, "-"); i >= 0 {
-		suffix := version[i+1:]
-		if len(suffix) > 0 && strings.IndexFunc(suffix, func(r rune) bool {
-			return r < '0' || r > '9'
-		}) == -1 {
-			return version[:i]
-		}
-	}
-	return version
+	base, _ := store.SplitRevision(version)
+	return base
 }
 
 // addToConfig resolves scope and writes a package version to
@@ -662,10 +670,35 @@ func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256 
 // the canonical/bare forms. Bare goes to gale.toml so
 // the entry tracks revision bumps automatically; the
 // canonical `<v>-<N>` goes to gale.lock for exact pin.
+// See configVersionForRecipe for the revision-rollback
+// exception (gh#65).
 func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe, sha256 string) error {
 	return ctx.FinalizeInstall(
-		r.Package.Name, r.Package.Version, r.Package.Full(), sha256,
+		r.Package.Name, configVersionForRecipe(ctx.StoreRoot, r),
+		r.Package.Full(), sha256,
 	)
+}
+
+// configVersionForRecipe returns the version form written to
+// gale.toml for a recipe install. Bare by convention, so the
+// entry tracks recipe revision bumps automatically. But when
+// the append-only store already holds a different revision that
+// the bare form would resolve to — the revision-rollback case,
+// `gale switch pkg <v>-<rev>` or `gale install pkg@<v>-<rev>`
+// with a higher revision on disk — a bare pin would activate
+// that other revision and the requested one would silently
+// never land on PATH (gh#65). Pin the canonical "<v>-<N>"
+// instead so generation resolution matches it exactly.
+func configVersionForRecipe(storeRoot string, r *recipe.Recipe) string {
+	bare := r.Package.Version
+	full := r.Package.Full()
+	s := store.NewStore(storeRoot)
+	bareDir, bareOK := s.StorePath(r.Package.Name, bare)
+	fullDir, fullOK := s.StorePath(r.Package.Name, full)
+	if bareOK && fullOK && bareDir != fullDir {
+		return full
+	}
+	return bare
 }
 
 // WriteConfigAndLock adds a package to gale.toml and
@@ -679,10 +712,12 @@ func (ctx *cmdContext) WriteConfigAndLock(name, configVersion, lockVersion, sha2
 }
 
 // WriteConfigAndLockForRecipe is WriteConfigAndLock for
-// the recipe-in-hand case. See FinalizeRecipeInstall.
+// the recipe-in-hand case. See FinalizeRecipeInstall and
+// configVersionForRecipe.
 func (ctx *cmdContext) WriteConfigAndLockForRecipe(r *recipe.Recipe, sha256 string) error {
 	return ctx.WriteConfigAndLock(
-		r.Package.Name, r.Package.Version, r.Package.Full(), sha256,
+		r.Package.Name, configVersionForRecipe(ctx.StoreRoot, r),
+		r.Package.Full(), sha256,
 	)
 }
 

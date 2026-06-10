@@ -3,6 +3,8 @@ package main
 import (
 	"fmt"
 	"runtime"
+	"strconv"
+	"strings"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/lockfile"
@@ -58,7 +60,12 @@ var verifyCmd = &cobra.Command{
 		}
 
 		platform := runtime.GOOS + "-" + runtime.GOARCH
-		tag := pkg.Version + "-" + platform
+		// GHCR manifests are tagged with the bare version
+		// ("<version>-<platform>"), not the canonical lockfile
+		// form ("<version>-<revision>-<platform>"). Strip the
+		// trailing "-<revision>" suffix when present so the
+		// constructed tag matches what gale-recipes CI pushes.
+		tag := bareVersion(pkg.Version) + "-" + platform
 		ociURI := fmt.Sprintf(
 			"oci://ghcr.io/%s/%s:%s",
 			localGHCRBase, name, tag,
@@ -79,6 +86,35 @@ var verifyCmd = &cobra.Command{
 		))
 		return nil
 	},
+}
+
+// bareVersion strips a Debian-style numeric revision suffix from v.
+// A trailing "-<N>" where N is a positive integer is removed; any
+// other suffix (e.g. "-rc1", "-dev.2") is left in place. This
+// mirrors the semantics of internal/version.splitRevision so the
+// two agree on what counts as a revision.
+//
+// Examples:
+//
+//	"1.8.1-4"  → "1.8.1"
+//	"1.8.1"    → "1.8.1"
+//	"0.10.0-2" → "0.10.0"
+//	"1.0-rc1"  → "1.0-rc1"
+//	"1.2-0"    → "1.2-0"
+func bareVersion(v string) string {
+	dash := strings.LastIndexByte(v, '-')
+	if dash < 0 {
+		return v
+	}
+	suffix := v[dash+1:]
+	if suffix == "" {
+		return v
+	}
+	n, err := strconv.Atoi(suffix)
+	if err != nil || n <= 0 {
+		return v
+	}
+	return v[:dash]
 }
 
 func init() {

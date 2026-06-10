@@ -11,9 +11,11 @@ import (
 	"strings"
 	"time"
 
+	"golang.org/x/mod/semver"
+
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/store"
 	"github.com/kelp/gale/internal/timing"
-	"github.com/kelp/gale/internal/version"
 )
 
 // validCommitHash matches a lowercase hex string 7-40 chars long.
@@ -325,17 +327,108 @@ func (r *Registry) mergeBinariesAtCommit(
 }
 
 // pickLatest returns the newest version key in a version→commit
-// index, using gale's version ordering (semver plus a numeric
-// "-<N>" revision suffix). Returns ("", false) for an empty
-// index.
+// index, using gale's version ordering (base version plus a
+// numeric "-<N>" revision suffix). Returns ("", false) for an
+// empty index.
+//
+// Deliberately NOT version.IsNewer: its optimistic always-true
+// answer for non-semver strings (socat's "1.8.1.1", autossh's
+// "1.4g") is designed for update-candidate checks; in a
+// max-selection loop it degenerates to last-map-key-wins, and Go
+// randomizes map iteration — a bare `gale install socat`
+// resolved to the OLDER revision ~10% of the time (gh#58).
+// indexKeyNewer is a deterministic total order instead.
 func pickLatest(idx map[string]string) (string, bool) {
 	best := ""
 	for k := range idx {
-		if best == "" || version.IsNewer(k, best) {
+		if best == "" || indexKeyNewer(k, best) {
 			best = k
 		}
 	}
 	return best, best != ""
+}
+
+// indexKeyNewer reports whether index key a orders after key b.
+// Bases compare by semver when both parse as semver, by natural
+// (digit-run-aware) ordering otherwise; equal bases break the
+// tie on the numeric "-<N>" revision suffix (absent means 1),
+// then on the raw string so the order is total.
+func indexKeyNewer(a, b string) bool {
+	aBase, aRev := store.SplitRevision(a)
+	bBase, bRev := store.SplitRevision(b)
+	if aBase != bBase {
+		av, bv := "v"+aBase, "v"+bBase
+		if semver.IsValid(av) && semver.IsValid(bv) {
+			if c := semver.Compare(av, bv); c != 0 {
+				return c > 0
+			}
+		} else if c := naturalCompare(aBase, bBase); c != 0 {
+			return c > 0
+		}
+	}
+	if aRev != bRev {
+		return aRev > bRev
+	}
+	return a > b
+}
+
+// naturalCompare compares two strings chunk-wise: maximal runs
+// of ASCII digits compare numerically, everything else compares
+// byte-wise. Gives "1.8.1.10" > "1.8.1.2" and "15.2.rel2" >
+// "15.2.rel1" without pretending such strings are semver.
+func naturalCompare(a, b string) int {
+	for a != "" && b != "" {
+		if isASCIIDigit(a[0]) && isASCIIDigit(b[0]) {
+			aNum, aRest := splitLeadingDigits(a)
+			bNum, bRest := splitLeadingDigits(b)
+			at := strings.TrimLeft(aNum, "0")
+			bt := strings.TrimLeft(bNum, "0")
+			// Longer trimmed digit run is the bigger number;
+			// equal lengths compare lexically (same as
+			// numerically for equal-length digit strings).
+			if len(at) != len(bt) {
+				if len(at) < len(bt) {
+					return -1
+				}
+				return 1
+			}
+			if at != bt {
+				if at < bt {
+					return -1
+				}
+				return 1
+			}
+			a, b = aRest, bRest
+			continue
+		}
+		if a[0] != b[0] {
+			if a[0] < b[0] {
+				return -1
+			}
+			return 1
+		}
+		a, b = a[1:], b[1:]
+	}
+	switch {
+	case a == "" && b == "":
+		return 0
+	case a == "":
+		return -1
+	default:
+		return 1
+	}
+}
+
+func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
+
+// splitLeadingDigits splits s into its maximal leading digit run
+// and the remainder.
+func splitLeadingDigits(s string) (digits, rest string) {
+	i := 0
+	for i < len(s) && isASCIIDigit(s[i]) {
+		i++
+	}
+	return s[:i], s[i:]
 }
 
 // FetchRecipeMetadata is FetchRecipe without the secondary

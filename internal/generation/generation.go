@@ -12,99 +12,21 @@ import (
 
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
+	"github.com/kelp/gale/internal/store"
 )
 
 // resolveStoreDir returns the actual store dir for a
-// (name, version) pair. Mirrors Store.resolveVersion's
-// resolution without an import cycle: a bare version
-// returns the highest "<v>-<N>" on disk, falls through
-// to an exact match, and finally to a bare "<v>" (legacy
-// pre-revision install). A "<v>-1" request also falls
-// back to a bare "<v>" when the suffixed one is absent.
-//
-// "Bare" means no trailing "-<digits>" revision suffix —
-// a dash from a semver pre-release/dev tag like
-// "0.16.2-dev.70+676b646" still counts as bare, because
-// the revision goes on the END (e.g. "...-1").
+// (name, version) pair by delegating to the canonical
+// resolver in internal/store: a bare version returns the
+// highest populated "<v>-<N>" on disk, falls through to an
+// exact match, and finally to a bare "<v>" (legacy
+// pre-revision install). A "<v>-1" request also falls back
+// to a bare "<v>" when the suffixed one is absent. Empty
+// in-flight revision dirs (created by a concurrent install,
+// or left by a killed one) are skipped so they can't shadow
+// the populated active revision (gh#76).
 func resolveStoreDir(storeRoot, name, version string) string {
-	if !hasNumericRevisionSuffix(version) {
-		if rev, ok := highestRevisionOnDisk(storeRoot, name, version); ok {
-			return filepath.Join(storeRoot, name, rev)
-		}
-	}
-	dir := filepath.Join(storeRoot, name, version)
-	if _, err := os.Stat(dir); err == nil {
-		return dir
-	}
-	if strings.HasSuffix(version, "-1") {
-		bare := strings.TrimSuffix(version, "-1")
-		bareDir := filepath.Join(storeRoot, name, bare)
-		if _, err := os.Stat(bareDir); err == nil {
-			return bareDir
-		}
-	}
-	return dir
-}
-
-// hasNumericRevisionSuffix reports whether version ends in a
-// "-<digits>" revision suffix. Distinguishes a bare semver-with-
-// dev-tag like "0.16.2-dev.70+676b646" (no revision) from an
-// explicit pinned form like "0.16.2-dev.70+676b646-1" (revision 1).
-// Used by resolveStoreDir and highestRevisionOnDisk to decide
-// whether to scan for the highest revision on disk (bare → scan)
-// or treat the version as an exact-match request (numeric suffix
-// → exact). Mirrors cmd/gale/context.go's stripNumericRevision
-// classification.
-func hasNumericRevisionSuffix(version string) bool {
-	i := strings.LastIndex(version, "-")
-	if i < 0 || i == len(version)-1 {
-		return false
-	}
-	for _, r := range version[i+1:] {
-		if r < '0' || r > '9' {
-			return false
-		}
-	}
-	return true
-}
-
-// highestRevisionOnDisk returns the directory name with the
-// highest N among "<version>-<N>" siblings under
-// <storeRoot>/<name>/. Skips .build-* staging dirs,
-// "<version>.bak" backups from in-progress reinstalls, and
-// non-directory entries (lock files).
-func highestRevisionOnDisk(storeRoot, name, version string) (string, bool) {
-	entries, err := os.ReadDir(filepath.Join(storeRoot, name))
-	if err != nil {
-		return "", false
-	}
-	prefix := version + "-"
-	best := -1
-	bestName := ""
-	for _, e := range entries {
-		if !e.IsDir() {
-			continue
-		}
-		n := e.Name()
-		if strings.HasPrefix(n, ".build-") || strings.HasSuffix(n, ".bak") {
-			continue
-		}
-		if !strings.HasPrefix(n, prefix) {
-			continue
-		}
-		rev, err := strconv.Atoi(n[len(prefix):])
-		if err != nil || rev < 0 {
-			continue
-		}
-		if rev > best {
-			best = rev
-			bestName = n
-		}
-	}
-	if best < 0 {
-		return "", false
-	}
-	return bestName, true
+	return store.NewStore(storeRoot).ResolveDir(name, version)
 }
 
 // carryForwardMissingVersions returns a copy of pkgs where
@@ -468,13 +390,13 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 				// immediately rather than discovering it when
 				// `<pkg>: command not found` fires later.
 				//
-				// Lenient (BuildLenient) callers — only
-				// `gale sync` — deliberately tolerate this
-				// case. A sync batch where one install fails
-				// must still land the successful installs on
-				// PATH (Issue #20); sync surfaces the install
-				// error via a separate channel, so swallowing
-				// the missing-store-dir here is intentional.
+				// Lenient (BuildLenient) callers deliberately
+				// tolerate this case. A sync batch where one
+				// install fails must still land the successful
+				// installs on PATH (Issue #20); the install
+				// error is surfaced via a separate channel.
+				// Warn instead of silently skipping so the
+				// user learns which package fell off PATH.
 				if !lenient {
 					return fmt.Errorf(
 						"%s@%s is missing from the store (%s); "+
@@ -482,6 +404,10 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 						name, version, pkgDir, name,
 					)
 				}
+				fmt.Fprintf(os.Stderr,
+					"generation: skipping %s@%s: store dir missing (%s); "+
+						"run `gale sync` to restore\n",
+					name, version, pkgDir)
 				continue
 			}
 			return fmt.Errorf("read store %s: %w", name, err)

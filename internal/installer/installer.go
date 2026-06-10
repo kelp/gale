@@ -673,11 +673,24 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 			return fmt.Errorf("relocate stale paths in text files: %w", err)
 		}
 
-		// Relocate stale LC_RPATH entries that reference a
-		// foreign gale store root (e.g. CI-baked paths like
-		// /Users/runner/.gale/pkg/...). Only meaningful on
-		// darwin; no-op on Linux where RelocateStaleRpaths
-		// is a stub.
+		// Migrate legacy absolute rpaths in prebuilts published
+		// before the relative-rpath change: rewrite any RPATH
+		// referencing a foreign gale store root (CI-baked paths
+		// like /Users/runner/.gale/pkg/... or /home/runner/.gale)
+		// to the local store root. Runs on both darwin and linux.
+		// Current builds (since #26) ship $ORIGIN/@loader_path-
+		// relative rpaths that fall through this untouched, so a
+		// fresh-box install is byte-for-byte with the attested
+		// artifact and needs no patchelf at all.
+		//
+		// On linux the rewrite needs patchelf; if it is absent the
+		// step no-ops and returns nil — it does NOT error and does
+		// NOT trigger a source rebuild (the source fallback below
+		// fires only when installBinaryTo returns a non-nil error).
+		// That gap only bites the obsolete pre-#26 prebuilts whose
+		// absolute CI rpath this step exists to repair; for them a
+		// patchelf-less box would install a binary with a stale
+		// rpath. Relative-rpath builds are unaffected.
 		if err := build.RelocateStaleRpaths(extractDir, storeRoot); err != nil {
 			return fmt.Errorf("relocate rpaths: %w", err)
 		}

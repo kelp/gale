@@ -67,8 +67,20 @@ version with
 .Ar pkg@ver .
 Skips pinned packages unless explicitly named.
 .Pp
+Use
+.Fl -no-install
+to rewrite
+.Pa gale.toml
+pins without building; run
+.Cm sync
+afterward to install.
+Use
+.Fl -no-refresh
+to skip the automatic tap refresh.
+.Pp
 .Dl $ gale update
 .Dl $ gale update jq@1.8.1
+.Dl $ gale update --no-install jq
 .It Cm switch Ar pkg Ar version
 Switch a package already declared in
 .Pa gale.toml
@@ -345,14 +357,16 @@ field
 .El
 .Ss Repository Management
 .Bl -tag -width Ds
-.It Cm repo add Ar url
-Add a recipe repository.
+.It Cm repo add Ar name Ar url
+Add a recipe repository with the given name and URL.
 .It Cm repo remove Ar name
 Remove a recipe repository.
 .It Cm repo list
 List configured recipe repositories.
-.It Cm repo create Ar name
-Create a new recipe repository.
+.It Cm repo init Ar name
+Create a new recipe repository scaffold.
+.It Cm repo update Op Ar name
+Update one or all recipe repositories.
 .El
 .Ss Shell Completion
 .Bl -tag -width Ds

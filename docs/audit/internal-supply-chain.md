@@ -1,5 +1,11 @@
 # Audit Report: internal/supply-chain
 
+> **Note (v0.13.0):** The `internal/trust/` package and all
+> recipe ed25519 signing infrastructure (BUG-4, BUG-5 below)
+> were removed in v0.13.0. `Registry.PublicKey` and
+> `verifyRecipe` no longer exist. BUG-4 and BUG-5 are
+> historical; BUG-1, BUG-2, and BUG-3 remain active findings.
+
 ## Summary
 
 Five bugs across the registry, trust, installer, and GHCR
@@ -63,35 +69,42 @@ network errors that allows unsigned binaries through.
 
 ### BUG-4: trust.Verify API ambiguity -- (false, nil) for malformed signature
 
-- **File:** `internal/trust/trust.go:69`
+> **Resolved (removed):** `internal/trust/` was deleted in
+> v0.13.0. This finding is historical only.
+
+- **File:** `internal/trust/trust.go:69` (removed)
 - **Severity:** Medium
 - **Category:** error-handling / API contract
-- **Description:** `trust.Verify` returns `(false, nil)` when
-  base64 decode of the signature fails. Callers must check the
-  bool, not just the error. `verifyRecipe` in `registry.go` does
+- **Description:** `trust.Verify` returned `(false, nil)` when
+  base64 decode of the signature failed. Callers had to check the
+  bool, not just the error. `verifyRecipe` in `registry.go` did
   this correctly, but the test `TestVerifyCorruptedSignature`
-  accepts either `ok == false` or `err != nil`, not pinning the
+  accepted either `ok == false` or `err != nil`, not pinning the
   contract.
 - **Code path:** `trust.Verify` with non-base64 signature ->
   `return false, nil`.
 - **Impact:** Future refactors that change the error behavior
-  pass the test while breaking callers.
+  would have passed the test while breaking callers.
 
 ### BUG-5: Direct Registry struct construction bypasses signature verification
 
-- **File:** `internal/registry/registry.go:21-24`
+> **Resolved (removed):** `internal/trust/` and
+> `Registry.PublicKey` were deleted in v0.13.0. This finding
+> is historical only.
+
+- **File:** `internal/registry/registry.go:21-24` (removed)
 - **Severity:** Medium
 - **Category:** security / verification-bypass
-- **Description:** `Registry` is an exported struct with an
-  exported `PublicKey` field. Setting `PublicKey` to `""` causes
+- **Description:** `Registry` was an exported struct with an
+  exported `PublicKey` field. Setting `PublicKey` to `""` caused
   `verifyRecipe` to return nil without checking signatures. All
-  tests construct `&Registry{BaseURL: srv.URL}` directly,
-  leaving `PublicKey` empty. No test exercises `verifyRecipe`
+  tests constructed `&Registry{BaseURL: srv.URL}` directly,
+  leaving `PublicKey` empty. No test exercised `verifyRecipe`
   with an actual key.
 - **Code path:** `&Registry{BaseURL: ...}` -> `FetchRecipe` ->
   `verifyRecipe` -> `r.PublicKey == ""` -> `return nil`.
-- **Impact:** Code that constructs `Registry` directly (not via
-  `New()` or `NewWithURL()`) silently disables verification.
+- **Impact:** Code that constructed `Registry` directly (not via
+  `New()` or `NewWithURL()`) silently disabled verification.
 
 ## Test Coverage Gaps
 
@@ -106,11 +119,11 @@ network errors that allows unsigned binaries through.
 
 - `internal/registry/registry.go`
 - `internal/registry/search.go`
-- `internal/trust/trust.go`
+- `internal/trust/trust.go` (removed in v0.13.0)
 - `internal/attestation/attestation.go`
 - `internal/ghcr/ghcr.go`
 - `internal/registry/registry_test.go`
-- `internal/trust/trust_test.go`
+- `internal/trust/trust_test.go` (removed in v0.13.0)
 - `internal/attestation/attestation_test.go`
 - `internal/ghcr/ghcr_test.go`
 - `internal/installer/installer.go`

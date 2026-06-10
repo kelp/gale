@@ -239,7 +239,8 @@ var updateCmd = &cobra.Command{
 			if updateNoInstall {
 				if err := config.UpsertPackage(
 					ctx.GalePath, config.CurrentHost(),
-					name, r.Package.Version,
+					name, noInstallPin(r.Package.Version,
+						r.Package.Full(), t.current),
 				); err != nil {
 					return fmt.Errorf("updating %s pin: %w",
 						name, err)
@@ -397,6 +398,26 @@ func updateAction(
 		return candidate, false
 	}
 	return current, false
+}
+
+// noInstallPin returns the version string to write to
+// gale.toml under --no-install. Pins stay bare by
+// convention, but for a revision-only bump (same upstream
+// version, higher recipe revision) the bare pin is
+// byte-identical to the current one — the promised
+// follow-up `gale sync` would resolve it to the
+// already-installed revision and silently skip the new
+// one (#66). Writing the canonical `<version>-<revision>`
+// makes the drift detectable; sync already handles
+// versioned pins. The strict-newer guard keeps the
+// reinstall-current path (store entry missing, same
+// version) writing the bare pin unchanged.
+func noInstallPin(bare, full, current string) string {
+	if stripNumericRevision(current) == bare &&
+		isNewerVersion(full, current) {
+		return full
+	}
+	return bare
 }
 
 // sortedTargetKeys returns a sorted copy of the input

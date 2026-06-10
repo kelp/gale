@@ -32,9 +32,31 @@ func isELF(path string) bool {
 		magic[3] == elfMagic[3]
 }
 
+// walkPrefixELF calls fn for every regular ELF file under
+// prefixDir. The whole prefix tree is walked — not just bin/
+// and lib/ — so ELF helpers under libexec/ and sbin/ get the
+// same rpath fixups (git installs most of its executables in
+// libexec/git-core/). Mirrors the darwin full-prefix walk in
+// fixup_darwin.go.
+func walkPrefixELF(prefixDir string, fn func(path string)) error {
+	return filepath.Walk(prefixDir,
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil //nolint:nilerr // skip unreadable files
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil // patch targets once, not via links
+			}
+			if isELF(path) {
+				fn(path)
+			}
+			return nil
+		})
+}
+
 // FixupBinaries rewrites ELF rpath entries so binaries
-// find shared libraries relative to themselves using
-// $ORIGIN/../lib.
+// find shared libraries relative to themselves via an
+// $ORIGIN-anchored path to the package's lib/ directory.
 func FixupBinaries(prefixDir string) error {
 	patchelf, err := exec.LookPath("patchelf")
 	if err != nil {
@@ -44,26 +66,12 @@ func FixupBinaries(prefixDir string) error {
 		return nil //nolint:nilerr // intentional: missing patchelf is not an error
 	}
 
-	// Scan bin/ and lib/ for ELF files.
+	// Scan the whole prefix for ELF files.
 	var files []string
-	for _, subdir := range []string{"bin", "lib"} {
-		dir := filepath.Join(prefixDir, subdir)
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		err := filepath.Walk(dir,
-			func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil //nolint:nilerr // skip unreadable files
-				}
-				if isELF(path) {
-					files = append(files, path)
-				}
-				return nil
-			})
-		if err != nil {
-			return fmt.Errorf("scan %s: %w", subdir, err)
-		}
+	if err := walkPrefixELF(prefixDir, func(path string) {
+		files = append(files, path)
+	}); err != nil {
+		return fmt.Errorf("scan prefix: %w", err)
 	}
 
 	if len(files) == 0 {
@@ -72,9 +80,11 @@ func FixupBinaries(prefixDir string) error {
 
 	for _, file := range files {
 		// Set rpath to find libs relative to the binary.
-		// $ORIGIN is the directory containing the binary.
+		// $ORIGIN is the directory containing the binary;
+		// the depth-aware path reaches <prefix>/lib from
+		// wherever the file sits (bin/, libexec/git-core/).
 		cmd := exec.Command(patchelf, "--set-rpath",
-			"$ORIGIN/../lib", file)
+			relativeOwnLibRpathLinux(prefixDir, file), file)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			// patchelf fails on static binaries and some
 			// special ELF files — skip silently.
@@ -86,6 +96,29 @@ func FixupBinaries(prefixDir string) error {
 	return nil
 }
 
+// prefixDepth returns the number of directory components
+// between prefixDir and file (bin/exe -> 1;
+// libexec/git-core/git -> 2).
+func prefixDepth(prefixDir, file string) int {
+	rel, err := filepath.Rel(prefixDir, file)
+	if err != nil {
+		rel = filepath.Base(file)
+	}
+	if dir := filepath.Dir(rel); dir != "." {
+		return len(strings.Split(dir, string(filepath.Separator)))
+	}
+	return 0
+}
+
+// relativeOwnLibRpathLinux returns the $ORIGIN-anchored rpath
+// from an ELF at `file` to its own package's lib/ directory:
+// bin/exe -> $ORIGIN/../lib; libexec/git-core/git ->
+// $ORIGIN/../../lib.
+func relativeOwnLibRpathLinux(prefixDir, file string) string {
+	n := prefixDepth(prefixDir, file)
+	return "$ORIGIN/" + strings.Repeat("../", n) + "lib"
+}
+
 // relativeFarmRpathLinux returns the $ORIGIN-anchored rpath
 // that points from an ELF at `file` (under the build prefix
 // `prefixDir`) to the shared-lib farm at <galeDir>/lib. A
@@ -95,17 +128,9 @@ func FixupBinaries(prefixDir string) error {
 // gale home. This is the Linux mirror of relativeFarmRpath in
 // fixup_darwin.go. See docs/dev/relocatable-binaries.md.
 func relativeFarmRpathLinux(prefixDir, file string) string {
-	rel, err := filepath.Rel(prefixDir, file)
-	if err != nil {
-		rel = filepath.Base(file)
-	}
-	// Directory components between the prefix root and the file
-	// (bin/exe -> 1; libexec/git-core/git -> 2).
-	n := 0
-	if dir := filepath.Dir(rel); dir != "." {
-		n = len(strings.Split(dir, string(filepath.Separator)))
-	}
-	// 3 levels (pkg/<name>/<ver-rev>) + n up to <galeDir>, +lib.
+	// 3 levels (pkg/<name>/<ver-rev>) + the file's own depth
+	// up to <galeDir>, then +lib.
+	n := prefixDepth(prefixDir, file)
 	return "$ORIGIN/" + strings.Repeat("../", 3+n) + "lib"
 }
 
@@ -141,33 +166,19 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		return nil
 	}
 
-	// Walk bin/ and lib/ for ELF files. The farm rpath is
-	// computed per file so deeper layouts (libexec/.../bin) get
-	// the right $ORIGIN depth.
-	for _, subdir := range []string{"bin", "lib"} {
-		dir := filepath.Join(prefixDir, subdir)
-		if _, err := os.Stat(dir); err != nil {
-			continue
-		}
-		_ = filepath.Walk(dir,
-			func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil //nolint:nilerr
-				}
-				if !isELF(path) {
-					return nil
-				}
-				// $ORIGIN/../lib reaches the package's own libs;
-				// the relative farm rpath reaches dep dylibs via
-				// <galeDir>/lib. Both relative — nothing absolute.
-				rpath := "$ORIGIN/../lib:" +
-					relativeFarmRpathLinux(prefixDir, path)
-				cmd := exec.Command(patchelf,
-					"--set-rpath", rpath, path)
-				_ = cmd.Run() // skip errors (static binaries)
-				return nil
-			})
-	}
+	// Walk the whole prefix for ELF files. Both rpath
+	// components are computed per file so deeper layouts
+	// (libexec/git-core/, sbin/) get the right $ORIGIN depth.
+	_ = walkPrefixELF(prefixDir, func(path string) {
+		// The own-lib rpath reaches the package's own libs;
+		// the relative farm rpath reaches dep dylibs via
+		// <galeDir>/lib. Both relative — nothing absolute.
+		rpath := relativeOwnLibRpathLinux(prefixDir, path) + ":" +
+			relativeFarmRpathLinux(prefixDir, path)
+		cmd := exec.Command(patchelf,
+			"--set-rpath", rpath, path)
+		_ = cmd.Run() // skip errors (static binaries)
+	})
 
 	return nil
 }
@@ -193,60 +204,45 @@ func RelocateStaleRpaths(prefixDir, storeRoot string) error {
 	galeDir := filepath.Dir(storeRoot)
 	currentFarmDir := filepath.Join(galeDir, "lib")
 
-	for _, subdir := range []string{"bin", "lib"} {
-		dir := filepath.Join(prefixDir, subdir)
-		if _, err := os.Stat(dir); err != nil {
-			continue
+	_ = walkPrefixELF(prefixDir, func(path string) {
+		// Read current rpath.
+		cmd := exec.Command(patchelf,
+			"--print-rpath", path)
+		out, err := cmd.Output()
+		if err != nil {
+			return
 		}
-		_ = filepath.Walk(dir,
-			func(path string, info os.FileInfo, err error) error {
-				if err != nil || info.IsDir() {
-					return nil //nolint:nilerr
-				}
-				if !isELF(path) {
-					return nil
-				}
+		rpath := strings.TrimSpace(string(out))
+		if rpath == "" {
+			return
+		}
 
-				// Read current rpath.
-				cmd := exec.Command(patchelf,
-					"--print-rpath", path)
-				out, err := cmd.Output()
-				if err != nil {
-					return nil //nolint:nilerr
-				}
-				rpath := strings.TrimSpace(string(out))
-				if rpath == "" {
-					return nil
-				}
+		parts := strings.Split(rpath, ":")
+		changed := false
+		for i, p := range parts {
+			if idx := strings.Index(p, pkgMarker); idx >= 0 {
+				suffix := p[idx+len(pkgMarker):]
+				parts[i] = filepath.Join(storeRoot, suffix)
+				changed = true
+				continue
+			}
+			if strings.HasSuffix(p, libMarker) ||
+				strings.Contains(p, libMarker+"/") {
+				idx := strings.Index(p, libMarker)
+				suffix := p[idx+len(libMarker):]
+				parts[i] = currentFarmDir + suffix
+				changed = true
+			}
+		}
+		if !changed {
+			return
+		}
 
-				parts := strings.Split(rpath, ":")
-				changed := false
-				for i, p := range parts {
-					if idx := strings.Index(p, pkgMarker); idx >= 0 {
-						suffix := p[idx+len(pkgMarker):]
-						parts[i] = filepath.Join(storeRoot, suffix)
-						changed = true
-						continue
-					}
-					if strings.HasSuffix(p, libMarker) ||
-						strings.Contains(p, libMarker+"/") {
-						idx := strings.Index(p, libMarker)
-						suffix := p[idx+len(libMarker):]
-						parts[i] = currentFarmDir + suffix
-						changed = true
-					}
-				}
-				if !changed {
-					return nil
-				}
-
-				newRpath := strings.Join(parts, ":")
-				cmd = exec.Command(patchelf,
-					"--set-rpath", newRpath, path)
-				_ = cmd.Run()
-				return nil
-			})
-	}
+		newRpath := strings.Join(parts, ":")
+		cmd = exec.Command(patchelf,
+			"--set-rpath", newRpath, path)
+		_ = cmd.Run()
+	})
 
 	return nil
 }

@@ -80,35 +80,8 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 	// Preserve the archive extension so ExtractSource
 	// can detect the correct format.
 	tarballPath := filepath.Join(workspace, "source"+sourceExtension(r.Source.URL))
-	cached := false
-	if cacheDir := sourceCache(); cacheDir != "" {
-		cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
-		if _, err := os.Stat(cachedFile); err == nil {
-			out.Step(fmt.Sprintf("Using cached source (%s)",
-				r.Source.SHA256[:12]))
-			if err := copyFile(cachedFile, tarballPath); err == nil {
-				cached = true
-			}
-		}
-	}
-	if !cached {
-		if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
-			return nil, fmt.Errorf("fetch source: %w", err)
-		}
-	}
-
-	// Verify source SHA256.
-	out.Step("Verifying SHA256...")
-	if err := download.VerifySHA256(tarballPath, r.Source.SHA256); err != nil {
-		return nil, fmt.Errorf("verify source: %w", err)
-	}
-
-	// Save to cache after successful verify.
-	if !cached {
-		if cacheDir := sourceCache(); cacheDir != "" {
-			cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
-			_ = copyFile(tarballPath, cachedFile)
-		}
+	if err := fetchSource(r, tarballPath); err != nil {
+		return nil, err
 	}
 
 	// Extract source.
@@ -661,6 +634,25 @@ func (bc *BuildContext) depSearchPaths() (libPath, incPath, pcPath, cmakePath st
 	return libPath, incPath, pcPath, cmakePath
 }
 
+// depBinTool returns the path to an executable named tool found
+// in the dependency bin directories, or "" if none provides it.
+// Used to surface specific dep tools (e.g. m4) to build systems
+// like meson whose custom-command subprocesses do not resolve
+// gale's assembled dep-bin PATH (gh#28).
+func depBinTool(deps *BuildDeps, tool string) string {
+	if deps == nil {
+		return ""
+	}
+	for _, dir := range deps.BinDirs {
+		p := filepath.Join(dir, tool)
+		if info, err := os.Stat(p); err == nil &&
+			!info.IsDir() && info.Mode()&0o111 != 0 {
+			return p
+		}
+	}
+	return ""
+}
+
 // buildEnv constructs a minimal, clean environment for build steps.
 // Resolves build tool locations from the host PATH so nix-installed
 // compilers work, without pulling in the full nix coreutils.
@@ -736,6 +728,31 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	// Per-dep env vars and dep compiler flags.
 	perDep, depCPPFLAGS, depLDFLAGS := bc.perDepEnv()
 	env = append(env, perDep...)
+
+	// gh#28: meson custom-command / generator subprocesses run
+	// with a sanitized PATH that does not resolve gale's dep-bin
+	// dirs, so flex (invoked by meson's pgflex custom command)
+	// cannot find a dep-provided m4 and fails ("exec of m4
+	// failed") unless m4 is installed system-wide. The fix rests
+	// on two upstream facts, both verified against source:
+	//   1. flex resolves m4 as `if (!(m4 = getenv("M4"))) m4 = M4;`
+	//      then execs that path directly (westes/flex src/main.c).
+	//      So $M4 takes precedence over the compiled-in fallback,
+	//      and the $M4 value is exec'd verbatim (not PATH-searched)
+	//      — a full path to the dep m4 is exactly what it wants.
+	//   2. postgres's pgflex wrapper runs flex via
+	//      subprocess.run(cmd) with no env= kwarg, so flex
+	//      inherits the build-step environment unmodified.
+	// The earlier "setting M4 on the meson step doesn't propagate"
+	// data point in the issue was a misdiagnosis: the step env is
+	// the same inherited env meson -> ninja -> pgflex -> flex see.
+	// Exporting M4 here reaches flex via that chain, as the
+	// end-to-end TestBuildSurfacesDepM4ToFlexCustomCommand proves.
+	// setDefault leaves a recipe-set [build] env M4 (applied
+	// later) as the winner.
+	if m4 := depBinTool(deps, "m4"); m4 != "" {
+		setDefault(&env, "M4", m4)
+	}
 
 	toolchainEnv, err := bc.toolchainEnv()
 	if err != nil {
@@ -1033,11 +1050,25 @@ func fixupShebangs(prefixDir string) error {
 			continue
 		}
 
-		// Extract the interpreter basename.
-		interp := filepath.Base(strings.TrimPrefix(shebang, "#!"))
-		interp = strings.TrimSpace(interp)
+		// Extract the interpreter basename, keeping any
+		// arguments (e.g. "#!<prefix>/bin/perl -w") separate
+		// so they are not folded into the program name.
+		fields := strings.Fields(strings.TrimPrefix(shebang, "#!"))
+		if len(fields) == 0 {
+			continue
+		}
+		interp := filepath.Base(fields[0])
 
 		newShebang := "#!/usr/bin/env " + interp
+		if len(fields) > 1 {
+			// On Linux the kernel passes everything after the
+			// interpreter path as ONE argument, so plain
+			// "#!/usr/bin/env perl -w" hands env the program
+			// name "perl -w". env -S re-splits the arguments
+			// (supported by GNU and BSD env).
+			newShebang = "#!/usr/bin/env -S " + interp + " " +
+				strings.Join(fields[1:], " ")
+		}
 		newData := []byte(newShebang + string(data[newline:]))
 
 		info, _ := e.Info()
@@ -1057,16 +1088,24 @@ func fixupShebangs(prefixDir string) error {
 // path. This avoids hardcoded temp paths in scripts.
 const PrefixPlaceholder = "@@GALE_PREFIX@@"
 
+// textFixupDirs lists the prefix subdirectories scanned by the
+// text-fixup passes (prefix replacement, placeholder restore,
+// stale-path relocation). include/ matters too: autoconf and
+// CMake packages install generated config headers there that
+// embed absolute prefix-derived paths (e.g. nodejs
+// include/node/config.gypi, read by node-gyp).
+var textFixupDirs = []string{
+	"bin", "sbin", "libexec", "share", "etc", "lib", "include",
+}
+
 // ReplacePrefixInTextFiles walks prefixDir and replaces all
 // occurrences of buildPrefix in text files with replacement.
 // Binary files (those containing null bytes in the first 512
-// bytes) are skipped. Directories scanned: bin, sbin,
-// libexec, share, etc, lib (for .la files and scripts).
+// bytes) are skipped. Directories scanned: textFixupDirs
+// (lib for .la files and scripts, include for generated
+// config headers).
 func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
-	dirs := []string{
-		"bin", "sbin", "libexec", "share", "etc", "lib",
-	}
-	for _, d := range dirs {
+	for _, d := range textFixupDirs {
 		dir := filepath.Join(prefixDir, d)
 		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
@@ -1114,10 +1153,7 @@ func RestorePrefixPlaceholder(storeDir string) error {
 // when install output is staged in a temporary directory before
 // being moved into its final store path.
 func RestorePrefixPlaceholderTo(rootDir, replacement string) error {
-	dirs := []string{
-		"bin", "sbin", "libexec", "share", "etc", "lib",
-	}
-	for _, d := range dirs {
+	for _, d := range textFixupDirs {
 		dir := filepath.Join(rootDir, d)
 		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
@@ -1160,15 +1196,12 @@ var stalePathRe = regexp.MustCompile(`/[^\s"'<>:()|&;,$]*\.gale/pkg/[^\s"'<>:()|
 // currentStoreRoot instead. This fixes CI-baked paths (e.g.
 // /Users/runner/.gale/pkg/...) that appear in scripts and
 // pkg-config files after a binary install.
-// Directories scanned: bin, sbin, libexec, share, etc, lib.
-// Binary files and files larger than 10 MB are skipped.
+// Directories scanned: textFixupDirs. Binary files and files
+// larger than 10 MB are skipped.
 func RelocateStalePathsInTextFiles(prefixDir, currentStoreRoot string) error {
 	currentStoreRoot = filepath.Clean(currentStoreRoot)
 	marker := ".gale/pkg/"
-	dirs := []string{
-		"bin", "sbin", "libexec", "share", "etc", "lib",
-	}
-	for _, d := range dirs {
+	for _, d := range textFixupDirs {
 		dir := filepath.Join(prefixDir, d)
 		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
@@ -1253,6 +1286,58 @@ func sourceCache() string {
 		return ""
 	}
 	return dir
+}
+
+// fetchSource places the verified source tarball for r at
+// tarballPath, preferring the local source cache. A cached
+// entry that fails SHA256 verification is evicted and the
+// source re-downloaded — a corrupt cache file (e.g. left by an
+// interrupted copy) must never become a permanent build
+// failure. A fresh download is verified and then saved back to
+// the cache atomically.
+func fetchSource(r *recipe.Recipe, tarballPath string) error {
+	cacheDir := sourceCache()
+	if cacheDir != "" {
+		cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
+		if _, err := os.Stat(cachedFile); err == nil {
+			if err := copyFile(cachedFile, tarballPath); err == nil {
+				out.Step(fmt.Sprintf("Using cached source (%s)",
+					r.Source.SHA256[:12]))
+				out.Step("Verifying SHA256...")
+				if download.VerifySHA256(tarballPath, r.Source.SHA256) == nil {
+					return nil
+				}
+				out.Step("Cached source is corrupt — " +
+					"evicting and re-downloading")
+				_ = os.Remove(cachedFile)
+			}
+		}
+	}
+
+	if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
+		return fmt.Errorf("fetch source: %w", err)
+	}
+
+	out.Step("Verifying SHA256...")
+	if err := download.VerifySHA256(tarballPath, r.Source.SHA256); err != nil {
+		return fmt.Errorf("verify source: %w", err)
+	}
+
+	// Save to cache after successful verify. Atomic (write
+	// aside, then rename) so an interrupted write never leaves
+	// a truncated file under the correct hash name.
+	if cacheDir != "" {
+		cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
+		tmp := cachedFile + ".tmp"
+		if err := copyFile(tarballPath, tmp); err == nil {
+			if err := os.Rename(tmp, cachedFile); err != nil {
+				_ = os.Remove(tmp)
+			}
+		} else {
+			_ = os.Remove(tmp)
+		}
+	}
+	return nil
 }
 
 // sourceExtension extracts the archive extension from a URL.

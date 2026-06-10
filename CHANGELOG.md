@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+### Fixed
+
+- Generation builds skip empty in-flight store dirs (created by
+  a concurrent install or left by a killed one), so a package no
+  longer silently vanishes from PATH when a rebuild races a
+  revision install (#76).
+- `pickLatest` orders non-semver versions (socat's `1.8.1.1`,
+  autossh's `1.4g`) deterministically, so a bare install no
+  longer resolves to the older revision at random (#58).
+- Explicit revision pins (`gale switch pkg <v>-<rev>`,
+  `gale install pkg@<v>-<rev>`) write the revision-qualified
+  version to gale.toml when a higher revision is on disk, so
+  the requested revision actually activates (#65).
+- `gale sync` no longer rebuilds and re-swaps a new generation
+  on every no-op run: the drift check now compares the config
+  against the store-dir basenames a fresh build would link (#49).
+- The revision-resolution rules now live in one place
+  (`internal/store`); generation, registry, and the CLI route
+  through it instead of keeping divergent copies.
+
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's

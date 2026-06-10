@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -88,22 +89,35 @@ func (s *Store) StorePath(name, version string) (string, bool) {
 // which raced with a concurrent `gale gc` removing a sibling
 // mid-chain (M2 in TODO.md).
 func (s *Store) resolveVersion(name, version string) (string, bool) {
-	entries, err := os.ReadDir(filepath.Join(s.Root, name))
+	nameDir := filepath.Join(s.Root, name)
+	entries, err := os.ReadDir(nameDir)
 	if err != nil {
 		return version, false
 	}
-	return resolveVersionFromEntries(entries, version)
+	return resolveVersionFromEntries(nameDir, entries, version)
+}
+
+// ResolveDir returns the on-disk store dir that (name, version)
+// resolves to, applying the resolution order documented on
+// resolveVersion. When nothing on disk matches, the literal
+// <root>/<name>/<version> join is returned so callers can Stat
+// it and report the missing path. This is the canonical resolver
+// shared by internal/generation and cmd/gale — do not duplicate
+// the resolution rules elsewhere.
+func (s *Store) ResolveDir(name, version string) string {
+	resolved, _ := s.resolveVersion(name, version)
+	return filepath.Join(s.Root, name, resolved)
 }
 
 // resolveVersionFromEntries applies the resolution order documented
 // on resolveVersion to a directory listing of <root>/<name>/.
 // Broken out so callers that already hold the listing (e.g. future
 // batch lookups) can reuse the logic without a redundant syscall.
-func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, bool) {
+func resolveVersionFromEntries(nameDir string, entries []os.DirEntry, version string) (string, bool) {
 	// "Bare" means no trailing "-<digits>" revision suffix. A
 	// dash from a semver pre-release/dev tag like "0.16.2-dev.70+sha"
 	// still counts as bare; the revision goes on the END.
-	hasNumericRev := hasNumericRevisionSuffix(version)
+	hasNumericRev := HasNumericRevisionSuffix(version)
 	prefix := version + "-"
 
 	hasExact := false
@@ -113,8 +127,11 @@ func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, b
 		bare = strings.TrimSuffix(version, "-1")
 	}
 
-	bestRev := -1
-	bestName := ""
+	type revDir struct {
+		rev  int
+		name string
+	}
+	var revDirs []revDir
 
 	for _, e := range entries {
 		if !e.IsDir() {
@@ -132,16 +149,36 @@ func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, b
 		}
 		if !hasNumericRev && strings.HasPrefix(n, prefix) {
 			rev, err := strconv.Atoi(n[len(prefix):])
-			if err == nil && rev >= 0 && rev > bestRev {
-				bestRev = rev
-				bestName = n
+			if err == nil && rev >= 0 {
+				revDirs = append(revDirs, revDir{rev: rev, name: n})
 			}
 		}
 	}
 
-	// Bare request: highest "<v>-<N>" wins over bare "<v>".
-	if !hasNumericRev && bestRev >= 0 {
-		return bestName, true
+	// Bare request: highest POPULATED "<v>-<N>" wins over bare
+	// "<v>". An empty revision dir is an in-flight install
+	// (Store.Create pre-creates the canonical dir before the
+	// download runs) or debris from a killed install; resolving
+	// to it would emit zero generation symlinks and silently
+	// drop the package from PATH (gh#76).
+	if !hasNumericRev && len(revDirs) > 0 {
+		sort.Slice(revDirs, func(i, j int) bool {
+			return revDirs[i].rev > revDirs[j].rev
+		})
+		for _, c := range revDirs {
+			if dirHasEntries(filepath.Join(nameDir, c.name)) {
+				return c.name, true
+			}
+		}
+		// Every revision dir is empty: prefer a populated bare
+		// "<v>" (legacy pre-revision install), else keep the old
+		// highest-revision answer so existence semantics for a
+		// fresh in-flight install are unchanged (IsInstalled
+		// still reports false via its own emptiness check).
+		if hasExact && dirHasEntries(filepath.Join(nameDir, version)) {
+			return version, true
+		}
+		return revDirs[0].name, true
 	}
 	// Exact match.
 	if hasExact {
@@ -154,15 +191,25 @@ func resolveVersionFromEntries(entries []os.DirEntry, version string) (string, b
 	return version, false
 }
 
-// hasNumericRevisionSuffix reports whether version ends in a
+// dirHasEntries reports whether dir exists and contains at
+// least one entry. Used to distinguish a real install from an
+// empty in-flight store dir.
+func dirHasEntries(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	return err == nil && len(entries) > 0
+}
+
+// HasNumericRevisionSuffix reports whether version ends in a
 // "-<digits>" revision suffix. Distinguishes a bare semver-with-
 // dev-tag like "0.16.2-dev.70+676b646" (no revision) from an
 // explicit pinned form like "0.16.2-dev.70+676b646-1" (revision 1).
 // resolveVersionFromEntries uses this to decide whether to scan
 // for the highest revision on disk (bare → scan) or treat the
 // version as an exact-match request (numeric suffix → exact).
-// Kept in sync with the identical helper in internal/generation.
-func hasNumericRevisionSuffix(version string) bool {
+// This is the canonical home for the classification —
+// internal/generation, internal/registry, and cmd/gale route
+// through it instead of keeping local copies.
+func HasNumericRevisionSuffix(version string) bool {
 	i := strings.LastIndex(version, "-")
 	if i < 0 || i == len(version)-1 {
 		return false
@@ -173,6 +220,22 @@ func hasNumericRevisionSuffix(version string) bool {
 		}
 	}
 	return true
+}
+
+// SplitRevision splits a "<base>-<N>" version into (base, N).
+// A version without a numeric revision suffix is returned
+// unchanged with revision 1 — the recipe default (an absent
+// revision means 1, see recipe.Package.Full).
+func SplitRevision(version string) (string, int) {
+	if !HasNumericRevisionSuffix(version) {
+		return version, 1
+	}
+	i := strings.LastIndex(version, "-")
+	n, err := strconv.Atoi(version[i+1:])
+	if err != nil {
+		return version, 1
+	}
+	return version[:i], n
 }
 
 // IsInstalled checks if a package version exists in the store.

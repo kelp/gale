@@ -169,6 +169,17 @@ func checkOutdated(
 			result.Errors = append(result.Errors,
 				fmt.Errorf("%s: %w", q.name, p.err))
 		default:
+			// Git-installed packages store a bare short hash as
+			// their version. ver.IsNewer returns true
+			// unconditionally for non-semver strings, so a hash
+			// would always appear outdated. Skip such packages:
+			// a read-only report must not flag a package as
+			// outdated just because version format comparison
+			// is undefined. Users can run `gale update <pkg>`
+			// explicitly to rebuild from HEAD.
+			if isGitHash(q.version) {
+				continue
+			}
 			// Compare via Full() so a revision bump (recipe
 			// revision 1 → 2 with unchanged upstream version)
 			// still shows as outdated.

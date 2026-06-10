@@ -480,23 +480,59 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 	return false
 }
 
-// checkFarm verifies the shared dylib farm at
-// ~/.gale/lib/ is in sync with the active generation.
+// checkFarm verifies each shared dylib farm is in sync
+// with the generation built from its own scope: the global
+// farm (~/.gale/lib/) against global packages, and the
+// project farm (<proj>/.gale/lib/) against project packages
+// when a project config exists. Scopes are checked
+// separately — generation.Build populates each farm from
+// its per-scope package set, so validating the global farm
+// against merged global+project packages reported false
+// drift that `gale doctor --repair` could never fix (#50).
 // Older revisions still on disk (awaiting `gale gc`) are
 // out of scope — they aren't on PATH and aren't in the
 // farm by design.
 func checkFarm(ctx *doctorContext) bool {
-	farmDir := farm.Dir(ctx.galeDir)
-	activePkgs := make(
-		map[string]string, len(ctx.globalPkgs)+len(ctx.projPkgs),
-	)
-	for k, v := range ctx.globalPkgs {
-		activePkgs[k] = v
+	ok := checkFarmScope(ctx, ctx.galeDir, ctx.globalPkgs)
+	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
+		// When cwd is under the global gale home,
+		// FindGaleConfig resolves to the GLOBAL gale.toml;
+		// deriving a project dir from it would yield the
+		// bogus <galeDir>/.gale and report drift --repair
+		// can never fix. The global farm was already
+		// checked above, so skip (same global-vs-project
+		// split as galeDirForConfig in paths.go).
+		projDir := filepath.Dir(projPath)
+		if !sameDir(projDir, ctx.galeDir) {
+			projGaleDir := filepath.Join(projDir, ".gale")
+			if !checkFarmScope(ctx, projGaleDir, ctx.projPkgs) {
+				ok = false
+			}
+		}
 	}
-	for k, v := range ctx.projPkgs {
-		activePkgs[k] = v
+	return ok
+}
+
+// sameDir reports whether two paths name the same
+// directory, resolving symlinks first so macOS /var vs
+// /private/var spellings compare equal.
+func sameDir(a, b string) bool {
+	if ra, err := filepath.EvalSymlinks(a); err == nil {
+		a = ra
 	}
-	active := generation.ActiveStoreDirs(activePkgs, ctx.storeRoot)
+	if rb, err := filepath.EvalSymlinks(b); err == nil {
+		b = rb
+	}
+	return a == b
+}
+
+// checkFarmScope validates one farm (galeDir/lib) against
+// the package set generation.Build uses to populate it.
+func checkFarmScope(
+	ctx *doctorContext, galeDir string, pkgs map[string]string,
+) bool {
+	farmDir := farm.Dir(galeDir)
+	active := generation.ActiveStoreDirs(pkgs, ctx.storeRoot)
 	issues, err := farm.CheckDrift(active, farmDir)
 	if err != nil {
 		ctx.out.Error(fmt.Sprintf("Farm check failed: %v", err))

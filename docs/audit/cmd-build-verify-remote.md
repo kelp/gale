@@ -132,5 +132,5 @@ do not persist to config.toml).
 - `internal/build/build.go`
 - `internal/repo/repo.go`
 - `internal/config/config.go`
-- `internal/trust/trust.go`
+- `internal/trust/trust.go` (removed in v0.13.0)
 - `internal/output/output.go`
