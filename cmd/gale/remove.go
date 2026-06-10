@@ -9,6 +9,7 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -56,18 +57,39 @@ var removeCmd = &cobra.Command{
 
 		st := store.NewStore(ctx.StoreRoot)
 
-		// Look up the package in the resolved config.
-		cfg, err := ctx.LoadConfig()
-		if err != nil {
-			return err
-		}
-
+		// Look up the package. With --host, membership and
+		// the pinned version come from the targeted host's
+		// section of the raw file — the effective config
+		// flattens to the *current* host's view, which hides
+		// foreign-host entries and reports the wrong version
+		// when the pins differ (gh#75).
 		host := resolveHostFlag(removeHost)
-		version, ok := cfg.Packages[name]
-		if !ok {
-			return fmt.Errorf(
-				"%s is not in %s", name, ctx.GalePath,
-			)
+		var version string
+		if host != "" {
+			raw, err := rawGaleConfig(ctx.GalePath)
+			if err != nil {
+				return err
+			}
+			v, ok := raw.Hosts[host].Packages[name]
+			if !ok {
+				return fmt.Errorf(
+					"%s is not in [hosts.%s.packages] in %s",
+					name, host, ctx.GalePath,
+				)
+			}
+			version = v
+		} else {
+			cfg, err := ctx.LoadConfig()
+			if err != nil {
+				return err
+			}
+			v, ok := cfg.Packages[name]
+			if !ok {
+				return fmt.Errorf(
+					"%s is not in %s", name, ctx.GalePath,
+				)
+			}
+			version = v
 		}
 
 		if dryRun {
@@ -123,26 +145,45 @@ var removeCmd = &cobra.Command{
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 
-		// Remove the declared version from the store.
+		// Remove the declared version from the store —
+		// unless another scope's gale.toml still references
+		// it. The store is shared: deleting an entry the
+		// global config (or an enclosing project's) still
+		// lists would leave that scope's generation symlinks
+		// dangling without warning (gh#67).
 		if st.IsInstalled(name, version) {
-			storeDir := filepath.Join(ctx.StoreRoot, name, version)
-			if err := st.Remove(name, version); err != nil {
-				return fmt.Errorf("removing from store: %w",
-					err)
-			}
-			// Clean up farm symlinks pointing into the
-			// removed store dir. Best-effort; a failure
-			// here leaves stale symlinks that `gale
-			// inspect` would surface.
-			if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
-				if err := farm.Depopulate(storeDir, farmDir); err != nil {
-					out.Warn(fmt.Sprintf(
-						"farm depopulate: %v", err,
-					))
+			// Resolve the canonical on-disk dir (<v>-<rev>)
+			// once. st.Remove resolves internally, but
+			// farm.Depopulate prefix-matches symlink targets
+			// against this path, so the bare config version
+			// made it a guaranteed no-op that leaked farm
+			// entries (gh#74).
+			storeDir := st.ResolveDir(name, version)
+			if otherScopeReferences(st, name, storeDir, out) {
+				out.Info(fmt.Sprintf(
+					"%s@%s still referenced by another "+
+						"gale.toml — keeping store entry",
+					name, version,
+				))
+			} else {
+				if err := st.Remove(name, version); err != nil {
+					return fmt.Errorf("removing from store: %w",
+						err)
 				}
+				// Clean up farm symlinks pointing into the
+				// removed store dir. Best-effort; a failure
+				// here leaves stale symlinks that `gale
+				// inspect` would surface.
+				if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
+					if err := farm.Depopulate(storeDir, farmDir); err != nil {
+						out.Warn(fmt.Sprintf(
+							"farm depopulate: %v", err,
+						))
+					}
+				}
+				out.Info(fmt.Sprintf("Removed %s@%s from store",
+					name, version))
 			}
-			out.Info(fmt.Sprintf("Removed %s@%s from store",
-				name, version))
 		} else {
 			out.Warn(fmt.Sprintf(
 				"%s@%s not found in store", name, version,
@@ -181,11 +222,7 @@ func init() {
 // `current` is accepted for future preference rules but is
 // not used: every match must be cleared regardless.
 func locatePackageSections(configPath, name, _ string) []string {
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
+	cfg, err := rawGaleConfig(configPath)
 	if err != nil {
 		return nil
 	}
@@ -205,6 +242,51 @@ func locatePackageSections(configPath, name, _ string) []string {
 		}
 	}
 	return sections
+}
+
+// rawGaleConfig parses the gale.toml at path without
+// applying host overlays, so per-host sections stay visible.
+// LoadConfig flattens to the current host's view via
+// ApplyHost, which hides entries declared for other hosts.
+func rawGaleConfig(path string) (*config.GaleConfig, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", path, err)
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		return nil, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return cfg, nil
+}
+
+// otherScopeReferences reports whether any gale.toml still
+// references the store dir about to be deleted. The current
+// scope's entry is already removed from disk by the time
+// this runs, so any hit comes from the other scope (global
+// vs project) or a surviving section. Uses the host-union
+// collector (collectReferencedPackagesAllHosts) so pins
+// under any [hosts.*.packages] overlay count as references
+// — flattening to the current host's view would hide them
+// and delete a store entry another host still needs. Bare
+// config versions resolve to the same canonical <v>-<rev>
+// key as storeDir via the shared store resolver.
+func otherScopeReferences(
+	st *store.Store, name, storeDir string,
+	out *output.Output,
+) bool {
+	globalDir, err := galeConfigDir()
+	if err != nil {
+		globalDir = ""
+	}
+	var projPath string
+	if cwd, err := os.Getwd(); err == nil {
+		projPath, _ = config.FindGaleConfig(cwd)
+	}
+	referenced := collectReferencedPackagesAllHosts(
+		globalDir, projPath, st, out,
+	)
+	return referenced[name+"@"+filepath.Base(storeDir)]
 }
 
 // formatSections renders the section list from
