@@ -1,9 +1,31 @@
 # Changelog
 
-## Unreleased
+## v0.16.5 — 2026-06-09
 
 ### Fixed
 
+- darwin: `gale build` of qemu no longer fails at the post-build
+  codesign step. The ad-hoc re-sign is gated to binaries gale
+  actually modified; entitlements (qemu's HVF) are captured before
+  the signature is stripped and re-applied, so they survive the
+  modify-and-resign; and the resource-fork / Finder-info xattrs
+  qemu's `entitlement.sh` attaches — which codesign rejects as
+  "detritus" — are cleared before every re-sign (#27).
+- Build: meson custom-command subprocesses (flex → `m4`) now
+  resolve a dependency `m4` from the build env instead of
+  silently requiring a system `m4`, restoring hermeticity for
+  meson + flex/bison recipes such as postgresql (#28).
+- Lint: the `make` → `gnumake` rule matches the configure step
+  case-insensitively, so openssl's `perl ./Configure` no longer
+  false-positives as a lint error (#29).
+- `gale update` writes the resolved `version-revision` to every
+  `gale.lock` pin instead of dropping the `-N` revision suffix
+  for some packages — which could silently downgrade (e.g.
+  python `3.14.4-3` → `3.14.4`) (#30).
+- build: a regression test guards that a Linux prebuilt installs
+  byte-for-byte without `patchelf` on PATH and emits
+  `$ORIGIN`-relative rpaths; the stale installer comment calling
+  `RelocateStaleRpaths` a Linux no-op stub is corrected (#24).
 - Generation builds skip empty in-flight store dirs (created by
   a concurrent install or left by a killed one), so a package no
   longer silently vanishes from PATH when a rebuild races a
@@ -154,6 +176,10 @@
     (a "skew"). This keeps openssl-dependent installs such as
     `bat` and `eza` on the binary path (~35s) instead of
     source-building openssl (~255s).
+- `gale build --output`/`-o <dir>` writes the produced
+  `<name>-<version>.tar.zst` into the given directory (created
+  if missing) instead of always the current working directory
+  (#25).
 
 ## v0.16.3 — 2026-05-29
 
