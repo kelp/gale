@@ -224,7 +224,14 @@ func generationDrifted(galeDir, storeRoot string, want map[string]string) bool {
 	if len(active) != len(want) {
 		return true
 	}
-	for name, version := range want {
+	// Config versions are bare by convention ("1.8.1") while the
+	// active generation's symlinks carry the canonical store-dir
+	// basename ("1.8.1-4"); comparing them raw reported drift on
+	// every run, so each no-op sync rebuilt and re-swapped a new
+	// generation (gh#49). Resolve the config pins to the store-dir
+	// basenames a fresh build would link before comparing.
+	expected := generation.ActiveVersions(want, storeRoot)
+	for name, version := range expected {
 		if active[name] != version {
 			return true
 		}
