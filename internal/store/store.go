@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/kelp/gale/internal/filelock"
 )
@@ -295,6 +296,114 @@ func (s *Store) List() ([]InstalledPackage, error) {
 		}
 	}
 	return pkgs, nil
+}
+
+// SweepTransient removes crash-leftover transient entries
+// (".build-*" staging dirs, "<version>.bak" backups,
+// "<version>.stream" extract dirs) under every <root>/<name>/
+// directory. Only entries whose mtime is older than maxAge are
+// touched, and a name dir whose lock file is concurrently
+// flock-held is skipped entirely — an in-flight install of any
+// version of that package may still be using its staging dirs
+// (gh#78). Returns the swept paths; in dry mode, the paths that
+// would be swept.
+func (s *Store) SweepTransient(maxAge time.Duration, dry bool) []string {
+	nameEntries, err := os.ReadDir(s.Root)
+	if err != nil {
+		return nil
+	}
+	cutoff := time.Now().Add(-maxAge)
+	var swept []string
+	for _, nameEntry := range nameEntries {
+		if !nameEntry.IsDir() {
+			continue
+		}
+		nameDir := filepath.Join(s.Root, nameEntry.Name())
+		entries, err := os.ReadDir(nameDir)
+		if err != nil {
+			continue
+		}
+		if anyLockHeld(nameDir, entries) {
+			// An install of some version of this package is in
+			// flight; its transient siblings are live.
+			continue
+		}
+		for _, e := range entries {
+			if !isTransientStoreEntry(e.Name()) {
+				continue
+			}
+			info, err := e.Info()
+			if err != nil || info.ModTime().After(cutoff) {
+				continue
+			}
+			path := filepath.Join(nameDir, e.Name())
+			if !dry {
+				if err := os.RemoveAll(path); err != nil {
+					continue
+				}
+			}
+			swept = append(swept, path)
+		}
+	}
+	return swept
+}
+
+// AnyLockHeld reports whether any per-package lock file under
+// the store is currently flock-held — i.e. an install or build
+// is in flight somewhere in the store. Used by gc to veto
+// sweeps of scratch space that cannot be attributed to a
+// specific package (gh#79).
+func (s *Store) AnyLockHeld() bool {
+	nameEntries, err := os.ReadDir(s.Root)
+	if err != nil {
+		return false
+	}
+	for _, nameEntry := range nameEntries {
+		if !nameEntry.IsDir() {
+			continue
+		}
+		nameDir := filepath.Join(s.Root, nameEntry.Name())
+		entries, err := os.ReadDir(nameDir)
+		if err != nil {
+			continue
+		}
+		if anyLockHeld(nameDir, entries) {
+			return true
+		}
+	}
+	return false
+}
+
+// anyLockHeld reports whether any *.lock file among entries
+// (a listing of dir) is concurrently flock-held.
+func anyLockHeld(dir string, entries []os.DirEntry) bool {
+	for _, e := range entries {
+		if !strings.HasSuffix(e.Name(), ".lock") {
+			continue
+		}
+		if lockHeld(filepath.Join(dir, e.Name())) {
+			return true
+		}
+	}
+	return false
+}
+
+// lockHeld probes whether some process currently holds an
+// exclusive flock on path. The probe lock is released
+// immediately; an unopenable path counts as unheld.
+func lockHeld(path string) bool {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	defer f.Close() // releases the probe flock
+	if err := syscall.Flock(
+		int(f.Fd()), //nolint:gosec // fd fits int on all supported platforms
+		syscall.LOCK_EX|syscall.LOCK_NB,
+	); err != nil {
+		return true
+	}
+	return false
 }
 
 // Remove removes a package version from the store. Prefers
