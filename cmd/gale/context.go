@@ -496,6 +496,16 @@ func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, 
 	if err := rebuildGenerationLenient(galeDir, storeRoot, configPath); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
 	}
+	// --host targeting another machine is declaration-only:
+	// the generation just rebuilt comes from the CURRENT
+	// host's effective package set, so a package declared
+	// for a foreign host is correctly absent from it.
+	// Running the presence check anyway mis-reported every
+	// cross-host install as store corruption — after config,
+	// lock, and store were already mutated (gh#72).
+	if host != "" && !config.HostKeyMatches(host, config.CurrentHost()) {
+		return nil
+	}
 	active, err := generation.CurrentVersions(galeDir, storeRoot)
 	if err != nil {
 		return fmt.Errorf(

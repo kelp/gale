@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"path/filepath"
 	"strconv"
 
 	"github.com/kelp/gale/internal/config"
@@ -243,11 +242,13 @@ func resolveGenerationsGaleDir(global, project bool) (string, error) {
 				"no project found — run 'gale init' first",
 			)
 		}
-		return filepath.Join(filepath.Dir(projPath), ".gale"), nil
+		return galeDirForConfig(projPath)
 	}
-	// Auto.
+	// Auto. galeDirForConfig (not Dir(cfg)/.gale): under
+	// ~/.gale the found config is the GLOBAL one and the
+	// derived dir would be the bogus ~/.gale/.gale (gh#96).
 	if projPath, err := config.FindGaleConfig(cwd); err == nil {
-		return filepath.Join(filepath.Dir(projPath), ".gale"), nil
+		return galeDirForConfig(projPath)
 	}
 	return galeConfigDir()
 }
