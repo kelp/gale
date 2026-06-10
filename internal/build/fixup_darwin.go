@@ -132,14 +132,19 @@ func FixupBinaries(prefixDir string) error {
 			}
 		}
 
-		// Re-sign (required on macOS after modification).
-		// Apple Silicon SIGKILLs unsigned Mach-Os on exec,
-		// so a failed signature here would produce a broken
-		// tarball — fail the build instead of shipping one.
-		if err := run("codesign", "--force", "--sign",
-			"-", file); err != nil {
-			return fmt.Errorf("codesign %s: %w",
-				filepath.Base(file), err)
+		// Re-sign ONLY binaries gale actually modified. An
+		// untouched Mach-O (e.g. qemu's self-signed mains,
+		// carrying an HVF entitlement) is left byte-identical:
+		// re-signing it serves no purpose and would strip the
+		// entitlement (issue #27). Apple Silicon SIGKILLs
+		// unsigned Mach-Os on exec, so a failed re-sign of a
+		// binary we DID modify must fail the build rather than
+		// ship a broken tarball.
+		if shouldResign(changed, inLib) {
+			if err := resign(file); err != nil {
+				return fmt.Errorf("codesign %s: %w",
+					filepath.Base(file), err)
+			}
 		}
 	}
 
@@ -239,13 +244,20 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		if existingRpaths(file)[rpath] {
 			continue
 		}
+		// Capture entitlements BEFORE addRpathRetry runs. When the
+		// Mach-O header lacks padding, addRpathRetry strips the
+		// signature (and with it the entitlements) to free space.
+		// Extracting here, while the original signature is intact,
+		// preserves an entitlement (e.g. qemu's HVF entitlement)
+		// even when the strip-and-retry branch fires (issue #27,
+		// point 2). resignWithEntitlements re-applies it.
+		ent := extractEntitlements(file)
 		if err := addRpathRetry(file, rpath); err != nil {
 			// addRpathRetry already warned; skip this file
 			// rather than fail the whole build.
 			continue
 		}
-		if err := run("codesign", "--force", "--sign",
-			"-", file); err != nil {
+		if err := resignWithEntitlements(file, ent); err != nil {
 			return fmt.Errorf("codesign %s: %w",
 				filepath.Base(file), err)
 		}
@@ -410,6 +422,7 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 
 	for _, file := range files {
 		rpaths := existingRpaths(file)
+		rewrote := false
 		for rpath := range rpaths {
 			var newPath string
 			switch {
@@ -438,12 +451,16 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 				return fmt.Errorf("rewrite rpath %s in %s: %w",
 					rpath, file, err)
 			}
+			rewrote = true
 		}
-		// Re-sign after modification.
-		if err := run("codesign", "--force", "--sign",
-			"-", file); err != nil {
-			return fmt.Errorf("codesign %s: %w",
-				filepath.Base(file), err)
+		// Re-sign ONLY when an rpath was actually rewritten. A
+		// file with no stale rpath is left byte-identical so the
+		// installed artifact still matches what was attested.
+		if rewrote {
+			if err := resign(file); err != nil {
+				return fmt.Errorf("codesign %s: %w",
+					filepath.Base(file), err)
+			}
 		}
 	}
 	return nil
@@ -507,6 +524,111 @@ func isSuspiciousDepRef(ref string, depStoreDirs []string) bool {
 		}
 	}
 	return false
+}
+
+// resign applies a fresh ad-hoc signature to a Mach-O after gale
+// has modified it (e.g. added a farm rpath). It strips any
+// existing signature first (mirroring addRpathRetry) so codesign
+// --sign starts from a clean header: re-signing a binary that
+// already carries an ad-hoc signature + entitlements can trip a
+// codesign edge case whose error a plain --force --sign would
+// surface as a build failure (issue #27). --remove-signature is a
+// no-op on an unsigned file, so this is safe to call
+// unconditionally.
+//
+// Entitlements are PRESERVED across the re-sign. gale must add a
+// farm rpath to binaries like qemu-system-aarch64, which has
+// runtime deps (glib, pixman) referenced via @rpath/ — so the
+// binary genuinely changes and cannot be left byte-identical. But
+// qemu self-signs its mains with the Hypervisor.framework
+// entitlement it needs for HVF acceleration. A plain ad-hoc
+// re-sign would drop that entitlement (issue #27, point 2), so we
+// extract the existing entitlements first and re-apply them.
+func resign(file string) error {
+	return resignWithEntitlements(file, extractEntitlements(file))
+}
+
+// resignWithEntitlements re-signs a Mach-O, re-applying the given
+// entitlements XML (pass "" for none). Callers that modify a binary
+// in a way that may strip its signature first (e.g. addRpathRetry's
+// header-too-small branch runs `codesign --remove-signature`) MUST
+// capture entitlements via extractEntitlements BEFORE that
+// modification and pass them here — by the time resign runs the
+// original entitlements are already gone (issue #27, point 2).
+func resignWithEntitlements(file, ent string) error {
+	_ = run("codesign", "--remove-signature", file)
+	args := []string{"--force", "--sign", "-"}
+	if ent != "" {
+		// Write the recovered entitlements to a temp plist and pass
+		// it to codesign so the new signature carries them too.
+		// Staging the plist MUST succeed: silently signing without
+		// --entitlements would drop the entitlement (e.g. qemu's HVF)
+		// while the build still "succeeds" — the exact failure mode
+		// issue #27 guards against. So a staging failure is fatal.
+		f, err := os.CreateTemp("", "gale-entitlements-*.plist")
+		if err != nil {
+			return fmt.Errorf("stage entitlements for %s: %w",
+				filepath.Base(file), err)
+		}
+		path := f.Name()
+		defer os.Remove(path)
+		_, werr := f.WriteString(ent)
+		cerr := f.Close()
+		if werr != nil {
+			return fmt.Errorf("write entitlements for %s: %w",
+				filepath.Base(file), werr)
+		}
+		if cerr != nil {
+			return fmt.Errorf("write entitlements for %s: %w",
+				filepath.Base(file), cerr)
+		}
+		args = append(args, "--entitlements", path)
+	}
+	args = append(args, file)
+	return run("codesign", args...)
+}
+
+// extractEntitlements returns the embedded entitlements plist (XML)
+// of a Mach-O, or "" if it carries none (or codesign fails). The
+// returned XML is suitable for re-applying via codesign
+// --entitlements.
+//
+// `codesign --display --entitlements - --xml` writes the plist as
+// clean XML to stdout (macOS 12+). On older toolchains --xml is
+// absent and the raw blob is emitted with an 8-byte binary magic
+// header (0xfade7171 + length) before the <?xml prologue; we strip
+// any bytes preceding the XML prologue so either format works. An
+// unsigned or entitlement-free binary yields no <key> elements,
+// which we treat as "none" so we don't pass an empty entitlements
+// file (which codesign rejects).
+func extractEntitlements(file string) string {
+	cmd := exec.Command("codesign", "--display", "--entitlements",
+		"-", "--xml", file)
+	out, err := cmd.Output()
+	if err != nil || !strings.Contains(string(out), "<?xml") {
+		// Retry without --xml for older codesign; the raw blob form
+		// carries the same XML after a binary magic header.
+		cmd = exec.Command("codesign", "--display",
+			"--entitlements", "-", file)
+		out, err = cmd.Output()
+		if err != nil {
+			return ""
+		}
+	}
+	s := string(out)
+	// Strip any binary magic header preceding the XML prologue.
+	if i := strings.Index(s, "<?xml"); i > 0 {
+		s = s[i:]
+	}
+	s = strings.TrimSpace(s)
+	// An entitlement-bearing binary emits a plist with at least one
+	// <key>. A signed-but-entitlement-free binary emits nothing or
+	// an empty document; re-applying that would be a no-op at best
+	// and a codesign error at worst, so skip it.
+	if !strings.Contains(s, "<key>") {
+		return ""
+	}
+	return s
 }
 
 // run executes a command and returns any error.
