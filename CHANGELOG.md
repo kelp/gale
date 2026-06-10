@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- `gale outdated` no longer reports git-installed packages (bare
+  short-hash versions) as always outdated. Packages whose installed
+  version is a git hash are skipped by the comparison; run
+  `gale update <pkg>` to rebuild from HEAD. (#63)
+
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
