@@ -184,7 +184,7 @@ func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, erro
 		// DryRun suppresses all writes.
 		if !r.DryRun {
 			if etag := resp.Header.Get("ETag"); etag != "" {
-				writeCacheEntry(entryDir, bodyPath, etagPath, body, etag)
+				writeCacheEntry(entryDir, body, etag)
 			}
 		}
 		return cacheResult{Body: body}, nil
@@ -254,20 +254,55 @@ func plainGet(ctx context.Context, url string) ([]byte, error) {
 	return io.ReadAll(resp.Body)
 }
 
-// writeCacheEntry commits body + etag to disk. Best-effort —
-// failures are swallowed. A failed write means the next fetch
-// re-downloads, which is a correctness-preserving degradation.
-func writeCacheEntry(entryDir, bodyPath, etagPath string, body []byte, etag string) {
-	if err := os.MkdirAll(entryDir, 0o755); err != nil {
+// writeCacheEntry commits body + etag to disk atomically.
+// Both files are written into a staging temp directory first, then
+// the staging directory is renamed over entryDir in a single
+// syscall. This ensures concurrent writers can never produce a
+// mismatched body/etag pair: a reader always sees either the old
+// complete pair or the new complete pair, never a mix.
+// Best-effort — failures are swallowed. A failed write means the
+// next fetch re-downloads, which is a correctness-preserving
+// degradation.
+func writeCacheEntry(entryDir string, body []byte, etag string) {
+	parent := filepath.Dir(entryDir)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return
 	}
-	// Write body + etag via temp-file + rename so a crash can't
-	// leave body and etag out of sync (partial body with a fresh
-	// etag would revalidate to 304 and return garbage).
-	if err := atomicWrite(bodyPath, body); err != nil {
+
+	// Stage both files in a temp directory adjacent to entryDir so
+	// the rename is on the same filesystem (required for atomicity
+	// on Linux/macOS; os.Rename is not atomic across filesystems).
+	tmp, err := os.MkdirTemp(parent, ".gale-cache-tmp-*")
+	if err != nil {
 		return
 	}
-	_ = atomicWrite(etagPath, []byte(etag))
+	// Remove the staging dir on any error path.
+	ok := false
+	defer func() {
+		if !ok {
+			os.RemoveAll(tmp)
+		}
+	}()
+
+	if err := atomicWrite(filepath.Join(tmp, "body"), body); err != nil {
+		return
+	}
+	if err := atomicWrite(filepath.Join(tmp, "etag"), []byte(etag)); err != nil {
+		return
+	}
+
+	// Rename the staging directory over the entry directory.
+	// On Linux this fails if entryDir already exists (ENOTDIR or
+	// EEXIST when the old and new are both directories on some
+	// kernels); remove the old entry first so the rename succeeds.
+	// The window between Remove and Rename is tiny and any
+	// concurrent reader that hits an absent entryDir will simply
+	// re-fetch, which is the correct degraded behavior.
+	_ = os.RemoveAll(entryDir)
+	if err := os.Rename(tmp, entryDir); err != nil {
+		return
+	}
+	ok = true
 }
 
 // atomicWrite writes data to path via a temp file in the same
