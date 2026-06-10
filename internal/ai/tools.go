@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -40,6 +41,69 @@ func RecipeTools(recipeDir string, checkRecipe func(string) bool) ([]Tool, func(
 		writeRecipeTool(recipeDir),
 		lintRecipeTool(recipeDir),
 	}, cleanup
+}
+
+// containedPath verifies that path resolves inside
+// allowedDir — after cleaning, .. elimination, and
+// symlink resolution — and returns the cleaned absolute
+// path. Symlinks are followed only for the containment
+// check; the returned path keeps the caller's form so
+// symlinked roots (macOS /var -> /private/var) round-trip.
+// Tool handlers receive LLM-controlled arguments, so
+// every local read or write must pass through here.
+func containedPath(allowedDir, path string) (string, error) {
+	cleanDir, err := filepath.Abs(allowedDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve allowed dir: %w", err)
+	}
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+
+	sep := string(filepath.Separator)
+	if absPath != cleanDir &&
+		!strings.HasPrefix(absPath, cleanDir+sep) {
+		return "", fmt.Errorf(
+			"path %q is outside allowed directory", path,
+		)
+	}
+
+	// Re-check after following symlinks so a link inside
+	// allowedDir cannot point the read or write outside.
+	// The target may not exist yet (writes), so fall back
+	// to resolving its parent directory.
+	realDir, err := filepath.EvalSymlinks(cleanDir)
+	if err != nil {
+		return "", fmt.Errorf("resolve allowed dir: %w", err)
+	}
+	realPath, err := filepath.EvalSymlinks(absPath)
+	if errors.Is(err, os.ErrNotExist) {
+		parent, perr := filepath.EvalSymlinks(filepath.Dir(absPath))
+		if perr != nil {
+			return "", fmt.Errorf("resolve path: %w", perr)
+		}
+		realPath = filepath.Join(parent, filepath.Base(absPath))
+	} else if err != nil {
+		return "", fmt.Errorf("resolve path: %w", err)
+	}
+	if realPath != realDir &&
+		!strings.HasPrefix(realPath, realDir+sep) {
+		return "", fmt.Errorf(
+			"path %q is outside allowed directory", path,
+		)
+	}
+	return absPath, nil
+}
+
+// validRecipeName reports whether an LLM-supplied package
+// name is a plain filename: non-empty, no path separators,
+// no leading dot.
+func validRecipeName(name string) bool {
+	return name != "" &&
+		name == filepath.Base(name) &&
+		!strings.ContainsAny(name, `/\`) &&
+		!strings.HasPrefix(name, ".")
 }
 
 func githubInfoTool() Tool {
@@ -98,7 +162,12 @@ func downloadAndHashTool(tmpDir string) Tool {
 			baseName := filepath.Base(args.URL)
 			h := sha256.Sum256([]byte(args.URL))
 			prefix := hex.EncodeToString(h[:4])
-			destPath := filepath.Join(tmpDir, prefix+"-"+baseName)
+			destPath, err := containedPath(
+				tmpDir, filepath.Join(tmpDir, prefix+"-"+baseName),
+			)
+			if err != nil {
+				return "", err
+			}
 
 			if err := download.Fetch(args.URL, destPath); err != nil {
 				return "", fmt.Errorf("download: %w", err)
@@ -372,6 +441,11 @@ func writeRecipeTool(tmpDir string) Tool {
 			if args.Name == "" {
 				return "", fmt.Errorf("name is required")
 			}
+			if !validRecipeName(args.Name) {
+				return "", fmt.Errorf(
+					"invalid package name %q", args.Name,
+				)
+			}
 
 			letter := string(args.Name[0])
 			dir := filepath.Join(tmpDir, letter)
@@ -379,7 +453,12 @@ func writeRecipeTool(tmpDir string) Tool {
 				return "", fmt.Errorf("mkdir: %w", err)
 			}
 
-			path := filepath.Join(dir, args.Name+".toml")
+			path, err := containedPath(
+				tmpDir, filepath.Join(dir, args.Name+".toml"),
+			)
+			if err != nil {
+				return "", err
+			}
 			if err := os.WriteFile(path, []byte(args.Content), 0o644); err != nil { //nolint:gosec
 				return "", fmt.Errorf("write: %w", err)
 			}
@@ -415,18 +494,9 @@ func lintRecipeTool(allowedDir string) Tool {
 				return "", fmt.Errorf("parse input: %w", err)
 			}
 
-			absPath, err := filepath.Abs(args.Path)
+			cleanPath, err := containedPath(allowedDir, args.Path)
 			if err != nil {
-				return "", fmt.Errorf("resolve path: %w", err)
-			}
-			cleanPath := filepath.Clean(absPath)
-			cleanDir := filepath.Clean(allowedDir)
-			if !strings.HasPrefix(cleanPath, cleanDir+string(filepath.Separator)) &&
-				cleanPath != cleanDir {
-				return "", fmt.Errorf(
-					"path %q is outside allowed directory",
-					args.Path,
-				)
+				return "", err
 			}
 
 			data, err := os.ReadFile(cleanPath)
