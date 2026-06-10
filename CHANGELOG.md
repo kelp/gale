@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- `gale env --project` and `gale env` (auto) now accept a project
+  that has only a `.tool-versions` file (no `gale.toml`), matching
+  the behaviour of all other read-only `--project` commands (#80).
+
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
