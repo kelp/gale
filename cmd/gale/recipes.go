@@ -78,15 +78,26 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
+				// A genuine miss — composeResolvers falls
+				// through to the next resolver in the chain.
 				return nil, fmt.Errorf(
 					"no local recipe for %q", name,
 				)
 			}
-			return nil, fmt.Errorf("reading recipe %q: %w", name, err)
+			// The recipe exists but cannot be read — a real
+			// failure that must stop the resolver chain (gh#71).
+			return nil, &recipeResolveError{
+				fmt.Errorf("reading recipe %s: %w", path, err),
+			}
 		}
 		rec, err := recipe.Parse(string(data))
 		if err != nil {
-			return nil, err
+			// Corrupt recipe — surface the parse error naming
+			// the file instead of letting a lower-priority
+			// resolver shadow it (gh#71).
+			return nil, &recipeResolveError{
+				fmt.Errorf("parsing recipe %s: %w", path, err),
+			}
 		}
 
 		// If recipe has no inline binaries, try the

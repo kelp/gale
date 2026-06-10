@@ -19,14 +19,18 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
+
+	"github.com/kelp/gale/internal/httpclient"
 )
 
-// httpClient is used for all HTTP requests to ensure
-// timeouts are enforced. 5 minutes is generous enough
-// for large downloads.
-var httpClient = &http.Client{
-	Timeout: 5 * time.Minute,
-}
+// httpClient serves all download traffic. It is the process-wide
+// shared client from internal/httpclient, which deliberately has
+// no whole-transfer Timeout: a hard cap (formerly 5 minutes here)
+// aborts large GHCR blob and source tarball transfers mid-stream
+// on slow links (gh#61). Stalled connections are still bounded by
+// the transport's dial and TLS handshake timeouts; callers that
+// need a per-request deadline pass one via context.
+var httpClient = httpclient.Default()
 
 // mirrors maps URL prefixes to fallback mirror prefixes.
 // When a download fails with an HTTP error, the URL prefix
