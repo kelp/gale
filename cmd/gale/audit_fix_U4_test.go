@@ -208,6 +208,52 @@ func TestGCRetainsOtherHostPins(t *testing.T) {
 	}
 }
 
+// TestGCAbortsWhenProjectScopeUnresolvable pins the PR#104
+// review finding: when a project config exists but
+// galeDirForConfig fails, gc must abort instead of silently
+// dropping the whole project scope (config pins, active project
+// generation, swap-link sweep) from its retention set — gc is
+// destructive, and a shrunken retained set deletes store
+// versions the project still references. On Linux the only
+// failure mode of galeDirForConfig is os.UserHomeDir with $HOME
+// empty, which is injected after fixture setup; pre-fix, gc
+// treated the error like the config-is-global case and returned
+// nil.
+func TestGCAbortsWhenProjectScopeUnresolvable(t *testing.T) {
+	galeDir, storeRoot := setupGCHome(t)
+	writeGlobalConfig(t, galeDir, "[packages]\n")
+	jqDir := mkStorePkg(t, storeRoot, "jq", "1.7-1")
+
+	// A project config FindGaleConfig will discover from cwd
+	// (the walk needs no $HOME).
+	projDir := filepath.Join(filepath.Dir(galeDir), "project")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projDir, "gale.toml"),
+		[]byte("[packages]\njq = \"1.7\"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(projDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Injection: blank $HOME so galeDirForConfig's
+	// os.UserHomeDir call fails inside RunE.
+	t.Setenv("HOME", "")
+
+	if err := gcCmd.RunE(gcCmd, nil); err == nil {
+		t.Error("gc must abort when the project gale dir " +
+			"cannot be resolved — proceeding shrinks the " +
+			"retention set")
+	}
+	if _, err := os.Stat(jqDir); err != nil {
+		t.Errorf("store entry must survive an aborted gc: %v", err)
+	}
+}
+
 // TestGCSweepsCrashLeftovers pins gh#78: transient store
 // entries stranded by a killed install (.build-*, *.bak,
 // *.stream) and stale current-new.<pid> swap symlinks must be

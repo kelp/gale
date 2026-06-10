@@ -40,7 +40,16 @@ var gcCmd = &cobra.Command{
 		}
 		if projPath != "" {
 			dir, err := galeDirForConfig(projPath)
-			if err != nil || dir == globalDir {
+			if err != nil {
+				// gc is destructive: an unresolvable project
+				// scope must abort the run, not silently
+				// shrink the retained set.
+				return fmt.Errorf(
+					"resolving project gale dir for %s: %w",
+					projPath, err,
+				)
+			}
+			if dir == globalDir {
 				// The "project" config is the global one —
 				// the global pass below already covers it.
 				projPath = ""
