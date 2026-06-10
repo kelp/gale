@@ -61,6 +61,10 @@ var installCmd = &cobra.Command{
 			return err
 		}
 		ctx.Host = resolveHostFlag(installHost)
+		// A typo'd --host would silently create a new
+		// [hosts.<typo>] section at finalize; make that
+		// visible up front (gh#108).
+		noticeNewHostSection(out, ctx.GalePath, ctx.Host)
 
 		// If --path flag is provided, build from local source.
 		if installPath != "" {

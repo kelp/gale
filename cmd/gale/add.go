@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -50,6 +51,16 @@ var addCmd = &cobra.Command{
 			return r.Package.Version, nil
 		}
 
+		host := resolveHostFlag(addHost)
+		if host != "" {
+			useGlobal := resolveScope(addGlobal, addProject, cwd)
+			configPath, err := resolveConfigPath(useGlobal)
+			if err != nil {
+				return err
+			}
+			noticeNewHostSection(out, configPath, host)
+		}
+
 		for _, arg := range args {
 			name, version, err := parsePackageArg(arg)
 			if err != nil {
@@ -65,8 +76,6 @@ var addCmd = &cobra.Command{
 				}
 				version = resolved
 			}
-
-			host := resolveHostFlag(addHost)
 
 			if dryRun {
 				useGlobal := resolveScope(addGlobal, addProject, cwd)
@@ -112,6 +121,29 @@ func resolveHostFlag(v string) string {
 		return config.CurrentHost()
 	}
 	return v
+}
+
+// noticeNewHostSection warns when a --host value names a host
+// that is neither this machine nor covered by any existing
+// [hosts.<key>] section in configPath, so a typo'd hostname
+// that would silently create a brand-new section is visible
+// (gh#108). A notice, not an error: declaring packages for a
+// host that isn't in the config yet is a supported workflow.
+// No-op for empty host (shared [packages]) and under --dry-run
+// (nothing is created).
+func noticeNewHostSection(out *output.Output, configPath, host string) {
+	if host == "" || dryRun {
+		return
+	}
+	if config.HostKeyMatches(host, config.CurrentHost()) {
+		return
+	}
+	if config.HostSectionExists(configPath, host) {
+		return
+	}
+	out.Warn(fmt.Sprintf(
+		"creating new host section '%s' in %s", host, configPath,
+	))
 }
 
 func init() {

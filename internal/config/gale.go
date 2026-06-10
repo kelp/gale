@@ -150,6 +150,39 @@ func matchingHostKeys(hosts map[string]HostConfig, host string) []string {
 	return keys
 }
 
+// HostSectionExists reports whether the gale.toml at path
+// already contains a [hosts.<key>] section that applies to
+// host. A key applies when it equals host literally (covers
+// comma-list keys, which HostKeyMatches splits and never
+// compares whole) or when HostKeyMatches in either direction:
+// an exact key, a glob key covering host, or a glob host value
+// covering an exact key all count. Legacy unquoted dotted
+// headers ([hosts.travis-mb.local.packages], pre-#59) parse as
+// nested tables and never reach the typed Hosts map, but the
+// section exists on disk and the mutators normalize and reuse
+// it, so they count too. Errors (unreadable or unparseable
+// file) report true so callers stay quiet and let the
+// subsequent write surface the real problem.
+func HostSectionExists(path, host string) bool {
+	content, err := readOrEmpty(path)
+	if err != nil {
+		return true
+	}
+	if legacyHostSectionLineIndex(splitLines(content), host) >= 0 {
+		return true
+	}
+	cfg, err := ParseGaleConfig(string(content))
+	if err != nil {
+		return true
+	}
+	for k := range cfg.Hosts {
+		if k == host || HostKeyMatches(k, host) || HostKeyMatches(host, k) {
+			return true
+		}
+	}
+	return false
+}
+
 // CurrentHost returns the active host identifier. Reads
 // $GALE_HOST first; falls back to os.Hostname(). Returns "" if
 // both fail.
