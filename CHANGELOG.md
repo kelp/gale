@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- `gale doctor` now checks each lib farm against its own
+  scope's packages — global farm vs global config, project
+  farm vs project config — instead of validating the global
+  farm against the merged set. This ends the persistent
+  false "Lib farm drift" that `--repair` could never fix
+  for project-only dylib packages, and makes real project
+  farm drift visible for the first time. (#50)
+
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's

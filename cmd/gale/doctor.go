@@ -480,23 +480,36 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 	return false
 }
 
-// checkFarm verifies the shared dylib farm at
-// ~/.gale/lib/ is in sync with the active generation.
+// checkFarm verifies each shared dylib farm is in sync
+// with the generation built from its own scope: the global
+// farm (~/.gale/lib/) against global packages, and the
+// project farm (<proj>/.gale/lib/) against project packages
+// when a project config exists. Scopes are checked
+// separately — generation.Build populates each farm from
+// its per-scope package set, so validating the global farm
+// against merged global+project packages reported false
+// drift that `gale doctor --repair` could never fix (#50).
 // Older revisions still on disk (awaiting `gale gc`) are
 // out of scope — they aren't on PATH and aren't in the
 // farm by design.
 func checkFarm(ctx *doctorContext) bool {
-	farmDir := farm.Dir(ctx.galeDir)
-	activePkgs := make(
-		map[string]string, len(ctx.globalPkgs)+len(ctx.projPkgs),
-	)
-	for k, v := range ctx.globalPkgs {
-		activePkgs[k] = v
+	ok := checkFarmScope(ctx, ctx.galeDir, ctx.globalPkgs)
+	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil {
+		projGaleDir := filepath.Join(filepath.Dir(projPath), ".gale")
+		if !checkFarmScope(ctx, projGaleDir, ctx.projPkgs) {
+			ok = false
+		}
 	}
-	for k, v := range ctx.projPkgs {
-		activePkgs[k] = v
-	}
-	active := generation.ActiveStoreDirs(activePkgs, ctx.storeRoot)
+	return ok
+}
+
+// checkFarmScope validates one farm (galeDir/lib) against
+// the package set generation.Build uses to populate it.
+func checkFarmScope(
+	ctx *doctorContext, galeDir string, pkgs map[string]string,
+) bool {
+	farmDir := farm.Dir(galeDir)
+	active := generation.ActiveStoreDirs(pkgs, ctx.storeRoot)
 	issues, err := farm.CheckDrift(active, farmDir)
 	if err != nil {
 		ctx.out.Error(fmt.Sprintf("Farm check failed: %v", err))
