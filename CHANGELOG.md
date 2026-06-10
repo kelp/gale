@@ -14,6 +14,11 @@
   preventing concurrent writers from committing a mismatched
   body/etag pair that a subsequent 304 would serve as authoritative.
   (F42 / #81)
+- `writeCacheEntry` now promotes the staging directory via a
+  backup-rename dance instead of deleting the old entry first, so
+  a failed promotion can no longer discard the previously valid
+  body/etag pair that offline and stale-on-error reads depend on.
+  (F42 follow-up / #95)
 
 ### Changed
 

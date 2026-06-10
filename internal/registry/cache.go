@@ -35,6 +35,11 @@ import (
 // users mix locally-developed packages into their gale.toml
 // and run read-only commands like outdated / sbom / doctor.
 
+// renameDir is a seam for tests to inject rename failures in
+// writeCacheEntry's promote step. Mirrors the same seam in
+// internal/installer.
+var renameDir = os.Rename
+
 // negativeCacheTTL bounds how long a cached 404 stays
 // authoritative. Long enough to dedupe back-to-back read-only
 // command invocations in a busy session, short enough that a
@@ -260,8 +265,10 @@ func plainGet(ctx context.Context, url string) ([]byte, error) {
 // syscall. This ensures concurrent writers can never produce a
 // mismatched body/etag pair: a reader always sees either the old
 // complete pair or the new complete pair, never a mix.
-// Best-effort — failures are swallowed. A failed write means the
-// next fetch re-downloads, which is a correctness-preserving
+// Best-effort — failures are swallowed. A failed write keeps the
+// previous entry intact (see the backup-rename dance below), so
+// offline and stale-on-error reads continue serving the old pair;
+// the next fetch re-downloads, which is a correctness-preserving
 // degradation.
 func writeCacheEntry(entryDir string, body []byte, etag string) {
 	parent := filepath.Dir(entryDir)
@@ -292,17 +299,38 @@ func writeCacheEntry(entryDir string, body []byte, etag string) {
 	}
 
 	// Rename the staging directory over the entry directory.
-	// On Linux this fails if entryDir already exists (ENOTDIR or
-	// EEXIST when the old and new are both directories on some
-	// kernels); remove the old entry first so the rename succeeds.
-	// The window between Remove and Rename is tiny and any
-	// concurrent reader that hits an absent entryDir will simply
-	// re-fetch, which is the correct degraded behavior.
-	_ = os.RemoveAll(entryDir)
-	if err := os.Rename(tmp, entryDir); err != nil {
+	// os.Rename fails when the target is an existing non-empty
+	// directory, so the old entry must move out of the way first.
+	// Use a backup-rename dance instead of RemoveAll so a failed
+	// promotion can never lose the previously valid pair:
+	//
+	//   1. Drop any stale <entryDir>.old left by an earlier crash,
+	//      so the backup rename below can't fail on a non-empty
+	//      target.
+	//   2. Rename entryDir to <entryDir>.old (atomic; skipped when
+	//      no prior entry exists).
+	//   3. Rename the staging dir over entryDir. On failure,
+	//      restore the backup and bail — offline and stale-on-error
+	//      reads keep serving the old pair.
+	//   4. On success, drop the backup.
+	//
+	// Crash windows: between 2 and 3 the entry is briefly absent —
+	// a concurrent reader re-fetches, which is the correct degraded
+	// behavior — and step 1 of the next write reclaims the
+	// leftover. A crash after 3 leaves only a stale .old, likewise
+	// reclaimed. At no point can a reader observe a mismatched
+	// body/etag pair.
+	backup := entryDir + ".old"
+	_ = os.RemoveAll(backup)
+	hadOld := renameDir(entryDir, backup) == nil
+	if err := renameDir(tmp, entryDir); err != nil {
+		if hadOld {
+			_ = renameDir(backup, entryDir)
+		}
 		return
 	}
 	ok = true
+	_ = os.RemoveAll(backup)
 }
 
 // atomicWrite writes data to path via a temp file in the same
