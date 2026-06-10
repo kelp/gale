@@ -2,13 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- `gale verify`: strip the revision suffix from the lockfile version
-  before constructing the OCI tag, so the tag matches the bare
-  `<version>-<platform>` form that gale-recipes CI pushes to GHCR
-  (issue #62).
-
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
