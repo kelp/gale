@@ -82,7 +82,11 @@ func FixupBinaries(prefixDir string) error {
 		return nil
 	}
 
-	libDir := filepath.Join(prefixDir, "lib")
+	// Trailing separator so libexec/ and lib64/ paths are
+	// not misclassified as lib/ (they hold executables, not
+	// dylibs, and must not get dylib-only fixups).
+	libDir := filepath.Join(prefixDir, "lib") +
+		string(filepath.Separator)
 
 	for _, file := range files {
 		inLib := strings.HasPrefix(file, libDir)
@@ -240,8 +244,9 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 			continue
 		}
 		if err := addRpathRetry(file, rpath); err != nil {
-			// addRpathRetry already warned; skip this file
-			// rather than fail the whole build.
+			// addRpathRetry already warned and restored the
+			// signature it stripped; skip this file rather
+			// than fail the whole build.
 			continue
 		}
 		if err := run("codesign", "--force", "--sign",
@@ -291,7 +296,10 @@ func relativeFarmRpath(prefixDir, file string) string {
 // ad-hoc signature and retrying once if the header lacks space.
 // Returns an error (after warning) only if the rpath still won't
 // fit, so callers can skip the file instead of aborting. The
-// caller re-signs after a successful add.
+// caller re-signs after a successful add; on failure this
+// function re-signs the file itself, restoring the signature it
+// stripped — a missing farm rpath degrades the binary, but an
+// unsigned Mach-O is SIGKILLed on exec on Apple Silicon.
 func addRpathRetry(file, rpath string) error {
 	if err := run("install_name_tool",
 		"-add_rpath", rpath, file); err == nil {
@@ -306,6 +314,14 @@ func addRpathRetry(file, rpath string) error {
 				"header space (link with "+
 				"-Wl,-headerpad_max_install_names)\n",
 			rpath, filepath.Base(file))
+		// Restore the signature stripped above so the file is
+		// never left unsigned in the build prefix — the
+		// source-build install path never re-signs.
+		if serr := run("codesign", "--force", "--sign",
+			"-", file); serr != nil {
+			return fmt.Errorf("re-sign %s after failed rpath"+
+				" add: %w", filepath.Base(file), serr)
+		}
 		return err
 	}
 	return nil
@@ -390,7 +406,7 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 		if info.IsDir() || !info.Mode().IsRegular() {
 			return nil
 		}
-		if isMachO(path) {
+		if isMachO(path) && !isObjectFile(path) && !isDSYMBundle(path) {
 			files = append(files, path)
 		}
 		return nil
@@ -409,6 +425,7 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 	currentFarmDir := filepath.Join(galeDir, "lib")
 
 	for _, file := range files {
+		changed := false
 		rpaths := existingRpaths(file)
 		for rpath := range rpaths {
 			var newPath string
@@ -438,8 +455,14 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 				return fmt.Errorf("rewrite rpath %s in %s: %w",
 					rpath, file, err)
 			}
+			changed = true
 		}
-		// Re-sign after modification.
+		// Re-sign only when an rpath was rewritten. Files
+		// with no stale rpaths stay byte-for-byte identical
+		// to the attested archive.
+		if !changed {
+			continue
+		}
 		if err := run("codesign", "--force", "--sign",
 			"-", file); err != nil {
 			return fmt.Errorf("codesign %s: %w",
