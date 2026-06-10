@@ -2,24 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- `atomicfile.Write` now preserves the existing file's permission
-  bits when rewriting a file, and creates new files at 0644
-  (world-readable); previously it silently downgraded every config
-  and lock file to 0600 on first rewrite, breaking shared-checkout
-  and multi-user reads of `gale.toml`. (F13 / #81)
-- Registry cache `writeCacheEntry` now writes body and etag into a
-  staging directory and renames the whole directory atomically,
-  preventing concurrent writers from committing a mismatched
-  body/etag pair that a subsequent 304 would serve as authoritative.
-  (F42 / #81)
-- `writeCacheEntry` now promotes the staging directory via a
-  backup-rename dance instead of deleting the old entry first, so
-  a failed promotion can no longer discard the previously valid
-  body/etag pair that offline and stale-on-error reads depend on.
-  (F42 follow-up / #95)
-
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
