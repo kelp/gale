@@ -247,7 +247,7 @@ func TestFinalizeInstallRotatesGenOnRevisionBump(t *testing.T) {
 
 	mkRev("2.92.0-3")
 	if err := finalizeInstall(galeDir, storeRoot, configPath, "",
-		"gh", "2.92.0", "2.92.0-3", "deadbeef"); err != nil {
+		"gh", "2.92.0", "2.92.0-3", "deadbeef", ""); err != nil {
 		t.Fatalf("finalizeInstall on revision bump: %v", err)
 	}
 
@@ -314,7 +314,7 @@ func TestFinalizeInstallWithMissingOtherPkgInConfig(t *testing.T) {
 	}
 
 	err := finalizeInstall(galeDir, storeRoot, configPath, "",
-		"gh", "2.92.0", "2.92.0-3", "deadbeef")
+		"gh", "2.92.0", "2.92.0-3", "deadbeef", "")
 	if err != nil {
 		t.Fatalf("finalizeInstall should be lenient (skip uninstalled config pkgs) and succeed, got: %v", err)
 	}
@@ -410,7 +410,7 @@ func TestFinalizeInstallPreservesAllDeclaredPackages(t *testing.T) {
 	// Run finalizeInstall — the EXACT function `just install`
 	// calls after building gale from source.
 	if err := finalizeInstall(galeDir, storeRoot, configPath, "",
-		newPkg, newVersion, newVersion+"-1", "deadbeef"); err != nil {
+		newPkg, newVersion, newVersion+"-1", "deadbeef", ""); err != nil {
 		t.Fatalf("finalizeInstall: %v", err)
 	}
 

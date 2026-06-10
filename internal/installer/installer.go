@@ -152,6 +152,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 
 	method := MethodSource
 	var sha256 string
+	var manifestDigest string
 
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	binaryViable := bin != nil && !inst.SourceOnly
@@ -199,6 +200,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 		if berr := installBinaryTo(bin, storeDir, canonicalDir, name, version, fallback, inst.Verifier, !staged, inst.Downloads); berr == nil {
 			method = MethodBinary
 			sha256 = bin.SHA256
+			manifestDigest = bin.ManifestDigest
 		} else {
 			// Binary install failed — fall back to source build.
 			// Reaching here means the recipe advertised a binary
@@ -253,10 +255,11 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	}
 
 	return &InstallResult{
-		Name:    name,
-		Version: version,
-		Method:  method,
-		SHA256:  sha256,
+		Name:           name,
+		Version:        version,
+		Method:         method,
+		SHA256:         sha256,
+		ManifestDigest: manifestDigest,
 	}, nil
 }
 

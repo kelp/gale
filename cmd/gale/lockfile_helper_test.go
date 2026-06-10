@@ -159,7 +159,7 @@ func TestWriteConfigAndLockRelockPreservesManifestDigest(t *testing.T) {
 	// Cached install (sha256 empty) resolving to the canonical
 	// revision form triggers the relock rewrite.
 	if err := writeConfigAndLock(
-		configPath, "", "git", "2.53.0", "2.53.0-2", "",
+		configPath, "", "git", "2.53.0", "2.53.0-2", "", "",
 	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}

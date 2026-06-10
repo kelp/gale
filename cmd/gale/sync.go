@@ -373,7 +373,7 @@ func runSyncOne(ctx *cmdContext, lf *lockfile.LockFile, w syncItem, dryRun bool)
 		lp, lpErr := lockfilePath(ctx.GalePath)
 		if lpErr != nil {
 			outcome.lockfileErr = lpErr
-		} else if wErr := updateLockfile(lp, w.name, r.Package.Full(), result.SHA256, ""); wErr != nil {
+		} else if wErr := updateLockfile(lp, w.name, r.Package.Full(), result.SHA256, result.ManifestDigest); wErr != nil {
 			outcome.lockfileErr = wErr
 		}
 	}

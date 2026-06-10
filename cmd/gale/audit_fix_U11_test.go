@@ -41,7 +41,7 @@ func TestFinalizeInstallForeignHostDeclarationOnly(t *testing.T) {
 
 	err := finalizeInstall(
 		galeDir, storeRoot, configPath, "otherbox",
-		"hello", "1.0.0", "1.0.0-1", "abc123",
+		"hello", "1.0.0", "1.0.0-1", "abc123", "",
 	)
 	if err != nil {
 		t.Fatalf("foreign-host install must not fail the "+
@@ -88,7 +88,7 @@ func TestFinalizeInstallCurrentHostGenCheckStillEnforced(t *testing.T) {
 
 	err := finalizeInstall(
 		galeDir, storeRoot, configPath, "thishost",
-		"hello", "1.0.0", "1.0.0-1", "abc123",
+		"hello", "1.0.0", "1.0.0-1", "abc123", "",
 	)
 	if err == nil {
 		t.Fatal("current-host install with no store dir must " +
