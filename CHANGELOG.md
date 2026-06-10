@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Fixed
+
+- AI `write_recipe` tool now rejects LLM-supplied names that
+  escape the recipe temp dir (path traversal, absolute paths,
+  symlink escape); the same containment guards `lint_recipe`
+  and `download_and_hash` (#64).
+
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
