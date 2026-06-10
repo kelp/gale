@@ -88,6 +88,22 @@ var verifyCmd = &cobra.Command{
 	},
 }
 
+// verifyOCIURI constructs the OCI URI to verify. When digest is
+// non-empty, it pins the manifest by digest
+// ("oci://ghcr.io/<base>/<name>@<digest>"); otherwise it falls
+// back to the tag form
+// ("oci://ghcr.io/<base>/<name>:<bareVersion>-<platform>").
+//
+// Stub: returns "" until implemented.
+func verifyOCIURI(base, name, version, platform, digest string) string {
+	_ = base
+	_ = name
+	_ = version
+	_ = platform
+	_ = digest
+	return ""
+}
+
 // bareVersion strips a Debian-style numeric revision suffix from v.
 // A trailing "-<N>" where N is a positive integer is removed; any
 // other suffix (e.g. "-rc1", "-dev.2") is left in place. This

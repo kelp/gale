@@ -69,6 +69,9 @@ type InstallResult struct {
 	Version string
 	Method  InstallMethod
 	SHA256  string // hex hash of installed archive
+	// ManifestDigest is the OCI manifest digest from
+	// .binaries.toml; empty for source builds.
+	ManifestDigest string
 }
 
 // Install installs a recipe into the store and links binaries.

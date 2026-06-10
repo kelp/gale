@@ -460,11 +460,11 @@ func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha2
 				// Same upstream version, differing revision
 				// representation (bare vs canonical). Rewrite to
 				// the canonical lockVersion but keep the hash.
-				return updateLockfile(lp, name, lockVersion, existing.SHA256)
+				return updateLockfile(lp, name, lockVersion, existing.SHA256, "")
 			}
 		}
 	}
-	return updateLockfile(lp, name, lockVersion, sha256)
+	return updateLockfile(lp, name, lockVersion, sha256, "")
 }
 
 // finalizeInstall adds a package to gale.toml, updates
@@ -526,7 +526,10 @@ func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, 
 // updateLockfile reads the lockfile, updates one package
 // entry, and writes it back. The file lock serializes
 // concurrent read-modify-write operations.
-func updateLockfile(lockPath, name, version, sha256 string) error {
+//
+// manifestDigest is the OCI manifest digest to persist
+// alongside the hash; empty for source builds.
+func updateLockfile(lockPath, name, version, sha256, manifestDigest string) error {
 	defer timing.Phase("lockfile-write " + name)()
 	return filelock.With(lockPath+".lock", func() error {
 		lf, err := lockfile.Read(lockPath)
