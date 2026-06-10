@@ -309,7 +309,7 @@ func (s *Store) Remove(name, version string) error {
 	exact := filepath.Join(s.Root, name, version)
 	if _, err := os.Stat(exact); err == nil {
 		lockPath := filepath.Join(s.Root, name, version+".lock")
-		return filelock.With(lockPath, func() error {
+		err := filelock.With(lockPath, func() error {
 			// ErrNotExist guard is load-bearing: two concurrent
 			// removers can both pass the Stat above, then race
 			// under the lock; the loser must tolerate ENOENT.
@@ -317,8 +317,15 @@ func (s *Store) Remove(name, version string) error {
 				!errors.Is(err, os.ErrNotExist) {
 				return fmt.Errorf("remove version directory: %w", err)
 			}
-			return cleanupEmptyNameDir(s.Root, name)
+			return nil
 		})
+		if err != nil {
+			return err
+		}
+		// Cleanup runs after our own lock is released so the
+		// flock probe inside cleanupEmptyNameDir does not see
+		// it as concurrently held (gh#77).
+		return cleanupEmptyNameDir(s.Root, name)
 	}
 
 	resolved, ok := s.resolveVersion(name, version)
@@ -335,18 +342,39 @@ func (s *Store) Remove(name, version string) error {
 	}
 
 	lockPath := filepath.Join(s.Root, name, resolved+".lock")
-	return filelock.With(lockPath, func() error {
+	if err := filelock.With(lockPath, func() error {
 		if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove version directory: %w", err)
 		}
-		return cleanupEmptyNameDir(s.Root, name)
-	})
+		return nil
+	}); err != nil {
+		return err
+	}
+	// See the exact-match branch: cleanup runs lock-free so
+	// the flock probe treats our released lock as unheld.
+	return cleanupEmptyNameDir(s.Root, name)
 }
 
 // cleanupEmptyNameDir removes the parent <root>/<name> dir
-// if no version dirs remain. Lock files (*.lock) left behind
-// by filelock are ignored when deciding emptiness. Missing
-// parent is not an error.
+// if no version dirs remain. Missing parent is not an error.
+//
+// A lock file (*.lock) that a concurrent process holds via
+// flock is NEVER deleted (gh#77): mutual exclusion relies on
+// every contender opening the same inode. Unlinking a held
+// lock file lets the next filelock.Acquire create a fresh
+// inode and succeed immediately while the original holder
+// still "owns" the orphaned one — two installers of the same
+// name@version then run concurrently. Residual unheld lock
+// files are swept via a non-blocking flock probe (see
+// tryRemoveUnheldLockFile); held ones survive, in which case
+// the name dir is left in place and reaped by a later remove
+// or gc once the holders are gone.
+//
+// Callers must NOT hold any lock file in the directory when
+// calling this: the probe opens a separate fd, and flock is
+// per open-file-description, so the caller's own held lock
+// would (correctly) be treated as concurrently held and never
+// be swept.
 func cleanupEmptyNameDir(root, name string) error {
 	nameDir := filepath.Join(root, name)
 	entries, err := os.ReadDir(nameDir)
@@ -356,24 +384,51 @@ func cleanupEmptyNameDir(root, name string) error {
 		}
 		return fmt.Errorf("read name directory: %w", err)
 	}
-	realEntries := 0
 	for _, e := range entries {
 		if !strings.HasSuffix(e.Name(), ".lock") {
-			realEntries++
+			// Real entries remain — keep everything.
+			return nil
 		}
 	}
-	if realEntries == 0 {
-		// Remove any residual lock files before removing the dir.
-		for _, e := range entries {
-			_ = os.Remove(filepath.Join(nameDir, e.Name()))
-		}
-		if err := os.Remove(nameDir); err != nil &&
-			!errors.Is(err, os.ErrNotExist) &&
-			!errors.Is(err, syscall.ENOTEMPTY) {
-			return fmt.Errorf(
-				"remove empty name directory: %w", err,
-			)
-		}
+	// Only lock files remain. Sweep the unheld ones; any held
+	// by a concurrent process survive and ENOTEMPTY below
+	// keeps the name dir in place for them.
+	for _, e := range entries {
+		tryRemoveUnheldLockFile(filepath.Join(nameDir, e.Name()))
+	}
+	if err := os.Remove(nameDir); err != nil &&
+		!errors.Is(err, os.ErrNotExist) &&
+		!errors.Is(err, syscall.ENOTEMPTY) {
+		return fmt.Errorf(
+			"remove empty name directory: %w", err,
+		)
 	}
 	return nil
+}
+
+// tryRemoveUnheldLockFile unlinks a lock file only when no
+// process currently holds it: it takes a non-blocking flock
+// probe and unlinks while still holding the probe, so any
+// contender that opened the file before the unlink serializes
+// behind the probe on the same inode. A residual window
+// remains — a contender parked between its open and flock at
+// the instant of the unlink later acquires the orphaned
+// inode — but that requires a contender to arrive in the
+// microseconds the probe is held on an unheld lock, versus
+// the old behavior of unconditionally unlinking locks held
+// for entire multi-minute installs.
+func tryRemoveUnheldLockFile(path string) {
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return
+	}
+	defer f.Close() // releases the probe flock
+	if err := syscall.Flock(
+		int(f.Fd()), //nolint:gosec // fd fits int on all supported platforms
+		syscall.LOCK_EX|syscall.LOCK_NB,
+	); err != nil {
+		// Held by a concurrent process — never delete (gh#77).
+		return
+	}
+	_ = os.Remove(path)
 }

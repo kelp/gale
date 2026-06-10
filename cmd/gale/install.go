@@ -432,13 +432,17 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 	out.Info(fmt.Sprintf("Installing %s@%s...",
 		r.Package.Name, r.Package.Version))
 
-	result, err := inst.Install(r)
+	// InstallWithFinalize holds the per-package lock across
+	// finalize so a concurrent `gale gc` cannot reap the
+	// just-installed package before it lands in gale.toml
+	// (gh#69 — the --recipe path missed the race-0004 fix the
+	// registry, --path, and --git paths already received).
+	result, err := inst.InstallWithFinalize(r, false,
+		func(res *installer.InstallResult) error {
+			return ctx.FinalizeRecipeInstall(r, res.SHA256)
+		})
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
-	}
-
-	if err := ctx.FinalizeRecipeInstall(r, result.SHA256); err != nil {
-		return err
 	}
 
 	reportResult(out, result, "Installed", "built from source")
