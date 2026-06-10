@@ -230,12 +230,169 @@ func splitLines(content []byte) []string {
 	return strings.Split(string(content), "\n")
 }
 
-// sectionLineIndex scans lines for a line whose trimmed content
-// equals "[section]". Returns the line index or -1 if not found.
-func sectionLineIndex(lines []string, section string) int {
-	target := "[" + section + "]"
+// isBareKeyChar reports whether c may appear in a TOML bare key
+// (A-Za-z0-9_-).
+func isBareKeyChar(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z':
+		return true
+	case c >= 'A' && c <= 'Z':
+		return true
+	case c >= '0' && c <= '9':
+		return true
+	case c == '_' || c == '-':
+		return true
+	}
+	return false
+}
+
+// isBareKey reports whether s is a valid TOML bare key
+// (non-empty, only A-Za-z0-9_-).
+func isBareKey(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !isBareKeyChar(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// escapeTOMLString escapes backslashes and double quotes so s can
+// be embedded in a TOML basic string.
+func escapeTOMLString(s string) string {
+	s = strings.ReplaceAll(s, `\`, `\\`)
+	return strings.ReplaceAll(s, `"`, `\"`)
+}
+
+// encodeSectionPath renders a section path as a TOML table name,
+// quoting any segment that is not a valid bare key (e.g. a dotted
+// hostname becomes "host.example.com").
+func encodeSectionPath(path []string) string {
+	parts := make([]string, len(path))
+	for i, seg := range path {
+		if isBareKey(seg) {
+			parts[i] = seg
+		} else {
+			parts[i] = `"` + escapeTOMLString(seg) + `"`
+		}
+	}
+	return strings.Join(parts, ".")
+}
+
+// parseSectionHeader parses a TOML table header line into its key
+// segments. It tolerates surrounding whitespace, whitespace inside
+// the brackets, quoted segments, and a trailing comment after the
+// closing bracket. Returns (segments, true) on success or
+// (nil, false) if the line is not a valid table header.
+func parseSectionHeader(line string) ([]string, bool) {
+	s := strings.TrimSpace(line)
+	if !strings.HasPrefix(s, "[") {
+		return nil, false
+	}
+	i := 1
+	var segs []string
+	for {
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		if i >= len(s) {
+			return nil, false
+		}
+		var seg string
+		switch s[i] {
+		case '"':
+			i++
+			var b strings.Builder
+			closed := false
+			for i < len(s) {
+				c := s[i]
+				if c == '\\' && i+1 < len(s) {
+					switch s[i+1] {
+					case '"':
+						b.WriteByte('"')
+					case '\\':
+						b.WriteByte('\\')
+					default:
+						b.WriteByte(c)
+						b.WriteByte(s[i+1])
+					}
+					i += 2
+					continue
+				}
+				if c == '"' {
+					i++
+					closed = true
+					break
+				}
+				b.WriteByte(c)
+				i++
+			}
+			if !closed {
+				return nil, false
+			}
+			seg = b.String()
+		case '\'':
+			i++
+			j := strings.IndexByte(s[i:], '\'')
+			if j < 0 {
+				return nil, false
+			}
+			seg = s[i : i+j]
+			i += j + 1
+		default:
+			start := i
+			for i < len(s) && isBareKeyChar(s[i]) {
+				i++
+			}
+			if i == start {
+				return nil, false
+			}
+			seg = s[start:i]
+		}
+		segs = append(segs, seg)
+		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+			i++
+		}
+		if i >= len(s) {
+			return nil, false
+		}
+		if s[i] == '.' {
+			i++
+			continue
+		}
+		if s[i] == ']' {
+			i++
+			break
+		}
+		return nil, false
+	}
+	rest := strings.TrimSpace(s[i:])
+	if rest != "" && !strings.HasPrefix(rest, "#") {
+		return nil, false
+	}
+	return segs, true
+}
+
+// sectionLineIndex scans lines for a table header whose key path
+// equals path, tolerating whitespace, quoted segments, and trailing
+// comments. Returns the line index or -1 if not found.
+func sectionLineIndex(lines []string, path []string) int {
 	for i, line := range lines {
-		if strings.TrimSpace(line) == target {
+		segs, ok := parseSectionHeader(line)
+		if !ok || len(segs) != len(path) {
+			continue
+		}
+		match := true
+		for j := range segs {
+			if segs[j] != path[j] {
+				match = false
+				break
+			}
+		}
+		if match {
 			return i
 		}
 	}
@@ -271,18 +428,17 @@ func keyLineIndex(lines []string, sectionStart, sectionEnd int, key string) int 
 	return -1
 }
 
-// setTOMLStringKey sets key = "value" in the specified TOML section,
-// preserving all other content verbatim. If the section does not exist
-// it is appended. If the key already exists in the section it is
-// updated in place; otherwise the key is inserted just before the end
-// of the section.
-func setTOMLStringKey(content []byte, section, key, value string) []byte {
+// setTOMLStringKey sets key = "value" in the TOML section named by
+// the path segments, preserving all other content verbatim. If the
+// section does not exist it is appended, quoting any path segment
+// that is not a bare key. If the key already exists in the section
+// it is updated in place; otherwise the key is inserted just before
+// the end of the section.
+func setTOMLStringKey(content []byte, section []string, key, value string) []byte {
 	lines := splitLines(content)
 	secIdx := sectionLineIndex(lines, section)
 
-	escaped := strings.ReplaceAll(value, `\`, `\\`)
-	escaped = strings.ReplaceAll(escaped, `"`, `\"`)
-	newLine := "  " + key + " = \"" + escaped + "\""
+	newLine := "  " + key + " = \"" + escapeTOMLString(value) + "\""
 
 	if secIdx < 0 {
 		// Section not found — append it.
@@ -290,7 +446,8 @@ func setTOMLStringKey(content []byte, section, key, value string) []byte {
 		if len(result) > 0 && result[len(result)-1] != '\n' {
 			result = append(result, '\n')
 		}
-		result = append(result, []byte("\n["+section+"]\n"+newLine+"\n")...)
+		header := "[" + encodeSectionPath(section) + "]"
+		result = append(result, []byte("\n"+header+"\n"+newLine+"\n")...)
 		return result
 	}
 
@@ -322,10 +479,10 @@ func setTOMLStringKey(content []byte, section, key, value string) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
-// deleteTOMLKey removes key from section in content. Returns
-// (modified content, true) if found and removed, (original, false)
-// otherwise.
-func deleteTOMLKey(content []byte, section, key string) ([]byte, bool) {
+// deleteTOMLKey removes key from the section named by the path
+// segments. Returns (modified content, true) if found and removed,
+// (original, false) otherwise.
+func deleteTOMLKey(content []byte, section []string, key string) ([]byte, bool) {
 	lines := splitLines(content)
 	secIdx := sectionLineIndex(lines, section)
 	if secIdx < 0 {
@@ -343,6 +500,20 @@ func deleteTOMLKey(content []byte, section, key string) ([]byte, bool) {
 	newLines = append(newLines, lines[:keyIdx]...)
 	newLines = append(newLines, lines[keyIdx+1:]...)
 	return []byte(strings.Join(newLines, "\n")), true
+}
+
+// packagesPath returns the section path for the shared
+// [packages] table.
+func packagesPath() []string {
+	return []string{"packages"}
+}
+
+// hostPackagesPath returns the section path for a host's package
+// table, [hosts.<host>.packages]. The host segment is kept as a
+// single key — encodeSectionPath quotes it when it contains dots
+// or other non-bare-key characters.
+func hostPackagesPath(host string) []string {
+	return []string{"hosts", host, "packages"}
 }
 
 // hostPinned returns the pinned map for cfg.Hosts[host],
@@ -372,10 +543,10 @@ func UpsertPackage(path, host, name, version string) error {
 		if err != nil {
 			return err
 		}
-		section := "packages"
+		section := packagesPath()
 		if host != "" {
 			// Check if the package is already in the host section.
-			hostSection := "hosts." + host + ".packages"
+			hostSection := hostPackagesPath(host)
 			lines := splitLines(content)
 			secIdx := sectionLineIndex(lines, hostSection)
 			if secIdx >= 0 {
@@ -397,9 +568,9 @@ func UpsertPackage(path, host, name, version string) error {
 // bootstrapped.
 func AddPackage(path, host, name, version string) error {
 	return withFileLock(path, func() error {
-		section := "packages"
+		section := packagesPath()
 		if host != "" {
-			section = "hosts." + host + ".packages"
+			section = hostPackagesPath(host)
 		}
 		content, err := readOrEmpty(path)
 		if err != nil {
@@ -420,9 +591,9 @@ func RemovePackage(path, host, name string) error {
 		if err != nil {
 			return fmt.Errorf("reading gale config: %w", err)
 		}
-		section := "packages"
+		section := packagesPath()
 		if host != "" {
-			section = "hosts." + host + ".packages"
+			section = hostPackagesPath(host)
 		}
 		modified, found := deleteTOMLKey(content, section, name)
 		if !found {
