@@ -60,15 +60,9 @@ var verifyCmd = &cobra.Command{
 		}
 
 		platform := runtime.GOOS + "-" + runtime.GOARCH
-		// GHCR manifests are tagged with the bare version
-		// ("<version>-<platform>"), not the canonical lockfile
-		// form ("<version>-<revision>-<platform>"). Strip the
-		// trailing "-<revision>" suffix when present so the
-		// constructed tag matches what gale-recipes CI pushes.
-		tag := bareVersion(pkg.Version) + "-" + platform
-		ociURI := fmt.Sprintf(
-			"oci://ghcr.io/%s/%s:%s",
-			localGHCRBase, name, tag,
+		ociURI := verifyOCIURI(
+			localGHCRBase, name, pkg.Version, platform,
+			pkg.ManifestDigest,
 		)
 
 		out.Step(fmt.Sprintf(
@@ -86,6 +80,32 @@ var verifyCmd = &cobra.Command{
 		))
 		return nil
 	},
+}
+
+// verifyOCIURI constructs the OCI URI to verify. When digest is
+// non-empty, it pins the manifest by digest
+// ("oci://ghcr.io/<base>/<name>@<digest>") — a digest identifies
+// the exact manifest that was installed, immune to tag moves on
+// GHCR. Otherwise it falls back to the tag form
+// ("oci://ghcr.io/<base>/<name>:<bareVersion>-<platform>"),
+// which is mutable: CI can re-push the tag, so the tag may no
+// longer point at the artifact actually installed.
+//
+// GHCR manifests are tagged with the bare version
+// ("<version>-<platform>"), not the canonical lockfile form
+// ("<version>-<revision>-<platform>"). Strip the trailing
+// "-<revision>" suffix when present so the constructed tag
+// matches what gale-recipes CI pushes.
+func verifyOCIURI(base, name, version, platform, digest string) string {
+	if digest != "" {
+		return fmt.Sprintf(
+			"oci://ghcr.io/%s/%s@%s", base, name, digest,
+		)
+	}
+	return fmt.Sprintf(
+		"oci://ghcr.io/%s/%s:%s",
+		base, name, bareVersion(version)+"-"+platform,
+	)
 }
 
 // bareVersion strips a Debian-style numeric revision suffix from v.

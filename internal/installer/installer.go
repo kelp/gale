@@ -69,6 +69,9 @@ type InstallResult struct {
 	Version string
 	Method  InstallMethod
 	SHA256  string // hex hash of installed archive
+	// ManifestDigest is the OCI manifest digest from
+	// .binaries.toml; empty for source builds.
+	ManifestDigest string
 }
 
 // Install installs a recipe into the store and links binaries.
@@ -149,6 +152,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 
 	method := MethodSource
 	var sha256 string
+	var manifestDigest string
 
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	binaryViable := bin != nil && !inst.SourceOnly
@@ -196,6 +200,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 		if berr := installBinaryTo(bin, storeDir, canonicalDir, name, version, fallback, inst.Verifier, !staged, inst.Downloads); berr == nil {
 			method = MethodBinary
 			sha256 = bin.SHA256
+			manifestDigest = bin.ManifestDigest
 		} else {
 			// Binary install failed — fall back to source build.
 			// Reaching here means the recipe advertised a binary
@@ -250,10 +255,11 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	}
 
 	return &InstallResult{
-		Name:    name,
-		Version: version,
-		Method:  method,
-		SHA256:  sha256,
+		Name:           name,
+		Version:        version,
+		Method:         method,
+		SHA256:         sha256,
+		ManifestDigest: manifestDigest,
 	}, nil
 }
 

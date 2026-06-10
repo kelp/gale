@@ -2,6 +2,7 @@ package recipe
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -31,6 +32,10 @@ type BinaryIndex struct {
 	// built. Empty when the file was written before C4 landed,
 	// or when the build had no declared deps.
 	Deps map[string][]BinaryDep `toml:"-"`
+	// Digests maps platform key → "sha256:<64hex>" OCI manifest
+	// digest recorded by CI when the prebuilt was pushed. Empty
+	// when the file predates the field or the digest is absent.
+	Digests map[string]string `toml:"-"`
 }
 
 // ParseBinaryIndex parses a .binaries.toml string into a
@@ -45,6 +50,7 @@ func ParseBinaryIndex(data string) (*BinaryIndex, error) {
 	idx := &BinaryIndex{
 		Platforms: make(map[string]string),
 		Deps:      make(map[string][]BinaryDep),
+		Digests:   make(map[string]string),
 	}
 
 	// Extract the top-level version string.
@@ -71,6 +77,11 @@ func ParseBinaryIndex(data string) (*BinaryIndex, error) {
 		if depsRaw, ok := sub["deps"]; ok {
 			if deps := parseBinaryDeps(depsRaw); len(deps) > 0 {
 				idx.Deps[key] = deps
+			}
+		}
+		if dig, ok := sub["manifest_digest"]; ok {
+			if s, ok := dig.(string); ok && validManifestDigest(s) {
+				idx.Digests[key] = s
 			}
 		}
 	}
@@ -125,6 +136,28 @@ func parseBinaryDeps(raw interface{}) []BinaryDep {
 	return out
 }
 
+// validManifestDigest reports whether s is a well-formed OCI
+// manifest digest: "sha256:" followed by exactly 64 lowercase
+// hex characters. Malformed digests are dropped at parse time —
+// the field is informational, so a bad value degrades to absent
+// rather than failing the whole parse.
+func validManifestDigest(s string) bool {
+	const prefix = "sha256:"
+	if !strings.HasPrefix(s, prefix) {
+		return false
+	}
+	hex := s[len(prefix):]
+	if len(hex) != 64 {
+		return false
+	}
+	for _, c := range hex {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // MergeBinaries populates a recipe's Binary map from a
 // BinaryIndex. If the index is nil or its version doesn't
 // match the recipe version (stale), this is a no-op.
@@ -154,8 +187,9 @@ func MergeBinaries(r *Recipe, idx *BinaryIndex, ghcrBase string) {
 				"https://ghcr.io/v2/%s/%s/blobs/sha256:%s",
 				ghcrBase, r.Package.Name, sha,
 			),
-			SHA256: sha,
-			Trust:  TrustSigstore,
+			SHA256:         sha,
+			Trust:          TrustSigstore,
+			ManifestDigest: idx.Digests[platform],
 		}
 	}
 }

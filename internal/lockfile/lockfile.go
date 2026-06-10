@@ -14,8 +14,9 @@ import (
 
 // LockedPackage represents a pinned package in the lockfile.
 type LockedPackage struct {
-	Version string `toml:"version"`
-	SHA256  string `toml:"sha256,omitempty"`
+	Version        string `toml:"version"`
+	SHA256         string `toml:"sha256,omitempty"`
+	ManifestDigest string `toml:"manifest_digest,omitempty"`
 }
 
 // LockFile represents a gale.lock file.

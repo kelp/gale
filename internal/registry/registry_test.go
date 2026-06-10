@@ -494,6 +494,39 @@ func TestFetchRecipeMergesBinariesToml(t *testing.T) {
 	}
 }
 
+const binariesTomlWithDigest = `version = "1.8.1"
+
+[darwin-arm64]
+sha256 = "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e"
+manifest_digest = "sha256:abababababababababababababababababababababababababababababababab"
+
+[linux-amd64]
+sha256 = "a903b0ca428c174e611ad78ee6508fefeab7a8b2eb60e55b554280679b2c07c6"
+manifest_digest = "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+`
+
+func TestFetchRecipeMergesManifestDigest(t *testing.T) {
+	srv := httptest.NewServer(fileHandler(
+		map[string]string{
+			"/recipes/j/jq.toml":          recipeNoBinaries,
+			"/recipes/j/jq.binaries.toml": binariesTomlWithDigest,
+		},
+	))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	b := rec.Binary["darwin-arm64"]
+	want := "sha256:abababababababababababababababababababababababababababababababab"
+	if b.ManifestDigest != want {
+		t.Errorf("ManifestDigest = %q, want %q",
+			b.ManifestDigest, want)
+	}
+}
+
 func TestFetchRecipeBinaries404NoError(t *testing.T) {
 	srv := httptest.NewServer(fileHandler(
 		map[string]string{

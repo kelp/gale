@@ -123,6 +123,108 @@ func TestAddDepRpathsLinuxUsesRelativeFarmRpath(t *testing.T) {
 	}
 }
 
+// TestAddDepRpathsOverwritesAbsoluteToolchainRpath guards the
+// remaining issue #24 gap: on Linux, llvmToolchainFlags injects
+// -Wl,-rpath,<absolute llvm libDir> into LDFLAGS, so a freshly
+// linked ELF carries the CI runner's ABSOLUTE store path in its
+// RUNPATH. The post-build fixup pass (FixupBinaries then
+// AddDepRpaths, in that order — see buildFromDir in build.go)
+// must OVERWRITE that RUNPATH with $ORIGIN-relative entries so
+// the absolute path never reaches a shipped artifact. If the
+// fixup steps were reordered or AddDepRpaths appended instead of
+// set, runner-absolute rpaths would silently ship again.
+func TestAddDepRpathsOverwritesAbsoluteToolchainRpath(t *testing.T) {
+	if _, err := exec.LookPath("patchelf"); err != nil {
+		t.Skip("patchelf not available")
+	}
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available")
+	}
+
+	// "dep" store dir with a shared lib, so AddDepRpaths has a
+	// dep lib to point the farm rpath at (it no-ops otherwise).
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	if err := os.MkdirAll(depLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void){return 7;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylib := filepath.Join(depLib, "libdep.so")
+	if out, err := exec.Command(
+		"cc", "-shared", "-fPIC",
+		"-Wl,-soname,libdep.so", "-o", dylib, libSrc,
+	).CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	// "package" prefix with a binary linking the dep, built with
+	// the absolute toolchain rpath llvmToolchainFlags would emit.
+	const toolchainRpath = "/home/runner/.gale/pkg/llvm/18.1.6-1/lib"
+	pkgDir := t.TempDir()
+	binDir := filepath.Join(pkgDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := filepath.Join(pkgDir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int dep_func(void);\nint main(){return dep_func();}\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "app")
+	if out, err := exec.Command(
+		"cc", "-o", binPath, mainSrc,
+		"-L"+depLib, "-ldep",
+		"-Wl,-rpath,"+toolchainRpath,
+		"-Wl,--enable-new-dtags",
+	).CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// Sanity: the absolute toolchain rpath IS baked pre-fixup.
+	// Without this the test could silently assert nothing.
+	rpBefore := elfRunpath(t, binPath)
+	if !strings.Contains(rpBefore, toolchainRpath) {
+		t.Fatalf("setup: expected absolute toolchain rpath %q "+
+			"baked pre-fixup, got %q", toolchainRpath, rpBefore)
+	}
+
+	// The exact post-build sequence buildFromDir runs.
+	if err := FixupBinaries(pkgDir); err != nil {
+		t.Fatalf("FixupBinaries: %v", err)
+	}
+	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+		t.Fatalf("AddDepRpaths: %v", err)
+	}
+
+	rp := elfRunpath(t, binPath)
+	// $ORIGIN-relative own-lib and farm entries must be present.
+	if !strings.Contains(rp, "$ORIGIN/../lib") {
+		t.Errorf("expected relative own-lib rpath "+
+			"$ORIGIN/../lib, got: %q", rp)
+	}
+	if !strings.Contains(rp, "$ORIGIN/../../../../lib") {
+		t.Errorf("expected relative farm rpath "+
+			"$ORIGIN/../../../../lib, got: %q", rp)
+	}
+	// The CI runner's absolute path must be gone.
+	if strings.Contains(rp, "/home/runner") {
+		t.Errorf("absolute CI runner rpath survived fixup: %q", rp)
+	}
+	// Must NOT bake any absolute gale store path at all.
+	for _, part := range strings.Split(rp, ":") {
+		if strings.Contains(part, ".gale") &&
+			filepath.IsAbs(part) {
+			t.Errorf("absolute .gale rpath component %q "+
+				"survived fixup: %q", part, rp)
+		}
+	}
+}
+
 // TestRelativeFarmRpathLinuxDepth checks the $ORIGIN prefix
 // scales with how deep a file sits under the prefix.
 func TestRelativeFarmRpathLinuxDepth(t *testing.T) {

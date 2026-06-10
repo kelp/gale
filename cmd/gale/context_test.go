@@ -61,7 +61,7 @@ func TestWriteConfigAndLockWritesToHostSection(t *testing.T) {
 	}
 
 	if err := writeConfigAndLock(configPath, "myhost",
-		"mypkg", "1.0.0", "1.0.0", "abc"); err != nil {
+		"mypkg", "1.0.0", "1.0.0", "abc", ""); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -100,7 +100,7 @@ func TestWriteConfigAndLockHostUpdatesExisting(t *testing.T) {
 	}
 
 	if err := writeConfigAndLock(configPath, "myhost",
-		"mypkg", "2.0.0", "2.0.0", "abc"); err != nil {
+		"mypkg", "2.0.0", "2.0.0", "abc", ""); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
 
@@ -144,7 +144,7 @@ func TestWriteConfigAndLockUpdatesLockfileOnCachedInstall(t *testing.T) {
 
 	// Simulate a cached install to v2.0.0 (sha256 is empty).
 	if err := writeConfigAndLock(
-		configPath, "", "mypkg", "2.0.0", "2.0.0", "",
+		configPath, "", "mypkg", "2.0.0", "2.0.0", "", "",
 	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
@@ -200,7 +200,7 @@ func TestWriteConfigAndLockRewritesBareLockToCanonical(t *testing.T) {
 	// Update resolves git to canonical 2.53.0-2. Cached
 	// install: sha256 is empty.
 	if err := writeConfigAndLock(
-		configPath, "", "git", "2.53.0", "2.53.0-2", "",
+		configPath, "", "git", "2.53.0", "2.53.0-2", "", "",
 	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestWriteConfigAndLockRewritesBareLockToCanonicalKeepsHash(t *testing.T) {
 	// Update resolves python to canonical 3.14.4-3. Cached
 	// install: sha256 is empty (no new hash this run).
 	if err := writeConfigAndLock(
-		configPath, "", "python", "3.14.4", "3.14.4-3", "",
+		configPath, "", "python", "3.14.4", "3.14.4-3", "", "",
 	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
@@ -297,7 +297,7 @@ func TestWriteConfigAndLockPreservesHashOnSameVersionCache(t *testing.T) {
 
 	// Cached install of the same version (sha256 empty).
 	if err := writeConfigAndLock(
-		configPath, "", "mypkg", "1.0.0", "1.0.0", "",
+		configPath, "", "mypkg", "1.0.0", "1.0.0", "", "",
 	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestFinalizeInstallTolerantOfUnrelatedMissingPackage(t *testing.T) {
 	}
 
 	err = finalizeInstall(galeDir, storeRoot, configPath, "",
-		"gale", "0.11.1", "0.11.1", "newhash")
+		"gale", "0.11.1", "0.11.1", "newhash", "")
 	if err != nil {
 		t.Fatalf("finalizeInstall should tolerate unrelated "+
 			"missing awscli store dir; got error: %v", err)
@@ -407,7 +407,7 @@ func TestFinalizeInstallErrorsWhenTargetMissing(t *testing.T) {
 	}
 
 	err := finalizeInstall(galeDir, storeRoot, configPath, "",
-		"gale", "0.11.1", "0.11.1-1", "newhash")
+		"gale", "0.11.1", "0.11.1-1", "newhash", "")
 	if err == nil {
 		t.Fatal("expected finalizeInstall error for missing target store dir")
 	}
@@ -472,7 +472,7 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 	defer os.Chmod(galeDir, 0o755)
 
 	err = finalizeInstall(galeDir, storeRoot, configPath, "",
-		"newpkg", "2.0.0", "2.0.0", "newhash")
+		"newpkg", "2.0.0", "2.0.0", "newhash", "")
 	if err == nil {
 		t.Fatal("expected finalizeInstall error")
 	}
@@ -617,7 +617,7 @@ func TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion(t *testing.T) {
 
 	// Cached install with canonical lockVersion and empty sha256.
 	if err := writeConfigAndLock(
-		configPath, "", "mypkg", "1.8.1", "1.8.1-1", "",
+		configPath, "", "mypkg", "1.8.1", "1.8.1-1", "", "",
 	); err != nil {
 		t.Fatalf("writeConfigAndLock: %v", err)
 	}
@@ -666,7 +666,7 @@ func TestFinalizeInstallWrapsRebuildError(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chmod(galeDir, 0o755) }) //nolint:gosec
 
-	err = finalizeInstall(galeDir, storeRoot, configPath, "", "jq", "1.8.1", "1.8.1-1", "sha256abc")
+	err = finalizeInstall(galeDir, storeRoot, configPath, "", "jq", "1.8.1", "1.8.1-1", "sha256abc", "")
 	if err == nil {
 		t.Fatal("expected finalizeInstall to return error on rebuild failure")
 	}

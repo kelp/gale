@@ -140,7 +140,7 @@ var installCmd = &cobra.Command{
 
 		result, err := ctx.Installer.InstallWithFinalize(r, false,
 			func(res *installer.InstallResult) error {
-				return ctx.FinalizeRecipeInstall(r, res.SHA256)
+				return ctx.FinalizeRecipeInstall(r, res.SHA256, res.ManifestDigest)
 			})
 		if err != nil {
 			if errors.Is(err, build.ErrUnsupportedPlatform) {
@@ -254,7 +254,7 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 		// repo state; sync it onto the recipe so Full() emits
 		// the matching <version>-<revision> string.
 		r.Package.Version = res.Version
-		return ctx.FinalizeRecipeInstall(r, res.SHA256)
+		return ctx.FinalizeRecipeInstall(r, res.SHA256, res.ManifestDigest)
 	})
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
@@ -301,7 +301,7 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 
 	result, err := inst.InstallLocalWithFinalize(r, absSource,
 		func(res *installer.InstallResult) error {
-			return ctx.FinalizeRecipeInstall(r, res.SHA256)
+			return ctx.FinalizeRecipeInstall(r, res.SHA256, res.ManifestDigest)
 		})
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)
@@ -435,7 +435,7 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 	// registry, --path, and --git paths already received).
 	result, err := inst.InstallWithFinalize(r, false,
 		func(res *installer.InstallResult) error {
-			return ctx.FinalizeRecipeInstall(r, res.SHA256)
+			return ctx.FinalizeRecipeInstall(r, res.SHA256, res.ManifestDigest)
 		})
 	if err != nil {
 		return fmt.Errorf("install failed: %w", err)

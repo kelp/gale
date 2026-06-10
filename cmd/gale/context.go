@@ -422,7 +422,7 @@ func lockfilePath(configPath string) (string, error) {
 // machine already lists it under its host overlay, that
 // entry is updated in place; otherwise it goes to shared
 // [packages].
-func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha256 string) error {
+func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha256, manifestDigest string) error {
 	if host != "" {
 		if err := config.AddPackage(
 			configPath, host, name, configVersion,
@@ -459,12 +459,16 @@ func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha2
 			if lockfile.VersionMatches(lockVersion, existing.Version) {
 				// Same upstream version, differing revision
 				// representation (bare vs canonical). Rewrite to
-				// the canonical lockVersion but keep the hash.
-				return updateLockfile(lp, name, lockVersion, existing.SHA256)
+				// the canonical lockVersion but keep the hash and
+				// manifest digest.
+				return updateLockfile(
+					lp, name, lockVersion,
+					existing.SHA256, existing.ManifestDigest,
+				)
 			}
 		}
 	}
-	return updateLockfile(lp, name, lockVersion, sha256)
+	return updateLockfile(lp, name, lockVersion, sha256, manifestDigest)
 }
 
 // finalizeInstall adds a package to gale.toml, updates
@@ -487,9 +491,10 @@ func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha2
 // post-rebuild check below enforces the contract: this
 // install must put the package on PATH, or surface a clear
 // error.
-func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, lockVersion, sha256 string) error {
+func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, lockVersion, sha256, manifestDigest string) error {
 	if err := writeConfigAndLock(
-		configPath, host, name, configVersion, lockVersion, sha256,
+		configPath, host, name, configVersion, lockVersion,
+		sha256, manifestDigest,
 	); err != nil {
 		return fmt.Errorf("writing config and lock: %w", err)
 	}
@@ -526,7 +531,10 @@ func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, 
 // updateLockfile reads the lockfile, updates one package
 // entry, and writes it back. The file lock serializes
 // concurrent read-modify-write operations.
-func updateLockfile(lockPath, name, version, sha256 string) error {
+//
+// manifestDigest is the OCI manifest digest to persist
+// alongside the hash; empty for source builds.
+func updateLockfile(lockPath, name, version, sha256, manifestDigest string) error {
 	defer timing.Phase("lockfile-write " + name)()
 	return filelock.With(lockPath+".lock", func() error {
 		lf, err := lockfile.Read(lockPath)
@@ -534,8 +542,9 @@ func updateLockfile(lockPath, name, version, sha256 string) error {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
 		lf.Packages[name] = lockfile.LockedPackage{
-			Version: version,
-			SHA256:  sha256,
+			Version:        version,
+			SHA256:         sha256,
+			ManifestDigest: manifestDigest,
 		}
 		return lockfile.Write(lockPath, lf)
 	})
@@ -665,10 +674,10 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 // lockVersion is the canonical `<version>-<revision>`
 // written to gale.lock. ctx.Host controls section
 // targeting (see writeConfigAndLock).
-func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256 string) error {
+func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256, manifestDigest string) error {
 	return finalizeInstall(
 		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, ctx.Host,
-		name, configVersion, lockVersion, sha256,
+		name, configVersion, lockVersion, sha256, manifestDigest,
 	)
 }
 
@@ -679,10 +688,10 @@ func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256 
 // canonical `<v>-<N>` goes to gale.lock for exact pin.
 // See configVersionForRecipe for the revision-rollback
 // exception (gh#65).
-func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe, sha256 string) error {
+func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe, sha256, manifestDigest string) error {
 	return ctx.FinalizeInstall(
 		r.Package.Name, configVersionForRecipe(ctx.StoreRoot, r),
-		r.Package.Full(), sha256,
+		r.Package.Full(), sha256, manifestDigest,
 	)
 }
 
@@ -712,19 +721,20 @@ func configVersionForRecipe(storeRoot string, r *recipe.Recipe) string {
 // updates gale.lock without rebuilding the generation.
 // ctx.Host controls section targeting (see
 // writeConfigAndLock).
-func (ctx *cmdContext) WriteConfigAndLock(name, configVersion, lockVersion, sha256 string) error {
+func (ctx *cmdContext) WriteConfigAndLock(name, configVersion, lockVersion, sha256, manifestDigest string) error {
 	return writeConfigAndLock(
-		ctx.GalePath, ctx.Host, name, configVersion, lockVersion, sha256,
+		ctx.GalePath, ctx.Host, name, configVersion, lockVersion,
+		sha256, manifestDigest,
 	)
 }
 
 // WriteConfigAndLockForRecipe is WriteConfigAndLock for
 // the recipe-in-hand case. See FinalizeRecipeInstall and
 // configVersionForRecipe.
-func (ctx *cmdContext) WriteConfigAndLockForRecipe(r *recipe.Recipe, sha256 string) error {
+func (ctx *cmdContext) WriteConfigAndLockForRecipe(r *recipe.Recipe, sha256, manifestDigest string) error {
 	return ctx.WriteConfigAndLock(
 		r.Package.Name, configVersionForRecipe(ctx.StoreRoot, r),
-		r.Package.Full(), sha256,
+		r.Package.Full(), sha256, manifestDigest,
 	)
 }
 

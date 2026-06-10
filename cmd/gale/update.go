@@ -258,7 +258,7 @@ var updateCmd = &cobra.Command{
 
 			result, err := ctx.Installer.InstallWithFinalize(r, false,
 				func(res *installer.InstallResult) error {
-					return ctx.WriteConfigAndLockForRecipe(r, res.SHA256)
+					return ctx.WriteConfigAndLockForRecipe(r, res.SHA256, res.ManifestDigest)
 				})
 			if err != nil {
 				out.Warn(fmt.Sprintf(

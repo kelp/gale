@@ -55,7 +55,7 @@ func TestFinalizeRecipeInstallPinsExplicitOlderRevision(t *testing.T) {
 	r := &recipe.Recipe{Package: recipe.Package{
 		Name: "foo", Version: "1.2.3", Revision: 1,
 	}}
-	if err := ctx.FinalizeRecipeInstall(r, "deadbeef"); err != nil {
+	if err := ctx.FinalizeRecipeInstall(r, "deadbeef", ""); err != nil {
 		t.Fatalf("FinalizeRecipeInstall: %v", err)
 	}
 
@@ -108,7 +108,7 @@ func TestFinalizeRecipeInstallKeepsBarePinForLatestRevision(t *testing.T) {
 	r := &recipe.Recipe{Package: recipe.Package{
 		Name: "foo", Version: "1.2.3", Revision: 2,
 	}}
-	if err := ctx.FinalizeRecipeInstall(r, "deadbeef"); err != nil {
+	if err := ctx.FinalizeRecipeInstall(r, "deadbeef", ""); err != nil {
 		t.Fatalf("FinalizeRecipeInstall: %v", err)
 	}
 

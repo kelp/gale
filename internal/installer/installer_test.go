@@ -1099,6 +1099,59 @@ func TestInstallResultSHA256Populated(t *testing.T) {
 	}
 }
 
+// --- Install ManifestDigest populated ---
+
+// TestInstallResultManifestDigestPopulated pins that a binary
+// install carries the recipe's OCI manifest digest through to
+// the InstallResult, so callers (sync, install) can persist it
+// in gale.lock for digest-pinned verification.
+func TestInstallResultManifestDigestPopulated(t *testing.T) {
+	const digest = "sha256:" +
+		"4ae2cd0a430a6a2729ba33aa1cfdf1cbeff58e95b2c1fb4e6f9d8f0c8e92c4ab"
+
+	binContent := "#!/bin/sh\necho digest-test"
+	tarzst := createTestTarZstd(t, "bin/dig", binContent)
+	hash := hashFile(t, tarzst)
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatalf("read tar.zst: %v", err)
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData)
+		},
+	))
+	defer srv.Close()
+
+	storeRoot := t.TempDir()
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+	}
+
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "dig", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:            srv.URL + "/dig.tar.zst",
+				SHA256:         hash,
+				Trust:          recipe.TrustSHA256Only,
+				ManifestDigest: digest,
+			},
+		},
+	}
+
+	result, err := inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install: %v", err)
+	}
+	if result.ManifestDigest != digest {
+		t.Errorf("ManifestDigest = %q, want %q",
+			result.ManifestDigest, digest)
+	}
+}
+
 // --- extractBuild ---
 
 func TestExtractBuildExtractsArchive(t *testing.T) {

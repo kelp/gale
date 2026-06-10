@@ -913,3 +913,111 @@ func TestIsStaleCanonicalAndBareVersionsAreEquivalent(t *testing.T) {
 			"must not trigger a perpetual resync loop")
 	}
 }
+
+// --- Behavior: manifest digest persists in gale.lock ---
+
+const testManifestDigest = "sha256:" +
+	"a3f1c2d4e5b6978800112233445566778899aabbccddeeff0011223344556677"
+
+func TestReadManifestDigest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.lock")
+	content := `[packages.jq]
+version = "1.7.1"
+sha256 = "abc123"
+manifest_digest = "` + testManifestDigest + `"
+`
+	if err := os.WriteFile(path,
+		[]byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lf, err := Read(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	got := lf.Packages["jq"].ManifestDigest
+	if got != testManifestDigest {
+		t.Errorf("manifest digest = %q, want %q",
+			got, testManifestDigest)
+	}
+}
+
+func TestWriteManifestDigestKey(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.lock")
+
+	lf := &LockFile{
+		Packages: map[string]LockedPackage{
+			"jq": {
+				Version:        "1.7.1",
+				ManifestDigest: testManifestDigest,
+			},
+		},
+	}
+	if err := Write(path, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(data,
+		[]byte(`manifest_digest = "sha256:`)) {
+		t.Errorf("expected manifest_digest key with "+
+			"sha256: prefix, got:\n%s", data)
+	}
+}
+
+func TestWriteOmitsEmptyManifestDigest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.lock")
+
+	lf := &LockFile{
+		Packages: map[string]LockedPackage{
+			"jq": {Version: "1.7.1"},
+		},
+	}
+	if err := Write(path, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(data, []byte("manifest_digest")) {
+		t.Errorf("expected no manifest_digest key, got:\n%s",
+			data)
+	}
+	if bytes.Contains(data, []byte("ManifestDigest")) {
+		t.Errorf("expected no ManifestDigest key, got:\n%s",
+			data)
+	}
+}
+
+func TestReadLockfileWithoutManifestDigest(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.lock")
+	content := `[packages.jq]
+version = "1.7.1"
+sha256 = "abc123"
+`
+	if err := os.WriteFile(path,
+		[]byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lf, err := Read(path)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := lf.Packages["jq"].ManifestDigest; got != "" {
+		t.Errorf("manifest digest = %q, want empty", got)
+	}
+	if lf.Packages["jq"].Version != "1.7.1" {
+		t.Errorf("version = %q, want 1.7.1",
+			lf.Packages["jq"].Version)
+	}
+}

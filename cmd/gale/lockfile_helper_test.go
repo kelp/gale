@@ -1,15 +1,20 @@
 package main
 
 // Tests for updateLockfile, the helper that runSyncOne calls to
-// persist SHA256 hashes after a successful install.
+// persist SHA256 hashes after a successful install, and for
+// writeConfigAndLock's manifest-digest handling.
 //
-// These tests exercise existing production code (not stubs) and
-// are expected to PASS.
+// The write-failure tests exercise existing production code and
+// pass. The manifest-digest tests are RED until updateLockfile
+// persists its manifestDigest parameter and writeConfigAndLock
+// threads digests through the relock path.
 
 import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kelp/gale/internal/lockfile"
 )
 
 // TestUpdateLockfileSurfacesWriteFailure pins the contract that
@@ -45,7 +50,7 @@ func TestUpdateLockfileSurfacesWriteFailure(t *testing.T) {
 	// succeed as a file alongside our dir. The read of lockPath
 	// will fail or return empty; the write of lockPath will fail
 	// because it is a directory.
-	err := updateLockfile(lockPath, "pkg", "1.0.0", "deadbeef")
+	err := updateLockfile(lockPath, "pkg", "1.0.0", "deadbeef", "")
 	if err == nil {
 		t.Error("updateLockfile returned nil, want non-nil error " +
 			"when the lockfile path is a directory")
@@ -74,9 +79,109 @@ func TestUpdateLockfileSurfacesWriteFailureUnwritableDir(t *testing.T) {
 
 	lockPath := filepath.Join(roDir, "gale.lock")
 
-	err := updateLockfile(lockPath, "pkg", "1.0.0", "deadbeef")
+	err := updateLockfile(lockPath, "pkg", "1.0.0", "deadbeef", "")
 	if err == nil {
 		t.Error("updateLockfile returned nil, want non-nil error " +
 			"when the parent directory is not writable")
+	}
+}
+
+// testManifestDigest is a well-formed OCI manifest digest for
+// round-trip assertions.
+const testManifestDigest = "sha256:" +
+	"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+
+// TestUpdateLockfilePersistsManifestDigest pins that the manifest
+// digest handed to updateLockfile lands on the LockedPackage entry
+// and survives a read-back, so `gale verify` can pin by digest.
+func TestUpdateLockfilePersistsManifestDigest(t *testing.T) {
+	tmp := t.TempDir()
+	lockPath := filepath.Join(tmp, "gale.lock")
+
+	if err := updateLockfile(
+		lockPath, "pkg", "1.0.0-2", "deadbeef", testManifestDigest,
+	); err != nil {
+		t.Fatalf("updateLockfile: %v", err)
+	}
+
+	got, err := lockfile.Read(lockPath)
+	if err != nil {
+		t.Fatalf("lockfile.Read: %v", err)
+	}
+	entry, ok := got.Packages["pkg"]
+	if !ok {
+		t.Fatal("pkg entry missing after update")
+	}
+	if entry.Version != "1.0.0-2" {
+		t.Errorf("Version = %q, want %q", entry.Version, "1.0.0-2")
+	}
+	if entry.SHA256 != "deadbeef" {
+		t.Errorf("SHA256 = %q, want %q", entry.SHA256, "deadbeef")
+	}
+	if entry.ManifestDigest != testManifestDigest {
+		t.Errorf("ManifestDigest = %q, want %q",
+			entry.ManifestDigest, testManifestDigest)
+	}
+}
+
+// TestWriteConfigAndLockRelockPreservesManifestDigest pins the
+// cached-install rewrite path (sha256 == ""): when the existing
+// lock entry has a bare version ("2.53.0") and the resolver hands
+// us the canonical "2.53.0-2", writeConfigAndLock rewrites the
+// entry to the canonical pin while carrying the old hash forward.
+// The manifest digest must survive that rewrite too — dropping it
+// would silently downgrade a digest-pinned package to tag-based
+// verification on the next cached sync.
+func TestWriteConfigAndLockRelockPreservesManifestDigest(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  git = \"2.53.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Input lock: bare version, hash, and a manifest digest.
+	lockPath := filepath.Join(tmp, "gale.lock")
+	lf := &lockfile.LockFile{
+		Packages: map[string]lockfile.LockedPackage{
+			"git": {
+				Version:        "2.53.0",
+				SHA256:         "aaa",
+				ManifestDigest: testManifestDigest,
+			},
+		},
+	}
+	if err := lockfile.Write(lockPath, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	// Cached install (sha256 empty) resolving to the canonical
+	// revision form triggers the relock rewrite.
+	if err := writeConfigAndLock(
+		configPath, "", "git", "2.53.0", "2.53.0-2", "", "",
+	); err != nil {
+		t.Fatalf("writeConfigAndLock: %v", err)
+	}
+
+	got, err := lockfile.Read(lockPath)
+	if err != nil {
+		t.Fatalf("lockfile.Read: %v", err)
+	}
+	entry, ok := got.Packages["git"]
+	if !ok {
+		t.Fatal("git entry missing after relock")
+	}
+	if entry.Version != "2.53.0-2" {
+		t.Errorf("Version = %q, want %q", entry.Version, "2.53.0-2")
+	}
+	if entry.SHA256 != "aaa" {
+		t.Errorf("SHA256 = %q, want %q (hash must carry forward)",
+			entry.SHA256, "aaa")
+	}
+	if entry.ManifestDigest != testManifestDigest {
+		t.Errorf("ManifestDigest = %q, want %q (digest must survive "+
+			"the bare-to-canonical relock)",
+			entry.ManifestDigest, testManifestDigest)
 	}
 }
