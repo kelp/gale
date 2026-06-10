@@ -119,6 +119,17 @@
   comma-list, and legacy dotted host keys count as existing;
   the write still proceeds — a notice, not an error (#108).
 
+### Added
+
+- `.binaries.toml` platform sections may record a
+  `manifest_digest` (the OCI manifest digest CI pushed). Binary
+  installs persist it in gale.lock, and `gale verify` pins the
+  attestation subject to `oci://...@sha256:<digest>` instead of
+  the mutable `<version>-<platform>` tag — a later tag overwrite
+  can no longer point verify at a different manifest than the
+  install used. Lockfile entries without a digest keep the
+  tag-based form (#111).
+
 ## v0.16.5 — 2026-06-09
 
 ### Fixed
