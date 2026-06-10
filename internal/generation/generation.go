@@ -126,8 +126,8 @@ func CurrentVersions(galeDir, storeRoot string) (map[string]string, error) {
 
 // ActiveStoreDirs resolves each (name, version) in pkgs to
 // its on-disk store dir. Returned in an arbitrary order.
-// Used by Build to populate the shared dylib farm, and by
-// `gale doctor` to check farm drift against the same set.
+// Seeds FarmStoreDirs, which Build and `gale doctor` use
+// for the shared dylib farm.
 func ActiveStoreDirs(pkgs map[string]string, storeRoot string) []string {
 	active := make([]string, 0, len(pkgs))
 	for name, version := range pkgs {
