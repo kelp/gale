@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/BurntSushi/toml"
+
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/filelock"
@@ -398,8 +400,65 @@ func mergeConfigAllHosts(
 		return
 	}
 	addPackageRefs(s, cfg.Packages, referenced)
-	for _, h := range cfg.Hosts {
-		addPackageRefs(s, h.Packages, referenced)
+	addAllHostPackageRefs(string(data), s, referenced)
+}
+
+// addAllHostPackageRefs adds every `packages` table found at
+// any depth under [hosts] to the referenced set, by walking
+// the raw TOML structure instead of the typed config.
+//
+// The typed GaleConfig.Hosts map silently drops an overlay
+// whose host key contains an unquoted dot: a hostname like
+// "Mac-123.local" splits into nested tables
+// (hosts."Mac-123"."local".packages), which decode into no
+// HostConfig field and vanish. The pin is still plainly there
+// in the file, and gc is destructive — a pin retention cannot
+// see is a store entry it deletes. So the host-union walk must
+// be structural: anything that looks like a packages table
+// under [hosts] keeps its store entries alive.
+func addAllHostPackageRefs(
+	data string, s *store.Store, referenced map[string]bool,
+) {
+	var raw map[string]any
+	if _, err := toml.Decode(data, &raw); err != nil {
+		return // mergeConfigAllHosts already warned
+	}
+	hosts, ok := raw["hosts"].(map[string]any)
+	if !ok {
+		return
+	}
+	for _, node := range hosts {
+		walkHostPackages(node, s, referenced)
+	}
+}
+
+// walkHostPackages recursively visits a table under [hosts]
+// and adds every nested `packages` table's name→version pairs
+// to the referenced set. Non-table nodes and non-string
+// versions are ignored.
+func walkHostPackages(
+	node any, s *store.Store, referenced map[string]bool,
+) {
+	table, ok := node.(map[string]any)
+	if !ok {
+		return
+	}
+	for key, v := range table {
+		if key == "packages" {
+			pkgs, ok := v.(map[string]any)
+			if !ok {
+				continue
+			}
+			m := make(map[string]string, len(pkgs))
+			for name, ver := range pkgs {
+				if vs, ok := ver.(string); ok {
+					m[name] = vs
+				}
+			}
+			addPackageRefs(s, m, referenced)
+			continue
+		}
+		walkHostPackages(v, s, referenced)
 	}
 }
 
