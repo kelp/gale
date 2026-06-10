@@ -290,6 +290,69 @@ func TestRelocateStaleRpathsPreservesEntitlement(t *testing.T) {
 	}
 }
 
+// TestResignWithEntitlementsClearsDetritusXattrs pins the fix for the
+// fatal half of issue #27. qemu's scripts/entitlement.sh signs each
+// emulator main WITH the HVF entitlement and THEN attaches an icon
+// resource fork (Rez -append) and the custom-icon Finder flag
+// (SetFile -a C). codesign refuses to sign a flat Mach-O carrying
+// com.apple.ResourceFork / com.apple.FinderInfo ("resource fork,
+// Finder information, or similar detritus not allowed"), and
+// `codesign --remove-signature` does NOT clear xattrs. AddDepRpaths
+// re-signs qemu-system-* when they link deps via @rpath, so the
+// re-sign must strip that detritus first or it dies at codesign.
+func TestResignWithEntitlementsClearsDetritusXattrs(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "main.c")
+	if err := os.WriteFile(src,
+		[]byte("int main() { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(dir, "qemu-like")
+	if out, err := exec.Command("cc", "-o", bin, src).
+		CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// Sign WITH the entitlement first (entitlement.sh order: codesign
+	// precedes Rez/SetFile), then capture it.
+	signWithEntitlement(t, bin)
+	ent := extractEntitlements(bin)
+	if ent == "" {
+		t.Skip("setup: entitlement did not stick after signing")
+	}
+
+	// Attach the detritus the way entitlement.sh's Rez/SetFile do.
+	// com.apple.ResourceFork alone triggers codesign's rejection;
+	// FinderInfo (exactly 32 bytes, custom-icon bit set) is added for
+	// fidelity, best-effort.
+	if out, err := exec.Command("xattr", "-w",
+		"com.apple.ResourceFork", "icon-detritus", bin).
+		CombinedOutput(); err != nil {
+		t.Skipf("setup: cannot set com.apple.ResourceFork: %v\n%s",
+			err, out)
+	}
+	_ = exec.Command("xattr", "-wx", "com.apple.FinderInfo",
+		"00000000000000000400000000000000"+
+			"00000000000000000000000000000000", bin).Run()
+
+	// Without the fix, resignWithEntitlements dies here with the
+	// detritus error; the fix clears the xattrs before signing.
+	if err := resignWithEntitlements(bin, ent); err != nil {
+		t.Fatalf("resignWithEntitlements failed on a "+
+			"detritus-carrying binary; gale must strip "+
+			"com.apple.ResourceFork/FinderInfo before re-signing "+
+			"(issue #27): %v", err)
+	}
+	if !isCodeSigned(t, bin) {
+		t.Error("binary not validly signed after detritus clear + " +
+			"re-sign")
+	}
+	if !binaryHasEntitlement(t, bin) {
+		t.Error("HVF entitlement lost across the detritus clear + " +
+			"re-sign")
+	}
+}
+
 // hvfEntitlementKey is the entitlement gale's tests sign binaries
 // with, mimicking qemu's Hypervisor.framework (HVF) mains. It is the
 // key binaryHasEntitlement looks for.

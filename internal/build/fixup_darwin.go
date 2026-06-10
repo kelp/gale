@@ -329,6 +329,7 @@ func addRpathRetry(file, rpath string) error {
 		// Restore the signature stripped above so the file is
 		// never left unsigned in the build prefix — the
 		// source-build install path never re-signs.
+		clearSigningDetritus(file)
 		if serr := run("codesign", "--force", "--sign",
 			"-", file); serr != nil {
 			return fmt.Errorf("re-sign %s after failed rpath"+
@@ -505,6 +506,7 @@ func EnsureCodeSigned(prefixDir string) error {
 			if exec.Command("codesign", "-v", path).Run() == nil {
 				return nil
 			}
+			clearSigningDetritus(path)
 			if err := run("codesign", "--force", "--sign",
 				"-", path); err != nil {
 				return fmt.Errorf("codesign %s: %w",
@@ -564,6 +566,21 @@ func resign(file string) error {
 	return resignWithEntitlements(file, extractEntitlements(file))
 }
 
+// clearSigningDetritus strips the extended attributes codesign
+// rejects on a flat Mach-O. qemu's scripts/entitlement.sh attaches an
+// icon resource fork (`Rez -append`, com.apple.ResourceFork) and sets
+// the custom-icon Finder flag (`SetFile -a C`, com.apple.FinderInfo)
+// on its emulator mains; codesign then fails with "resource fork,
+// Finder information, or similar detritus not allowed", and
+// `codesign --remove-signature` does NOT clear xattrs. So gale clears
+// them before re-signing any binary it modified (issue #27). `xattr
+// -c` drops all xattrs — the icon is cosmetic (Homebrew does the
+// equivalent). Best-effort: a stubborn xattr resurfaces as a loud
+// codesign failure at the actual sign call, never a silent drop.
+func clearSigningDetritus(file string) {
+	_ = run("xattr", "-c", file)
+}
+
 // resignWithEntitlements re-signs a Mach-O, re-applying the given
 // entitlements XML (pass "" for none). Callers that modify a binary
 // in a way that may strip its signature first (e.g. addRpathRetry's
@@ -573,6 +590,7 @@ func resign(file string) error {
 // original entitlements are already gone (issue #27, point 2).
 func resignWithEntitlements(file, ent string) error {
 	_ = run("codesign", "--remove-signature", file)
+	clearSigningDetritus(file)
 	args := []string{"--force", "--sign", "-"}
 	if ent != "" {
 		// Write the recovered entitlements to a temp plist and pass
