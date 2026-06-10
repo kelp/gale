@@ -207,6 +207,58 @@
   `[hosts.*.packages]` overlay, not just the current host's
   flattened view — removing one host's entry no longer deletes
   a shared store dir another host's pin still references.
+- `gale gc` retains every store version the active global and
+  project generations link (read from their symlink targets), so
+  gc can no longer delete a live version and leave dangling
+  `current/bin` entries on PATH (#46).
+- `gale gc` no longer rebuilds generations after cleanup: with
+  retention covering the active generation the rebuild is
+  unnecessary, so gc can no longer destroy rollback state — a
+  `gale generations rollback` now survives gc instead of being
+  silently re-advanced to config state, and a project-scope
+  rebuild error can no longer leave the global scope dangling (#47).
+- `gale gc` retains runtime deps at the versions recorded in each
+  installed package's `.gale-deps.toml` — and config pins across
+  ALL hosts' `[hosts.*.packages]` overlays — instead of only the
+  registry's current recipe version, so a recipe bump or an
+  offline gc no longer reaps dep store dirs installed binaries
+  still link (#48).
+- `gale gc` sweeps crash-leftover transient store entries
+  (`.build-*`, `*.bak`, `*.stream`) and stale `current-new.<pid>`
+  swap symlinks once they are older than an hour, skipping any
+  package whose install lock is concurrently held (#78).
+- `gale gc` sweeps interrupted-build scratch under `~/.gale/tmp`
+  (`gale-build-*`, `gale-install-*`, `gale-tools-*`, `gale-git-*`,
+  `gale-home-*`, `gale-tmp-*`) older than an hour; the sweep is
+  vetoed entirely while any install holds a store lock (#79).
+- `gale install --host <other-host>` no longer fails with a bogus
+  "store dir removed mid-install" error after writing config, lock,
+  and store. Cross-host installs are declaration-only: the
+  active-generation presence check is skipped when the target host
+  does not match the current machine (#72).
+- `gale pin` and `gale unpin` accept `-g/--global` and
+  `-p/--project` scope flags and auto-resolve to the global config
+  outside a project — matching install/add/remove — so globally
+  managed packages can finally be pinned (#73).
+- Running doctor, env, or generations from inside `~/.gale` no
+  longer conflates the global gale.toml with a project config:
+  `doctor --repair` stops creating a bogus `~/.gale/.gale` directory,
+  doctor stops double-reporting global packages and host-override
+  shadows, and env/generations resolve the global generation dir.
+  All FindGaleConfig-derived gale dirs now route through
+  `galeDirForConfig` / a shared `configInGaleDir` predicate (#96).
+- `gale install pkg@version` resolves through the configured
+  tap chain (taps first, registry fallback) like every other
+  version-aware command, so tap-only packages can be
+  version-pinned and tap overrides are no longer silently
+  replaced by the registry recipe (#70).
+- A corrupt or unreadable recipe in a configured tap surfaces
+  as an error naming the failing file instead of silently
+  falling back to the registry's copy of the recipe (#71).
+- Downloads no longer abort after 5 minutes: GHCR blob and
+  source tarball fetches use the shared no-timeout HTTP client,
+  so large transfers on slow links complete instead of failing
+  mid-stream or spuriously falling back to a source build (#61).
 
 ### Changed
 
