@@ -193,6 +193,31 @@ func collectReferencedPackages(
 	)
 }
 
+// collectReferencedPackagesAllHosts is the host-union
+// variant: it counts the shared [packages] section plus
+// every [hosts.*.packages] overlay in each config, not
+// just the current host's flattened view. `gale remove`
+// uses it for the cross-scope deletion guard — the store
+// is shared across hosts (synced configs), so a pin under
+// another host's overlay must keep the store entry alive
+// even though ApplyHost would hide it on this machine.
+func collectReferencedPackagesAllHosts(
+	globalDir, projPath string,
+	s *store.Store, out *output.Output,
+) map[string]bool {
+	referenced := map[string]bool{}
+	if globalDir != "" {
+		mergeConfigAllHosts(
+			filepath.Join(globalDir, "gale.toml"),
+			s, referenced, out,
+		)
+	}
+	if projPath != "" {
+		mergeConfigAllHosts(projPath, s, referenced, out)
+	}
+	return referenced
+}
+
 // collectReferencedPackagesWithResolver merges all
 // name@version pairs from global and project configs into
 // a set. When a resolver is provided, each config package's
@@ -249,7 +274,48 @@ func mergeConfig(
 		return
 	}
 	cfg.ApplyHost(config.CurrentHost())
-	for name, version := range cfg.Packages {
+	addPackageRefs(s, cfg.Packages, referenced)
+}
+
+// mergeConfigAllHosts is the host-union counterpart of
+// mergeConfig: instead of flattening to the current host's
+// view, it adds the shared [packages] section plus every
+// [hosts.*.packages] overlay. When shared and overlay pin
+// different versions of the same package, both versions
+// are recorded — the union, not the override.
+func mergeConfigAllHosts(
+	path string,
+	s *store.Store,
+	referenced map[string]bool,
+	out *output.Output,
+) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // missing config is fine
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
+		return
+	}
+	addPackageRefs(s, cfg.Packages, referenced)
+	for _, h := range cfg.Hosts {
+		addPackageRefs(s, h.Packages, referenced)
+	}
+}
+
+// addPackageRefs adds each name→version pair to the
+// referenced set, resolving through store.StorePath so
+// bare versions (jq = "1.8.1") become the canonical
+// on-disk form (jq@1.8.1-3) and compare cleanly against
+// store.List output. Entries not in the store stay keyed
+// on their raw name@version.
+func addPackageRefs(
+	s *store.Store,
+	packages map[string]string,
+	referenced map[string]bool,
+) {
+	for name, version := range packages {
 		if dir, ok := s.StorePath(name, version); ok {
 			referenced[name+"@"+filepath.Base(dir)] = true
 			continue

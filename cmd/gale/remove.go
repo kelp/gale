@@ -264,9 +264,13 @@ func rawGaleConfig(path string) (*config.GaleConfig, error) {
 // references the store dir about to be deleted. The current
 // scope's entry is already removed from disk by the time
 // this runs, so any hit comes from the other scope (global
-// vs project) or a surviving section. Reuses gc's retention
-// logic (collectReferencedPackages) so bare config versions
-// resolve to the same canonical <v>-<rev> key as storeDir.
+// vs project) or a surviving section. Uses the host-union
+// collector (collectReferencedPackagesAllHosts) so pins
+// under any [hosts.*.packages] overlay count as references
+// — flattening to the current host's view would hide them
+// and delete a store entry another host still needs. Bare
+// config versions resolve to the same canonical <v>-<rev>
+// key as storeDir via the shared store resolver.
 func otherScopeReferences(
 	st *store.Store, name, storeDir string,
 	out *output.Output,
@@ -279,7 +283,7 @@ func otherScopeReferences(
 	if cwd, err := os.Getwd(); err == nil {
 		projPath, _ = config.FindGaleConfig(cwd)
 	}
-	referenced := collectReferencedPackages(
+	referenced := collectReferencedPackagesAllHosts(
 		globalDir, projPath, st, out,
 	)
 	return referenced[name+"@"+filepath.Base(storeDir)]
