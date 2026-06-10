@@ -2,22 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- darwin: a failed rpath-add retry no longer leaves a Mach-O
-  unsigned in the build prefix — `addRpathRetry` restores the
-  ad-hoc signature it stripped, so source-built binaries are
-  never SIGKILLed on exec on Apple Silicon (#52).
-- darwin: `FixupBinaries` no longer misclassifies `libexec/`
-  and `lib64/` paths as `lib/`; executables there keep their
-  `@executable_path`-anchored rpaths instead of receiving
-  dylib-only fixups (#53).
-- darwin: `RelocateStaleRpaths` re-signs only files whose
-  rpaths it actually rewrote — untouched Mach-Os stay
-  byte-for-byte identical to the attested archive — and now
-  skips `.o` files and `.dSYM` bundles like every other
-  fixup pass (#54).
-
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
