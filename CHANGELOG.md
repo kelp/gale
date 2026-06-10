@@ -2,21 +2,6 @@
 
 ## Unreleased
 
-### Fixed
-
-- Docs drift (#82): TODO.md Layer 1 recipe signing
-  corrected to reflect removal in v0.13.0; CLAUDE.md
-  project layout and CLI commands tables updated to
-  include all current packages and commands; gale.1
-  `repo create` corrected to `repo init`, `repo add`
-  synopsis updated to two-argument form, `repo update`
-  added, and `update --no-install`/`--no-refresh` flags
-  documented; design.md store paths updated to
-  `name/version-revision/` format and atomic swap step 4
-  corrected to reflect that old generations are pruned
-  lazily; internal-supply-chain.md notes that BUG-4 and
-  BUG-5 are historical (trust package removed in v0.13.0).
-
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
