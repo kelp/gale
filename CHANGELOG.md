@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Fixed
+
+- Archive extraction can no longer escape the destination
+  directory via absolute symlinks. A symlink entry followed by a
+  regular-file or hard-link entry whose path traversed it could
+  write outside the sandbox before SHA256 verification; extraction
+  now rejects any path with a symlinked parent component and opens
+  files with `O_NOFOLLOW` (#40).
+
 ### Changed
 
 - Recipe resolution is now atomic. Gale reads each package's
