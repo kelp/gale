@@ -757,7 +757,6 @@ func lastIndex(s string, c byte) int {
 func init() {
 	gcCmd.Flags().StringVar(&gcRecipes, "recipes", "",
 		"Resolve recipes from a local directory instead of the registry "+
-			"(bare --recipes uses ../gale-recipes/) for runtime-dep retention")
-	gcCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+			"for runtime-dep retention")
 	rootCmd.AddCommand(gcCmd)
 }

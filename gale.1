@@ -165,7 +165,7 @@ is searched.
 .Dl $ gale which jq
 .Dl jq@1.8.1
 .Dl /Users/you/.gale/pkg/jq/1.8.1/bin/jq
-.It Cm outdated Op Fl -recipes Op Fl -no-refresh Op Fl g | Fl p
+.It Cm outdated Op Fl -recipes Ar dir Op Fl -no-refresh Op Fl g | Fl p
 Show packages that have newer versions available in
 the registry.
 Pass
@@ -443,12 +443,9 @@ Build from source, skipping prebuilt binaries.
 Clone the source repository and build from HEAD.
 .It Fl -recipe Ar file
 Use a specific local recipe file.
-.It Fl -recipes Op Ar path
+.It Fl -recipes Ar dir
 Resolve recipes from a local directory instead of
 the registry.
-Defaults to sibling
-.Pa ../gale-recipes/
-when used without argument.
 .El
 .Ss Build Flags
 .Bl -tag -width Ds

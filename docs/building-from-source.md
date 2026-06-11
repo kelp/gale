@@ -97,11 +97,11 @@ gale build --git recipes/j/jq.toml
 ### Resolve Dependencies Locally
 
 When working in the gale-recipes repository, use
-`--recipes` to resolve build dependencies from a
-local directory instead of the registry:
+`--recipes <dir>` to resolve build dependencies from
+a local directory instead of the registry:
 
 ```sh
-gale build --recipes recipes/f/fd.toml
+gale build --recipes . recipes/f/fd.toml
 ```
 
 If the recipe path is inside a `recipes/` directory,

@@ -39,7 +39,7 @@ var addCmd = &cobra.Command{
 			}
 		}
 
-		recipeRes, _, resolveErr := resolveRecipeResolver(addRecipes, cwd)
+		recipeRes, _, resolveErr := resolveRecipeResolver(addRecipes)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -152,9 +152,7 @@ func init() {
 	addCmd.Flags().BoolVarP(&addProject, "project", "p",
 		false, "Add to project config")
 	addCmd.Flags().StringVar(&addRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry "+
-			"(bare --recipes uses ../gale-recipes/)")
-	addCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+		"Resolve recipes from a local directory instead of the registry")
 	addCmd.Flags().StringVar(&addHost, "host", "",
 		"Write under [hosts.<host>.packages] "+
 			"(use 'current' for this machine)")

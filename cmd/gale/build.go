@@ -36,11 +36,7 @@ var buildCmd = &cobra.Command{
 		// Resolve and install dependencies (build, runtime,
 		// and implicit system deps). --recipes flag takes
 		// precedence, then auto-detect from recipe path.
-		cwd, cwdErr := os.Getwd()
-		if cwdErr != nil {
-			return fmt.Errorf("getting working dir: %w", cwdErr)
-		}
-		resolver, _, resolveErr := resolveRecipeResolver(buildRecipes, cwd)
+		resolver, _, resolveErr := resolveRecipeResolver(buildRecipes)
 		if resolveErr != nil {
 			return resolveErr
 		}
@@ -126,9 +122,7 @@ func init() {
 	buildCmd.Flags().BoolVar(&buildRelease, "release", false,
 		"Build with release flags (overrides recipe debug)")
 	buildCmd.Flags().StringVar(&buildRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry "+
-			"(bare --recipes uses ../gale-recipes/)")
-	buildCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+		"Resolve recipes from a local directory instead of the registry")
 	buildCmd.Flags().StringVarP(&buildOutput, "output", "o", "",
 		"Write the archive into this directory (created if "+
 			"missing; defaults to the current directory)")

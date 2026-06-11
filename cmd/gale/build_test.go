@@ -11,9 +11,11 @@ func TestBuildCmdHasRecipesFlag(t *testing.T) {
 	if f == nil {
 		t.Fatal("build command should have --recipes flag")
 	}
-	if f.NoOptDefVal != "auto" {
-		t.Errorf("recipes flag NoOptDefVal = %q, want %q",
-			f.NoOptDefVal, "auto")
+	// No bare form: NoOptDefVal must be unset so the space
+	// form (--recipes <dir>) parses (gh#114).
+	if f.NoOptDefVal != "" {
+		t.Errorf("recipes flag NoOptDefVal = %q, want empty",
+			f.NoOptDefVal)
 	}
 }
 

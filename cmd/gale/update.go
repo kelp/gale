@@ -432,9 +432,7 @@ func sortedTargetKeys(keys []string) []string {
 
 func init() {
 	updateCmd.Flags().StringVar(&updateRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry "+
-			"(bare --recipes uses ../gale-recipes/)")
-	updateCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+		"Resolve recipes from a local directory instead of the registry")
 	updateCmd.Flags().StringVar(&updatePath, "path", "",
 		"Build from a local source directory")
 	updateCmd.Flags().BoolVar(&updateGit, "git", false,

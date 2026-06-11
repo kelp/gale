@@ -203,9 +203,11 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 				t.Errorf("%s: --recipes default = %q, want empty",
 					name, f.DefValue)
 			}
-			if f.NoOptDefVal != "auto" {
-				t.Errorf("%s: --recipes NoOptDefVal = %q, want %q",
-					name, f.NoOptDefVal, "auto")
+			// No bare form: NoOptDefVal must be unset so the
+			// space form (--recipes <dir>) parses (gh#114).
+			if f.NoOptDefVal != "" {
+				t.Errorf("%s: --recipes NoOptDefVal = %q, want empty",
+					name, f.NoOptDefVal)
 			}
 
 			// --local must not exist.
@@ -217,12 +219,67 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 	}
 }
 
+// TestRecipesFlagAcceptsSpaceForm verifies that
+// `--recipes <dir>` (space-separated) parses the value like
+// every other string flag. Setting NoOptDefVal broke this:
+// `gale sync --recipes .` treated `.` as a positional arg and
+// failed with `unknown command "."` (gh#114).
+func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
+	cmds := map[string]*cobra.Command{
+		"install":  installCmd,
+		"add":      addCmd,
+		"update":   updateCmd,
+		"sync":     syncCmd,
+		"outdated": outdatedCmd,
+		"gc":       gcCmd,
+		"inspect":  inspectCmd,
+		"switch":   switchCmd,
+		"build":    buildCmd,
+	}
+
+	for name, cmd := range cmds {
+		t.Run(name, func(t *testing.T) {
+			f := cmd.Flags().Lookup("recipes")
+			if f == nil {
+				t.Fatalf("%s: --recipes flag not found", name)
+			}
+			// Restore shared command state for other tests.
+			defer func() {
+				if err := f.Value.Set(""); err != nil {
+					t.Fatalf("resetting flag: %v", err)
+				}
+				f.Changed = false
+			}()
+
+			if err := cmd.ParseFlags(
+				[]string{"--recipes", "."},
+			); err != nil {
+				t.Fatalf("%s: parsing --recipes .: %v", name, err)
+			}
+			got, err := cmd.Flags().GetString("recipes")
+			if err != nil {
+				t.Fatalf("%s: reading flag: %v", name, err)
+			}
+			if got != "." {
+				t.Errorf("%s: --recipes value = %q, want %q "+
+					"(space form must consume the value, not "+
+					"leave it as a positional arg)",
+					name, got, ".")
+			}
+			if args := cmd.Flags().Args(); len(args) != 0 {
+				t.Errorf("%s: leftover positional args %v, want none",
+					name, args)
+			}
+		})
+	}
+}
+
 // TestRecipesFlagWordingIsAccurate verifies the --recipes
 // flag description across every command that exposes it. The
 // previous wording — "Use local recipes directory (default:
 // ../gale-recipes/)" — was inaccurate: with no flag, recipes
 // resolve through the remote registry, not a sibling. The
-// sibling path only applies when --recipes is passed bare.
+// bare form and its sibling default were removed (gh#114).
 //
 // See finding F-2 (and the original fix on outdated in
 // commit 4a54c9e).
@@ -257,6 +314,13 @@ func TestRecipesFlagWordingIsAccurate(t *testing.T) {
 			if !strings.Contains(f.Usage, "instead of the registry") {
 				t.Errorf("%s: --recipes usage %q does not "+
 					"clarify it overrides the registry",
+					name, f.Usage)
+			}
+			// The bare form was removed (gh#114); the usage
+			// must not advertise it.
+			if strings.Contains(f.Usage, "bare --recipes") {
+				t.Errorf("%s: --recipes usage %q still "+
+					"advertises the removed bare form",
 					name, f.Usage)
 			}
 		})

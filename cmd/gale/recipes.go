@@ -29,20 +29,16 @@ func loadRecipeFile(path string, local bool) (*recipe.Recipe, error) {
 }
 
 // resolveRecipeResolver constructs a RecipeResolver from
-// the --recipes flag value and working directory. When
-// recipesFlag is non-empty, returns a local resolver.
-// Otherwise composes a chain: configured `[[repos]]` taps
-// (priority order, lowest number first) → registry. The
-// returned registry is nil when using local recipes; when
-// taps are wired in it remains non-nil so versioned fetches
-// still resolve through the registry.
-func resolveRecipeResolver(recipesFlag, cwd string) (installer.RecipeResolver, *registry.Registry, error) {
+// the --recipes flag value. When recipesFlag is non-empty,
+// returns a local resolver for that directory. Otherwise
+// composes a chain: configured `[[repos]]` taps (priority
+// order, lowest number first) → registry. The returned
+// registry is nil when using local recipes; when taps are
+// wired in it remains non-nil so versioned fetches still
+// resolve through the registry.
+func resolveRecipeResolver(recipesFlag string) (installer.RecipeResolver, *registry.Registry, error) {
 	if recipesFlag != "" {
-		override := ""
-		if recipesFlag != "auto" {
-			override = recipesFlag
-		}
-		recipesDir, err := findLocalRecipesDir(cwd, override)
+		recipesDir, err := findLocalRecipesDir(recipesFlag)
 		if err != nil {
 			return nil, nil, err
 		}
@@ -123,36 +119,36 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 	}
 }
 
-// findLocalRecipesDir locates a local recipes directory.
-// When override is non-empty, it resolves that path directly
-// (using its recipes/ subdirectory if present). When override
-// is empty, it looks for a sibling gale-recipes directory
-// relative to dir.
-func findLocalRecipesDir(dir, override string) (string, error) {
-	if override != "" {
-		absOverride, err := filepath.Abs(override)
-		if err != nil {
-			return "", fmt.Errorf("resolving path: %w", err)
-		}
-		// If override contains a recipes/ subdir, use that.
-		sub := filepath.Join(absOverride, "recipes")
-		if _, err := os.Stat(sub); err == nil {
-			return sub, nil
-		}
-		return absOverride, nil
+// findLocalRecipesDir resolves the --recipes override to a
+// recipes directory (using its recipes/ subdirectory if
+// present). The override is required: the bare --recipes form
+// and its sibling ../gale-recipes/ fallback were removed
+// (gh#114).
+func findLocalRecipesDir(override string) (string, error) {
+	if override == "" {
+		return "", fmt.Errorf("--recipes requires a directory")
 	}
-
-	absDir, err := filepath.Abs(dir)
+	absOverride, err := filepath.Abs(override)
 	if err != nil {
 		return "", fmt.Errorf("resolving path: %w", err)
 	}
-	recipesDir := filepath.Join(filepath.Dir(absDir), "gale-recipes", "recipes")
-	if _, err := os.Stat(recipesDir); err != nil {
-		return "", fmt.Errorf(
-			"no sibling gale-recipes found next to %s", absDir,
-		)
+	// Fail fast on a missing or non-directory path so a typo
+	// (or pflag consuming a following flag as the value) yields
+	// one clear error instead of misleading per-package
+	// "no local recipe" misses (gh#114).
+	info, err := os.Stat(absOverride)
+	if err != nil {
+		return "", fmt.Errorf("recipes directory not found: %s", absOverride)
 	}
-	return recipesDir, nil
+	if !info.IsDir() {
+		return "", fmt.Errorf("recipes path is not a directory: %s", absOverride)
+	}
+	// If override contains a recipes/ subdir, use that.
+	sub := filepath.Join(absOverride, "recipes")
+	if _, err := os.Stat(sub); err == nil {
+		return sub, nil
+	}
+	return absOverride, nil
 }
 
 // detectRecipesRepo checks if the recipe file is inside a

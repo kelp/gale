@@ -163,9 +163,7 @@ func init() {
 	installCmd.Flags().BoolVarP(&installProject, "project", "p",
 		false, "Install to project config")
 	installCmd.Flags().StringVar(&installRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry "+
-			"(bare --recipes uses ../gale-recipes/)")
-	installCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+		"Resolve recipes from a local directory instead of the registry")
 	installCmd.Flags().StringVar(&installRecipe, "recipe", "",
 		"Install from a recipe TOML file")
 	installCmd.Flags().StringVar(&installPath, "path", "",
