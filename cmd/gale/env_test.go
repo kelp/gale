@@ -162,6 +162,7 @@ func TestEnvVarsUseShellQuoting(t *testing.T) {
 	// (e.g. \t for tab) which POSIX sh doesn't
 	// understand. Vars must be single-quoted for
 	// shell safety.
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "gale.toml")
 	if err := os.WriteFile(configPath, []byte(
@@ -201,6 +202,7 @@ func TestEnvVarsUseShellQuoting(t *testing.T) {
 func TestEnvVarsEscapeEmbeddedSingleQuotes(t *testing.T) {
 	// Values with embedded single quotes must be escaped
 	// using the '\'' idiom.
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "gale.toml")
 	if err := os.WriteFile(configPath, []byte(

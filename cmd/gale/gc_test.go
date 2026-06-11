@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -766,5 +767,306 @@ func TestRemoveUnreferencedVersionsReturnsFailureCount(t *testing.T) {
 	)
 	if failed == 0 {
 		t.Error("expected failure count > 0 when store removal fails")
+	}
+}
+
+// makeRegisteredProject creates a project dir with a gale.toml
+// and an active generation (gen/1) whose bin/<binName> symlink
+// points into storeRoot/<pkg>/<ver>/bin/<binName>. Returns the
+// project path. Helper for the gh#115 registry retention tests.
+func makeRegisteredProject(
+	t *testing.T, storeRoot, configToml, pkg, ver, binName string,
+) string {
+	t.Helper()
+	proj := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(proj, "gale.toml"),
+		[]byte(configToml), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(proj, ".gale", "gen", "1", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(storeRoot, pkg, ver, "bin", binName),
+		filepath.Join(binDir, binName),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"),
+		filepath.Join(proj, ".gale", "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	return proj
+}
+
+// TestGCRetentionIncludesRegisteredProjects pins the gh#115
+// fix: gc must retain store versions linked by the active
+// generation of OTHER projects, discovered through the
+// machine-local registry at <globalDir>/projects. The
+// registered project's gen links jq@1.6 (which its config no
+// longer mentions) — both the gen-linked and config-pinned
+// versions must survive, while a fully unreferenced version
+// must not.
+func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
+	storeRoot := t.TempDir()
+	for _, d := range []struct{ n, v string }{
+		{"jq", "1.6"}, {"jq", "1.7"}, {"fd", "9.0"},
+	} {
+		if err := os.MkdirAll(
+			filepath.Join(storeRoot, d.n, d.v, "bin"), 0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	globalDir := t.TempDir()
+	otherProj := makeRegisteredProject(
+		t, storeRoot, "[packages]\njq = \"1.7\"\n",
+		"jq", "1.6", "jq",
+	)
+	if err := os.WriteFile(
+		filepath.Join(globalDir, "projects"),
+		[]byte(otherProj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+	ref, retained := collectGCRetention(
+		globalDir, "", "", s, nil, out,
+	)
+
+	if !ref["jq@1.6"] {
+		t.Error("jq@1.6 (linked by registered project's active " +
+			"generation) must be retained")
+	}
+	if !ref["jq@1.7"] {
+		t.Error("jq@1.7 (pinned by registered project's config) " +
+			"must be retained")
+	}
+	if ref["fd@9.0"] {
+		t.Error("fd@9.0 is unreferenced everywhere and must " +
+			"not be retained")
+	}
+	if len(retained) != 1 || retained[0] != otherProj {
+		t.Errorf("retained projects: want [%s], got %v",
+			otherProj, retained)
+	}
+}
+
+// TestGCRetentionSkipsVanishedRegisteredProjects verifies a
+// registry entry whose gale.toml no longer exists contributes
+// nothing and is not reported as contributing retention.
+func TestGCRetentionSkipsVanishedRegisteredProjects(t *testing.T) {
+	storeRoot := t.TempDir()
+	globalDir := t.TempDir()
+	ghost := t.TempDir() // registered but no gale.toml
+	if err := os.WriteFile(
+		filepath.Join(globalDir, "projects"),
+		[]byte(ghost+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+	ref, retained := collectGCRetention(
+		globalDir, "", "", s, nil, out,
+	)
+	if len(ref) != 0 {
+		t.Errorf("vanished project must add no refs: %v", ref)
+	}
+	if len(retained) != 0 {
+		t.Errorf("vanished project must not be listed as "+
+			"contributing: %v", retained)
+	}
+}
+
+// TestGCDryRunListsContributingProjects verifies `gale gc -n`
+// names the registered projects whose generations contributed
+// retention, and that a version linked only by another
+// project's generation is not flagged for removal (gh#115).
+func TestGCDryRunListsContributingProjects(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GALE_OFFLINE", "1")
+	t.Chdir(t.TempDir()) // neutral cwd: no project here
+
+	storeRoot := filepath.Join(home, ".gale", "pkg")
+	for _, d := range []struct{ n, v string }{
+		{"jq", "1.7"}, {"fd", "9.0"},
+	} {
+		if err := os.MkdirAll(
+			filepath.Join(storeRoot, d.n, d.v, "bin"), 0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	otherProj := makeRegisteredProject(
+		t, storeRoot, "[packages]\njq = \"1.7\"\n",
+		"jq", "1.7", "jq",
+	)
+	if err := os.WriteFile(
+		filepath.Join(home, ".gale", "projects"),
+		[]byte(otherProj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	dryRun = true
+	t.Cleanup(func() { dryRun = false })
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	runErr := gcCmd.RunE(gcCmd, nil)
+	w.Close()
+	os.Stderr = origStderr
+
+	data, _ := io.ReadAll(r)
+	stderr := string(data)
+
+	if runErr != nil {
+		t.Fatalf("gc -n failed: %v\noutput: %s", runErr, stderr)
+	}
+	if !strings.Contains(stderr, otherProj) {
+		t.Errorf("gc -n must name the contributing project %s, "+
+			"got: %s", otherProj, stderr)
+	}
+	if strings.Contains(stderr, "Would remove jq@1.7") {
+		t.Errorf("jq@1.7 is linked by a registered project's "+
+			"generation and must not be removable: %s", stderr)
+	}
+	if !strings.Contains(stderr, "Would remove fd@9.0") {
+		t.Errorf("fd@9.0 is unreferenced and should be flagged "+
+			"for removal: %s", stderr)
+	}
+}
+
+// TestGCPrunesStaleRegistry verifies a real (non-dry) gc run
+// drops registry entries whose project no longer exists and
+// keeps live ones (gh#115).
+func TestGCPrunesStaleRegistry(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GALE_OFFLINE", "1")
+	t.Chdir(t.TempDir())
+
+	live := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(live, "gale.toml"),
+		[]byte("[packages]\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	ghost := t.TempDir() // no gale.toml
+
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "projects"),
+		[]byte(live+"\n"+ghost+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("gc failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(galeDir, "projects"))
+	if err != nil {
+		t.Fatalf("reading registry after gc: %v", err)
+	}
+	got := string(data)
+	if strings.Contains(got, ghost) {
+		t.Errorf("vanished project %s must be pruned from the "+
+			"registry, got: %q", ghost, got)
+	}
+	if !strings.Contains(got, live) {
+		t.Errorf("live project %s must survive prune, got: %q",
+			live, got)
+	}
+}
+
+// TestGCRealRunPreservesRegisteredProjectStoreDirs pins the
+// end-to-end gh#115 guarantee on disk: a REAL (non-dry) gc run
+// from a neutral cwd must not delete a store version that only
+// a registered project's active generation links. The dry-run
+// test above shares the retention set but exercises none of the
+// real-mode-only code (projects.Prune before retention, the
+// actual store.Remove), so a regression gating registered-
+// project retention on dry-run would pass it — and reproduce
+// the gen/222 incident. fd@9.0 doubles as the control: it is
+// unreferenced everywhere and must actually be removed, proving
+// the sweep ran.
+func TestGCRealRunPreservesRegisteredProjectStoreDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GALE_OFFLINE", "1")
+	t.Chdir(t.TempDir()) // neutral cwd: no project here
+
+	storeRoot := filepath.Join(home, ".gale", "pkg")
+	for _, d := range []struct{ n, v string }{
+		{"jq", "1.7"}, {"fd", "9.0"},
+	} {
+		if err := os.MkdirAll(
+			filepath.Join(storeRoot, d.n, d.v, "bin"), 0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	otherProj := makeRegisteredProject(
+		t, storeRoot, "[packages]\njq = \"1.7\"\n",
+		"jq", "1.7", "jq",
+	)
+	if err := os.WriteFile(
+		filepath.Join(home, ".gale", "projects"),
+		[]byte(otherProj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	dryRun = false
+	t.Cleanup(func() { dryRun = false })
+
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("gc failed: %v", err)
+	}
+
+	if _, err := os.Stat(
+		filepath.Join(storeRoot, "jq", "1.7"),
+	); err != nil {
+		t.Errorf("jq@1.7 is linked by a registered project's "+
+			"active generation and must survive a real gc: %v", err)
+	}
+	if _, err := os.Stat(
+		filepath.Join(storeRoot, "fd", "9.0"),
+	); !os.IsNotExist(err) {
+		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
+			"a real gc (proves the sweep ran), err=%v", err)
+	}
+	// The live registered project must survive the pre-retention
+	// registry prune.
+	reg, err := os.ReadFile(filepath.Join(home, ".gale", "projects"))
+	if err != nil {
+		t.Fatalf("reading registry after gc: %v", err)
+	}
+	if !strings.Contains(string(reg), otherProj) {
+		t.Errorf("live registered project must survive gc's "+
+			"registry prune, got: %q", string(reg))
 	}
 }

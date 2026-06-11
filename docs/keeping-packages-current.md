@@ -98,6 +98,17 @@ Preview what would be removed without deleting:
 gale gc --dry-run
 ```
 
+Gale keeps a machine-local registry of projects at
+`~/.gale/projects`, filled in automatically whenever a
+project environment is used (direnv activation,
+`gale sync`, project-scoped installs). `gale gc`
+retains every registered project's pins and active
+generation, so a gc run from your home directory or
+one project cannot sweep store versions another
+project still links. The dry run lists which projects
+contributed retention; registry entries whose project
+directory has vanished are pruned on each real gc run.
+
 ## Workflow
 
 A typical update session:

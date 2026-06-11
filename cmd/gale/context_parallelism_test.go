@@ -11,6 +11,7 @@ import (
 // cmdContext and the Installer's Downloads limiter, so one
 // configured number bounds total in-flight downloads.
 func TestNewCmdContextWiresParallelism(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	tmp := t.TempDir()
 	if err := os.WriteFile(
 		tmp+"/gale.toml", []byte("[packages]\n"), 0o644,

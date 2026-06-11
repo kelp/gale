@@ -225,6 +225,7 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 	// project flag is passed through and honored.
 
 	// Create a project directory with gale.toml.
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	projDir := t.TempDir()
 	projConfig := filepath.Join(projDir, "gale.toml")
 	if err := os.WriteFile(projConfig,
