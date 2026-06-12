@@ -1070,3 +1070,88 @@ func TestGCRealRunPreservesRegisteredProjectStoreDirs(t *testing.T) {
 			"registry prune, got: %q", string(reg))
 	}
 }
+
+// TestGCRealRunPreservesToolVersionsOnlyProjectPins pins the
+// .tool-versions side of registered-project pin retention: a
+// registered project that has NO gale.toml — it lives only via
+// .tool-versions — must still contribute its pins to gc's
+// retention set. The project pins jq 1.7 but its active
+// generation links jq 1.6 (pin edited, sync not yet run), so
+// only pin retention can keep jq@1.7 alive. gale.toml projects
+// get this via mergeConfigAllHosts; .tool-versions projects must
+// not be second-class. fd@9.0 is the unreferenced control.
+func TestGCRealRunPreservesToolVersionsOnlyProjectPins(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GALE_OFFLINE", "1")
+	t.Chdir(t.TempDir()) // neutral cwd: no project here
+
+	storeRoot := filepath.Join(home, ".gale", "pkg")
+	for _, d := range []struct{ n, v string }{
+		{"jq", "1.6"}, {"jq", "1.7"}, {"fd", "9.0"},
+	} {
+		if err := os.MkdirAll(
+			filepath.Join(storeRoot, d.n, d.v, "bin"), 0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Project with ONLY a .tool-versions (no gale.toml) pinning
+	// jq 1.7, while its active generation links jq 1.6.
+	proj := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(proj, ".tool-versions"),
+		[]byte("jq 1.7\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(proj, ".gale", "gen", "1", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(storeRoot, "jq", "1.6", "bin", "jq"),
+		filepath.Join(binDir, "jq"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"),
+		filepath.Join(proj, ".gale", "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(home, ".gale", "projects"),
+		[]byte(proj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	dryRun = false
+	t.Cleanup(func() { dryRun = false })
+
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("gc failed: %v", err)
+	}
+
+	if _, err := os.Stat(
+		filepath.Join(storeRoot, "jq", "1.7"),
+	); err != nil {
+		t.Errorf("jq@1.7 is pinned by a registered project's "+
+			".tool-versions and must survive a real gc: %v", err)
+	}
+	if _, err := os.Stat(
+		filepath.Join(storeRoot, "jq", "1.6"),
+	); err != nil {
+		t.Errorf("jq@1.6 is linked by the registered project's "+
+			"active generation and must survive a real gc: %v", err)
+	}
+	if _, err := os.Stat(
+		filepath.Join(storeRoot, "fd", "9.0"),
+	); !os.IsNotExist(err) {
+		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
+			"a real gc (proves the sweep ran), err=%v", err)
+	}
+}

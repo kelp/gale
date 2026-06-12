@@ -208,12 +208,14 @@ func collectGCRetention(
 
 // addRegisteredProjectRefs unions in the retention of every
 // project in the machine-local registry (gh#115): each live
-// registered project contributes its config pins (all hosts)
-// and everything its active generation links. Returns the
-// project paths that contributed. Vanished projects (no
-// gale.toml or .tool-versions) contribute nothing — Prune
-// removes them on non-dry runs. Projects already covered by
-// the direct global/cwd-project passes are skipped.
+// registered project contributes its config pins — from
+// gale.toml (all hosts) or, when the project lives only via
+// .tool-versions, from that file — and everything its active
+// generation links. Returns the project paths that
+// contributed. Vanished projects (no gale.toml or
+// .tool-versions) contribute nothing — Prune removes them on
+// non-dry runs. Projects already covered by the direct
+// global/cwd-project passes are skipped.
 // Best-effort: an unreadable registry retains nothing extra.
 func addRegisteredProjectRefs(
 	globalDir, projGaleDir string,
@@ -243,7 +245,20 @@ func addRegisteredProjectRefs(
 		if !projects.Lives(proj) {
 			continue // vanished; Prune cleans it up
 		}
-		mergeConfigAllHosts(cfgPath, s, referenced, out)
+		if _, err := os.Stat(cfgPath); err == nil {
+			mergeConfigAllHosts(cfgPath, s, referenced, out)
+		} else {
+			// No gale.toml — the project lives via
+			// .tool-versions (Lives passed), so its pins come
+			// from there. Without this, a pinned version the
+			// active generation doesn't link (pin edited, sync
+			// not yet run) would be swept — pin retention
+			// must not depend on the config flavor.
+			mergeToolVersions(
+				filepath.Join(proj, ".tool-versions"),
+				s, referenced, out,
+			)
+		}
 		addActiveGenerationRefs(galeDir, s, referenced)
 		retained = append(retained, proj)
 	}
@@ -488,6 +503,30 @@ func mergeConfigAllHosts(
 	}
 	addPackageRefs(s, cfg.Packages, referenced)
 	addAllHostPackageRefs(string(data), s, referenced)
+}
+
+// mergeToolVersions reads a .tool-versions file and adds its
+// pins to the referenced set, resolving through addPackageRefs
+// so versions canonicalize via store.StorePath like every other
+// pin source. ParseToolVersions maps tool names to gale recipe
+// names (golang → go). Silently skips a missing file but warns
+// on parse errors, mirroring mergeConfig.
+func mergeToolVersions(
+	path string,
+	s *store.Store,
+	referenced map[string]bool,
+	out *output.Output,
+) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // missing file is fine
+	}
+	pkgs, err := config.ParseToolVersions(string(data))
+	if err != nil {
+		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
+		return
+	}
+	addPackageRefs(s, pkgs, referenced)
 }
 
 // addAllHostPackageRefs adds every `packages` table found at
