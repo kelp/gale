@@ -74,9 +74,11 @@ var gcCmd = &cobra.Command{
 		}
 
 		// Drop registry entries whose project vanished before
-		// computing liveness — a project without a gale.toml
-		// (or .tool-versions) needs no retention (gh#115).
-		// Skipped in dry-run mode: -n must not mutate state.
+		// computing liveness — vanished means provably absent:
+		// gale.toml and .tool-versions both stat as not-exist
+		// (gh#115). Any other stat error keeps the entry; when
+		// in doubt, keep. Skipped in dry-run mode: -n must not
+		// mutate state.
 		if !dryRun && globalDir != "" {
 			if err := projects.Prune(globalDir); err != nil {
 				out.Warn(fmt.Sprintf(
@@ -212,10 +214,13 @@ func collectGCRetention(
 // gale.toml (all hosts) or, when the project lives only via
 // .tool-versions, from that file — and everything its active
 // generation links. Returns the project paths that
-// contributed. Vanished projects (no gale.toml or
-// .tool-versions) contribute nothing — Prune removes them on
-// non-dry runs. Projects already covered by the direct
-// global/cwd-project passes are skipped.
+// contributed. Vanished projects (gale.toml and .tool-versions
+// provably absent — see projects.Lives) contribute nothing —
+// Prune removes them on non-dry runs. A project whose liveness
+// stat fails any other way counts as live and is attempted;
+// the merge helpers are best-effort, so an unreadable project
+// simply contributes nothing extra. Projects already covered
+// by the direct global/cwd-project passes are skipped.
 // Best-effort: an unreadable registry retains nothing extra.
 func addRegisteredProjectRefs(
 	globalDir, projGaleDir string,
@@ -243,17 +248,20 @@ func addRegisteredProjectRefs(
 			continue // unresolvable or already covered
 		}
 		if !projects.Lives(proj) {
-			continue // vanished; Prune cleans it up
+			continue // provably absent; Prune cleans it up
 		}
 		if _, err := os.Stat(cfgPath); err == nil {
 			mergeConfigAllHosts(cfgPath, s, referenced, out)
 		} else {
-			// No gale.toml — the project lives via
-			// .tool-versions (Lives passed), so its pins come
-			// from there. Without this, a pinned version the
-			// active generation doesn't link (pin edited, sync
-			// not yet run) would be swept — pin retention
-			// must not depend on the config flavor.
+			// gale.toml missing or unreadable (Lives passed,
+			// so the project is not provably absent). If it is
+			// merely missing, the pins come from .tool-versions;
+			// if it is unreadable (EACCES/EIO), mergeToolVersions
+			// likely no-ops, which is safe — best-effort. Without
+			// this, a pinned version the active generation
+			// doesn't link (pin edited, sync not yet run) would
+			// be swept — pin retention must not depend on the
+			// config flavor.
 			mergeToolVersions(
 				filepath.Join(proj, ".tool-versions"),
 				s, referenced, out,

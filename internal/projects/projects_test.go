@@ -178,6 +178,79 @@ func TestPruneKeepsToolVersionsProjects(t *testing.T) {
 	}
 }
 
+// denyStat makes os.Stat on anything under proj fail with
+// EACCES (not ErrNotExist) by stripping permissions from
+// proj's parent. Restores perms on cleanup so TempDir removal
+// works. Skips the test when running as root, which bypasses
+// permission checks.
+func denyStat(t *testing.T, parent string) {
+	t.Helper()
+	if os.Geteuid() == 0 {
+		t.Skip("root bypasses permission checks")
+	}
+	if err := os.Chmod(parent, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(parent, 0o755); err != nil {
+			t.Error(err)
+		}
+	})
+}
+
+// TestLivesKeepsUnstatableProjects: a stat error that does not
+// prove absence (EACCES here; also EIO, flaky network mounts)
+// must count as live. Treating it as dead would let a single
+// transient error during gc drop the entry and sweep a
+// still-active project's store versions. gc's principle is
+// conservative retention: when in doubt, keep.
+func TestLivesKeepsUnstatableProjects(t *testing.T) {
+	parent := t.TempDir()
+	proj := filepath.Join(parent, "proj")
+	if err := os.Mkdir(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGaleToml(t, proj)
+	denyStat(t, parent)
+
+	if !Lives(proj) {
+		t.Error("Lives must treat a permission-denied stat as " +
+			"live (not provably vanished), got dead")
+	}
+}
+
+// TestPruneKeepsUnstatableProjects: Prune must keep a registry
+// entry whose liveness stat fails for reasons other than
+// absence — the project still exists, it is just unreadable
+// right now.
+func TestPruneKeepsUnstatableProjects(t *testing.T) {
+	galeHome := filepath.Join(t.TempDir(), ".gale")
+	parent := t.TempDir()
+	proj := filepath.Join(parent, "proj")
+	if err := os.Mkdir(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeGaleToml(t, proj)
+
+	if err := Register(galeHome, proj); err != nil {
+		t.Fatal(err)
+	}
+	denyStat(t, parent)
+
+	if err := Prune(galeHome); err != nil {
+		t.Fatalf("Prune: %v", err)
+	}
+
+	got, err := List(galeHome)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(got) != 1 {
+		t.Errorf("unstatable project must survive prune, got %v",
+			got)
+	}
+}
+
 // TestRegisterPruneConcurrent stresses Register racing Prune.
 // Register is read-check-append and Prune is
 // read-filter-rewrite (atomic rename); without mutual

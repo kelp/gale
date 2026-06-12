@@ -32,6 +32,7 @@ package projects
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -150,10 +151,13 @@ func List(galeHome string) ([]string, error) {
 	return out, nil
 }
 
-// Prune rewrites the registry keeping only live projects: a
-// path whose gale.toml (or .tool-versions — gale's config
-// fallback) still exists. A vanished project needs no gc
-// retention, so gc calls this before computing liveness.
+// Prune rewrites the registry dropping only provably vanished
+// projects: paths whose gale.toml AND .tool-versions (gale's
+// config fallback) stat as fs.ErrNotExist. A vanished project
+// needs no gc retention, so gc calls this before computing
+// liveness. Entries whose liveness stat fails any other way
+// (see Lives) stay registered — keeping them is safe, dropping
+// them is not.
 func Prune(galeHome string) error {
 	// Scan liveness OUTSIDE the lock: Lives() stats every
 	// registered path, and a dead network mount can hang a stat
@@ -212,11 +216,21 @@ func Prune(galeHome string) error {
 
 // Lives reports whether path still looks like a gale project:
 // a gale.toml, or the .tool-versions fallback gale's config
-// loading honors. Prune keeps live paths; gc retains only
-// live projects' generations.
+// loading honors. Prune keeps live paths; gc retains live
+// projects' generations.
+//
+// Dead means provably absent: every stat fails with
+// fs.ErrNotExist. Any other stat error (EACCES, EIO, a flaky
+// network mount) does not prove the project vanished, so it
+// counts as live — gc's principle is conservative retention,
+// and a transient error must never let the store sweep delete
+// a still-active project's versions. This includes ENOTDIR
+// (project path replaced by a regular file), which is not
+// fs.ErrNotExist: treating it as live merely delays pruning of
+// a rare stale entry, so simplicity wins over a special case.
 func Lives(path string) bool {
 	for _, name := range []string{"gale.toml", ".tool-versions"} {
-		if _, err := os.Stat(filepath.Join(path, name)); err == nil {
+		if _, err := os.Stat(filepath.Join(path, name)); !errors.Is(err, fs.ErrNotExist) {
 			return true
 		}
 	}
