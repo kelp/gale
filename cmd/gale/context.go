@@ -45,9 +45,8 @@ type cmdContext struct {
 }
 
 // newCmdContext resolves the config, store, and installer.
-// When recipesPath is non-empty, recipes are resolved locally:
-// "auto" uses sibling gale-recipes/ detection, any other value
-// is used as an explicit path.
+// When recipesPath is non-empty, recipes are resolved locally
+// from that directory (--recipes always requires a value).
 //
 // Scope flags: when both global and project are false, the
 // current auto-detect behavior is used (project gale.toml
@@ -95,7 +94,7 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 
 	// Set up resolver.
 	storeRoot := defaultStoreRoot()
-	resolver, reg, resolveErr := resolveRecipeResolver(recipesPath, cwd)
+	resolver, reg, resolveErr := resolveRecipeResolver(recipesPath)
 	if resolveErr != nil {
 		return nil, resolveErr
 	}

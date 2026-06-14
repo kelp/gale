@@ -285,7 +285,7 @@ func TestResolveRecipeResolverWithRecipesFlagSkipsTaps(t *testing.T) {
 		t.Fatalf("write flag recipe: %v", err)
 	}
 
-	resolver, reg, err := resolveRecipeResolver(flagDir, "")
+	resolver, reg, err := resolveRecipeResolver(flagDir)
 	if err != nil {
 		t.Fatalf("resolveRecipeResolver: %v", err)
 	}
@@ -314,7 +314,7 @@ func TestResolveRecipeResolverPrefersTapOverRegistry(t *testing.T) {
 		"[[repos]]\nname = \"mytap\"\n"+
 			"url = \"https://example.com/mytap.git\"\npriority = 1\n")
 
-	resolver, reg, err := resolveRecipeResolver("", "")
+	resolver, reg, err := resolveRecipeResolver("")
 	if err != nil {
 		t.Fatalf("resolveRecipeResolver: %v", err)
 	}

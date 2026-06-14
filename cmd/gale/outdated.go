@@ -300,9 +300,7 @@ func applyOutdatedNoRefresh(reg *registry.Registry, noRefresh bool) {
 
 func init() {
 	outdatedCmd.Flags().StringVar(&outdatedRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry "+
-			"(bare --recipes uses ../gale-recipes/)")
-	outdatedCmd.Flags().Lookup("recipes").NoOptDefVal = "auto"
+		"Resolve recipes from a local directory instead of the registry")
 	outdatedCmd.Flags().BoolVar(&outdatedNoRefresh, "no-refresh", false,
 		"Skip refreshing configured recipe taps before resolving")
 	outdatedCmd.Flags().BoolVarP(&outdatedGlobal, "global", "g", false,

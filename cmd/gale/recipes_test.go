@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,7 +35,7 @@ func TestFindLocalRecipesDirOverride(t *testing.T) {
 	}
 
 	// Override with a path that contains recipes/ subdir.
-	got, err := findLocalRecipesDir("ignored", tmp)
+	got, err := findLocalRecipesDir(tmp)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -45,7 +46,7 @@ func TestFindLocalRecipesDirOverride(t *testing.T) {
 	// Override with a path that has no recipes/ subdir — use
 	// the path directly.
 	plain := t.TempDir()
-	got, err = findLocalRecipesDir("ignored", plain)
+	got, err = findLocalRecipesDir(plain)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -54,29 +55,43 @@ func TestFindLocalRecipesDirOverride(t *testing.T) {
 	}
 }
 
-func TestFindLocalRecipesDirAutoDetect(t *testing.T) {
-	// Create sibling structure: parent/gale-recipes/recipes/
-	parent := t.TempDir()
-	recipesDir := filepath.Join(
-		parent, "gale-recipes", "recipes",
-	)
-	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+func TestFindLocalRecipesDirRejectsMissingDir(t *testing.T) {
+	// A nonexistent --recipes path must fail fast with one
+	// clear error, not flow into misleading per-package
+	// "no local recipe" misses (gh#114). This also catches
+	// `--recipes --build`, where pflag consumes the next
+	// flag as the value.
+	missing := filepath.Join(t.TempDir(), "nope")
+	_, err := findLocalRecipesDir(missing)
+	if err == nil {
+		t.Fatal("expected error for nonexistent directory, got nil")
+	}
+	if !strings.Contains(err.Error(), "recipes directory not found") {
+		t.Errorf("error %q does not name the missing directory", err)
+	}
+}
+
+func TestFindLocalRecipesDirRejectsNonDirectory(t *testing.T) {
+	// A --recipes path that names a file is an error.
+	file := filepath.Join(t.TempDir(), "recipes.toml")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-
-	// Simulate cwd as parent/gale (sibling of gale-recipes).
-	cwd := filepath.Join(parent, "gale")
-	if err := os.MkdirAll(cwd, 0o755); err != nil {
-		t.Fatal(err)
+	_, err := findLocalRecipesDir(file)
+	if err == nil {
+		t.Fatal("expected error for non-directory, got nil")
 	}
-
-	// Empty override triggers auto-detect.
-	got, err := findLocalRecipesDir(cwd, "")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+	if !strings.Contains(err.Error(), "not a directory") {
+		t.Errorf("error %q does not say the path is not a directory", err)
 	}
-	if got != recipesDir {
-		t.Errorf("got %q, want %q", got, recipesDir)
+}
+
+func TestFindLocalRecipesDirRejectsEmptyOverride(t *testing.T) {
+	// The bare --recipes form and its sibling ../gale-recipes/
+	// fallback were removed (gh#114). An empty override is an
+	// error.
+	if _, err := findLocalRecipesDir(""); err == nil {
+		t.Fatal("expected error for empty override, got nil")
 	}
 }
 

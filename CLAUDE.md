@@ -146,11 +146,13 @@ gale completion <shell>       Generate shell completion script
 
 ### Key Flags
 
-- `--recipes [path]` (install, add, update, sync,
-  outdated): resolve recipes from local directory.
-  Defaults to sibling `../gale-recipes/`. `gale build`
+- `--recipes <dir>` (install, add, update, sync,
+  outdated, gc, inspect, switch, build): resolve
+  recipes from a local directory instead of the
+  registry. A value is required; `--recipes <dir>`
+  and `--recipes=<dir>` both work. `gale build`
   auto-detects when the recipe is inside a recipes
-  repo and resolves deps locally.
+  repo and resolves deps locally without the flag.
 - `--path <dir>` (install, update): build from a
   local source directory, version from git hash
 - `--build` (install, update, sync): build from
