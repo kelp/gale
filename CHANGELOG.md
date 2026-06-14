@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- `--recipes` now requires a directory value on all commands;
+  the bare form and its hidden `../gale-recipes/` sibling
+  default are removed, so the space form (`--recipes <dir>`)
+  parses correctly instead of failing with `unknown command`
+  (#114).
+
+### Fixed
+
+- gc: retain every project's active generation via a
+  machine-local project registry (`~/.gale/projects`),
+  auto-populated on project-scoped use (env/sync/install);
+  `gc -n` lists contributing projects and gc prunes vanished
+  entries (#115).
+
 ## v0.17.0 — 2026-06-10
 
 ### Fixed
