@@ -16,6 +16,7 @@ import (
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -72,15 +73,30 @@ var gcCmd = &cobra.Command{
 			resolver = ctx.Resolver
 		}
 
+		// Drop registry entries whose project vanished before
+		// computing liveness — vanished means provably absent:
+		// gale.toml and .tool-versions both stat as not-exist
+		// (gh#115). Any other stat error keeps the entry; when
+		// in doubt, keep. Skipped in dry-run mode: -n must not
+		// mutate state.
+		if !dryRun && globalDir != "" {
+			if err := projects.Prune(globalDir); err != nil {
+				out.Warn(fmt.Sprintf(
+					"pruning project registry: %v", err,
+				))
+			}
+		}
+
 		// Retention covers config pins across ALL hosts,
-		// everything the active generations link, and each
-		// retained package's installed dep closure. Anything
-		// retained can never be deleted below, so the active
-		// generation needs no rebuild after gc — which also
-		// means a `gale generations rollback` survives gc
-		// instead of being silently re-advanced to config
-		// state (gh#46, gh#47).
-		referenced := collectGCRetention(
+		// everything the active generations link — including
+		// every registered project's active generation
+		// (gh#115) — and each retained package's installed
+		// dep closure. Anything retained can never be deleted
+		// below, so the active generation needs no rebuild
+		// after gc — which also means a `gale generations
+		// rollback` survives gc instead of being silently
+		// re-advanced to config state (gh#46, gh#47).
+		referenced, retainedProjects := collectGCRetention(
 			globalDir, projPath, projGaleDir, s, resolver, out,
 		)
 		removedPkgs, failedPkgs := removeUnreferencedVersions(
@@ -106,6 +122,16 @@ var gcCmd = &cobra.Command{
 		sweptArtifacts := sweepCrashLeftovers(
 			s, globalDir, projGaleDir, dryRun,
 		)
+
+		// In dry-run mode, make the registry's contribution
+		// visible so a stale entry holding store versions
+		// alive is diagnosable rather than mysterious (gh#115).
+		if dryRun && len(retainedProjects) > 0 {
+			out.Info(fmt.Sprintf(
+				"Projects contributing retention: %s",
+				strings.Join(retainedProjects, ", "),
+			))
+		}
 
 		if removedPkgs == 0 && removedGens == 0 &&
 			failedPkgs == 0 && sweptArtifacts == 0 {
@@ -147,6 +173,10 @@ var gcCmd = &cobra.Command{
 //   - everything the active global and project generations
 //     link, read from their symlink targets, so gc can never
 //     leave current/bin dangling (gh#46);
+//   - the config pins and active generation of every project
+//     in the machine-local registry (<globalDir>/projects), so
+//     a gc run from $HOME or project A cannot sweep versions
+//     project B still links (gh#115);
 //   - a best-effort registry runtime-dep top-up (the recipe's
 //     current version, when a resolver is available);
 //   - the transitive dep closure recorded in each retained
@@ -154,22 +184,93 @@ var gcCmd = &cobra.Command{
 //     binaries actually link, which a recipe version bump or
 //     an offline resolver miss would otherwise leave
 //     unprotected (gh#48).
+//
+// The second return value lists the registered projects that
+// contributed retention, for the `gc -n` report.
 func collectGCRetention(
 	globalDir, projPath, projGaleDir string,
 	s *store.Store,
 	resolver installer.RecipeResolver,
 	out *output.Output,
-) map[string]bool {
+) (map[string]bool, []string) {
 	referenced := collectReferencedPackagesAllHosts(
 		globalDir, projPath, s, out,
 	)
 	addActiveGenerationRefs(globalDir, s, referenced)
 	addActiveGenerationRefs(projGaleDir, s, referenced)
+	retainedProjects := addRegisteredProjectRefs(
+		globalDir, projGaleDir, s, referenced, out,
+	)
 	if resolver != nil {
 		expandRuntimeDeps(s, resolver, referenced)
 	}
 	expandInstalledDeps(s, referenced)
-	return referenced
+	return referenced, retainedProjects
+}
+
+// addRegisteredProjectRefs unions in the retention of every
+// project in the machine-local registry (gh#115): each live
+// registered project contributes its config pins — from
+// gale.toml (all hosts) or, when the project lives only via
+// .tool-versions, from that file — and everything its active
+// generation links. Returns the project paths that
+// contributed. Vanished projects (gale.toml and .tool-versions
+// provably absent — see projects.Lives) contribute nothing —
+// Prune removes them on non-dry runs. A project whose liveness
+// stat fails any other way counts as live and is attempted;
+// the merge helpers are best-effort, so an unreadable project
+// simply contributes nothing extra. Projects already covered
+// by the direct global/cwd-project passes are skipped.
+// Best-effort: an unreadable registry retains nothing extra.
+func addRegisteredProjectRefs(
+	globalDir, projGaleDir string,
+	s *store.Store,
+	referenced map[string]bool,
+	out *output.Output,
+) []string {
+	if globalDir == "" {
+		return nil
+	}
+	regProjects, err := projects.List(globalDir)
+	if err != nil {
+		out.Warn(fmt.Sprintf(
+			"reading project registry: %v", err,
+		))
+		return nil
+	}
+	var retained []string
+	for _, proj := range regProjects {
+		cfgPath := filepath.Join(proj, "gale.toml")
+		galeDir, err := galeDirForConfig(cfgPath)
+		if err != nil ||
+			sameDir(galeDir, globalDir) ||
+			(projGaleDir != "" && sameDir(galeDir, projGaleDir)) {
+			continue // unresolvable or already covered
+		}
+		if !projects.Lives(proj) {
+			continue // provably absent; Prune cleans it up
+		}
+		if _, err := os.Stat(cfgPath); err == nil {
+			mergeConfigAllHosts(cfgPath, s, referenced, out)
+		} else {
+			// gale.toml missing or unreadable (Lives passed,
+			// so the project is not provably absent). If it is
+			// merely missing, the pins come from .tool-versions;
+			// if it is unreadable (EACCES/EIO), mergeToolVersions
+			// likely no-ops, which is safe — best-effort. Without
+			// this, a pinned version the active generation
+			// doesn't link (pin edited, sync not yet run) would
+			// be swept — pin retention must not depend on the
+			// config flavor.
+			mergeToolVersions(
+				filepath.Join(proj, ".tool-versions"),
+				s, referenced, out,
+			)
+		}
+		addActiveGenerationRefs(galeDir, s, referenced)
+		retained = append(retained, proj)
+	}
+	return retained
 }
 
 // addActiveGenerationRefs adds every name@version the active
@@ -410,6 +511,30 @@ func mergeConfigAllHosts(
 	}
 	addPackageRefs(s, cfg.Packages, referenced)
 	addAllHostPackageRefs(string(data), s, referenced)
+}
+
+// mergeToolVersions reads a .tool-versions file and adds its
+// pins to the referenced set, resolving through addPackageRefs
+// so versions canonicalize via store.StorePath like every other
+// pin source. ParseToolVersions maps tool names to gale recipe
+// names (golang → go). Silently skips a missing file but warns
+// on parse errors, mirroring mergeConfig.
+func mergeToolVersions(
+	path string,
+	s *store.Store,
+	referenced map[string]bool,
+	out *output.Output,
+) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return // missing file is fine
+	}
+	pkgs, err := config.ParseToolVersions(string(data))
+	if err != nil {
+		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
+		return
+	}
+	addPackageRefs(s, pkgs, referenced)
 }
 
 // addAllHostPackageRefs adds every `packages` table found at

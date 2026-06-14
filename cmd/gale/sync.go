@@ -81,6 +81,13 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		ctx.GaleDir = galeDir
 	}
 
+	// newCmdContext registered the auto-detected scope; the
+	// overrides above may have re-pointed the context at a
+	// different project (shell/run's projectDir path), so
+	// register the effective one too (gh#115). Dedup makes
+	// the repeat a no-op.
+	registerProject(ctx.GalePath)
+
 	if buildOnly {
 		ctx.Installer.SourceOnly = true
 	}

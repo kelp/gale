@@ -70,6 +70,7 @@ internal/httpclient/   shared *http.Client for all fetches
 internal/inspect/      binary linkage auditing (@rpath checks)
 internal/parallel/     bounded worker pool for fan-out work
 internal/prewarm/      concurrent ETag cache pre-population
+internal/projects/     machine-local project registry for gc
 internal/timing/       verbose phase-elapsed-time logging
 internal/version/      version comparison rules (update/outdated)
 ```
@@ -269,6 +270,19 @@ When adding a new command that installs packages, use
 For versioned installs, use `resolveVersionedRecipe`.
 When adding a new build mode, delegate to `BuildLocal`
 after obtaining the source directory.
+
+**`internal/projects/`** — machine-local project
+registry (`~/.gale/projects`) that lets gc retain
+every project's active generation (gh#115).
+`newCmdContext` registers the resolved project
+automatically via `registerProject` (context.go), so
+commands built on it need no explicit call. Call
+`registerProject(configPath)` directly only when a
+command re-points its config path after context
+resolution (see sync's projectDir override) or
+resolves scope without a context (see `gale env`).
+Registration is best-effort and skipped for the
+global config and dry runs.
 
 ## Adding a New Command
 

@@ -16,6 +16,7 @@ import (
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/parallel"
+	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
@@ -92,6 +93,11 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		return nil, fmt.Errorf("resolving gale dir: %w", err)
 	}
 
+	// Record project-scoped use in the machine-local project
+	// registry so gc can retain this project's generation when
+	// run from anywhere else (gh#115).
+	registerProject(galePath)
+
 	// Set up resolver.
 	storeRoot := defaultStoreRoot()
 	resolver, reg, resolveErr := resolveRecipeResolver(recipesPath)
@@ -121,6 +127,31 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		Registry:    reg,
 		Parallelism: n,
 	}, nil
+}
+
+// registerProject records the project owning configPath in the
+// machine-local registry (~/.gale/projects) so gc can union
+// this project's generation into its retention set (gh#115).
+// No-ops for global configs and dry runs. Best-effort by
+// design: a read-only gale home must never block the command
+// that triggered registration.
+func registerProject(configPath string) {
+	if dryRun || configPath == "" {
+		return
+	}
+	globalDir, err := galeConfigDir()
+	if err != nil {
+		return
+	}
+	if configInGaleDir(configPath, globalDir) {
+		return // the global config is not a project
+	}
+	if err := projects.Register(
+		globalDir, filepath.Dir(configPath),
+	); err != nil {
+		fmt.Fprintf(os.Stderr,
+			"warning: registering project for gc: %v\n", err)
+	}
 }
 
 // LoadConfig reads and parses the gale.toml that this

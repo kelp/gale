@@ -78,6 +78,7 @@ func TestSyncIfNeededSyncsTargetProject(t *testing.T) {
 	// install will fail (no registry), but the error message
 	// should reference the package name from the PROJECT's
 	// config — proving sync used the right scope.
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	projDir := t.TempDir()
 	projConfig := filepath.Join(projDir, "gale.toml")
 	if err := os.WriteFile(projConfig,
@@ -115,6 +116,7 @@ func TestSyncIfNeededNestedSubdirectory(t *testing.T) {
 	// project, syncIfNeeded must walk up to find gale.toml
 	// at the project root and sync against that root —
 	// not the nested path.
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	projDir := t.TempDir()
 	projConfig := filepath.Join(projDir, "gale.toml")
 	if err := os.WriteFile(projConfig,

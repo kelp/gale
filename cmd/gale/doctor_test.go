@@ -488,6 +488,11 @@ func TestCheckRevisionDriftPassesWhenInSync(t *testing.T) {
 // this contract, the file would be zero bytes.
 func TestDoctorRunWritesSummaryToStdout(t *testing.T) {
 	home := t.TempDir()
+	// runDoctor's best-effort newCmdContext registers the
+	// project found from the PROCESS cwd (this repo) in
+	// ~/.gale/projects; isolate HOME so tests never write
+	// to the developer's real registry (gh#115).
+	t.Setenv("HOME", home)
 	galeDir := filepath.Join(home, ".gale")
 	if err := os.MkdirAll(galeDir, 0o755); err != nil {
 		t.Fatal(err)

@@ -33,6 +33,12 @@ var envCmd = &cobra.Command{
 			return err
 		}
 
+		// `gale env` is the direnv activation path (`use gale`
+		// runs it), so this is where most projects first enter
+		// the gc retention registry (gh#115). No-op for the
+		// global scope.
+		registerProject(configPath)
+
 		if !envVarsOnly {
 			binDir := filepath.Join(galeDir, "current", "bin")
 			fmt.Fprintf(out, "export PATH=\"%s:$PATH\"\n", binDir)

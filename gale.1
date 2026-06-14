@@ -119,9 +119,19 @@ to list both with section headers.
 .It Cm gc
 Remove unused package versions from the store and
 old generations.
-Keeps only versions referenced by
-.Pa gale.toml
-and the current generation.
+Keeps versions referenced by any
+.Pa gale.toml ,
+by the active global and project generations, and by
+the active generation of every project recorded in
+.Pa ~/.gale/projects ,
+so a gc run from one directory cannot sweep versions
+another project still links.
+Registry entries whose project directory has vanished
+are pruned on each real run.
+With
+.Fl -dry-run ,
+also lists the registered projects that contributed
+retention.
 .Pp
 .Dl $ gale gc --dry-run
 .Dl $ gale gc
@@ -666,6 +676,12 @@ Symlink to the active generation directory.
 Add
 .Pa ~/.gale/current/bin
 to PATH.
+.It Pa ~/.gale/projects
+Machine-local project registry, one absolute path per
+line, recorded automatically on project-scoped use.
+.Cm gc
+retains every registered project's pins and active
+generation.
 .It Pa gale.toml
 Project package declarations.
 .It Pa gale.lock

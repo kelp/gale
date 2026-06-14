@@ -375,6 +375,7 @@ func TestFinishUpdateSkipsRebuildWhenNothingChanged(t *testing.T) {
 // contains "not in gale.toml" or "newpkg", which the current code never
 // produces (it fails later with a recipe/path error).
 func TestUpdatePathRequiresPackageInConfig(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	tmp := t.TempDir()
 	// Create a gale.toml that does NOT list "newpkg".
 	if err := os.WriteFile(filepath.Join(tmp, "gale.toml"),

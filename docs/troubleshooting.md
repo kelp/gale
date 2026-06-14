@@ -49,6 +49,16 @@ Sync recreates the generation directory with fresh
 symlinks into the store. This fixes stale or broken
 links.
 
+One historical cause was `gale gc` run from outside a
+project: it could not see other projects' generations
+and swept store versions they still linked. Gale now
+records every project in `~/.gale/projects` as a side
+effect of normal use, and gc retains all registered
+projects' active generations. If a project predates
+this (its environment was never activated since
+upgrading), one `gale sync` inside the project both
+relinks it and registers it.
+
 ### Build failures
 
 Source builds can fail for several reasons:

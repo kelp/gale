@@ -15,6 +15,9 @@ import (
 // is updated before the store is modified. If the config
 // write fails, the store entry must still exist.
 func TestRemoveConfigBeforeStore(t *testing.T) {
+	// Isolate ~/.gale: the command path registers the project
+	// (gh#115) and this test also writes to defaultStoreRoot().
+	t.Setenv("HOME", t.TempDir())
 	projDir := t.TempDir()
 	configPath := filepath.Join(projDir, "gale.toml")
 	if err := os.WriteFile(configPath,
@@ -83,6 +86,7 @@ func TestRemoveConfigBeforeStore(t *testing.T) {
 // removing a package that is in the config but not in
 // the store emits a warning instead of silently no-oping.
 func TestRemoveDeletesLockfileEntry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	projDir := t.TempDir()
 	configPath := filepath.Join(projDir, "gale.toml")
 	if err := os.WriteFile(configPath,
