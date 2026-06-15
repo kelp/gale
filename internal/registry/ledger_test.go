@@ -271,6 +271,120 @@ linux-amd64 = { sha256 = "999999999999999999999999999999999999999999999999999999
 	}
 }
 
+// A ref-tip recipe that LAGS the ledger head: version 1.7.1 rev 3, while
+// the ref-tip .binaries.toml ledger's newest entry is 1.8.1-5. The non-head
+// 1.7.1-3 entry matches this recipe via binaryIndexMatchesRecipe.
+const staleRefTipRecipe = `[package]
+name = "jq"
+version = "1.7.1"
+revision = 3
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://example.com/jq-1.7.1.tar.gz"
+sha256 = "abc123"
+`
+
+// A ref-tip .binaries.toml whose [[history]] ledger HEAD (1.8.1-5) is newer
+// than the ref-tip recipe (1.7.1-3). The stale 1.7.1-3 entry carries the
+// "7171..." sha so the test can tell the stale binary apart from the head's
+// "8181..." sha. The flat head is at 1.7.1 so it does not rescue 1.8.1.
+const staleRefTipBinaries = `version = "1.7.1"
+
+[darwin-arm64]
+sha256 = "7171717171717171717171717171717171717171717171717171717171717171"
+manifest_digest = "sha256:7171717171717171717171717171717171717171717171717171717171717171"
+
+[[history]]
+version = "1.7.1-3"
+darwin-arm64 = { sha256 = "7171717171717171717171717171717171717171717171717171717171717171", manifest_digest = "sha256:7171717171717171717171717171717171717171717171717171717171717171" }
+linux-amd64 = { sha256 = "7171717171717171717171717171717171717171717171717171717171717171", manifest_digest = "sha256:7171717171717171717171717171717171717171717171717171717171717171" }
+linux-arm64 = { sha256 = "7171717171717171717171717171717171717171717171717171717171717171", manifest_digest = "sha256:7171717171717171717171717171717171717171717171717171717171717171" }
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "8181818181818181818181818181818181818181818181818181818181818181", manifest_digest = "sha256:8181818181818181818181818181818181818181818181818181818181818181" }
+linux-amd64 = { sha256 = "8181818181818181818181818181818181818181818181818181818181818181", manifest_digest = "sha256:8181818181818181818181818181818181818181818181818181818181818181" }
+linux-arm64 = { sha256 = "8181818181818181818181818181818181818181818181818181818181818181", manifest_digest = "sha256:8181818181818181818181818181818181818181818181818181818181818181" }
+`
+
+// The recipe served at the .versions-pinned commit: jq 1.8.1 rev 5, the
+// real latest. Its .binaries.toml carries the matching 1.8.1-5 binary.
+const pinnedRecipe181 = `[package]
+name = "jq"
+version = "1.8.1"
+revision = 5
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://example.com/jq-1.8.1.tar.gz"
+sha256 = "abc123"
+`
+
+const pinnedBinaries181 = `version = "1.8.1-5"
+
+[darwin-arm64]
+sha256 = "8181818181818181818181818181818181818181818181818181818181818181"
+manifest_digest = "sha256:8181818181818181818181818181818181818181818181818181818181818181"
+
+[linux-amd64]
+sha256 = "8181818181818181818181818181818181818181818181818181818181818181"
+manifest_digest = "sha256:8181818181818181818181818181818181818181818181818181818181818181"
+
+[linux-arm64]
+sha256 = "8181818181818181818181818181818181818181818181818181818181818181"
+manifest_digest = "sha256:8181818181818181818181818181818181818181818181818181818181818181"
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "8181818181818181818181818181818181818181818181818181818181818181" }
+linux-amd64 = { sha256 = "8181818181818181818181818181818181818181818181818181818181818181" }
+linux-arm64 = { sha256 = "8181818181818181818181818181818181818181818181818181818181818181" }
+`
+
+// When the ref-tip recipe LAGS the ledger head, FetchRecipe must defer to
+// the .versions commit pin. fetchLatestRefTip's MergeBinariesForRecipe
+// matches the non-head 1.7.1-3 entry (it matches the ref-tip recipe's own
+// version) and reports ledgerOK=true, but the ledger is authoritative only
+// when its HEAD matches the ref-tip recipe. Here the head is 1.8.1-5, so the
+// resolver must consult .versions and return 1.8.1, not the stale 1.7.1.
+func TestFetchRecipeStaleRefTipDefersToVersions(t *testing.T) {
+	commit := "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.8.1-5 " + commit + "\n"
+
+	srv := httptest.NewServer(fileHandler(map[string]string{
+		"/recipes/j/jq.versions":                     versionsBody,
+		"/recipes/j/jq.toml":                         staleRefTipRecipe,
+		"/recipes/j/jq.binaries.toml":                staleRefTipBinaries,
+		"/" + commit + "/recipes/j/jq.toml":          pinnedRecipe181,
+		"/" + commit + "/recipes/j/jq.binaries.toml": pinnedBinaries181,
+	}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.8.1" {
+		t.Fatalf("version = %q, want 1.8.1 (trusted stale non-head ledger "+
+			"match instead of deferring to .versions?)", rec.Package.Version)
+	}
+	b, ok := rec.Binary[ledgerPlatform()]
+	if !ok {
+		t.Fatalf("no binary for %s", ledgerPlatform())
+	}
+	// Must be the 1.8.1 sha (8181...), not the stale 1.7.1 sha (7171...).
+	if strings.HasPrefix(b.SHA256, "7171") {
+		t.Errorf("SHA256 = %q, want the 1.8.1 sha (used stale ledger entry?)",
+			b.SHA256)
+	}
+}
+
 // A historical version (not the ledger head) is resolved via the
 // .versions commit-pin path, fetching the recipe at the pinned
 // commit — NOT the ref-tip recipe.

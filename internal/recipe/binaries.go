@@ -339,6 +339,28 @@ func MergeBinariesForRecipe(r *Recipe, idx *BinaryIndex, ghcrBase string) bool {
 	return false
 }
 
+// MergeBinariesFromLedgerHead merges binaries from the NEWEST
+// [[history]] ledger entry (PickHistoryLatest), but only when that
+// head entry's version matches the recipe (binaryIndexMatchesRecipe)
+// -- i.e. the ref-tip recipe and the ledger head are coherent. It
+// returns true only then. When the ledger head's version differs
+// from the recipe (ref-tip lags or leads the ledger), it merges the
+// flat head section as a best-effort fallback and returns false, so
+// the registry defers to the .versions commit pin (gh#121).
+func MergeBinariesFromLedgerHead(r *Recipe, idx *BinaryIndex, ghcrBase string) bool {
+	if idx == nil {
+		return false
+	}
+	if head, ok := idx.PickHistoryLatest(); ok && binaryIndexMatchesRecipe(r, head.Version) {
+		MergeBinariesFromHistory(r, head, ghcrBase)
+		if len(r.Binary) > 0 {
+			return true
+		}
+	}
+	MergeBinaries(r, idx, ghcrBase)
+	return false
+}
+
 // mergeBinaryPlatforms is the shared body of MergeBinaries and
 // MergeBinariesFromHistory: when version matches the recipe, it
 // fills r.Binary with one GHCR blob entry per platform.

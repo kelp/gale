@@ -213,10 +213,15 @@ var errNoVersionIndex = errors.New("no version index")
 // fetchLatestRefTip fetches the ref-tip recipe and merges its
 // binaries from the ref-tip .binaries.toml, preferring the
 // [[history]] ledger head and falling back to the flat head
-// section. ledgerOK reports whether a [[history]] ledger was
-// present, so FetchRecipe can decide whether ref-tip is
-// authoritative (ledger present) or must defer to the .versions
-// commit pin (no ledger, possibly stale ref-tip).
+// section. ledgerOK reports whether the ledger HEAD
+// (PickHistoryLatest) matches the ref-tip recipe version --
+// i.e. the ref-tip recipe and the ledger are coherent -- so
+// FetchRecipe can decide whether ref-tip is authoritative
+// (coherent ledger head) or must defer to the .versions commit
+// pin. A non-head ledger entry that merely matches the ref-tip
+// version does NOT make ledgerOK true: when the ref-tip recipe
+// lags the ledger head, ledgerOK is false and FetchRecipe defers
+// to .versions (gh#121).
 //
 // An inline-binary recipe returns immediately without touching
 // .binaries.toml (ledgerOK=false). A fetch error (404, network) is
@@ -235,7 +240,7 @@ func (r *Registry) fetchLatestRefTip(name string) (rec *recipe.Recipe, ledgerOK 
 		// recipe still resolves and the caller source-builds.
 		return rec, false, nil //nolint:nilerr // binary index error is not fatal
 	}
-	ledgerOK = recipe.MergeBinariesForRecipe(rec, idx, ghcrBaseFromURL(r.BaseURL))
+	ledgerOK = recipe.MergeBinariesFromLedgerHead(rec, idx, ghcrBaseFromURL(r.BaseURL))
 	return rec, ledgerOK, nil
 }
 
