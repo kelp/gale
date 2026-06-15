@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Ledger-based resolution: gale resolves the latest installable
+  version from the append-only `[[history]]` ledger in a recipe's
+  `.binaries.toml`, falling back to the `.versions` commit-pin path
+  when no ledger is present. Pinned historical installs continue to
+  use `.versions`. This is the client half of the one-ledger design
+  and lets `.versions` be retired later (#121).
+- Digest-based fetch: when a recipe carries a `manifest_digest`,
+  gale pulls the OCI manifest by that digest, confirms it
+  references exactly the layer the ledger's sha256 names, and only
+  then fetches the blob. Fail-closed — a manifest mismatch or fetch
+  failure aborts the binary install and falls back to a source
+  build, so a binary is never installed without verifying the
+  immutable manifest it was attested under (#121).
+
 ## v0.18.0 — 2026-06-14
 
 ### Changed

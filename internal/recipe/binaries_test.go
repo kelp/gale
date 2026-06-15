@@ -444,3 +444,259 @@ func TestMergeBinariesEmptyManifestDigestWhenAbsent(t *testing.T) {
 		t.Errorf("Trust = %q, want %q", b.Trust, TrustSigstore)
 	}
 }
+
+// --- Behavior 11: MergeBinariesFromHistory populates from a ledger entry ---
+
+func TestMergeBinariesFromHistoryPopulates(t *testing.T) {
+	digest := "sha256:efefefefefefefefefefefefefefefefefefefefefefefefefefefefefefefef"
+	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1", Revision: 5}}
+	entry := BinaryHistoryEntry{
+		Version: "1.8.1-5",
+		Platforms: map[string]string{
+			"darwin-arm64": "abc123",
+			"linux-amd64":  "def456",
+		},
+		Digests: map[string]string{
+			"darwin-arm64": digest,
+		},
+	}
+	MergeBinariesFromHistory(r, entry, "kelp/gale-recipes")
+
+	if len(r.Binary) != 2 {
+		t.Fatalf("Binary count = %d, want 2", len(r.Binary))
+	}
+	b := r.Binary["darwin-arm64"]
+	if b.URL != "https://ghcr.io/v2/kelp/gale-recipes/jq/blobs/sha256:abc123" {
+		t.Errorf("URL = %q", b.URL)
+	}
+	if b.SHA256 != "abc123" {
+		t.Errorf("SHA256 = %q, want abc123", b.SHA256)
+	}
+	if b.ManifestDigest != digest {
+		t.Errorf("ManifestDigest = %q, want %q", b.ManifestDigest, digest)
+	}
+	if b.Trust != TrustSigstore {
+		t.Errorf("Trust = %q, want %q", b.Trust, TrustSigstore)
+	}
+	// A platform without a digest still merges, with empty digest.
+	if r.Binary["linux-amd64"].ManifestDigest != "" {
+		t.Errorf("linux-amd64 digest = %q, want empty",
+			r.Binary["linux-amd64"].ManifestDigest)
+	}
+}
+
+// A revisioned recipe requires the full <version>-<revision> on the
+// ledger entry, matching binaryIndexMatchesRecipe.
+func TestMergeBinariesFromHistoryRejectsVersionMismatch(t *testing.T) {
+	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1", Revision: 5}}
+	entry := BinaryHistoryEntry{
+		Version:   "1.8.1-2", // wrong revision
+		Platforms: map[string]string{"darwin-arm64": "abc123"},
+	}
+	MergeBinariesFromHistory(r, entry, "kelp/gale-recipes")
+	if len(r.Binary) != 0 {
+		t.Errorf("Binary count = %d, want 0 (version mismatch)", len(r.Binary))
+	}
+}
+
+// --- Behavior 12: MergeBinariesPreferLedger picks ledger over flat ---
+
+func TestMergeBinariesPreferLedgerUsesHistory(t *testing.T) {
+	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1", Revision: 5}}
+	idx := &BinaryIndex{
+		Version:   "1.8.1-5",
+		Platforms: map[string]string{"darwin-arm64": "flatsha"},
+		History: []BinaryHistoryEntry{
+			{
+				Version:   "1.8.1-5",
+				Platforms: map[string]string{"darwin-arm64": "ledgersha"},
+			},
+		},
+	}
+	used := MergeBinariesPreferLedger(r, idx, "kelp/gale-recipes")
+	if !used {
+		t.Error("used = false, want true (ledger present)")
+	}
+	if r.Binary["darwin-arm64"].SHA256 != "ledgersha" {
+		t.Errorf("SHA256 = %q, want ledgersha (flat shadowed ledger?)",
+			r.Binary["darwin-arm64"].SHA256)
+	}
+}
+
+func TestMergeBinariesPreferLedgerFallsBackToFlat(t *testing.T) {
+	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1"}}
+	idx := &BinaryIndex{
+		Version:   "1.8.1",
+		Platforms: map[string]string{"darwin-arm64": "flatsha"},
+	}
+	used := MergeBinariesPreferLedger(r, idx, "kelp/gale-recipes")
+	if used {
+		t.Error("used = true, want false (no ledger)")
+	}
+	if r.Binary["darwin-arm64"].SHA256 != "flatsha" {
+		t.Errorf("SHA256 = %q, want flatsha", r.Binary["darwin-arm64"].SHA256)
+	}
+}
+
+func TestMergeBinariesPreferLedgerNil(t *testing.T) {
+	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1"}}
+	if MergeBinariesPreferLedger(r, nil, "kelp/gale-recipes") {
+		t.Error("used = true for nil index, want false")
+	}
+}
+
+// --- Behavior 9: ParseBinaryIndex reads the [[history]] ledger ---
+
+// A .binaries.toml carries an append-only [[history]] ledger: one
+// table per published <version>-<revision>, each with an inline
+// table per platform recording {sha256, manifest_digest}. This is
+// the registry-side source of truth for installable versions that
+// replaces the .versions commit-pin file (gh#121). The flat head
+// section is retained for older gale clients.
+const validBinariesTOMLWithHistory = `version = "1.8.1-5"
+
+[darwin-arm64]
+sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089"
+manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b"
+
+[linux-amd64]
+sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455bc55d74788"
+manifest_digest = "sha256:9f35d79850663818a8be0eca27bb9680af73b3c6a79d08f17c49d5f336bc4ac0"
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089", manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b" }
+linux-amd64 = { sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455bc55d74788", manifest_digest = "sha256:9f35d79850663818a8be0eca27bb9680af73b3c6a79d08f17c49d5f336bc4ac0" }
+linux-arm64 = { sha256 = "62a2c004ef2ed6f2c17cf94e61598f82c717a79b3f648392a5f467fee2b0e4da", manifest_digest = "sha256:148c92fbecb0938286cb1a46791de4a7cf230b0bbda90fe0fd4719577a2ef0ef" }
+`
+
+func TestParseBinaryIndexHistoryLength(t *testing.T) {
+	idx, err := ParseBinaryIndex(validBinariesTOMLWithHistory)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(idx.History) != 1 {
+		t.Fatalf("History count = %d, want 1", len(idx.History))
+	}
+}
+
+func TestParseBinaryIndexHistoryEntry(t *testing.T) {
+	idx, err := ParseBinaryIndex(validBinariesTOMLWithHistory)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	e := idx.History[0]
+	if e.Version != "1.8.1-5" {
+		t.Errorf("Version = %q, want %q", e.Version, "1.8.1-5")
+	}
+	if len(e.Platforms) != 3 {
+		t.Fatalf("Platforms count = %d, want 3", len(e.Platforms))
+	}
+	wantSHA := "62a2c004ef2ed6f2c17cf94e61598f82c717a79b3f648392a5f467fee2b0e4da"
+	if got := e.Platforms["linux-arm64"]; got != wantSHA {
+		t.Errorf("linux-arm64 sha = %q, want %q", got, wantSHA)
+	}
+	wantDigest := "sha256:148c92fbecb0938286cb1a46791de4a7cf230b0bbda90fe0fd4719577a2ef0ef"
+	if got := e.Digests["linux-arm64"]; got != wantDigest {
+		t.Errorf("linux-arm64 digest = %q, want %q", got, wantDigest)
+	}
+}
+
+// A .binaries.toml without [[history]] yields a nil History slice —
+// the flat head section still parses, so existing clients are
+// unaffected.
+func TestParseBinaryIndexNoHistory(t *testing.T) {
+	idx, err := ParseBinaryIndex(validBinariesTOML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if idx.History != nil {
+		t.Errorf("History = %v, want nil", idx.History)
+	}
+}
+
+// A history entry whose platform table lacks sha256, or carries a
+// malformed manifest_digest, degrades gracefully: the platform sha
+// is dropped when absent and the bad digest is dropped, but the
+// parse never fails — mirroring the flat-section leniency.
+const malformedHistoryBinariesTOML = `version = "2.0.0-1"
+
+[[history]]
+version = "2.0.0-1"
+darwin-arm64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111", manifest_digest = "not-a-digest" }
+linux-amd64 = { manifest_digest = "sha256:2222222222222222222222222222222222222222222222222222222222222222" }
+linux-arm64 = { sha256 = "3333333333333333333333333333333333333333333333333333333333333333", manifest_digest = "sha256:3333333333333333333333333333333333333333333333333333333333333333" }
+`
+
+// --- Behavior 10: PickHistoryLatest selects the newest entry ---
+
+// A multi-entry, multi-revision ledger locks in the total order
+// ahead of the ledger accumulating real history.
+const multiEntryHistoryTOML = `version = "1.8.1-5"
+
+[[history]]
+version = "1.7.1"
+linux-amd64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111" }
+
+[[history]]
+version = "1.8.1-2"
+linux-amd64 = { sha256 = "2222222222222222222222222222222222222222222222222222222222222222" }
+
+[[history]]
+version = "1.8.1-5"
+linux-amd64 = { sha256 = "5555555555555555555555555555555555555555555555555555555555555555" }
+
+[[history]]
+version = "1.8.0"
+linux-amd64 = { sha256 = "0000000000000000000000000000000000000000000000000000000000000000" }
+`
+
+func TestPickHistoryLatest(t *testing.T) {
+	idx, err := ParseBinaryIndex(multiEntryHistoryTOML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry, ok := idx.PickHistoryLatest()
+	if !ok {
+		t.Fatal("PickHistoryLatest ok = false")
+	}
+	if entry.Version != "1.8.1-5" {
+		t.Errorf("Version = %q, want %q", entry.Version, "1.8.1-5")
+	}
+}
+
+func TestPickHistoryLatestEmpty(t *testing.T) {
+	idx := &BinaryIndex{}
+	if _, ok := idx.PickHistoryLatest(); ok {
+		t.Error("PickHistoryLatest on empty ledger ok = true, want false")
+	}
+}
+
+func TestParseBinaryIndexHistoryDropsMalformed(t *testing.T) {
+	idx, err := ParseBinaryIndex(malformedHistoryBinariesTOML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(idx.History) != 1 {
+		t.Fatalf("History count = %d, want 1", len(idx.History))
+	}
+	e := idx.History[0]
+	// darwin-arm64: valid sha, malformed digest dropped.
+	if got := e.Platforms["darwin-arm64"]; got == "" {
+		t.Error("darwin-arm64 sha should be retained")
+	}
+	if _, ok := e.Digests["darwin-arm64"]; ok {
+		t.Error("darwin-arm64 malformed digest should be dropped")
+	}
+	// linux-amd64: no sha — platform omitted entirely.
+	if _, ok := e.Platforms["linux-amd64"]; ok {
+		t.Error("linux-amd64 has no sha256, should be omitted")
+	}
+	// linux-arm64: fully valid.
+	if got := e.Platforms["linux-arm64"]; got == "" {
+		t.Error("linux-arm64 sha should be retained")
+	}
+	if _, ok := e.Digests["linux-arm64"]; !ok {
+		t.Error("linux-arm64 digest should be retained")
+	}
+}

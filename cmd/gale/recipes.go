@@ -108,7 +108,10 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 					string(binData),
 				)
 				if parseErr == nil {
-					recipe.MergeBinaries(
+					// Prefer the [[history]] ledger head over the
+					// flat section, matching registry resolution
+					// (gh#121).
+					recipe.MergeBinariesPreferLedger(
 						rec, idx, localGHCRBase,
 					)
 				}

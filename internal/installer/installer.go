@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
@@ -571,6 +572,16 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		}
 	}
 
+	// Digest-based fetch (gh#121): when the recipe carries a
+	// manifest digest, confirm the immutable OCI manifest
+	// references exactly the layer the ledger's sha256 names
+	// before pulling it. Fail-closed — any failure aborts the
+	// binary install so the caller falls back to a source build
+	// rather than trusting an unverifiable artifact.
+	if err := verifyManifestDigest(bin, token); err != nil {
+		return fmt.Errorf("verify manifest digest: %w", err)
+	}
+
 	// Stream fetch + SHA verification + extraction in one
 	// pass into a sibling staging directory. The network
 	// fetch stays outside the store-gen lock so a slow
@@ -840,6 +851,44 @@ func isGHCR(rawURL string) bool {
 		return false
 	}
 	return u.Host == "ghcr.io"
+}
+
+// verifyManifestDigest enforces digest-based fetch (gh#121). When a
+// binary carries a manifest digest, gale pulls the OCI manifest by
+// that digest and confirms it references exactly the layer the
+// ledger's sha256 names — the manifest is the immutable, attested
+// handle, and the sha256 is the cross-check second factor. Returns
+// nil when no digest is declared (legacy recipes fetch the blob
+// directly). All failures propagate so the binary install aborts
+// to a source-build fallback.
+func verifyManifestDigest(bin *recipe.Binary, token string) error {
+	if bin.ManifestDigest == "" {
+		return nil
+	}
+	manifestURL, err := ghcr.ManifestURLForBlob(bin.URL, bin.ManifestDigest)
+	if err != nil {
+		// Not a GHCR blob URL, so there is no OCI manifest to
+		// verify. A manifest digest only rides on ledger-sourced
+		// GHCR binaries (always /blobs/ URLs); on any other URL it
+		// is inert metadata — sigstore+non-GHCR is already
+		// rejected, and sha256-only verifies the blob bytes
+		// directly. Nothing to check.
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	layerDigest, err := ghcr.FetchManifestLayer(ctx, manifestURL, bin.ManifestDigest, token)
+	if err != nil {
+		return err
+	}
+	got := strings.TrimPrefix(layerDigest, "sha256:")
+	if !strings.EqualFold(got, bin.SHA256) {
+		return fmt.Errorf(
+			"manifest layer %s does not match ledger sha256 %s",
+			layerDigest, bin.SHA256,
+		)
+	}
+	return nil
 }
 
 // repoFromURL extracts the repository path from a GHCR blob

@@ -117,6 +117,57 @@ func TestLocalRecipeResolverEmptyName(t *testing.T) {
 	}
 }
 
+// A local --recipes dir whose .binaries.toml carries a [[history]]
+// ledger resolves binaries from the ledger head (gh#121).
+func TestLocalRecipeResolverUsesLedger(t *testing.T) {
+	dir := t.TempDir()
+	bucket := filepath.Join(dir, "j")
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipeTOML := `[package]
+name = "jq"
+version = "1.8.1"
+revision = 5
+
+[source]
+url = "https://example.com/jq.tar.gz"
+sha256 = "abc"
+`
+	binariesTOML := `version = "1.8.1-5"
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "ledgersha", manifest_digest = "sha256:` +
+		strings.Repeat("a", 64) + `" }
+linux-amd64 = { sha256 = "ledgerlinux", manifest_digest = "sha256:` +
+		strings.Repeat("b", 64) + `" }
+linux-arm64 = { sha256 = "ledgerarm", manifest_digest = "sha256:` +
+		strings.Repeat("c", 64) + `" }
+`
+	if err := os.WriteFile(filepath.Join(bucket, "jq.toml"),
+		[]byte(recipeTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bucket, "jq.binaries.toml"),
+		[]byte(binariesTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	rec, err := localRecipeResolver(dir)("jq")
+	if err != nil {
+		t.Fatalf("resolver error: %v", err)
+	}
+	if len(rec.Binary) == 0 {
+		t.Fatal("no binaries merged from ledger")
+	}
+	for _, b := range rec.Binary {
+		if b.ManifestDigest == "" {
+			t.Error("ManifestDigest empty, want it set from the ledger")
+		}
+	}
+}
+
 func TestDetectRecipesRepoWithMultiCharBucket(t *testing.T) {
 	// Letter bucket must be single character.
 	path := "/home/user/code/gale-recipes/recipes/jq/jq.toml"

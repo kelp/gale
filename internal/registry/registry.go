@@ -7,15 +7,12 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
-	"golang.org/x/mod/semver"
-
 	"github.com/kelp/gale/internal/recipe"
-	"github.com/kelp/gale/internal/store"
 	"github.com/kelp/gale/internal/timing"
+	"github.com/kelp/gale/internal/version"
 )
 
 // validCommitHash matches a lowercase hex string 7-40 chars long.
@@ -180,20 +177,67 @@ func (r *Registry) warn(format string, args ...any) {
 // legacy two-file fetch against the configured ref. Uses an
 // ETag-based HTTP cache under r.CacheDir when set.
 func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
-	rec, err := r.fetchLatestPinned(name)
-	if err == nil {
+	// Ledger-first (gh#121): when the ref-tip .binaries.toml carries
+	// a [[history]] ledger, ref-tip is coherent by construction (CI
+	// appends to the ledger atomically), so resolve the latest from
+	// it and pull the binary by its immutable manifest digest. No
+	// commit pin is needed.
+	rec, ledgerOK, err := r.fetchLatestRefTip(name)
+	if err == nil && ledgerOK && len(rec.Binary) > 0 {
 		return rec, nil
 	}
-	if errors.Is(err, errNoVersionIndex) {
-		return r.fetchRecipe(name, true)
+
+	// No ledger: the ref-tip may lag .versions (the mutable-main-ref
+	// race), so resolve via the .versions commit pin instead.
+	pinned, perr := r.fetchLatestPinned(name)
+	if perr == nil {
+		return pinned, nil
 	}
-	return nil, err
+	if errors.Is(perr, errNoVersionIndex) {
+		// No .versions either. Reuse the ref-tip recipe already
+		// fetched above (with its flat-head binaries) rather than
+		// re-fetching it.
+		if err != nil {
+			return nil, err
+		}
+		return rec, nil
+	}
+	return nil, perr
 }
 
 // errNoVersionIndex signals that a package has no usable
 // .versions index (absent, unparseable, or empty), so the
 // caller should fall back to the legacy ref-tip fetch.
 var errNoVersionIndex = errors.New("no version index")
+
+// fetchLatestRefTip fetches the ref-tip recipe and merges its
+// binaries from the ref-tip .binaries.toml, preferring the
+// [[history]] ledger head and falling back to the flat head
+// section. ledgerOK reports whether a [[history]] ledger was
+// present, so FetchRecipe can decide whether ref-tip is
+// authoritative (ledger present) or must defer to the .versions
+// commit pin (no ledger, possibly stale ref-tip).
+//
+// An inline-binary recipe returns immediately without touching
+// .binaries.toml (ledgerOK=false). A fetch error (404, network) is
+// returned so FetchRecipe can fall back.
+func (r *Registry) fetchLatestRefTip(name string) (rec *recipe.Recipe, ledgerOK bool, err error) {
+	rec, err = r.fetchRecipe(name, false)
+	if err != nil {
+		return nil, false, err
+	}
+	if len(rec.Binary) > 0 {
+		return rec, false, nil
+	}
+	idx, ferr := r.fetchBinaries(name)
+	if ferr != nil || idx == nil {
+		// A missing or unparseable binary index is non-fatal: the
+		// recipe still resolves and the caller source-builds.
+		return rec, false, nil //nolint:nilerr // binary index error is not fatal
+	}
+	ledgerOK = recipe.MergeBinariesPreferLedger(rec, idx, ghcrBaseFromURL(r.BaseURL))
+	return rec, ledgerOK, nil
+}
 
 // fetchLatestPinned resolves the latest version from the
 // package's .versions index and fetches the recipe and its
@@ -327,9 +371,8 @@ func (r *Registry) mergeBinariesAtCommit(
 }
 
 // pickLatest returns the newest version key in a version→commit
-// index, using gale's version ordering (base version plus a
-// numeric "-<N>" revision suffix). Returns ("", false) for an
-// empty index.
+// index, using gale's total version order (see version.KeyNewer).
+// Returns ("", false) for an empty index.
 //
 // Deliberately NOT version.IsNewer: its optimistic always-true
 // answer for non-semver strings (socat's "1.8.1.1", autossh's
@@ -337,98 +380,17 @@ func (r *Registry) mergeBinariesAtCommit(
 // max-selection loop it degenerates to last-map-key-wins, and Go
 // randomizes map iteration — a bare `gale install socat`
 // resolved to the OLDER revision ~10% of the time (gh#58).
-// indexKeyNewer is a deterministic total order instead.
 func pickLatest(idx map[string]string) (string, bool) {
-	best := ""
+	return version.Latest(mapKeys(idx))
+}
+
+// mapKeys returns the keys of a version→commit index.
+func mapKeys(idx map[string]string) []string {
+	keys := make([]string, 0, len(idx))
 	for k := range idx {
-		if best == "" || indexKeyNewer(k, best) {
-			best = k
-		}
+		keys = append(keys, k)
 	}
-	return best, best != ""
-}
-
-// indexKeyNewer reports whether index key a orders after key b.
-// Bases compare by semver when both parse as semver, by natural
-// (digit-run-aware) ordering otherwise; equal bases break the
-// tie on the numeric "-<N>" revision suffix (absent means 1),
-// then on the raw string so the order is total.
-func indexKeyNewer(a, b string) bool {
-	aBase, aRev := store.SplitRevision(a)
-	bBase, bRev := store.SplitRevision(b)
-	if aBase != bBase {
-		av, bv := "v"+aBase, "v"+bBase
-		if semver.IsValid(av) && semver.IsValid(bv) {
-			if c := semver.Compare(av, bv); c != 0 {
-				return c > 0
-			}
-		} else if c := naturalCompare(aBase, bBase); c != 0 {
-			return c > 0
-		}
-	}
-	if aRev != bRev {
-		return aRev > bRev
-	}
-	return a > b
-}
-
-// naturalCompare compares two strings chunk-wise: maximal runs
-// of ASCII digits compare numerically, everything else compares
-// byte-wise. Gives "1.8.1.10" > "1.8.1.2" and "15.2.rel2" >
-// "15.2.rel1" without pretending such strings are semver.
-func naturalCompare(a, b string) int {
-	for a != "" && b != "" {
-		if isASCIIDigit(a[0]) && isASCIIDigit(b[0]) {
-			aNum, aRest := splitLeadingDigits(a)
-			bNum, bRest := splitLeadingDigits(b)
-			at := strings.TrimLeft(aNum, "0")
-			bt := strings.TrimLeft(bNum, "0")
-			// Longer trimmed digit run is the bigger number;
-			// equal lengths compare lexically (same as
-			// numerically for equal-length digit strings).
-			if len(at) != len(bt) {
-				if len(at) < len(bt) {
-					return -1
-				}
-				return 1
-			}
-			if at != bt {
-				if at < bt {
-					return -1
-				}
-				return 1
-			}
-			a, b = aRest, bRest
-			continue
-		}
-		if a[0] != b[0] {
-			if a[0] < b[0] {
-				return -1
-			}
-			return 1
-		}
-		a, b = a[1:], b[1:]
-	}
-	switch {
-	case a == "" && b == "":
-		return 0
-	case a == "":
-		return -1
-	default:
-		return 1
-	}
-}
-
-func isASCIIDigit(c byte) bool { return c >= '0' && c <= '9' }
-
-// splitLeadingDigits splits s into its maximal leading digit run
-// and the remainder.
-func splitLeadingDigits(s string) (digits, rest string) {
-	i := 0
-	for i < len(s) && isASCIIDigit(s[i]) {
-		i++
-	}
-	return s[:i], s[i:]
+	return keys
 }
 
 // FetchRecipeMetadata is FetchRecipe without the secondary
@@ -492,6 +454,14 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	}
 
 	defer timing.Phase(fmt.Sprintf("recipe-fetch %s@%s", name, version))()
+
+	// Ledger-first (gh#121), but only for the head version: the
+	// ledger records no per-entry commit, so historical versions
+	// still need the .versions commit-pin path for their
+	// historically-correct recipe (deps, build steps).
+	if rec, ok := r.fetchVersionFromLedger(name, version); ok {
+		return rec, nil
+	}
 
 	// Fetch the versions index.
 	bucket := string(name[0])
@@ -558,6 +528,37 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	return rec, nil
 }
 
+// fetchVersionFromLedger resolves a requested version against the
+// [[history]] ledger, but only when it resolves to the ledger HEAD
+// (the latest entry). Historical versions return ok=false so the
+// caller uses the .versions commit-pin path, which fetches the
+// historically-correct recipe at its pinned commit. Returns
+// (recipe, true) only on a head match that yields a binary.
+func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recipe, bool) {
+	idx, err := r.fetchBinaries(name)
+	if err != nil || idx == nil || len(idx.History) == 0 {
+		return nil, false
+	}
+	entry, ok := idx.PickHistoryLatest()
+	if !ok {
+		return nil, false
+	}
+	// Resolve the request against the head entry only (bare base,
+	// exact, and "-1"→bare all handled by version.Pick).
+	if _, ok := version.Pick([]string{entry.Version}, requested); !ok {
+		return nil, false
+	}
+	rec, err := r.fetchRecipe(name, false)
+	if err != nil {
+		return nil, false
+	}
+	recipe.MergeBinariesFromHistory(rec, entry, ghcrBaseFromURL(r.BaseURL))
+	if len(rec.Binary) == 0 {
+		return nil, false
+	}
+	return rec, true
+}
+
 // fetchBinaries fetches the .binaries.toml file for a package
 // at the configured ref tip. Returns nil (not error) if the
 // file is not found or the network is unreachable — the caller
@@ -619,62 +620,7 @@ func ghcrBaseFromURL(rawURL string) string {
 // revision 1 for comparison. Returns ("", false) if
 // no match is found.
 func pickVersion(idx map[string]string, requested string) (string, bool) {
-	// 1. Exact match wins immediately.
-	if _, ok := idx[requested]; ok {
-		return requested, true
-	}
-	// 2. If requested has a "-1" suffix and the bare version
-	//    exists in the index, return the bare entry. Legacy
-	//    pre-revision .versions entries record the bare
-	//    version; revision 1 is the implicit default, so a
-	//    "-1" lookup should still find them.
-	if bare, ok := strings.CutSuffix(requested, "-1"); ok {
-		if _, ok := idx[bare]; ok {
-			return bare, true
-		}
-	}
-	// 3. Other -<digits> suffixes get no fallback — we only
-	//    bump to latest revision for bare base versions.
-	if hasRevisionSuffix(requested) {
-		return "", false
-	}
-	// 3. Scan idx for entries of the form "<requested>-<N>"
-	//    where N is all digits. Pick the highest N.
-	prefix := requested + "-"
-	bestRev := -1
-	bestKey := ""
-	for k := range idx {
-		if !strings.HasPrefix(k, prefix) {
-			continue
-		}
-		suf := k[len(prefix):]
-		n, err := strconv.Atoi(suf)
-		if err != nil || n < 0 {
-			continue
-		}
-		if n > bestRev {
-			bestRev = n
-			bestKey = k
-		}
-	}
-	if bestKey != "" {
-		return bestKey, true
-	}
-	return "", false
-}
-
-// hasRevisionSuffix reports whether v ends with "-<digits>".
-func hasRevisionSuffix(v string) bool {
-	i := strings.LastIndex(v, "-")
-	if i < 0 || i == len(v)-1 {
-		return false
-	}
-	for _, c := range v[i+1:] {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return true
+	return version.Pick(mapKeys(idx), requested)
 }
 
 // parseVersionIndex parses a .versions file into a
