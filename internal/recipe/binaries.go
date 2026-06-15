@@ -5,6 +5,8 @@ import (
 	"strings"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/kelp/gale/internal/version"
 )
 
 // BinaryDep records one entry from a `.binaries.toml` per-platform
@@ -36,6 +38,26 @@ type BinaryIndex struct {
 	// digest recorded by CI when the prebuilt was pushed. Empty
 	// when the file predates the field or the digest is absent.
 	Digests map[string]string `toml:"-"`
+	// History is the append-only [[history]] ledger: one entry
+	// per published <version>-<revision>. It is the registry-side
+	// source of truth for installable versions, replacing the
+	// .versions commit-pin file (gh#121). Nil when the file
+	// predates the ledger.
+	History []BinaryHistoryEntry `toml:"-"`
+}
+
+// BinaryHistoryEntry is one [[history]] table in a .binaries.toml
+// ledger: a published <version>-<revision> with its per-platform
+// binary coordinates. Unlike the flat head section, history entries
+// carry only sha256 and manifest_digest — never deps.
+type BinaryHistoryEntry struct {
+	Version string
+	// Platforms maps platform key → sha256 layer-blob hash.
+	Platforms map[string]string
+	// Digests maps platform key → "sha256:<64hex>" OCI manifest
+	// digest. A platform may appear in Platforms without a digest
+	// when the recorded value was malformed or absent.
+	Digests map[string]string
 }
 
 // ParseBinaryIndex parses a .binaries.toml string into a
@@ -60,9 +82,15 @@ func ParseBinaryIndex(data string) (*BinaryIndex, error) {
 		}
 	}
 
+	// The [[history]] ledger is an array of tables, handled
+	// separately from the flat platform sections below.
+	if h, ok := raw["history"]; ok {
+		idx.History = parseBinaryHistory(h)
+	}
+
 	// Remaining top-level keys are platform sections.
 	for key, val := range raw {
-		if key == "version" {
+		if key == "version" || key == "history" {
 			continue
 		}
 		sub, ok := val.(map[string]interface{})
@@ -136,6 +164,69 @@ func parseBinaryDeps(raw interface{}) []BinaryDep {
 	return out
 }
 
+// parseBinaryHistory converts the raw TOML value for the
+// `[[history]]` array of tables into typed BinaryHistoryEntry
+// values. Each entry has a `version` string plus one inline table
+// per platform carrying `sha256` and an optional `manifest_digest`.
+// Like the flat section, malformed pieces degrade rather than fail
+// the parse: a platform with no sha256 is omitted, and a malformed
+// digest is dropped while its sha256 is retained.
+func parseBinaryHistory(raw interface{}) []BinaryHistoryEntry {
+	tables := asTableSlice(raw)
+	if len(tables) == 0 {
+		return nil
+	}
+	out := make([]BinaryHistoryEntry, 0, len(tables))
+	for _, t := range tables {
+		entry := BinaryHistoryEntry{
+			Platforms: make(map[string]string),
+			Digests:   make(map[string]string),
+		}
+		for key, val := range t {
+			if key == "version" {
+				if s, ok := val.(string); ok {
+					entry.Version = s
+				}
+				continue
+			}
+			plat, ok := val.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			sha, ok := plat["sha256"].(string)
+			if !ok || sha == "" {
+				continue
+			}
+			entry.Platforms[key] = sha
+			if dig, ok := plat["manifest_digest"].(string); ok && validManifestDigest(dig) {
+				entry.Digests[key] = dig
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+// asTableSlice normalizes the two concrete types BurntSushi may
+// decode an array-of-tables into ([]map[string]interface{} or
+// []interface{}) to a slice of tables.
+func asTableSlice(raw interface{}) []map[string]interface{} {
+	if arr, ok := raw.([]map[string]interface{}); ok {
+		return arr
+	}
+	iarr, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]interface{}, 0, len(iarr))
+	for _, v := range iarr {
+		if m, ok := v.(map[string]interface{}); ok {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // validManifestDigest reports whether s is a well-formed OCI
 // manifest digest: "sha256:" followed by exactly 64 lowercase
 // hex characters. Malformed digests are dropped at parse time —
@@ -158,6 +249,28 @@ func validManifestDigest(s string) bool {
 	return true
 }
 
+// PickHistoryLatest returns the newest entry in the [[history]]
+// ledger under gale's total version order (version.KeyNewer), and
+// false when the ledger is empty. This is the registry-side
+// resolution of "latest installable version" that replaces the
+// .versions commit-pin file (gh#121).
+func (idx *BinaryIndex) PickHistoryLatest() (BinaryHistoryEntry, bool) {
+	keys := make([]string, len(idx.History))
+	for i, e := range idx.History {
+		keys[i] = e.Version
+	}
+	latest, ok := version.Latest(keys)
+	if !ok {
+		return BinaryHistoryEntry{}, false
+	}
+	for _, e := range idx.History {
+		if e.Version == latest {
+			return e, true
+		}
+	}
+	return BinaryHistoryEntry{}, false
+}
+
 // MergeBinaries populates a recipe's Binary map from a
 // BinaryIndex. If the index is nil or its version doesn't
 // match the recipe version (stale), this is a no-op.
@@ -176,12 +289,87 @@ func MergeBinaries(r *Recipe, idx *BinaryIndex, ghcrBase string) {
 	if idx == nil {
 		return
 	}
-	if !binaryIndexMatchesRecipe(r, idx.Version) {
+	mergeBinaryPlatforms(r, idx.Version, idx.Platforms, idx.Digests, ghcrBase)
+}
+
+// MergeBinariesFromHistory populates a recipe's Binary map from a
+// single [[history]] ledger entry, the same way MergeBinaries does
+// from the flat head section. The version gate (binaryIndexMatchesRecipe)
+// still applies, so a ledger entry is only merged into a recipe whose
+// version it matches. Used by ledger-based resolution (gh#121).
+func MergeBinariesFromHistory(r *Recipe, entry BinaryHistoryEntry, ghcrBase string) {
+	mergeBinaryPlatforms(r, entry.Version, entry.Platforms, entry.Digests, ghcrBase)
+}
+
+// MergeBinariesForRecipe merges binaries for r from idx, preferring
+// the newest [[history]] ledger entry whose version matches r (per
+// binaryIndexMatchesRecipe), then the flat head section. Returns
+// true only when a matching ledger entry produced binaries; in the
+// flat-fallback (and nil-index) case it returns false so the
+// registry still defers to the .versions commit pin when one exists.
+//
+// This is the shared "ledger-first, flat fallback" rule for every
+// ref-tip binary merge — the main path, the mispin rescue, and the
+// optional fetchRecipe merge — as well as local --recipes resolution
+// (gh#121). Unlike a head-only scan, matching against the recipe's
+// own version lets a recipe behind the ledger head (a pinned or
+// ref-tip-ahead resolution) still recover its prebuilt binary from
+// the matching ledger entry.
+func MergeBinariesForRecipe(r *Recipe, idx *BinaryIndex, ghcrBase string) bool {
+	if idx == nil {
+		return false
+	}
+	var best *BinaryHistoryEntry
+	for i := range idx.History {
+		e := &idx.History[i]
+		if !binaryIndexMatchesRecipe(r, e.Version) {
+			continue
+		}
+		if best == nil || version.KeyNewer(e.Version, best.Version) {
+			best = e
+		}
+	}
+	if best != nil {
+		MergeBinariesFromHistory(r, *best, ghcrBase)
+		if len(r.Binary) > 0 {
+			return true
+		}
+	}
+	MergeBinaries(r, idx, ghcrBase)
+	return false
+}
+
+// MergeBinariesFromLedgerHead merges binaries from the NEWEST
+// [[history]] ledger entry (PickHistoryLatest), but only when that
+// head entry's version matches the recipe (binaryIndexMatchesRecipe)
+// -- i.e. the ref-tip recipe and the ledger head are coherent. It
+// returns true only then. When the ledger head's version differs
+// from the recipe (ref-tip lags or leads the ledger), it merges the
+// flat head section as a best-effort fallback and returns false, so
+// the registry defers to the .versions commit pin (gh#121).
+func MergeBinariesFromLedgerHead(r *Recipe, idx *BinaryIndex, ghcrBase string) bool {
+	if idx == nil {
+		return false
+	}
+	if head, ok := idx.PickHistoryLatest(); ok && binaryIndexMatchesRecipe(r, head.Version) {
+		MergeBinariesFromHistory(r, head, ghcrBase)
+		if len(r.Binary) > 0 {
+			return true
+		}
+	}
+	MergeBinaries(r, idx, ghcrBase)
+	return false
+}
+
+// mergeBinaryPlatforms is the shared body of MergeBinaries and
+// MergeBinariesFromHistory: when version matches the recipe, it
+// fills r.Binary with one GHCR blob entry per platform.
+func mergeBinaryPlatforms(r *Recipe, indexVersion string, platforms, digests map[string]string, ghcrBase string) {
+	if !binaryIndexMatchesRecipe(r, indexVersion) {
 		return
 	}
-
-	r.Binary = make(map[string]Binary, len(idx.Platforms))
-	for platform, sha := range idx.Platforms {
+	r.Binary = make(map[string]Binary, len(platforms))
+	for platform, sha := range platforms {
 		r.Binary[platform] = Binary{
 			URL: fmt.Sprintf(
 				"https://ghcr.io/v2/%s/%s/blobs/sha256:%s",
@@ -189,7 +377,7 @@ func MergeBinaries(r *Recipe, idx *BinaryIndex, ghcrBase string) {
 			),
 			SHA256:         sha,
 			Trust:          TrustSigstore,
-			ManifestDigest: idx.Digests[platform],
+			ManifestDigest: digests[platform],
 		}
 	}
 }
