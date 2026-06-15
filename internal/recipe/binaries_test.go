@@ -538,6 +538,34 @@ func TestMergeBinariesPreferLedgerFallsBackToFlat(t *testing.T) {
 	}
 }
 
+// When a ledger head exists but its version doesn't match the recipe
+// (binaryIndexMatchesRecipe rejects it, leaving r.Binary empty), the
+// flat head section is tried as documented fallback. The return value
+// must be false so the registry treats ref-tip as non-authoritative.
+func TestMergeBinariesPreferLedgerFallsBackToFlatOnLedgerMismatch(t *testing.T) {
+	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1", Revision: 1}}
+	idx := &BinaryIndex{
+		Version:   "1.8.1",
+		Platforms: map[string]string{"darwin-arm64": "flatsha"},
+		History: []BinaryHistoryEntry{
+			{
+				// 1.8.1-2 mismatches a rev-1 recipe, which accepts
+				// only "1.8.1" or "1.8.1-1".
+				Version:   "1.8.1-2",
+				Platforms: map[string]string{"darwin-arm64": "ledgersha"},
+			},
+		},
+	}
+	used := MergeBinariesPreferLedger(r, idx, "kelp/gale-recipes")
+	if used {
+		t.Error("used = true, want false (ledger head mismatched, used flat)")
+	}
+	if r.Binary["darwin-arm64"].SHA256 != "flatsha" {
+		t.Errorf("SHA256 = %q, want flatsha (flat fallback)",
+			r.Binary["darwin-arm64"].SHA256)
+	}
+}
+
 func TestMergeBinariesPreferLedgerNil(t *testing.T) {
 	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1"}}
 	if MergeBinariesPreferLedger(r, nil, "kelp/gale-recipes") {

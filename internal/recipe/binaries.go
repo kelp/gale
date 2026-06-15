@@ -303,16 +303,29 @@ func MergeBinariesFromHistory(r *Recipe, entry BinaryHistoryEntry, ghcrBase stri
 
 // MergeBinariesPreferLedger merges binaries from the index,
 // preferring the [[history]] ledger head over the flat head
-// section, and reports whether a ledger was used. This is the
-// shared "ledger-first, flat fallback" rule for both registry and
-// local --recipes resolution (gh#121). A nil index is a no-op.
+// section, and reports whether the ledger head was authoritative.
+// This is the shared "ledger-first, flat fallback" rule for both
+// registry and local --recipes resolution (gh#121). A nil index is
+// a no-op.
+//
+// The ledger head is tried first. It is authoritative only when it
+// actually yields binaries: binaryIndexMatchesRecipe gates the merge
+// on version, so a ledger head whose version mismatches the recipe
+// (e.g. a rev-2 head against a rev-1 recipe) leaves r.Binary empty.
+// In that case the flat head section is tried instead, and the
+// return value is false — ref-tip is no longer authoritative, so the
+// registry still defers to the .versions commit pin when one exists
+// (the same coherence caveat as the pre-ledger flat-only path).
+// Returns true only when the ledger head produced binaries.
 func MergeBinariesPreferLedger(r *Recipe, idx *BinaryIndex, ghcrBase string) bool {
 	if idx == nil {
 		return false
 	}
 	if entry, ok := idx.PickHistoryLatest(); ok {
 		MergeBinariesFromHistory(r, entry, ghcrBase)
-		return true
+		if len(r.Binary) > 0 {
+			return true
+		}
 	}
 	MergeBinaries(r, idx, ghcrBase)
 	return false
