@@ -301,28 +301,36 @@ func MergeBinariesFromHistory(r *Recipe, entry BinaryHistoryEntry, ghcrBase stri
 	mergeBinaryPlatforms(r, entry.Version, entry.Platforms, entry.Digests, ghcrBase)
 }
 
-// MergeBinariesPreferLedger merges binaries from the index,
-// preferring the [[history]] ledger head over the flat head
-// section, and reports whether the ledger head was authoritative.
-// This is the shared "ledger-first, flat fallback" rule for both
-// registry and local --recipes resolution (gh#121). A nil index is
-// a no-op.
+// MergeBinariesForRecipe merges binaries for r from idx, preferring
+// the newest [[history]] ledger entry whose version matches r (per
+// binaryIndexMatchesRecipe), then the flat head section. Returns
+// true only when a matching ledger entry produced binaries; in the
+// flat-fallback (and nil-index) case it returns false so the
+// registry still defers to the .versions commit pin when one exists.
 //
-// The ledger head is tried first. It is authoritative only when it
-// actually yields binaries: binaryIndexMatchesRecipe gates the merge
-// on version, so a ledger head whose version mismatches the recipe
-// (e.g. a rev-2 head against a rev-1 recipe) leaves r.Binary empty.
-// In that case the flat head section is tried instead, and the
-// return value is false — ref-tip is no longer authoritative, so the
-// registry still defers to the .versions commit pin when one exists
-// (the same coherence caveat as the pre-ledger flat-only path).
-// Returns true only when the ledger head produced binaries.
-func MergeBinariesPreferLedger(r *Recipe, idx *BinaryIndex, ghcrBase string) bool {
+// This is the shared "ledger-first, flat fallback" rule for every
+// ref-tip binary merge — the main path, the mispin rescue, and the
+// optional fetchRecipe merge — as well as local --recipes resolution
+// (gh#121). Unlike a head-only scan, matching against the recipe's
+// own version lets a recipe behind the ledger head (a pinned or
+// ref-tip-ahead resolution) still recover its prebuilt binary from
+// the matching ledger entry.
+func MergeBinariesForRecipe(r *Recipe, idx *BinaryIndex, ghcrBase string) bool {
 	if idx == nil {
 		return false
 	}
-	if entry, ok := idx.PickHistoryLatest(); ok {
-		MergeBinariesFromHistory(r, entry, ghcrBase)
+	var best *BinaryHistoryEntry
+	for i := range idx.History {
+		e := &idx.History[i]
+		if !binaryIndexMatchesRecipe(r, e.Version) {
+			continue
+		}
+		if best == nil || version.KeyNewer(e.Version, best.Version) {
+			best = e
+		}
+	}
+	if best != nil {
+		MergeBinariesFromHistory(r, *best, ghcrBase)
 		if len(r.Binary) > 0 {
 			return true
 		}

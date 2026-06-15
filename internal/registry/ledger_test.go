@@ -195,6 +195,82 @@ func TestFetchRecipeVersionLedgerHead(t *testing.T) {
 	}
 }
 
+// The mispin rescue must consult the [[history]] ledger, not just the
+// flat head section. Scenario: .versions pins the latest version X
+// (1.8.1) at commit C; recipe@C is version X but ships NO binary at C
+// (the @commit .binaries.toml is absent — a mispin). The ref-tip recipe
+// is AHEAD (2.0.0) and the ref-tip .binaries.toml's flat head is at yet
+// another version (1.9.0, so flat won't match X), but its [[history]]
+// ledger carries an entry matching X. A flat-only mispin rescue misses
+// the ledger and degrades to a source build; the ledger-aware rescue
+// finds X's entry and keeps the prebuilt binary.
+func TestFetchRecipeMispinRescueConsultsLedger(t *testing.T) {
+	commit := "abc1234def5678901234567890abcdef12345678"
+	versionsBody := "1.8.1 " + commit + "\n"
+
+	// recipe@C is version 1.8.1 (= X). It has no inline binaries, and
+	// no .binaries.toml is served at the commit — the mispin.
+	pinnedRecipe := recipeNoBinaries // version 1.8.1
+
+	// Ref-tip recipe is ahead at 2.0.0, so fetchLatestRefTip can't
+	// satisfy it from the ref-tip binaries and FetchRecipe proceeds to
+	// the .versions pinned path.
+	tipRecipe := strings.Replace(recipeNoBinaries,
+		`version = "1.8.1"`, `version = "2.0.0"`, 1)
+
+	// Ref-tip .binaries.toml: flat head at 1.9.0 (matches neither the
+	// 2.0.0 ref-tip recipe nor X=1.8.1). The ledger carries a 1.8.1
+	// entry covering all three platforms — this is what the rescue must
+	// find.
+	tipBinaries := `version = "1.9.0"
+
+[darwin-arm64]
+sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
+
+[linux-amd64]
+sha256 = "9999999999999999999999999999999999999999999999999999999999999999"
+
+[[history]]
+version = "1.8.1"
+darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089", manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b" }
+linux-amd64 = { sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455bc55d74788", manifest_digest = "sha256:9f35d79850663818a8be0eca27bb9680af73b3c6a79d08f17c49d5f336bc4ac0" }
+linux-arm64 = { sha256 = "62a2c004ef2ed6f2c17cf94e61598f82c717a79b3f648392a5f467fee2b0e4da", manifest_digest = "sha256:148c92fbecb0938286cb1a46791de4a7cf230b0bbda90fe0fd4719577a2ef0ef" }
+
+[[history]]
+version = "1.9.0"
+darwin-arm64 = { sha256 = "9999999999999999999999999999999999999999999999999999999999999999" }
+linux-amd64 = { sha256 = "9999999999999999999999999999999999999999999999999999999999999999" }
+`
+
+	srv := httptest.NewServer(fileHandler(map[string]string{
+		"/recipes/j/jq.versions":            versionsBody,
+		"/recipes/j/jq.toml":                tipRecipe,
+		"/recipes/j/jq.binaries.toml":       tipBinaries,
+		"/" + commit + "/recipes/j/jq.toml": pinnedRecipe,
+		// No /<commit>/recipes/j/jq.binaries.toml — the mispin.
+	}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipe("jq")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.8.1" {
+		t.Fatalf("version = %q, want 1.8.1 (the pinned X)", rec.Package.Version)
+	}
+	b, ok := rec.Binary[ledgerPlatform()]
+	if !ok {
+		t.Fatalf("no binary for %s — mispin rescue ignored the ledger "+
+			"and degraded to a source build", ledgerPlatform())
+	}
+	// Must be the 1.8.1 ledger sha, not the 1.9.0 flat-head sha (9999...).
+	if strings.HasPrefix(b.SHA256, "9999") {
+		t.Errorf("SHA256 = %q, want the 1.8.1 ledger sha (used flat head?)",
+			b.SHA256)
+	}
+}
+
 // A historical version (not the ledger head) is resolved via the
 // .versions commit-pin path, fetching the recipe at the pinned
 // commit — NOT the ref-tip recipe.

@@ -235,7 +235,7 @@ func (r *Registry) fetchLatestRefTip(name string) (rec *recipe.Recipe, ledgerOK 
 		// recipe still resolves and the caller source-builds.
 		return rec, false, nil //nolint:nilerr // binary index error is not fatal
 	}
-	ledgerOK = recipe.MergeBinariesPreferLedger(rec, idx, ghcrBaseFromURL(r.BaseURL))
+	ledgerOK = recipe.MergeBinariesForRecipe(rec, idx, ghcrBaseFromURL(r.BaseURL))
 	return rec, ledgerOK, nil
 }
 
@@ -310,7 +310,7 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 	if len(rec.Binary) == 0 {
 		idx, ferr := r.fetchBinaries(name)
 		if ferr == nil && idx != nil {
-			recipe.MergeBinaries(rec, idx, ghcrBaseFromURL(r.BaseURL))
+			recipe.MergeBinariesForRecipe(rec, idx, ghcrBaseFromURL(r.BaseURL))
 			if len(rec.Binary) > 0 {
 				recordMispin(name)
 			}
@@ -438,7 +438,7 @@ func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe,
 		}
 		if idx != nil {
 			base := ghcrBaseFromURL(r.BaseURL)
-			recipe.MergeBinaries(rec, idx, base)
+			recipe.MergeBinariesForRecipe(rec, idx, base)
 		}
 	}
 

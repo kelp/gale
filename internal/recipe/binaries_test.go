@@ -499,9 +499,9 @@ func TestMergeBinariesFromHistoryRejectsVersionMismatch(t *testing.T) {
 	}
 }
 
-// --- Behavior 12: MergeBinariesPreferLedger picks ledger over flat ---
+// --- Behavior 12: MergeBinariesForRecipe picks the version-matching ledger entry over flat ---
 
-func TestMergeBinariesPreferLedgerUsesHistory(t *testing.T) {
+func TestMergeBinariesForRecipeUsesHistory(t *testing.T) {
 	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1", Revision: 5}}
 	idx := &BinaryIndex{
 		Version:   "1.8.1-5",
@@ -513,7 +513,7 @@ func TestMergeBinariesPreferLedgerUsesHistory(t *testing.T) {
 			},
 		},
 	}
-	used := MergeBinariesPreferLedger(r, idx, "kelp/gale-recipes")
+	used := MergeBinariesForRecipe(r, idx, "kelp/gale-recipes")
 	if !used {
 		t.Error("used = false, want true (ledger present)")
 	}
@@ -523,13 +523,13 @@ func TestMergeBinariesPreferLedgerUsesHistory(t *testing.T) {
 	}
 }
 
-func TestMergeBinariesPreferLedgerFallsBackToFlat(t *testing.T) {
+func TestMergeBinariesForRecipeFallsBackToFlat(t *testing.T) {
 	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1"}}
 	idx := &BinaryIndex{
 		Version:   "1.8.1",
 		Platforms: map[string]string{"darwin-arm64": "flatsha"},
 	}
-	used := MergeBinariesPreferLedger(r, idx, "kelp/gale-recipes")
+	used := MergeBinariesForRecipe(r, idx, "kelp/gale-recipes")
 	if used {
 		t.Error("used = true, want false (no ledger)")
 	}
@@ -538,11 +538,12 @@ func TestMergeBinariesPreferLedgerFallsBackToFlat(t *testing.T) {
 	}
 }
 
-// When a ledger head exists but its version doesn't match the recipe
-// (binaryIndexMatchesRecipe rejects it, leaving r.Binary empty), the
-// flat head section is tried as documented fallback. The return value
-// must be false so the registry treats ref-tip as non-authoritative.
-func TestMergeBinariesPreferLedgerFallsBackToFlatOnLedgerMismatch(t *testing.T) {
+// When the ledger holds no entry matching the recipe's version (here a
+// rev-1 recipe accepts only "1.8.1" or "1.8.1-1", but the ledger only
+// carries 1.8.1-2), the flat head section is tried as documented
+// fallback. The return value must be false so the registry treats
+// ref-tip as non-authoritative.
+func TestMergeBinariesForRecipeFallsBackToFlatOnLedgerMismatch(t *testing.T) {
 	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1", Revision: 1}}
 	idx := &BinaryIndex{
 		Version:   "1.8.1",
@@ -556,7 +557,7 @@ func TestMergeBinariesPreferLedgerFallsBackToFlatOnLedgerMismatch(t *testing.T) 
 			},
 		},
 	}
-	used := MergeBinariesPreferLedger(r, idx, "kelp/gale-recipes")
+	used := MergeBinariesForRecipe(r, idx, "kelp/gale-recipes")
 	if used {
 		t.Error("used = true, want false (ledger head mismatched, used flat)")
 	}
@@ -566,9 +567,41 @@ func TestMergeBinariesPreferLedgerFallsBackToFlatOnLedgerMismatch(t *testing.T) 
 	}
 }
 
-func TestMergeBinariesPreferLedgerNil(t *testing.T) {
+// The core version-matching behavior: when the recipe's version
+// matches a NON-head ledger entry, MergeBinariesForRecipe must pick
+// that entry — not the newest ledger head, and not the flat section.
+// A rev-1 recipe at 1.8.1 must take the 1.8.1 ledger entry even though
+// the ledger head is 2.0.0-1 and the flat section carries a different
+// sha.
+func TestMergeBinariesForRecipeMatchesNonHeadLedgerEntry(t *testing.T) {
+	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1", Revision: 1}}
+	idx := &BinaryIndex{
+		Version:   "2.0.0-1",
+		Platforms: map[string]string{"darwin-arm64": "flatsha"},
+		History: []BinaryHistoryEntry{
+			{
+				Version:   "1.8.1",
+				Platforms: map[string]string{"darwin-arm64": "matchsha"},
+			},
+			{
+				Version:   "2.0.0-1",
+				Platforms: map[string]string{"darwin-arm64": "headsha"},
+			},
+		},
+	}
+	used := MergeBinariesForRecipe(r, idx, "kelp/gale-recipes")
+	if !used {
+		t.Error("used = false, want true (matching ledger entry)")
+	}
+	if got := r.Binary["darwin-arm64"].SHA256; got != "matchsha" {
+		t.Errorf("SHA256 = %q, want matchsha (matching ledger entry, "+
+			"not head headsha, not flat flatsha)", got)
+	}
+}
+
+func TestMergeBinariesForRecipeNil(t *testing.T) {
 	r := &Recipe{Package: Package{Name: "jq", Version: "1.8.1"}}
-	if MergeBinariesPreferLedger(r, nil, "kelp/gale-recipes") {
+	if MergeBinariesForRecipe(r, nil, "kelp/gale-recipes") {
 		t.Error("used = true for nil index, want false")
 	}
 }
