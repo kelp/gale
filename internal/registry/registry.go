@@ -538,7 +538,10 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 // (the latest entry). Historical versions return ok=false so the
 // caller uses the .versions commit-pin path, which fetches the
 // historically-correct recipe at its pinned commit. Returns
-// (recipe, true) only on a head match that yields a binary.
+// (recipe, true) only on a head match that yields a binary AND the
+// ref-tip recipe is coherent with the ledger head: a stale ref-tip
+// recipe (lagging the head, with its own inline [binary] entries)
+// defers to .versions rather than returning the wrong recipe.
 func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recipe, bool) {
 	idx, err := r.fetchBinaries(name)
 	if err != nil || idx == nil || len(idx.History) == 0 {
@@ -557,8 +560,7 @@ func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recip
 	if err != nil {
 		return nil, false
 	}
-	recipe.MergeBinariesFromHistory(rec, entry, ghcrBaseFromURL(r.BaseURL))
-	if len(rec.Binary) == 0 {
+	if !recipe.MergeBinariesFromLedgerHead(rec, idx, ghcrBaseFromURL(r.BaseURL)) {
 		return nil, false
 	}
 	return rec, true
