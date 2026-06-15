@@ -1,5 +1,38 @@
 # TODO
 
+## Code Standards Backlog
+
+The strict golangci-lint config (`.golangci.yml`, paired with the
+expanded `docs/dev/style-guide.md`) enforces its rules on new and
+changed code via `new-from-merge-base`. 80 pre-existing violations are
+grandfathered; clear them as files are touched or in scoped follow-up
+PRs, then drop the `issues:` block from `.golangci.yml` to enforce
+repo-wide. Re-measure anytime: remove the `issues:` block and run
+`just lint`.
+
+Mechanical (low-risk, do first):
+
+- [ ] **misspell (1)** — fix the flagged spelling.
+- [ ] **predeclared (5)** — rename identifiers that shadow builtins.
+- [ ] **forcetypeassert (2)** — add comma-ok to bare type assertions.
+- [ ] **errorlint (2)** — match with `errors.Is`/`errors.As`, wrap
+  with `%w`.
+- [ ] **nilnil (3)** — return a sentinel error instead of `(nil, nil)`.
+- [ ] **contextcheck (4)** — thread `context.Context` instead of
+  dropping it.
+
+Refactors (need judgment):
+
+- [ ] **dupl in `build.go` (1 pair)** — `internal/build/build.go:1107`
+  duplicates `:1155`; extract the shared block into a helper.
+- [ ] **dupl in tests (19 hits)** — duplicated setup across
+  `cmd/gale/*_test.go`, `internal/build`, `internal/download`,
+  `internal/recipe`. Replace with shared `t.Helper()` fixtures or
+  table-driven cases (dupl is enforced on tests by design).
+- [ ] **revive (13)** — early-return / superfluous-else / naming.
+- [ ] **funlen (16)** — split functions over 80 lines / 50 statements.
+- [ ] **gocognit (13)** — reduce cognitive complexity below 30.
+
 ## Done
 
 - [x] Project scaffolding (Go module, cobra CLI, deps)
