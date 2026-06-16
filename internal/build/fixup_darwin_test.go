@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kelp/gale/internal/farm"
 )
 
 // --- Issue #27: FixupBinaries must not re-sign binaries it
@@ -828,6 +830,227 @@ func TestAddDepRpathsAddsRpathForDepLib(t *testing.T) {
 	if strings.Contains(after, "path "+depLib) {
 		t.Errorf("binary baked absolute dep path %s:\n%s",
 			depLib, after)
+	}
+}
+
+// --- Issue #124: canonicalize unversioned/intermediate
+// @rpath dep refs to the versioned name the farm provides ---
+
+func TestAddDepRpathsCanonicalizesUnversionedDepRef(t *testing.T) {
+	// A dep store ships a versioned real dylib plus the
+	// unversioned + intermediate symlink aliases the linker
+	// resolves -lfoo through. gale's FixupBinaries gives the
+	// dep an UNVERSIONED install name (@rpath/libdep.dylib),
+	// so a dependent records that unversioned ref. The farm
+	// only ever holds the versioned real file
+	// (libdep.1.2.dylib), so the unversioned ref cannot
+	// resolve at runtime. AddDepRpaths must rewrite the ref to
+	// the versioned real name the farm provides.
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	os.MkdirAll(depLib, 0o755)
+
+	// Build the versioned real dylib with an UNVERSIONED
+	// @rpath install name (what gale's FixupBinaries bakes).
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void) { return 7; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	realDylib := filepath.Join(depLib, "libdep.1.2.dylib")
+	cmd := exec.Command("cc", "-shared",
+		"-install_name", "@rpath/libdep.dylib",
+		"-o", realDylib, libSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+	// Symlink chain the linker resolves -ldep through:
+	// libdep.dylib -> libdep.1.dylib -> libdep.1.2.dylib.
+	if err := os.Symlink("libdep.1.2.dylib",
+		filepath.Join(depLib, "libdep.1.dylib")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("libdep.1.dylib",
+		filepath.Join(depLib, "libdep.dylib")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Build a binary in a separate package prefix that links
+	// the dep. -ldep resolves via the libdep.dylib alias, so
+	// the binary records the unversioned @rpath/libdep.dylib.
+	pkgDir := t.TempDir()
+	binDir := filepath.Join(pkgDir, "bin")
+	os.MkdirAll(binDir, 0o755)
+	mainSrc := filepath.Join(pkgDir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int dep_func(void);\nint main() { return dep_func(); }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "app")
+	cmd = exec.Command("cc", "-o", binPath, mainSrc,
+		"-L"+depLib, "-ldep",
+		"-Wl,-headerpad_max_install_names")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	before := otoolOutput(t, binPath)
+	if !strings.Contains(before, "@rpath/libdep.dylib") {
+		t.Skipf("binary doesn't record unversioned ref, "+
+			"test setup issue:\n%s", before)
+	}
+
+	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+		t.Fatalf("AddDepRpaths error: %v", err)
+	}
+
+	after := otoolOutput(t, binPath)
+	// The unversioned ref must be canonicalized to the
+	// versioned real name the farm provides.
+	if !strings.Contains(after, "@rpath/libdep.1.2.dylib") {
+		t.Errorf("expected canonicalized @rpath/libdep.1.2.dylib in:\n%s", after)
+	}
+	if strings.Contains(after, "@rpath/libdep.dylib ") {
+		t.Errorf("unversioned @rpath/libdep.dylib still present:\n%s", after)
+	}
+	// The farm rpath must still be added.
+	if !strings.Contains(after, "@executable_path/../../../../lib") {
+		t.Errorf("expected relative farm rpath in:\n%s", after)
+	}
+}
+
+func TestAddDepRpathsCanonicalizedBinaryRunsViaFarm(t *testing.T) {
+	// Full runtime end-to-end: a store-shaped layout, a real
+	// versioned-only farm (farm.Populate), and a binary that
+	// records an unversioned dep ref. After AddDepRpaths the
+	// binary must EXECUTE — dyld resolves @rpath/libdep.1.2.dylib
+	// through the farm. Before the #124 fix it aborts with
+	// "Library not loaded: @rpath/libdep.dylib".
+	root := t.TempDir()
+
+	// Dep package: <root>/pkg/dep/1.2-1/lib/libdep.1.2.dylib
+	// with the unversioned @rpath install name gale bakes,
+	// plus the alias the linker resolves -ldep through.
+	depStore := filepath.Join(root, "pkg", "dep", "1.2-1")
+	depLib := filepath.Join(depStore, "lib")
+	os.MkdirAll(depLib, 0o755)
+	libSrc := filepath.Join(root, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void) { return 0; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("cc", "-shared",
+		"-install_name", "@rpath/libdep.dylib",
+		"-o", filepath.Join(depLib, "libdep.1.2.dylib"),
+		libSrc).CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+	if err := os.Symlink("libdep.1.2.dylib",
+		filepath.Join(depLib, "libdep.dylib")); err != nil {
+		t.Fatal(err)
+	}
+
+	// Populate the real farm at <root>/lib — versioned only.
+	farmDir := farm.DirFromStoreDir(depStore)
+	if farmDir == "" {
+		t.Fatalf("DirFromStoreDir returned empty for %s", depStore)
+	}
+	if err := farm.Populate(depStore, farmDir); err != nil {
+		t.Fatalf("farm.Populate: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(farmDir, "libdep.1.2.dylib")); err != nil {
+		t.Fatalf("farm missing versioned dylib: %v", err)
+	}
+
+	// Consumer package: <root>/pkg/app/1.0-1/bin/app, linked
+	// so it records the unversioned @rpath/libdep.dylib.
+	appStore := filepath.Join(root, "pkg", "app", "1.0-1")
+	appBin := filepath.Join(appStore, "bin")
+	os.MkdirAll(appBin, 0o755)
+	mainSrc := filepath.Join(root, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int dep_func(void);\nint main() { return dep_func(); }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(appBin, "app")
+	if out, err := exec.Command("cc", "-o", binPath, mainSrc,
+		"-L"+depLib, "-ldep",
+		"-Wl,-headerpad_max_install_names").CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	if err := AddDepRpaths(appStore, []string{depStore}); err != nil {
+		t.Fatalf("AddDepRpaths error: %v", err)
+	}
+
+	// The binary must run: dyld resolves the canonicalized ref
+	// through the farm. The dep's lib dir is NOT on any rpath,
+	// so success proves the farm path works.
+	out, err := exec.Command(binPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("canonicalized binary failed to run: %v\n%s", err, out)
+	}
+}
+
+func TestAddDepRpathsLeavesSelfRefUnversioned(t *testing.T) {
+	// A reference to the package's OWN lib (not in
+	// depStoreDirs) must NOT be canonicalized — self-dylib
+	// handling is out of scope for #124 and resolves via
+	// @loader_path against the package's own lib dir, which
+	// ships the unversioned alias.
+	pkgDir := t.TempDir()
+	libDir := filepath.Join(pkgDir, "lib")
+	binDir := filepath.Join(pkgDir, "bin")
+	os.MkdirAll(libDir, 0o755)
+	os.MkdirAll(binDir, 0o755)
+
+	libSrc := filepath.Join(pkgDir, "self.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int self_func(void) { return 3; }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	realDylib := filepath.Join(libDir, "libself.1.0.dylib")
+	cmd := exec.Command("cc", "-shared",
+		"-install_name", "@rpath/libself.dylib",
+		"-o", realDylib, libSrc)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+	if err := os.Symlink("libself.1.0.dylib",
+		filepath.Join(libDir, "libself.dylib")); err != nil {
+		t.Fatal(err)
+	}
+
+	mainSrc := filepath.Join(pkgDir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("extern int self_func(void);\nint main() { return self_func(); }\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "app")
+	cmd = exec.Command("cc", "-o", binPath, mainSrc,
+		"-L"+libDir, "-lself",
+		"-Wl,-headerpad_max_install_names")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("cc link failed: %v\n%s", err, out)
+	}
+
+	// A dep store dir is passed, but it does NOT provide
+	// libself — so the self-ref must be left alone.
+	otherDep := t.TempDir()
+	os.MkdirAll(filepath.Join(otherDep, "lib"), 0o755)
+	if err := AddDepRpaths(pkgDir, []string{otherDep}); err != nil {
+		t.Fatalf("AddDepRpaths error: %v", err)
+	}
+
+	after := otoolOutput(t, binPath)
+	if !strings.Contains(after, "@rpath/libself.dylib") {
+		t.Errorf("self-ref @rpath/libself.dylib was rewritten "+
+			"but should be untouched:\n%s", after)
 	}
 }
 

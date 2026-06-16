@@ -8,6 +8,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/kelp/gale/internal/farm"
 )
 
 // Mach-O magic numbers.
@@ -159,6 +161,15 @@ func FixupBinaries(prefixDir string) error {
 // @rpath/ references to libraries in dep store dirs and
 // adds LC_RPATH entries so they resolve at runtime.
 //
+// It also canonicalizes unversioned and intermediate @rpath
+// dep references (e.g. @rpath/libgit2.dylib or
+// @rpath/libgit2.1.dylib) to the versioned real name the
+// shared farm provides (@rpath/libgit2.1.9.dylib). The farm
+// holds only the deepest real versioned dylib, so a
+// dependent that recorded the unversioned name a build
+// system left in LC_LOAD_DYLIB would otherwise fail to
+// resolve at runtime (issue #124).
+//
 // FixupBinaries already adds @executable_path/../lib for
 // the package's own libs. This handles EXTERNAL deps whose
 // dylibs live in other store directories.
@@ -236,6 +247,23 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 			continue
 		}
 
+		// Plan the unversioned/intermediate -> versioned ref
+		// rewrites the farm needs (issue #124). canonicalDepName
+		// only stats/reads symlinks, so this is cheap and lets us
+		// skip extractEntitlements for files we won't touch.
+		type changeOp struct{ from, to string }
+		var changes []changeOp
+		for _, dep := range deps {
+			if !strings.HasPrefix(dep, "@rpath/") {
+				continue
+			}
+			refBase := strings.TrimPrefix(dep, "@rpath/")
+			if real, ok := canonicalDepName(refBase, depStoreDirs); ok {
+				changes = append(changes,
+					changeOp{from: dep, to: "@rpath/" + real})
+			}
+		}
+
 		// Add the farm rpath RELATIVE, so the shipped binary
 		// resolves its deps via ~/.gale/lib at any gale-home
 		// location and needs no install-time rewrite. This is
@@ -245,10 +273,12 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		// the @loader_path form to the farm dir even when a
 		// dylib is reached through the farm's symlinks.
 		rpath := relativeFarmRpath(prefixDir, file)
-		if existingRpaths(file)[rpath] {
+		needRpath := !existingRpaths(file)[rpath]
+		if len(changes) == 0 && !needRpath {
 			continue
 		}
-		// Capture entitlements BEFORE addRpathRetry runs. When the
+
+		// Capture entitlements BEFORE any mutation. When the
 		// Mach-O header lacks padding, addRpathRetry strips the
 		// signature (and with it the entitlements) to free space.
 		// Extracting here, while the original signature is intact,
@@ -256,19 +286,82 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		// even when the strip-and-retry branch fires (issue #27,
 		// point 2). resignWithEntitlements re-applies it.
 		ent := extractEntitlements(file)
-		if err := addRpathRetry(file, rpath); err != nil {
-			// addRpathRetry already warned and restored the
-			// signature it stripped; skip this file rather
-			// than fail the whole build.
-			continue
+		mutated := false
+		for _, c := range changes {
+			if err := run("install_name_tool",
+				"-change", c.from, c.to, file); err != nil {
+				// A failed rewrite (e.g. no header space) is
+				// non-fatal: leave the ref as-is rather than
+				// abort the build, matching addRpathRetry.
+				fmt.Fprintf(os.Stderr,
+					"warning: cannot canonicalize %s -> %s"+
+						" in %s: %v\n",
+					c.from, c.to, filepath.Base(file), err)
+				continue
+			}
+			mutated = true
 		}
-		if err := resignWithEntitlements(file, ent); err != nil {
-			return fmt.Errorf("codesign %s: %w",
-				filepath.Base(file), err)
+
+		if needRpath {
+			if err := addRpathRetry(file, rpath); err != nil {
+				// addRpathRetry warned and restored any signature
+				// it stripped, but a -change above may have left
+				// the file unsigned; re-sign before skipping.
+				if mutated {
+					if err := resignWithEntitlements(file, ent); err != nil {
+						return fmt.Errorf("codesign %s: %w",
+							filepath.Base(file), err)
+					}
+				}
+				continue
+			}
+			mutated = true
+		}
+
+		if mutated {
+			if err := resignWithEntitlements(file, ent); err != nil {
+				return fmt.Errorf("codesign %s: %w",
+					filepath.Base(file), err)
+			}
 		}
 	}
 
 	return nil
+}
+
+// canonicalDepName maps an @rpath dep basename (refBase, e.g.
+// "libgit2.dylib" or the intermediate "libgit2.1.dylib") to the
+// versioned real dylib basename the shared farm provides, by
+// following the symlink chain in the dep store lib dirs. The farm
+// holds only the deepest real versioned file (farm.Populate skips
+// symlinks), so resolving refBase through the dep store yields
+// exactly the farmed name.
+//
+// Returns ("", false) when no dep provides refBase, when refBase
+// already names the real file, or when that real file is not a
+// versioned name the farm would hold — leaving already-correct and
+// out-of-scope refs (including the package's own libs, which live
+// under prefixDir, not depStoreDirs) untouched.
+func canonicalDepName(refBase string, depStoreDirs []string) (string, bool) {
+	for _, sd := range depStoreDirs {
+		cand := filepath.Join(sd, "lib", refBase)
+		if _, err := os.Lstat(cand); err != nil {
+			continue
+		}
+		real, err := filepath.EvalSymlinks(cand)
+		if err != nil {
+			continue
+		}
+		realBase := filepath.Base(real)
+		if realBase == refBase {
+			return "", false
+		}
+		if !farm.IsVersionedDylib(realBase) {
+			return "", false
+		}
+		return realBase, true
+	}
+	return "", false
 }
 
 // relativeFarmRpath returns the @loader_path/@executable_path-
