@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -564,26 +565,17 @@ func TestBuildOutputSHA256MatchesArchive(t *testing.T) {
 
 // --- test helpers ---
 
-// createSourceTarGz builds a tar.gz at a temp path with the given
-// files and returns the path and hex-encoded SHA256 of the archive.
-func createSourceTarGz(t *testing.T, files map[string]string) (string, string) {
+// writeTarFiles writes all entries in files into tw and closes tw,
+// compW, and f in innermost-first order so each layer fully flushes
+// before the caller hashes the result.
+func writeTarFiles(
+	t *testing.T,
+	tw *tar.Writer,
+	compW io.Closer,
+	f *os.File,
+	files map[string]string,
+) {
 	t.Helper()
-
-	archivePath := filepath.Join(t.TempDir(), "source.tar.gz")
-
-	f, err := os.Create(archivePath)
-	if err != nil {
-		t.Fatalf("failed to create archive file: %v", err)
-	}
-	defer f.Close()
-
-	gw := gzip.NewWriter(f)
-	defer gw.Close()
-
-	tw := tar.NewWriter(gw)
-	defer tw.Close()
-
-	// Collect and sort names for deterministic output.
 	names := make([]string, 0, len(files))
 	for name := range files {
 		names = append(names, name)
@@ -592,11 +584,8 @@ func createSourceTarGz(t *testing.T, files map[string]string) (string, string) {
 
 	dirs := make(map[string]bool)
 	for _, name := range names {
-		// Emit directory entries for each ancestor path.
 		if dir := filepath.Dir(name); dir != "." {
-			parts := strings.Split(
-				filepath.ToSlash(dir), "/",
-			)
+			parts := strings.Split(filepath.ToSlash(dir), "/")
 			for i := range parts {
 				d := strings.Join(parts[:i+1], "/") + "/"
 				if !dirs[d] {
@@ -607,118 +596,76 @@ func createSourceTarGz(t *testing.T, files map[string]string) (string, string) {
 						Mode:     0o755,
 					}
 					if err := tw.WriteHeader(dhdr); err != nil {
-						t.Fatalf("failed to write dir header: %v",
-							err)
+						t.Fatalf("write dir header: %v", err)
 					}
 				}
 			}
 		}
-
 		content := files[name]
-		hdr := &tar.Header{
-			Name: name,
-			Mode: 0o644,
-			Size: int64(len(content)),
-		}
+		hdr := &tar.Header{Name: name, Mode: 0o644, Size: int64(len(content))}
 		if err := tw.WriteHeader(hdr); err != nil {
-			t.Fatalf("failed to write tar header: %v", err)
+			t.Fatalf("write tar header: %v", err)
 		}
 		if _, err := tw.Write([]byte(content)); err != nil {
-			t.Fatalf("failed to write tar content: %v", err)
+			t.Fatalf("write tar content: %v", err)
 		}
 	}
-
-	// Close writers before hashing.
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	// Compute SHA256 of the archive.
-	data, err := os.ReadFile(archivePath)
-	if err != nil {
-		t.Fatalf("failed to read archive: %v", err)
+	if err := tw.Close(); err != nil {
+		t.Fatalf("close tar writer: %v", err)
 	}
-	h := sha256.Sum256(data)
-	hash := fmt.Sprintf("%x", h)
-
-	return archivePath, hash
+	if err := compW.Close(); err != nil {
+		t.Fatalf("close compression writer: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close archive file: %v", err)
+	}
 }
 
-func createSourceTarXz(t *testing.T, files map[string]string) (string, string) {
+// createSourceArchive builds a tar archive at a temp path with the
+// given files, compressed with ext ("gz" or "xz"), and returns the
+// path and hex-encoded SHA256 of the archive.
+func createSourceArchive(
+	t *testing.T,
+	files map[string]string,
+	ext string,
+) (string, string) {
 	t.Helper()
-
-	archivePath := filepath.Join(t.TempDir(), "source.tar.xz")
-
+	archivePath := filepath.Join(t.TempDir(), "source.tar."+ext)
 	f, err := os.Create(archivePath)
 	if err != nil {
-		t.Fatalf("failed to create archive file: %v", err)
+		t.Fatalf("create archive file: %v", err)
 	}
-	defer f.Close()
-
-	xw, err := xz.NewWriter(f)
-	if err != nil {
-		t.Fatalf("failed to create xz writer: %v", err)
+	switch ext {
+	case "gz":
+		gw := gzip.NewWriter(f)
+		writeTarFiles(t, tar.NewWriter(gw), gw, f, files)
+	case "xz":
+		xw, err := xz.NewWriter(f)
+		if err != nil {
+			f.Close()
+			t.Fatalf("create xz writer: %v", err)
+		}
+		writeTarFiles(t, tar.NewWriter(xw), xw, f, files)
+	default:
+		f.Close()
+		t.Fatalf("unsupported archive extension: %q", ext)
 	}
-	defer xw.Close()
-
-	tw := tar.NewWriter(xw)
-	defer tw.Close()
-
-	names := make([]string, 0, len(files))
-	for name := range files {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-
-	dirs := make(map[string]bool)
-	for _, name := range names {
-		if dir := filepath.Dir(name); dir != "." {
-			parts := strings.Split(
-				filepath.ToSlash(dir), "/",
-			)
-			for i := range parts {
-				d := strings.Join(parts[:i+1], "/") + "/"
-				if !dirs[d] {
-					dirs[d] = true
-					dhdr := &tar.Header{
-						Typeflag: tar.TypeDir,
-						Name:     d,
-						Mode:     0o755,
-					}
-					if err := tw.WriteHeader(dhdr); err != nil {
-						t.Fatalf("failed to write dir header: %v",
-							err)
-					}
-				}
-			}
-		}
-
-		content := files[name]
-		hdr := &tar.Header{
-			Name: name,
-			Mode: 0o644,
-			Size: int64(len(content)),
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			t.Fatalf("failed to write tar header: %v", err)
-		}
-		if _, err := tw.Write([]byte(content)); err != nil {
-			t.Fatalf("failed to write tar content: %v", err)
-		}
-	}
-
-	tw.Close()
-	xw.Close()
-	f.Close()
-
 	data, err := os.ReadFile(archivePath)
 	if err != nil {
-		t.Fatalf("failed to read archive: %v", err)
+		t.Fatalf("read archive: %v", err)
 	}
 	h := sha256.Sum256(data)
-	hash := fmt.Sprintf("%x", h)
+	return archivePath, fmt.Sprintf("%x", h)
+}
 
-	return archivePath, hash
+// createSourceTarGz is a compatibility alias for createSourceArchive
+// with the "gz" extension.
+func createSourceTarGz(
+	t *testing.T,
+	files map[string]string,
+) (string, string) {
+	t.Helper()
+	return createSourceArchive(t, files, "gz")
 }
 
 // serveFile starts an httptest server that serves the file at
@@ -2359,9 +2306,9 @@ func TestSourceExtensionExtractsCorrectSuffix(t *testing.T) {
 // --- Behavior 18: Build handles .tar.xz sources ---
 
 func TestBuildSuccessWithTarXzSource(t *testing.T) {
-	tarball, hash := createSourceTarXz(t, map[string]string{
+	tarball, hash := createSourceArchive(t, map[string]string{
 		"testpkg-1.0/README": "hello",
-	})
+	}, "xz")
 	srv := serveFile(t, tarball)
 
 	r := &recipe.Recipe{

@@ -1326,10 +1326,12 @@ func TestFullOnStructLiteralWithRevisionThree(t *testing.T) {
 
 // --- Behavior: constraint-table syntax in dependency lists ---
 
-// TestBareRuntimeDepsConstraintsNilOrEmpty tests that a recipe with
-// bare-string runtime deps produces no Constraints entries (behavior 1).
-func TestBareRuntimeDepsConstraintsNilOrEmpty(t *testing.T) {
-	input := `
+// parseWithDeps wraps the standard [package]/[source] preamble around
+// depsTOML and calls Parse, fataling on error. It lets the dep-constraint
+// tests focus on the [dependencies] section alone.
+func parseWithDeps(t *testing.T, depsTOML string) *Recipe {
+	t.Helper()
+	const preamble = `
 [package]
 name = "foo"
 version = "1.0.0"
@@ -1338,198 +1340,155 @@ version = "1.0.0"
 url = "https://example.com/foo.tar.gz"
 sha256 = "abc123"
 
-[dependencies]
-runtime = ["a", "b"]
 `
-	r, err := Parse(input)
+	r, err := Parse(preamble + depsTOML)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Parse failed: %v", err)
 	}
-	if len(r.Dependencies.Runtime) != 2 {
-		t.Fatalf("Runtime length = %d, want 2", len(r.Dependencies.Runtime))
-	}
-	if r.Dependencies.Runtime[0] != "a" || r.Dependencies.Runtime[1] != "b" {
-		t.Errorf("Runtime = %v, want [a b]", r.Dependencies.Runtime)
-	}
-	if len(r.Dependencies.Constraints) != 0 {
-		t.Errorf("Constraints = %v, want nil or empty", r.Dependencies.Constraints)
+	return r
+}
+
+// TestBareStringDepsProduceNoConstraints verifies that bare-string deps in
+// both runtime and build sections produce no Constraints entries
+// (behaviors 1 and 4a).
+func TestBareStringDepsProduceNoConstraints(t *testing.T) {
+	for _, tc := range []struct {
+		section string
+		toml    string
+		deps    func(*Recipe) []string
+	}{
+		{
+			section: "runtime",
+			toml:    "[dependencies]\nruntime = [\"a\", \"b\"]\n",
+			deps:    func(r *Recipe) []string { return r.Dependencies.Runtime },
+		},
+		{
+			section: "build",
+			toml:    "[dependencies]\nbuild = [\"a\", \"b\"]\n",
+			deps:    func(r *Recipe) []string { return r.Dependencies.Build },
+		},
+	} {
+		t.Run(tc.section, func(t *testing.T) {
+			r := parseWithDeps(t, tc.toml)
+			got := tc.deps(r)
+			if len(got) != 2 {
+				t.Fatalf("%s length = %d, want 2", tc.section, len(got))
+			}
+			if got[0] != "a" || got[1] != "b" {
+				t.Errorf("%s = %v, want [a b]", tc.section, got)
+			}
+			if len(r.Dependencies.Constraints) != 0 {
+				t.Errorf("Constraints = %v, want nil or empty",
+					r.Dependencies.Constraints)
+			}
+		})
 	}
 }
 
-// TestBareRuntimeDepsConstraintsNilOrEmptyBuild tests that a recipe with
-// bare-string build deps produces no Constraints entries (behavior 4a).
-func TestBareRuntimeDepsConstraintsNilOrEmptyBuild(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-build = ["a", "b"]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Build) != 2 {
-		t.Fatalf("Build length = %d, want 2", len(r.Dependencies.Build))
-	}
-	if r.Dependencies.Build[0] != "a" || r.Dependencies.Build[1] != "b" {
-		t.Errorf("Build = %v, want [a b]", r.Dependencies.Build)
-	}
-	if len(r.Dependencies.Constraints) != 0 {
-		t.Errorf("Constraints = %v, want nil or empty", r.Dependencies.Constraints)
-	}
-}
-
-// TestTableFormRuntimeExtractsNameAndConstraint tests that a recipe with a
-// single inline-table runtime dep extracts the name into Runtime and stores
-// the version constraint in Constraints (behavior 2).
-func TestTableFormRuntimeExtractsNameAndConstraint(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-runtime = [{name = "expat", version = ">=2.7.5-2"}]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Runtime) != 1 {
-		t.Fatalf("Runtime length = %d, want 1", len(r.Dependencies.Runtime))
-	}
-	if r.Dependencies.Runtime[0] != "expat" {
-		t.Errorf("Runtime[0] = %q, want %q", r.Dependencies.Runtime[0], "expat")
-	}
-	if r.Dependencies.Constraints == nil {
-		t.Fatal("Constraints is nil, want map containing expat")
-	}
-	if got := r.Dependencies.Constraints["expat"]; got != ">=2.7.5-2" {
-		t.Errorf("Constraints[expat] = %q, want %q", got, ">=2.7.5-2")
+// TestTableFormExtractsNameAndConstraint verifies that a single
+// inline-table dep extracts the name into the right slice and stores
+// the version constraint in Constraints (behaviors 2 and 4b).
+func TestTableFormExtractsNameAndConstraint(t *testing.T) {
+	for _, tc := range []struct {
+		section    string
+		toml       string
+		deps       func(*Recipe) []string
+		depName    string
+		constraint string
+	}{
+		{
+			section:    "runtime",
+			toml:       "[dependencies]\nruntime = [{name = \"expat\", version = \">=2.7.5-2\"}]\n",
+			deps:       func(r *Recipe) []string { return r.Dependencies.Runtime },
+			depName:    "expat",
+			constraint: ">=2.7.5-2",
+		},
+		{
+			section:    "build",
+			toml:       "[dependencies]\nbuild = [{name = \"cmake\", version = \">=3.26\"}]\n",
+			deps:       func(r *Recipe) []string { return r.Dependencies.Build },
+			depName:    "cmake",
+			constraint: ">=3.26",
+		},
+	} {
+		t.Run(tc.section, func(t *testing.T) {
+			r := parseWithDeps(t, tc.toml)
+			got := tc.deps(r)
+			if len(got) != 1 {
+				t.Fatalf("%s length = %d, want 1", tc.section, len(got))
+			}
+			if got[0] != tc.depName {
+				t.Errorf("%s[0] = %q, want %q",
+					tc.section, got[0], tc.depName)
+			}
+			if r.Dependencies.Constraints == nil {
+				t.Fatalf("Constraints is nil, want map containing %s",
+					tc.depName)
+			}
+			if c := r.Dependencies.Constraints[tc.depName]; c != tc.constraint {
+				t.Errorf("Constraints[%s] = %q, want %q",
+					tc.depName, c, tc.constraint)
+			}
+		})
 	}
 }
 
-// TestTableFormBuildExtractsNameAndConstraint tests that a recipe with a
-// single inline-table build dep extracts the name into Build and stores the
-// version constraint in Constraints (behavior 4b).
-func TestTableFormBuildExtractsNameAndConstraint(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-build = [{name = "cmake", version = ">=3.26"}]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Build) != 1 {
-		t.Fatalf("Build length = %d, want 1", len(r.Dependencies.Build))
-	}
-	if r.Dependencies.Build[0] != "cmake" {
-		t.Errorf("Build[0] = %q, want %q", r.Dependencies.Build[0], "cmake")
-	}
-	if r.Dependencies.Constraints == nil {
-		t.Fatal("Constraints is nil, want map containing cmake")
-	}
-	if got := r.Dependencies.Constraints["cmake"]; got != ">=3.26" {
-		t.Errorf("Constraints[cmake] = %q, want %q", got, ">=3.26")
-	}
-}
-
-// TestMixedBareAndTableRuntimeDeps tests that a recipe mixing bare strings
-// and inline-table entries in runtime produces the correct Runtime slice and
-// Constraints map (behavior 3).
-func TestMixedBareAndTableRuntimeDeps(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-runtime = ["curl", {name = "expat", version = ">=2.7.5-2"}]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Runtime) != 2 {
-		t.Fatalf("Runtime length = %d, want 2", len(r.Dependencies.Runtime))
-	}
-	if r.Dependencies.Runtime[0] != "curl" {
-		t.Errorf("Runtime[0] = %q, want %q", r.Dependencies.Runtime[0], "curl")
-	}
-	if r.Dependencies.Runtime[1] != "expat" {
-		t.Errorf("Runtime[1] = %q, want %q", r.Dependencies.Runtime[1], "expat")
-	}
-	if r.Dependencies.Constraints == nil {
-		t.Fatal("Constraints is nil, want map containing expat")
-	}
-	if got := r.Dependencies.Constraints["expat"]; got != ">=2.7.5-2" {
-		t.Errorf("Constraints[expat] = %q, want %q", got, ">=2.7.5-2")
-	}
-	if _, hasCurl := r.Dependencies.Constraints["curl"]; hasCurl {
-		t.Error("Constraints should not contain bare-string dep 'curl'")
-	}
-}
-
-// TestMixedBareAndTableBuildDeps tests the same mixing behavior for build
-// deps (behavior 4c).
-func TestMixedBareAndTableBuildDeps(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-build = ["autoconf", {name = "cmake", version = ">=3.26"}]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Build) != 2 {
-		t.Fatalf("Build length = %d, want 2", len(r.Dependencies.Build))
-	}
-	if r.Dependencies.Build[0] != "autoconf" {
-		t.Errorf("Build[0] = %q, want %q", r.Dependencies.Build[0], "autoconf")
-	}
-	if r.Dependencies.Build[1] != "cmake" {
-		t.Errorf("Build[1] = %q, want %q", r.Dependencies.Build[1], "cmake")
-	}
-	if r.Dependencies.Constraints == nil {
-		t.Fatal("Constraints is nil, want map containing cmake")
-	}
-	if got := r.Dependencies.Constraints["cmake"]; got != ">=3.26" {
-		t.Errorf("Constraints[cmake] = %q, want %q", got, ">=3.26")
-	}
-	if _, hasAutoconf := r.Dependencies.Constraints["autoconf"]; hasAutoconf {
-		t.Error("Constraints should not contain bare-string dep 'autoconf'")
+// TestMixedBareAndTableDeps verifies that mixing bare strings and
+// inline-table entries produces the correct slice and Constraints map
+// (behaviors 3 and 4c).
+func TestMixedBareAndTableDeps(t *testing.T) {
+	for _, tc := range []struct {
+		section    string
+		toml       string
+		deps       func(*Recipe) []string
+		bareDep    string
+		tableDep   string
+		constraint string
+	}{
+		{
+			section:    "runtime",
+			toml:       "[dependencies]\nruntime = [\"curl\", {name = \"expat\", version = \">=2.7.5-2\"}]\n",
+			deps:       func(r *Recipe) []string { return r.Dependencies.Runtime },
+			bareDep:    "curl",
+			tableDep:   "expat",
+			constraint: ">=2.7.5-2",
+		},
+		{
+			section:    "build",
+			toml:       "[dependencies]\nbuild = [\"autoconf\", {name = \"cmake\", version = \">=3.26\"}]\n",
+			deps:       func(r *Recipe) []string { return r.Dependencies.Build },
+			bareDep:    "autoconf",
+			tableDep:   "cmake",
+			constraint: ">=3.26",
+		},
+	} {
+		t.Run(tc.section, func(t *testing.T) {
+			r := parseWithDeps(t, tc.toml)
+			got := tc.deps(r)
+			if len(got) != 2 {
+				t.Fatalf("%s length = %d, want 2", tc.section, len(got))
+			}
+			if got[0] != tc.bareDep {
+				t.Errorf("%s[0] = %q, want %q",
+					tc.section, got[0], tc.bareDep)
+			}
+			if got[1] != tc.tableDep {
+				t.Errorf("%s[1] = %q, want %q",
+					tc.section, got[1], tc.tableDep)
+			}
+			if r.Dependencies.Constraints == nil {
+				t.Fatalf("Constraints is nil, want map containing %s",
+					tc.tableDep)
+			}
+			if c := r.Dependencies.Constraints[tc.tableDep]; c != tc.constraint {
+				t.Errorf("Constraints[%s] = %q, want %q",
+					tc.tableDep, c, tc.constraint)
+			}
+			if _, has := r.Dependencies.Constraints[tc.bareDep]; has {
+				t.Errorf("Constraints should not contain bare dep %q",
+					tc.bareDep)
+			}
+		})
 	}
 }
 
