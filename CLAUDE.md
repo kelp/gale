@@ -297,7 +297,30 @@ global config and dry runs.
 ## Conventions
 
 See `docs/dev/style-guide.md` for the full style guide
-covering writing, documentation, code, and naming.
+covering writing, documentation, code, naming, the
+strict linter rules, and LLM guardrails.
+
+Code standards (strict). `.golangci.yml` enforces
+these on new and changed code; existing violations are
+grandfathered (`new-from-merge-base`) and fixed when a
+file is next touched:
+
+- Errors: wrap with `%w` and a noun phrase; match with
+  `errors.Is`/`errors.As`; lowercase, unpunctuated
+  strings; comma-ok on every type assertion; no
+  `(nil, nil)`; no panics in `internal/`.
+- Shape: short functions (`funlen` ≤ 80, `gocognit` <
+  30); ≤ 5 params, ≤ 3 results — else a config struct.
+- Abstraction: accept interfaces, return concrete
+  types; no interface until 2 impls or a test needs a
+  mock; composition over embedding.
+- No duplication (`dupl`, tests included — use helpers
+  and table tests), no dead code, no shadowed builtins.
+
+LLM guardrails: reuse before writing; no stubs or
+fakes; stay in scope; no hallucinated APIs; verify by
+running tests before claiming done. Full text in the
+style guide's "LLM Guardrails" section.
 
 Key rules:
 

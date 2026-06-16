@@ -1,12 +1,49 @@
 version: "2"
+
+# Strict + pragmatic linter set. See docs/dev/style-guide.md for the
+# rationale behind each rule.
+#
+# Adoption is incremental: `issues.new-from-merge-base` grandfathers the
+# violations that predate this config. New and changed code must pass the
+# full set; existing hits are fixed as files are next touched. Drop the
+# `issues` block once the backlog is clear to enforce repo-wide.
 linters:
   enable:
-    - bodyclose
-    - exhaustive
-    - gocritic
-    - gosec
-    - nilerr
-    - unparam
+    # correctness / safety
+    - bodyclose         # HTTP response bodies are closed
+    - contextcheck      # context is propagated, not dropped
+    - durationcheck     # no nonsense duration multiplications
+    - errorlint         # %w wrapping; errors.Is/As over == and type switch
+    - exhaustive        # enum switches cover every case
+    - forcetypeassert   # comma-ok required on every type assertion
+    - gosec             # security static analysis
+    - makezero          # no append to a make-with-length slice
+    - nilerr            # do not return nil when err is non-nil
+    - nilnil            # no (nil, nil) returns
+    - reassign          # no reassigning package variables of other packages
+    - wastedassign      # no assignments whose value is never read
+    # style / quality
+    - errname           # Err* sentinels, *Error types
+    - gocritic          # opinionated correctness/style/perf checks
+    - misspell          # spelling in comments and strings
+    - predeclared       # do not shadow builtins (error, len, string)
+    - revive            # curated style rules (see settings)
+    - unconvert         # no redundant type conversions
+    - unparam           # no unused function parameters
+    - usestdlibvars     # use stdlib constants over magic strings
+    # conciseness / shape
+    - dupl              # copy-paste detection (non-test code)
+    - funlen            # functions stay short
+    - gocognit          # cognitive complexity ceiling
+  # Deliberately NOT enabled:
+  #   gochecknoinits / gochecknoglobals — gale registers cobra commands as
+  #     package globals in init() (CLAUDE.md "Adding a New Command"); these
+  #     would fight an established, correct pattern.
+  #   wrapcheck — flagged 44 stdlib pass-throughs (os, json, cobra); the
+  #     wrapping discipline is covered by errorlint plus the noun-phrase
+  #     convention in the style guide.
+  #   cyclop — double-flags with gocognit. lll/wsl/nlreturn/godot —
+  #     formatting noise; gofumpt owns layout.
   settings:
     errcheck:
       exclude-functions:
@@ -28,6 +65,27 @@ linters:
         - G301
         - G306
         - G302
+    gocognit:
+      min-complexity: 30
+    funlen:
+      lines: 80
+      statements: 50
+    dupl:
+      threshold: 150
+    revive:
+      rules:
+        - name: early-return
+        - name: indent-error-flow
+        - name: superfluous-else
+        - name: unreachable-code
+        - name: error-naming
+        - name: error-return
+        - name: error-strings
+        - name: receiver-naming
+        - name: argument-limit
+          arguments: [5]
+        - name: function-result-limit
+          arguments: [3]
   exclusions:
     generated: lax
     presets:
@@ -42,12 +100,21 @@ linters:
       - linters:
           - gosec
         path: _test\.go
+      # dupl is intentionally NOT excluded from tests: duplicated test
+      # setup should become a shared helper or a table-driven case, not
+      # be silenced. The ~19 pre-existing test duplications are
+      # grandfathered by issues.new-from-merge-base and tracked as a
+      # refactor backlog; new test code must stay DRY.
     paths:
       - vendor
       - third_party$
       - builtin$
       - examples$
       - ^tmp/
+issues:
+  # Grandfather pre-existing violations: only lines changed relative to
+  # main are reported. CI must check out full history (fetch-depth: 0).
+  new-from-merge-base: origin/main
 formatters:
   exclusions:
     generated: lax
