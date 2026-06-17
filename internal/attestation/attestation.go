@@ -166,6 +166,20 @@ func (v *GHVerifier) VerifyOCI(ociURI, repo string) error {
 	return runVerify(ociURI, repo, "", true)
 }
 
+// IsMissingOCIAttestation reports whether gh attestation verify
+// failed because the OCI registry has no attestation for the image.
+func IsMissingOCIAttestation(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "oci") &&
+		strings.Contains(msg, "attestation") &&
+		(strings.Contains(msg, "no ") ||
+			strings.Contains(msg, "not found") ||
+			strings.Contains(msg, "failed to find"))
+}
+
 // FetchBundle downloads the Sigstore attestation bundle(s)
 // for the given artifact digest from the public GitHub
 // Attestations API. The digest must be a hex-encoded SHA256

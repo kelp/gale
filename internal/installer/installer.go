@@ -646,7 +646,7 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		attestDone := timing.Phase("attestation " + pkgID)
 		ociURI := binaryOCIURI(bin, version)
 		err := v.VerifyOCI(ociURI, attestation.DefaultRepo)
-		if err != nil && isMissingOCIAttestation(err) {
+		if err != nil && attestation.IsMissingOCIAttestation(err) {
 			// Packages published before gale-recipes started pushing
 			// attestations to GHCR as OCI referrers still have their
 			// attestation in the GitHub Attestations API. Fall back
@@ -923,13 +923,6 @@ func binaryOCIURI(bin *recipe.Binary, version string) string {
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	repoPath := repoFromURL(bin.URL)
 	return attestation.OCIURI(repoPath, version, platform, bin.ManifestDigest)
-}
-
-// isMissingOCIAttestation reports whether gh attestation verify
-// failed because the OCI registry has no attestation for the image.
-func isMissingOCIAttestation(err error) bool {
-	return err != nil &&
-		strings.Contains(err.Error(), "no attestations found in the OCI registry")
 }
 
 // InstallBuildDeps installs every declared direct

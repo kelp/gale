@@ -2,9 +2,13 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 
 	"github.com/kelp/gale/internal/attestation"
+	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/spf13/cobra"
 )
@@ -70,7 +74,21 @@ var verifyCmd = &cobra.Command{
 		if err := v.VerifyOCI(
 			ociURI, attestation.DefaultRepo,
 		); err != nil {
-			return fmt.Errorf("verification failed: %w", err)
+			if !attestation.IsMissingOCIAttestation(err) || pkg.SHA256 == "" {
+				return fmt.Errorf("verification failed: %w", err)
+			}
+			// Pre-OCI packages have their attestation in the GitHub
+			// Attestations API instead of the registry. Download the
+			// archive blob and verify it as a file.
+			out.Info("OCI attestation not found; falling back to GitHub Attestations API...")
+			archivePath, dlErr := downloadArchive(name, pkg.SHA256)
+			if dlErr != nil {
+				return fmt.Errorf("download archive for attestation fallback: %w", dlErr)
+			}
+			defer os.Remove(archivePath)
+			if err := v.VerifyFile(archivePath, attestation.DefaultRepo); err != nil {
+				return fmt.Errorf("verification failed: %w", err)
+			}
 		}
 
 		out.Success(fmt.Sprintf(
@@ -78,6 +96,36 @@ var verifyCmd = &cobra.Command{
 		))
 		return nil
 	},
+}
+
+// downloadArchive fetches the raw tar.zst package blob from GHCR so
+// `gale verify` can fall back to the GitHub Attestations API for
+// packages published before OCI attestations were pushed as referrers.
+func downloadArchive(name, sha256 string) (string, error) {
+	token, err := ghcr.Token(localGHCRBase + "/" + name)
+	if err != nil {
+		return "", fmt.Errorf("fetch ghcr token: %w", err)
+	}
+	blobURL := fmt.Sprintf(
+		"https://ghcr.io/v2/%s/%s/blobs/sha256:%s",
+		localGHCRBase, name, sha256,
+	)
+
+	tmpDir := build.TmpDir()
+	if tmpDir == "" {
+		return "", fmt.Errorf("build temp dir unavailable")
+	}
+	f, err := os.CreateTemp(tmpDir, "gale-verify-archive-*.tar.zst")
+	if err != nil {
+		return "", fmt.Errorf("create temp archive: %w", err)
+	}
+	f.Close()
+
+	if err := download.FetchWithAuthNamed(blobURL, f.Name(), token, ""); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
 }
 
 func init() {

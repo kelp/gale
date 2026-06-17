@@ -412,6 +412,32 @@ func TestVerifyOCIFailure(t *testing.T) {
 	if !strings.Contains(err.Error(), "no OCI attestation found") {
 		t.Errorf("error %q missing OCI stderr", err.Error())
 	}
+	if !IsMissingOCIAttestation(err) {
+		t.Errorf("IsMissingOCIAttestation(%v) = false, want true", err)
+	}
+}
+
+func TestIsMissingOCIAttestation(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"nil", nil, false},
+		{"unrelated", fmt.Errorf("network error"), false},
+		{"missing OCI plural", fmt.Errorf("no attestations found in the OCI registry"), true},
+		{"missing OCI singular", fmt.Errorf("no OCI attestation found"), true},
+		{"wrapped missing OCI", fmt.Errorf("gh failed: %w", fmt.Errorf("no OCI attestation found")), true},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.name, func(t *testing.T) {
+			t.Parallel()
+			if got := IsMissingOCIAttestation(c.err); got != c.want {
+				t.Errorf("IsMissingOCIAttestation(%v) = %v, want %v", c.err, got, c.want)
+			}
+		})
+	}
 }
 
 func TestFetchBundle(t *testing.T) {
