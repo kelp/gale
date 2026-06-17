@@ -3,8 +3,6 @@ package main
 import (
 	"fmt"
 	"runtime"
-	"strconv"
-	"strings"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/lockfile"
@@ -60,16 +58,16 @@ var verifyCmd = &cobra.Command{
 		}
 
 		platform := runtime.GOOS + "-" + runtime.GOARCH
-		ociURI := verifyOCIURI(
-			localGHCRBase, name, pkg.Version, platform,
-			pkg.ManifestDigest,
+		repoPath := localGHCRBase + "/" + name
+		ociURI := attestation.OCIURI(
+			repoPath, pkg.Version, platform, pkg.ManifestDigest,
 		)
 
 		out.Step(fmt.Sprintf(
 			"Verifying attestation for %s@%s...", name, pkg.Version,
 		))
 
-		if err := attestation.VerifyOCI(
+		if err := v.VerifyOCI(
 			ociURI, attestation.DefaultRepo,
 		); err != nil {
 			return fmt.Errorf("verification failed: %w", err)
@@ -80,61 +78,6 @@ var verifyCmd = &cobra.Command{
 		))
 		return nil
 	},
-}
-
-// verifyOCIURI constructs the OCI URI to verify. When digest is
-// non-empty, it pins the manifest by digest
-// ("oci://ghcr.io/<base>/<name>@<digest>") — a digest identifies
-// the exact manifest that was installed, immune to tag moves on
-// GHCR. Otherwise it falls back to the tag form
-// ("oci://ghcr.io/<base>/<name>:<bareVersion>-<platform>"),
-// which is mutable: CI can re-push the tag, so the tag may no
-// longer point at the artifact actually installed.
-//
-// GHCR manifests are tagged with the bare version
-// ("<version>-<platform>"), not the canonical lockfile form
-// ("<version>-<revision>-<platform>"). Strip the trailing
-// "-<revision>" suffix when present so the constructed tag
-// matches what gale-recipes CI pushes.
-func verifyOCIURI(base, name, version, platform, digest string) string {
-	if digest != "" {
-		return fmt.Sprintf(
-			"oci://ghcr.io/%s/%s@%s", base, name, digest,
-		)
-	}
-	return fmt.Sprintf(
-		"oci://ghcr.io/%s/%s:%s",
-		base, name, bareVersion(version)+"-"+platform,
-	)
-}
-
-// bareVersion strips a Debian-style numeric revision suffix from v.
-// A trailing "-<N>" where N is a positive integer is removed; any
-// other suffix (e.g. "-rc1", "-dev.2") is left in place. This
-// mirrors the semantics of internal/version.splitRevision so the
-// two agree on what counts as a revision.
-//
-// Examples:
-//
-//	"1.8.1-4"  → "1.8.1"
-//	"1.8.1"    → "1.8.1"
-//	"0.10.0-2" → "0.10.0"
-//	"1.0-rc1"  → "1.0-rc1"
-//	"1.2-0"    → "1.2-0"
-func bareVersion(v string) string {
-	dash := strings.LastIndexByte(v, '-')
-	if dash < 0 {
-		return v
-	}
-	suffix := v[dash+1:]
-	if suffix == "" {
-		return v
-	}
-	n, err := strconv.Atoi(suffix)
-	if err != nil || n <= 0 {
-		return v
-	}
-	return v[:dash]
 }
 
 func init() {

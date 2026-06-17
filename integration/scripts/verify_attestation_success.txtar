@@ -16,7 +16,9 @@ exec gale verify hello
 stderr 'attestation verified'
 
 # Post-verify: gh was invoked at least once, and the argv
-# contains both the OCI URI and the recipes repo.
+# contains the OCI URI, the recipes repo, and the
+# --bundle-from-oci flag.
 exists $WORK/fake-gh/log
 grep 'oci://ghcr\.io/kelp/gale-recipes/hello' $WORK/fake-gh/log
 grep 'attestation' $WORK/fake-gh/log
+grep '--bundle-from-oci' $WORK/fake-gh/log

@@ -644,7 +644,15 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// opted in to sigstore (which by definition means GHCR).
 	if needAttest {
 		attestDone := timing.Phase("attestation " + pkgID)
-		err := v.VerifyFile(archiveOut, attestation.DefaultRepo)
+		ociURI := binaryOCIURI(bin, version)
+		err := v.VerifyOCI(ociURI, attestation.DefaultRepo)
+		if err != nil && isMissingOCIAttestation(err) {
+			// Packages published before gale-recipes started pushing
+			// attestations to GHCR as OCI referrers still have their
+			// attestation in the GitHub Attestations API. Fall back
+			// to the teed archive file in that case.
+			err = v.VerifyFile(archiveOut, attestation.DefaultRepo)
+		}
 		attestDone()
 		if err != nil {
 			return fmt.Errorf("attestation: %w", err)
@@ -906,6 +914,22 @@ func repoFromURL(rawURL string) string {
 		p = p[:idx]
 	}
 	return p
+}
+
+// binaryOCIURI builds the OCI image reference to verify for a
+// prebuilt binary. The attestation is keyed to the manifest digest
+// when available; otherwise it falls back to the mutable tag.
+func binaryOCIURI(bin *recipe.Binary, version string) string {
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+	repoPath := repoFromURL(bin.URL)
+	return attestation.OCIURI(repoPath, version, platform, bin.ManifestDigest)
+}
+
+// isMissingOCIAttestation reports whether gh attestation verify
+// failed because the OCI registry has no attestation for the image.
+func isMissingOCIAttestation(err error) bool {
+	return err != nil &&
+		strings.Contains(err.Error(), "no attestations found in the OCI registry")
 }
 
 // InstallBuildDeps installs every declared direct

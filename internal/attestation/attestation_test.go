@@ -2,6 +2,9 @@ package attestation
 
 import (
 	"bytes"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +22,19 @@ func isolate(t *testing.T) *bytes.Buffer {
 	warnWriter = buf
 	t.Cleanup(func() { warnWriter = orig })
 	return buf
+}
+
+// withAttestationServer returns an attestation-endpoint format
+// string backed by a test server that returns a static bundle for
+// any subject. The server is closed on test cleanup.
+func withAttestationServer(t *testing.T) string {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"attestations":[{"bundle":{"foo":"bar"}}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	return srv.URL + "/repos/%s/attestations/%s"
 }
 
 func TestAvailableWhenGHOnPath(t *testing.T) {
@@ -115,6 +131,10 @@ func TestAvailableWarnsOnceAcrossCalls(t *testing.T) {
 
 func TestVerifyFileSuccess(t *testing.T) {
 	isolate(t)
+	origEndpoint := attestationsEndpoint
+	attestationsEndpoint = withAttestationServer(t)
+	defer func() { attestationsEndpoint = origEndpoint }()
+
 	mock := writeMockGH(t, mockOpts{verifyExit: 0})
 	orig := lookPath
 	lookPath = func(name string) (string, error) {
@@ -122,14 +142,19 @@ func TestVerifyFileSuccess(t *testing.T) {
 	}
 	defer func() { lookPath = orig }()
 
+	file := writeTempFile(t, []byte("archive bytes"))
 	v := &GHVerifier{}
-	if err := v.VerifyFile("test.tar.zst", "owner/repo"); err != nil {
+	if err := v.VerifyFile(file, "owner/repo"); err != nil {
 		t.Errorf("expected success, got %v", err)
 	}
 }
 
 func TestVerifyFileFailure(t *testing.T) {
 	isolate(t)
+	origEndpoint := attestationsEndpoint
+	attestationsEndpoint = withAttestationServer(t)
+	defer func() { attestationsEndpoint = origEndpoint }()
+
 	mock := writeMockGH(t, mockOpts{
 		verifyExit:   1,
 		verifyStderr: "verification failed",
@@ -140,25 +165,37 @@ func TestVerifyFileFailure(t *testing.T) {
 	}
 	defer func() { lookPath = orig }()
 
+	file := writeTempFile(t, []byte("archive bytes"))
 	v := &GHVerifier{}
-	err := v.VerifyFile("test.tar.zst", "owner/repo")
+	err := v.VerifyFile(file, "owner/repo")
 	if err == nil {
 		t.Error("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "verification failed") {
+		t.Errorf("error %q missing gh stderr", err.Error())
 	}
 }
 
 func TestVerifyFileGHNotAvailable(t *testing.T) {
 	isolate(t)
+	origEndpoint := attestationsEndpoint
+	attestationsEndpoint = withAttestationServer(t)
+	defer func() { attestationsEndpoint = origEndpoint }()
+
 	orig := lookPath
 	lookPath = func(name string) (string, error) {
 		return "", &os.PathError{Op: "lookpath", Path: "gh"}
 	}
 	defer func() { lookPath = orig }()
 
+	file := writeTempFile(t, []byte("archive bytes"))
 	v := &GHVerifier{}
-	err := v.VerifyFile("test.tar.zst", "owner/repo")
+	err := v.VerifyFile(file, "owner/repo")
 	if err == nil {
 		t.Error("expected error when gh not available")
+	}
+	if !strings.Contains(err.Error(), "gh CLI not found") {
+		t.Errorf("error %q missing gh not found reason", err.Error())
 	}
 }
 
@@ -168,6 +205,10 @@ func TestVerifyFileGHNotAvailable(t *testing.T) {
 // returns "unknown command" mid-verify.
 func TestVerifyOldGhReportsUpgradeGuidance(t *testing.T) {
 	isolate(t)
+	origEndpoint := attestationsEndpoint
+	attestationsEndpoint = withAttestationServer(t)
+	defer func() { attestationsEndpoint = origEndpoint }()
+
 	mock := writeMockGH(t, mockOpts{
 		verifyExit:   1,
 		verifyStderr: `unknown command "attestation" for "gh"`,
@@ -178,8 +219,9 @@ func TestVerifyOldGhReportsUpgradeGuidance(t *testing.T) {
 	}
 	defer func() { lookPath = orig }()
 
+	file := writeTempFile(t, []byte("archive bytes"))
 	v := &GHVerifier{}
-	err := v.VerifyFile("test.tar.zst", "owner/repo")
+	err := v.VerifyFile(file, "owner/repo")
 	if err == nil {
 		t.Fatal("expected error for old gh, got nil")
 	}
@@ -274,13 +316,16 @@ type mockOpts struct {
 	attestationHelpExit int    // exit for `gh attestation --help`
 	verifyExit          int    // exit for `gh attestation verify ...`
 	verifyStderr        string // stderr for the verify call
+	verifyOCIExit       int    // exit for verify with --bundle-from-oci
+	verifyOCIStderr     string // stderr for the OCI verify call
 }
 
 // writeMockGH creates a shell script that dispatches on
 // the second arg: "--help" returns attestationHelpExit;
 // "verify" returns verifyExit (writing verifyStderr first).
-// Any other invocation returns the help exit code so the
-// probe stays the source of truth.
+// When --bundle-from-oci is present it returns verifyOCIExit
+// instead. Any other invocation returns the help exit code so
+// the probe stays the source of truth.
 func writeMockGH(t *testing.T, opts mockOpts) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -288,7 +333,13 @@ func writeMockGH(t *testing.T, opts mockOpts) string {
 	script := "#!/bin/sh\n" +
 		"case \"$2\" in\n" +
 		"  --help) exit " + itoa(opts.attestationHelpExit) + " ;;\n" +
-		"  verify)\n"
+		"  verify)\n" +
+		"    if echo \"$*\" | grep -q -e '--bundle-from-oci'; then\n"
+	if opts.verifyOCIStderr != "" {
+		script += "      echo '" + opts.verifyOCIStderr + "' >&2\n"
+	}
+	script += "      exit " + itoa(opts.verifyOCIExit) + "\n" +
+		"    fi\n"
 	if opts.verifyStderr != "" {
 		script += "    echo '" + opts.verifyStderr + "' >&2\n"
 	}
@@ -306,4 +357,168 @@ func itoa(n int) string {
 		return "0"
 	}
 	return "1"
+}
+
+// writeTempFile creates a temporary file with data and returns its
+// path. The file is cleaned up when the test finishes.
+func writeTempFile(t *testing.T, data []byte) string {
+	t.Helper()
+	f, err := os.CreateTemp(t.TempDir(), "attest-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return f.Name()
+}
+
+func TestVerifyOCISuccess(t *testing.T) {
+	isolate(t)
+	mock := writeMockGH(t, mockOpts{
+		attestationHelpExit: 0,
+		verifyOCIExit:       0,
+	})
+	orig := lookPath
+	lookPath = func(name string) (string, error) { return mock, nil }
+	defer func() { lookPath = orig }()
+
+	v := &GHVerifier{}
+	if err := v.VerifyOCI("oci://ghcr.io/owner/repo/img:1.0-linux-amd64", "owner/repo"); err != nil {
+		t.Errorf("expected success, got %v", err)
+	}
+}
+
+func TestVerifyOCIFailure(t *testing.T) {
+	isolate(t)
+	mock := writeMockGH(t, mockOpts{
+		attestationHelpExit: 0,
+		verifyOCIExit:       1,
+		verifyOCIStderr:     "no OCI attestation found",
+	})
+	orig := lookPath
+	lookPath = func(name string) (string, error) { return mock, nil }
+	defer func() { lookPath = orig }()
+
+	v := &GHVerifier{}
+	err := v.VerifyOCI("oci://ghcr.io/owner/repo/img:1.0-linux-amd64", "owner/repo")
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "no OCI attestation found") {
+		t.Errorf("error %q missing OCI stderr", err.Error())
+	}
+}
+
+func TestFetchBundle(t *testing.T) {
+	want := []byte(`{"foo":"bar"}`)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/owner/repo/attestations/sha256:deadbeef" {
+			http.NotFound(w, r)
+			return
+		}
+		if auth := r.Header.Get("Authorization"); auth != "Bearer token" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"attestations":[{"bundle":%s}]}`, want)
+	}))
+	defer srv.Close()
+
+	t.Setenv("GALE_GITHUB_TOKEN", "token")
+	orig := attestationsEndpoint
+	attestationsEndpoint = srv.URL + "/repos/%s/attestations/%s"
+	defer func() { attestationsEndpoint = orig }()
+
+	got, err := FetchBundle("deadbeef", "owner/repo")
+	if err != nil {
+		t.Fatalf("FetchBundle: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("FetchBundle = %q, want %q", got, want)
+	}
+}
+
+func TestFetchBundleNoAttestations(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintln(w, `{"attestations":[]}`)
+	}))
+	defer srv.Close()
+
+	orig := attestationsEndpoint
+	attestationsEndpoint = srv.URL + "/repos/%s/attestations/%s"
+	defer func() { attestationsEndpoint = orig }()
+
+	_, err := FetchBundle("deadbeef", "owner/repo")
+	if err == nil {
+		t.Fatal("expected error for empty attestations, got nil")
+	}
+	if !strings.Contains(err.Error(), "no attestations found") {
+		t.Errorf("error %q should mention 'no attestations found'", err.Error())
+	}
+}
+
+func TestOCIURI(t *testing.T) {
+	cases := []struct {
+		repoPath, version, platform, digest, want string
+	}{
+		{
+			repoPath: "owner/repo/pkg",
+			version:  "1.8.1-4",
+			platform: "darwin-arm64",
+			digest:   "sha256:abc123",
+			want:     "oci://ghcr.io/owner/repo/pkg@sha256:abc123",
+		},
+		{
+			repoPath: "owner/repo/pkg",
+			version:  "1.8.1-4",
+			platform: "darwin-arm64",
+			want:     "oci://ghcr.io/owner/repo/pkg:1.8.1-darwin-arm64",
+		},
+		{
+			repoPath: "owner/repo/pkg",
+			version:  "1.0-rc1",
+			platform: "linux-amd64",
+			want:     "oci://ghcr.io/owner/repo/pkg:1.0-rc1-linux-amd64",
+		},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.want, func(t *testing.T) {
+			t.Parallel()
+			got := OCIURI(c.repoPath, c.version, c.platform, c.digest)
+			if got != c.want {
+				t.Errorf("OCIURI = %q, want %q", got, c.want)
+			}
+		})
+	}
+}
+
+func TestBareVersion(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"1.8.1-4", "1.8.1"},
+		{"1.8.1", "1.8.1"},
+		{"0.10.0-2", "0.10.0"},
+		{"1.0-rc1", "1.0-rc1"},
+		{"1.2-0", "1.2-0"},
+		{"2.0-1-2", "2.0-1"},
+	}
+	for _, c := range cases {
+		c := c
+		t.Run(c.in, func(t *testing.T) {
+			t.Parallel()
+			got := BareVersion(c.in)
+			if got != c.want {
+				t.Errorf("BareVersion(%q) = %q, want %q", c.in, got, c.want)
+			}
+		})
+	}
 }
