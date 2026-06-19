@@ -130,14 +130,8 @@ func (v *GHVerifier) probe() {
 // its Sigstore bundle from the public GitHub Attestations
 // API and passing it to gh via --bundle.
 func (v *GHVerifier) VerifyFile(filePath, repo string) error {
-	if info, err := os.Stat(filePath); err != nil || info.IsDir() {
-		if err != nil {
-			return fmt.Errorf("stat attestation subject: %w", err)
-		}
-		return fmt.Errorf(
-			"attestation subject is a directory, expected a file: %s",
-			filePath,
-		)
+	if err := requireFileSubject(filePath); err != nil {
+		return err
 	}
 
 	digest, err := hashFile(filePath)
@@ -172,12 +166,16 @@ func IsMissingOCIAttestation(err error) bool {
 	if err == nil {
 		return false
 	}
+	// Match the stable core of the real gh registry-missing
+	// message (gh 2.92.0): "no attestations found in the OCI
+	// registry. Retry the command without the --bundle-from-oci
+	// flag...". Requiring both "oci registry" and "no attestation"
+	// avoids misclassifying real verification failures whose text
+	// echoes the oci:// subject (e.g. "certificate identity not
+	// found in trust policy verifying oci://...").
 	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "oci") &&
-		strings.Contains(msg, "attestation") &&
-		(strings.Contains(msg, "no ") ||
-			strings.Contains(msg, "not found") ||
-			strings.Contains(msg, "failed to find"))
+	return strings.Contains(msg, "oci registry") &&
+		strings.Contains(msg, "no attestation")
 }
 
 // FetchBundle downloads the Sigstore attestation bundle(s)
@@ -332,6 +330,24 @@ func attestationToken() string {
 	return os.Getenv("GITHUB_TOKEN")
 }
 
+// requireFileSubject rejects an attestation subject that is
+// missing or a directory. It is the single guard for the
+// file-verification path (VerifyFile); the OCI path uses an
+// oci:// subject and never reaches it.
+func requireFileSubject(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("stat attestation subject: %w", err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf(
+			"attestation subject is a directory, expected a file: %s",
+			path,
+		)
+	}
+	return nil
+}
+
 // hashFile returns the hex-encoded SHA256 hash of path.
 func hashFile(path string) (string, error) {
 	f, err := os.Open(path)
@@ -394,15 +410,6 @@ func runVerify(subject, repo, bundlePath string, bundleFromOCI bool) error {
 		return fmt.Errorf("gh CLI not found")
 	}
 
-	if !strings.HasPrefix(subject, "oci://") {
-		if info, err := os.Stat(subject); err == nil && info.IsDir() {
-			return fmt.Errorf(
-				"attestation subject is a directory, expected a file: %s",
-				subject,
-			)
-		}
-	}
-
 	args := []string{"attestation", "verify", subject, "--repo", repo}
 	if bundleFromOCI {
 		args = append(args, "--bundle-from-oci")
@@ -417,6 +424,14 @@ func runVerify(subject, repo, bundlePath string, bundleFromOCI bool) error {
 		if strings.Contains(msg, `unknown command "attestation"`) {
 			return fmt.Errorf(
 				"gh at %s lacks 'attestation' (need gh >= 2.49.0); "+
+					"install a current gh with: gale install gh",
+				ghPath,
+			)
+		}
+		if strings.Contains(msg, "unknown flag") &&
+			strings.Contains(msg, "bundle-from-oci") {
+			return fmt.Errorf(
+				"gh at %s lacks --bundle-from-oci (need a newer gh); "+
 					"install a current gh with: gale install gh",
 				ghPath,
 			)

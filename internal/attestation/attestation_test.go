@@ -318,6 +318,7 @@ type mockOpts struct {
 	verifyStderr        string // stderr for the verify call
 	verifyOCIExit       int    // exit for verify with --bundle-from-oci
 	verifyOCIStderr     string // stderr for the OCI verify call
+	argvLog             string // if set, append each call's argv here
 }
 
 // writeMockGH creates a shell script that dispatches on
@@ -330,8 +331,11 @@ func writeMockGH(t *testing.T, opts mockOpts) string {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gh")
-	script := "#!/bin/sh\n" +
-		"case \"$2\" in\n" +
+	script := "#!/bin/sh\n"
+	if opts.argvLog != "" {
+		script += "echo \"$*\" >> '" + opts.argvLog + "'\n"
+	}
+	script += "case \"$2\" in\n" +
 		"  --help) exit " + itoa(opts.attestationHelpExit) + " ;;\n" +
 		"  verify)\n" +
 		"    if echo \"$*\" | grep -q -e '--bundle-from-oci'; then\n"
@@ -398,7 +402,8 @@ func TestVerifyOCIFailure(t *testing.T) {
 	mock := writeMockGH(t, mockOpts{
 		attestationHelpExit: 0,
 		verifyOCIExit:       1,
-		verifyOCIStderr:     "no OCI attestation found",
+		// Real gh 2.92.0 no-referrer output.
+		verifyOCIStderr: "no attestations found in the OCI registry",
 	})
 	orig := lookPath
 	lookPath = func(name string) (string, error) { return mock, nil }
@@ -409,12 +414,114 @@ func TestVerifyOCIFailure(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "no OCI attestation found") {
+	if !strings.Contains(err.Error(), "no attestations found in the OCI registry") {
 		t.Errorf("error %q missing OCI stderr", err.Error())
 	}
 	if !IsMissingOCIAttestation(err) {
 		t.Errorf("IsMissingOCIAttestation(%v) = false, want true", err)
 	}
+}
+
+// TestVerifyOCIGhLacksBundleFromOCIFlag covers an old gh
+// that has the "attestation" subcommand but not the
+// --bundle-from-oci flag: gh prints "unknown flag:
+// --bundle-from-oci". gale must surface an actionable
+// upgrade message rather than the raw flag error.
+func TestVerifyOCIGhLacksBundleFromOCIFlag(t *testing.T) {
+	isolate(t)
+	mock := writeMockGH(t, mockOpts{
+		attestationHelpExit: 0,
+		verifyOCIExit:       1,
+		verifyOCIStderr:     "unknown flag: --bundle-from-oci",
+	})
+	orig := lookPath
+	lookPath = func(name string) (string, error) { return mock, nil }
+	defer func() { lookPath = orig }()
+
+	v := &GHVerifier{}
+	err := v.VerifyOCI("oci://ghcr.io/owner/repo/img:1.0-linux-amd64", "owner/repo")
+	if err == nil {
+		t.Fatal("expected error for gh lacking --bundle-from-oci, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "--bundle-from-oci") {
+		t.Errorf("error %q should name the missing flag", msg)
+	}
+	if !strings.Contains(msg, "newer gh") {
+		t.Errorf("error %q should ask for a newer gh", msg)
+	}
+	if !strings.Contains(msg, "gale install gh") {
+		t.Errorf("error %q missing fix suggestion", msg)
+	}
+}
+
+// TestVerifyFilePassesBundleArg asserts the file path hands
+// gh "--bundle <path>" (and never --bundle-from-oci), pinning
+// the argv contract for the token-free file fallback.
+func TestVerifyFilePassesBundleArg(t *testing.T) {
+	isolate(t)
+	origEndpoint := attestationsEndpoint
+	attestationsEndpoint = withAttestationServer(t)
+	defer func() { attestationsEndpoint = origEndpoint }()
+
+	log := filepath.Join(t.TempDir(), "argv.log")
+	mock := writeMockGH(t, mockOpts{verifyExit: 0, argvLog: log})
+	orig := lookPath
+	lookPath = func(name string) (string, error) { return mock, nil }
+	defer func() { lookPath = orig }()
+
+	file := writeTempFile(t, []byte("archive bytes"))
+	v := &GHVerifier{}
+	if err := v.VerifyFile(file, "owner/repo"); err != nil {
+		t.Fatalf("VerifyFile: %v", err)
+	}
+
+	argv := readFile(t, log)
+	if !strings.Contains(argv, "--bundle ") {
+		t.Errorf("argv %q missing --bundle", argv)
+	}
+	if strings.Contains(argv, "--bundle-from-oci") {
+		t.Errorf("argv %q must not use --bundle-from-oci on file path", argv)
+	}
+}
+
+// TestVerifyOCIPassesBundleFromOCIArg pins the OCI argv
+// contract: the registry path uses --bundle-from-oci and
+// never the file --bundle flag.
+func TestVerifyOCIPassesBundleFromOCIArg(t *testing.T) {
+	isolate(t)
+	log := filepath.Join(t.TempDir(), "argv.log")
+	mock := writeMockGH(t, mockOpts{
+		attestationHelpExit: 0,
+		verifyOCIExit:       0,
+		argvLog:             log,
+	})
+	orig := lookPath
+	lookPath = func(name string) (string, error) { return mock, nil }
+	defer func() { lookPath = orig }()
+
+	v := &GHVerifier{}
+	if err := v.VerifyOCI("oci://ghcr.io/owner/repo/img:1.0-linux-amd64", "owner/repo"); err != nil {
+		t.Fatalf("VerifyOCI: %v", err)
+	}
+
+	argv := readFile(t, log)
+	if !strings.Contains(argv, "--bundle-from-oci") {
+		t.Errorf("argv %q missing --bundle-from-oci", argv)
+	}
+	if strings.Contains(argv, "--bundle ") {
+		t.Errorf("argv %q must not use file --bundle on OCI path", argv)
+	}
+}
+
+// readFile returns the contents of path or fails the test.
+func readFile(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read argv log: %v", err)
+	}
+	return string(b)
 }
 
 func TestIsMissingOCIAttestation(t *testing.T) {
@@ -426,8 +533,27 @@ func TestIsMissingOCIAttestation(t *testing.T) {
 		{"nil", nil, false},
 		{"unrelated", fmt.Errorf("network error"), false},
 		{"missing OCI plural", fmt.Errorf("no attestations found in the OCI registry"), true},
-		{"missing OCI singular", fmt.Errorf("no OCI attestation found"), true},
-		{"wrapped missing OCI", fmt.Errorf("gh failed: %w", fmt.Errorf("no OCI attestation found")), true},
+		// Exact real gh 2.92.0 output when the registry has no
+		// referrer, wrapped the way gale wraps gh output.
+		{
+			"gh 2.92.0 real",
+			fmt.Errorf("attestation verification failed: %s",
+				"no attestations found in the OCI registry. Retry the "+
+					"command without the --bundle-from-oci flag to check "+
+					"GitHub for the attestation"),
+			true,
+		},
+		{"wrapped missing OCI", fmt.Errorf("gh failed: %w", fmt.Errorf("no attestations found in the OCI registry")), true},
+		// False positive guard: a real verification failure whose
+		// text echoes the oci:// subject and contains "not found"
+		// must NOT be classified as a missing-registry-attestation.
+		{
+			"cert identity error echoing oci subject",
+			fmt.Errorf("attestation verification failed: %s",
+				"verifying oci://ghcr.io/kelp/gale-recipes/jq@sha256:..: "+
+					"certificate identity not found in trust policy"),
+			false,
+		},
 	}
 	for _, c := range cases {
 		c := c

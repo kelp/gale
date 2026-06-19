@@ -3410,6 +3410,132 @@ func TestInstallBinaryVerifiesOCIURI(t *testing.T) {
 	}
 }
 
+// TestInstallBinaryFallsBackToFileWhenOCIMissing covers the
+// #131-critical path for every package published before
+// gale-recipes started pushing OCI-referrer attestations: VerifyOCI
+// reports "no attestations found in the OCI registry" (the exact gh
+// 2.92.0 string), IsMissingOCIAttestation matches it, and the
+// installer must fall back to VerifyFile against the teed archive.
+//
+// The assertions are non-vacuous because the recordingVerifier
+// defaults ociErr to nil: the existing OCI tests never exercise the
+// fallback, so without the production `if IsMissingOCIAttestation(err)`
+// branch this install would surface the OCI error and fail, and
+// calledFile/capturedSHA would stay zero-valued. capturedSHA ==
+// fx.hash proves a real FILE carrying the archive bytes (not a
+// directory or empty stub) was handed to VerifyFile — the regression
+// guard the repurposed TestInstallBinaryVerifiesOCIURI dropped.
+func TestInstallBinaryFallsBackToFileWhenOCIMissing(t *testing.T) {
+	fx := setupBinaryInstallTest(t)
+	// Exact real gh 2.92.0 missing-referrer output. gale wraps gh
+	// output as "attestation verification failed: <gh output>".
+	fx.rv.ociErr = fmt.Errorf("attestation verification failed: " +
+		"no attestations found in the OCI registry. Retry the " +
+		"command without the --bundle-from-oci flag to check GitHub " +
+		"for the attestation")
+
+	blobURL := fmt.Sprintf(
+		"https://ghcr.io/v2/owner/repo/testpkg/blobs/sha256:%s", fx.hash,
+	)
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    blobURL,
+				SHA256: fx.hash,
+				Trust:  recipe.TrustSigstore,
+			},
+		},
+	}
+
+	result, err := fx.inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+	if result.Method != MethodBinary {
+		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
+	}
+	if !fx.rv.calledOCI {
+		t.Fatal("VerifyOCI was never called; Verifier not wired into install path")
+	}
+	if !fx.rv.calledFile {
+		t.Fatal("VerifyFile was never called; missing-OCI fallback did not fire")
+	}
+	if fx.rv.capturedIsDir {
+		t.Error("VerifyFile was handed a directory, want the teed archive file")
+	}
+	if fx.rv.capturedSHA != fx.hash {
+		t.Errorf("VerifyFile saw archive SHA256 %q, want %q "+
+			"(the teed copy of the downloaded archive bytes)",
+			fx.rv.capturedSHA, fx.hash)
+	}
+}
+
+// TestInstallBinaryFailsClosedOnNonMissingOCIError proves the
+// fallback is fail-CLOSED: a real attestation failure (signature
+// mismatch) is NOT a missing-referrer condition, so
+// IsMissingOCIAttestation returns false, VerifyFile must NOT run, and
+// the binary install must be rejected. After the binary is rejected
+// the installer attempts a source build; setupBinaryInstallTest's
+// hostRewrite client redirects that fetch to the local test server
+// (which serves the binary blob), so the build fails deterministically
+// and offline on a SHA256 mismatch. Install surfaces a non-nil error —
+// confirming the package is never installed via the unverified binary.
+//
+// Non-vacuous: if the production code dropped the
+// IsMissingOCIAttestation guard and fell back unconditionally,
+// VerifyFile (which returns nil here) would let the binary install
+// succeed with Method == MethodBinary and err == nil, failing both
+// assertions below.
+func TestInstallBinaryFailsClosedOnNonMissingOCIError(t *testing.T) {
+	fx := setupBinaryInstallTest(t)
+	// A genuine verification failure: signature mismatch mentions
+	// "attestation" but not "oci"/"no"/"not found", so
+	// IsMissingOCIAttestation returns false and the fallback must
+	// not fire.
+	fx.rv.ociErr = fmt.Errorf(
+		"attestation verification failed: signature mismatch",
+	)
+
+	blobURL := fmt.Sprintf(
+		"https://ghcr.io/v2/owner/repo/testpkg/blobs/sha256:%s", fx.hash,
+	)
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		// The source-build fallback that fires after the binary is
+		// rejected is redirected by hostRewrite to the test server and
+		// fails on a SHA256 mismatch, keeping the test hermetic and
+		// offline (no real upstream source fetch).
+		Source: recipe.Source{
+			URL:    "http://127.0.0.1:1/nonexistent.tar.gz",
+			SHA256: "unused",
+		},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:    blobURL,
+				SHA256: fx.hash,
+				Trust:  recipe.TrustSigstore,
+			},
+		},
+	}
+
+	result, err := fx.inst.Install(r)
+	if !fx.rv.calledOCI {
+		t.Fatal("VerifyOCI was never called; Verifier not wired into install path")
+	}
+	if fx.rv.calledFile {
+		t.Error("VerifyFile fired on a non-missing OCI error; " +
+			"fallback is not fail-closed")
+	}
+	// The binary must be rejected: either Install errors outright or,
+	// at minimum, it does not report a binary install.
+	if err == nil && result != nil && result.Method == MethodBinary {
+		t.Fatalf("install succeeded via binary despite a fail-closed "+
+			"attestation error: method=%q err=%v", result.Method, err)
+	}
+}
+
 // TestInstallBinaryEmitsAttestationTimingPhase asserts that
 // installBinaryTo wraps the attestation VerifyOCI call in a
 // timing.Phase so that --verbose surfaces attestation cost.

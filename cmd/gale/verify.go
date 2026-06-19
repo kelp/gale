@@ -125,7 +125,31 @@ func downloadArchive(name, sha256 string) (string, error) {
 		os.Remove(f.Name())
 		return "", err
 	}
+
+	// Verify the downloaded bytes against the expected digest before
+	// handing the file to attestation verification. A mismatch here is
+	// far clearer than a downstream bundle 404.
+	if err := verifyArchiveDigest(f.Name(), sha256); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
 	return f.Name(), nil
+}
+
+// verifyArchiveDigest checks that the file at path hashes to wantSHA
+// (hex-encoded SHA256), returning a localized error on mismatch.
+func verifyArchiveDigest(path, wantSHA string) error {
+	got, err := download.HashFile(path)
+	if err != nil {
+		return fmt.Errorf("hashing downloaded archive: %w", err)
+	}
+	if got != wantSHA {
+		return fmt.Errorf(
+			"downloaded archive sha256 mismatch: expected %s, got %s",
+			wantSHA, got,
+		)
+	}
+	return nil
 }
 
 func init() {
