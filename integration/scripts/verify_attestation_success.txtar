@@ -1,8 +1,15 @@
-# `gale verify <pkg>` shells out to `gh attestation verify`.
-# The fake gh returns exit 0 by default and logs every call
-# under $WORK/fake-gh/log, so we can also confirm gh was
-# really invoked with the right OCI URI — not short-
-# circuited away to silent success.
+# `gale verify <pkg>` prefers the tokenless OCI-referrer path:
+# gale fetches the Sigstore bundle from GHCR itself, writes it to a
+# temp file, and runs `gh attestation verify oci://...@<digest>
+# --bundle <file>` offline. The fake gh returns exit 0 by default and
+# logs every call under $WORK/fake-gh/log, so we confirm gh was
+# invoked with the oci:// URI and --bundle (NOT --bundle-from-oci) —
+# not short-circuited away to silent success.
+
+# A non-empty token makes ghcr.Token return it without an HTTP call,
+# keeping the referrer fetch hermetic. The fake registry ignores the
+# Authorization header.
+env GALE_GITHUB_TOKEN=fake-integration-token
 
 gale-fixture recipes $WORK/recipes
 exec gale install hello -g --recipes=$WORK/recipes
@@ -11,12 +18,20 @@ exec gale install hello -g --recipes=$WORK/recipes
 # trust=sha256-only fixture skips attestation on install).
 ! exists $WORK/fake-gh/log
 
+# Wire the fake GHCR to serve the referrers index, referrer manifest,
+# and bundle blob for hello, and record the matching manifest_digest
+# in the lockfile so verify takes the OCI-referrer path.
+gale-attest-referrer hello $WORK/home/.gale/gale.lock
+
 # Run verify.
 exec gale verify hello
 stderr 'attestation verified'
 
-# Post-verify: gh was invoked at least once, and the argv
-# contains both the OCI URI and the recipes repo.
+# Post-verify: gh was invoked at least once, and the argv contains the
+# OCI URI pinned by digest, the attestation subcommand, and --bundle
+# (the offline tokenless flag) — never --bundle-from-oci.
 exists $WORK/fake-gh/log
 grep 'oci://ghcr\.io/kelp/gale-recipes/hello' $WORK/fake-gh/log
 grep 'attestation' $WORK/fake-gh/log
+grep '--bundle ' $WORK/fake-gh/log
+! grep '--bundle-from-oci' $WORK/fake-gh/log

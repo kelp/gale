@@ -1,37 +1,81 @@
 package main
 
-import "testing"
+import (
+	"crypto/sha256"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
-// verifyTestDigest is a well-formed OCI manifest digest for URI
-// construction assertions.
-const verifyTestDigest = "sha256:" +
-	"2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
-
-// TestVerifyOCIURIUsesDigest pins that when a manifest digest is
-// available, the verify URI pins the manifest by digest instead of
-// by tag. Digest pinning verifies the exact artifact installed,
-// immune to tag moves on GHCR.
-func TestVerifyOCIURIUsesDigest(t *testing.T) {
-	got := verifyOCIURI(
-		"kelp/gale-recipes", "jq", "1.8.1-4",
-		"darwin-arm64", verifyTestDigest,
-	)
-	want := "oci://ghcr.io/kelp/gale-recipes/jq@" + verifyTestDigest
+func TestVerifyBlobURL(t *testing.T) {
+	t.Setenv("GALE_GHCR_URL", "")
+	const sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	got := verifyBlobURL("hello", sha)
+	want := "https://ghcr.io/v2/kelp/gale-recipes/hello/blobs/sha256:" + sha
 	if got != want {
-		t.Errorf("verifyOCIURI with digest = %q, want %q", got, want)
+		t.Fatalf("verifyBlobURL = %q, want %q", got, want)
+	}
+
+	t.Setenv("GALE_GHCR_URL", "http://127.0.0.1:5555")
+	got = verifyBlobURL("hello", sha)
+	want = "http://127.0.0.1:5555/v2/kelp/gale-recipes/hello/blobs/sha256:" + sha
+	if got != want {
+		t.Fatalf("verifyBlobURL (override) = %q, want %q", got, want)
 	}
 }
 
-// TestVerifyOCIURIFallsBackToTag pins the no-digest fallback: the
-// tag form gale-recipes CI pushes, "<bareVersion>-<platform>". The
-// canonical lockfile version "1.8.1-4" carries a revision; GHCR
-// tags use the bare "1.8.1", so the revision must be stripped.
-func TestVerifyOCIURIFallsBackToTag(t *testing.T) {
-	got := verifyOCIURI(
-		"kelp/gale-recipes", "jq", "1.8.1-4", "darwin-arm64", "",
-	)
-	want := "oci://ghcr.io/kelp/gale-recipes/jq:1.8.1-darwin-arm64"
-	if got != want {
-		t.Errorf("verifyOCIURI without digest = %q, want %q", got, want)
+func TestVerifyArchiveDigest(t *testing.T) {
+	dir := t.TempDir()
+	content := []byte("gale archive bytes")
+	path := filepath.Join(dir, "archive.tar.zst")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write temp archive: %v", err)
+	}
+	good := fmt.Sprintf("%x", sha256.Sum256(content))
+
+	tests := []struct {
+		name    string
+		path    string
+		wantSHA string
+		wantErr string
+	}{
+		{
+			name:    "match",
+			path:    path,
+			wantSHA: good,
+			wantErr: "",
+		},
+		{
+			name:    "mismatch",
+			path:    path,
+			wantSHA: strings.Repeat("0", 64),
+			wantErr: "downloaded archive sha256 mismatch",
+		},
+		{
+			name:    "missing file",
+			path:    filepath.Join(dir, "nope.tar.zst"),
+			wantSHA: good,
+			wantErr: "hashing downloaded archive",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := verifyArchiveDigest(tt.path, tt.wantSHA)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected no error, got %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
+			}
+		})
 	}
 }

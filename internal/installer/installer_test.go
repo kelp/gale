@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"io"
@@ -22,6 +23,7 @@ import (
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/filelock"
+	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/recipe"
@@ -3243,24 +3245,28 @@ func gitRun(t *testing.T, dir string, args ...string) {
 	}
 }
 
-// --- Regression: installBinaryTo must pass archive FILE to VerifyFile ---
+// --- Regression: installBinaryTo verifies OCI attestation ---
 
 // recordingVerifier is a test-local Verifier that records the
-// stat and content-hash of the path it receives at call time.
-// It returns nil (success) so the install continues; the test
-// asserts the recorded values after Install returns.
+// calls made by the install path. It returns nil (success) by
+// default so the install continues; callers set ociErr to
+// drive the API-fallback path.
 type recordingVerifier struct {
-	called        bool
-	capturedIsDir bool
-	capturedSHA   string
-	statErr       error
+	calledFile        bool
+	calledOCIReferrer bool
+	capturedOCI       string
+	capturedBundle    []byte
+	capturedIsDir     bool
+	capturedSHA       string
+	statErr           error
+	ociErr            error
 }
 
 func (rv *recordingVerifier) Available() bool           { return true }
 func (rv *recordingVerifier) UnavailableReason() string { return "" }
 
 func (rv *recordingVerifier) VerifyFile(filePath, repo string) error {
-	rv.called = true
+	rv.calledFile = true
 	info, err := os.Stat(filePath)
 	if err != nil {
 		rv.statErr = err
@@ -3272,9 +3278,7 @@ func (rv *recordingVerifier) VerifyFile(filePath, repo string) error {
 	rv.capturedIsDir = info.IsDir()
 
 	// Hash the file bytes so we can compare to the expected
-	// archive SHA256. Reading a directory here would fail,
-	// which is the actual bug: production code passes the
-	// staging DIRECTORY, not the archive file.
+	// archive SHA256.
 	if !rv.capturedIsDir {
 		f, err := os.Open(filePath)
 		if err == nil {
@@ -3285,6 +3289,13 @@ func (rv *recordingVerifier) VerifyFile(filePath, repo string) error {
 		}
 	}
 	return nil
+}
+
+func (rv *recordingVerifier) VerifyOCIReferrer(ociURI, repo string, bundle []byte) error {
+	rv.calledOCIReferrer = true
+	rv.capturedOCI = ociURI
+	rv.capturedBundle = bundle
+	return rv.ociErr
 }
 
 // hostRewrite is a round-tripper that rewrites every request to
@@ -3302,28 +3313,45 @@ func (h hostRewrite) RoundTrip(r *http.Request) (*http.Response, error) {
 	return h.base.RoundTrip(r2)
 }
 
-// TestInstallBinaryVerifiesArchiveFile asserts that installBinaryTo
-// hands VerifyFile a real archive FILE (with the correct bytes),
-// not the staging DIRECTORY it extracts into.
+// binaryInstallFixture holds the objects built by setupBinaryInstallTest.
+type binaryInstallFixture struct {
+	inst   *Installer
+	rv     *recordingVerifier
+	hash   string
+	digest string // OCI manifest digest the fake server serves
+}
+
+// blobURL returns the fake GHCR blob URL for the archive. It uses a
+// ghcr.io host so checkBinaryTrustPolicy accepts the sigstore trust
+// policy; the fixture's hostRewrite transports redirect the actual
+// request to the local test server. The repository path
+// "owner/repo/testpkg" makes binaryOCIURI derive
+// "oci://ghcr.io/owner/repo/testpkg@<digest>".
+func (fx *binaryInstallFixture) blobURL() string {
+	return fmt.Sprintf(
+		"https://ghcr.io/v2/owner/repo/testpkg/blobs/sha256:%s", fx.hash,
+	)
+}
+
+// setupBinaryInstallTest builds a fake binary archive, serves it (plus
+// a matching single-layer OCI manifest at /manifests/ paths) over a
+// TLS test server with host-rewrites to ghcr.io, and returns an
+// installer with a recording verifier, the archive hash, and the
+// manifest digest the server serves. Cleanup is registered with
+// t.Cleanup.
 //
-// Regression: after the streaming-extract refactor, the code passes
-// stagingDir (a directory) to VerifyFile instead of a tempfile
-// containing the raw archive bytes. This causes every sigstore-trust
-// binary install to fail attestation (gh attestation verify needs a
-// file to compute a SHA256 digest) and silently fall back to a source
-// build.
-//
-// The fix will tee the archive bytes to a tempfile and pass that
-// file to VerifyFile. Until fixed, the recording fake captures
-// capturedIsDir == true (a directory was passed) and/or
-// capturedSHA is empty (couldn't read a directory as a file).
-func TestInstallBinaryVerifiesArchiveFile(t *testing.T) {
-	// Isolate build.TmpDir() under a throwaway HOME so we can
-	// glob for leaked gale-verify-* tempfiles after the install.
+// The blob URLs name ghcr.io so the sigstore trust policy accepts
+// them; both the download client (blob fetch) and the shared
+// httpclient (manifest fetch, via http.DefaultTransport) are
+// rewritten to reach the local server. The manifest's only layer
+// digest is the archive's sha256, and the recipe's ManifestDigest is
+// the manifest bytes' sha256, so verifyManifestDigest passes
+// hermetically. The referrer fetch is stubbed per test via
+// stubReferrerBundle, so the server need not serve the referrers index.
+func setupBinaryInstallTest(t *testing.T) *binaryInstallFixture {
 	fakeHome := t.TempDir()
 	t.Setenv("HOME", fakeHome)
 
-	// Build a tar.zst with a known binary.
 	binContent := "#!/bin/sh\necho from-sigstore-binary"
 	tarzst := createTestTarZstd(t, "bin/testpkg", binContent)
 	hash := hashFile(t, tarzst)
@@ -3332,60 +3360,86 @@ func TestInstallBinaryVerifiesArchiveFile(t *testing.T) {
 		t.Fatalf("read tar.zst: %v", err)
 	}
 
-	// Serve over TLS — FetchAndExtractTarZstd rejects sending a
-	// bearer token over plain HTTP.
+	manifest := fmt.Sprintf(
+		`{"layers":[{"digest":"sha256:%s"}]}`, hash,
+	)
+	digest := fmt.Sprintf("sha256:%x", sha256.Sum256([]byte(manifest)))
+
 	srv := httptest.NewTLSServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
+			if strings.Contains(r.URL.Path, "/manifests/") {
+				w.Write([]byte(manifest)) //nolint:errcheck
+				return
+			}
 			w.Write(blobData) //nolint:errcheck
 		},
 	))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
 
-	// Redirect https://ghcr.io/... to the test server. The
-	// host-rewrite round-tripper injects the TLS test server's
-	// address without touching the logical URL the production
-	// code sees (ghcr.io).
-	restore := download.SetHTTPClient(&http.Client{
-		Transport: hostRewrite{
-			base: srv.Client().Transport,
-			host: srv.Listener.Addr().String(),
-		},
-	})
-	defer restore()
+	rewrite := hostRewrite{
+		base: srv.Client().Transport,
+		host: srv.Listener.Addr().String(),
+	}
+	// Redirect the download client (blob fetch).
+	restore := download.SetHTTPClient(&http.Client{Transport: rewrite})
+	t.Cleanup(restore)
+	// Redirect the shared httpclient used by ghcr.FetchManifestLayer:
+	// httpclient.Default() has a nil Transport, so it dispatches via
+	// http.DefaultTransport. Swap that for the test's duration.
+	savedDefault := http.DefaultTransport
+	http.DefaultTransport = rewrite
+	t.Cleanup(func() { http.DefaultTransport = savedDefault })
 
-	// Make ghcr.Token return a fake token without a network
-	// call. FetchAndExtractTarZstd requires TLS when a token
-	// is present, which is why we need the TLS server above.
 	t.Setenv("GALE_GITHUB_TOKEN", "fake-token-for-test")
 
-	// Wire the recording verifier.
 	rv := &recordingVerifier{}
-
 	storeRoot := t.TempDir()
 	inst := &Installer{
 		Store:    store.NewStore(storeRoot),
 		Verifier: rv,
 	}
+	return &binaryInstallFixture{
+		inst: inst, rv: rv, hash: hash, digest: digest,
+	}
+}
 
-	// Recipe uses a ghcr.io URL with default (sigstore) trust,
-	// which is the path that triggers VerifyFile.
-	blobURL := fmt.Sprintf(
-		"https://ghcr.io/v2/owner/repo/testpkg/blobs/sha256:%s",
-		hash,
-	)
+// stubReferrerBundle overrides the fetchReferrerBundle package var
+// for the duration of a test so the install path never reaches a real
+// GHCR referrers API. It restores the original via t.Cleanup.
+func stubReferrerBundle(t *testing.T, fn func(ctx context.Context, blobURL, manifestDigest, token string) ([]byte, error)) {
+	t.Helper()
+	orig := fetchReferrerBundle
+	fetchReferrerBundle = fn
+	t.Cleanup(func() { fetchReferrerBundle = orig })
+}
+
+// TestInstallBinaryVerifiesOCIReferrer asserts that installBinaryTo
+// fetches the referrer bundle and verifies the OCI image reference via
+// VerifyOCIReferrer for sigstore-trusted prebuilt binaries when a
+// referrer bundle exists.
+func TestInstallBinaryVerifiesOCIReferrer(t *testing.T) {
+	fx := setupBinaryInstallTest(t)
+
+	wantBundle := []byte(`{"bundle":"data"}`)
+	stubReferrerBundle(t, func(_ context.Context, _, _, _ string) ([]byte, error) {
+		return wantBundle, nil
+	})
+
+	blobURL := fx.blobURL()
 	r := &recipe.Recipe{
 		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
 		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
 		Binary: map[string]recipe.Binary{
 			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
-				URL:    blobURL,
-				SHA256: hash,
-				Trust:  recipe.TrustSigstore,
+				URL:            blobURL,
+				SHA256:         fx.hash,
+				Trust:          recipe.TrustSigstore,
+				ManifestDigest: fx.digest,
 			},
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := fx.inst.Install(r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -3393,38 +3447,22 @@ func TestInstallBinaryVerifiesArchiveFile(t *testing.T) {
 		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
 	}
 
-	// The recording verifier must have been called.
-	if !rv.called {
-		t.Fatal("VerifyFile was never called; " +
-			"Verifier not wired into install path")
+	if !fx.rv.calledOCIReferrer {
+		t.Fatal("VerifyOCIReferrer was never called; Verifier not wired into install path")
 	}
 
-	// The path handed to VerifyFile must be a FILE, not a directory.
-	// Today (bug present): it receives the staging dir → IsDir == true.
-	if rv.statErr != nil {
-		t.Fatalf("VerifyFile received an inaccessible path: %v",
-			rv.statErr)
+	wantOCI := fmt.Sprintf("oci://ghcr.io/owner/repo/testpkg@%s", fx.digest)
+	if fx.rv.capturedOCI != wantOCI {
+		t.Errorf("VerifyOCIReferrer received %q, want %q", fx.rv.capturedOCI, wantOCI)
 	}
-	if rv.capturedIsDir {
-		t.Errorf("VerifyFile received a DIRECTORY, not a file — " +
-			"installBinaryTo is passing the staging dir instead " +
-			"of the archive tempfile")
+	if !bytes.Equal(fx.rv.capturedBundle, wantBundle) {
+		t.Errorf("VerifyOCIReferrer bundle = %q, want %q",
+			fx.rv.capturedBundle, wantBundle)
 	}
-
-	// The file's bytes must be the raw compressed archive
-	// (the same bytes FetchAndExtractTarZstd tees). This
-	// ensures gh attestation verify can compute the correct
-	// SHA256 digest of the artifact.
-	if rv.capturedSHA != hash {
-		t.Errorf("VerifyFile received file with SHA256 = %q, "+
-			"want archive SHA256 = %q; "+
-			"the tempfile must contain the raw archive bytes",
-			rv.capturedSHA, hash)
+	if fx.rv.calledFile {
+		t.Errorf("VerifyFile was called unexpectedly; OCI referrer verification succeeded")
 	}
 
-	// Secondary assertion: no gale-verify-* tempfile should
-	// leak under build.TmpDir() after a successful install.
-	// The fix must clean up the tempfile via defer.
 	tmpDir := build.TmpDir()
 	if tmpDir != "" {
 		pattern := filepath.Join(tmpDir, "gale-verify-*")
@@ -3435,14 +3473,125 @@ func TestInstallBinaryVerifiesArchiveFile(t *testing.T) {
 	}
 }
 
-// TestInstallBinaryEmitsAttestationTimingPhase asserts that
-// installBinaryTo wraps the attestation VerifyFile call in a
-// timing.Phase so that --verbose surfaces attestation cost.
+// TestInstallBinaryFallsBackToFileWhenNoReferrer covers the
+// #131-critical path for every package published before
+// gale-recipes started pushing OCI-referrer attestations: the
+// referrer fetch returns ghcr.ErrNoReferrer, so the installer must
+// fall back to VerifyFile against the teed archive (the GitHub
+// Attestations API file path).
 //
-// Today the binary-stream phase is timed but the VerifyFile call
-// right after it is not, so no "[timing] attestation" line ever
-// appears. The substring assertion below is the RED reason: it
-// fails until the attestation phase is added.
+// The assertions are non-vacuous because the recordingVerifier
+// defaults ociErr to nil: without the production ErrNoReferrer
+// fall-through this install would call VerifyOCIReferrer and leave
+// calledFile/capturedSHA zero-valued. capturedSHA == fx.hash proves a
+// real FILE carrying the archive bytes (not a directory or empty
+// stub) was handed to VerifyFile.
+func TestInstallBinaryFallsBackToFileWhenNoReferrer(t *testing.T) {
+	fx := setupBinaryInstallTest(t)
+	stubReferrerBundle(t, func(_ context.Context, _, _, _ string) ([]byte, error) {
+		return nil, ghcr.ErrNoReferrer
+	})
+
+	blobURL := fx.blobURL()
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:            blobURL,
+				SHA256:         fx.hash,
+				Trust:          recipe.TrustSigstore,
+				ManifestDigest: fx.digest,
+			},
+		},
+	}
+
+	result, err := fx.inst.Install(r)
+	if err != nil {
+		t.Fatalf("Install error: %v", err)
+	}
+	if result.Method != MethodBinary {
+		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
+	}
+	if fx.rv.calledOCIReferrer {
+		t.Error("VerifyOCIReferrer fired despite ErrNoReferrer; " +
+			"the file fallback must not call the referrer verifier")
+	}
+	if !fx.rv.calledFile {
+		t.Fatal("VerifyFile was never called; no-referrer fallback did not fire")
+	}
+	if fx.rv.capturedIsDir {
+		t.Error("VerifyFile was handed a directory, want the teed archive file")
+	}
+	if fx.rv.capturedSHA != fx.hash {
+		t.Errorf("VerifyFile saw archive SHA256 %q, want %q "+
+			"(the teed copy of the downloaded archive bytes)",
+			fx.rv.capturedSHA, fx.hash)
+	}
+}
+
+// TestInstallBinaryFailsClosedOnReferrerVerifyError proves the
+// fallback is fail-CLOSED: once a referrer bundle is found, a real
+// VerifyOCIReferrer failure (signature mismatch) must NOT trigger the
+// file fallback, and the binary install must be rejected. After the
+// binary is rejected the installer attempts a source build; the
+// recipe's unreachable source URL makes that build fail
+// deterministically and offline. Install surfaces a non-nil error —
+// confirming the package is never installed via the unverified binary.
+//
+// Non-vacuous: if the production code fell back to VerifyFile after a
+// referrer-verify error, VerifyFile (which returns nil here) would let
+// the binary install succeed with Method == MethodBinary and err ==
+// nil, failing the assertions below.
+func TestInstallBinaryFailsClosedOnReferrerVerifyError(t *testing.T) {
+	fx := setupBinaryInstallTest(t)
+	stubReferrerBundle(t, func(_ context.Context, _, _, _ string) ([]byte, error) {
+		return []byte(`{"bundle":"data"}`), nil
+	})
+	// A genuine verification failure on the found referrer bundle.
+	fx.rv.ociErr = fmt.Errorf(
+		"attestation verification failed: signature mismatch",
+	)
+
+	blobURL := fx.blobURL()
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
+		// The source-build fallback that fires after the binary is
+		// rejected hits an unreachable URL and fails offline, keeping
+		// the test hermetic (no real upstream source fetch).
+		Source: recipe.Source{
+			URL:    "http://127.0.0.1:1/nonexistent.tar.gz",
+			SHA256: "unused",
+		},
+		Binary: map[string]recipe.Binary{
+			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
+				URL:            blobURL,
+				SHA256:         fx.hash,
+				Trust:          recipe.TrustSigstore,
+				ManifestDigest: fx.digest,
+			},
+		},
+	}
+
+	result, err := fx.inst.Install(r)
+	if !fx.rv.calledOCIReferrer {
+		t.Fatal("VerifyOCIReferrer was never called; Verifier not wired into install path")
+	}
+	if fx.rv.calledFile {
+		t.Error("VerifyFile fired after a referrer-verify error; " +
+			"fallback is not fail-closed")
+	}
+	// The binary must be rejected: either Install errors outright or,
+	// at minimum, it does not report a binary install.
+	if err == nil && result != nil && result.Method == MethodBinary {
+		t.Fatalf("install succeeded via binary despite a fail-closed "+
+			"attestation error: method=%q err=%v", result.Method, err)
+	}
+}
+
+// TestInstallBinaryEmitsAttestationTimingPhase asserts that
+// installBinaryTo wraps the attestation verification call in a
+// timing.Phase so that --verbose surfaces attestation cost.
 func TestInstallBinaryEmitsAttestationTimingPhase(t *testing.T) {
 	// No t.Parallel(): timing.SetOutput is a process-global sink.
 
@@ -3451,76 +3600,39 @@ func TestInstallBinaryEmitsAttestationTimingPhase(t *testing.T) {
 	timing.SetOutput(output.NewWithOptions(&buf, output.Options{Verbose: true}))
 	defer timing.SetOutput(nil)
 
-	fakeHome := t.TempDir()
-	t.Setenv("HOME", fakeHome)
-
-	// Build a tar.zst with a known binary.
-	binContent := "#!/bin/sh\necho from-sigstore-binary"
-	tarzst := createTestTarZstd(t, "bin/testpkg", binContent)
-	hash := hashFile(t, tarzst)
-	blobData, err := os.ReadFile(tarzst)
-	if err != nil {
-		t.Fatalf("read tar.zst: %v", err)
-	}
-
-	srv := httptest.NewTLSServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			w.Write(blobData) //nolint:errcheck
-		},
-	))
-	defer srv.Close()
-
-	restore := download.SetHTTPClient(&http.Client{
-		Transport: hostRewrite{
-			base: srv.Client().Transport,
-			host: srv.Listener.Addr().String(),
-		},
+	fx := setupBinaryInstallTest(t)
+	stubReferrerBundle(t, func(_ context.Context, _, _, _ string) ([]byte, error) {
+		return []byte(`{"bundle":"data"}`), nil
 	})
-	defer restore()
 
-	t.Setenv("GALE_GITHUB_TOKEN", "fake-token-for-test")
-
-	// VerifyFile returns nil so needAttest fires and the install
-	// succeeds via the binary path.
-	rv := &recordingVerifier{}
-
-	storeRoot := t.TempDir()
-	inst := &Installer{
-		Store:    store.NewStore(storeRoot),
-		Verifier: rv,
-	}
-
-	blobURL := fmt.Sprintf(
-		"https://ghcr.io/v2/owner/repo/testpkg/blobs/sha256:%s",
-		hash,
-	)
+	blobURL := fx.blobURL()
 	r := &recipe.Recipe{
 		Package: recipe.Package{Name: "testpkg", Version: "1.0"},
 		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
 		Binary: map[string]recipe.Binary{
 			fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH): {
-				URL:    blobURL,
-				SHA256: hash,
-				Trust:  recipe.TrustSigstore,
+				URL:            blobURL,
+				SHA256:         fx.hash,
+				Trust:          recipe.TrustSigstore,
+				ManifestDigest: fx.digest,
 			},
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := fx.inst.Install(r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
 	if result.Method != MethodBinary {
 		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
 	}
-	if !rv.called {
-		t.Fatal("VerifyFile was never called; " +
-			"Verifier not wired into install path")
+	if !fx.rv.calledOCIReferrer {
+		t.Fatal("VerifyOCIReferrer was never called; Verifier not wired into install path")
 	}
 
 	if !strings.Contains(buf.String(), "[timing] attestation") {
 		t.Errorf("expected a \"[timing] attestation\" line in timing "+
-			"output, but the attestation VerifyFile call is not wrapped "+
+			"output, but the attestation call is not wrapped "+
 			"in timing.Phase.\ntiming output:\n%s", buf.String())
 	}
 }

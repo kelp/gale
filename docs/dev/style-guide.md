@@ -56,7 +56,7 @@ mood ("Add", "Fix", "Remove", not "Added", "Fixed").
 Body (if needed): why it changed. Not how — the diff
 shows how.
 
-No emojis. No Co-Authored-By lines.
+No emojis.
 
 ## Code
 
