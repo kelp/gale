@@ -325,6 +325,85 @@ func TestFetchReferrerBundleAllFallbackSkipsBadSibling(t *testing.T) {
 	}
 }
 
+// TestFetchReferrerBundleTagSchemaFallback pins the real GHCR shape:
+// the /referrers/<digest> API 303-redirects to a backing store that
+// 404s even when a referrer exists, but the OCI tag-schema fallback
+// (/manifests/sha256-<hex>, the subject digest with ':' -> '-') serves
+// the index. gale must fall back to the tag schema and return the
+// bundle, not give up with ErrNoReferrer.
+func TestFetchReferrerBundleTagSchemaFallback(t *testing.T) {
+	bundle := []byte(`{"bundle":"viatag"}`)
+	manifestDigest := "sha256:" + strings.Repeat("a", 64)
+	tagRef := "sha256-" + strings.Repeat("a", 64)
+
+	builts, indexBytes := buildReferrers([]fixtureReferrer{
+		{artifactType: "application/vnd.dev.sigstore.bundle.v0.3+json", bundle: bundle},
+	})
+	repoPath := "kelp/gale-recipes/jq"
+
+	var gotAuth []string
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			gotAuth = append(gotAuth, r.Header.Get("Authorization"))
+			switch {
+			case r.URL.Path == "/v2/"+repoPath+"/referrers/"+manifestDigest:
+				// GHCR's broken redirect surfaces here as a 404.
+				http.Error(w, "Not Found", http.StatusNotFound)
+			case r.URL.Path == "/v2/"+repoPath+"/manifests/"+tagRef:
+				w.Write(indexBytes)
+			case strings.HasPrefix(r.URL.Path, "/v2/"+repoPath+"/manifests/"):
+				d := strings.TrimPrefix(r.URL.Path, "/v2/"+repoPath+"/manifests/")
+				for _, b := range builts {
+					if b.refDigest == d {
+						w.Write(b.refManifest)
+						return
+					}
+				}
+				http.Error(w, "no such manifest", http.StatusNotFound)
+			case strings.HasPrefix(r.URL.Path, "/v2/"+repoPath+"/blobs/"):
+				d := strings.TrimPrefix(r.URL.Path, "/v2/"+repoPath+"/blobs/")
+				for _, b := range builts {
+					if b.blobDigest == d {
+						w.Write(b.blobBody)
+						return
+					}
+				}
+				http.Error(w, "no such blob", http.StatusNotFound)
+			default:
+				http.Error(w, "unexpected "+r.URL.Path, http.StatusNotFound)
+			}
+		},
+	))
+	t.Cleanup(srv.Close)
+
+	blobURL := srv.URL + "/v2/" + repoPath + "/blobs/sha256:" + strings.Repeat("e", 64)
+	got, err := FetchReferrerBundle(context.Background(), blobURL, manifestDigest, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != string(bundle) {
+		t.Errorf("bundle = %q, want %q", got, bundle)
+	}
+	for _, a := range gotAuth {
+		if a != "" {
+			t.Errorf("expected anonymous requests, got Authorization %q", a)
+		}
+	}
+}
+
+func TestReferrersTagURLForBlob(t *testing.T) {
+	blob := "https://ghcr.io/v2/kelp/gale-recipes/jq/blobs/sha256:abc123"
+	digest := "sha256:" + strings.Repeat("d", 64)
+	got, err := ReferrersTagURLForBlob(blob, digest)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := "https://ghcr.io/v2/kelp/gale-recipes/jq/manifests/sha256-" + strings.Repeat("d", 64)
+	if got != want {
+		t.Errorf("ReferrersTagURLForBlob = %q, want %q", got, want)
+	}
+}
+
 func TestReferrersURLForBlob(t *testing.T) {
 	blob := "https://ghcr.io/v2/kelp/gale-recipes/jq/blobs/sha256:abc123"
 	digest := "sha256:" + strings.Repeat("d", 64)

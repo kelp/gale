@@ -67,6 +67,21 @@ func ReferrersURLForBlob(blobURL, manifestDigest string) (string, error) {
 	return base + "/referrers/" + manifestDigest, nil
 }
 
+// ReferrersTagURLForBlob builds the OCI referrers tag-schema fallback
+// URL: ".../manifests/sha256-<hex>" (the subject digest with ':'
+// replaced by '-'). The OCI spec defines this tag as how clients list
+// referrers on registries that do not serve the /referrers/ API.
+// GHCR's /referrers/ endpoint 303-redirects to a backing store that
+// 404s (it truncates the digest at the colon), so this tag schema is
+// the path that actually resolves referrers there.
+func ReferrersTagURLForBlob(blobURL, manifestDigest string) (string, error) {
+	base, _, ok := strings.Cut(blobURL, "/blobs/")
+	if !ok {
+		return "", fmt.Errorf("not a GHCR blob URL: %q", blobURL)
+	}
+	return base + "/manifests/" + strings.Replace(manifestDigest, ":", "-", 1), nil
+}
+
 // FetchReferrerBundle fetches the Sigstore attestation bundle(s)
 // attached as OCI referrers to the image manifest, as JSONL ready for
 // gh --bundle. blobURL is the package's ".../blobs/sha256:<hex>" URL;
@@ -75,12 +90,7 @@ func ReferrersURLForBlob(blobURL, manifestDigest string) (string, error) {
 func FetchReferrerBundle(ctx context.Context, blobURL, manifestDigest, token string) ([]byte, error) {
 	defer timing.Phase("ghcr-referrers")()
 
-	idxURL, err := ReferrersURLForBlob(blobURL, manifestDigest)
-	if err != nil {
-		return nil, err
-	}
-
-	idx, err := fetchReferrersIndex(ctx, idxURL, token)
+	idx, err := fetchReferrersIndex(ctx, blobURL, manifestDigest, token)
 	if err != nil {
 		return nil, err
 	}
@@ -128,28 +138,58 @@ func collectBundles(ctx context.Context, blobURL string, digests []string, stric
 	return out, nil
 }
 
-// fetchReferrersIndex GETs the referrers index and parses it.
-func fetchReferrersIndex(ctx context.Context, idxURL, token string) (*ociIndex, error) {
-	body, err := getOCI(ctx, idxURL, indexAccept, token)
+// fetchReferrersIndex resolves the referrers index, preferring the
+// /referrers/ API and falling back to the OCI tag schema. GHCR's API
+// 303-redirects to a store that 404s (whether or not a referrer
+// exists), so the tag schema is the path that resolves real
+// referrers; a 404 from both means no referrer.
+func fetchReferrersIndex(ctx context.Context, blobURL, manifestDigest, token string) (*ociIndex, error) {
+	apiURL, err := ReferrersURLForBlob(blobURL, manifestDigest)
 	if err != nil {
-		// GHCR 303-redirects the referrers endpoint to a backing store
-		// that 404s when a subject has no referrer; the Go client
-		// follows the redirect, so a no-referrer subject surfaces as a
-		// 404 here. Treat it as "no referrer" so verification falls
-		// back to the GitHub Attestations API file path rather than
-		// failing — which would source-build every package not yet
-		// republished with a referrer (#131).
-		var se *statusError
-		if errors.As(err, &se) && se.code == http.StatusNotFound {
-			return nil, ErrNoReferrer
+		return nil, err
+	}
+	body, err := getOCI(ctx, apiURL, indexAccept, token)
+	if err != nil {
+		if !isNotFound(err) {
+			return nil, fmt.Errorf("fetch referrers index: %w", err)
 		}
-		return nil, fmt.Errorf("fetch referrers index: %w", err)
+		// API 404 (GHCR's broken redirect): try the tag schema.
+		body, err = fetchReferrersTag(ctx, blobURL, manifestDigest, token)
+		if err != nil {
+			return nil, err
+		}
 	}
 	var idx ociIndex
 	if err := json.Unmarshal(body, &idx); err != nil {
 		return nil, fmt.Errorf("parse referrers index: %w", err)
 	}
 	return &idx, nil
+}
+
+// fetchReferrersTag GETs the OCI tag-schema referrers index. A 404
+// here means the subject truly has no referrer; verification then
+// falls back to the GitHub Attestations API file path rather than
+// failing, which would source-build every package not yet republished
+// with a referrer (#131).
+func fetchReferrersTag(ctx context.Context, blobURL, manifestDigest, token string) ([]byte, error) {
+	tagURL, err := ReferrersTagURLForBlob(blobURL, manifestDigest)
+	if err != nil {
+		return nil, err
+	}
+	body, err := getOCI(ctx, tagURL, indexAccept, token)
+	if err != nil {
+		if isNotFound(err) {
+			return nil, ErrNoReferrer
+		}
+		return nil, fmt.Errorf("fetch referrers tag: %w", err)
+	}
+	return body, nil
+}
+
+// isNotFound reports whether err is a registry 404.
+func isNotFound(err error) bool {
+	var se *statusError
+	return errors.As(err, &se) && se.code == http.StatusNotFound
 }
 
 // selectReferrers returns the referrer manifest digests to pull and
