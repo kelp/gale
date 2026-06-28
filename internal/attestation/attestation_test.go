@@ -2,6 +2,7 @@ package attestation
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kelp/gale/internal/ghcr"
 )
 
 // isolate points HOME at a tempdir so findGh's bundled
@@ -201,8 +204,8 @@ func TestVerifyFileGHNotAvailable(t *testing.T) {
 
 // TestVerifyOldGhReportsUpgradeGuidance covers the
 // defence-in-depth branch in runVerify for the case where
-// probe was bypassed (e.g. direct VerifyOCI call) and gh
-// returns "unknown command" mid-verify.
+// probe was bypassed and gh returns "unknown command"
+// mid-verify.
 func TestVerifyOldGhReportsUpgradeGuidance(t *testing.T) {
 	isolate(t)
 	origEndpoint := attestationsEndpoint
@@ -316,17 +319,14 @@ type mockOpts struct {
 	attestationHelpExit int    // exit for `gh attestation --help`
 	verifyExit          int    // exit for `gh attestation verify ...`
 	verifyStderr        string // stderr for the verify call
-	verifyOCIExit       int    // exit for verify with --bundle-from-oci
-	verifyOCIStderr     string // stderr for the OCI verify call
 	argvLog             string // if set, append each call's argv here
 }
 
 // writeMockGH creates a shell script that dispatches on
 // the second arg: "--help" returns attestationHelpExit;
 // "verify" returns verifyExit (writing verifyStderr first).
-// When --bundle-from-oci is present it returns verifyOCIExit
-// instead. Any other invocation returns the help exit code so
-// the probe stays the source of truth.
+// Any other invocation returns the help exit code so the
+// probe stays the source of truth.
 func writeMockGH(t *testing.T, opts mockOpts) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -337,13 +337,7 @@ func writeMockGH(t *testing.T, opts mockOpts) string {
 	}
 	script += "case \"$2\" in\n" +
 		"  --help) exit " + itoa(opts.attestationHelpExit) + " ;;\n" +
-		"  verify)\n" +
-		"    if echo \"$*\" | grep -q -e '--bundle-from-oci'; then\n"
-	if opts.verifyOCIStderr != "" {
-		script += "      echo '" + opts.verifyOCIStderr + "' >&2\n"
-	}
-	script += "      exit " + itoa(opts.verifyOCIExit) + "\n" +
-		"    fi\n"
+		"  verify)\n"
 	if opts.verifyStderr != "" {
 		script += "    echo '" + opts.verifyStderr + "' >&2\n"
 	}
@@ -381,77 +375,226 @@ func writeTempFile(t *testing.T, data []byte) string {
 	return f.Name()
 }
 
-func TestVerifyOCISuccess(t *testing.T) {
+// TestVerifyOCIReferrerPassesBundleArg pins the new tokenless
+// OCI contract: VerifyOCIReferrer hands gh the oci:// subject
+// plus "--bundle <path>" (an offline verify against the bundle
+// gale already fetched) and NEVER --bundle-from-oci.
+func TestVerifyOCIReferrerPassesBundleArg(t *testing.T) {
 	isolate(t)
-	mock := writeMockGH(t, mockOpts{
-		attestationHelpExit: 0,
-		verifyOCIExit:       0,
-	})
+	log := filepath.Join(t.TempDir(), "argv.log")
+	mock := writeMockGH(t, mockOpts{verifyExit: 0, argvLog: log})
 	orig := lookPath
 	lookPath = func(name string) (string, error) { return mock, nil }
 	defer func() { lookPath = orig }()
 
 	v := &GHVerifier{}
-	if err := v.VerifyOCI("oci://ghcr.io/owner/repo/img:1.0-linux-amd64", "owner/repo"); err != nil {
-		t.Errorf("expected success, got %v", err)
+	uri := "oci://ghcr.io/owner/repo/img@sha256:abc"
+	if err := v.VerifyOCIReferrer(uri, "owner/repo", []byte(`{"x":1}`)); err != nil {
+		t.Fatalf("VerifyOCIReferrer: %v", err)
+	}
+
+	argv := readFile(t, log)
+	if !strings.Contains(argv, uri) {
+		t.Errorf("argv %q missing oci subject", argv)
+	}
+	if !strings.Contains(argv, "--bundle ") {
+		t.Errorf("argv %q missing --bundle", argv)
+	}
+	if strings.Contains(argv, "--bundle-from-oci") {
+		t.Errorf("argv %q must not use --bundle-from-oci", argv)
 	}
 }
 
-func TestVerifyOCIFailure(t *testing.T) {
+// TestVerifyOCIReferrerFailurePropagates checks a real gh
+// mismatch (exit 1) surfaces as an error.
+func TestVerifyOCIReferrerFailurePropagates(t *testing.T) {
 	isolate(t)
 	mock := writeMockGH(t, mockOpts{
-		attestationHelpExit: 0,
-		verifyOCIExit:       1,
-		// Real gh 2.92.0 no-referrer output.
-		verifyOCIStderr: "no attestations found in the OCI registry",
+		verifyExit:   1,
+		verifyStderr: "verification failed",
 	})
 	orig := lookPath
 	lookPath = func(name string) (string, error) { return mock, nil }
 	defer func() { lookPath = orig }()
 
 	v := &GHVerifier{}
-	err := v.VerifyOCI("oci://ghcr.io/owner/repo/img:1.0-linux-amd64", "owner/repo")
+	err := v.VerifyOCIReferrer(
+		"oci://ghcr.io/owner/repo/img@sha256:abc",
+		"owner/repo", []byte(`{"x":1}`),
+	)
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
-	if !strings.Contains(err.Error(), "no attestations found in the OCI registry") {
-		t.Errorf("error %q missing OCI stderr", err.Error())
-	}
-	if !IsMissingOCIAttestation(err) {
-		t.Errorf("IsMissingOCIAttestation(%v) = false, want true", err)
+	if !strings.Contains(err.Error(), "verification failed") {
+		t.Errorf("error %q missing gh stderr", err.Error())
 	}
 }
 
-// TestVerifyOCIGhLacksBundleFromOCIFlag covers an old gh
-// that has the "attestation" subcommand but not the
-// --bundle-from-oci flag: gh prints "unknown flag:
-// --bundle-from-oci". gale must surface an actionable
-// upgrade message rather than the raw flag error.
-func TestVerifyOCIGhLacksBundleFromOCIFlag(t *testing.T) {
-	isolate(t)
-	mock := writeMockGH(t, mockOpts{
-		attestationHelpExit: 0,
-		verifyOCIExit:       1,
-		verifyOCIStderr:     "unknown flag: --bundle-from-oci",
-	})
-	orig := lookPath
-	lookPath = func(name string) (string, error) { return mock, nil }
-	defer func() { lookPath = orig }()
+// fakeVerifier records which Verifier methods VerifyPrebuilt
+// invokes so routing tests can assert the decision path
+// without spawning gh.
+type fakeVerifier struct {
+	ociCalled  bool
+	fileCalled bool
+	ociErr     error
+	fileErr    error
+}
 
-	v := &GHVerifier{}
-	err := v.VerifyOCI("oci://ghcr.io/owner/repo/img:1.0-linux-amd64", "owner/repo")
+func (f *fakeVerifier) Available() bool           { return true }
+func (f *fakeVerifier) UnavailableReason() string { return "" }
+
+func (f *fakeVerifier) VerifyFile(filePath, repo string) error {
+	f.fileCalled = true
+	return f.fileErr
+}
+
+func (f *fakeVerifier) VerifyOCIReferrer(ociURI, repo string, bundle []byte) error {
+	f.ociCalled = true
+	return f.ociErr
+}
+
+// TestVerifyPrebuiltUsesReferrerWhenBundleFound asserts that a
+// successful FetchBundle routes to VerifyOCIReferrer and never
+// touches the file fallback.
+func TestVerifyPrebuiltUsesReferrerWhenBundleFound(t *testing.T) {
+	fv := &fakeVerifier{}
+	archiveCalled := false
+	err := VerifyPrebuilt(fv, PrebuiltParams{
+		Repo:           "owner/repo",
+		OCIURI:         "oci://ghcr.io/owner/repo/img@sha256:abc",
+		ManifestDigest: "sha256:abc",
+		FetchBundle:    func() ([]byte, error) { return []byte(`{"x":1}`), nil },
+		Archive: func() (string, func(), error) {
+			archiveCalled = true
+			return "", nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("VerifyPrebuilt: %v", err)
+	}
+	if !fv.ociCalled {
+		t.Error("expected VerifyOCIReferrer to be called")
+	}
+	if fv.fileCalled || archiveCalled {
+		t.Error("file fallback must not run when referrer bundle found")
+	}
+}
+
+// TestVerifyPrebuiltFallsBackOnNoReferrer asserts ErrNoReferrer
+// from FetchBundle routes to the file path.
+func TestVerifyPrebuiltFallsBackOnNoReferrer(t *testing.T) {
+	fv := &fakeVerifier{}
+	err := VerifyPrebuilt(fv, PrebuiltParams{
+		Repo:           "owner/repo",
+		OCIURI:         "oci://ghcr.io/owner/repo/img@sha256:abc",
+		ManifestDigest: "sha256:abc",
+		FetchBundle:    func() ([]byte, error) { return nil, ghcr.ErrNoReferrer },
+		Archive: func() (string, func(), error) {
+			return "/tmp/archive", nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("VerifyPrebuilt: %v", err)
+	}
+	if fv.ociCalled {
+		t.Error("VerifyOCIReferrer must not run after ErrNoReferrer")
+	}
+	if !fv.fileCalled {
+		t.Error("expected VerifyFile fallback")
+	}
+}
+
+// TestVerifyPrebuiltPropagatesFetchError asserts a non-ErrNoReferrer
+// fetch error fails closed: it propagates and never falls back.
+func TestVerifyPrebuiltPropagatesFetchError(t *testing.T) {
+	fv := &fakeVerifier{}
+	want := errors.New("network down")
+	err := VerifyPrebuilt(fv, PrebuiltParams{
+		Repo:           "owner/repo",
+		OCIURI:         "oci://ghcr.io/owner/repo/img@sha256:abc",
+		ManifestDigest: "sha256:abc",
+		FetchBundle:    func() ([]byte, error) { return nil, want },
+		Archive: func() (string, func(), error) {
+			return "/tmp/archive", nil, nil
+		},
+	})
 	if err == nil {
-		t.Fatal("expected error for gh lacking --bundle-from-oci, got nil")
+		t.Fatal("expected error, got nil")
 	}
-	msg := err.Error()
-	if !strings.Contains(msg, "--bundle-from-oci") {
-		t.Errorf("error %q should name the missing flag", msg)
+	if !errors.Is(err, want) {
+		t.Errorf("error %v should wrap %v", err, want)
 	}
-	if !strings.Contains(msg, "newer gh") {
-		t.Errorf("error %q should ask for a newer gh", msg)
+	if fv.fileCalled {
+		t.Error("file fallback must not run after a non-ErrNoReferrer fetch error")
 	}
-	if !strings.Contains(msg, "gale install gh") {
-		t.Errorf("error %q missing fix suggestion", msg)
+}
+
+// TestVerifyPrebuiltFileWhenNoManifestDigest asserts an empty
+// ManifestDigest skips the referrer path entirely.
+func TestVerifyPrebuiltFileWhenNoManifestDigest(t *testing.T) {
+	fv := &fakeVerifier{}
+	fetchCalled := false
+	err := VerifyPrebuilt(fv, PrebuiltParams{
+		Repo:   "owner/repo",
+		OCIURI: "oci://ghcr.io/owner/repo/img@sha256:abc",
+		FetchBundle: func() ([]byte, error) {
+			fetchCalled = true
+			return []byte(`{"x":1}`), nil
+		},
+		Archive: func() (string, func(), error) {
+			return "/tmp/archive", nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("VerifyPrebuilt: %v", err)
+	}
+	if fetchCalled || fv.ociCalled {
+		t.Error("empty ManifestDigest must skip the referrer path")
+	}
+	if !fv.fileCalled {
+		t.Error("expected VerifyFile when ManifestDigest empty")
+	}
+}
+
+// TestVerifyPrebuiltReferrerErrorFailsClosed asserts that once a
+// referrer bundle is found, a VerifyOCIReferrer failure propagates
+// without any file fallback.
+func TestVerifyPrebuiltReferrerErrorFailsClosed(t *testing.T) {
+	want := errors.New("cert identity mismatch")
+	fv := &fakeVerifier{ociErr: want}
+	err := VerifyPrebuilt(fv, PrebuiltParams{
+		Repo:           "owner/repo",
+		OCIURI:         "oci://ghcr.io/owner/repo/img@sha256:abc",
+		ManifestDigest: "sha256:abc",
+		FetchBundle:    func() ([]byte, error) { return []byte(`{"x":1}`), nil },
+		Archive: func() (string, func(), error) {
+			return "/tmp/archive", nil, nil
+		},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("expected %v, got %v", want, err)
+	}
+	if fv.fileCalled {
+		t.Error("file fallback must not run after a found referrer fails")
+	}
+}
+
+// TestVerifyPrebuiltRunsArchiveCleanup asserts the file fallback
+// invokes the cleanup returned by Archive.
+func TestVerifyPrebuiltRunsArchiveCleanup(t *testing.T) {
+	fv := &fakeVerifier{}
+	cleaned := false
+	err := VerifyPrebuilt(fv, PrebuiltParams{
+		Repo: "owner/repo",
+		Archive: func() (string, func(), error) {
+			return "/tmp/archive", func() { cleaned = true }, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("VerifyPrebuilt: %v", err)
+	}
+	if !cleaned {
+		t.Error("expected Archive cleanup to run")
 	}
 }
 
@@ -485,35 +628,6 @@ func TestVerifyFilePassesBundleArg(t *testing.T) {
 	}
 }
 
-// TestVerifyOCIPassesBundleFromOCIArg pins the OCI argv
-// contract: the registry path uses --bundle-from-oci and
-// never the file --bundle flag.
-func TestVerifyOCIPassesBundleFromOCIArg(t *testing.T) {
-	isolate(t)
-	log := filepath.Join(t.TempDir(), "argv.log")
-	mock := writeMockGH(t, mockOpts{
-		attestationHelpExit: 0,
-		verifyOCIExit:       0,
-		argvLog:             log,
-	})
-	orig := lookPath
-	lookPath = func(name string) (string, error) { return mock, nil }
-	defer func() { lookPath = orig }()
-
-	v := &GHVerifier{}
-	if err := v.VerifyOCI("oci://ghcr.io/owner/repo/img:1.0-linux-amd64", "owner/repo"); err != nil {
-		t.Fatalf("VerifyOCI: %v", err)
-	}
-
-	argv := readFile(t, log)
-	if !strings.Contains(argv, "--bundle-from-oci") {
-		t.Errorf("argv %q missing --bundle-from-oci", argv)
-	}
-	if strings.Contains(argv, "--bundle ") {
-		t.Errorf("argv %q must not use file --bundle on OCI path", argv)
-	}
-}
-
 // readFile returns the contents of path or fails the test.
 func readFile(t *testing.T, path string) string {
 	t.Helper()
@@ -522,48 +636,6 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read argv log: %v", err)
 	}
 	return string(b)
-}
-
-func TestIsMissingOCIAttestation(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want bool
-	}{
-		{"nil", nil, false},
-		{"unrelated", fmt.Errorf("network error"), false},
-		{"missing OCI plural", fmt.Errorf("no attestations found in the OCI registry"), true},
-		// Exact real gh 2.92.0 output when the registry has no
-		// referrer, wrapped the way gale wraps gh output.
-		{
-			"gh 2.92.0 real",
-			fmt.Errorf("attestation verification failed: %s",
-				"no attestations found in the OCI registry. Retry the "+
-					"command without the --bundle-from-oci flag to check "+
-					"GitHub for the attestation"),
-			true,
-		},
-		{"wrapped missing OCI", fmt.Errorf("gh failed: %w", fmt.Errorf("no attestations found in the OCI registry")), true},
-		// False positive guard: a real verification failure whose
-		// text echoes the oci:// subject and contains "not found"
-		// must NOT be classified as a missing-registry-attestation.
-		{
-			"cert identity error echoing oci subject",
-			fmt.Errorf("attestation verification failed: %s",
-				"verifying oci://ghcr.io/kelp/gale-recipes/jq@sha256:..: "+
-					"certificate identity not found in trust policy"),
-			false,
-		},
-	}
-	for _, c := range cases {
-		c := c
-		t.Run(c.name, func(t *testing.T) {
-			t.Parallel()
-			if got := IsMissingOCIAttestation(c.err); got != c.want {
-				t.Errorf("IsMissingOCIAttestation(%v) = %v, want %v", c.err, got, c.want)
-			}
-		})
-	}
 }
 
 func TestFetchBundle(t *testing.T) {

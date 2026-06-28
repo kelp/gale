@@ -69,8 +69,9 @@ func TestIntegration(t *testing.T) {
 			return setupScript(t, env)
 		},
 		Cmds: map[string]func(ts *testscript.TestScript, neg bool, args []string){
-			"gale-fixture":    support.CmdFixture,
-			"gale-gh-returns": support.CmdGHReturns,
+			"gale-fixture":         support.CmdFixture,
+			"gale-gh-returns":      support.CmdGHReturns,
+			"gale-attest-referrer": support.CmdAttestReferrer,
 		},
 	})
 }
@@ -89,6 +90,10 @@ func setupScript(t *testing.T, env *testscript.Env) error {
 	ghcr := support.StartFakeGHCR(t, payloads)
 	env.Values["ghcr"] = ghcr
 	env.Setenv("GHCR_URL", ghcr.URL)
+	// Point gale's OCI-referrer attestation fetch (gale verify) at the
+	// fake registry so it stays hermetic. Only ghcr.BaseURL() reads
+	// this; recipe URLs use the templated __GHCR_URL__ directly.
+	env.Setenv("GALE_GHCR_URL", ghcr.URL)
 	env.Defer(ghcr.Close)
 
 	gh := support.WriteFakeGH(t, env.WorkDir)

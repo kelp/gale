@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
+	"time"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
@@ -71,24 +73,33 @@ var verifyCmd = &cobra.Command{
 			"Verifying attestation for %s@%s...", name, pkg.Version,
 		))
 
-		if err := v.VerifyOCI(
-			ociURI, attestation.DefaultRepo,
-		); err != nil {
-			if !attestation.IsMissingOCIAttestation(err) || pkg.SHA256 == "" {
-				return fmt.Errorf("verification failed: %w", err)
-			}
-			// Pre-OCI packages have their attestation in the GitHub
-			// Attestations API instead of the registry. Download the
-			// archive blob and verify it as a file.
-			out.Info("OCI attestation not found; falling back to GitHub Attestations API...")
-			archivePath, dlErr := downloadArchive(name, pkg.SHA256)
-			if dlErr != nil {
-				return fmt.Errorf("download archive for attestation fallback: %w", dlErr)
-			}
-			defer os.Remove(archivePath)
-			if err := v.VerifyFile(archivePath, attestation.DefaultRepo); err != nil {
-				return fmt.Errorf("verification failed: %w", err)
-			}
+		if err := attestation.VerifyPrebuilt(v, attestation.PrebuiltParams{
+			Repo:           attestation.DefaultRepo,
+			OCIURI:         ociURI,
+			ManifestDigest: pkg.ManifestDigest,
+			FetchBundle: func() ([]byte, error) {
+				ctx, cancel := context.WithTimeout(
+					context.Background(), 30*time.Second,
+				)
+				defer cancel()
+				token, terr := ghcr.Token(repoPath)
+				if terr != nil {
+					return nil, fmt.Errorf("fetch ghcr token: %w", terr)
+				}
+				return ghcr.FetchReferrerBundle(
+					ctx, verifyBlobURL(name, pkg.SHA256),
+					pkg.ManifestDigest, token,
+				)
+			},
+			Archive: func() (string, func(), error) {
+				archivePath, dlErr := downloadArchive(name, pkg.SHA256)
+				if dlErr != nil {
+					return "", nil, dlErr
+				}
+				return archivePath, func() { os.Remove(archivePath) }, nil
+			},
+		}); err != nil {
+			return fmt.Errorf("verification failed: %w", err)
 		}
 
 		out.Success(fmt.Sprintf(
@@ -106,10 +117,7 @@ func downloadArchive(name, sha256 string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("fetch ghcr token: %w", err)
 	}
-	blobURL := fmt.Sprintf(
-		"https://ghcr.io/v2/%s/%s/blobs/sha256:%s",
-		localGHCRBase, name, sha256,
-	)
+	blobURL := verifyBlobURL(name, sha256)
 
 	tmpDir := build.TmpDir()
 	if tmpDir == "" {
@@ -134,6 +142,17 @@ func downloadArchive(name, sha256 string) (string, error) {
 		return "", err
 	}
 	return f.Name(), nil
+}
+
+// verifyBlobURL builds the GHCR blob URL for a package's archive,
+// honoring the GALE_GHCR_URL override (via ghcr.BaseURL) so the
+// referrer fetch and the file-fallback download both reach the same
+// registry host, including a fake one in integration tests.
+func verifyBlobURL(name, sha256 string) string {
+	return fmt.Sprintf(
+		"%s/v2/%s/%s/blobs/sha256:%s",
+		ghcr.BaseURL(), localGHCRBase, name, sha256,
+	)
 }
 
 // verifyArchiveDigest checks that the file at path hashes to wantSHA

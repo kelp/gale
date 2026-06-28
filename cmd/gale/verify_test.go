@@ -9,6 +9,23 @@ import (
 	"testing"
 )
 
+func TestVerifyBlobURL(t *testing.T) {
+	t.Setenv("GALE_GHCR_URL", "")
+	const sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	got := verifyBlobURL("hello", sha)
+	want := "https://ghcr.io/v2/kelp/gale-recipes/hello/blobs/sha256:" + sha
+	if got != want {
+		t.Fatalf("verifyBlobURL = %q, want %q", got, want)
+	}
+
+	t.Setenv("GALE_GHCR_URL", "http://127.0.0.1:5555")
+	got = verifyBlobURL("hello", sha)
+	want = "http://127.0.0.1:5555/v2/kelp/gale-recipes/hello/blobs/sha256:" + sha
+	if got != want {
+		t.Fatalf("verifyBlobURL (override) = %q, want %q", got, want)
+	}
+}
+
 func TestVerifyArchiveDigest(t *testing.T) {
 	dir := t.TempDir()
 	content := []byte("gale archive bytes")

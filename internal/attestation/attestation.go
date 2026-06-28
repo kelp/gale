@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -17,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/httpclient"
 )
 
@@ -54,10 +56,11 @@ type Verifier interface {
 	// its Sigstore bundle from the public GitHub Attestations
 	// API and passing it to gh via --bundle.
 	VerifyFile(filePath, repo string) error
-	// VerifyOCI verifies an OCI image by fetching its
-	// Sigstore bundle from the OCI registry via gh
-	// --bundle-from-oci.
-	VerifyOCI(ociURI, repo string) error
+	// VerifyOCIReferrer verifies an OCI image against a Sigstore
+	// bundle that gale already fetched from the registry's OCI
+	// referrers. It writes the bundle to a temp file and runs gh
+	// offline via --bundle, which needs no GitHub token.
+	VerifyOCIReferrer(ociURI, repo string, bundle []byte) error
 }
 
 // GHVerifier implements Verifier using the gh CLI.
@@ -150,32 +153,71 @@ func (v *GHVerifier) VerifyFile(filePath, repo string) error {
 	}
 	defer os.Remove(bundleFile)
 
-	return runVerify(filePath, repo, bundleFile, false)
+	return runVerify(filePath, repo, bundleFile)
 }
 
-// VerifyOCI verifies an OCI image by fetching its
-// Sigstore bundle from the OCI registry via gh
-// --bundle-from-oci.
-func (v *GHVerifier) VerifyOCI(ociURI, repo string) error {
-	return runVerify(ociURI, repo, "", true)
-}
-
-// IsMissingOCIAttestation reports whether gh attestation verify
-// failed because the OCI registry has no attestation for the image.
-func IsMissingOCIAttestation(err error) bool {
-	if err == nil {
-		return false
+// VerifyOCIReferrer verifies an OCI image against a bundle gale
+// already fetched from the registry's OCI referrers. It writes the
+// bundle to a temp .jsonl and runs gh attestation verify <ociURI>
+// --bundle <temp>, which runs offline and needs no GitHub token.
+func (v *GHVerifier) VerifyOCIReferrer(ociURI, repo string, bundle []byte) error {
+	bundleFile, err := writeBundleTemp(bundle)
+	if err != nil {
+		return err
 	}
-	// Match the stable core of the real gh registry-missing
-	// message (gh 2.92.0): "no attestations found in the OCI
-	// registry. Retry the command without the --bundle-from-oci
-	// flag...". Requiring both "oci registry" and "no attestation"
-	// avoids misclassifying real verification failures whose text
-	// echoes the oci:// subject (e.g. "certificate identity not
-	// found in trust policy verifying oci://...").
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "oci registry") &&
-		strings.Contains(msg, "no attestation")
+	defer os.Remove(bundleFile)
+
+	return runVerify(ociURI, repo, bundleFile)
+}
+
+// PrebuiltParams routes attestation verification for a prebuilt
+// binary through one shared decision path so the installer and
+// `gale verify` never duplicate the referrer-then-file fallback.
+type PrebuiltParams struct {
+	// Repo is the GitHub repository whose attestations sign the
+	// artifact (e.g. "kelp/gale-recipes").
+	Repo string
+	// OCIURI is the oci:// reference for the manifest, pinned by
+	// digest. Required for the referrer path.
+	OCIURI string
+	// ManifestDigest is the image manifest digest. Empty disables
+	// the referrer path and goes straight to the file fallback.
+	ManifestDigest string
+	// FetchBundle fetches the Sigstore bundle from the OCI
+	// referrers. It returns ghcr.ErrNoReferrer when none exists.
+	FetchBundle func() ([]byte, error)
+	// Archive yields the local archive to verify on the file
+	// fallback, with an optional cleanup func.
+	Archive func() (path string, cleanup func(), err error)
+}
+
+// VerifyPrebuilt verifies a prebuilt binary, preferring the
+// tokenless OCI-referrer path and falling back to the GitHub
+// Attestations API file path only when no referrer exists. It
+// fails closed: once a referrer bundle is found, a verification
+// error propagates without a file fallback, and a non-ErrNoReferrer
+// fetch error propagates too.
+func VerifyPrebuilt(v Verifier, p PrebuiltParams) error {
+	if p.ManifestDigest != "" && p.OCIURI != "" && p.FetchBundle != nil {
+		bundle, err := p.FetchBundle()
+		switch {
+		case err == nil:
+			return v.VerifyOCIReferrer(p.OCIURI, p.Repo, bundle)
+		case errors.Is(err, ghcr.ErrNoReferrer):
+			// Fall through to the file path.
+		default:
+			return fmt.Errorf("fetch referrer bundle: %w", err)
+		}
+	}
+
+	path, cleanup, err := p.Archive()
+	if err != nil {
+		return fmt.Errorf("resolve attestation archive: %w", err)
+	}
+	if cleanup != nil {
+		defer cleanup()
+	}
+	return v.VerifyFile(path, p.Repo)
 }
 
 // FetchBundle downloads the Sigstore attestation bundle(s)
@@ -401,19 +443,16 @@ func findGh() (string, error) {
 	return lookPath("gh")
 }
 
-// runVerify runs gh attestation verify.
-// If bundlePath is non-empty, it passes --bundle.
-// If bundleFromOCI is true, it passes --bundle-from-oci.
-func runVerify(subject, repo, bundlePath string, bundleFromOCI bool) error {
+// runVerify runs gh attestation verify against subject, passing
+// --bundle <bundlePath> when bundlePath is non-empty.
+func runVerify(subject, repo, bundlePath string) error {
 	ghPath, err := findGh()
 	if err != nil {
 		return fmt.Errorf("gh CLI not found")
 	}
 
 	args := []string{"attestation", "verify", subject, "--repo", repo}
-	if bundleFromOCI {
-		args = append(args, "--bundle-from-oci")
-	} else if bundlePath != "" {
+	if bundlePath != "" {
 		args = append(args, "--bundle", bundlePath)
 	}
 
@@ -424,14 +463,6 @@ func runVerify(subject, repo, bundlePath string, bundleFromOCI bool) error {
 		if strings.Contains(msg, `unknown command "attestation"`) {
 			return fmt.Errorf(
 				"gh at %s lacks 'attestation' (need gh >= 2.49.0); "+
-					"install a current gh with: gale install gh",
-				ghPath,
-			)
-		}
-		if strings.Contains(msg, "unknown flag") &&
-			strings.Contains(msg, "bundle-from-oci") {
-			return fmt.Errorf(
-				"gh at %s lacks --bundle-from-oci (need a newer gh); "+
 					"install a current gh with: gale install gh",
 				ghPath,
 			)

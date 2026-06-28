@@ -7,6 +7,7 @@ package support
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/lockfile"
 	"github.com/rogpeppe/go-internal/testscript"
 )
 
@@ -186,6 +188,77 @@ func (fg *FakeGHCR) handle(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.Copy(w, f)
 }
 
+// AttestReferrer registers an OCI referrers index, a referrer
+// manifest, and a Sigstore bundle blob for the package's image
+// manifest under the kelp/gale-recipes/<name> repository path. It
+// returns the synthetic image manifest digest the caller records in
+// the lockfile so `gale verify` derives the same referrers URL.
+//
+// The bytes are minimal but shaped exactly like what gale parses:
+//   - referrers index: {"manifests":[{digest, artifactType:
+//     "application/vnd.dev.sigstore.bundle.v0.3+json"}]}
+//   - referrer manifest: {"layers":[{digest: <bundle blob digest>}]}
+//   - bundle blob: an opaque JSON bundle handed to gh via --bundle.
+func (fg *FakeGHCR) AttestReferrer(name string) (string, error) {
+	repoPath := "kelp/gale-recipes/" + name
+	base := "/v2/" + repoPath
+
+	bundle := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`)
+	bundleDigest := "sha256:" + hexSHA(bundle)
+	fg.RegisterContent(base+"/blobs/"+bundleDigest, bundle)
+
+	refManifest, err := json.Marshal(map[string]any{
+		"layers": []map[string]string{{"digest": bundleDigest}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal referrer manifest: %w", err)
+	}
+	refDigest := "sha256:" + hexSHA(refManifest)
+	fg.RegisterContent(base+"/manifests/"+refDigest, refManifest)
+
+	// The image manifest digest is synthetic: gale only uses it to
+	// build the referrers URL, never re-fetching the image manifest on
+	// the verify path. Make it deterministic from the package name.
+	manifestDigest := "sha256:" + hexSHA([]byte("image-manifest:"+name))
+	index, err := json.Marshal(map[string]any{
+		"manifests": []map[string]string{{
+			"digest":       refDigest,
+			"artifactType": "application/vnd.dev.sigstore.bundle.v0.3+json",
+			"mediaType":    "application/vnd.oci.image.manifest.v1+json",
+		}},
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal referrers index: %w", err)
+	}
+	fg.RegisterContent(base+"/referrers/"+manifestDigest, index)
+
+	return manifestDigest, nil
+}
+
+func hexSHA(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// setLockManifestDigest rewrites the lockfile so pkg carries the given
+// manifest_digest, leaving its other fields untouched.
+func setLockManifestDigest(lockPath, pkg, manifestDigest string) error {
+	lf, err := lockfile.Read(lockPath)
+	if err != nil {
+		return fmt.Errorf("read lockfile: %w", err)
+	}
+	entry, ok := lf.Packages[pkg]
+	if !ok {
+		return fmt.Errorf("package %q not in lockfile %s", pkg, lockPath)
+	}
+	entry.ManifestDigest = manifestDigest
+	lf.Packages[pkg] = entry
+	if err := lockfile.Write(lockPath, lf); err != nil {
+		return fmt.Errorf("write lockfile: %w", err)
+	}
+	return nil
+}
+
 // FakeGH is the mocked gh CLI used for attestation paths.
 // Scripts rewrite its behavior via gale-gh-returns.
 type FakeGH struct {
@@ -306,6 +379,37 @@ func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 		ghcr.RegisterContent(args[1], body)
 	default:
 		ts.Fatalf("gale-fixture: unknown subcommand %q", args[0])
+	}
+}
+
+// CmdAttestReferrer is the "gale-attest-referrer" script command.
+//
+// Usage:
+//
+//	gale-attest-referrer <package> <lockfile>
+//
+// It wires the fake GHCR to serve an OCI referrers index, a referrer
+// manifest, and a Sigstore bundle blob for <package>, then rewrites
+// <lockfile> so the package carries the matching manifest_digest. This
+// drives `gale verify` down the tokenless OCI-referrer path entirely
+// against the fake registry — no real network, no GitHub token.
+func CmdAttestReferrer(ts *testscript.TestScript, neg bool, args []string) {
+	if neg {
+		ts.Fatalf("gale-attest-referrer does not support negation")
+	}
+	if len(args) != 2 {
+		ts.Fatalf("gale-attest-referrer: needs <package> <lockfile>")
+	}
+	ghcr, _ := ts.Value("ghcr").(*FakeGHCR)
+	if ghcr == nil {
+		ts.Fatalf("gale-attest-referrer: no ghcr in env")
+	}
+	manifestDigest, err := ghcr.AttestReferrer(args[0])
+	if err != nil {
+		ts.Fatalf("gale-attest-referrer: %v", err)
+	}
+	if err := setLockManifestDigest(ts.MkAbs(args[1]), args[0], manifestDigest); err != nil {
+		ts.Fatalf("gale-attest-referrer: %v", err)
 	}
 }
 

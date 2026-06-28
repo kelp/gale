@@ -644,15 +644,7 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// opted in to sigstore (which by definition means GHCR).
 	if needAttest {
 		attestDone := timing.Phase("attestation " + pkgID)
-		ociURI := binaryOCIURI(bin, version)
-		err := v.VerifyOCI(ociURI, attestation.DefaultRepo)
-		if err != nil && attestation.IsMissingOCIAttestation(err) {
-			// Packages published before gale-recipes started pushing
-			// attestations to GHCR as OCI referrers still have their
-			// attestation in the GitHub Attestations API. Fall back
-			// to the teed archive file in that case.
-			err = v.VerifyFile(archiveOut, attestation.DefaultRepo)
-		}
+		err := verifyPrebuiltAttestation(bin, version, archiveOut, token, v)
 		attestDone()
 		if err != nil {
 			return fmt.Errorf("attestation: %w", err)
@@ -923,6 +915,35 @@ func binaryOCIURI(bin *recipe.Binary, version string) string {
 	platform := runtime.GOOS + "-" + runtime.GOARCH
 	repoPath := repoFromURL(bin.URL)
 	return attestation.OCIURI(repoPath, version, platform, bin.ManifestDigest)
+}
+
+// fetchReferrerBundle is the seam over ghcr.FetchReferrerBundle so
+// tests can stay hermetic (no real GHCR referrers API call).
+var fetchReferrerBundle = ghcr.FetchReferrerBundle
+
+// verifyPrebuiltAttestation routes a prebuilt binary's attestation
+// check through attestation.VerifyPrebuilt: the tokenless OCI-referrer
+// path first, falling back to the teed archive file only when no
+// referrer exists. archiveOut is the teed copy of the downloaded
+// archive bytes the file path verifies.
+func verifyPrebuiltAttestation(bin *recipe.Binary, version, archiveOut, token string, v attestation.Verifier) error {
+	return attestation.VerifyPrebuilt(v, attestation.PrebuiltParams{
+		Repo:           attestation.DefaultRepo,
+		OCIURI:         binaryOCIURI(bin, version),
+		ManifestDigest: bin.ManifestDigest,
+		FetchBundle: func() ([]byte, error) {
+			ctx, cancel := context.WithTimeout(
+				context.Background(), 30*time.Second,
+			)
+			defer cancel()
+			return fetchReferrerBundle(
+				ctx, bin.URL, bin.ManifestDigest, token,
+			)
+		},
+		Archive: func() (string, func(), error) {
+			return archiveOut, nil, nil
+		},
+	})
 }
 
 // InstallBuildDeps installs every declared direct
