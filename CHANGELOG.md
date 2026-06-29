@@ -13,6 +13,9 @@
 
 ### Fixed
 
+- build (Linux): skip patchelf rpath rewrites on statically linked
+  ELFs with no `DT_NEEDED` entries. patchelf can exit 0 while
+  corrupting Go binaries, causing immediate SIGSEGV on exec (#134).
 - sync: stop rebuilding a package from source on every run when an
   orphan store dir with a revision higher than the recipe's is
   present (e.g. left by a withdrawn recipe revision). A bare pin
