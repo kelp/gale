@@ -4,6 +4,8 @@
 
 ### Changed
 
+- claude-review: allow Cloud Agent (`cursor[bot]`) to trigger the
+  review workflow, replacing the temporary actor skip added in #140.
 - install/update/sync: collapse per-dylib `farm: replacing …`
   lines into a single `farm: updated <pkg>@<ver> (N dylibs)`
   summary when a revision bump overwrites same-package farm
