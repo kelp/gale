@@ -152,7 +152,8 @@ func Populate(storeDir, farmDir string) error {
 		if replaced == 1 {
 			noun = "dylib"
 		}
-		fmt.Fprintf(os.Stderr,
+		fmt.Fprintf(
+			os.Stderr,
 			"farm: updated %s@%s (%d %s)\n",
 			pkgName, pkgVer, replaced, noun,
 		)
