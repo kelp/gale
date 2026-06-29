@@ -318,21 +318,49 @@ func sortedSyncItems(pkgs map[string]string) []syncItem {
 // outer loop can dispatch it under a parallel worker pool.
 // Pure with respect to output (no fmt.Println / out.Info calls);
 // caller emits user-visible lines after the worker barrier.
+// installedStale reports whether an already-installed package must be
+// reinstalled. It evaluates staleness against the store dir a
+// reinstall writes — the recipe's canonical version-revision — not the
+// bare pin's highest on-disk revision. An orphan dir whose revision
+// exceeds the recipe's (e.g. left by a withdrawn recipe revision)
+// would otherwise shadow the rebuild target: the check reads the stale
+// orphan while Reinstall writes the recipe revision, so every sync
+// rebuilds forever (the direnv-stall loop).
+//
+// When the recipe cannot be resolved (e.g. offline) it falls back to
+// the bare resolution and reports stale only for pre-revision installs
+// missing deps metadata, so installed packages still report up to date
+// rather than churn.
+func installedStale(ctx *cmdContext, w syncItem) bool {
+	r, err := ctx.ResolveVersionedRecipe(w.name, w.version)
+	if err != nil {
+		storeDir, ok := ctx.Installer.Store.StorePath(w.name, w.version)
+		return ok && !installer.HasDepsMetadata(storeDir)
+	}
+
+	// Prefer the recipe's canonical dir; fall back to the bare
+	// resolution when that revision is not yet on disk.
+	storeDir, ok := ctx.Installer.Store.StorePath(w.name, r.Package.Full())
+	if !ok {
+		storeDir, ok = ctx.Installer.Store.StorePath(w.name, w.version)
+	}
+	if !ok {
+		return false
+	}
+	if !installer.HasDepsMetadata(storeDir) {
+		// Pre-revision install — soft migration: mark stale.
+		return true
+	}
+	stale, staleErr := installer.IsStale(storeDir, r, ctx.Resolver)
+	return staleErr == nil && stale
+}
+
 func runSyncOne(ctx *cmdContext, lf *lockfile.LockFile, w syncItem, dryRun bool) syncOutcome {
 	outcome := syncOutcome{name: w.name, version: w.version}
 
 	// Step a/b: check if already installed and whether stale.
 	if ctx.Installer.Store.IsInstalled(w.name, w.version) {
-		if storeDir, ok := ctx.Installer.Store.StorePath(w.name, w.version); ok {
-			if !installer.HasDepsMetadata(storeDir) {
-				// Pre-revision install — soft migration: mark stale.
-				outcome.stale = true
-			} else if r, err := ctx.ResolveVersionedRecipe(w.name, w.version); err == nil {
-				if s, err := installer.IsStale(storeDir, r, ctx.Resolver); err == nil {
-					outcome.stale = s
-				}
-			}
-		}
+		outcome.stale = installedStale(ctx, w)
 
 		// Step c: not stale — up to date, no install.
 		if !outcome.stale {
