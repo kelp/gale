@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Changed
+
+- install/update/sync: collapse per-dylib `farm: replacing …`
+  lines into a single `farm: updated <pkg>@<ver> (N dylibs)`
+  summary when a revision bump overwrites same-package farm
+  entries.
+
 ### Fixed
 
 - sync: stop rebuilding a package from source on every run when an

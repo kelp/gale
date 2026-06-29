@@ -431,14 +431,10 @@ Moved to gale-recipes TODO. Recipe format additions
   active set to `farm.Rebuild`. Surfaced while fixing
   the store-walking farm rebuild.
 
-- [ ] **Collapse install-time farm replace output.**
-  During a revision bump, `installer.Populate` at
-  `internal/installer/installer.go:398` prints one
-  `farm: replacing …` line per dylib. For packages like
-  postgresql or ruby that's 4+ lines per install. Replace
-  with a single summary line
-  (`farm: updated <pkg>@<ver> (N dylibs)`) so the output
-  stays scannable.
+- [x] **Collapse install-time farm replace output.**
+  During a revision bump, `farm.Populate` prints one
+  summary line (`farm: updated <pkg>@<ver> (N dylibs)`)
+  instead of a per-dylib `farm: replacing …` cascade.
 
 ## Installer Resilience
 
