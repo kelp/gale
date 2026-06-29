@@ -10,6 +10,10 @@ concurrency:
 
 jobs:
   claude-review:
+    # Cloud Agent opens PRs as cursor[bot]. claude-code-action rejects
+    # bot-initiated runs unless allowed_bots is on main; skip review
+    # on bot PRs so CI stays green. Human PRs still get review.
+    if: github.event.pull_request.user.type != 'Bot'
     # Optional: Filter by PR author
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||
@@ -37,9 +41,6 @@ jobs:
           plugin_marketplaces: 'https://github.com/anthropics/claude-code.git'
           plugins: 'code-review@claude-code-plugins'
           prompt: '/code-review:code-review ${{ github.repository }}/pull/${{ github.event.pull_request.number }}'
-          # Cloud Agent PRs are opened by cursor[bot]; allow that
-          # actor so synchronize events don't fail the check.
-          allowed_bots: "cursor"
           # See https://github.com/anthropics/claude-code-action/blob/main/docs/usage.md
           # or https://code.claude.com/docs/en/cli-reference for available options
 
