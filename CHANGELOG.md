@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- sync: stop rebuilding a package from source on every run when an
+  orphan store dir with a revision higher than the recipe's is
+  present (e.g. left by a withdrawn recipe revision). A bare pin
+  resolved staleness against the highest on-disk revision while
+  `Reinstall` wrote the recipe's revision, so the orphan was never
+  reconciled and each sync rebuilt — stalling direnv past its 2s
+  timeout. Staleness is now evaluated against the recipe's canonical
+  version-revision, the dir a reinstall actually writes (#136).
+
 ## v0.19.0 — 2026-06-28
 
 ### Added
