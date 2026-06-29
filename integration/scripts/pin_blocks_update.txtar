@@ -20,6 +20,9 @@ grep 'pinned' $WORK/proj/gale.toml
 # Bump recipe and try to update — pin must hold.
 gale-fixture render recipes-rev2/h/hello.toml.tmpl $WORK/recipes/h/hello.toml
 exec gale update hello --recipes=$WORK/recipes
+stderr 'skipping hello \(pinned\)'
+stderr 'gale switch hello'
+stderr 'gale unpin hello'
 ! exists $HOME/.gale/pkg/hello/1.0-2
 exists $HOME/.gale/pkg/hello/1.0-1
 

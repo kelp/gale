@@ -1,13 +1,59 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/kelp/gale/internal/output"
 )
+
+func TestWarnSkippingPinnedUpdate(t *testing.T) {
+	tests := []struct {
+		name       string
+		pkg        string
+		reqVersion string
+		want       []string
+	}{
+		{
+			name: "bare package names switch and unpin",
+			pkg:  "jq",
+			want: []string{
+				"skipping jq (pinned)",
+				"gale switch jq <version>",
+				"gale unpin jq",
+			},
+		},
+		{
+			name:       "explicit version points at switch",
+			pkg:        "jq",
+			reqVersion: "2.0.0",
+			want: []string{
+				"skipping jq (pinned)",
+				"gale switch jq 2.0.0",
+				"gale switch jq@2.0.0",
+				"gale unpin jq",
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			out := output.NewWithOptions(&buf, output.Options{})
+			warnSkippingPinnedUpdate(out, tt.pkg, tt.reqVersion)
+			got := buf.String()
+			for _, sub := range tt.want {
+				if !strings.Contains(got, sub) {
+					t.Errorf("message %q missing %q", got, sub)
+				}
+			}
+		})
+	}
+}
 
 func TestUpdateOrderIsDeterministic(t *testing.T) {
 	// Build a slice of names large enough that
@@ -494,5 +540,80 @@ func TestUpdatePathRespectsDryRun(t *testing.T) {
 				"want nil (dry-run must not attempt real install)",
 			err,
 		)
+	}
+}
+
+// TestUpdatePinnedPackagePrintsGuidance verifies issue #135:
+// updating a pinned package must explain how to use switch
+// or unpin instead of silently skipping.
+func TestUpdatePinnedPackagePrintsGuidance(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GALE_OFFLINE", "1")
+
+	projDir := t.TempDir()
+	configPath := filepath.Join(projDir, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  jq = \"1.7.0\"\n\n[pinned]\n  jq = true\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	recipesDir := filepath.Join(projDir, "recipes", "j")
+	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(recipesDir, "jq.toml"),
+		[]byte("[package]\nname = \"jq\"\nversion = \"1.8.0\"\n\n"+
+			"[source]\nurl = \"https://example.invalid/jq.tar.gz\"\n"+
+			"sha256 = \"deadbeef\"\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	updateRecipes = filepath.Join(projDir, "recipes")
+	updateNoRefresh = true
+	t.Cleanup(func() {
+		updateRecipes = ""
+		updateNoRefresh = false
+	})
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = oldStderr })
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- updateCmd.RunE(updateCmd, []string{"jq"})
+		w.Close()
+	}()
+
+	var stderr bytes.Buffer
+	if _, copyErr := stderr.ReadFrom(r); copyErr != nil {
+		t.Fatal(copyErr)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatalf("update pinned package failed: %v", err)
+	}
+
+	out := stderr.String()
+	for _, sub := range []string{
+		"skipping jq (pinned)",
+		"gale switch jq <version>",
+		"gale unpin jq",
+	} {
+		if !strings.Contains(out, sub) {
+			t.Errorf("stderr %q missing %q", out, sub)
+		}
 	}
 }
