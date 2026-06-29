@@ -10,6 +10,9 @@ concurrency:
 
 jobs:
   claude-review:
+    # Cloud Agent pushes to PR branches as cursor[bot]. Skip review
+    # on those events so claude-code-action doesn't reject the actor.
+    if: github.actor != 'cursor[bot]' && github.actor != 'cursor'
     # Optional: Filter by PR author
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||

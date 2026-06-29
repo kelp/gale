@@ -121,9 +121,19 @@ func TestPopulateConflictSamePackageOverwrites(t *testing.T) {
 	if err := Populate(storeOld, farmDir); err != nil {
 		t.Fatal(err)
 	}
-	if err := Populate(storeNew, farmDir); err != nil {
-		t.Fatalf("newer same-package install should succeed: %v",
-			err)
+	captured := captureStderr(t, func() {
+		if err := Populate(storeNew, farmDir); err != nil {
+			t.Fatalf("newer same-package install should succeed: %v",
+				err)
+		}
+	})
+	wantSummary := "farm: updated curl@8.19.0 (1 dylib)"
+	if !strings.Contains(captured, wantSummary) {
+		t.Errorf("stderr = %q, want substring %q",
+			captured, wantSummary)
+	}
+	if strings.Contains(captured, "replacing") {
+		t.Errorf("unexpected per-dylib output: %q", captured)
 	}
 
 	got, err := os.Readlink(filepath.Join(
@@ -138,6 +148,37 @@ func TestPopulateConflictSamePackageOverwrites(t *testing.T) {
 	if got != wantTarget {
 		t.Errorf("target = %q, want %q (newer should win)",
 			got, wantTarget)
+	}
+}
+
+func TestPopulateReplaceSummaryCollapsesMultipleDylibs(t *testing.T) {
+	root := t.TempDir()
+	farmDir := filepath.Join(root, "lib")
+	storeOld := storeLayout(t, root, "pgsql", "16.0-1",
+		[]string{
+			versionedName("libpq", "5"),
+			versionedName("libecpg", "6"),
+			versionedName("libpgtypes", "3"),
+		})
+	storeNew := storeLayout(t, root, "pgsql", "16.0-2",
+		[]string{
+			versionedName("libpq", "5"),
+			versionedName("libecpg", "6"),
+			versionedName("libpgtypes", "3"),
+		})
+
+	if err := Populate(storeOld, farmDir); err != nil {
+		t.Fatal(err)
+	}
+	captured := captureStderr(t, func() {
+		if err := Populate(storeNew, farmDir); err != nil {
+			t.Fatal(err)
+		}
+	})
+	wantSummary := "farm: updated pgsql@16.0-2 (3 dylibs)"
+	if !strings.Contains(captured, wantSummary) {
+		t.Errorf("stderr = %q, want substring %q",
+			captured, wantSummary)
 	}
 }
 

@@ -88,6 +88,8 @@ func Populate(storeDir, farmDir string) error {
 	}
 
 	pkgName := packageName(storeDir)
+	pkgVer := filepath.Base(storeDir)
+	var replaced int
 
 	for _, entry := range entries {
 		name := entry.Name()
@@ -124,9 +126,7 @@ func Populate(storeDir, farmDir string) error {
 				)
 			}
 			// Same package, different version: overwrite.
-			fmt.Fprintf(os.Stderr,
-				"farm: replacing %s: %s -> %s\n",
-				name, existing, target)
+			replaced++
 			if err := os.Remove(link); err != nil {
 				return fmt.Errorf("remove stale symlink: %w", err)
 			}
@@ -145,6 +145,18 @@ func Populate(storeDir, farmDir string) error {
 			return fmt.Errorf("create symlink %s: %w",
 				name, err)
 		}
+	}
+
+	if replaced > 0 {
+		noun := "dylibs"
+		if replaced == 1 {
+			noun = "dylib"
+		}
+		fmt.Fprintf(
+			os.Stderr,
+			"farm: updated %s@%s (%d %s)\n",
+			pkgName, pkgVer, replaced, noun,
+		)
 	}
 	return nil
 }
