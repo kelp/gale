@@ -164,6 +164,94 @@ func TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate(t *testing.T) {
 	}
 }
 
+// writeDepsWithFile writes a .gale-deps.toml into storeDir recording
+// the given resolved deps, so IsStale compares them against the
+// current recipe's resolved deps.
+func writeDepsWithFile(t *testing.T, storeDir string, deps ...installer.ResolvedDep) {
+	t.Helper()
+	if err := installer.WriteDepsMetadata(storeDir,
+		installer.DepsMetadata{Deps: deps}); err != nil {
+		t.Fatalf("writeDepsWithFile: %v", err)
+	}
+}
+
+// TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild pins the
+// fix for the infinite rebuild loop: an orphan store dir whose
+// revision exceeds the recipe's (left by a withdrawn recipe revision)
+// must NOT drive a rebuild. Staleness has to be evaluated against the
+// recipe's canonical version-revision — the dir a reinstall writes —
+// not the bare pin's highest on-disk revision.
+//
+// Setup: the recipe is revision 1 and its dep "foo" currently resolves
+// to 2.0.0-1. The canonical dir 1.0.0-1 records foo 2.0.0-1 (current →
+// not stale); an orphan 1.0.0-2 records foo 1.0.0-1 (stale). A bare
+// "1.0.0" pin resolves on disk to the orphan 1.0.0-2. Before the fix,
+// runSyncOne checked the orphan, reported stale, and reinstalled the
+// recipe revision (1.0.0-1) — which never touched the orphan, so every
+// sync rebuilt forever.
+func TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild(t *testing.T) {
+	tmp := t.TempDir()
+	storeRoot := filepath.Join(tmp, "store")
+	galeDir := filepath.Join(tmp, ".gale")
+	galePath := filepath.Join(tmp, "gale.toml")
+
+	// Canonical (recipe) revision: records the current dep → not stale.
+	canonDir := seedStore(t, storeRoot, "mypkg", "1.0.0-1")
+	writeDepsWithFile(t, canonDir, installer.ResolvedDep{
+		Name: "foo", Version: "2.0.0", Revision: 1,
+	})
+	// Orphan higher revision: records an old dep → stale. A bare pin
+	// resolves to this dir on disk.
+	orphanDir := seedStore(t, storeRoot, "mypkg", "1.0.0-2")
+	writeDepsWithFile(t, orphanDir, installer.ResolvedDep{
+		Name: "foo", Version: "1.0.0", Revision: 1,
+	})
+
+	resolver := func(name string) (*recipe.Recipe, error) {
+		switch name {
+		case "mypkg":
+			r := minimalRecipe(name, "1.0.0")
+			r.Package.Revision = 1
+			r.Dependencies.Build = []string{"foo"}
+			return r, nil
+		case "foo":
+			r := minimalRecipe(name, "2.0.0")
+			r.Package.Revision = 1
+			return r, nil
+		default:
+			return nil, errors.New("unknown package")
+		}
+	}
+
+	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
+	lf := emptyLockFile()
+	w := syncItem{name: "mypkg", version: "1.0.0"}
+
+	out := runSyncOne(ctx, lf, w, false)
+
+	if out.stale {
+		t.Error("stale = true, want false: the recipe's canonical " +
+			"revision (1.0.0-1) records the current dep; only the " +
+			"orphan 1.0.0-2 is stale and must be ignored")
+	}
+	if !out.upToDate {
+		t.Error("upToDate = false, want true: no rebuild should occur")
+	}
+	if out.result != nil {
+		t.Errorf("result = %v, want nil: no install should be attempted", out.result)
+	}
+	if out.installErr != nil {
+		t.Errorf("installErr = %v, want nil", out.installErr)
+	}
+}
+
 // TestRunSyncOneMissingFromStoreTriggersInstall verifies that when
 // a package is absent from the store, runSyncOne triggers the
 // Install path and returns a non-nil result with no installErr.
