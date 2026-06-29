@@ -10,10 +10,9 @@ concurrency:
 
 jobs:
   claude-review:
-    # Cloud Agent opens PRs as cursor[bot]. claude-code-action rejects
-    # bot-initiated runs unless allowed_bots is on main; skip review
-    # on bot PRs so CI stays green. Human PRs still get review.
-    if: github.event.pull_request.user.type != 'Bot'
+    # Cloud Agent pushes to PR branches as cursor[bot]. Skip review
+    # on those events so claude-code-action doesn't reject the actor.
+    if: github.actor != 'cursor[bot]' && github.actor != 'cursor'
     # Optional: Filter by PR author
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||
