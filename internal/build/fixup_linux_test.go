@@ -466,3 +466,119 @@ func TestRelocateStaleRpathsRewritesAbsoluteStoreRpath(t *testing.T) {
 			want, rpAfter)
 	}
 }
+
+// buildStaticBinary links a trivial statically-linked ELF under
+// pkgDir/bin/ and returns its path.
+func buildStaticBinary(t *testing.T, pkgDir string) string {
+	t.Helper()
+	binDir := filepath.Join(pkgDir, "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mainSrc := filepath.Join(pkgDir, "main.c")
+	if err := os.WriteFile(mainSrc,
+		[]byte("int main(void){return 0;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "app")
+	if out, err := exec.Command(
+		"cc", "-static", "-o", binPath, mainSrc,
+	).CombinedOutput(); err != nil {
+		t.Skipf("cc -static failed: %v\n%s", err, out)
+	}
+	return binPath
+}
+
+// TestFixupBinariesSkipsStaticELF guards issue #134: patchelf can
+// exit 0 while corrupting a static Go (or cc -static) binary. ELFs
+// with no DT_NEEDED must pass through FixupBinaries byte-for-byte
+// and still execute.
+func TestFixupBinariesSkipsStaticELF(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available")
+	}
+
+	pkgDir := t.TempDir()
+	binPath := buildStaticBinary(t, pkgDir)
+
+	before, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := FixupBinaries(pkgDir); err != nil {
+		t.Fatalf("FixupBinaries: %v", err)
+	}
+
+	after, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("FixupBinaries mutated a static ELF (%d -> %d bytes)",
+			len(before), len(after))
+	}
+
+	out, err := exec.Command(binPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("static binary failed after FixupBinaries: %v\n%s",
+			err, out)
+	}
+}
+
+// TestAddDepRpathsSkipsStaticELF is the AddDepRpaths mirror of
+// issue #134: a static binary under a prefix with dep libs present
+// must not be touched.
+func TestAddDepRpathsSkipsStaticELF(t *testing.T) {
+	if _, err := exec.LookPath("patchelf"); err != nil {
+		t.Skip("patchelf not available")
+	}
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available")
+	}
+
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	if err := os.MkdirAll(depLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void){return 7;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylib := filepath.Join(depLib, "libdep.so")
+	if out, err := exec.Command(
+		"cc", "-shared", "-fPIC",
+		"-Wl,-soname,libdep.so", "-o", dylib, libSrc,
+	).CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	pkgDir := t.TempDir()
+	binPath := buildStaticBinary(t, pkgDir)
+
+	before, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+		t.Fatalf("AddDepRpaths: %v", err)
+	}
+
+	after, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("AddDepRpaths mutated a static ELF (%d -> %d bytes)",
+			len(before), len(after))
+	}
+
+	out, err := exec.Command(binPath).CombinedOutput()
+	if err != nil {
+		t.Fatalf("static binary failed after AddDepRpaths: %v\n%s",
+			err, out)
+	}
+}

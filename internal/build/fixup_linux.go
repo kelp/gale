@@ -3,6 +3,7 @@
 package build
 
 import (
+	"debug/elf"
 	"fmt"
 	"os"
 	"os/exec"
@@ -30,6 +31,24 @@ func isELF(path string) bool {
 		magic[1] == elfMagic[1] &&
 		magic[2] == elfMagic[2] &&
 		magic[3] == elfMagic[3]
+}
+
+// elfHasDynamicDeps reports whether path is an ELF that links
+// against shared libraries at runtime (has DT_NEEDED entries).
+// Statically linked binaries — including Go builds with no cgo
+// deps — return false; patchelf must not rewrite them because it
+// can corrupt the layout even when it exits 0 (#134). When the
+// file cannot be parsed as ELF, return true so patchelf decides
+// (preserves prior behavior for truncated or special files).
+func elfHasDynamicDeps(path string) bool {
+	f, err := elf.Open(path)
+	if err != nil {
+		return true
+	}
+	defer f.Close()
+
+	needed, err := f.DynString(elf.DT_NEEDED)
+	return err == nil && len(needed) > 0
 }
 
 // walkPrefixELF calls fn for every regular ELF file under
@@ -79,6 +98,9 @@ func FixupBinaries(prefixDir string) error {
 	}
 
 	for _, file := range files {
+		if !elfHasDynamicDeps(file) {
+			continue
+		}
 		// Set rpath to find libs relative to the binary.
 		// $ORIGIN is the directory containing the binary;
 		// the depth-aware path reaches <prefix>/lib from
@@ -170,6 +192,9 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 	// components are computed per file so deeper layouts
 	// (libexec/git-core/, sbin/) get the right $ORIGIN depth.
 	_ = walkPrefixELF(prefixDir, func(path string) {
+		if !elfHasDynamicDeps(path) {
+			return
+		}
 		// The own-lib rpath reaches the package's own libs;
 		// the relative farm rpath reaches dep dylibs via
 		// <galeDir>/lib. Both relative — nothing absolute.
@@ -177,7 +202,7 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 			relativeFarmRpathLinux(prefixDir, path)
 		cmd := exec.Command(patchelf,
 			"--set-rpath", rpath, path)
-		_ = cmd.Run() // skip errors (static binaries)
+		_ = cmd.Run() // skip errors on special ELF files
 	})
 
 	return nil
@@ -205,6 +230,9 @@ func RelocateStaleRpaths(prefixDir, storeRoot string) error {
 	currentFarmDir := filepath.Join(galeDir, "lib")
 
 	_ = walkPrefixELF(prefixDir, func(path string) {
+		if !elfHasDynamicDeps(path) {
+			return
+		}
 		// Read current rpath.
 		cmd := exec.Command(patchelf,
 			"--print-rpath", path)
