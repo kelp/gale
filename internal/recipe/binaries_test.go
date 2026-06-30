@@ -772,6 +772,22 @@ func TestPickHistoryEmpty(t *testing.T) {
 	}
 }
 
+func TestPickHistoryBarePrefersHighestRevision(t *testing.T) {
+	idx := &BinaryIndex{
+		History: []BinaryHistoryEntry{
+			{Version: "1.8.1", Platforms: map[string]string{"linux-amd64": "baresha"}},
+			{Version: "1.8.1-5", Platforms: map[string]string{"linux-amd64": "revsha"}},
+		},
+	}
+	entry, ok := idx.PickHistory("1.8.1")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if entry.Version != "1.8.1-5" {
+		t.Errorf("Version = %q, want 1.8.1-5 (highest revision, not legacy bare)", entry.Version)
+	}
+}
+
 func TestParseBinaryIndexHistoryDropsMalformed(t *testing.T) {
 	idx, err := ParseBinaryIndex(malformedHistoryBinariesTOML)
 	if err != nil {

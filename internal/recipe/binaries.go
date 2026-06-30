@@ -287,6 +287,23 @@ func (idx *BinaryIndex) PickHistory(requested string) (BinaryHistoryEntry, bool)
 	if !ok {
 		return BinaryHistoryEntry{}, false
 	}
+	// Legacy ledger entries may carry both a bare key (pre-
+	// revision CI) and revision-qualified re-publishes. A bare
+	// pin means highest revision for that base — bump past an
+	// exact bare match when a higher "<base>-<N>" key exists.
+	if !version.HasRevisionSuffix(requested) {
+		var sameBase []string
+		for _, k := range keys {
+			base, _ := version.SplitRevision(k)
+			if base == requested {
+				sameBase = append(sameBase, k)
+			}
+		}
+		if latest, ok := version.Latest(sameBase); ok &&
+			version.KeyNewer(latest, matched) {
+			matched = latest
+		}
+	}
 	for _, e := range idx.History {
 		if e.Version == matched {
 			return e, true

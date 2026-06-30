@@ -592,10 +592,10 @@ linux-amd64 = { sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455
 `
 
 	srv := httptest.NewServer(fileHandler(map[string]string{
-		"/recipes/j/jq.versions":              versionsBody,
-		"/recipes/j/jq.toml":                  ledgerRecipeRev5,
-		"/recipes/j/jq.binaries.toml":         ledgerDarwinOnly,
-		"/" + commit + "/recipes/j/jq.toml":   histRecipe,
+		"/recipes/j/jq.versions":            versionsBody,
+		"/recipes/j/jq.toml":                ledgerRecipeRev5,
+		"/recipes/j/jq.binaries.toml":       ledgerDarwinOnly,
+		"/" + commit + "/recipes/j/jq.toml": histRecipe,
 	}))
 	defer srv.Close()
 
