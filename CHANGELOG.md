@@ -16,6 +16,10 @@
 
 ### Fixed
 
+- registry: resolve historical `@version` installs from the
+  `[[history]]` ledger in `.binaries.toml`, not the `.versions`
+  commit-pin file. Unblocks the gale-recipes `.versions` cutover
+  (#130).
 - build (Linux): skip patchelf rpath rewrites on statically linked
   ELFs with no `DT_NEEDED` entries. patchelf can exit 0 while
   corrupting Go binaries, causing immediate SIGSEGV on exec (#134).

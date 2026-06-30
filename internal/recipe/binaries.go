@@ -271,6 +271,38 @@ func (idx *BinaryIndex) PickHistoryLatest() (BinaryHistoryEntry, bool) {
 	return BinaryHistoryEntry{}, false
 }
 
+// PickHistory resolves requested against all [[history]] entries
+// using version.Pick (exact match, bare→highest revision,
+// "-1"→bare). Returns false when the ledger is empty or nothing
+// matches.
+func (idx *BinaryIndex) PickHistory(requested string) (BinaryHistoryEntry, bool) {
+	if len(idx.History) == 0 {
+		return BinaryHistoryEntry{}, false
+	}
+	keys := make([]string, len(idx.History))
+	for i, e := range idx.History {
+		keys[i] = e.Version
+	}
+	matched, ok := version.Pick(keys, requested)
+	if !ok {
+		return BinaryHistoryEntry{}, false
+	}
+	for _, e := range idx.History {
+		if e.Version == matched {
+			return e, true
+		}
+	}
+	return BinaryHistoryEntry{}, false
+}
+
+// ApplyHistoryVersion sets r.Package.Version and Revision from a
+// [[history]] ledger entry key (e.g. "1.7.1-1", "1.8.1-5").
+func ApplyHistoryVersion(r *Recipe, ledgerVersion string) {
+	base, rev := version.SplitRevision(ledgerVersion)
+	r.Package.Version = base
+	r.Package.Revision = rev
+}
+
 // MergeBinaries populates a recipe's Binary map from a
 // BinaryIndex. If the index is nil or its version doesn't
 // match the recipe version (stale), this is a no-op.

@@ -42,6 +42,12 @@ func IsNewer(candidate, current string) bool {
 	return cRev > iRev
 }
 
+// SplitRevision parses a version key into (base, revision). A
+// missing or non-numeric "-N" suffix leaves revision at 1.
+func SplitRevision(v string) (base string, revision int) {
+	return splitRevision(v)
+}
+
 // splitRevision peels a numeric `-<N>` suffix off the end of v
 // and returns (base, revision). A missing or non-numeric
 // suffix leaves v untouched and revision defaults to 1

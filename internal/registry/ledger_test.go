@@ -32,6 +32,8 @@ manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9
 [[history]]
 version = "1.7.1-1"
 darwin-arm64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111", manifest_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+linux-amd64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111", manifest_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+linux-arm64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111", manifest_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
 
 [[history]]
 version = "1.8.1-5"
@@ -495,24 +497,13 @@ func TestFetchRecipeVersionInlineRefTipDefersToVersions(t *testing.T) {
 	}
 }
 
-// A historical version (not the ledger head) is resolved via the
-// .versions commit-pin path, fetching the recipe at the pinned
-// commit — NOT the ref-tip recipe.
-func TestFetchRecipeVersionHistoricalUsesVersions(t *testing.T) {
-	commit := "fedcba9876543210fedcba9876543210fedcba98"
-	versionsBody := "1.7.1-1 " + commit + "\n1.8.1-5 " +
-		"abc1234def5678901234567890abcdef12345678\n"
-
-	// Pinned commit serves the historical recipe (version 1.7.1).
-	histRecipe := strings.Replace(recipeNoBinaries,
-		`version = "1.8.1"`, `version = "1.7.1"`, 1)
-
+// A historical version resolves from the [[history]] ledger when
+// present — no .versions file required (gh#130).
+func TestFetchRecipeVersionHistoricalUsesLedger(t *testing.T) {
 	srv := httptest.NewServer(fileHandler(map[string]string{
-		"/recipes/j/jq.versions":            versionsBody,
-		"/recipes/j/jq.toml":                ledgerRecipeRev5,
-		"/recipes/j/jq.binaries.toml":       ledgerBinariesToml,
-		"/" + commit + "/recipes/j/jq.toml": histRecipe,
-		// no binaries at the pinned commit → source build, fine here.
+		"/recipes/j/jq.toml":          ledgerRecipeRev5,
+		"/recipes/j/jq.binaries.toml": ledgerBinariesToml,
+		// No .versions served: historical must resolve from ledger.
 	}))
 	defer srv.Close()
 
@@ -522,7 +513,52 @@ func TestFetchRecipeVersionHistoricalUsesVersions(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if rec.Package.Version != "1.7.1" {
-		t.Fatalf("version = %q, want 1.7.1 (used ref-tip recipe instead "+
-			"of the pinned commit?)", rec.Package.Version)
+		t.Fatalf("version = %q, want 1.7.1", rec.Package.Version)
+	}
+	if rec.Package.Revision != 1 {
+		t.Fatalf("revision = %d, want 1", rec.Package.Revision)
+	}
+	b, ok := rec.Binary[ledgerPlatform()]
+	if !ok {
+		t.Fatalf("no binary for %s", ledgerPlatform())
+	}
+	if !strings.HasPrefix(b.SHA256, "1111") {
+		t.Errorf("SHA256 = %q, want 1.7.1 ledger sha (1111...)", b.SHA256)
+	}
+}
+
+// When the ledger has no matching entry, FetchRecipeVersion falls
+// back to the .versions commit-pin path.
+func TestFetchRecipeVersionHistoricalFallsBackToVersions(t *testing.T) {
+	commit := "fedcba9876543210fedcba9876543210fedcba98"
+	versionsBody := "1.7.1-1 " + commit + "\n1.8.1-5 " +
+		"abc1234def5678901234567890abcdef12345678\n"
+
+	histRecipe := strings.Replace(recipeNoBinaries,
+		`version = "1.8.1"`, `version = "1.7.1"`, 1)
+
+	// Ledger fixture has 1.7.1-1; serve a ledger without it.
+	ledgerNoHist := `version = "1.8.1-5"
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089", manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b" }
+`
+
+	srv := httptest.NewServer(fileHandler(map[string]string{
+		"/recipes/j/jq.versions":            versionsBody,
+		"/recipes/j/jq.toml":                ledgerRecipeRev5,
+		"/recipes/j/jq.binaries.toml":       ledgerNoHist,
+		"/" + commit + "/recipes/j/jq.toml": histRecipe,
+	}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.7.1" {
+		t.Fatalf("version = %q, want 1.7.1 (.versions fallback)", rec.Package.Version)
 	}
 }
