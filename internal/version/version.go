@@ -22,8 +22,8 @@ import (
 // IsNewer reports whether candidate is strictly newer than
 // current. See the package comment for the ordering rules.
 func IsNewer(candidate, current string) bool {
-	cBase, cRev := splitRevision(candidate)
-	iBase, iRev := splitRevision(current)
+	cBase, cRev := SplitRevision(candidate)
+	iBase, iRev := SplitRevision(current)
 
 	cv := "v" + cBase
 	iv := "v" + iBase
@@ -42,11 +42,11 @@ func IsNewer(candidate, current string) bool {
 	return cRev > iRev
 }
 
-// splitRevision peels a numeric `-<N>` suffix off the end of v
+// SplitRevision peels a numeric `-<N>` suffix off the end of v
 // and returns (base, revision). A missing or non-numeric
 // suffix leaves v untouched and revision defaults to 1
 // (matching recipe parsing: an absent or <= 0 revision means 1).
-func splitRevision(v string) (base string, revision int) {
+func SplitRevision(v string) (base string, revision int) {
 	dash := strings.LastIndexByte(v, '-')
 	if dash < 0 {
 		return v, 1

@@ -40,6 +40,29 @@ linux-amd64 = { sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455
 linux-arm64 = { sha256 = "62a2c004ef2ed6f2c17cf94e61598f82c717a79b3f648392a5f467fee2b0e4da", manifest_digest = "sha256:148c92fbecb0938286cb1a46791de4a7cf230b0bbda90fe0fd4719577a2ef0ef" }
 `
 
+// A ref-tip .binaries.toml whose [[history]] ledger covers the
+// historical 1.7.1-1 across every platform, so a historical-version
+// resolution finds a binary regardless of host arch (gh#130). The
+// 1.7.1-1 shas are a distinct "1717…" sentinel.
+const ledgerBinariesHistoryFull = `version = "1.8.1-5"
+
+[darwin-arm64]
+sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089"
+manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b"
+
+[[history]]
+version = "1.7.1-1"
+darwin-arm64 = { sha256 = "1717171717171717171717171717171717171717171717171717171717171717", manifest_digest = "sha256:1717171717171717171717171717171717171717171717171717171717171717" }
+linux-amd64 = { sha256 = "1717171717171717171717171717171717171717171717171717171717171717", manifest_digest = "sha256:1717171717171717171717171717171717171717171717171717171717171717" }
+linux-arm64 = { sha256 = "1717171717171717171717171717171717171717171717171717171717171717", manifest_digest = "sha256:1717171717171717171717171717171717171717171717171717171717171717" }
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089", manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b" }
+linux-amd64 = { sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455bc55d74788", manifest_digest = "sha256:9f35d79850663818a8be0eca27bb9680af73b3c6a79d08f17c49d5f336bc4ac0" }
+linux-arm64 = { sha256 = "62a2c004ef2ed6f2c17cf94e61598f82c717a79b3f648392a5f467fee2b0e4da", manifest_digest = "sha256:148c92fbecb0938286cb1a46791de4a7cf230b0bbda90fe0fd4719577a2ef0ef" }
+`
+
 // ledgerPlatform returns a platform present in the ledger fixture
 // so the test asserts a binary regardless of host arch.
 func ledgerPlatform() string {
@@ -524,5 +547,99 @@ func TestFetchRecipeVersionHistoricalUsesVersions(t *testing.T) {
 	if rec.Package.Version != "1.7.1" {
 		t.Fatalf("version = %q, want 1.7.1 (used ref-tip recipe instead "+
 			"of the pinned commit?)", rec.Package.Version)
+	}
+}
+
+// A historical version resolves from the [[history]] ledger when no
+// .versions index is served, so installs keep working after the
+// .versions bridge is retired (gh#130). The ref-tip recipe (head
+// 1.8.1-5) is retagged to the requested historical version and the
+// matching ledger entry's prebuilt binary is merged. Both the bare
+// base ("1.7.1") and the exact ("1.7.1-1") request forms resolve.
+func TestFetchRecipeVersionHistoricalFromLedgerNoVersions(t *testing.T) {
+	for _, requested := range []string{"1.7.1", "1.7.1-1"} {
+		t.Run(requested, func(t *testing.T) {
+			srv := httptest.NewServer(fileHandler(map[string]string{
+				"/recipes/j/jq.toml":          ledgerRecipeRev5,
+				"/recipes/j/jq.binaries.toml": ledgerBinariesHistoryFull,
+				// No jq.versions served: resolution must use the ledger.
+			}))
+			defer srv.Close()
+
+			reg := testRegistry(srv.URL)
+			rec, err := reg.FetchRecipeVersion("jq", requested)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if rec.Package.Version != "1.7.1" || rec.Package.Revision != 1 {
+				t.Fatalf("version = %s-%d, want 1.7.1-1",
+					rec.Package.Version, rec.Package.Revision)
+			}
+			b, ok := rec.Binary[ledgerPlatform()]
+			if !ok {
+				t.Fatalf("no binary for %s", ledgerPlatform())
+			}
+			// Must be the 1.7.1-1 ledger sha, not the head 1.8.1-5 one.
+			if !strings.HasPrefix(b.SHA256, "1717") {
+				t.Errorf("SHA256 = %q, want the 1.7.1-1 ledger sha (1717…)",
+					b.SHA256)
+			}
+			if !strings.HasPrefix(b.URL, "https://ghcr.io/v2/") {
+				t.Errorf("URL = %q, want a GHCR blob URL", b.URL)
+			}
+			if b.ManifestDigest == "" {
+				t.Error("ManifestDigest empty, want it set from the ledger")
+			}
+		})
+	}
+}
+
+// When .versions IS served, a historical version still resolves via
+// the commit-pin path (the historically-correct recipe body), not the
+// ledger fallback — the ledger only kicks in once .versions is gone
+// (gh#130). Guards the precedence ordering in FetchRecipeVersion.
+func TestFetchRecipeVersionHistoricalPrefersVersionsOverLedger(t *testing.T) {
+	commit := "fedcba9876543210fedcba9876543210fedcba98"
+	versionsBody := "1.7.1-1 " + commit + "\n1.8.1-5 " +
+		"abc1234def5678901234567890abcdef12345678\n"
+	histRecipe := strings.Replace(recipeNoBinaries,
+		`version = "1.8.1"`, `version = "1.7.1"`, 1)
+
+	srv := httptest.NewServer(fileHandler(map[string]string{
+		"/recipes/j/jq.versions":            versionsBody,
+		"/recipes/j/jq.toml":                ledgerRecipeRev5,
+		"/recipes/j/jq.binaries.toml":       ledgerBinariesHistoryFull,
+		"/" + commit + "/recipes/j/jq.toml": histRecipe,
+		// No binaries at the pinned commit → source build (no 1717 sha).
+	}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The commit-pin recipe has no binary; if the ledger fallback had
+	// fired we'd see the 1717 sentinel binary instead.
+	if _, ok := rec.Binary[ledgerPlatform()]; ok {
+		t.Errorf("got a ledger binary; want the .versions commit-pin " +
+			"recipe (ledger fallback fired despite .versions present)")
+	}
+}
+
+// When neither .versions nor the [[history]] ledger carries the
+// requested version, resolution fails rather than silently
+// succeeding (gh#130).
+func TestFetchRecipeVersionUnknownNoVersionsNoLedger(t *testing.T) {
+	srv := httptest.NewServer(fileHandler(map[string]string{
+		"/recipes/j/jq.toml":          ledgerRecipeRev5,
+		"/recipes/j/jq.binaries.toml": ledgerBinariesHistoryFull,
+	}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	if _, err := reg.FetchRecipeVersion("jq", "9.9.9"); err == nil {
+		t.Fatal("expected error for a version absent from both " +
+			".versions and the ledger")
 	}
 }

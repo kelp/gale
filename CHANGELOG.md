@@ -4,6 +4,13 @@
 
 ### Changed
 
+- registry: resolve a historical `@version` install from the
+  `.binaries.toml` `[[history]]` ledger when no `.versions` index
+  is available, retagging the ref-tip recipe to the requested
+  version and pulling its digest-pinned prebuilt. `.versions` is
+  still preferred while present (for the historically-correct
+  recipe body); the ledger fallback is what lets the `.versions`
+  bridge be retired (#130, #121 item 3).
 - claude-review: allow Cloud Agent (`cursor[bot]`) to trigger the
   review workflow, replacing the temporary actor skip added in #140.
 - install/update/sync: collapse per-dylib `farm: replacing …`

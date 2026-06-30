@@ -17,8 +17,8 @@ import (
 // non-semver strings — a max-selection loop over map keys needs a
 // deterministic order or it degenerates to last-key-wins (gh#58).
 func KeyNewer(a, b string) bool {
-	aBase, aRev := splitRevision(a)
-	bBase, bRev := splitRevision(b)
+	aBase, aRev := SplitRevision(a)
+	bBase, bRev := SplitRevision(b)
 	if aBase != bBase {
 		av, bv := "v"+aBase, "v"+bBase
 		if semver.IsValid(av) && semver.IsValid(bv) {

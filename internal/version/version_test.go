@@ -74,10 +74,10 @@ func TestSplitRevision(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.v, func(t *testing.T) {
-			base, rev := splitRevision(tt.v)
+			base, rev := SplitRevision(tt.v)
 			if base != tt.wantBase || rev != tt.wantRev {
 				t.Errorf(
-					"splitRevision(%q) = (%q, %d), want (%q, %d)",
+					"SplitRevision(%q) = (%q, %d), want (%q, %d)",
 					tt.v, base, rev, tt.wantBase, tt.wantRev,
 				)
 			}

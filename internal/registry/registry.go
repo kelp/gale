@@ -450,9 +450,13 @@ func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe,
 	return rec, nil
 }
 
-// FetchRecipeVersion fetches a recipe at a specific version
-// by looking up the commit hash in the .versions index, then
-// fetching the recipe at that commit.
+// FetchRecipeVersion fetches a recipe at a specific version. The
+// head version resolves from the [[history]] ledger; a historical
+// version prefers the .versions commit-pin path (which carries the
+// historically-correct recipe body) and, when no .versions index is
+// available, falls back to synthesizing a binary recipe from the
+// matching ledger entry (gh#130) — the path that survives the
+// .versions cutover.
 func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, error) {
 	if err := ValidName(name); err != nil {
 		return nil, err
@@ -461,14 +465,36 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	defer timing.Phase(fmt.Sprintf("recipe-fetch %s@%s", name, version))()
 
 	// Ledger-first (gh#121), but only for the head version: the
-	// ledger records no per-entry commit, so historical versions
-	// still need the .versions commit-pin path for their
+	// ledger records no per-entry commit, so a historical version
+	// prefers the .versions commit-pin path for its
 	// historically-correct recipe (deps, build steps).
 	if rec, ok := r.fetchVersionFromLedger(name, version); ok {
 		return rec, nil
 	}
 
-	// Fetch the versions index.
+	rec, err := r.fetchVersionFromVersionsIndex(name, version)
+	if err == nil {
+		return rec, nil
+	}
+
+	// No usable .versions index (absent, unparseable, or lacking the
+	// requested version): fall back to the [[history]] ledger so
+	// historical installs keep working after the .versions bridge is
+	// retired (gh#130). On a ledger miss, surface the original
+	// .versions error rather than a less specific one.
+	if hrec, ok := r.fetchHistoricalFromLedger(name, version); ok {
+		return hrec, nil
+	}
+	return nil, err
+}
+
+// fetchVersionFromVersionsIndex resolves a specific version through
+// the .versions commit-pin index: it looks up the commit for the
+// requested version, then fetches the recipe and its binary index
+// pinned to that single immutable commit so a pinned install
+// resolves a consistent recipe+binary pair. Returns an error when
+// the index is unreachable, unparseable, or lacks the version.
+func (r *Registry) fetchVersionFromVersionsIndex(name, version string) (*recipe.Recipe, error) {
 	bucket := string(name[0])
 	indexURL := fmt.Sprintf("%s/recipes/%s/%s.versions",
 		r.BaseURL, bucket, name)
@@ -500,13 +526,13 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	// Fetch recipe at the specific commit. BaseURL already
 	// includes the ref (e.g. "/main") for the .versions index
 	// above; for a per-commit fetch we substitute the commit
-	// for that ref segment.
+	// for that ref segment. Reuse the same context — both fetches
+	// share the 30s budget, which is intentional: a slow
+	// versions-index fetch should not extend the per-call deadline
+	// for the follow-up recipe fetch.
 	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
 		r.repoBase(), commit, bucket, name)
 
-	// Reuse the same context — both fetches share the 30s budget,
-	// which is intentional: a slow versions-index fetch should not
-	// extend the per-call deadline for the follow-up recipe fetch.
 	rcr, err := r.cachedGet(ctx, recipeURL)
 	if err != nil {
 		return nil, fmt.Errorf(
@@ -564,6 +590,68 @@ func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recip
 		return nil, false
 	}
 	return rec, true
+}
+
+// fetchHistoricalFromLedger synthesizes a recipe for a historical
+// (non-head) version from the [[history]] ledger, the fallback used
+// when no .versions index is available (gh#130). It retags the
+// ref-tip recipe to the resolved historical version and merges that
+// ledger entry's prebuilt binary, so the install resolves the same
+// store path and digest-pinned artifact a .versions-pinned install
+// would. The ref-tip recipe body (source URL, build steps) is for
+// the head version, so a source-build fallback for a historical
+// version is best-effort — the supported route is the prebuilt
+// binary by digest, which is byte-identical either way. Returns
+// ok=false when the ledger lacks the version or yields no binary, so
+// the caller surfaces the original .versions error.
+func (r *Registry) fetchHistoricalFromLedger(name, requested string) (*recipe.Recipe, bool) {
+	idx, err := r.fetchBinaries(name)
+	if err != nil || idx == nil || len(idx.History) == 0 {
+		return nil, false
+	}
+	entry, ok := pickHistoryEntry(idx, requested)
+	if !ok {
+		return nil, false
+	}
+	rec, err := r.fetchRecipe(name, false)
+	if err != nil {
+		return nil, false
+	}
+	// Retag the ref-tip recipe to the resolved historical version so
+	// both the store path (Package.Full) and the binary version-gate
+	// (binaryIndexMatchesRecipe) key off it. Clear any inline ref-tip
+	// binaries first — they belong to the head version.
+	base, rev := version.SplitRevision(entry.Version)
+	rec.Package.Version = base
+	rec.Package.Revision = rev
+	rec.Binary = nil
+	recipe.MergeBinariesFromHistory(rec, entry, ghcrBaseFromURL(r.BaseURL))
+	if len(rec.Binary) == 0 {
+		return nil, false
+	}
+	return rec, true
+}
+
+// pickHistoryEntry resolves requested against the ledger's history
+// versions (via version.Pick: exact, bare base → highest revision,
+// and "-1" → bare legacy entry) and returns the matching entry.
+func pickHistoryEntry(
+	idx *recipe.BinaryIndex, requested string,
+) (recipe.BinaryHistoryEntry, bool) {
+	versions := make([]string, len(idx.History))
+	for i, e := range idx.History {
+		versions[i] = e.Version
+	}
+	resolved, ok := version.Pick(versions, requested)
+	if !ok {
+		return recipe.BinaryHistoryEntry{}, false
+	}
+	for _, e := range idx.History {
+		if e.Version == resolved {
+			return e, true
+		}
+	}
+	return recipe.BinaryHistoryEntry{}, false
 }
 
 // fetchBinaries fetches the .binaries.toml file for a package
