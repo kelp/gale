@@ -141,7 +141,7 @@ func TestGenerationDriftedFalseWhenConfigUnchanged(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	if generationDrifted(galeDir, storeRoot, pkgs) {
+	if generationDrifted(galeDir, storeRoot, pkgs, nil) {
 		t.Error("generationDrifted = true for an unchanged config " +
 			"(gh#49: every no-op sync rebuilds the generation)")
 	}
@@ -166,7 +166,7 @@ func TestGenerationDriftedTrueWhenPackageRemoved(t *testing.T) {
 	}
 
 	if !generationDrifted(galeDir, storeRoot,
-		map[string]string{"jq": "1.8.1"}) {
+		map[string]string{"jq": "1.8.1"}, nil) {
 		t.Error("generationDrifted = false after removing fd " +
 			"from config; its symlinks would stay on PATH")
 	}

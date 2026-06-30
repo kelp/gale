@@ -745,12 +745,14 @@ func checkOrphans(ctx *doctorContext) bool {
 		projPath = p
 	}
 	var resolver installer.RecipeResolver
+	var pinResolve versionedRecipeResolver
 	if doctorCheckRegistry && ctx.cmdCtx != nil {
 		resolver = ctx.cmdCtx.Resolver
+		pinResolve = ctx.cmdCtx.versionedRecipeResolver()
 	}
 	referenced := collectReferencedPackagesWithResolver(
 		filepath.Dir(globalConfig), projPath,
-		ctx.store, resolver, ctx.out,
+		ctx.store, resolver, pinResolve, ctx.out,
 	)
 
 	var orphaned int

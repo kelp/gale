@@ -206,7 +206,165 @@ func (ctx *cmdContext) loadToolVersionsFallback() (*config.GaleConfig, error) {
 // rotated, desyncing PATH from config (gh#68). The skipped
 // package is reported on stderr by BuildLenient.
 func rebuildGeneration(galeDir, storeRoot, configPath string) error {
-	return rebuildGenerationLenient(galeDir, storeRoot, configPath)
+	return rebuildGenerationLenient(galeDir, storeRoot, configPath, nil)
+}
+
+// versionedRecipeResolver fetches a recipe for a specific
+// config pin. Nil means fall back to store bare-version
+// resolution (highest revision on disk).
+type versionedRecipeResolver func(name, version string) (*recipe.Recipe, error)
+
+func (ctx *cmdContext) versionedRecipeResolver() versionedRecipeResolver {
+	if ctx == nil || ctx.Resolver == nil {
+		return nil
+	}
+	resolve := ctx.Resolver
+	reg := ctx.Registry
+	return func(name, version string) (*recipe.Recipe, error) {
+		return resolveRecipeForPin(name, version, resolve, reg)
+	}
+}
+
+// resolveRecipeForPin fetches the recipe for a config pin.
+// Shared by sync staleness, generation rebuild, and gc
+// retention so they all agree on the canonical revision.
+func resolveRecipeForPin(
+	name, version string,
+	resolve installer.RecipeResolver,
+	reg *registry.Registry,
+) (*recipe.Recipe, error) {
+	r, err := resolve(name)
+	if err == nil &&
+		(r.Package.Version == version || r.Package.Full() == version) {
+		return r, nil
+	}
+	if reg != nil {
+		var pinned *recipe.Recipe
+		pinned, vErr := reg.FetchRecipeVersion(name, version)
+		if vErr == nil {
+			return pinned, nil
+		}
+		if err != nil {
+			return nil, fmt.Errorf(
+				"resolving %s@%s: %w", name, version, err,
+			)
+		}
+		return nil, fmt.Errorf(
+			"%s@%s not found (registry has %s): %w",
+			name, version, r.Package.Version, vErr,
+		)
+	}
+	if err != nil {
+		return nil, fmt.Errorf(
+			"resolving %s@%s: %w", name, version, err,
+		)
+	}
+	return nil, fmt.Errorf(
+		"%s@%s not found (registry has %s)",
+		name, version, r.Package.Version,
+	)
+}
+
+// canonicalizeForBuild maps bare config pins to the recipe's
+// canonical `<version>-<revision>` so generation rebuild links
+// the revision the recipe offers, not a higher orphan left on
+// disk by a withdrawn recipe revision (gh#137).
+func canonicalizeForBuild(
+	pkgs map[string]string,
+	pinResolve versionedRecipeResolver,
+) map[string]string {
+	if pinResolve == nil || len(pkgs) == 0 {
+		return pkgs
+	}
+	out := make(map[string]string, len(pkgs))
+	for name, version := range pkgs {
+		out[name] = version
+		if store.HasNumericRevisionSuffix(version) {
+			continue
+		}
+		r, err := pinResolve(name, version)
+		if err != nil || r.Package.Version != version {
+			continue
+		}
+		out[name] = r.Package.Full()
+	}
+	return out
+}
+
+// isSupersededRevision reports whether a store revision exceeds
+// the revision the recipe currently offers for the same version.
+func isSupersededRevision(
+	name, version string,
+	pinResolve versionedRecipeResolver,
+) bool {
+	if pinResolve == nil || !store.HasNumericRevisionSuffix(version) {
+		return false
+	}
+	base, rev := store.SplitRevision(version)
+	if rev <= 0 {
+		return false
+	}
+	r, err := pinResolve(name, base)
+	if err != nil {
+		return false
+	}
+	recipeRev := r.Package.Revision
+	if recipeRev <= 0 {
+		recipeRev = 1
+	}
+	return rev > recipeRev
+}
+
+// generationLinksSupersededOrphan reports whether the active
+// generation still symlinks a store revision higher than the
+// recipe's current revision (gh#137).
+func generationLinksSupersededOrphan(
+	galeDir, storeRoot string,
+	pinResolve versionedRecipeResolver,
+) bool {
+	if pinResolve == nil || galeDir == "" {
+		return false
+	}
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		return false
+	}
+	for name, version := range active {
+		if isSupersededRevision(name, version, pinResolve) {
+			return true
+		}
+	}
+	return false
+}
+
+// storeRetentionKey returns the name@version key gc should
+// retain for a config pin. Bare pins prefer the recipe's
+// canonical revision over the highest revision on disk.
+func storeRetentionKey(
+	s *store.Store,
+	name, version string,
+	pinResolve versionedRecipeResolver,
+) string {
+	if store.HasNumericRevisionSuffix(version) {
+		if dir, ok := s.StorePath(name, version); ok {
+			return name + "@" + filepath.Base(dir)
+		}
+		return name + "@" + version
+	}
+	if pinResolve != nil {
+		r, err := pinResolve(name, version)
+		if err == nil && r.Package.Version == version {
+			canon := r.Package.Full()
+			if dir, ok := s.StorePath(name, canon); ok {
+				return name + "@" + filepath.Base(dir)
+			}
+			return name + "@" + canon
+		}
+	}
+	if dir, ok := s.StorePath(name, version); ok {
+		return name + "@" + filepath.Base(dir)
+	}
+	return name + "@" + version
 }
 
 // rebuildGenerationLenient rebuilds the generation,
@@ -214,11 +372,15 @@ func rebuildGeneration(galeDir, storeRoot, configPath string) error {
 // missing. Sync uses this so a batch where one install
 // failed still lands the successful installs on PATH — per
 // Issue #20. The install failure is surfaced separately.
-func rebuildGenerationLenient(galeDir, storeRoot, configPath string) error {
+func rebuildGenerationLenient(
+	galeDir, storeRoot, configPath string,
+	pinResolve versionedRecipeResolver,
+) error {
 	pkgs, err := readConfigPackages(configPath)
 	if err != nil {
 		return err
 	}
+	pkgs = canonicalizeForBuild(pkgs, pinResolve)
 	if err := generation.BuildLenient(pkgs, galeDir, storeRoot); err != nil {
 		return err
 	}
@@ -528,7 +690,9 @@ func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, 
 	); err != nil {
 		return fmt.Errorf("writing config and lock: %w", err)
 	}
-	if err := rebuildGenerationLenient(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGenerationLenient(
+		galeDir, storeRoot, configPath, nil,
+	); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
 	}
 	// --host targeting another machine is declaration-only:
@@ -643,43 +807,8 @@ func addToConfig(name, version, host string, global, project bool) (string, erro
 // registry index. Returns an error if the version can't be
 // found.
 func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Recipe, error) {
-	// Try the resolver first — if latest matches, use it.
-	// Compare both bare Version and Full() (with revision) so
-	// a request for "1.2.3-2" matches a recipe whose Version is
-	// "1.2.3" and Revision is 2.
-	r, err := ctx.Resolver(name)
-	if err == nil &&
-		(r.Package.Version == version || r.Package.Full() == version) {
-		return r, nil
-	}
-
-	// Try versioned registry fetch (not available in
-	// --recipes mode).
-	var vErr error
-	if ctx.Registry != nil {
-		var pinned *recipe.Recipe
-		pinned, vErr = ctx.Registry.FetchRecipeVersion(
-			name, version,
-		)
-		if vErr == nil {
-			return pinned, nil
-		}
-	}
-
-	if err != nil {
-		return nil, fmt.Errorf(
-			"resolving %s@%s: %w", name, version, err,
-		)
-	}
-	if vErr != nil {
-		return nil, fmt.Errorf(
-			"%s@%s not found (registry has %s): %w",
-			name, version, r.Package.Version, vErr,
-		)
-	}
-	return nil, fmt.Errorf(
-		"%s@%s not found (registry has %s)",
-		name, version, r.Package.Version,
+	return resolveRecipeForPin(
+		name, version, ctx.Resolver, ctx.Registry,
 	)
 }
 
@@ -779,7 +908,10 @@ func (ctx *cmdContext) RebuildGeneration() error {
 // tolerate missing store dirs since gh#68. Sync uses this.
 func (ctx *cmdContext) RebuildGenerationLenient() error {
 	defer timing.Phase("generation-rebuild")()
-	return rebuildGenerationLenient(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath)
+	return rebuildGenerationLenient(
+		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath,
+		ctx.versionedRecipeResolver(),
+	)
 }
 
 // RemoveLockEntry removes a package entry from the lockfile.

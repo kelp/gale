@@ -284,7 +284,7 @@ func otherScopeReferences(
 		projPath, _ = config.FindGaleConfig(cwd)
 	}
 	referenced := collectReferencedPackagesAllHosts(
-		globalDir, projPath, st, out,
+		globalDir, projPath, st, nil, out,
 	)
 	return referenced[name+"@"+filepath.Base(storeDir)]
 }

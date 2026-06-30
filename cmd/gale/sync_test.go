@@ -198,7 +198,7 @@ func TestFinishSyncFailurePreservesPartialProgress(t *testing.T) {
 	}
 
 	err = finishSync(false, 1, 0, false, func() error {
-		return rebuildGenerationLenient(galeDir, storeRoot, configPath)
+		return rebuildGenerationLenient(galeDir, storeRoot, configPath, nil)
 	})
 	if err == nil {
 		t.Fatal("expected sync error")
@@ -321,7 +321,7 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 		0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := rebuildGenerationLenient(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGenerationLenient(galeDir, storeRoot, configPath, nil); err != nil {
 		t.Fatalf("initial rebuild: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "drop")); err != nil {
@@ -338,7 +338,7 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 	}
 
 	err := finishSync(false, 0, 0, true, func() error {
-		return rebuildGenerationLenient(galeDir, storeRoot, configPath)
+		return rebuildGenerationLenient(galeDir, storeRoot, configPath, nil)
 	})
 	if err != nil {
 		t.Fatalf("finishSync after config edit: %v", err)
