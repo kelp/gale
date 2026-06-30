@@ -345,6 +345,7 @@ func TestGCRemovesOrphanRevisionAboveRecipe(t *testing.T) {
 	}
 }
 
+// TestGCKeepsExplicitlyPinnedRevision verifies that when config
 // pins a specific revision (jq = "1.8.1-2"), gc keeps exactly
 // that revision and reaps others.
 func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
