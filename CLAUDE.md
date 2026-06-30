@@ -203,7 +203,7 @@ Also exports `[vars]` from gale.toml. `gale run` and
 - `docs/revisions.md` — revision system, shared dylib
   farm, `.gale-deps.toml` staleness model
 - `docs/dev/` — development reference (design,
-  style guide, build improvements)
+ style guide, build improvements, change discipline)
 - `docs/dev/releasing.md` — release flow (immutable
   releases; `just tag` + `just release` drive CI)
 
@@ -233,6 +233,14 @@ After the release is live, bump TWO `gale.toml` files:
   not a substitute. See `docs/dev/design.md`.
 - Prebuilt binaries only for compiler bootstraps.
 - Declarative over imperative (gale.toml → generation).
+
+## Change Discipline
+
+Before tier 2–3 edits (version identity, finalize path,
+generation/farm, gc/sync staleness), trace the affected
+pipeline and grep callers — do not patch from memory.
+Full tiers, invariants, pipelines, and grep cheatsheet:
+[`docs/dev/change-discipline.md`](docs/dev/change-discipline.md).
 
 ## Code Reuse
 
@@ -317,10 +325,12 @@ file is next touched:
 - No duplication (`dupl`, tests included — use helpers
   and table tests), no dead code, no shadowed builtins.
 
-LLM guardrails: reuse before writing; no stubs or
-fakes; stay in scope; no hallucinated APIs; verify by
-running tests before claiming done. Full text in the
-style guide's "LLM Guardrails" section.
+LLM guardrails: trace before edit (tier ≥2); reuse
+before writing; no stubs or fakes; stay in scope; no
+hallucinated APIs; verify by running tests before
+claiming done. Full text in the style guide's "LLM
+Guardrails" section and
+[`docs/dev/change-discipline.md`](docs/dev/change-discipline.md).
 
 Key rules:
 
