@@ -288,6 +288,63 @@ func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
 	}
 }
 
+// TestGCRemovesOrphanRevisionAboveRecipe verifies gc drops a
+// store revision higher than the recipe's current revision
+// when a resolver is available (gh#137).
+func TestGCRemovesOrphanRevisionAboveRecipe(t *testing.T) {
+	storeRoot := t.TempDir()
+	for _, ver := range []string{"1.48.0-1", "1.48.0-2"} {
+		dir := filepath.Join(storeRoot, "just", ver, "bin")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	globalDir := t.TempDir()
+	globalCfg := filepath.Join(globalDir, "gale.toml")
+	if err := os.WriteFile(globalCfg,
+		[]byte("[packages]\njust = \"1.48.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	s := store.NewStore(storeRoot)
+	out := output.New(os.Stderr, false)
+
+	pinResolve := versionedRecipeResolver(func(name, version string) (*recipe.Recipe, error) {
+		if name != "just" || version != "1.48.0" {
+			return nil, fmt.Errorf("unexpected pin %s@%s", name, version)
+		}
+		return &recipe.Recipe{
+			Package: recipe.Package{
+				Name: "just", Version: "1.48.0", Revision: 1,
+			},
+		}, nil
+	})
+
+	ref := collectReferencedPackagesAllHosts(globalDir, "", s, pinResolve, out)
+	n, _ := removeUnreferencedVersions(s, ref, false, out)
+	if n != 1 {
+		t.Errorf("want 1 removed, got %d", n)
+	}
+	if !ref["just@1.48.0-1"] {
+		t.Errorf("just@1.48.0-1 must be retained, got: %v", ref)
+	}
+	if ref["just@1.48.0-2"] {
+		t.Error("just@1.48.0-2 must not be retained")
+	}
+	if _, err := os.Stat(filepath.Join(
+		storeRoot, "just", "1.48.0-1",
+	)); err != nil {
+		t.Errorf("just/1.48.0-1 should survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(
+		storeRoot, "just", "1.48.0-2",
+	)); !os.IsNotExist(err) {
+		t.Errorf("just/1.48.0-2 should be removed")
+	}
+}
+
 // TestGCKeepsExplicitlyPinnedRevision verifies that when config
 // pins a specific revision (jq = "1.8.1-2"), gc keeps exactly
 // that revision and reaps others.
@@ -567,7 +624,7 @@ func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
 	})
 
 	ref := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, out,
+		globalDir, "", s, resolver, nil, out,
 	)
 
 	if !ref["postgresql@17.2-1"] {
@@ -622,7 +679,7 @@ func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
 	})
 
 	ref := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, out,
+		globalDir, "", s, resolver, nil, out,
 	)
 
 	for _, k := range []string{
@@ -666,7 +723,7 @@ func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
 	out := output.New(os.Stderr, false)
 
 	ref := collectReferencedPackagesWithResolver(
-		globalDir, "", s, nil, out,
+		globalDir, "", s, nil, nil, out,
 	)
 
 	if !ref["curl@8.19.0-1"] {
@@ -839,7 +896,7 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 	ref, retained := collectGCRetention(
-		globalDir, "", "", s, nil, out,
+		globalDir, "", "", s, nil, nil, out,
 	)
 
 	if !ref["jq@1.6"] {
@@ -877,7 +934,7 @@ func TestGCRetentionSkipsVanishedRegisteredProjects(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 	ref, retained := collectGCRetention(
-		globalDir, "", "", s, nil, out,
+		globalDir, "", "", s, nil, nil, out,
 	)
 	if len(ref) != 0 {
 		t.Errorf("vanished project must add no refs: %v", ref)
@@ -1153,5 +1210,72 @@ func TestGCRealRunPreservesToolVersionsOnlyProjectPins(t *testing.T) {
 	); !os.IsNotExist(err) {
 		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
 			"a real gc (proves the sweep ran), err=%v", err)
+	}
+}
+
+// TestGenerationLinksSupersededOrphanBarePin verifies gc rebuilds
+// when a bare config pin shadows a superseded orphan on PATH.
+func TestGenerationLinksSupersededOrphanBarePin(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	orphan := mkStorePkg(t, storeRoot, "just", "1.48.0-2")
+	mkActiveGen(t, galeDir, 1, filepath.Join(orphan, "bin", "just"))
+
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\njust = \"1.48.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pinResolve := versionedRecipeResolver(func(name, version string) (*recipe.Recipe, error) {
+		if name != "just" || version != "1.48.0" {
+			return nil, fmt.Errorf("unexpected pin %s@%s", name, version)
+		}
+		return &recipe.Recipe{
+			Package: recipe.Package{
+				Name: "just", Version: "1.48.0", Revision: 1,
+			},
+		}, nil
+	})
+
+	if !generationLinksSupersededOrphan(
+		galeDir, storeRoot, configPath, pinResolve,
+	) {
+		t.Error("want true when bare pin shadows a superseded orphan")
+	}
+}
+
+// TestGenerationLinksSupersededOrphanExplicitPin verifies gc does
+// not rebuild when gale.toml explicitly pins the higher revision.
+func TestGenerationLinksSupersededOrphanExplicitPin(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	storeDir := mkStorePkg(t, storeRoot, "jq", "1.8.1-3")
+	mkActiveGen(t, galeDir, 1, filepath.Join(storeDir, "bin", "jq"))
+
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\njq = \"1.8.1-3\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pinResolve := versionedRecipeResolver(func(name, version string) (*recipe.Recipe, error) {
+		if name != "jq" {
+			return nil, fmt.Errorf("unexpected package %s", name)
+		}
+		return &recipe.Recipe{
+			Package: recipe.Package{
+				Name: "jq", Version: "1.8.1", Revision: 2,
+			},
+		}, nil
+	})
+
+	if generationLinksSupersededOrphan(
+		galeDir, storeRoot, configPath, pinResolve,
+	) {
+		t.Error("want false when config explicitly pins the " +
+			"superseded revision")
 	}
 }

@@ -11,6 +11,7 @@ import (
 
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/recipe"
 )
 
 // TestRebuildGenerationOverManyPackagesSymlinksAll is a
@@ -446,5 +447,65 @@ func TestFinalizeInstallPreservesAllDeclaredPackages(t *testing.T) {
 			t.Errorf("gen/1/bin missing %q (have %d/%d): %v",
 				name, len(got), len(want), got)
 		}
+	}
+}
+
+// TestRebuildGenerationLinksRecipeRevisionOverOrphan verifies
+// that a generation rebuild with recipe-canonical resolution
+// links the recipe's revision dir, not a higher orphan left on
+// disk by a withdrawn recipe revision (gh#137).
+func TestRebuildGenerationLinksRecipeRevisionOverOrphan(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	for _, ver := range []string{"1.48.0-1", "1.48.0-2"} {
+		binDir := filepath.Join(storeRoot, "just", ver, "bin")
+		if err := os.MkdirAll(binDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(
+			filepath.Join(binDir, "just"), []byte("#!/bin/sh\n"), 0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\njust = \"1.48.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pinResolve := versionedRecipeResolver(func(name, version string) (*recipe.Recipe, error) {
+		if name != "just" || version != "1.48.0" {
+			return nil, fmt.Errorf("unexpected pin %s@%s", name, version)
+		}
+		return &recipe.Recipe{
+			Package: recipe.Package{
+				Name: "just", Version: "1.48.0", Revision: 1,
+			},
+		}, nil
+	})
+
+	if err := rebuildGenerationLenient(
+		galeDir, storeRoot, configPath, pinResolve,
+	); err != nil {
+		t.Fatalf("rebuildGenerationLenient: %v", err)
+	}
+
+	target, err := os.Readlink(
+		filepath.Join(galeDir, "gen", "1", "bin", "just"),
+	)
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	wantFragment := filepath.Join("just", "1.48.0-1", "bin", "just")
+	if !strings.Contains(target, wantFragment) {
+		t.Errorf("just symlink target = %q, want fragment %q",
+			target, wantFragment)
+	}
+	if strings.Contains(target, "1.48.0-2") {
+		t.Errorf("just symlink must not point at orphan 1.48.0-2: %q",
+			target)
 	}
 }

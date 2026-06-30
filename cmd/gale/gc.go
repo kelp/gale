@@ -69,8 +69,10 @@ var gcCmd = &cobra.Command{
 		// (nil resolver), the installed .gale-deps.toml walk in
 		// collectGCRetention still protects recorded deps.
 		var resolver installer.RecipeResolver
+		var pinResolve versionedRecipeResolver
 		if ctx, cErr := newCmdContext(gcRecipes, false, false); cErr == nil {
 			resolver = ctx.Resolver
+			pinResolve = ctx.versionedRecipeResolver()
 		}
 
 		// Drop registry entries whose project vanished before
@@ -87,6 +89,39 @@ var gcCmd = &cobra.Command{
 			}
 		}
 
+		// Rebuild generations when the active gen still links a
+		// superseded orphan revision, so retention and pruning see
+		// recipe-canonical symlinks (gh#137).
+		if !dryRun && pinResolve != nil {
+			if globalDir != "" {
+				globalCfg := filepath.Join(globalDir, "gale.toml")
+				if generationLinksSupersededOrphan(
+					globalDir, storeRoot, globalCfg, pinResolve,
+				) {
+					if err := rebuildGenerationLenient(
+						globalDir, storeRoot, globalCfg, pinResolve,
+					); err != nil {
+						out.Warn(fmt.Sprintf(
+							"rebuilding global generation: %v", err,
+						))
+					}
+				}
+			}
+			if projGaleDir != "" && projPath != "" {
+				if generationLinksSupersededOrphan(
+					projGaleDir, storeRoot, projPath, pinResolve,
+				) {
+					if err := rebuildGenerationLenient(
+						projGaleDir, storeRoot, projPath, pinResolve,
+					); err != nil {
+						out.Warn(fmt.Sprintf(
+							"rebuilding project generation: %v", err,
+						))
+					}
+				}
+			}
+		}
+
 		// Retention covers config pins across ALL hosts,
 		// everything the active generations link — including
 		// every registered project's active generation
@@ -97,7 +132,8 @@ var gcCmd = &cobra.Command{
 		// rollback` survives gc instead of being silently
 		// re-advanced to config state (gh#46, gh#47).
 		referenced, retainedProjects := collectGCRetention(
-			globalDir, projPath, projGaleDir, s, resolver, out,
+			globalDir, projPath, projGaleDir, s, resolver,
+			pinResolve, out,
 		)
 		removedPkgs, failedPkgs := removeUnreferencedVersions(
 			s, referenced, dryRun, out,
@@ -191,15 +227,16 @@ func collectGCRetention(
 	globalDir, projPath, projGaleDir string,
 	s *store.Store,
 	resolver installer.RecipeResolver,
+	pinResolve versionedRecipeResolver,
 	out *output.Output,
 ) (map[string]bool, []string) {
 	referenced := collectReferencedPackagesAllHosts(
-		globalDir, projPath, s, out,
+		globalDir, projPath, s, pinResolve, out,
 	)
 	addActiveGenerationRefs(globalDir, s, referenced)
 	addActiveGenerationRefs(projGaleDir, s, referenced)
 	retainedProjects := addRegisteredProjectRefs(
-		globalDir, projGaleDir, s, referenced, out,
+		globalDir, projGaleDir, s, referenced, pinResolve, out,
 	)
 	if resolver != nil {
 		expandRuntimeDeps(s, resolver, referenced)
@@ -226,6 +263,7 @@ func addRegisteredProjectRefs(
 	globalDir, projGaleDir string,
 	s *store.Store,
 	referenced map[string]bool,
+	pinResolve versionedRecipeResolver,
 	out *output.Output,
 ) []string {
 	if globalDir == "" {
@@ -251,7 +289,7 @@ func addRegisteredProjectRefs(
 			continue // provably absent; Prune cleans it up
 		}
 		if _, err := os.Stat(cfgPath); err == nil {
-			mergeConfigAllHosts(cfgPath, s, referenced, out)
+			mergeConfigAllHosts(cfgPath, s, referenced, pinResolve, out)
 		} else {
 			// gale.toml missing or unreadable (Lives passed,
 			// so the project is not provably absent). If it is
@@ -264,7 +302,7 @@ func addRegisteredProjectRefs(
 			// config flavor.
 			mergeToolVersions(
 				filepath.Join(proj, ".tool-versions"),
-				s, referenced, out,
+				s, referenced, pinResolve, out,
 			)
 		}
 		addActiveGenerationRefs(galeDir, s, referenced)
@@ -400,7 +438,7 @@ func collectReferencedPackages(
 	s *store.Store, out *output.Output,
 ) map[string]bool {
 	return collectReferencedPackagesWithResolver(
-		globalDir, projPath, s, nil, out,
+		globalDir, projPath, s, nil, nil, out,
 	)
 }
 
@@ -414,17 +452,19 @@ func collectReferencedPackages(
 // even though ApplyHost would hide it on this machine.
 func collectReferencedPackagesAllHosts(
 	globalDir, projPath string,
-	s *store.Store, out *output.Output,
+	s *store.Store,
+	pinResolve versionedRecipeResolver,
+	out *output.Output,
 ) map[string]bool {
 	referenced := map[string]bool{}
 	if globalDir != "" {
 		mergeConfigAllHosts(
 			filepath.Join(globalDir, "gale.toml"),
-			s, referenced, out,
+			s, referenced, pinResolve, out,
 		)
 	}
 	if projPath != "" {
-		mergeConfigAllHosts(projPath, s, referenced, out)
+		mergeConfigAllHosts(projPath, s, referenced, pinResolve, out)
 	}
 	return referenced
 }
@@ -446,17 +486,18 @@ func collectReferencedPackagesWithResolver(
 	globalDir, projPath string,
 	s *store.Store,
 	resolver installer.RecipeResolver,
+	pinResolve versionedRecipeResolver,
 	out *output.Output,
 ) map[string]bool {
 	referenced := map[string]bool{}
 	if globalDir != "" {
 		mergeConfig(
 			filepath.Join(globalDir, "gale.toml"),
-			s, referenced, out,
+			s, referenced, pinResolve, out,
 		)
 	}
 	if projPath != "" {
-		mergeConfig(projPath, s, referenced, out)
+		mergeConfig(projPath, s, referenced, pinResolve, out)
 	}
 	if resolver != nil {
 		expandRuntimeDeps(s, resolver, referenced)
@@ -473,6 +514,7 @@ func mergeConfig(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
+	pinResolve versionedRecipeResolver,
 	out *output.Output,
 ) {
 	data, err := os.ReadFile(path)
@@ -485,7 +527,7 @@ func mergeConfig(
 		return
 	}
 	cfg.ApplyHost(config.CurrentHost())
-	addPackageRefs(s, cfg.Packages, referenced)
+	addPackageRefs(s, cfg.Packages, referenced, pinResolve)
 }
 
 // mergeConfigAllHosts is the host-union counterpart of
@@ -498,6 +540,7 @@ func mergeConfigAllHosts(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
+	pinResolve versionedRecipeResolver,
 	out *output.Output,
 ) {
 	data, err := os.ReadFile(path)
@@ -509,8 +552,8 @@ func mergeConfigAllHosts(
 		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
 		return
 	}
-	addPackageRefs(s, cfg.Packages, referenced)
-	addAllHostPackageRefs(string(data), s, referenced)
+	addPackageRefs(s, cfg.Packages, referenced, pinResolve)
+	addAllHostPackageRefs(string(data), s, referenced, pinResolve)
 }
 
 // mergeToolVersions reads a .tool-versions file and adds its
@@ -523,6 +566,7 @@ func mergeToolVersions(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
+	pinResolve versionedRecipeResolver,
 	out *output.Output,
 ) {
 	data, err := os.ReadFile(path)
@@ -534,7 +578,7 @@ func mergeToolVersions(
 		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
 		return
 	}
-	addPackageRefs(s, pkgs, referenced)
+	addPackageRefs(s, pkgs, referenced, pinResolve)
 }
 
 // addAllHostPackageRefs adds every `packages` table found at
@@ -552,6 +596,7 @@ func mergeToolVersions(
 // under [hosts] keeps its store entries alive.
 func addAllHostPackageRefs(
 	data string, s *store.Store, referenced map[string]bool,
+	pinResolve versionedRecipeResolver,
 ) {
 	var raw map[string]any
 	if _, err := toml.Decode(data, &raw); err != nil {
@@ -562,7 +607,7 @@ func addAllHostPackageRefs(
 		return
 	}
 	for _, node := range hosts {
-		walkHostPackages(node, s, referenced)
+		walkHostPackages(node, s, referenced, pinResolve)
 	}
 }
 
@@ -572,6 +617,7 @@ func addAllHostPackageRefs(
 // versions are ignored.
 func walkHostPackages(
 	node any, s *store.Store, referenced map[string]bool,
+	pinResolve versionedRecipeResolver,
 ) {
 	table, ok := node.(map[string]any)
 	if !ok {
@@ -589,33 +635,28 @@ func walkHostPackages(
 					m[name] = vs
 				}
 			}
-			addPackageRefs(s, m, referenced)
+			addPackageRefs(s, m, referenced, pinResolve)
 			continue
 		}
-		walkHostPackages(v, s, referenced)
+		walkHostPackages(v, s, referenced, pinResolve)
 	}
 }
 
 // addPackageRefs adds each name→version pair to the
-// referenced set, resolving through store.StorePath so
-// bare versions (jq = "1.8.1") become the canonical
-// on-disk form (jq@1.8.1-3) and compare cleanly against
-// store.List output. Entries not in the store stay keyed
-// on their raw name@version.
+// referenced set, resolving through storeRetentionKey so
+// bare versions (jq = "1.8.1") become the recipe's
+// canonical on-disk form (jq@1.8.1-3) when a resolver is
+// available, instead of the highest revision on disk.
+// Entries not in the store stay keyed on their raw
+// name@version.
 func addPackageRefs(
 	s *store.Store,
 	packages map[string]string,
 	referenced map[string]bool,
+	pinResolve versionedRecipeResolver,
 ) {
 	for name, version := range packages {
-		if dir, ok := s.StorePath(name, version); ok {
-			referenced[name+"@"+filepath.Base(dir)] = true
-			continue
-		}
-		// Not in the store — record the raw request so
-		// callers that diff config-vs-installed can still
-		// see the unresolved reference.
-		referenced[name+"@"+version] = true
+		referenced[storeRetentionKey(s, name, version, pinResolve)] = true
 	}
 }
 

@@ -194,7 +194,10 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		}
 	}
 
-	configChanged := generationDrifted(ctx.GaleDir, ctx.StoreRoot, cfg.Packages)
+	configChanged := generationDrifted(
+		ctx.GaleDir, ctx.StoreRoot, cfg.Packages,
+		ctx.versionedRecipeResolver(),
+	)
 
 	if err := finishSync(dryRun, failed, installed, configChanged, ctx.RebuildGenerationLenient); err != nil {
 		if failed > 0 {
@@ -220,7 +223,11 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 // rebuilding regardless would bump the generation counter on
 // every no-op sync; skipping when packages have been removed
 // would leave the dropped package's symlink in current/bin.
-func generationDrifted(galeDir, storeRoot string, want map[string]string) bool {
+func generationDrifted(
+	galeDir, storeRoot string,
+	want map[string]string,
+	pinResolve versionedRecipeResolver,
+) bool {
 	active, err := generation.CurrentVersions(galeDir, storeRoot)
 	if err != nil {
 		// On read error, prefer to rebuild — better a wasted
@@ -237,7 +244,9 @@ func generationDrifted(galeDir, storeRoot string, want map[string]string) bool {
 	// every run, so each no-op sync rebuilt and re-swapped a new
 	// generation (gh#49). Resolve the config pins to the store-dir
 	// basenames a fresh build would link before comparing.
-	expected := generation.ActiveVersions(want, storeRoot)
+	expected := generation.ActiveVersions(
+		canonicalizeForBuild(want, pinResolve), storeRoot,
+	)
 	for name, version := range expected {
 		if active[name] != version {
 			return true
