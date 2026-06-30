@@ -61,5 +61,9 @@ jobs:
       - name: Build
         run: go build -o gale ./cmd/gale/
 
+      - name: Pipeline test layer check
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        run: scripts/check-pipeline-tests.sh origin/main
+
       - name: Integration (Tier A)
         run: go test -tags=integration -timeout 5m ./integration/...

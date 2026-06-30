@@ -244,3 +244,25 @@ Interfaces will keep changing. Invariants and pipelines
 should not. When design iteration renames a helper, update
 the cheatsheet row if the **concept** moved — not every
 mention in prose.
+
+## Enforcement
+
+Voluntary tracing is not enough for the mis-tiered case
+(pipeline bug that feels like a local fix). Two mechanisms
+back the doc:
+
+**PR template** (`.github/pull_request_template.md`) —
+tier checkbox and tier 2–3 confirmation items on every PR.
+
+**CI: pipeline test layer** (`scripts/check-pipeline-tests.sh`)
+— when this diff touches pipeline-sensitive production code
+and adds or modifies tests, at least one `cmd/gale/*_test.go`
+or `integration/` file must change too. Refactors with no
+test diff are allowed (existing coverage must still pass).
+
+Sensitive paths today:
+
+- `cmd/gale/context.go`, `sync.go`, `gc.go`, `generations.go`
+- `internal/generation/`, `internal/farm/`
+
+Run locally: `scripts/check-pipeline-tests.sh origin/main`.
