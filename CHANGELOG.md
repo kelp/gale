@@ -10,6 +10,9 @@
   lines into a single `farm: updated <pkg>@<ver> (N dylibs)`
   summary when a revision bump overwrites same-package farm
   entries.
+- update: when a pinned package is skipped, print guidance to
+  use `gale switch` or `gale unpin` instead of failing silently
+  (#135).
 
 ### Fixed
 
@@ -24,6 +27,16 @@
   reconciled and each sync rebuilt — stalling direnv past its 2s
   timeout. Staleness is now evaluated against the recipe's canonical
   version-revision, the dir a reinstall actually writes (#136).
+- gc: prune orphan store revisions above the recipe's current
+  revision and rebuild the active generation when it still links
+  one. After #136 stopped sync from looping, bare-version
+  resolution still preferred the highest revision on disk for
+  generation rebuilds and gc retention — leaving stale binaries
+  on PATH indefinitely. Bare config pins now canonicalize to the
+  recipe's `<version>-<revision>` before generation rebuild; gc
+  retention uses the same key; and gc rebuilds only when the
+  active gen still symlinks a superseded orphan while config uses
+  a bare pin (#137).
 
 ## v0.19.0 — 2026-06-28
 
