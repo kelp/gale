@@ -10,26 +10,16 @@ permissions:
   issues: write
 
 jobs:
-  comment-137:
+  comment-136:
     runs-on: ubuntu-latest
     steps:
-      - name: Comment on #137
+      - name: Comment on #136
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          count=$(gh api repos/kelp/gale/issues/137/comments --jq length)
+          count=$(gh api repos/kelp/gale/issues/136/comments --jq length)
           if [ "$count" -gt 0 ]; then
-            echo "Issue #137 already has comments; skipping"
+            echo "Issue #136 already has comments; skipping"
             exit 0
           fi
-          gh issue comment 137 --repo kelp/gale --body-file - <<'EOF'
-          Fixed in PR #143 (commit af4c3f6). Follow-up to the sync loop fix.
-
-          After the sync fix stopped looping, bare-version resolution still preferred the highest revision on disk for generation rebuilds and gc retention — leaving stale binaries on PATH. This change:
-
-          - Canonicalizes bare config pins to `recipe.Package.Full()` before generation rebuild (`canonicalizeForBuild`)
-          - Uses recipe-canonical keys for gc retention (`storeRetentionKey`)
-          - Rebuilds the active generation during gc only when it still links a superseded orphan while config uses a bare pin (`generationLinksSupersededOrphan`)
-
-          Regression tests: `TestGCRemovesOrphanRevisionAboveRecipe`, `TestRebuildGenerationLinksRecipeRevisionOverOrphan`.
-          EOF
+          gh issue comment 136 --repo kelp/gale --body "Fixed on main (commit 688ce7d). See PR kelp/gale#136 for the merge."
