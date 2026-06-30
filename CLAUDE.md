@@ -203,7 +203,7 @@ Also exports `[vars]` from gale.toml. `gale run` and
 - `docs/revisions.md` — revision system, shared dylib
   farm, `.gale-deps.toml` staleness model
 - `docs/dev/` — development reference (design,
- style guide, build improvements, change discipline)
+  style guide, build improvements, change discipline)
 - `docs/dev/releasing.md` — release flow (immutable
   releases; `just tag` + `just release` drive CI)
 
