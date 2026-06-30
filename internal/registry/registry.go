@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -460,10 +461,9 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 
 	defer timing.Phase(fmt.Sprintf("recipe-fetch %s@%s", name, version))()
 
-	// Ledger-first (gh#121), but only for the head version: the
-	// ledger records no per-entry commit, so historical versions
-	// still need the .versions commit-pin path for their
-	// historically-correct recipe (deps, build steps).
+	// Ledger-first (gh#121, gh#130): resolve any @version pin from
+	// [[history]] when present; fall back to .versions only when
+	// the ledger has no matching entry.
 	if rec, ok := r.fetchVersionFromLedger(name, version); ok {
 		return rec, nil
 	}
@@ -534,33 +534,35 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 }
 
 // fetchVersionFromLedger resolves a requested version against the
-// [[history]] ledger, but only when it resolves to the ledger HEAD
-// (the latest entry). Historical versions return ok=false so the
-// caller uses the .versions commit-pin path, which fetches the
-// historically-correct recipe at its pinned commit. Returns
-// (recipe, true) only on a head match that yields a binary AND the
-// ref-tip recipe is coherent with the ledger head: a stale ref-tip
-// recipe (lagging the head, with its own inline [binary] entries)
-// defers to .versions rather than returning the wrong recipe.
+// [[history]] ledger. Head requests keep the coherence guard:
+// when the ref-tip recipe lags the ledger head, ok=false so the
+// caller falls through to .versions. Historical requests use the
+// ref-tip recipe with version overridden from the ledger entry and
+// binaries merged from that entry (gh#130).
 func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recipe, bool) {
 	idx, err := r.fetchBinaries(name)
 	if err != nil || idx == nil || len(idx.History) == 0 {
 		return nil, false
 	}
-	entry, ok := idx.PickHistoryLatest()
+	entry, ok := idx.PickHistory(requested)
 	if !ok {
-		return nil, false
-	}
-	// Resolve the request against the head entry only (bare base,
-	// exact, and "-1"→bare all handled by version.Pick).
-	if _, ok := version.Pick([]string{entry.Version}, requested); !ok {
 		return nil, false
 	}
 	rec, err := r.fetchRecipe(name, false)
 	if err != nil {
 		return nil, false
 	}
-	if !recipe.MergeBinariesFromLedgerHead(rec, idx, ghcrBaseFromURL(r.BaseURL)) {
+	ghcrBase := ghcrBaseFromURL(r.BaseURL)
+	head, headOK := idx.PickHistoryLatest()
+	if headOK && entry.Version == head.Version {
+		if !recipe.MergeBinariesFromLedgerHead(rec, idx, ghcrBase) {
+			return nil, false
+		}
+		return rec, true
+	}
+	recipe.ApplyHistoryVersion(rec, entry.Version)
+	recipe.MergeBinariesFromHistory(rec, entry, ghcrBase)
+	if rec.BinaryForPlatform(runtime.GOOS, runtime.GOARCH) == nil {
 		return nil, false
 	}
 	return rec, true

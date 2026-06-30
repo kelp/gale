@@ -733,6 +733,61 @@ func TestPickHistoryLatestEmpty(t *testing.T) {
 	}
 }
 
+func TestPickHistory(t *testing.T) {
+	idx, err := ParseBinaryIndex(multiEntryHistoryTOML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	tests := []struct {
+		requested string
+		want      string
+		ok        bool
+	}{
+		{"1.8.1-5", "1.8.1-5", true},
+		{"1.8.1", "1.8.1-5", true},
+		{"1.7.1", "1.7.1", true},
+		{"1.8.0", "1.8.0", true},
+		{"1.9.0", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.requested, func(t *testing.T) {
+			entry, ok := idx.PickHistory(tt.requested)
+			if ok != tt.ok {
+				t.Fatalf("ok = %v, want %v", ok, tt.ok)
+			}
+			if !tt.ok {
+				return
+			}
+			if entry.Version != tt.want {
+				t.Errorf("Version = %q, want %q", entry.Version, tt.want)
+			}
+		})
+	}
+}
+
+func TestPickHistoryEmpty(t *testing.T) {
+	idx := &BinaryIndex{}
+	if _, ok := idx.PickHistory("1.0.0"); ok {
+		t.Error("PickHistory on empty ledger ok = true, want false")
+	}
+}
+
+func TestPickHistoryBarePrefersHighestRevision(t *testing.T) {
+	idx := &BinaryIndex{
+		History: []BinaryHistoryEntry{
+			{Version: "1.8.1", Platforms: map[string]string{"linux-amd64": "baresha"}},
+			{Version: "1.8.1-5", Platforms: map[string]string{"linux-amd64": "revsha"}},
+		},
+	}
+	entry, ok := idx.PickHistory("1.8.1")
+	if !ok {
+		t.Fatal("ok = false, want true")
+	}
+	if entry.Version != "1.8.1-5" {
+		t.Errorf("Version = %q, want 1.8.1-5 (highest revision, not legacy bare)", entry.Version)
+	}
+}
+
 func TestParseBinaryIndexHistoryDropsMalformed(t *testing.T) {
 	idx, err := ParseBinaryIndex(malformedHistoryBinariesTOML)
 	if err != nil {

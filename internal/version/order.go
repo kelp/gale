@@ -97,6 +97,11 @@ func Pick(keys []string, requested string) (string, bool) {
 	return "", false
 }
 
+// HasRevisionSuffix reports whether v ends with "-<digits>".
+func HasRevisionSuffix(v string) bool {
+	return hasRevisionSuffix(v)
+}
+
 // hasRevisionSuffix reports whether v ends with "-<digits>".
 func hasRevisionSuffix(v string) bool {
 	i := strings.LastIndex(v, "-")
