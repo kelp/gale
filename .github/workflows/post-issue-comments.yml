@@ -10,28 +10,8 @@ permissions:
   issues: write
 
 jobs:
-  comment-136:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Comment on #136
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          count=$(gh api repos/kelp/gale/issues/136/comments --jq length)
-          if [ "$count" -gt 0 ]; then
-            echo "Issue #136 already has comments; skipping"
-            exit 0
-          fi
-          gh api --method POST repos/kelp/gale/issues/136/comments \
-            --input - <<'EOF'
-          {
-            "body": "Fixed on `main` (commit 688ce7d, PR kelp/gale#136).\n\n`installedStale` in `cmd/gale/sync.go` now evaluates staleness against the recipe's canonical `version-revision` dir — the path `Reinstall` actually writes — instead of the bare pin's highest on-disk revision. This stops the infinite rebuild loop when a withdrawn recipe revision leaves an orphan store dir (e.g. `1.0.0-2`) shadowing the recipe's `1.0.0-1`.\n\nRegression test: `TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild`."
-          }
-          EOF
-
   comment-137:
     runs-on: ubuntu-latest
-    needs: comment-136
     steps:
       - name: Comment on #137
         env:
@@ -42,9 +22,14 @@ jobs:
             echo "Issue #137 already has comments; skipping"
             exit 0
           fi
-          gh api --method POST repos/kelp/gale/issues/137/comments \
-            --input - <<'EOF'
-          {
-            "body": "Fixed in PR #143 (commit af4c3f6). Follow-up to the sync loop fix.\n\nAfter the sync fix stopped looping, bare-version resolution still preferred the highest revision on disk for generation rebuilds and gc retention — leaving stale binaries on PATH. This change:\n\n- Canonicalizes bare config pins to `recipe.Package.Full()` before generation rebuild (`canonicalizeForBuild`)\n- Uses recipe-canonical keys for gc retention (`storeRetentionKey`)\n- Rebuilds the active generation during gc only when it still links a superseded orphan while config uses a bare pin (`generationLinksSupersededOrphan`)\n\nRegression tests: `TestGCRemovesOrphanRevisionAboveRecipe`, `TestRebuildGenerationLinksRecipeRevisionOverOrphan`."
-          }
+          gh issue comment 137 --repo kelp/gale --body-file - <<'EOF'
+          Fixed in PR #143 (commit af4c3f6). Follow-up to the sync loop fix.
+
+          After the sync fix stopped looping, bare-version resolution still preferred the highest revision on disk for generation rebuilds and gc retention — leaving stale binaries on PATH. This change:
+
+          - Canonicalizes bare config pins to `recipe.Package.Full()` before generation rebuild (`canonicalizeForBuild`)
+          - Uses recipe-canonical keys for gc retention (`storeRetentionKey`)
+          - Rebuilds the active generation during gc only when it still links a superseded orphan while config uses a bare pin (`generationLinksSupersededOrphan`)
+
+          Regression tests: `TestGCRemovesOrphanRevisionAboveRecipe`, `TestRebuildGenerationLinksRecipeRevisionOverOrphan`.
           EOF
