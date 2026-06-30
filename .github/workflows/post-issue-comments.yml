@@ -2,6 +2,9 @@ name: Post fixed-issue comments
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/post-issue-comments.yml]
 
 permissions:
   issues: write
