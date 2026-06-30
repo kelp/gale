@@ -344,6 +344,7 @@ func TestGCRemovesOrphanRevisionAboveRecipe(t *testing.T) {
 		t.Errorf("just/1.48.0-2 should be removed")
 	}
 }
+
 // pins a specific revision (jq = "1.8.1-2"), gc keeps exactly
 // that revision and reaps others.
 func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
