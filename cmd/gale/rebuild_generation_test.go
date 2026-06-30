@@ -509,3 +509,70 @@ func TestRebuildGenerationLinksRecipeRevisionOverOrphan(t *testing.T) {
 			target)
 	}
 }
+
+// TestRebuildGenerationActivatesPresentWhenUnrelatedMissing is a
+// regression guard for gh#123: `gale update <pkg>` built a new
+// version into the store, but the generation never rotated
+// because an *unrelated* package declared in gale.toml was
+// missing from the store, and the strict rebuild aborted on it.
+// `update` and `remove` both rebuild through rebuildGeneration,
+// which since #99 (v0.17.0) delegates to the lenient path: the
+// present (just-built) package activates and the missing
+// unrelated one is skipped with a warning, instead of aborting
+// and forcing a full `gale sync`.
+//
+// This pins that behavior at the rebuildGeneration function the
+// CLI actually calls. The finishUpdate* tests stub the rebuild
+// func, and TestFinalizeInstallWithMissingOtherPkgInConfig covers
+// the install path (finalizeInstall) — neither guards this shared
+// function against a regression back to strict generation.Build.
+func TestRebuildGenerationActivatesPresentWhenUnrelatedMissing(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	// Stage only the just-built package in the store, using the
+	// "-1" revision layout the real store uses.
+	binDir := filepath.Join(storeRoot, "gale", "0.19.0-1", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatalf("mkdir gale: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "gale"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write gale: %v", err)
+	}
+
+	// Declare the just-built package plus an unrelated one that is
+	// NOT staged in the store — the exact #123 scenario.
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  gale = \"0.19.0\"\n  awscli = \"2.34.19\"\n"),
+		0o644); err != nil {
+		t.Fatalf("write gale.toml: %v", err)
+	}
+
+	// The shared rebuild path must not abort on the missing
+	// unrelated package — strict Build would error here.
+	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+		t.Fatalf("rebuildGeneration aborted on a missing unrelated package "+
+			"(gh#123 regression): %v", err)
+	}
+
+	genBinDir := filepath.Join(galeDir, "gen", "1", "bin")
+	entries, err := os.ReadDir(genBinDir)
+	if err != nil {
+		t.Fatalf("read gen bin: %v", err)
+	}
+	got := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		got[e.Name()] = true
+	}
+
+	if !got["gale"] {
+		t.Errorf("gen/1/bin missing %q: the just-built package did not "+
+			"activate, entries=%v", "gale", entries)
+	}
+	if got["awscli"] {
+		t.Errorf("gen/1/bin has %q: a package missing from the store should "+
+			"be skipped, not linked", "awscli")
+	}
+}
