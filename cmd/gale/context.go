@@ -317,22 +317,36 @@ func isSupersededRevision(
 
 // generationLinksSupersededOrphan reports whether the active
 // generation still symlinks a store revision higher than the
-// recipe's current revision (gh#137).
+// recipe's current revision while config uses a bare pin for
+// that package (gh#137). Explicit revision pins that match the
+// active dir are user intent and must not trigger a rebuild.
 func generationLinksSupersededOrphan(
-	galeDir, storeRoot string,
+	galeDir, storeRoot, configPath string,
 	pinResolve versionedRecipeResolver,
 ) bool {
 	if pinResolve == nil || galeDir == "" {
+		return false
+	}
+	pkgs, err := readConfigPackages(configPath)
+	if err != nil {
 		return false
 	}
 	active, err := generation.CurrentVersions(galeDir, storeRoot)
 	if err != nil {
 		return false
 	}
-	for name, version := range active {
-		if isSupersededRevision(name, version, pinResolve) {
-			return true
+	for name, activeVer := range active {
+		if !isSupersededRevision(name, activeVer, pinResolve) {
+			continue
 		}
+		pin, ok := pkgs[name]
+		if !ok {
+			continue
+		}
+		if store.HasNumericRevisionSuffix(pin) && pin == activeVer {
+			continue
+		}
+		return true
 	}
 	return false
 }

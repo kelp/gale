@@ -1212,3 +1212,70 @@ func TestGCRealRunPreservesToolVersionsOnlyProjectPins(t *testing.T) {
 			"a real gc (proves the sweep ran), err=%v", err)
 	}
 }
+
+// TestGenerationLinksSupersededOrphanBarePin verifies gc rebuilds
+// when a bare config pin shadows a superseded orphan on PATH.
+func TestGenerationLinksSupersededOrphanBarePin(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	orphan := mkStorePkg(t, storeRoot, "just", "1.48.0-2")
+	mkActiveGen(t, galeDir, 1, filepath.Join(orphan, "bin", "just"))
+
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\njust = \"1.48.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pinResolve := versionedRecipeResolver(func(name, version string) (*recipe.Recipe, error) {
+		if name != "just" || version != "1.48.0" {
+			return nil, fmt.Errorf("unexpected pin %s@%s", name, version)
+		}
+		return &recipe.Recipe{
+			Package: recipe.Package{
+				Name: "just", Version: "1.48.0", Revision: 1,
+			},
+		}, nil
+	})
+
+	if !generationLinksSupersededOrphan(
+		galeDir, storeRoot, configPath, pinResolve,
+	) {
+		t.Error("want true when bare pin shadows a superseded orphan")
+	}
+}
+
+// TestGenerationLinksSupersededOrphanExplicitPin verifies gc does
+// not rebuild when gale.toml explicitly pins the higher revision.
+func TestGenerationLinksSupersededOrphanExplicitPin(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	storeDir := mkStorePkg(t, storeRoot, "jq", "1.8.1-3")
+	mkActiveGen(t, galeDir, 1, filepath.Join(storeDir, "bin", "jq"))
+
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\njq = \"1.8.1-3\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	pinResolve := versionedRecipeResolver(func(name, version string) (*recipe.Recipe, error) {
+		if name != "jq" {
+			return nil, fmt.Errorf("unexpected package %s", name)
+		}
+		return &recipe.Recipe{
+			Package: recipe.Package{
+				Name: "jq", Version: "1.8.1", Revision: 2,
+			},
+		}, nil
+	})
+
+	if generationLinksSupersededOrphan(
+		galeDir, storeRoot, configPath, pinResolve,
+	) {
+		t.Error("want false when config explicitly pins the " +
+			"superseded revision")
+	}
+}

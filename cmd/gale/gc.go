@@ -93,29 +93,31 @@ var gcCmd = &cobra.Command{
 		// superseded orphan revision, so retention and pruning see
 		// recipe-canonical symlinks (gh#137).
 		if !dryRun && pinResolve != nil {
-			if globalDir != "" &&
-				generationLinksSupersededOrphan(
-					globalDir, storeRoot, pinResolve,
-				) {
+			if globalDir != "" {
 				globalCfg := filepath.Join(globalDir, "gale.toml")
-				if err := rebuildGenerationLenient(
+				if generationLinksSupersededOrphan(
 					globalDir, storeRoot, globalCfg, pinResolve,
-				); err != nil {
-					out.Warn(fmt.Sprintf(
-						"rebuilding global generation: %v", err,
-					))
+				) {
+					if err := rebuildGenerationLenient(
+						globalDir, storeRoot, globalCfg, pinResolve,
+					); err != nil {
+						out.Warn(fmt.Sprintf(
+							"rebuilding global generation: %v", err,
+						))
+					}
 				}
 			}
-			if projGaleDir != "" && projPath != "" &&
-				generationLinksSupersededOrphan(
-					projGaleDir, storeRoot, pinResolve,
-				) {
-				if err := rebuildGenerationLenient(
+			if projGaleDir != "" && projPath != "" {
+				if generationLinksSupersededOrphan(
 					projGaleDir, storeRoot, projPath, pinResolve,
-				); err != nil {
-					out.Warn(fmt.Sprintf(
-						"rebuilding project generation: %v", err,
-					))
+				) {
+					if err := rebuildGenerationLenient(
+						projGaleDir, storeRoot, projPath, pinResolve,
+					); err != nil {
+						out.Warn(fmt.Sprintf(
+							"rebuilding project generation: %v", err,
+						))
+					}
 				}
 			}
 		}
