@@ -159,7 +159,9 @@ var removeCmd = &cobra.Command{
 			// made it a guaranteed no-op that leaked farm
 			// entries (gh#74).
 			storeDir := st.ResolveDir(name, version)
-			if otherScopeReferences(st, name, storeDir, out) {
+			if otherScopeReferences(
+				st, name, storeDir, ctx.versionedRecipeResolver(), out,
+			) {
 				out.Info(fmt.Sprintf(
 					"%s@%s still referenced by another "+
 						"gale.toml — keeping store entry",
@@ -270,9 +272,11 @@ func rawGaleConfig(path string) (*config.GaleConfig, error) {
 // — flattening to the current host's view would hide them
 // and delete a store entry another host still needs. Bare
 // config versions resolve to the same canonical <v>-<rev>
-// key as storeDir via the shared store resolver.
+// key as storeDir via storeRetentionKey (recipe-canonical when
+// a resolver is available).
 func otherScopeReferences(
 	st *store.Store, name, storeDir string,
+	pinResolve versionedRecipeResolver,
 	out *output.Output,
 ) bool {
 	globalDir, err := galeConfigDir()
@@ -284,7 +288,7 @@ func otherScopeReferences(
 		projPath, _ = config.FindGaleConfig(cwd)
 	}
 	referenced := collectReferencedPackagesAllHosts(
-		globalDir, projPath, st, nil, out,
+		globalDir, projPath, st, pinResolve, out,
 	)
 	return referenced[name+"@"+filepath.Base(storeDir)]
 }
