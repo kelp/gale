@@ -562,3 +562,49 @@ darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865
 		t.Fatalf("version = %q, want 1.7.1 (.versions fallback)", rec.Package.Version)
 	}
 }
+
+// When a historical ledger entry has no binary for the host
+// platform, fetchVersionFromLedger must return false so the
+// caller can fall through to .versions for the correct recipe.
+func TestFetchRecipeVersionHistoricalMissingPlatformFallsBackToVersions(t *testing.T) {
+	if ledgerPlatform() == "darwin-arm64" {
+		t.Skip("ledger fixture only omits darwin-arm64 host binary")
+	}
+	commit := "fedcba9876543210fedcba9876543210fedcba98"
+	versionsBody := "1.7.1-1 " + commit + "\n1.8.1-5 " +
+		"abc1234def5678901234567890abcdef12345678\n"
+
+	histRecipe := strings.Replace(recipeNoBinaries,
+		`version = "1.8.1"`, `version = "1.7.1"`, 1)
+
+	// Ledger has 1.7.1-1 but only for darwin-arm64 — not the
+	// host platform on linux CI.
+	ledgerDarwinOnly := `version = "1.8.1-5"
+
+[[history]]
+version = "1.7.1-1"
+darwin-arm64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111", manifest_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089", manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b" }
+linux-amd64 = { sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455bc55d74788", manifest_digest = "sha256:9f35d79850663818a8be0eca27bb9680af73b3c6a79d08f17c49d5f336bc4ac0" }
+`
+
+	srv := httptest.NewServer(fileHandler(map[string]string{
+		"/recipes/j/jq.versions":              versionsBody,
+		"/recipes/j/jq.toml":                  ledgerRecipeRev5,
+		"/recipes/j/jq.binaries.toml":         ledgerDarwinOnly,
+		"/" + commit + "/recipes/j/jq.toml":   histRecipe,
+	}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.7.1" {
+		t.Fatalf("version = %q, want 1.7.1 (.versions fallback)", rec.Package.Version)
+	}
+}

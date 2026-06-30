@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 
@@ -561,7 +562,7 @@ func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recip
 	}
 	recipe.ApplyHistoryVersion(rec, entry.Version)
 	recipe.MergeBinariesFromHistory(rec, entry, ghcrBase)
-	if len(rec.Binary) == 0 {
+	if rec.BinaryForPlatform(runtime.GOOS, runtime.GOARCH) == nil {
 		return nil, false
 	}
 	return rec, true
