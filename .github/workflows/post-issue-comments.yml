@@ -1,0 +1,67 @@
+name: Post fixed-issue comments
+
+on:
+  workflow_dispatch:
+
+permissions:
+  issues: write
+
+jobs:
+  comment:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment on #134
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment 134 --repo kelp/gale --body "$(cat <<'EOF'
+          Fixed in #142 (merged to \`main\` as 75440bb).
+
+          \`FixupBinaries\` / \`AddDepRpaths\` now skip patchelf on statically linked ELFs with no \`DT_NEEDED\` entries (\`elfHasDynamicDeps\` in \`internal/build/fixup_linux.go\`). Regression tests: \`TestFixupBinariesSkipsStaticELF\`, \`TestAddDepRpathsSkipsStaticELF\`.
+
+          Verified: static binary is byte-for-byte unchanged after fixup and still executes.
+          EOF
+          )"
+
+      - name: Comment on #135
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment 135 --repo kelp/gale --body "$(cat <<'EOF'
+          Fixed in #139 (merged to \`main\` as d0ca8e6).
+
+          \`gale update\` now prints guidance when a pinned package is skipped — suggests \`gale switch <pkg> <version>\` or \`gale unpin <pkg>\` instead of failing silently. See \`warnSkippingPinnedUpdate\` in \`cmd/gale/update.go\`.
+
+          Regression test: \`TestUpdatePinnedPackagePrintsGuidance\`.
+          EOF
+          )"
+
+      - name: Comment on #136
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment 136 --repo kelp/gale --body "$(cat <<'EOF'
+          Fixed in #136 (merged to \`main\` as 688ce7d).
+
+          \`installedStale\` in \`cmd/gale/sync.go\` now evaluates staleness against the recipe's canonical \`version-revision\` dir — the path \`Reinstall\` actually writes — instead of the bare pin's highest on-disk revision. This stops the infinite rebuild loop when a withdrawn recipe revision leaves an orphan store dir (e.g. \`1.0.0-2\`) shadowing the recipe's \`1.0.0-1\`.
+
+          Regression test: \`TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild\`.
+          EOF
+          )"
+
+      - name: Comment on #137
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh issue comment 137 --repo kelp/gale --body "$(cat <<'EOF'
+          Fixed in #143 (merged to \`main\` as af4c3f6). Follow-up to #136.
+
+          After #136 stopped sync from looping, bare-version resolution still preferred the highest revision on disk for generation rebuilds and gc retention — leaving stale binaries on PATH. This change:
+
+          - Canonicalizes bare config pins to \`recipe.Package.Full()\` before generation rebuild (\`canonicalizeForBuild\`)
+          - Uses recipe-canonical keys for gc retention (\`storeRetentionKey\`)
+          - Rebuilds the active generation during gc only when it still links a superseded orphan while config uses a bare pin (\`generationLinksSupersededOrphan\`)
+
+          Regression tests: \`TestGCRemovesOrphanRevisionAboveRecipe\`, \`TestRebuildGenerationLinksRecipeRevisionOverOrphan\`.
+          EOF
+          )"
