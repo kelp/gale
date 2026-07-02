@@ -192,11 +192,12 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 
 	// Try binary first (unless source-only mode).
 	if binaryViable {
-		// Resolve the full declared closure so metadata
-		// records every direct dep — even the build-only
-		// ones we just skipped installing. IsStale needs
-		// this to flag stale installs when a build dep's
-		// recipe bumps revision.
+		// Resolve the declared runtime closure so metadata
+		// records the deps the shipped binary can link.
+		// Build-only tools are deliberately excluded
+		// (gh#157): recording them would pin those tools in
+		// the store for gc/farm even though the binary never
+		// links them.
 		fallback, ferr := inst.ResolveDirectDeps(r)
 		if ferr != nil {
 			os.RemoveAll(storeDir)
@@ -998,30 +999,20 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 }
 
 // ResolveDirectDeps returns the (name, version, revision)
-// tuple for every direct declared dep of r (build +
-// runtime, deduped, after platform overlay). Does NOT
-// install anything — the binary-install path uses this to
-// populate .gale-deps.toml with the full declared closure
-// even though build-only deps weren't actually installed.
-// Keeps IsStale's "declared dep missing from metadata =
-// stale" contract intact.
+// tuple for every declared runtime dep of r (deduped, after
+// platform overlay). Does NOT install anything — the
+// binary-install path uses this to populate .gale-deps.toml
+// with the runtime closure the shipped binary links.
+// Build-only deps are excluded (gh#157): recording them
+// would pin build tools in the store for gc/farm even though
+// the binary never links them, and IsStale ignores them.
 func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]ResolvedDep, error) {
 	if inst.Resolver == nil {
 		return nil, nil
 	}
-	deps := withSystemDeps(
-		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
-		r.Build.System,
-	)
-	names := make([]string, 0,
-		len(deps.Build)+len(deps.Runtime))
+	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
+	names := make([]string, 0, len(deps.Runtime))
 	seen := make(map[string]bool)
-	for _, d := range deps.Build {
-		if !seen[d] {
-			seen[d] = true
-			names = append(names, d)
-		}
-	}
 	for _, d := range deps.Runtime {
 		if !seen[d] {
 			seen[d] = true
@@ -1399,7 +1390,15 @@ func extractBuildTo(result *build.BuildResult, extractDir, finalStoreDir string,
 	if err := build.RestorePrefixPlaceholderTo(workDir, finalStoreDir); err != nil {
 		return fmt.Errorf("restore prefix paths: %w", err)
 	}
-	if deps != nil {
+	// Keep the archive's own .gale-deps.toml when present: a
+	// source build emits a runtime-only closure (gh#157), and
+	// overwriting it here with BuildDepsToResolved(deps) — the
+	// full build environment — would re-leak build-only tools
+	// into the store dir, re-pinning them for gc/farm and
+	// re-triggering spurious staleness. Only synthesize
+	// metadata when the archive shipped none (legacy or
+	// zero-dep archives), mirroring extractStreamed.
+	if !HasDepsMetadata(workDir) {
 		md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
 		if err := WriteDepsMetadata(workDir, md); err != nil {
 			return fmt.Errorf("write deps metadata: %w", err)

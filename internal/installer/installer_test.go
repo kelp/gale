@@ -2333,8 +2333,11 @@ func TestCheckBinaryTrustPolicy(t *testing.T) {
 // wasted bandwidth and store space.
 //
 // Runtime deps must still be installed (the binary links against
-// them) and .gale-deps.toml must record BOTH so IsStale's
-// staleness detection keeps working.
+// them) and recorded in .gale-deps.toml. Build-only deps must
+// be neither installed nor recorded (gh#157): the shipped
+// binary can't link them, so recording them only pins the tool
+// for gc/farm and triggers spurious staleness on toolchain
+// bumps.
 func TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds(t *testing.T) {
 	// Three prebuilt binaries: victim (the target), bdep
 	// (build-only), rdep (runtime). All served via httptest.
@@ -2441,7 +2444,9 @@ func TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds(t *testing.T) {
 			"install succeeded", bdepPath)
 	}
 
-	// Metadata must record both so IsStale still works.
+	// Metadata records the runtime dep only. The build-only
+	// dep must be absent (gh#157) so it isn't pinned for
+	// gc/farm and a build-dep bump doesn't force a re-download.
 	md, err := ReadDepsMetadata(filepath.Join(storeRoot,
 		"victim", "1.0-1"))
 	if err != nil {
@@ -2451,10 +2456,10 @@ func TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds(t *testing.T) {
 	for _, d := range md.Deps {
 		names[d.Name] = true
 	}
-	if !names["bdep"] {
-		t.Errorf("metadata missing bdep entry; "+
-			"got %v — staleness detection won't catch "+
-			"build-dep revision bumps", md.Deps)
+	if names["bdep"] {
+		t.Errorf("build-only bdep recorded in metadata; "+
+			"got %v — build deps must not be recorded "+
+			"(gh#157)", md.Deps)
 	}
 	if !names["rdep"] {
 		t.Errorf("metadata missing rdep entry; got %v", md.Deps)
@@ -2595,17 +2600,19 @@ func TestInstallInstallsBuildOnlyDepsOnSourceFallback(t *testing.T) {
 	}
 }
 
-// TestInstallInstallsAllDepsInSourceOnlyMode verifies that
-// SourceOnly mode walks the full dep set via
-// InstallBuildDeps (not just runtime deps) — even when the
-// recipe declares a usable binary, because the binary path
-// is never entered.
+// TestInstallInstallsAllDepsInSourceOnlyMode verifies two
+// things about a source-only install with a build-only dep:
 //
-// Pre-installs bdep so the deps walk hits the Cached path
-// and the test doesn't have to model a full source build
-// for the dep itself; the assertion is that the walker
-// VISITED bdep, evidenced by bdep ending up in the build
-// env paths returned to the caller.
+//  1. The dep walker still visits build-only deps via
+//     InstallBuildDeps (evidenced by the resolver being
+//     called for bdep), even though the recipe advertises a
+//     usable binary — the binary path is never entered.
+//  2. gh#157: the installed STORE dir's .gale-deps.toml is
+//     runtime-only. bdep (build-only) must NOT appear —
+//     recording it would pin the build tool for gc/farm and
+//     mark the package stale on every toolchain bump — while
+//     rdep (runtime) MUST appear because the shipped binary
+//     links it.
 func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
 	srcTar := createTestSourceTarGz(t)
 	srcHash := hashFile(t, srcTar)
@@ -2626,22 +2633,35 @@ func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
 
 	storeRoot := t.TempDir()
 	s := store.NewStore(storeRoot)
-	// Pre-install bdep so the deps walk treats it as
-	// cached. The point of the test is the walker reaches
-	// build-only deps, not that it can build them.
+	// Pre-install both deps so the walk treats them as
+	// cached; the test asserts the walker reaches them and
+	// records only the runtime one, not that it builds them.
 	preInstall(t, s, "bdep", "1.0-1")
+	preInstall(t, s, "rdep", "1.0-1")
 
 	platform := fmt.Sprintf("%s-%s",
 		runtime.GOOS, runtime.GOARCH)
 
+	var resolvedMu sync.Mutex
+	resolved := make(map[string]bool)
 	inst := &Installer{
 		Store:      s,
 		SourceOnly: true,
 		Resolver: func(name string) (*recipe.Recipe, error) {
-			if name == "bdep" {
+			resolvedMu.Lock()
+			resolved[name] = true
+			resolvedMu.Unlock()
+			switch name {
+			case "bdep":
 				return &recipe.Recipe{
 					Package: recipe.Package{
 						Name: "bdep", Version: "1.0",
+					},
+				}, nil
+			case "rdep":
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name: "rdep", Version: "1.0",
 					},
 				}, nil
 			}
@@ -2672,7 +2692,8 @@ func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
 			},
 		},
 		Dependencies: recipe.Dependencies{
-			Build: []string{"bdep"},
+			Build:   []string{"bdep"},
+			Runtime: []string{"rdep"},
 		},
 	}
 
@@ -2680,35 +2701,46 @@ func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	// bdep should appear in victim's .gale-deps.toml — this
-	// only happens if the dep walker visited it via the
-	// SourceOnly path's InstallBuildDeps (since the binary
-	// path's metadata fallback is unreachable in
-	// SourceOnly).
+	// The walker must have visited the build-only dep — only
+	// InstallBuildDeps (the SourceOnly path) resolves it.
+	if !resolved["bdep"] {
+		t.Error("dep walker never resolved build-only bdep " +
+			"in SourceOnly mode")
+	}
+
+	// gh#157: store metadata is runtime-only. The archive's
+	// runtime-filtered .gale-deps.toml must survive extraction
+	// (extractBuildTo must not overwrite it with the full
+	// build closure).
 	md, err := ReadDepsMetadata(filepath.Join(storeRoot,
 		"victim", "1.0-1"))
 	if err != nil {
 		t.Fatalf("read metadata: %v", err)
 	}
-	found := false
+	names := make(map[string]bool, len(md.Deps))
 	for _, d := range md.Deps {
-		if d.Name == "bdep" {
-			found = true
-			break
-		}
+		names[d.Name] = true
 	}
-	if !found {
-		t.Errorf("bdep missing from metadata in SourceOnly "+
-			"mode — deps walker didn't visit build-only "+
-			"deps; got %+v", md.Deps)
+	if names["bdep"] {
+		t.Errorf("build-only bdep leaked into store metadata "+
+			"after a source install (gh#157); got %+v", md.Deps)
+	}
+	if !names["rdep"] {
+		t.Errorf("runtime dep rdep missing from store "+
+			"metadata; got %+v", md.Deps)
 	}
 }
 
 // TestInstallSkipsBuildOnlyDepsPreservesStaleness pins the
-// contract that even though build-only deps aren't
-// installed locally, they ARE recorded in
-// .gale-deps.toml — so IsStale flags the package as stale
-// when a build dep's recipe bumps revision.
+// gh#157 contract: a build-only dep bump must NOT mark the
+// package stale. The shipped binary cannot link build tools
+// (cmake, rust, go), so re-downloading it on every toolchain
+// revision is pure churn. IsStale considers only runtime
+// deps, and the binary-install fallback no longer records
+// build-only deps in .gale-deps.toml at all — recording them
+// would pin those tools in the store for gc/farm. Name
+// retained from the pre-gh#157 behavior to keep the linter's
+// grandfathering of this long test intact.
 func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 	victimTar := createTestTarZstd(t, "bin/victim",
 		"#!/bin/sh\necho victim")
@@ -2787,31 +2819,32 @@ func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	// Confirm metadata recorded bdep at revision 1.
+	// Confirm the build-only dep is NOT recorded: victim
+	// declares only a build dep, so its runtime closure is
+	// empty (gh#157). Recording bdep would pin it for
+	// gc/farm even though the binary never links it.
 	storeDir := filepath.Join(storeRoot, "victim", "1.0-1")
 	md, err := ReadDepsMetadata(storeDir)
 	if err != nil {
 		t.Fatalf("read metadata: %v", err)
 	}
-	if len(md.Deps) != 1 || md.Deps[0].Name != "bdep" ||
-		md.Deps[0].Revision != 1 {
-		t.Fatalf("metadata = %+v, want one bdep@1.0-1 entry",
-			md.Deps)
+	if len(md.Deps) != 0 {
+		t.Fatalf("metadata = %+v, want no recorded deps "+
+			"(bdep is build-only)", md.Deps)
 	}
 
 	// Bump bdep's revision in the resolver and ask
-	// IsStale to compare.
+	// IsStale to compare. bdep is a build-only dep, so the
+	// bump must NOT mark victim stale (gh#157).
 	bdepRev = 2
 	stale, err := IsStale(storeDir, victim, resolver)
 	if err != nil {
 		t.Fatalf("IsStale: %v", err)
 	}
-	if !stale {
-		t.Error("victim should be reported stale after " +
-			"bdep revision bump — metadata records bdep " +
-			"but a binary-only install skipped its actual " +
-			"installation, so without the recorded entry " +
-			"staleness detection silently breaks")
+	if stale {
+		t.Error("victim marked stale after a build-only " +
+			"bdep revision bump; build deps must not " +
+			"affect staleness (gh#157)")
 	}
 }
 

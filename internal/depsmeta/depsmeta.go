@@ -104,6 +104,33 @@ func FromNamedDirs(namedDirs map[string]string) []ResolvedDep {
 	return result
 }
 
+// FromNamedDirsFiltered is FromNamedDirs restricted to the dep
+// names in keep. Entries whose name is absent from keep are
+// dropped; names in keep with no matching dir are skipped. The
+// builder uses it to record only the runtime dep closure in
+// .gale-deps.toml, excluding build-only tools (cmake, rust, go
+// and their transitive deps) that the shipped binary cannot
+// link. Transitivity is preserved because each recorded dep's
+// own metadata lists its runtime deps, so consumers that walk
+// the metadata chain (the dylib farm, gc) still reach the full
+// runtime closure. See gh#157.
+func FromNamedDirsFiltered(namedDirs map[string]string, keep []string) []ResolvedDep {
+	if len(namedDirs) == 0 || len(keep) == 0 {
+		return nil
+	}
+	keepSet := make(map[string]bool, len(keep))
+	for _, name := range keep {
+		keepSet[name] = true
+	}
+	filtered := make(map[string]string, len(keep))
+	for name, dir := range namedDirs {
+		if keepSet[name] {
+			filtered[name] = dir
+		}
+	}
+	return FromNamedDirs(filtered)
+}
+
 func parseVersionRevision(base string) (string, int) {
 	idx := strings.LastIndex(base, "-")
 	if idx >= 0 {

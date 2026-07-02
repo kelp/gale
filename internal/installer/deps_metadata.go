@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/depsmeta"
@@ -53,8 +54,11 @@ func ReadDepsMetadata(storeDir string) (DepsMetadata, error) {
 // true (stale) so a soft migration reinstalls old
 // installs that predate this metadata.
 //
-// Only Runtime and Build deps declared on `r` are
-// considered — external system libraries are ignored.
+// Only the Runtime deps declared on `r` are considered:
+// build-only tools (cmake, rust, go) and external system
+// libraries are ignored, because the shipped binary cannot
+// link them, so a bump to one must not force a re-download
+// (gh#157).
 func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, error) {
 	// Check whether the metadata file is present before reading it.
 	// A missing file means the package predates this metadata (soft
@@ -80,16 +84,19 @@ func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, 
 		metaMap[dep.Name] = depKey{Version: dep.Version, Revision: dep.Revision}
 	}
 
-	// Collect declared deps from Build and Runtime.
-	declared := make([]string, 0, len(r.Dependencies.Build)+len(r.Dependencies.Runtime))
+	// Collect declared runtime deps. Build-only deps are
+	// deliberately excluded (gh#157): the shipped binary
+	// links only its runtime closure. Use the platform
+	// overlay so the check matches what the builder recorded
+	// (runtimeDepsMetadata also resolves via
+	// DependenciesForPlatform); a platform runtime override
+	// otherwise leaves the package permanently stale.
+	runtimeDeps := r.DependenciesForPlatform(
+		runtime.GOOS, runtime.GOARCH,
+	).Runtime
+	declared := make([]string, 0, len(runtimeDeps))
 	seen := make(map[string]bool)
-	for _, dep := range r.Dependencies.Build {
-		if !seen[dep] {
-			seen[dep] = true
-			declared = append(declared, dep)
-		}
-	}
-	for _, dep := range r.Dependencies.Runtime {
+	for _, dep := range runtimeDeps {
 		if !seen[dep] {
 			seen[dep] = true
 			declared = append(declared, dep)
