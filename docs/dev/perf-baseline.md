@@ -72,6 +72,12 @@ close.
 
 ### Where single-install time actually goes: attestation (measured 2026-06-02)
 
+*Historical: this measured the old `gh attestation verify`
+subprocess path. Native in-process verification (gh#129) has
+since replaced it and parallelizes in-process; the per-artifact
+subprocess spawn described below no longer exists. Left as the
+record of the analysis that motivated that change.*
+
 `--verbose` now times the attestation step (commit `11b0287`). For `jq`
 (no deps) on the Linux VM:
 

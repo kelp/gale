@@ -2,8 +2,24 @@
 
 ## Unreleased
 
+### Added
+
+- Native in-process Sigstore attestation verification (sigstore-go).
+  Verification no longer shells out to the `gh` CLI. `trust =
+  "sigstore"` now fails closed: a verification failure aborts the
+  binary install and falls back to a source build instead of
+  proceeding (closes #129).
+- `gale verify` works offline. The Sigstore trusted root resolves
+  from the Sigstore TUF CDN with a one-day cache under
+  `~/.gale/cache/sigstore-tuf/`, falling back to a trusted-root
+  snapshot embedded in the binary (with a one-time warning) when the
+  network is unreachable. `GALE_SIGSTORE_TRUSTED_ROOT` overrides the
+  trusted root with a local file for air-gapped use.
+
 ### Changed
 
+- `gale doctor` reports the Sigstore trusted-root cache state
+  instead of checking for the `gh` CLI.
 - registry: historical `@version` installs prefer the recipe at the
   ledger entry's recorded `commit` (written by gale-recipes CI since
   gale-recipes#141), so old versions resolve their historically
@@ -48,6 +64,11 @@
   retention uses the same key; and gc rebuilds only when the
   active gen still symlinks a superseded orphan while config uses
   a bare pin (#137).
+
+### Removed
+
+- The `gh` CLI dependency for attestation verification. gale no
+  longer uses or needs `gh` for anything.
 
 ## v0.19.0 — 2026-06-28
 

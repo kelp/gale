@@ -378,13 +378,15 @@ Proves prebuilt binaries were built by our CI from
 our source.
 
 - [x] **Verify Sigstore attestations on install** —
-  shells out to `gh attestation verify` after SHA256
-  check. Skips gracefully when gh CLI not installed.
-  Falls back to source build on attestation failure.
+  native in-process verification (sigstore-go) after
+  SHA256 check. No external tool. Fails closed: a
+  verification failure falls back to a source build
+  instead of proceeding (gh#129).
 - [x] **`gale verify <pkg>`** — verifies attestation
-  for installed packages via OCI URI. Requires gh.
-- [x] **Doctor check** — `gale doctor` warns when gh
-  CLI is not available.
+  for installed packages via OCI URI. Works offline
+  via the embedded trusted-root fallback.
+- [x] **Doctor check** — `gale doctor` reports the
+  Sigstore TUF trusted-root cache state.
 
 ### Layer 4: Reproducible build verification
 
@@ -678,12 +680,19 @@ attestation handling**, ahead of any distribution change:
 - [ ] **Cache attestation per store artifact.** Once a binary at a
   given sha256 is verified, record it; shared deps and reinstalls
   skip re-verification entirely.
-- [ ] **Verify a closure's artifacts concurrently.** gh proves N
-  concurrent verifies ≈ 1×. Confirm whether the existing closure
-  parallelism already overlaps the verify step (timestamped trace),
-  and if not, make it.
-- [ ] **(Stretch) in-process Sigstore verification** to drop the
-  per-artifact `gh` subprocess spawn entirely.
+- [x] **Verify a closure's artifacts concurrently.** Resolved as a
+  side effect of in-process verification (gh#129): attestation now
+  runs inline inside each package's `installBinaryTo`, which already
+  executes through the 8-way parallel install pool
+  (`parallel.ForEach`), so closure verification overlaps for free.
+- [x] **(Stretch) in-process Sigstore verification** (gh#129).
+  sigstore-go verifies bundles in-process; the per-artifact `gh`
+  subprocess spawn is gone.
+- [ ] **Drop the GitHub-API file-subject fallback in
+  `VerifyPrebuilt`.** Once gale-recipes confirms every
+  ledger-referenced artifact has an OCI referrer, remove the
+  `VerifyFile`/Attestations-API fallback path and require the
+  OCI-referrer path unconditionally.
 
 This corrects the earlier read that distribution infra (Tier 2/3)
 was the next lever — it isn't, until attestation is addressed. The

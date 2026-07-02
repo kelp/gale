@@ -142,7 +142,21 @@ gale verify jq
 ```
 
 Checks the Sigstore attestation for the installed
-binary. Requires the `gh` CLI.
+binary. Verification runs in-process; no external
+tool is required.
+
+Gale resolves the Sigstore trusted root from the
+Sigstore TUF CDN, caching it for a day under
+`~/.gale/cache/sigstore-tuf/`. If the network is
+unreachable, gale falls back to a trusted-root
+snapshot embedded in the binary and prints a
+one-time warning. `gale doctor` reports the cache
+state.
+
+For air-gapped verification, set
+`GALE_SIGSTORE_TRUSTED_ROOT` to a local
+`trusted_root.json` to bypass the TUF fetch
+entirely.
 
 ### Preview sync changes
 
