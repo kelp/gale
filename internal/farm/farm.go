@@ -22,15 +22,22 @@ import (
 )
 
 // darwinVersioned matches libFOO.N.dylib, libFOO.N.M.dylib,
-// libFOO.N.M.P.dylib.
+// libFOO.N.M.P.dylib. Mach-O puts the version before the
+// extension, so a dotted-stem library like libpython3.14.dylib
+// already matches (the "3" ends the stem, ".14" reads as the
+// version) — dotted stems need no darwin-specific fix (gh#165).
 var darwinVersioned = regexp.MustCompile(
 	`^lib[A-Za-z0-9_+\-]+\.[0-9]+(\.[0-9]+)*\.dylib$`,
 )
 
 // linuxVersioned matches libFOO.so.N, libFOO.so.N.M,
-// libFOO.so.N.M.P.
+// libFOO.so.N.M.P. The stem class allows '.' so dotted-stem
+// sonames like libpython3.14.so.1.0 (stem "python3.14") match;
+// the required `.so.` plus the `$`-anchored numeric tail keep
+// the version pinned to the last `.so.`, so the stem can't
+// swallow it (gh#165).
 var linuxVersioned = regexp.MustCompile(
-	`^lib[A-Za-z0-9_+\-]+\.so\.[0-9]+(\.[0-9]+)*$`,
+	`^lib[A-Za-z0-9_+.\-]+\.so\.[0-9]+(\.[0-9]+)*$`,
 )
 
 // Dir returns the farm directory for a given gale dir.
