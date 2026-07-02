@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"text/tabwriter"
@@ -121,7 +122,11 @@ func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
 		}
 		var configs []sbomConfig
 		if projPath, err := projectConfigPath(cwd); err == nil {
-			if _, statErr := os.Stat(projPath); statErr == nil {
+			ok, existsErr := sbomConfigExists(projPath)
+			if existsErr != nil {
+				return nil, existsErr
+			}
+			if ok {
 				configs = append(configs, sbomConfig{
 					path: projPath, scope: "project",
 				})
@@ -142,31 +147,36 @@ func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
 	// Single-scope path. Reuse main's resolver so the
 	// project-then-global fallback and ErrNotExist semantics
 	// stay consistent with `list`, `outdated`, and `env`.
-	if global || project {
-		path, err := resolveReadOnlyConfigPath(global, project)
-		if err != nil {
-			return nil, err
-		}
-		if _, statErr := os.Stat(path); statErr != nil {
-			if errors.Is(statErr, os.ErrNotExist) {
-				return nil, nil
-			}
-			return nil, fmt.Errorf("stat %s: %w", path, statErr)
-		}
-		return []sbomConfig{{path: path}}, nil
-	}
-
-	path, err := resolveReadOnlyConfigPath(false, false)
+	path, err := resolveReadOnlyConfigPath(global, project)
 	if err != nil {
-		return nil, fmt.Errorf("resolving config: %w", err)
+		return nil, err
 	}
-	if _, statErr := os.Stat(path); statErr != nil {
-		if errors.Is(statErr, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("stat %s: %w", path, statErr)
+	ok, err := sbomConfigExists(path)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return nil, nil
 	}
 	return []sbomConfig{{path: path}}, nil
+}
+
+// sbomConfigExists reports whether the resolved config path has
+// anything to read: the gale.toml itself, or the project's
+// .tool-versions sibling that readConfigOrToolVersions falls
+// back to when gale.toml is absent (projectConfigPath returns
+// the would-be gale.toml path for .tool-versions-only trees).
+func sbomConfigExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	tv := filepath.Join(filepath.Dir(path), ".tool-versions")
+	if _, err := os.Stat(tv); err == nil {
+		return true, nil
+	}
+	return false, nil
 }
 
 // collectSbomEntries reads each config + lockfile and returns
@@ -181,13 +191,13 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 	// no config yields any entries.
 	entries := make([]sbomEntry, 0)
 	for _, sc := range configs {
-		data, err := os.ReadFile(sc.path)
+		// readConfigOrToolVersions gives .tool-versions projects
+		// the same fallback `list` and `env` get; a missing
+		// gale.toml with a .tool-versions sibling still yields
+		// that project's packages.
+		cfg, err := readConfigOrToolVersions(sc.path)
 		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", sc.path, err)
-		}
-		cfg, err := config.ParseGaleConfig(string(data))
-		if err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", sc.path, err)
+			return nil, err
 		}
 		cfg.ApplyHost(config.CurrentHost())
 

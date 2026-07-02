@@ -130,3 +130,42 @@ func TestOutputTablePopulatedFieldsUntouched(t *testing.T) {
 		}
 	}
 }
+
+// TestSbomToolVersionsProject pins the Bugbot finding on the
+// scope-resolution consolidation: a `.tool-versions`-only tree
+// counts as a project (projectConfigPath returns its would-be
+// gale.toml path), so sbom must read the .tool-versions
+// fallback like `list` and `env` do — not bail on the missing
+// gale.toml and emit an empty SBOM.
+func TestSbomToolVersionsProject(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	proj := filepath.Join(tempHome, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(proj, ".tool-versions"),
+		[]byte("jq 1.7.0\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(proj)
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	t.Cleanup(func() {
+		sbomGlobal, sbomProject, sbomAll, sbomJSON = false, false, false, false
+	})
+
+	var stdout, stderr bytes.Buffer
+	if err := runSbom(&stdout, &stderr, nil); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	out := stdout.String()
+	if !strings.Contains(out, "jq") || !strings.Contains(out, "1.7.0") {
+		t.Errorf("sbom output missing jq 1.7.0 from .tool-versions:\nstdout: %q\nstderr: %q",
+			out, stderr.String())
+	}
+}
