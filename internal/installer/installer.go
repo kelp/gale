@@ -1091,6 +1091,7 @@ func mergeBuildDeps(a, b *build.BuildDeps) *build.BuildDeps {
 			out.NamedDirs[k] = v
 		}
 	}
+	out.Canonicalize()
 	return out
 }
 
@@ -1302,6 +1303,9 @@ func (inst *Installer) installDepsInner(
 			return nil, err
 		}
 	}
+	// The fan-out above records deps in completion order; give
+	// the build deterministic inputs (gale-recipes#79).
+	result.Canonicalize()
 	return &result, nil
 }
 
