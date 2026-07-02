@@ -13,7 +13,16 @@ permissions:
   contents: write
 
 jobs:
+  # Attestation parity gate: native in-process Sigstore verification
+  # must agree with `gh attestation verify` on real gale-recipes
+  # artifacts before a release builds. See attestation-parity.yml.
+  parity:
+    uses: ./.github/workflows/attestation-parity.yml
+    permissions:
+      contents: read
+
   build:
+    needs: parity
     timeout-minutes: 30
     runs-on: ubuntu-latest
     strategy:

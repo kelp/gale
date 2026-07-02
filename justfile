@@ -123,6 +123,11 @@ release version:
 release-retry version:
     gh workflow run release.yml --ref "v{{version}}" -f tag="v{{version}}"
 
+# Regenerate the embedded Sigstore trusted root from the TUF CDN.
+# Run before each release; see docs/dev/releasing.md.
+refresh-trusted-root:
+    go run ./tools/refresh-trusted-root
+
 # Format git describe as semver (used by build and install)
 _dev-version:
     #!/usr/bin/env bash

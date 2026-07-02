@@ -33,10 +33,16 @@ type RecipeResolver func(name string) (*recipe.Recipe, error)
 
 // Installer installs packages into the store.
 type Installer struct {
-	Store      *store.Store
-	Resolver   RecipeResolver
-	Verifier   attestation.Verifier // nil = skip attestation
-	SourceOnly bool                 // skip binary, build from source
+	Store    *store.Store
+	Resolver RecipeResolver
+	// Verifier checks Sigstore attestations for prebuilt
+	// binaries. Production wiring always sets it (a native
+	// in-process verifier); nil is a test-only seam meaning
+	// "skip attestation entirely". When non-nil, sigstore
+	// trust ALWAYS verifies — there is no availability probe
+	// and no silent skip.
+	Verifier   attestation.Verifier
+	SourceOnly bool // skip binary, build from source
 
 	// BinaryFallbackLog receives a one-line warning when a
 	// binary install fails and the installer falls back to a
@@ -599,13 +605,13 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	}
 
 	// When sigstore attestation is needed, tee the raw archive
-	// bytes to a unique tempfile. gh attestation verify computes
-	// the digest by reading the subject as a file, so we verify
-	// the teed copy of the downloaded archive (the exact bytes the
+	// bytes to a unique tempfile. The file-fallback verification
+	// path hashes the subject as a file, so we verify the teed
+	// copy of the downloaded archive (the exact bytes the
 	// attestation covers) and delete it after via defer. Binary
 	// installs run 8-way parallel, so the tempfile must be
 	// collision-free (os.CreateTemp guarantees this).
-	needAttest := bin.EffectiveTrust() == recipe.TrustSigstore && v != nil && v.Available()
+	needAttest := bin.EffectiveTrust() == recipe.TrustSigstore && v != nil
 	var archiveOut string
 	if needAttest {
 		af, err := os.CreateTemp(build.TmpDir(), "gale-verify-*.tar.zst")
@@ -634,17 +640,20 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 		return fmt.Errorf("fetch binary: %w", fetchErr)
 	}
 
-	// Attestation verification fires only when the recipe's
-	// trust policy requires it (sigstore — the default) AND
-	// a Verifier is wired up and available. `nil = skip` is
-	// load-bearing: tests set Verifier=nil instead of mocking
-	// the gh CLI. The explicit trust-policy check above
-	// closes the C3 bypass where a non-GHCR URL dodged this
-	// step entirely; here we only verify when the recipe
-	// opted in to sigstore (which by definition means GHCR).
+	// Attestation verification fires whenever the recipe's
+	// trust policy requires it (sigstore — the default) and a
+	// Verifier is wired up. A non-nil verifier ALWAYS verifies
+	// and a failure aborts the binary path (the caller falls
+	// back to a source build) — fail closed, never a silent
+	// skip (gh#129). nil is a test-only seam meaning "skip
+	// attestation"; production wiring never passes nil. The
+	// explicit trust-policy check above closes the C3 bypass
+	// where a non-GHCR URL dodged this step entirely; here we
+	// only verify when the recipe opted in to sigstore (which
+	// by definition means GHCR).
 	if needAttest {
 		attestDone := timing.Phase("attestation " + pkgID)
-		err := verifyPrebuiltAttestation(bin, version, archiveOut, token, v)
+		err := verifyPrebuiltAttestation(bin, archiveOut, token, v)
 		attestDone()
 		if err != nil {
 			return fmt.Errorf("attestation: %w", err)
@@ -908,15 +917,6 @@ func repoFromURL(rawURL string) string {
 	return p
 }
 
-// binaryOCIURI builds the OCI image reference to verify for a
-// prebuilt binary. The attestation is keyed to the manifest digest
-// when available; otherwise it falls back to the mutable tag.
-func binaryOCIURI(bin *recipe.Binary, version string) string {
-	platform := runtime.GOOS + "-" + runtime.GOARCH
-	repoPath := repoFromURL(bin.URL)
-	return attestation.OCIURI(repoPath, version, platform, bin.ManifestDigest)
-}
-
 // fetchReferrerBundle is the seam over ghcr.FetchReferrerBundle so
 // tests can stay hermetic (no real GHCR referrers API call).
 var fetchReferrerBundle = ghcr.FetchReferrerBundle
@@ -926,10 +926,9 @@ var fetchReferrerBundle = ghcr.FetchReferrerBundle
 // path first, falling back to the teed archive file only when no
 // referrer exists. archiveOut is the teed copy of the downloaded
 // archive bytes the file path verifies.
-func verifyPrebuiltAttestation(bin *recipe.Binary, version, archiveOut, token string, v attestation.Verifier) error {
+func verifyPrebuiltAttestation(bin *recipe.Binary, archiveOut, token string, v attestation.Verifier) error {
 	return attestation.VerifyPrebuilt(v, attestation.PrebuiltParams{
 		Repo:           attestation.DefaultRepo,
-		OCIURI:         binaryOCIURI(bin, version),
 		ManifestDigest: bin.ManifestDigest,
 		FetchBundle: func() ([]byte, error) {
 			ctx, cancel := context.WithTimeout(

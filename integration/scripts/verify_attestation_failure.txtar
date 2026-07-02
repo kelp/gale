@@ -1,10 +1,19 @@
-# When `gh attestation verify` exits non-zero, `gale verify`
-# must report the failure rather than swallowing the error.
+# Native verification fails closed on identity mismatch. The served
+# bundle is cryptographically valid — signed, logged, timestamped,
+# chaining to the trusted root, with the RIGHT subject digest — but
+# its certificate identity (SAN + SourceRepositoryURI) names
+# evil/other instead of kelp/gale-recipes. `gale verify` must reject
+# it: a matching digest alone is not proof of provenance.
+
+env GALE_GITHUB_TOKEN=fake-integration-token
 
 gale-fixture recipes $WORK/recipes
 exec gale install hello -g --recipes=$WORK/recipes
 
-gale-gh-returns exit=1 stderr=no-attestation-found
+gale-attest-referrer hello $WORK/home/.gale/gale.lock evil/other
+env GALE_SIGSTORE_TRUSTED_ROOT=$WORK/trusted_root.json
+env GALE_SIGSTORE_TEST_NO_SCT=1
 
 ! exec gale verify hello
 stderr 'verification failed'
+stderr 'no attestation bundle verified'

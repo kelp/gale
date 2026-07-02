@@ -70,7 +70,6 @@ func TestIntegration(t *testing.T) {
 		},
 		Cmds: map[string]func(ts *testscript.TestScript, neg bool, args []string){
 			"gale-fixture":         support.CmdFixture,
-			"gale-gh-returns":      support.CmdGHReturns,
 			"gale-attest-referrer": support.CmdAttestReferrer,
 		},
 	})
@@ -96,15 +95,12 @@ func setupScript(t *testing.T, env *testscript.Env) error {
 	env.Setenv("GALE_GHCR_URL", ghcr.URL)
 	env.Defer(ghcr.Close)
 
-	gh := support.WriteFakeGH(t, env.WorkDir)
-	env.Values["gh"] = gh
-
 	for name, p := range payloads.Map {
 		env.Setenv(support.EnvNameForSHA(name), p.SHA256)
 	}
 
 	sep := string(os.PathListSeparator)
 	env.Setenv("PATH",
-		filepath.Dir(galeBin)+sep+gh.Dir+sep+env.Getenv("PATH"))
+		filepath.Dir(galeBin)+sep+env.Getenv("PATH"))
 	return nil
 }

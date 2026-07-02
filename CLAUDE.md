@@ -60,7 +60,7 @@ internal/lockfile/     gale.lock read/write
 internal/repo/         recipe repository management
 internal/ai/           Anthropic SDK integration
 internal/lint/         recipe TOML validation
-internal/attestation/  Sigstore attestation via gh CLI
+internal/attestation/  native Sigstore verification (sigstore-go)
 internal/gitutil/      git clone, ls-remote, URL expansion
 internal/atomicfile/   atomic file writes (write-then-rename)
 internal/depsmeta/     .gale-deps.toml format (build↔installer)
@@ -372,10 +372,18 @@ Key rules:
   `//nolint:gosec` for world-readable files.
 - Use `go:embed` to bake files into the binary
   (see `internal/generation/gale-readme.md`).
-- `internal/attestation/` defines a `Verifier` interface.
-  Installer takes `Verifier` field (nil = skip). Tests
-  pass nil instead of mocking. `VerifyOCI` is a
-  package-level function used only by `gale verify`.
+- `internal/attestation/` defines a `Verifier` interface:
+  `VerifyFile(filePath, repo)` and
+  `VerifyOCI(manifestDigest, repo, bundles)`. Verification
+  runs in-process via sigstore-go — no external tool. A
+  non-nil verifier always verifies and fails closed; nil is
+  a test-only seam (production wiring never passes it).
+  `GALE_SIGSTORE_TRUSTED_ROOT` overrides the trusted root
+  with a local file (test/air-gap seam);
+  `GALE_SIGSTORE_TEST_NO_SCT` drops the SCT requirement,
+  but only takes effect together with the root override.
+  `internal/attestation/sigstoretest/` mints synthetic
+  trust material and signed bundles for offline tests.
 
 ## Testing Homebrew Formula
 

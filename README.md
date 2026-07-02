@@ -209,12 +209,10 @@ steps = [
 
 ## Optional Dependencies
 
-**[gh](https://cli.github.com/)** — GitHub CLI.
-Used for Sigstore attestation verification during
-binary installs, `gale verify`, and `gale audit`.
-Without it, gale skips attestation checks and
-installs proceed normally. `gale doctor` reports
-its availability.
+None. Sigstore attestation verification (binary
+installs, `gale verify`, `gale audit`) runs
+in-process — no `gh` CLI or other external tool
+required.
 
 **[Anthropic API key](https://console.anthropic.com/)** —
 used by `gale create-recipe` for AI-powered recipe

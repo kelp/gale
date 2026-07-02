@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"runtime"
 	"time"
 
 	"github.com/kelp/gale/internal/attestation"
@@ -23,7 +22,7 @@ var (
 var verifyCmd = &cobra.Command{
 	Use:   "verify <package>",
 	Short: "Verify attestation for an installed package",
-	Long:  "Check Sigstore attestation to confirm a package binary was built by gale-recipes CI. Requires the gh CLI.",
+	Long:  "Check Sigstore attestation to confirm a package binary was built by gale-recipes CI. Verification runs in-process; no external tools required.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(verifyGlobal, verifyProject); err != nil {
@@ -33,12 +32,6 @@ var verifyCmd = &cobra.Command{
 		out := newCmdOutput(cmd)
 
 		v := attestation.NewVerifier()
-		if !v.Available() {
-			return fmt.Errorf(
-				"attestation verification unavailable: %s",
-				v.UnavailableReason(),
-			)
-		}
 
 		// Resolve context first so lockfile uses the same
 		// config path the installer would use.
@@ -63,11 +56,7 @@ var verifyCmd = &cobra.Command{
 			)
 		}
 
-		platform := runtime.GOOS + "-" + runtime.GOARCH
 		repoPath := localGHCRBase + "/" + name
-		ociURI := attestation.OCIURI(
-			repoPath, pkg.Version, platform, pkg.ManifestDigest,
-		)
 
 		out.Step(fmt.Sprintf(
 			"Verifying attestation for %s@%s...", name, pkg.Version,
@@ -75,7 +64,6 @@ var verifyCmd = &cobra.Command{
 
 		if err := attestation.VerifyPrebuilt(v, attestation.PrebuiltParams{
 			Repo:           attestation.DefaultRepo,
-			OCIURI:         ociURI,
 			ManifestDigest: pkg.ManifestDigest,
 			FetchBundle: func() ([]byte, error) {
 				ctx, cancel := context.WithTimeout(

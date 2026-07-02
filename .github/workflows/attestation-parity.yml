@@ -1,0 +1,160 @@
+name: Attestation Parity
+
+# Pre-release parity validation for native Sigstore verification.
+#
+# For each real gale-recipes artifact in the matrix, this job runs
+# BOTH verifiers against the same artifact and digest:
+#   - native: the in-process sigstore-go verifier, via the env-gated
+#     TestNetworkParity (internal/attestation/network_parity_test.go)
+#   - reference: `gh attestation verify`
+# and fails on any verdict divergence. It also fails when both agree
+# the artifact is bad — parity would hold, but a release must not
+# ship on top of unverifiable artifacts.
+#
+# release.yml calls this workflow before its build job, so a parity
+# failure blocks the release. Run it standalone via workflow_dispatch.
+
+on:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: parity (${{ matrix.name }})
+    timeout-minutes: 15
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Pinned known-good artifact. An empty package selects the
+          # test's built-in pin (jq@1.8.1-5 linux-amd64; see the
+          # pinned* constants in network_parity_test.go).
+          - name: jq-pinned
+            package: ""
+            version: ""
+            mode: oci
+          # Current head artifacts, verified via their OCI referrer
+          # bundles (empty version = the .binaries.toml flat head).
+          - name: gale-head
+            package: gale
+            version: ""
+            mode: oci
+          - name: ripgrep-head
+            package: ripgrep
+            version: ""
+            mode: oci
+          # Legacy artifact published before Sigstore bundles were
+          # attached as OCI referrers (no referrer on GHCR; bundle
+          # only in the GitHub Attestations API). Exercises the
+          # file-fallback path on both sides.
+          - name: gale-legacy-file-fallback
+            package: gale
+            version: "0.18.0-1"
+            mode: file
+    env:
+      # GH_TOKEN drives the gh CLI; GITHUB_TOKEN lets the go test's
+      # Attestations API fetch (file fallback) avoid anonymous rate
+      # limits.
+      GH_TOKEN: ${{ github.token }}
+      GITHUB_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c  # v6.4.0
+        with:
+          go-version: stable
+
+      - name: Build gale
+        run: go build ./cmd/gale/
+
+      - name: Ensure gh >= 2.49
+        run: |
+          set -euo pipefail
+          need="2.49.0"
+          have=$(gh --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1 || echo "0.0.0")
+          echo "gh version: ${have} (need >= ${need})"
+          if [ "$(printf '%s\n' "$need" "$have" | sort -V | head -n1)" != "$need" ]; then
+            echo "gh ${have} too old for oci:// verification; installing latest"
+            sudo mkdir -p -m 755 /etc/apt/keyrings
+            wget -qO- https://cli.github.com/packages/githubcli-archive-keyring.gpg \
+              | sudo tee /etc/apt/keyrings/githubcli-archive-keyring.gpg > /dev/null
+            echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
+              | sudo tee /etc/apt/sources.list.d/github-cli.list > /dev/null
+            sudo apt-get update
+            sudo apt-get install -y gh
+            gh --version
+          fi
+
+      - name: Compare native and gh verification
+        env:
+          PARITY_TARGET_PACKAGE: ${{ matrix.package }}
+          PARITY_TARGET_VERSION: ${{ matrix.version }}
+          PARITY_MODE: ${{ matrix.mode }}
+        run: |
+          set -euo pipefail
+
+          OUT="${RUNNER_TEMP}/parity.env"
+
+          echo "==> native verification (in-process sigstore-go)"
+          if GALE_TEST_NETWORK=1 \
+             GALE_PARITY_PACKAGE="${PARITY_TARGET_PACKAGE}" \
+             GALE_PARITY_VERSION="${PARITY_TARGET_VERSION}" \
+             GALE_PARITY_OUT="${OUT}" \
+             go test ./internal/attestation/ -run 'TestNetworkParity$' -count=1 -v; then
+            native=pass
+          else
+            native=fail
+          fi
+          echo "native verdict: ${native}"
+
+          if [ ! -f "${OUT}" ]; then
+            echo "::error::artifact coordinates were not resolved (registry/ledger fetch failed — not a parity divergence)"
+            exit 1
+          fi
+          # shellcheck disable=SC1090
+          source "${OUT}"
+          echo "artifact: ${PARITY_PACKAGE}@${PARITY_VERSION} manifest=${PARITY_MANIFEST_DIGEST} archive=${PARITY_ARCHIVE_SHA256}"
+
+          echo "==> gh attestation verify (mode: ${PARITY_MODE})"
+          if [ "${PARITY_MODE}" = "file" ]; then
+            # Legacy path: gh must verify the archive file, matching
+            # the native VerifyFile fallback (the manifest digest has
+            # no attestation for pre-referrer artifacts).
+            ARCHIVE="${RUNNER_TEMP}/${PARITY_PACKAGE}.tar.zst"
+            TOKEN=$(curl -fsS "https://ghcr.io/token?scope=repository:kelp/gale-recipes/${PARITY_PACKAGE}:pull" | jq -r .token)
+            curl -fsSL -H "Authorization: Bearer ${TOKEN}" -o "${ARCHIVE}" \
+              "https://ghcr.io/v2/kelp/gale-recipes/${PARITY_PACKAGE}/blobs/sha256:${PARITY_ARCHIVE_SHA256}"
+            echo "${PARITY_ARCHIVE_SHA256}  ${ARCHIVE}" | sha256sum -c -
+            if gh attestation verify "${ARCHIVE}" \
+                 --repo kelp/gale-recipes \
+                 --predicate-type https://slsa.dev/provenance/v1; then
+              ghv=pass
+            else
+              ghv=fail
+            fi
+          else
+            if gh attestation verify \
+                 "oci://ghcr.io/kelp/gale-recipes/${PARITY_PACKAGE}@${PARITY_MANIFEST_DIGEST}" \
+                 --repo kelp/gale-recipes \
+                 --predicate-type https://slsa.dev/provenance/v1; then
+              ghv=pass
+            else
+              ghv=fail
+            fi
+          fi
+          echo "gh verdict: ${ghv}"
+
+          echo "==> parity: native=${native} gh=${ghv}"
+          if [ "${native}" != "${ghv}" ]; then
+            echo "::error::parity divergence on ${PARITY_PACKAGE}@${PARITY_VERSION}: native=${native}, gh=${ghv}"
+            exit 1
+          fi
+          if [ "${native}" != "pass" ]; then
+            echo "::error::both verifiers rejected ${PARITY_PACKAGE}@${PARITY_VERSION} — parity holds, but the artifact is unverifiable"
+            exit 1
+          fi
+          echo "parity OK: both verifiers accepted ${PARITY_PACKAGE}@${PARITY_VERSION}"

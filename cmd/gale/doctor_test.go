@@ -6,7 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 )
@@ -572,5 +574,144 @@ func TestRepairDoctorRebuildsToolVersionsProjectGeneration(t *testing.T) {
 
 	if _, err := os.Lstat(filepath.Join(projectGaleDir, "current", "bin", "go")); err != nil {
 		t.Fatalf("go symlink missing after project repair: %v", err)
+	}
+}
+
+// sigstoreTUFCacheDir returns the TUF cache path under a test home,
+// mirroring attestation.TUFCacheDir's layout.
+func sigstoreTUFCacheDir(home string) string {
+	return filepath.Join(home, ".gale", "cache", "sigstore-tuf")
+}
+
+// writeSigstoreCacheFile creates the TUF cache dir under home with
+// one metadata file in it, returning the file path.
+func writeSigstoreCacheFile(t *testing.T, home string) string {
+	t.Helper()
+	dir := sigstoreTUFCacheDir(home)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "timestamp.json")
+	if err := os.WriteFile(file, []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	return file
+}
+
+// sigstoreRootCase is one branch of the checkSigstoreRoot table.
+type sigstoreRootCase struct {
+	name   string
+	setup  func(t *testing.T, home string)
+	prefix string // "==> " success or "!!! " warning
+	want   string
+}
+
+// runSigstoreRootCase executes one checkSigstoreRoot branch case:
+// isolated HOME, cleared override env, the case's setup, then the
+// check — which must return true — and output assertions.
+func runSigstoreRootCase(t *testing.T, tt sigstoreRootCase) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv(attestation.TrustedRootEnv, "")
+	tt.setup(t, home)
+
+	var buf bytes.Buffer
+	ctx := &doctorContext{
+		galeDir: filepath.Join(home, ".gale"),
+		cwd:     home,
+		out:     output.NewWithOptions(&buf, output.Options{}),
+	}
+
+	if !checkSigstoreRoot(ctx) {
+		t.Fatalf("checkSigstoreRoot must always return true; "+
+			"output: %q", buf.String())
+	}
+	out := buf.String()
+	if !strings.Contains(out, tt.prefix) {
+		t.Errorf("expected prefix %q, got: %q", tt.prefix, out)
+	}
+	if !strings.Contains(out, tt.want) {
+		t.Errorf("expected output containing %q, got: %q",
+			tt.want, out)
+	}
+}
+
+// TestCheckSigstoreRoot drives every branch of the sigstore
+// trust-root check: env override (present and missing), absent
+// cache, fresh cache, stale cache, and a cache path that is a file.
+// The check is informational, so every branch must return true.
+func TestCheckSigstoreRoot(t *testing.T) {
+	tests := []sigstoreRootCase{
+		{
+			name: "env override active",
+			setup: func(t *testing.T, home string) {
+				root := filepath.Join(home, "trusted_root.json")
+				if err := os.WriteFile(root, []byte("{}"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv(attestation.TrustedRootEnv, root)
+			},
+			prefix: "!!! ",
+			want:   "override active",
+		},
+		{
+			name: "env override set but file missing",
+			setup: func(t *testing.T, home string) {
+				t.Setenv(attestation.TrustedRootEnv,
+					filepath.Join(home, "no-such-root.json"))
+			},
+			prefix: "!!! ",
+			want:   "override set but file missing",
+		},
+		{
+			name:   "cache absent",
+			setup:  func(t *testing.T, home string) {},
+			prefix: "!!! ",
+			want:   "will fetch on first sigstore install",
+		},
+		{
+			name: "cache present and fresh",
+			setup: func(t *testing.T, home string) {
+				writeSigstoreCacheFile(t, home)
+			},
+			prefix: "==> ",
+			want:   "fresh",
+		},
+		{
+			name: "cache stale",
+			setup: func(t *testing.T, home string) {
+				file := writeSigstoreCacheFile(t, home)
+				old := time.Now().Add(-48 * time.Hour)
+				for _, p := range []string{file, sigstoreTUFCacheDir(home)} {
+					if err := os.Chtimes(p, old, old); err != nil {
+						t.Fatal(err)
+					}
+				}
+			},
+			prefix: "!!! ",
+			want:   "stale",
+		},
+		{
+			name: "cache path is a file",
+			setup: func(t *testing.T, home string) {
+				dir := filepath.Dir(sigstoreTUFCacheDir(home))
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(
+					sigstoreTUFCacheDir(home), []byte("junk"), 0o644,
+				); err != nil {
+					t.Fatal(err)
+				}
+			},
+			prefix: "!!! ",
+			want:   "not a directory",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runSigstoreRootCase(t, tt)
+		})
 	}
 }

@@ -83,10 +83,11 @@ func ReferrersTagURLForBlob(blobURL, manifestDigest string) (string, error) {
 }
 
 // FetchReferrerBundle fetches the Sigstore attestation bundle(s)
-// attached as OCI referrers to the image manifest, as JSONL ready for
-// gh --bundle. blobURL is the package's ".../blobs/sha256:<hex>" URL;
-// token may be "" (anonymous). Returns ErrNoReferrer when the
-// referrers index has no usable bundle referrer.
+// attached as OCI referrers to the image manifest, as JSONL for
+// native in-process verification (attestation.Verifier.VerifyOCI).
+// blobURL is the package's ".../blobs/sha256:<hex>" URL; token may
+// be "" (anonymous). Returns ErrNoReferrer when the referrers index
+// has no usable bundle referrer.
 func FetchReferrerBundle(ctx context.Context, blobURL, manifestDigest, token string) ([]byte, error) {
 	defer timing.Phase("ghcr-referrers")()
 

@@ -1,10 +1,12 @@
-# `gale verify <pkg>` prefers the tokenless OCI-referrer path:
-# gale fetches the Sigstore bundle from GHCR itself, writes it to a
-# temp file, and runs `gh attestation verify oci://...@<digest>
-# --bundle <file>` offline. The fake gh returns exit 0 by default and
-# logs every call under $WORK/fake-gh/log, so we confirm gh was
-# invoked with the oci:// URI and --bundle (NOT --bundle-from-oci) —
-# not short-circuited away to silent success.
+# `gale verify <pkg>` prefers the tokenless OCI-referrer path: gale
+# fetches the Sigstore bundle from GHCR itself and verifies it
+# in-process with sigstore-go — no gh CLI. gale-attest-referrer mints
+# a REAL signed bundle whose subject digest equals the lockfile's
+# manifest_digest and whose certificate identity names
+# kelp/gale-recipes (the repo gale verifies against), and writes the
+# trusted_root.json the bundle chains to. GALE_SIGSTORE_TRUSTED_ROOT
+# points verification at that root; GALE_SIGSTORE_TEST_NO_SCT drops
+# the SCT requirement (synthetic fixtures cannot mint SCTs).
 
 # A non-empty token makes ghcr.Token return it without an HTTP call,
 # keeping the referrer fetch hermetic. The fake registry ignores the
@@ -14,24 +16,13 @@ env GALE_GITHUB_TOKEN=fake-integration-token
 gale-fixture recipes $WORK/recipes
 exec gale install hello -g --recipes=$WORK/recipes
 
-# Pre-verify: gh log is empty (install doesn't call gh — our
-# trust=sha256-only fixture skips attestation on install).
-! exists $WORK/fake-gh/log
-
 # Wire the fake GHCR to serve the referrers index, referrer manifest,
-# and bundle blob for hello, and record the matching manifest_digest
-# in the lockfile so verify takes the OCI-referrer path.
-gale-attest-referrer hello $WORK/home/.gale/gale.lock
+# and signed bundle for hello; record the matching manifest_digest in
+# the lockfile so verify takes the OCI-referrer path.
+gale-attest-referrer hello $WORK/home/.gale/gale.lock kelp/gale-recipes
+env GALE_SIGSTORE_TRUSTED_ROOT=$WORK/trusted_root.json
+env GALE_SIGSTORE_TEST_NO_SCT=1
 
-# Run verify.
+# Native verification succeeds: right subject digest, right identity.
 exec gale verify hello
 stderr 'attestation verified'
-
-# Post-verify: gh was invoked at least once, and the argv contains the
-# OCI URI pinned by digest, the attestation subcommand, and --bundle
-# (the offline tokenless flag) — never --bundle-from-oci.
-exists $WORK/fake-gh/log
-grep 'oci://ghcr\.io/kelp/gale-recipes/hello' $WORK/fake-gh/log
-grep 'attestation' $WORK/fake-gh/log
-grep '--bundle ' $WORK/fake-gh/log
-! grep '--bundle-from-oci' $WORK/fake-gh/log

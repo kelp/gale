@@ -23,6 +23,11 @@ prepare the `CHANGELOG.md` entry and push a tag.
 # Pick the next version (semver: major.minor.patch).
 # Latest released: see the v* tags or GitHub Releases.
 
+# 0. Refresh the embedded Sigstore trusted root from the
+#    TUF CDN, so an offline `gale verify` falls back to a
+#    current snapshot. Commit the file if it changed.
+just refresh-trusted-root
+
 # 1. Tag locally. Runs fmt + check first; refuses if
 #    `v<version>` already exists.
 just tag 0.16.0
