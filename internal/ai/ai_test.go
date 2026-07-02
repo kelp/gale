@@ -19,14 +19,6 @@ func TestNewClientEmptyKeyReturnsNonNil(t *testing.T) {
 	}
 }
 
-func TestCompleteWithoutAPIKeyReturnsErrNotConfigured(t *testing.T) {
-	c := NewClient("")
-	_, err := c.Complete("hello")
-	if !errors.Is(err, ErrNotConfigured) {
-		t.Errorf("error = %v, want ErrNotConfigured", err)
-	}
-}
-
 func TestRunAgentWithoutAPIKeyReturnsErrNotConfigured(t *testing.T) {
 	c := NewClient("")
 	_, err := c.RunAgent("system", "user", nil, 5)

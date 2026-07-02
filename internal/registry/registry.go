@@ -257,22 +257,14 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 
 	defer timing.Phase("recipe-fetch " + name)()
 
-	bucket := string(name[0])
-	indexURL := fmt.Sprintf("%s/recipes/%s/%s.versions",
-		r.BaseURL, bucket, name)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cr, err := r.cachedGet(ctx, indexURL)
-	if err != nil {
-		// Missing index (404 for pre-.versions recipes) or any
-		// other fetch error → fall back to the legacy ref-tip
-		// path rather than hard-failing.
-		return nil, errNoVersionIndex
-	}
 
-	idx, err := parseVersionIndex(string(cr.Body))
+	idx, err := r.fetchVersionIndex(ctx, name)
 	if err != nil {
+		// Missing index (404 for pre-.versions recipes), parse
+		// failure, or any other fetch error → fall back to the
+		// legacy ref-tip path rather than hard-failing.
 		return nil, errNoVersionIndex
 	}
 	resolved, ok := pickLatest(idx)
@@ -280,6 +272,7 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 		return nil, errNoVersionIndex
 	}
 	commit := idx[resolved]
+	bucket := string(name[0])
 
 	// Both fetches share the 30s budget and, crucially, the
 	// same immutable commit — the recipe and its binary index
@@ -289,7 +282,7 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 		return nil, err
 	}
 	if len(rec.Binary) == 0 {
-		if err := r.mergeBinariesAtCommit(ctx, rec, name, bucket, commit); err != nil {
+		if err := r.mergeBinariesAtCommit(ctx, rec, name, commit); err != nil {
 			return nil, err
 		}
 	}
@@ -360,10 +353,12 @@ func (r *Registry) fetchRecipeAtCommit(
 
 // mergeBinariesAtCommit fetches the .binaries.toml pinned to
 // the same commit as the recipe and merges it. A missing index
-// is non-fatal (the caller source-builds).
+// is non-fatal (the caller source-builds). bucket is derived
+// from name[0] internally.
 func (r *Registry) mergeBinariesAtCommit(
-	ctx context.Context, rec *recipe.Recipe, name, bucket, commit string,
+	ctx context.Context, rec *recipe.Recipe, name, commit string,
 ) error {
+	bucket := string(name[0])
 	binURL := fmt.Sprintf("%s/%s/recipes/%s/%s.binaries.toml",
 		r.repoBase(), commit, bucket, name)
 	idx, err := r.fetchBinariesURL(ctx, name, binURL)
@@ -374,6 +369,23 @@ func (r *Registry) mergeBinariesAtCommit(
 		recipe.MergeBinaries(rec, idx, ghcrBaseFromURL(r.BaseURL))
 	}
 	return nil
+}
+
+// fetchVersionIndex fetches and parses the .versions index for
+// name. Returns (nil, error) on fetch or parse failure. The ctx
+// should already carry an appropriate timeout; no new timeout is
+// added here.
+func (r *Registry) fetchVersionIndex(
+	ctx context.Context, name string,
+) (map[string]string, error) {
+	bucket := string(name[0])
+	indexURL := fmt.Sprintf("%s/recipes/%s/%s.versions",
+		r.BaseURL, bucket, name)
+	cr, err := r.cachedGet(ctx, indexURL)
+	if err != nil {
+		return nil, err
+	}
+	return parseVersionIndex(string(cr.Body))
 }
 
 // pickLatest returns the newest version key in a version→commit
@@ -458,7 +470,6 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	if err := ValidName(name); err != nil {
 		return nil, err
 	}
-
 	defer timing.Phase(fmt.Sprintf("recipe-fetch %s@%s", name, version))()
 
 	// Ledger-first (gh#121, gh#130): resolve any @version pin from
@@ -468,68 +479,26 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 		return rec, nil
 	}
 
-	// Fetch the versions index.
-	bucket := string(name[0])
-	indexURL := fmt.Sprintf("%s/recipes/%s/%s.versions",
-		r.BaseURL, bucket, name)
-
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	cr, err := r.cachedGet(ctx, indexURL)
+	idx, err := r.fetchVersionIndex(ctx, name)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"fetch version index for %s: %w", name, err,
-		)
+		return nil, fmt.Errorf("fetch version index for %s: %w", name, err)
 	}
-
-	idx, err := parseVersionIndex(string(cr.Body))
-	if err != nil {
-		return nil, fmt.Errorf(
-			"parse version index for %s: %w", name, err,
-		)
-	}
-
 	resolved, ok := pickVersion(idx, version)
 	if !ok {
-		return nil, fmt.Errorf(
-			"%s@%s: version not found in registry", name, version,
-		)
+		return nil, fmt.Errorf("%s@%s: version not found in registry", name, version)
 	}
 	commit := idx[resolved]
-
-	// Fetch recipe at the specific commit. BaseURL already
-	// includes the ref (e.g. "/main") for the .versions index
-	// above; for a per-commit fetch we substitute the commit
-	// for that ref segment.
-	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
-		r.repoBase(), commit, bucket, name)
-
-	// Reuse the same context — both fetches share the 30s budget,
-	// which is intentional: a slow versions-index fetch should not
-	// extend the per-call deadline for the follow-up recipe fetch.
-	rcr, err := r.cachedGet(ctx, recipeURL)
+	rec, err := r.fetchRecipeAtCommit(ctx, name, string(name[0]), commit)
 	if err != nil {
-		return nil, fmt.Errorf(
-			"fetch %s@%s recipe: %w", name, version, err,
-		)
+		return nil, err
 	}
-
-	rec, err := recipe.Parse(string(rcr.Body))
-	if err != nil {
-		return nil, fmt.Errorf(
-			"parse %s@%s recipe: %w", name, version, err,
-		)
-	}
-
-	// Fetch the binary index pinned to the same commit so a
-	// pinned-version install resolves a consistent recipe+binary
-	// pair instead of always source-building.
 	if len(rec.Binary) == 0 {
-		if err := r.mergeBinariesAtCommit(ctx, rec, name, bucket, commit); err != nil {
+		if err := r.mergeBinariesAtCommit(ctx, rec, name, commit); err != nil {
 			return nil, err
 		}
 	}
-
 	return rec, nil
 }
 
@@ -635,11 +604,9 @@ func (r *Registry) fetchBinariesURL(
 ) (*recipe.BinaryIndex, error) {
 	cr, err := r.cachedGet(ctx, url)
 	if err != nil {
-		// 404 → graceful nil, everything else → warn + nil.
-		// cachedGet wraps the status in the error text so we
-		// can detect 404 via string match; this keeps the
-		// helper simple at the cost of a fragile pattern.
-		if strings.Contains(err.Error(), "HTTP 404") {
+		// 404 → graceful nil (binary index is optional).
+		// All other errors → warn + nil (non-fatal network failure).
+		if errors.Is(err, errHTTP404) {
 			return nil, nil
 		}
 		r.warn("fetch binaries %s: %v", name, err)

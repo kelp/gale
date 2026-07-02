@@ -154,8 +154,9 @@ func (r *Recipe) BuildForPlatform(goos, goarch string) Build {
 
 // PlatformDependencies holds per-platform dependency overrides.
 type PlatformDependencies struct {
-	Build   []string
-	Runtime []string
+	Build       []string
+	Runtime     []string
+	Constraints map[string]string // name → version constraint
 }
 
 // Dependencies holds build-time and runtime dependency lists.
@@ -296,7 +297,9 @@ func validPlatformKey(key string) bool {
 
 // DependenciesForPlatform returns the dependencies for the given
 // platform. Per-platform lists override the default lists when
-// present, otherwise the default lists are used.
+// present, otherwise the default lists are used. Per-platform
+// constraints are merged into the returned Constraints map,
+// overriding any global constraint for the same dep name.
 func (r *Recipe) DependenciesForPlatform(goos, goarch string) Dependencies {
 	deps := r.Dependencies
 	key := goos + "-" + goarch
@@ -307,6 +310,16 @@ func (r *Recipe) DependenciesForPlatform(goos, goarch string) Dependencies {
 			}
 			if pd.Runtime != nil {
 				deps.Runtime = pd.Runtime
+			}
+			if len(pd.Constraints) > 0 {
+				merged := make(map[string]string, len(deps.Constraints)+len(pd.Constraints))
+				for k, v := range deps.Constraints {
+					merged[k] = v
+				}
+				for k, v := range pd.Constraints {
+					merged[k] = v
+				}
+				deps.Constraints = merged
 			}
 		}
 	}
@@ -347,44 +360,44 @@ func parseDep(v interface{}) (name, constraint string, err error) {
 	}
 }
 
+// parseDepList parses a raw dep array into a name slice and a
+// constraints map. constraints is the caller's existing map and is
+// returned (possibly newly allocated) with any new entries appended.
+func parseDepList(
+	raw interface{},
+	constraints map[string]string,
+) (names []string, out map[string]string, err error) {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil, constraints, nil
+	}
+	for _, v := range arr {
+		name, constraint, err := parseDep(v)
+		if err != nil {
+			return nil, nil, err
+		}
+		names = append(names, name)
+		if constraint != "" {
+			if constraints == nil {
+				constraints = make(map[string]string)
+			}
+			constraints[name] = constraint
+		}
+	}
+	return names, constraints, nil
+}
+
 func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
-	deps := Dependencies{}
 	if raw == nil {
-		return deps, nil
+		return Dependencies{}, nil
 	}
-	if buildRaw, ok := raw["build"]; ok {
-		if arr, ok := buildRaw.([]interface{}); ok {
-			for _, v := range arr {
-				name, constraint, err := parseDep(v)
-				if err != nil {
-					return Dependencies{}, err
-				}
-				deps.Build = append(deps.Build, name)
-				if constraint != "" {
-					if deps.Constraints == nil {
-						deps.Constraints = make(map[string]string)
-					}
-					deps.Constraints[name] = constraint
-				}
-			}
-		}
+	var deps Dependencies
+	var err error
+	if deps.Build, deps.Constraints, err = parseDepList(raw["build"], nil); err != nil {
+		return Dependencies{}, err
 	}
-	if runtimeRaw, ok := raw["runtime"]; ok {
-		if arr, ok := runtimeRaw.([]interface{}); ok {
-			for _, v := range arr {
-				name, constraint, err := parseDep(v)
-				if err != nil {
-					return Dependencies{}, err
-				}
-				deps.Runtime = append(deps.Runtime, name)
-				if constraint != "" {
-					if deps.Constraints == nil {
-						deps.Constraints = make(map[string]string)
-					}
-					deps.Constraints[name] = constraint
-				}
-			}
-		}
+	if deps.Runtime, deps.Constraints, err = parseDepList(raw["runtime"], deps.Constraints); err != nil {
+		return Dependencies{}, err
 	}
 	for key, val := range raw {
 		if key == "build" || key == "runtime" {
@@ -400,40 +413,12 @@ func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
 				key,
 			)
 		}
-		pd := PlatformDependencies{}
-		if buildRaw, ok := sub["build"]; ok {
-			if arr, ok := buildRaw.([]interface{}); ok {
-				for _, v := range arr {
-					name, constraint, err := parseDep(v)
-					if err != nil {
-						return Dependencies{}, err
-					}
-					pd.Build = append(pd.Build, name)
-					if constraint != "" {
-						if deps.Constraints == nil {
-							deps.Constraints = make(map[string]string)
-						}
-						deps.Constraints[name] = constraint
-					}
-				}
-			}
+		var pd PlatformDependencies
+		if pd.Build, pd.Constraints, err = parseDepList(sub["build"], nil); err != nil {
+			return Dependencies{}, err
 		}
-		if runtimeRaw, ok := sub["runtime"]; ok {
-			if arr, ok := runtimeRaw.([]interface{}); ok {
-				for _, v := range arr {
-					name, constraint, err := parseDep(v)
-					if err != nil {
-						return Dependencies{}, err
-					}
-					pd.Runtime = append(pd.Runtime, name)
-					if constraint != "" {
-						if deps.Constraints == nil {
-							deps.Constraints = make(map[string]string)
-						}
-						deps.Constraints[name] = constraint
-					}
-				}
-			}
+		if pd.Runtime, pd.Constraints, err = parseDepList(sub["runtime"], pd.Constraints); err != nil {
+			return Dependencies{}, err
 		}
 		if deps.Platform == nil {
 			deps.Platform = make(map[string]PlatformDependencies)
@@ -443,61 +428,75 @@ func parseDependencies(raw map[string]interface{}) (Dependencies, error) {
 	return deps, nil
 }
 
+// stringVal returns the string value for key in m, or "" if the
+// key is absent or the value is not a string.
+func stringVal(m map[string]interface{}, key string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return s
+		}
+	}
+	return ""
+}
+
+// toStringSlice converts a raw []interface{} to []string.
+// Non-string elements are silently dropped (intentional: wrong-typed
+// build steps are a recipe authoring error that lint catches; silent
+// drops keep parse tolerant for forward-compat unknown array types).
+func toStringSlice(raw interface{}) []string {
+	arr, ok := raw.([]interface{})
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, v := range arr {
+		if s, ok := v.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+// toStringStringMap converts a raw map[string]interface{} to
+// map[string]string. Non-string values are silently dropped
+// (same rationale as toStringSlice).
+func toStringStringMap(raw interface{}) map[string]string {
+	m, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	out := make(map[string]string, len(m))
+	for k, v := range m {
+		if s, ok := v.(string); ok {
+			out[k] = s
+		}
+	}
+	return out
+}
+
 // parseBuild extracts Build and per-platform overrides
 // from the raw TOML map.
 func parseBuild(raw map[string]interface{}) (Build, error) {
-	b := Build{}
 	if raw == nil {
-		return b, nil
+		return Build{}, nil
 	}
-
-	// Extract top-level steps.
-	if steps, ok := raw["steps"]; ok {
-		if arr, ok := steps.([]interface{}); ok {
-			for _, v := range arr {
-				if s, ok := v.(string); ok {
-					b.Steps = append(b.Steps, s)
-				}
-			}
-		}
+	b := Build{
+		Steps: toStringSlice(raw["steps"]),
+		Env:   toStringStringMap(raw["env"]),
 	}
-
-	// Extract system.
-	if sys, ok := raw["system"]; ok {
-		if s, ok := sys.(string); ok {
-			b.System = s
-		}
-	}
-
-	// Extract debug.
+	b.System = stringVal(raw, "system")
+	b.Toolchain = stringVal(raw, "toolchain")
 	if dbg, ok := raw["debug"]; ok {
 		if d, ok := dbg.(bool); ok {
 			b.Debug = d
 		}
 	}
-
-	// Extract top-level env.
-	if envRaw, ok := raw["env"]; ok {
-		if m, ok := envRaw.(map[string]interface{}); ok {
-			b.Env = make(map[string]string, len(m))
-			for k, v := range m {
-				if s, ok := v.(string); ok {
-					b.Env[k] = s
-				}
-			}
-		}
-	}
-
-	// Extract top-level toolchain.
-	if toolchain, ok := raw["toolchain"]; ok {
-		if s, ok := toolchain.(string); ok {
-			b.Toolchain = s
-		}
-	}
-
-	// Extract per-platform overrides (sub-tables).
+	// Extract per-platform overrides (sub-tables). Skip every known
+	// scalar key explicitly so a string-typed key (e.g. toolchain)
+	// is skipped by name rather than by failing the map assertion.
 	for key, val := range raw {
-		if key == "steps" || key == "system" || key == "debug" || key == "env" {
+		if key == "steps" || key == "env" || key == "system" ||
+			key == "debug" || key == "toolchain" {
 			continue
 		}
 		sub, ok := val.(map[string]interface{})
@@ -510,36 +509,15 @@ func parseBuild(raw map[string]interface{}) (Build, error) {
 				key,
 			)
 		}
-		pb := PlatformBuild{}
-		if steps, ok := sub["steps"]; ok {
-			if arr, ok := steps.([]interface{}); ok {
-				for _, v := range arr {
-					if s, ok := v.(string); ok {
-						pb.Steps = append(pb.Steps, s)
-					}
-				}
-			}
+		pb := PlatformBuild{
+			Steps: toStringSlice(sub["steps"]),
+			Env:   toStringStringMap(sub["env"]),
 		}
-		if envRaw, ok := sub["env"]; ok {
-			if m, ok := envRaw.(map[string]interface{}); ok {
-				pb.Env = make(map[string]string, len(m))
-				for k, v := range m {
-					if s, ok := v.(string); ok {
-						pb.Env[k] = s
-					}
-				}
-			}
-		}
-		if toolchain, ok := sub["toolchain"]; ok {
-			if s, ok := toolchain.(string); ok {
-				pb.Toolchain = s
-			}
-		}
+		pb.Toolchain = stringVal(sub, "toolchain")
 		if b.Platform == nil {
 			b.Platform = make(map[string]PlatformBuild)
 		}
 		b.Platform[key] = pb
 	}
-
 	return b, nil
 }

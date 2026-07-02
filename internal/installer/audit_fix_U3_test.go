@@ -139,16 +139,18 @@ func TestInstallBinaryToInPlace_FixupFailureNotInstalled(t *testing.T) {
 	))
 	defer srv.Close()
 
-	bin := &recipe.Binary{
+	bin := recipe.Binary{
 		URL:    srv.URL + "/pkg.tar.zst",
 		SHA256: hash,
 		Trust:  recipe.TrustSHA256Only,
 	}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "u3bin", Version: "1.0"},
+		Binary:  map[string]recipe.Binary{runtime.GOOS + "-" + runtime.GOARCH: bin},
+	}
+	inst := &Installer{}
 
-	err = installBinaryTo(
-		bin, extractDir, extractDir, "u3bin", "1.0",
-		nil, nil, true, nil,
-	)
+	err = inst.installBinaryTo(r, extractDir, extractDir, nil, true)
 	if err == nil {
 		t.Fatal("expected fixup-pipeline failure")
 	}

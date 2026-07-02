@@ -4,6 +4,7 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/recipe"
 )
 
@@ -21,13 +22,13 @@ func TestIsStaleIgnoresBuildDepBump(t *testing.T) {
 	dir := t.TempDir()
 	// Metadata as written today: the build closure leaked in,
 	// recording cmake at the revision it was built against.
-	md := DepsMetadata{
-		Deps: []ResolvedDep{
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
 			{Name: "cmake", Version: "3.0.0", Revision: 1},
 		},
 	}
-	if err := WriteDepsMetadata(dir, md); err != nil {
-		t.Fatalf("WriteDepsMetadata error: %v", err)
+	if err := depsmeta.Write(dir, md); err != nil {
+		t.Fatalf("depsmeta.Write error: %v", err)
 	}
 	r := &recipe.Recipe{
 		Package:      recipe.Package{Name: "fastfetch", Version: "2.0.0", Revision: 1},
@@ -38,7 +39,7 @@ func TestIsStaleIgnoresBuildDepBump(t *testing.T) {
 		"cmake": {Package: recipe.Package{Name: "cmake", Version: "3.0.0", Revision: 2}},
 	})
 
-	stale, err := IsStale(dir, r, resolver)
+	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("IsStale error: %v", err)
 	}
@@ -53,13 +54,13 @@ func TestIsStaleIgnoresBuildDepBump(t *testing.T) {
 // silence legitimate propagation.
 func TestIsStaleStillDetectsRuntimeDepBump(t *testing.T) {
 	dir := t.TempDir()
-	md := DepsMetadata{
-		Deps: []ResolvedDep{
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
 			{Name: "zlib", Version: "1.3.1", Revision: 1},
 		},
 	}
-	if err := WriteDepsMetadata(dir, md); err != nil {
-		t.Fatalf("WriteDepsMetadata error: %v", err)
+	if err := depsmeta.Write(dir, md); err != nil {
+		t.Fatalf("depsmeta.Write error: %v", err)
 	}
 	r := &recipe.Recipe{
 		Package:      recipe.Package{Name: "curl", Version: "8.0.0", Revision: 1},
@@ -69,7 +70,7 @@ func TestIsStaleStillDetectsRuntimeDepBump(t *testing.T) {
 		"zlib": {Package: recipe.Package{Name: "zlib", Version: "1.3.1", Revision: 2}},
 	})
 
-	stale, err := IsStale(dir, r, resolver)
+	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("IsStale error: %v", err)
 	}
@@ -90,13 +91,13 @@ func TestIsStaleHonorsPlatformRuntimeOverride(t *testing.T) {
 	dir := t.TempDir()
 	// Metadata records what the builder wrote: the platform
 	// runtime dep (openssl), resolved to its installed rev.
-	md := DepsMetadata{
-		Deps: []ResolvedDep{
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
 			{Name: "openssl", Version: "3.0.0", Revision: 1},
 		},
 	}
-	if err := WriteDepsMetadata(dir, md); err != nil {
-		t.Fatalf("WriteDepsMetadata error: %v", err)
+	if err := depsmeta.Write(dir, md); err != nil {
+		t.Fatalf("depsmeta.Write error: %v", err)
 	}
 	key := runtime.GOOS + "-" + runtime.GOARCH
 	r := &recipe.Recipe{
@@ -115,7 +116,7 @@ func TestIsStaleHonorsPlatformRuntimeOverride(t *testing.T) {
 		"zlib":    {Package: recipe.Package{Name: "zlib", Version: "1.3.1", Revision: 1}},
 	})
 
-	stale, err := IsStale(dir, r, resolver)
+	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("IsStale error: %v", err)
 	}

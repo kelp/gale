@@ -9,9 +9,6 @@ import (
 // Constraint represents a version constraint expression
 // on a dep. Empty constraint matches any version.
 type Constraint struct {
-	// Raw is the original expression string, preserved
-	// for display.
-	Raw string
 	// Op is one of ">=", ">", "<=", "<", "=", or "" (any).
 	Op string
 	// Major, Minor, Patch, Revision are the four-tuple
@@ -95,7 +92,6 @@ func ParseConstraint(expr string) (Constraint, error) {
 	}
 
 	return Constraint{
-		Raw:      expr,
 		Op:       op,
 		Major:    maj,
 		Minor:    min,
@@ -130,23 +126,10 @@ func (c Constraint) Satisfies(version string, revision int) bool {
 		return true
 	}
 
-	// Strip leading 'v' and any '-revision' suffix from the version string;
-	// the caller provides revision authoritatively.
-	v := strings.TrimPrefix(version, "v")
-	if idx := strings.LastIndex(v, "-"); idx >= 0 {
-		if _, err := strconv.Atoi(v[idx+1:]); err == nil {
-			v = v[:idx]
-		}
-	}
-
-	parts := strings.Split(v, ".")
-	if len(parts) < 3 {
-		return false
-	}
-	iMaj, err1 := strconv.Atoi(parts[0])
-	iMin, err2 := strconv.Atoi(parts[1])
-	iPat, err3 := strconv.Atoi(parts[2])
-	if err1 != nil || err2 != nil || err3 != nil {
+	// Parse the installed version; caller provides revision
+	// authoritatively so the fourth return value is discarded.
+	iMaj, iMin, iPat, _, ok := parseVersion(version)
+	if !ok {
 		return false
 	}
 

@@ -28,15 +28,13 @@ import (
 // Payload is a pre-built fixture tarball served by the
 // fake GHCR.
 type Payload struct {
-	Name        string // fixture payload name (e.g. "hello")
 	TarballPath string // absolute path to the .tar.zst on disk
 	SHA256      string // hex sha256 of the tarball
 }
 
 // Payloads maps payload name to its metadata.
 type Payloads struct {
-	Map     map[string]*Payload
-	tmpRoot string
+	Map map[string]*Payload
 }
 
 // BuildPayloads walks fixturesRoot/payloads/ and builds
@@ -52,7 +50,7 @@ func BuildPayloads(fixturesRoot, tmpRoot string) (*Payloads, error) {
 	if err := os.MkdirAll(tmpRoot, 0o755); err != nil {
 		return nil, err
 	}
-	p := &Payloads{Map: make(map[string]*Payload), tmpRoot: tmpRoot}
+	p := &Payloads{Map: make(map[string]*Payload)}
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -63,31 +61,16 @@ func BuildPayloads(fixturesRoot, tmpRoot string) (*Payloads, error) {
 		if err := download.CreateTarZstd(src, dst); err != nil {
 			return nil, fmt.Errorf("build %s: %w", name, err)
 		}
-		sum, err := hashFile(dst)
+		sum, err := download.HashFile(dst)
 		if err != nil {
 			return nil, fmt.Errorf("hash %s: %w", name, err)
 		}
 		p.Map[name] = &Payload{
-			Name:        name,
 			TarballPath: dst,
 			SHA256:      sum,
 		}
-		envNames = append(envNames, EnvNameForSHA(name))
 	}
 	return p, nil
-}
-
-func hashFile(path string) (string, error) {
-	f, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer f.Close()
-	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // FakeGHCR serves fixture tarballs over HTTP so install
@@ -312,9 +295,18 @@ func setLockManifestDigest(lockPath, pkg, manifestDigest string) error {
 //	    placeholders (__GHCR_URL__, __<NAME>_PAYLOAD_SHA__,
 //	    etc.) against the current script environment.
 //
+//	gale-fixture render <template-rel-path> <dst>
+//	    Read a template from $FIXTURES/<template-rel-path>,
+//	    substitute placeholders, write to <dst> (strips
+//	    .tmpl suffix if present).
+//
 //	gale-fixture register-blob <url-path> <payload-name>
 //	    Ask the fake GHCR to serve <payload-name> at
 //	    <url-path>. Overrides the default route.
+//
+//	gale-fixture serve-file <url-path> <src-file>
+//	    Serve the contents of <src-file> at <url-path>
+//	    on the fake GHCR (raw bytes, not a tarball).
 func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 	if neg {
 		ts.Fatalf("gale-fixture does not support negation")
@@ -322,13 +314,17 @@ func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 	if len(args) == 0 {
 		ts.Fatalf("gale-fixture: missing subcommand")
 	}
+	payloads, _ := ts.Value("payloads").(*Payloads)
+	if payloads == nil {
+		ts.Fatalf("gale-fixture: no payloads in env")
+	}
 	switch args[0] {
 	case "recipes":
 		if len(args) != 2 {
 			ts.Fatalf("gale-fixture recipes: needs <dst>")
 		}
 		dst := ts.MkAbs(args[1])
-		if err := copyRecipes(ts, dst); err != nil {
+		if err := copyRecipes(ts, dst, payloads); err != nil {
 			ts.Fatalf("gale-fixture recipes: %v", err)
 		}
 	case "render":
@@ -337,7 +333,7 @@ func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 		}
 		src := filepath.Join(ts.Getenv("FIXTURES"), args[1])
 		dst := ts.MkAbs(args[2])
-		if err := renderFile(ts, src, dst); err != nil {
+		if err := renderFile(ts, src, dst, payloads); err != nil {
 			ts.Fatalf("gale-fixture render: %v", err)
 		}
 	case "register-blob":
@@ -415,12 +411,12 @@ func CmdAttestReferrer(ts *testscript.TestScript, neg bool, args []string) {
 // renderFile reads a single template file, substitutes
 // placeholders, and writes it to dst (stripping a trailing
 // .tmpl suffix from dst if present).
-func renderFile(ts *testscript.TestScript, src, dst string) error {
+func renderFile(ts *testscript.TestScript, src, dst string, payloads *Payloads) error {
 	data, err := os.ReadFile(src)
 	if err != nil {
 		return err
 	}
-	data = substitute(ts, data)
+	data = substitute(ts, data, payloads)
 	dst = strings.TrimSuffix(dst, ".tmpl")
 	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
 		return err
@@ -432,7 +428,7 @@ func renderFile(ts *testscript.TestScript, src, dst string) error {
 
 // copyRecipes walks $FIXTURES/recipes/ and writes each
 // file into dst, substituting placeholders.
-func copyRecipes(ts *testscript.TestScript, dst string) error {
+func copyRecipes(ts *testscript.TestScript, dst string, payloads *Payloads) error {
 	src := filepath.Join(ts.Getenv("FIXTURES"), "recipes")
 	return filepath.Walk(src, func(path string, fi os.FileInfo, err error) error {
 		if err != nil {
@@ -453,7 +449,7 @@ func copyRecipes(ts *testscript.TestScript, dst string) error {
 		if err != nil {
 			return err
 		}
-		data = substitute(ts, data)
+		data = substitute(ts, data, payloads)
 		// Strip .tmpl suffix if present.
 		target = strings.TrimSuffix(target, ".tmpl")
 		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
@@ -463,39 +459,27 @@ func copyRecipes(ts *testscript.TestScript, dst string) error {
 	})
 }
 
-func substitute(ts *testscript.TestScript, data []byte) []byte {
+func substitute(ts *testscript.TestScript, data []byte, payloads *Payloads) []byte {
+	return substituteData(ts.Getenv, data, payloads)
+}
+
+// substituteData replaces known placeholders in data.
+// getenv is called to look up env var values. payloads
+// provides the set of payload SHA env var names.
+func substituteData(getenv func(string) string, data []byte, payloads *Payloads) []byte {
 	s := string(data)
 	// Known placeholders.
-	s = strings.ReplaceAll(s, "__GHCR_URL__", ts.Getenv("GHCR_URL"))
+	s = strings.ReplaceAll(s, "__GHCR_URL__", getenv("GHCR_URL"))
 	// Payload SHAs: __<NAME>_PAYLOAD_SHA__
 	// These are injected into the script env by setupScript.
-	for _, kv := range scriptEnvList(ts) {
-		if !strings.HasSuffix(kv.key, "_PAYLOAD_SHA") {
-			continue
+	for name := range payloads.Map {
+		k := EnvNameForSHA(name)
+		if v := getenv(k); v != "" {
+			s = strings.ReplaceAll(s, "__"+k+"__", v)
 		}
-		s = strings.ReplaceAll(s, "__"+kv.key+"__", kv.val)
 	}
 	return []byte(s)
 }
-
-type envKV struct{ key, val string }
-
-// scriptEnvList returns every payload SHA env var seen in
-// the script environment. Payload env names are registered
-// by BuildPayloads into envNames.
-func scriptEnvList(ts *testscript.TestScript) []envKV {
-	out := make([]envKV, 0, len(envNames))
-	for _, k := range envNames {
-		if v := ts.Getenv(k); v != "" {
-			out = append(out, envKV{k, v})
-		}
-	}
-	return out
-}
-
-// envNames lists the per-payload SHA env var names
-// (e.g. HELLO_PAYLOAD_SHA). Populated by BuildPayloads.
-var envNames []string
 
 // EnvNameForSHA converts a payload name to its env var.
 func EnvNameForSHA(payloadName string) string {

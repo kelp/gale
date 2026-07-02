@@ -1,7 +1,6 @@
 package main
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,34 +227,15 @@ func TestRemoveWarnsWhenPackageNotInStore(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	orig, _ := os.Getwd()
-	os.Chdir(projDir)
-	t.Cleanup(func() { os.Chdir(orig) })
-
-	// Capture stderr via a pipe drained on a goroutine so
-	// the writer never blocks regardless of how much output
-	// the command produces.
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	origStderr := os.Stderr
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = origStderr })
-
-	stderrCh := make(chan string, 1)
-	go func() {
-		data, _ := io.ReadAll(r)
-		stderrCh <- string(data)
-	}()
+	chdirTo(t, projDir)
 
 	removeProject = true
 	t.Cleanup(func() { removeProject = false })
 
-	runErr := removeCmd.RunE(removeCmd, []string{"testpkg"})
-	w.Close()
-	stderr := <-stderrCh
-	os.Stderr = origStderr
+	var runErr error
+	stderr := captureStderr(t, func() {
+		runErr = removeCmd.RunE(removeCmd, []string{"testpkg"})
+	})
 
 	if runErr != nil {
 		t.Fatalf("remove command failed: %v", runErr)

@@ -309,12 +309,13 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 
 // packageName extracts the package name from a store dir
 // path like .../pkg/<name>/<version>. Returns "" on
-// unexpected shapes.
+// unexpected shapes (grandparent is not "pkg").
 func packageName(storeDir string) string {
-	// storeDir = <root>/<name>/<version>. Name is the
-	// parent dir's basename.
+	// storeDir = <root>/pkg/<name>/<version>.
+	// parent  = <root>/pkg/<name>
+	// grandpa = <root>/pkg
 	parent := filepath.Dir(storeDir)
-	if filepath.Base(parent) == "" {
+	if filepath.Base(filepath.Dir(parent)) != "pkg" {
 		return ""
 	}
 	return filepath.Base(parent)

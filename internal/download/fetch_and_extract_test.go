@@ -203,7 +203,7 @@ func TestFetchAndExtractTarZstdSendsBearerTokenWhenProvided(t *testing.T) {
 
 	var capturedAuth string
 	// Use TLS server: the production code refuses to send a bearer
-	// token over plain HTTP (same policy as FetchWithAuthNamed).
+	// token over plain HTTP.
 	srv := httptest.NewTLSServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			capturedAuth = r.Header.Get("Authorization")
@@ -213,7 +213,7 @@ func TestFetchAndExtractTarZstdSendsBearerTokenWhenProvided(t *testing.T) {
 	defer srv.Close()
 
 	// Make the package-level HTTP client trust the test server's
-	// self-signed certificate (same pattern as FetchWithAuth tests).
+	// self-signed certificate.
 	restoreClient := SetHTTPClient(srv.Client())
 	defer restoreClient()
 

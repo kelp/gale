@@ -2,11 +2,11 @@ package main
 
 // Tests for updateLockfile, the helper that runSyncOne calls to
 // persist SHA256 hashes after a successful install, and for
-// writeConfigAndLock's manifest-digest handling.
+// WriteConfigAndLock's manifest-digest handling.
 //
 // The write-failure tests exercise existing production code and
 // pass. The manifest-digest tests are RED until updateLockfile
-// persists its manifestDigest parameter and writeConfigAndLock
+// persists its manifestDigest parameter and WriteConfigAndLock
 // threads digests through the relock path.
 
 import (
@@ -127,7 +127,7 @@ func TestUpdateLockfilePersistsManifestDigest(t *testing.T) {
 // TestWriteConfigAndLockRelockPreservesManifestDigest pins the
 // cached-install rewrite path (sha256 == ""): when the existing
 // lock entry has a bare version ("2.53.0") and the resolver hands
-// us the canonical "2.53.0-2", writeConfigAndLock rewrites the
+// us the canonical "2.53.0-2", WriteConfigAndLock rewrites the
 // entry to the canonical pin while carrying the old hash forward.
 // The manifest digest must survive that rewrite too — dropping it
 // would silently downgrade a digest-pinned package to tag-based
@@ -158,10 +158,11 @@ func TestWriteConfigAndLockRelockPreservesManifestDigest(t *testing.T) {
 
 	// Cached install (sha256 empty) resolving to the canonical
 	// revision form triggers the relock rewrite.
-	if err := writeConfigAndLock(
-		configPath, "", "git", "2.53.0", "2.53.0-2", "", "",
+	ctx := &cmdContext{GalePath: configPath}
+	if err := ctx.WriteConfigAndLock(
+		"git", "2.53.0", "2.53.0-2", "", "",
 	); err != nil {
-		t.Fatalf("writeConfigAndLock: %v", err)
+		t.Fatalf("WriteConfigAndLock: %v", err)
 	}
 
 	got, err := lockfile.Read(lockPath)

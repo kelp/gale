@@ -48,7 +48,7 @@ func TestRebuildGenerationToleratesUninstalledPackage(t *testing.T) {
 
 	// The rebuild update/remove run after committing their
 	// config mutation. It must not fail on ghost.
-	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
 		t.Fatalf(
 			"rebuildGeneration failed on a config package that "+
 				"is not installed: %v", err,

@@ -141,13 +141,11 @@ const appConfigWithRepos = `
 [[repos]]
 name = "core"
 url = "https://github.com/kelp/gale-recipes"
-key = "gale-ed25519:abc123"
 priority = 1
 
 [[repos]]
 name = "community"
 url = "https://github.com/acme/gale-recipes"
-key = "gale-ed25519:def456..."
 priority = 2
 `
 
@@ -193,20 +191,6 @@ func TestParseAppConfigRepoURL(t *testing.T) {
 	}
 }
 
-func TestParseAppConfigRepoKey(t *testing.T) {
-	cfg, err := ParseAppConfig(appConfigWithRepos)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if cfg.Repos[0].Key != "gale-ed25519:abc123" {
-		t.Errorf("Repos[0].Key = %q, want %q",
-			cfg.Repos[0].Key, "gale-ed25519:abc123")
-	}
-}
-
 func TestParseAppConfigRepoPriority(t *testing.T) {
 	cfg, err := ParseAppConfig(appConfigWithRepos)
 	if err != nil {
@@ -237,11 +221,6 @@ func TestParseAppConfigSecondRepo(t *testing.T) {
 	if cfg.Repos[1].URL != wantURL {
 		t.Errorf("Repos[1].URL = %q, want %q",
 			cfg.Repos[1].URL, wantURL)
-	}
-	wantKey := "gale-ed25519:def456..."
-	if cfg.Repos[1].Key != wantKey {
-		t.Errorf("Repos[1].Key = %q, want %q",
-			cfg.Repos[1].Key, wantKey)
 	}
 	if cfg.Repos[1].Priority != 2 {
 		t.Errorf("Repos[1].Priority = %d, want 2",

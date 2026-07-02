@@ -39,10 +39,13 @@ func TestFinalizeInstallForeignHostDeclarationOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := finalizeInstall(
-		galeDir, storeRoot, configPath, "otherbox",
-		"hello", "1.0.0", "1.0.0-1", "abc123", "",
-	)
+	ctx := &cmdContext{
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+		GalePath:  configPath,
+		Host:      "otherbox",
+	}
+	err := ctx.FinalizeInstall("hello", "1.0.0", "1.0.0-1", "abc123", "")
 	if err != nil {
 		t.Fatalf("foreign-host install must not fail the "+
 			"active-generation check (declaration-only): %v", err)
@@ -86,10 +89,13 @@ func TestFinalizeInstallCurrentHostGenCheckStillEnforced(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := finalizeInstall(
-		galeDir, storeRoot, configPath, "thishost",
-		"hello", "1.0.0", "1.0.0-1", "abc123", "",
-	)
+	ctx := &cmdContext{
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+		GalePath:  configPath,
+		Host:      "thishost",
+	}
+	err := ctx.FinalizeInstall("hello", "1.0.0", "1.0.0-1", "abc123", "")
 	if err == nil {
 		t.Fatal("current-host install with no store dir must " +
 			"still fail the active-generation check")

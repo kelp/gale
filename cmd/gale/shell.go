@@ -107,7 +107,7 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 		))
 		return
 	}
-	stale, err := lockfile.IsStale(configPath, lp, cfg.Packages)
+	stale, err := lockfile.IsStale(lp, cfg.Packages)
 	if err != nil {
 		out.Warn(fmt.Sprintf(
 			"sync: checking lockfile: %v", err,

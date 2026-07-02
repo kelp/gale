@@ -1606,3 +1606,190 @@ runtime = [{name = "bar"}]
 		t.Errorf("Constraints[bar] = %q, want absent or empty", got)
 	}
 }
+
+// --- Platform-scoped constraints ---
+
+// TestPlatformDepConstraintScopedToPlatformEntry tests that a
+// version-constrained dep inside a platform table stores the
+// constraint on PlatformDependencies.Constraints, not on the
+// global Dependencies.Constraints.
+func TestPlatformDepConstraintScopedToPlatformEntry(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+build = ["autoconf"]
+
+[dependencies.linux-amd64]
+runtime = [{name = "expat", version = ">=2.7.5-2"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Global Constraints must not contain the platform-scoped dep.
+	if _, ok := r.Dependencies.Constraints["expat"]; ok {
+		t.Error("global Constraints should not contain platform-scoped dep expat")
+	}
+	// The platform entry must carry its own Constraints.
+	pd, ok := r.Dependencies.Platform["linux-amd64"]
+	if !ok {
+		t.Fatal("expected linux-amd64 platform deps entry")
+	}
+	if pd.Constraints == nil {
+		t.Fatal("PlatformDependencies.Constraints is nil, want map with expat")
+	}
+	if got := pd.Constraints["expat"]; got != ">=2.7.5-2" {
+		t.Errorf("pd.Constraints[expat] = %q, want >=2.7.5-2", got)
+	}
+}
+
+// TestDependenciesForPlatformMergesPlatformConstraints tests that
+// DependenciesForPlatform merges platform-scoped constraints into
+// the returned Dependencies.Constraints map.
+func TestDependenciesForPlatformMergesPlatformConstraints(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+build = [{name = "cmake", version = ">=3.26"}]
+
+[dependencies.linux-amd64]
+runtime = [{name = "expat", version = ">=2.7.5-2"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	deps := r.DependenciesForPlatform("linux", "amd64")
+	// Global constraint must be present.
+	if got := deps.Constraints["cmake"]; got != ">=3.26" {
+		t.Errorf("Constraints[cmake] = %q, want >=3.26", got)
+	}
+	// Platform constraint must be merged in.
+	if got := deps.Constraints["expat"]; got != ">=2.7.5-2" {
+		t.Errorf("Constraints[expat] = %q, want >=2.7.5-2 after merge", got)
+	}
+}
+
+// TestDependenciesForPlatformNonMatchingPlatformNoMerge tests that
+// DependenciesForPlatform does not merge constraints from a
+// platform entry that does not match the requested platform.
+func TestDependenciesForPlatformNonMatchingPlatformNoMerge(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies.linux-amd64]
+runtime = [{name = "expat", version = ">=2.7.5-2"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	deps := r.DependenciesForPlatform("darwin", "arm64")
+	if _, ok := deps.Constraints["expat"]; ok {
+		t.Error("Constraints should not contain expat for darwin-arm64")
+	}
+}
+
+// TestToStringSliceSilentlyDropsNonStringElements tests that
+// toStringSlice silently drops non-string elements in the raw array.
+// This is intentional: wrong-typed build steps are a recipe authoring
+// error that lint catches; keeping parse tolerant avoids breaking
+// forward-compat with unknown array types.
+func TestToStringSliceSilentlyDropsNonStringElements(t *testing.T) {
+	raw := []interface{}{"step1", 42, "step2", true, nil}
+	got := toStringSlice(raw)
+	want := []string{"step1", "step2"}
+	if len(got) != len(want) {
+		t.Fatalf("toStringSlice: got %v (len %d), want %v (len %d)",
+			got, len(got), want, len(want))
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Errorf("toStringSlice[%d] = %q, want %q", i, got[i], v)
+		}
+	}
+}
+
+// TestToStringStringMapSilentlyDropsNonStringValues tests that
+// toStringStringMap silently drops non-string values in the raw map.
+// This is intentional: wrong-typed env values are a recipe authoring
+// error that lint catches; keeping parse tolerant avoids breaking
+// forward-compat with unknown map value types.
+func TestToStringStringMapSilentlyDropsNonStringValues(t *testing.T) {
+	raw := map[string]interface{}{
+		"KEY1": "value1",
+		"KEY2": 99,
+		"KEY3": "value3",
+		"KEY4": true,
+	}
+	got := toStringStringMap(raw)
+	// Only string values must survive.
+	if len(got) != 2 {
+		t.Fatalf("toStringStringMap: got %v (len %d), want 2 string entries",
+			got, len(got))
+	}
+	if got["KEY1"] != "value1" {
+		t.Errorf("KEY1 = %q, want value1", got["KEY1"])
+	}
+	if got["KEY3"] != "value3" {
+		t.Errorf("KEY3 = %q, want value3", got["KEY3"])
+	}
+}
+
+// TestParseBuildSkipListIncludesToolchain tests that a recipe with a
+// top-level toolchain key and a platform sub-table parses without
+// error. This pins the explicit skip-list fix (toolchain was absent).
+func TestParseBuildSkipListIncludesToolchain(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[build]
+system = "make"
+toolchain = "gcc"
+steps = ["make install"]
+
+[build.linux-amd64]
+toolchain = "clang"
+steps = ["CC=clang make install"]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error parsing recipe with toolchain: %v", err)
+	}
+	if r.Build.Toolchain != "gcc" {
+		t.Errorf("Build.Toolchain = %q, want gcc", r.Build.Toolchain)
+	}
+	pb, ok := r.Build.Platform["linux-amd64"]
+	if !ok {
+		t.Fatal("expected linux-amd64 platform build entry")
+	}
+	if pb.Toolchain != "clang" {
+		t.Errorf("platform Toolchain = %q, want clang", pb.Toolchain)
+	}
+}

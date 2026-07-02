@@ -3,6 +3,7 @@ package registry
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -369,5 +370,62 @@ func TestEmptyCacheDirSkipsCache(t *testing.T) {
 	if got := ch.lastIfNoneMatch("/recipes/t/testpkg.toml"); got != "" {
 		t.Errorf("expected no If-None-Match when cache disabled, got %q",
 			got)
+	}
+}
+
+// --- Sentinel error tests ---
+
+// TestPlainGet404ReturnsSentinel verifies that plainGet (the
+// uncached path, used when CacheDir is empty) returns errHTTP404
+// for a 404 response — not a fresh fmt.Errorf — so callers can
+// use errors.Is instead of string-matching.
+func TestPlainGet404ReturnsSentinel(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		},
+	))
+	defer srv.Close()
+
+	// Empty CacheDir forces the plainGet path.
+	reg := &Registry{BaseURL: srv.URL}
+	cr, err := reg.cachedGet(t.Context(), srv.URL+"/any")
+	if err == nil {
+		t.Fatalf("expected error for 404, got body len=%d", len(cr.Body))
+	}
+	if !errors.Is(err, errHTTP404) {
+		t.Errorf("errors.Is(err, errHTTP404) = false; err = %v "+
+			"— plainGet must return the sentinel, not a fresh fmt.Errorf",
+			err)
+	}
+}
+
+// TestOfflineNoCacheSentinel verifies that the offline-no-cache
+// path in cachedGet wraps ErrOfflineNoCache so callers can detect
+// it with errors.Is without string-matching the message.
+func TestOfflineNoCacheSentinel(t *testing.T) {
+	// Closed server: any HTTP request would fail loudly.
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			t.Fatalf("offline mode must not make HTTP requests: %s",
+				r.URL.Path)
+		},
+	))
+	defer srv.Close()
+
+	reg := &Registry{
+		BaseURL:  srv.URL,
+		CacheDir: t.TempDir(), // cache dir configured, but empty
+		Offline:  true,
+	}
+	_, err := reg.cachedGet(t.Context(), srv.URL+"/any")
+	if err == nil {
+		t.Fatal("expected error for offline with no cache")
+	}
+	if !errors.Is(err, ErrOfflineNoCache) {
+		t.Errorf("errors.Is(err, ErrOfflineNoCache) = false; "+
+			"err = %v — cachedGet must wrap ErrOfflineNoCache "+
+			"with %%w on the no-cache path",
+			err)
 	}
 }

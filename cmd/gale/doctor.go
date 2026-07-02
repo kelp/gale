@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
@@ -34,6 +36,29 @@ var (
 	// network-perf/0004.
 	doctorCheckRegistry bool
 )
+
+// cappedList builds a message body listing items, capped at
+// 5. header is the opening line. If len(items) > 5, an
+// overflow line "... N more" is appended. footer is appended
+// after the list when non-empty (e.g. a remediation command).
+func cappedList(header string, items []string, footer string) string {
+	const maxShown = 5
+	msg := header
+	shown := items
+	if len(shown) > maxShown {
+		shown = shown[:maxShown]
+	}
+	for _, item := range shown {
+		msg += "\n  " + item
+	}
+	if len(items) > maxShown {
+		msg += fmt.Sprintf("\n  ... %d more", len(items)-maxShown)
+	}
+	if footer != "" {
+		msg += "\n  " + footer
+	}
+	return msg
+}
 
 // doctorContext holds resolved state shared across checks.
 type doctorContext struct {
@@ -258,24 +283,11 @@ func checkHostOverrides(ctx *doctorContext) bool {
 		ctx.out.Success("No host-override shadows")
 		return true
 	}
-	const maxShown = 5
-	shown := overrides
-	if len(shown) > maxShown {
-		shown = shown[:maxShown]
-	}
-	msg := fmt.Sprintf(
-		"Host overlay shadows %d shared package(s):", len(overrides),
-	)
-	for _, line := range shown {
-		msg += "\n  " + line
-	}
-	if len(overrides) > maxShown {
-		msg += fmt.Sprintf("\n  ... %d more",
-			len(overrides)-maxShown)
-	}
-	msg += "\n  (host overlay wins — remove shared entry or " +
-		"the overlay to silence)"
-	ctx.out.Warn(msg)
+	ctx.out.Warn(cappedList(
+		fmt.Sprintf("Host overlay shadows %d shared package(s):", len(overrides)),
+		overrides,
+		"(host overlay wins — remove shared entry or the overlay to silence)",
+	))
 	return true
 }
 
@@ -472,25 +484,14 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 		return true
 	}
 	sort.Strings(drift)
-	const maxShown = 5
-	msg := fmt.Sprintf(
-		"Revision drift in current generation (%d package(s))",
-		len(drift),
-	)
-	shown := drift
-	if len(shown) > maxShown {
-		shown = shown[:maxShown]
-	}
-	for _, d := range shown {
-		msg += "\n  " + d
-	}
-	if len(drift) > maxShown {
-		msg += fmt.Sprintf(
-			"\n  ... %d more", len(drift)-maxShown,
-		)
-	}
-	msg += "\n  Run: gale doctor --repair"
-	ctx.out.Error(msg)
+	ctx.out.Error(cappedList(
+		fmt.Sprintf(
+			"Revision drift in current generation (%d package(s))",
+			len(drift),
+		),
+		drift,
+		"Run: gale doctor --repair",
+	))
 	return false
 }
 
@@ -547,23 +548,11 @@ func checkFarmScope(
 		))
 		return true
 	}
-	// Cap the printed list so a very out-of-sync farm
-	// doesn't flood output.
-	const maxShown = 5
-	shown := issues
-	if len(shown) > maxShown {
-		shown = shown[:maxShown]
-	}
-	msg := fmt.Sprintf("Lib farm drift (%d issue(s))", len(issues))
-	for _, i := range shown {
-		msg += "\n  " + i
-	}
-	if len(issues) > maxShown {
-		msg += fmt.Sprintf("\n  ... %d more",
-			len(issues)-maxShown)
-	}
-	msg += "\n  Run: gale doctor --repair"
-	ctx.out.Error(msg)
+	ctx.out.Error(cappedList(
+		fmt.Sprintf("Lib farm drift (%d issue(s))", len(issues)),
+		issues,
+		"Run: gale doctor --repair",
+	))
 	return false
 }
 
@@ -603,7 +592,7 @@ func checkStaleInstalls(ctx *doctorContext) bool {
 		// the recipe, so old installs whose version is no
 		// longer in the registry's .versions index still
 		// surface as soft-migration candidates.
-		if !installer.HasDepsMetadata(storeDir) {
+		if !depsmeta.Has(storeDir) {
 			stale = append(stale, pkg.Name+"@"+pkg.Version)
 			continue
 		}
@@ -614,7 +603,7 @@ func checkStaleInstalls(ctx *doctorContext) bool {
 			continue
 		}
 		isStale, err := installer.IsStale(
-			storeDir, r, ctx.cmdCtx.Resolver,
+			storeDir, r, runtime.GOOS, runtime.GOARCH, ctx.cmdCtx.Resolver,
 		)
 		if err != nil {
 			continue
@@ -627,23 +616,14 @@ func checkStaleInstalls(ctx *doctorContext) bool {
 		ctx.out.Success("No stale installs")
 		return true
 	}
-	const maxShown = 5
-	shown := stale
-	if len(shown) > maxShown {
-		shown = shown[:maxShown]
-	}
-	msg := fmt.Sprintf(
-		"Stale installs (%d) — deps changed since built:",
-		len(stale),
-	)
-	for _, s := range shown {
-		msg += "\n  " + s
-	}
-	if len(stale) > maxShown {
-		msg += fmt.Sprintf("\n  ... %d more", len(stale)-maxShown)
-	}
-	msg += "\n  Run: gale sync (reinstalls stale packages)"
-	ctx.out.Warn(msg)
+	ctx.out.Warn(cappedList(
+		fmt.Sprintf(
+			"Stale installs (%d) — deps changed since built:",
+			len(stale),
+		),
+		stale,
+		"Run: gale sync (reinstalls stale packages)",
+	))
 	// Warn, not fail — staleness is common during recipe
 	// development and auto-resolves on next sync.
 	return true
@@ -846,7 +826,7 @@ func newestModTime(dir string) time.Time {
 
 func repairDoctor(ctx *doctorContext) error {
 	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
-	if err := rebuildGeneration(ctx.galeDir, ctx.storeRoot, globalConfig); err != nil {
+	if err := rebuildGeneration(ctx.galeDir, ctx.storeRoot, globalConfig, nil); err != nil {
 		return fmt.Errorf("rebuild global generation: %w", err)
 	}
 	if projConfig, err := projectConfigPath(ctx.cwd); err == nil &&
@@ -859,7 +839,7 @@ func repairDoctor(ctx *doctorContext) error {
 		if dirErr != nil {
 			return fmt.Errorf("resolving project gale dir: %w", dirErr)
 		}
-		if err := rebuildGeneration(projGaleDir, ctx.storeRoot, projConfig); err != nil {
+		if err := rebuildGeneration(projGaleDir, ctx.storeRoot, projConfig, nil); err != nil {
 			return fmt.Errorf("rebuild project generation: %w", err)
 		}
 	}

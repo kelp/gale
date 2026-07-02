@@ -37,32 +37,6 @@ func NewClient(apiKey string) *Client {
 	return c
 }
 
-// Complete sends a single-shot prompt and returns the
-// response text. Used by gale search.
-func (c *Client) Complete(prompt string) (string, error) {
-	if c.apiKey == "" {
-		return "", ErrNotConfigured
-	}
-
-	resp, err := c.sdk.Messages.New(
-		context.Background(),
-		anthropic.MessageNewParams{
-			Model:     defaultModel,
-			MaxTokens: defaultMaxTokens,
-			Messages: []anthropic.MessageParam{
-				anthropic.NewUserMessage(
-					anthropic.NewTextBlock(prompt),
-				),
-			},
-		},
-	)
-	if err != nil {
-		return "", fmt.Errorf("ai: %w", err)
-	}
-
-	return extractText(resp), nil
-}
-
 // Tool defines a tool the agent can call.
 type Tool struct {
 	Param   anthropic.ToolParam

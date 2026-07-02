@@ -1,23 +1,10 @@
 package env
 
-import "errors"
-
-// ErrUnsupportedShell is returned when GenerateHook receives
-// an unknown integration name.
-var ErrUnsupportedShell = errors.New("unsupported shell")
-
-// GenerateHook generates a hook script for the given
-// integration. Currently only "direnv" is supported.
-func GenerateHook(shell string) (string, error) {
-	switch shell {
-	case "direnv":
-		return generateDirenvHook(), nil
-	default:
-		return "", ErrUnsupportedShell
-	}
-}
-
-func generateDirenvHook() string {
+// DirenvHook returns the direnv integration script.
+// Add to ~/.config/direnv/direnvrc:
+//
+//	eval "$(gale hook direnv)"
+func DirenvHook() string {
 	return `# Gale integration for direnv.
 # Add to ~/.config/direnv/direnvrc:
 #   eval "$(gale hook direnv)"

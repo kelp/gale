@@ -71,7 +71,7 @@ func TestRebuildGenerationOverManyPackagesSymlinksAll(t *testing.T) {
 	}
 
 	// Exercise the EXACT function the install path uses.
-	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
 		t.Fatalf("rebuildGeneration: %v", err)
 	}
 
@@ -158,7 +158,7 @@ func TestRebuildGenerationAutoPrunesOldGens(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
 		t.Fatalf("rebuildGeneration: %v", err)
 	}
 
@@ -235,7 +235,7 @@ func TestFinalizeInstallRotatesGenOnRevisionBump(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("write initial lockfile: %v", err)
 	}
-	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
 		t.Fatalf("initial rebuildGeneration: %v", err)
 	}
 
@@ -247,9 +247,15 @@ func TestFinalizeInstallRotatesGenOnRevisionBump(t *testing.T) {
 	}
 
 	mkRev("2.92.0-3")
-	if err := finalizeInstall(galeDir, storeRoot, configPath, "",
-		"gh", "2.92.0", "2.92.0-3", "deadbeef", ""); err != nil {
-		t.Fatalf("finalizeInstall on revision bump: %v", err)
+	ctx := &cmdContext{
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+		GalePath:  configPath,
+	}
+	if err := ctx.FinalizeInstall(
+		"gh", "2.92.0", "2.92.0-3", "deadbeef", "",
+	); err != nil {
+		t.Fatalf("FinalizeInstall on revision bump: %v", err)
 	}
 
 	current, err := os.Readlink(filepath.Join(galeDir, "current"))
@@ -314,10 +320,14 @@ func TestFinalizeInstallWithMissingOtherPkgInConfig(t *testing.T) {
 		t.Fatalf("write gh-3: %v", err)
 	}
 
-	err := finalizeInstall(galeDir, storeRoot, configPath, "",
-		"gh", "2.92.0", "2.92.0-3", "deadbeef", "")
+	ctx := &cmdContext{
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+		GalePath:  configPath,
+	}
+	err := ctx.FinalizeInstall("gh", "2.92.0", "2.92.0-3", "deadbeef", "")
 	if err != nil {
-		t.Fatalf("finalizeInstall should be lenient (skip uninstalled config pkgs) and succeed, got: %v", err)
+		t.Fatalf("FinalizeInstall should be lenient (skip uninstalled config pkgs) and succeed, got: %v", err)
 	}
 
 	active, err := generation.CurrentVersions(galeDir, storeRoot)
@@ -408,11 +418,17 @@ func TestFinalizeInstallPreservesAllDeclaredPackages(t *testing.T) {
 		t.Fatalf("write new pkg exe: %v", err)
 	}
 
-	// Run finalizeInstall — the EXACT function `just install`
+	// Run FinalizeInstall — the EXACT method `just install`
 	// calls after building gale from source.
-	if err := finalizeInstall(galeDir, storeRoot, configPath, "",
-		newPkg, newVersion, newVersion+"-1", "deadbeef", ""); err != nil {
-		t.Fatalf("finalizeInstall: %v", err)
+	ctx := &cmdContext{
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+		GalePath:  configPath,
+	}
+	if err := ctx.FinalizeInstall(
+		newPkg, newVersion, newVersion+"-1", "deadbeef", "",
+	); err != nil {
+		t.Fatalf("FinalizeInstall: %v", err)
 	}
 
 	// Walk gen/1/bin and assert all 44 pre-existing + 1 new = 45 binaries.
@@ -487,10 +503,10 @@ func TestRebuildGenerationLinksRecipeRevisionOverOrphan(t *testing.T) {
 		}, nil
 	})
 
-	if err := rebuildGenerationLenient(
+	if err := rebuildGeneration(
 		galeDir, storeRoot, configPath, pinResolve,
 	); err != nil {
-		t.Fatalf("rebuildGenerationLenient: %v", err)
+		t.Fatalf("rebuildGeneration: %v", err)
 	}
 
 	target, err := os.Readlink(
@@ -552,7 +568,7 @@ func TestRebuildGenerationActivatesPresentWhenUnrelatedMissing(t *testing.T) {
 
 	// The shared rebuild path must not abort on the missing
 	// unrelated package — strict Build would error here.
-	if err := rebuildGeneration(galeDir, storeRoot, configPath); err != nil {
+	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
 		t.Fatalf("rebuildGeneration aborted on a missing unrelated package "+
 			"(gh#123 regression): %v", err)
 	}

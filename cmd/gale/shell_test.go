@@ -47,13 +47,7 @@ func TestSyncIfNeededUsesProjectDir(t *testing.T) {
 
 	// cwd has no gale.toml — if syncIfNeeded ignores
 	// projectDir it would silently return.
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(orig) })
-	emptyDir := t.TempDir()
-	os.Chdir(emptyDir)
+	chdirTo(t, t.TempDir())
 
 	var buf bytes.Buffer
 	syncIfNeeded(&buf, projDir)
@@ -88,13 +82,7 @@ func TestSyncIfNeededSyncsTargetProject(t *testing.T) {
 	}
 
 	// cwd has no gale.toml.
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(orig) })
-	emptyDir := t.TempDir()
-	os.Chdir(emptyDir)
+	chdirTo(t, t.TempDir())
 
 	var buf bytes.Buffer
 	syncIfNeeded(&buf, projDir)
@@ -132,13 +120,7 @@ func TestSyncIfNeededNestedSubdirectory(t *testing.T) {
 	}
 
 	// cwd has no gale.toml.
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(orig) })
-	emptyDir := t.TempDir()
-	os.Chdir(emptyDir)
+	chdirTo(t, t.TempDir())
 
 	var buf bytes.Buffer
 	syncIfNeeded(&buf, nestedDir)
@@ -229,12 +211,7 @@ func TestSyncIfNeededWarnsOnBadConfig(t *testing.T) {
 
 	// Change to the directory so syncIfNeeded finds
 	// the config.
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(orig) })
-	os.Chdir(dir)
+	chdirTo(t, dir)
 
 	var buf bytes.Buffer
 	syncIfNeeded(&buf, "")

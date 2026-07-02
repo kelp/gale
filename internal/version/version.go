@@ -48,6 +48,14 @@ func SplitRevision(v string) (base string, revision int) {
 	return splitRevision(v)
 }
 
+// Base strips the numeric revision suffix from v, returning the
+// bare version triple. "1.8.1-4" → "1.8.1"; "1.0-rc1" → "1.0-rc1";
+// "1.2-0" → "1.2-0".
+func Base(v string) string {
+	base, _ := splitRevision(v)
+	return base
+}
+
 // splitRevision peels a numeric `-<N>` suffix off the end of v
 // and returns (base, revision). A missing or non-numeric
 // suffix leaves v untouched and revision defaults to 1

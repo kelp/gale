@@ -14,6 +14,35 @@
   length, and dependency directory ordering is canonicalized
   instead of following goroutine-completion order
   (kelp/gale-recipes#79).
+- installer: a platform-scoped version constraint on a
+  transitive dep was silently dropped during dep installs.
+  The C4 constraint check now reads the platform-merged
+  constraint map, so a violating transitive dep fails the
+  install loudly instead of installing silently.
+- installer: `IsStale` now merges platform-scoped dep lists
+  and constraints (via `DependenciesForPlatform`) into the
+  staleness check, so a platform runtime override no longer
+  leaves a package unchecked.
+- create-recipe: removed an unguarded `os.RemoveAll` hazard
+  in cleanup.
+
+### Changed
+
+- Code-quality sweep across the codebase (20 issues):
+  collapsed six duplicated scope-resolution copies, reduced
+  the installer API surface, deleted dead code (repo search
+  API, unused fetch variants, dead fields and params),
+  removed the depsmeta forwarding layer, consolidated
+  version/revision parsing, deduplicated
+  registry/recipe/build/doctor/gc helpers, and consolidated
+  duplicated test scaffolding.
+- Removed `internal/prewarm` (concurrent pre-fetch of
+  build-dep recipes before dep installs): redundant now
+  that the parallel dep walk fetches and installs deps
+  concurrently under the shared download limiter.
+- `gale env` and `gale which` now resolve scope uniformly
+  with sync, so `.tool-versions`-only projects get project
+  scope instead of falling back to global.
 
 ## v0.20.0 — 2026-07-01
 

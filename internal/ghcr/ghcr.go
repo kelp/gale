@@ -72,15 +72,6 @@ func ResetTokenCacheForTest() {
 	globalCache.inflight = make(map[string]*inflightCall)
 }
 
-// BlobURL returns the full GHCR blob URL for a given base
-// repository, package name, and SHA256 hash.
-func BlobURL(base, name, sha256 string) string {
-	return fmt.Sprintf(
-		"https://ghcr.io/v2/%s/%s/blobs/sha256:%s",
-		base, name, sha256,
-	)
-}
-
 // tokenEndpoint is the base URL for the GHCR token service.
 // Tests override this to point at httptest servers.
 var tokenEndpoint = "https://ghcr.io/token" //nolint:gosec // G101 — URL, not a credential

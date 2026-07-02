@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
 // --- Behavior 1: Read lock file ---
@@ -178,26 +177,15 @@ func writeLock(t *testing.T, path string, pkgs map[string]LockedPackage) {
 
 func TestIsStaleInSync(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	pkgs := map[string]string{"jq": "1.7.1"}
 
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	writeLock(t, lockPath, map[string]LockedPackage{
 		"jq": {Version: "1.7.1"},
 	})
 
-	// Lock must be newer than toml.
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath, pkgs)
+	stale, err := IsStale(lockPath, pkgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -208,7 +196,6 @@ func TestIsStaleInSync(t *testing.T) {
 
 func TestIsStaleTOMLNewerContentMatches(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	pkgs := map[string]string{"jq": "1.7.1"}
@@ -216,19 +203,8 @@ func TestIsStaleTOMLNewerContentMatches(t *testing.T) {
 		"jq": {Version: "1.7.1"},
 	})
 
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(lockPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Even though toml is newer by mtime, content matches
-	// so the lock is not stale.
-	stale, err := IsStale(tomlPath, lockPath, pkgs)
+	// Content matches so the lock is not stale.
+	stale, err := IsStale(lockPath, pkgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -239,24 +215,13 @@ func TestIsStaleTOMLNewerContentMatches(t *testing.T) {
 
 func TestIsStaleTOMLNewerContentDiffers(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	writeLock(t, lockPath, map[string]LockedPackage{
 		"jq": {Version: "1.7.1"},
 	})
 
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(lockPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.8.0\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath,
+	stale, err := IsStale(lockPath,
 		map[string]string{"jq": "1.8.0"})
 	if err != nil {
 		t.Fatal(err)
@@ -268,27 +233,17 @@ func TestIsStaleTOMLNewerContentDiffers(t *testing.T) {
 
 func TestIsStaleExtraPackage(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	tomlPkgs := map[string]string{
 		"jq": "1.7.1", "ripgrep": "14.1.0",
 	}
 
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	writeLock(t, lockPath, map[string]LockedPackage{
 		"jq": {Version: "1.7.1"},
 	})
 
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath, tomlPkgs)
+	stale, err := IsStale(lockPath, tomlPkgs)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -299,15 +254,9 @@ func TestIsStaleExtraPackage(t *testing.T) {
 
 func TestIsStaleMissingLock(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath,
+	stale, err := IsStale(lockPath,
 		map[string]string{"jq": "1.7.1"})
 	if err != nil {
 		t.Fatal(err)
@@ -319,23 +268,13 @@ func TestIsStaleMissingLock(t *testing.T) {
 
 func TestIsStaleVersionDiffers(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.8.0\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 	writeLock(t, lockPath, map[string]LockedPackage{
 		"jq": {Version: "1.7.1"},
 	})
 
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath,
+	stale, err := IsStale(lockPath,
 		map[string]string{"jq": "1.8.0"})
 	if err != nil {
 		t.Fatal(err)
@@ -527,14 +466,7 @@ func TestWriteOmitsEmptySHA256(t *testing.T) {
 
 func TestIsStaleStatLockError(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "subdir", "gale.lock")
-
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	// Create lock inside a directory, then make directory
 	// unreadable so stat fails with permission error.
@@ -554,29 +486,10 @@ func TestIsStaleStatLockError(t *testing.T) {
 		os.Chmod(subdir, 0o755)
 	})
 
-	_, err := IsStale(tomlPath, lockPath,
+	_, err := IsStale(lockPath,
 		map[string]string{"jq": "1.7.1"})
 	if err == nil {
 		t.Fatal("expected error for unreadable lock dir")
-	}
-}
-
-// --- IsStale: missing gale.toml ---
-
-func TestIsStaleStatTOMLError(t *testing.T) {
-	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	// tomlPath does not exist.
-	_, err := IsStale(tomlPath, lockPath,
-		map[string]string{"jq": "1.7.1"})
-	if err == nil {
-		t.Fatal("expected error when gale.toml missing")
 	}
 }
 
@@ -584,26 +497,14 @@ func TestIsStaleStatTOMLError(t *testing.T) {
 
 func TestIsStaleMalformedLockErrors(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
 	if err := os.WriteFile(lockPath,
 		[]byte("not [valid toml"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Lock must be newer than toml.
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := IsStale(tomlPath, lockPath,
+	_, err := IsStale(lockPath,
 		map[string]string{"jq": "1.7.1"})
 	if err == nil {
 		t.Fatal("expected error for malformed lock")
@@ -614,25 +515,14 @@ func TestIsStaleMalformedLockErrors(t *testing.T) {
 
 func TestIsStaleLockHasExtraPackage(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
 	writeLock(t, lockPath, map[string]LockedPackage{
 		"jq":      {Version: "1.7.1"},
 		"ripgrep": {Version: "14.1.0"},
 	})
 
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath,
+	stale, err := IsStale(lockPath,
 		map[string]string{"jq": "1.7.1"})
 	if err != nil {
 		t.Fatal(err)
@@ -646,24 +536,13 @@ func TestIsStaleLockHasExtraPackage(t *testing.T) {
 
 func TestIsStalePackageMissingFromLock(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
 	writeLock(t, lockPath, map[string]LockedPackage{
 		"ripgrep": {Version: "14.1.0"},
 	})
 
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	stale, err := IsStale(tomlPath, lockPath,
+	stale, err := IsStale(lockPath,
 		map[string]string{"jq": "1.7.1"})
 	if err != nil {
 		t.Fatal(err)
@@ -677,7 +556,6 @@ func TestIsStalePackageMissingFromLock(t *testing.T) {
 
 func TestIsStaleClockSkewContentDiffers(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	// Write lock with jq 1.7.1.
@@ -685,34 +563,19 @@ func TestIsStaleClockSkewContentDiffers(t *testing.T) {
 		"jq": {Version: "1.7.1"},
 	})
 
-	// Write toml file.
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.8.0\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Simulate clock skew: toml appears older than lock.
-	past := time.Now().Add(-1 * time.Hour)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	// Despite mtime saying lock is newer, content shows
-	// version 1.8.0 vs 1.7.1. Must detect staleness.
-	stale, err := IsStale(tomlPath, lockPath,
+	// Content shows version 1.8.0 vs 1.7.1. Must detect staleness.
+	stale, err := IsStale(lockPath,
 		map[string]string{"jq": "1.8.0"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !stale {
-		t.Error("IsStale = false, want true: " +
-			"content differs despite favorable mtime")
+		t.Error("IsStale = false, want true: content differs")
 	}
 }
 
 func TestIsStaleNewerMtimeContentMatches(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	// Write lock with jq 1.7.1.
@@ -720,34 +583,19 @@ func TestIsStaleNewerMtimeContentMatches(t *testing.T) {
 		"jq": {Version: "1.7.1"},
 	})
 
-	// Push lock mtime into the past.
-	past := time.Now().Add(-1 * time.Hour)
-	if err := os.Chtimes(lockPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	// Write toml file (now, so it's newer than lock).
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Toml is newer by mtime, but content matches.
-	// Should NOT be stale since packages are identical.
-	stale, err := IsStale(tomlPath, lockPath,
+	// Content matches; should NOT be stale.
+	stale, err := IsStale(lockPath,
 		map[string]string{"jq": "1.7.1"})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if stale {
-		t.Error("IsStale = true, want false: " +
-			"toml newer by mtime but content matches")
+		t.Error("IsStale = true, want false: content matches")
 	}
 }
 
 func TestIsStaleClockSkewContentMatches(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
 
 	// Write lock with jq 1.7.1.
@@ -755,20 +603,8 @@ func TestIsStaleClockSkewContentMatches(t *testing.T) {
 		"jq": {Version: "1.7.1"},
 	})
 
-	// Write toml file.
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.7.1\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Simulate clock skew: toml appears older than lock.
-	past := time.Now().Add(-1 * time.Hour)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
-	// Content matches, so not stale despite clock skew.
-	stale, err := IsStale(tomlPath, lockPath,
+	// Content matches, so not stale.
+	stale, err := IsStale(lockPath,
 		map[string]string{"jq": "1.7.1"})
 	if err != nil {
 		t.Fatal(err)
@@ -873,14 +709,7 @@ func TestWriteMultiplePackagesRoundTrip(t *testing.T) {
 // strip a trailing "-1" suffix (or similar normalization) before comparing.
 func TestIsStaleCanonicalAndBareVersionsAreEquivalent(t *testing.T) {
 	dir := t.TempDir()
-	tomlPath := filepath.Join(dir, "gale.toml")
 	lockPath := filepath.Join(dir, "gale.lock")
-
-	// Write gale.toml with bare version (as gale.toml always stores).
-	if err := os.WriteFile(tomlPath,
-		[]byte("[packages]\njq = \"1.8.1\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
 
 	// Write lockfile with canonical form — as install/update write it
 	// via r.Package.Full() when revision = 1.
@@ -888,18 +717,11 @@ func TestIsStaleCanonicalAndBareVersionsAreEquivalent(t *testing.T) {
 		"jq": {Version: "1.8.1-1", SHA256: "abc123"},
 	})
 
-	// Push toml mtime into the past so mtime comparison (if any)
-	// does not affect the result.
-	past := time.Now().Add(-10 * time.Second)
-	if err := os.Chtimes(tomlPath, past, past); err != nil {
-		t.Fatal(err)
-	}
-
 	// tomlPackages mirrors what syncIfNeeded reads from gale.toml:
 	// bare versions only.
 	tomlPackages := map[string]string{"jq": "1.8.1"}
 
-	stale, err := IsStale(tomlPath, lockPath, tomlPackages)
+	stale, err := IsStale(lockPath, tomlPackages)
 	if err != nil {
 		t.Fatal(err)
 	}

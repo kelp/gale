@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/filelock"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 )
@@ -71,6 +72,9 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 		GalePath:  filepath.Join(galeDir, "gale.toml"),
 		GaleDir:   galeDir,
 		StoreRoot: storeRoot,
+		Installer: &installer.Installer{
+			Store: s,
+		},
 	}
 	out := output.New(io.Discard, false)
 

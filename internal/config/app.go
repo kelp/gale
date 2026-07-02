@@ -16,7 +16,6 @@ import (
 type Repo struct {
 	Name     string `toml:"name"`
 	URL      string `toml:"url"`
-	Key      string `toml:"key"`
 	Priority int    `toml:"priority"`
 }
 

@@ -66,9 +66,7 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		useGlobal := resolveScope(global, project, cwd)
 		if !useGlobal {
 			if _, err := projectConfigPath(cwd); err != nil {
-				return nil, fmt.Errorf(
-					"no project found — run 'gale init' first",
-				)
+				return nil, errors.New(errNoProject)
 			}
 		}
 		galePath, err = resolveConfigPath(useGlobal)
@@ -154,59 +152,49 @@ func registerProject(configPath string) {
 	}
 }
 
-// LoadConfig reads and parses the gale.toml that this
-// context points to. If gale.toml doesn't exist, falls
-// back to reading .tool-versions in the same directory.
-func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
-	data, err := os.ReadFile(ctx.GalePath)
+// readConfigOrToolVersions reads configPath and parses it
+// as a GaleConfig. If gale.toml is absent, falls back to
+// .tool-versions in the same directory. If that is also
+// absent, returns an empty GaleConfig. Callers apply
+// host-specific flattening after this returns.
+func readConfigOrToolVersions(configPath string) (*config.GaleConfig, error) {
+	data, err := os.ReadFile(configPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return ctx.loadToolVersionsFallback()
+		if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("reading %s: %w", configPath, err)
 		}
-		return nil, fmt.Errorf("reading %s: %w", ctx.GalePath, err)
+		// Fallback: .tool-versions in the same directory.
+		tvPath := filepath.Join(filepath.Dir(configPath), ".tool-versions")
+		tvData, tvErr := os.ReadFile(tvPath)
+		if tvErr != nil {
+			if errors.Is(tvErr, os.ErrNotExist) {
+				return &config.GaleConfig{Packages: map[string]string{}}, nil
+			}
+			return nil, fmt.Errorf("reading .tool-versions: %w", tvErr)
+		}
+		pkgs, pkgErr := config.ParseToolVersions(string(tvData))
+		if pkgErr != nil {
+			return nil, fmt.Errorf("parsing .tool-versions: %w", pkgErr)
+		}
+		return &config.GaleConfig{Packages: pkgs}, nil
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
 		return nil, err
 	}
-	cfg.ApplyHost(config.CurrentHost())
 	return cfg, nil
 }
 
-// loadToolVersionsFallback checks for a .tool-versions file
-// in the same directory as the expected gale.toml.
-func (ctx *cmdContext) loadToolVersionsFallback() (*config.GaleConfig, error) {
-	dir := filepath.Dir(ctx.GalePath)
-	tvPath := filepath.Join(dir, ".tool-versions")
-	data, err := os.ReadFile(tvPath)
+// LoadConfig reads and parses the gale.toml that this
+// context points to. If gale.toml doesn't exist, falls
+// back to reading .tool-versions in the same directory.
+func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
+	cfg, err := readConfigOrToolVersions(ctx.GalePath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &config.GaleConfig{
-				Packages: map[string]string{},
-			}, nil
-		}
-		return nil, fmt.Errorf("reading .tool-versions: %w", err)
+		return nil, err
 	}
-
-	pkgs, err := config.ParseToolVersions(string(data))
-	if err != nil {
-		return nil, fmt.Errorf("parsing .tool-versions: %w", err)
-	}
-	return &config.GaleConfig{Packages: pkgs}, nil
-}
-
-// rebuildGeneration reads the effective project/global
-// config and rebuilds the generation symlinks. Tolerates
-// packages whose store dir is missing (skip-with-warning):
-// gale.toml legitimately lists packages that aren't
-// installed locally — `gale add` without sync, a fresh
-// clone on a new host, an unsupported-platform skip — and
-// the previous strict rebuild let update/remove commit
-// their config+lock mutations while the generation never
-// rotated, desyncing PATH from config (gh#68). The skipped
-// package is reported on stderr by BuildLenient.
-func rebuildGeneration(galeDir, storeRoot, configPath string) error {
-	return rebuildGenerationLenient(galeDir, storeRoot, configPath, nil)
+	cfg.ApplyHost(config.CurrentHost())
+	return cfg, nil
 }
 
 // versionedRecipeResolver fetches a recipe for a specific
@@ -381,12 +369,18 @@ func storeRetentionKey(
 	return name + "@" + version
 }
 
-// rebuildGenerationLenient rebuilds the generation,
-// skipping (with a warning) packages whose store dir is
-// missing. Sync uses this so a batch where one install
-// failed still lands the successful installs on PATH — per
-// Issue #20. The install failure is surfaced separately.
-func rebuildGenerationLenient(
+// rebuildGeneration reads the effective project/global
+// config and rebuilds the generation symlinks. Packages
+// whose store dir is missing are silently skipped with a
+// warning: gale.toml legitimately lists packages that
+// aren't installed locally — `gale add` without sync, a
+// fresh clone on a new host, an unsupported-platform skip
+// — and failing the rebuild would desync PATH from config
+// (gh#68). The skipped package is reported on stderr by
+// generation.Build. Bare config pins are first mapped to
+// the recipe's canonical revision via pinResolve (gh#137,
+// see canonicalizeForBuild); a nil pinResolve skips that.
+func rebuildGeneration(
 	galeDir, storeRoot, configPath string,
 	pinResolve versionedRecipeResolver,
 ) error {
@@ -395,7 +389,7 @@ func rebuildGenerationLenient(
 		return err
 	}
 	pkgs = canonicalizeForBuild(pkgs, pinResolve)
-	if err := generation.BuildLenient(pkgs, galeDir, storeRoot); err != nil {
+	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
 		return err
 	}
 	autoPruneGenerations(galeDir, storeRoot)
@@ -405,8 +399,8 @@ func rebuildGenerationLenient(
 // autoPruneGenerations is the post-Build hook that bounds gen
 // dir accumulation. Every command that creates a generation
 // (install, update, sync, add, remove, recipe install, ...)
-// routes through rebuildGeneration / rebuildGenerationLenient,
-// so a single hook here covers all of them. Reads the keep
+// routes through rebuildGeneration, so a single hook here
+// covers all of them. Reads the keep
 // count from ~/.gale/config.toml [generation] keep, defaults
 // to DefaultGenerationKeep when unset, treats negative as
 // "disabled."
@@ -416,7 +410,7 @@ func rebuildGenerationLenient(
 // must not regress because of a cleanup hiccup. Removed gen
 // numbers are reported on stderr so users see what happened.
 func autoPruneGenerations(galeDir, storeRoot string) {
-	keep := loadGenerationKeep(galeDir)
+	keep := loadGenerationKeep()
 	if keep <= 0 {
 		return
 	}
@@ -439,19 +433,10 @@ func autoPruneGenerations(galeDir, storeRoot string) {
 // config falls back to DefaultGenerationKeep so a user who
 // has never created config.toml still gets bounded gen growth.
 //
-// The config path is the global one regardless of galeDir
-// (which may be project-scoped) since gen retention is an
-// app-level concern, not per-project.
-func loadGenerationKeep(_ string) int {
-	dir, err := galeConfigDir()
-	if err != nil {
-		return config.DefaultGenerationKeep
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "config.toml"))
-	if err != nil {
-		return config.DefaultGenerationKeep
-	}
-	cfg, err := config.ParseAppConfig(string(data))
+// Reads from the global config regardless of caller scope
+// since gen retention is an app-level concern, not per-project.
+func loadGenerationKeep() int {
+	cfg, err := loadAppConfig()
 	if err != nil {
 		return config.DefaultGenerationKeep
 	}
@@ -502,30 +487,9 @@ func readConfigPackages(configPath string) (map[string]string, error) {
 }
 
 func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
-	data, err := os.ReadFile(configPath)
+	cfg, err := readConfigOrToolVersions(configPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			dir := filepath.Dir(configPath)
-			tvPath := filepath.Join(dir, ".tool-versions")
-			data, err := os.ReadFile(tvPath)
-			if err != nil {
-				if errors.Is(err, os.ErrNotExist) {
-					return &config.GaleConfig{Packages: map[string]string{}}, nil
-				}
-				return nil, fmt.Errorf("reading .tool-versions: %w", err)
-			}
-			pkgs, err := config.ParseToolVersions(string(data))
-			if err != nil {
-				return nil, fmt.Errorf("parsing .tool-versions: %w", err)
-			}
-			return &config.GaleConfig{Packages: pkgs}, nil
-		}
-		return nil, fmt.Errorf("reading config: %w", err)
-	}
-
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		return nil, fmt.Errorf("parsing config: %w", err)
+		return nil, err
 	}
 	host := config.CurrentHost()
 	cfg.Packages = cfg.EffectivePackages(host)
@@ -608,134 +572,6 @@ func lockfilePath(configPath string) (string, error) {
 	return configPath[:len(configPath)-len(".toml")] + ".lock", nil
 }
 
-// writeConfigAndLock adds a package to gale.toml and
-// updates gale.lock. Does not rebuild the generation —
-// callers handle that (once per command, not per package).
-// When sha256 is empty (cached install), the lockfile
-// entry is still updated with the new version so stale
-// hashes from a previous version are not retained.
-//
-// configVersion is the form written to gale.toml (bare
-// by convention so the entry tracks revision bumps
-// automatically); lockVersion is the canonical
-// `<version>-<revision>` form written to gale.lock for
-// exact pinning. See docs/revisions.md.
-//
-// host selects where in gale.toml the package lands.
-// When non-empty, the package is force-written to
-// [hosts.<host>.packages]. When empty, the package is
-// upserted with location preservation: if the current
-// machine already lists it under its host overlay, that
-// entry is updated in place; otherwise it goes to shared
-// [packages].
-func writeConfigAndLock(configPath, host, name, configVersion, lockVersion, sha256, manifestDigest string) error {
-	if host != "" {
-		if err := config.AddPackage(
-			configPath, host, name, configVersion,
-		); err != nil {
-			return fmt.Errorf("adding to config: %w", err)
-		}
-	} else if err := config.UpsertPackage(
-		configPath, config.CurrentHost(), name, configVersion,
-	); err != nil {
-		return fmt.Errorf("adding to config: %w", err)
-	}
-	lp, err := lockfilePath(configPath)
-	if err != nil {
-		return fmt.Errorf("resolving lockfile path: %w", err)
-	}
-	if sha256 == "" {
-		// Cached install: no new hash to record. Preserve the
-		// existing entry only when the stored version is
-		// EXACTLY the canonical lockVersion. A loose
-		// VersionMatches early-return drops the revision
-		// (gh#30): a bare "2.53.0" in the lock satisfies
-		// VersionMatches against the resolved "2.53.0-2", so
-		// the canonical form was never written and the bare
-		// pin stuck. Rewrite to lockVersion, carrying the old
-		// hash forward since none was computed this run.
-		lf, err := lockfile.Read(lp)
-		if err != nil {
-			return fmt.Errorf("reading lockfile: %w", err)
-		}
-		if existing, ok := lf.Packages[name]; ok {
-			if existing.Version == lockVersion {
-				return nil // identical pin, keep existing hash
-			}
-			if lockfile.VersionMatches(lockVersion, existing.Version) {
-				// Same upstream version, differing revision
-				// representation (bare vs canonical). Rewrite to
-				// the canonical lockVersion but keep the hash and
-				// manifest digest.
-				return updateLockfile(
-					lp, name, lockVersion,
-					existing.SHA256, existing.ManifestDigest,
-				)
-			}
-		}
-	}
-	return updateLockfile(lp, name, lockVersion, sha256, manifestDigest)
-}
-
-// finalizeInstall adds a package to gale.toml, updates
-// gale.lock, and rebuilds the generation. See
-// writeConfigAndLock for host semantics.
-//
-// Uses lenient rebuild so unrelated missing store dirs in
-// gale.toml don't block this install from landing on PATH —
-// the common fresh-clone-on-new-host scenario (gh#23):
-// gale.toml lists packages this host hasn't installed yet,
-// strict rebuild errors on them, and the silent side-effect
-// is "lockfile updated, store populated, gen never rotated,
-// `which <pkg>` still resolves the prior revision." Sync
-// already uses lenient for the same reason.
-//
-// Lenient on its own can mask the install actually failing
-// to land — populateGeneration's `continue` on ErrNotExist
-// could silently skip OUR package too if (e.g.) the store
-// dir gets removed between Install and rebuild. The
-// post-rebuild check below enforces the contract: this
-// install must put the package on PATH, or surface a clear
-// error.
-func finalizeInstall(galeDir, storeRoot, configPath, host, name, configVersion, lockVersion, sha256, manifestDigest string) error {
-	if err := writeConfigAndLock(
-		configPath, host, name, configVersion, lockVersion,
-		sha256, manifestDigest,
-	); err != nil {
-		return fmt.Errorf("writing config and lock: %w", err)
-	}
-	if err := rebuildGenerationLenient(
-		galeDir, storeRoot, configPath, nil,
-	); err != nil {
-		return fmt.Errorf("rebuild generation: %w", err)
-	}
-	// --host targeting another machine is declaration-only:
-	// the generation just rebuilt comes from the CURRENT
-	// host's effective package set, so a package declared
-	// for a foreign host is correctly absent from it.
-	// Running the presence check anyway mis-reported every
-	// cross-host install as store corruption — after config,
-	// lock, and store were already mutated (gh#72).
-	if host != "" && !config.HostKeyMatches(host, config.CurrentHost()) {
-		return nil
-	}
-	active, err := generation.CurrentVersions(galeDir, storeRoot)
-	if err != nil {
-		return fmt.Errorf(
-			"verify install landed on PATH: %w", err,
-		)
-	}
-	if _, ok := active[name]; !ok {
-		return fmt.Errorf(
-			"%s@%s installed to store but did not land in the "+
-				"active generation; the store dir may have been "+
-				"removed mid-install",
-			name, lockVersion,
-		)
-	}
-	return nil
-}
-
 // updateLockfile reads the lockfile, updates one package
 // entry, and writes it back. The file lock serializes
 // concurrent read-modify-write operations.
@@ -783,22 +619,16 @@ func stripNumericRevision(version string) string {
 	return base
 }
 
-// addToConfig resolves scope and writes a package version to
-// gale.toml. Returns the config path used. When host is
-// non-empty, writes to [hosts.<host>.packages]; otherwise
-// writes to the shared [packages] section, preserving an
-// existing host-scoped entry for the current machine.
-func addToConfig(name, version, host string, global, project bool) (string, error) {
+// addToConfig writes a package version to the given gale.toml
+// path. Returns the config path used. When host is non-empty,
+// writes to [hosts.<host>.packages]; otherwise writes to the
+// shared [packages] section, preserving an existing
+// host-scoped entry for the current machine.
+//
+// configPath is pre-resolved by the caller (once per command
+// invocation) so scope is not re-derived on every package.
+func addToConfig(name, version, host, configPath string) (string, error) {
 	version = stripNumericRevision(version)
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("getting working dir: %w", err)
-	}
-	useGlobal := resolveScope(global, project, cwd)
-	configPath, err := resolveConfigPath(useGlobal)
-	if err != nil {
-		return "", fmt.Errorf("resolving config path: %w", err)
-	}
 	if host != "" {
 		if err := config.AddPackage(
 			configPath, host, name, version,
@@ -846,12 +676,58 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 // is written to gale.toml (bare by convention);
 // lockVersion is the canonical `<version>-<revision>`
 // written to gale.lock. ctx.Host controls section
-// targeting (see writeConfigAndLock).
+// targeting (see WriteConfigAndLock).
+//
+// Uses lenient rebuild so unrelated missing store dirs in
+// gale.toml don't block this install from landing on PATH —
+// the common fresh-clone-on-new-host scenario (gh#23):
+// gale.toml lists packages this host hasn't installed yet,
+// strict rebuild errors on them, and the silent side-effect
+// is "lockfile updated, store populated, gen never rotated,
+// `which <pkg>` still resolves the prior revision." Sync
+// already uses lenient for the same reason.
+//
+// Lenient on its own can mask the install actually failing
+// to land — populateGeneration's `continue` on ErrNotExist
+// could silently skip OUR package too if (e.g.) the store
+// dir gets removed between Install and rebuild. The
+// post-rebuild check below enforces the contract: this
+// install must put the package on PATH, or surface a clear
+// error.
 func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256, manifestDigest string) error {
-	return finalizeInstall(
-		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, ctx.Host,
+	if err := ctx.WriteConfigAndLock(
 		name, configVersion, lockVersion, sha256, manifestDigest,
-	)
+	); err != nil {
+		return fmt.Errorf("writing config and lock: %w", err)
+	}
+	if err := rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, nil); err != nil {
+		return fmt.Errorf("rebuild generation: %w", err)
+	}
+	// --host targeting another machine is declaration-only:
+	// the generation just rebuilt comes from the CURRENT
+	// host's effective package set, so a package declared
+	// for a foreign host is correctly absent from it.
+	// Running the presence check anyway mis-reported every
+	// cross-host install as store corruption — after config,
+	// lock, and store were already mutated (gh#72).
+	if ctx.Host != "" && !config.HostKeyMatches(ctx.Host, config.CurrentHost()) {
+		return nil
+	}
+	active, err := generation.CurrentVersions(ctx.GaleDir, ctx.StoreRoot)
+	if err != nil {
+		return fmt.Errorf(
+			"verify install landed on PATH: %w", err,
+		)
+	}
+	if _, ok := active[name]; !ok {
+		return fmt.Errorf(
+			"%s@%s installed to store but did not land in the "+
+				"active generation; the store dir may have been "+
+				"removed mid-install",
+			name, lockVersion,
+		)
+	}
+	return nil
 }
 
 // FinalizeRecipeInstall is FinalizeInstall for the
@@ -892,13 +768,73 @@ func configVersionForRecipe(storeRoot string, r *recipe.Recipe) string {
 
 // WriteConfigAndLock adds a package to gale.toml and
 // updates gale.lock without rebuilding the generation.
-// ctx.Host controls section targeting (see
-// writeConfigAndLock).
+// Callers handle generation rebuild (once per command,
+// not per package).
+//
+// configVersion is the form written to gale.toml (bare
+// by convention so the entry tracks revision bumps
+// automatically); lockVersion is the canonical
+// `<version>-<revision>` form written to gale.lock for
+// exact pinning. See docs/revisions.md.
+//
+// ctx.Host selects where in gale.toml the package lands.
+// When non-empty, the package is force-written to
+// [hosts.<host>.packages]. When empty, the package is
+// upserted with location preservation: if the current
+// machine already lists it under its host overlay, that
+// entry is updated in place; otherwise it goes to shared
+// [packages].
+//
+// When sha256 is empty (cached install), the lockfile
+// entry is still updated with the new version so stale
+// hashes from a previous version are not retained.
 func (ctx *cmdContext) WriteConfigAndLock(name, configVersion, lockVersion, sha256, manifestDigest string) error {
-	return writeConfigAndLock(
-		ctx.GalePath, ctx.Host, name, configVersion, lockVersion,
-		sha256, manifestDigest,
-	)
+	if ctx.Host != "" {
+		if err := config.AddPackage(
+			ctx.GalePath, ctx.Host, name, configVersion,
+		); err != nil {
+			return fmt.Errorf("adding to config: %w", err)
+		}
+	} else if err := config.UpsertPackage(
+		ctx.GalePath, config.CurrentHost(), name, configVersion,
+	); err != nil {
+		return fmt.Errorf("adding to config: %w", err)
+	}
+	lp, err := lockfilePath(ctx.GalePath)
+	if err != nil {
+		return fmt.Errorf("resolving lockfile path: %w", err)
+	}
+	if sha256 == "" {
+		// Cached install: no new hash to record. Preserve the
+		// existing entry only when the stored version is
+		// EXACTLY the canonical lockVersion. A loose
+		// VersionMatches early-return drops the revision
+		// (gh#30): a bare "2.53.0" in the lock satisfies
+		// VersionMatches against the resolved "2.53.0-2", so
+		// the canonical form was never written and the bare
+		// pin stuck. Rewrite to lockVersion, carrying the old
+		// hash forward since none was computed this run.
+		lf, err := lockfile.Read(lp)
+		if err != nil {
+			return fmt.Errorf("reading lockfile: %w", err)
+		}
+		if existing, ok := lf.Packages[name]; ok {
+			if existing.Version == lockVersion {
+				return nil // identical pin, keep existing hash
+			}
+			if lockfile.VersionMatches(lockVersion, existing.Version) {
+				// Same upstream version, differing revision
+				// representation (bare vs canonical). Rewrite to
+				// the canonical lockVersion but keep the hash and
+				// manifest digest.
+				return updateLockfile(
+					lp, name, lockVersion,
+					existing.SHA256, existing.ManifestDigest,
+				)
+			}
+		}
+	}
+	return updateLockfile(lp, name, lockVersion, sha256, manifestDigest)
 }
 
 // WriteConfigAndLockForRecipe is WriteConfigAndLock for
@@ -912,17 +848,23 @@ func (ctx *cmdContext) WriteConfigAndLockForRecipe(r *recipe.Recipe, sha256, man
 }
 
 // RebuildGeneration reads gale.toml and rebuilds the
-// generation symlinks.
+// generation symlinks, including a timing phase for
+// verbose output. Missing store dirs are silently skipped
+// with a warning (see generation.Build).
 func (ctx *cmdContext) RebuildGeneration() error {
-	return rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath)
+	defer timing.Phase("generation-rebuild")()
+	return rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, nil)
 }
 
-// RebuildGenerationLenient is RebuildGeneration plus a
-// timing phase (see rebuildGenerationLenient). Both
-// tolerate missing store dirs since gh#68. Sync uses this.
-func (ctx *cmdContext) RebuildGenerationLenient() error {
+// RebuildGenerationCanonical is RebuildGeneration with
+// bare config pins mapped to the recipe's canonical
+// revision first, so the rebuild links the revision the
+// recipe offers instead of a higher orphan left on disk
+// by a withdrawn recipe revision (gh#137). Sync uses this;
+// it costs a recipe resolution per bare pin.
+func (ctx *cmdContext) RebuildGenerationCanonical() error {
 	defer timing.Phase("generation-rebuild")()
-	return rebuildGenerationLenient(
+	return rebuildGeneration(
 		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath,
 		ctx.versionedRecipeResolver(),
 	)

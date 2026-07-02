@@ -58,10 +58,9 @@ func Write(path string, lf *LockFile) error {
 }
 
 // IsStale checks if the lock file is stale relative to
-// the gale.toml packages. Returns true if packages differ
-// or if gale.toml is newer than the lock file.
+// the gale.toml packages. Returns true if packages differ.
 func IsStale(
-	galeTOMLPath, lockPath string,
+	lockPath string,
 	tomlPackages map[string]string,
 ) (bool, error) {
 	_, err := os.Stat(lockPath)
@@ -72,12 +71,8 @@ func IsStale(
 		return false, fmt.Errorf("stat lock file: %w", err)
 	}
 
-	if _, err := os.Stat(galeTOMLPath); err != nil {
-		return false, fmt.Errorf("stat gale.toml: %w", err)
-	}
-
-	// Always compare package content rather than relying
-	// on mtime, which can be misleading under clock skew.
+	// Compare package content rather than relying on mtime,
+	// which can be misleading under clock skew.
 	lf, err := Read(lockPath)
 	if err != nil {
 		return false, fmt.Errorf("reading lock file: %w", err)

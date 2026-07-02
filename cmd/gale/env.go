@@ -87,51 +87,7 @@ var envCmd = &cobra.Command{
 // --project: project .gale + project gale.toml (errors if no
 // project found).
 func resolveEnvScope(global, project bool) (galeDir, configPath string, err error) {
-	if global {
-		galeDir, err = galeConfigDir()
-		if err != nil {
-			return "", "", err
-		}
-		configPath, err = globalConfigPath()
-		return galeDir, configPath, err
-	}
-
-	cwd, cwdErr := os.Getwd()
-	if cwdErr != nil {
-		return "", "", fmt.Errorf("getting working dir: %w", cwdErr)
-	}
-
-	if project {
-		projectCfg, err := projectConfigPath(cwd)
-		if err != nil {
-			return "", "", fmt.Errorf(
-				"no project found — run 'gale init' first",
-			)
-		}
-		galeDir, err = galeDirForConfig(projectCfg)
-		if err != nil {
-			return "", "", err
-		}
-		return galeDir, projectCfg, nil
-	}
-
-	// Auto: project preferred when it exists.
-	// galeDirForConfig (not Dir(cfg)/.gale): under ~/.gale
-	// the found config is the GLOBAL one and the derived
-	// dir would be the bogus ~/.gale/.gale (gh#96).
-	if projectCfg, err := projectConfigPath(cwd); err == nil {
-		galeDir, err = galeDirForConfig(projectCfg)
-		if err != nil {
-			return "", "", err
-		}
-		return galeDir, projectCfg, nil
-	}
-	galeDir, err = galeConfigDir()
-	if err != nil {
-		return "", "", err
-	}
-	configPath, err = globalConfigPath()
-	return galeDir, configPath, err
+	return resolveScopedPaths(global, project)
 }
 
 func init() {
@@ -145,25 +101,12 @@ func init() {
 }
 
 // resolveGaleDir returns the .gale directory for the
-// current scope. If a project gale.toml exists, returns
-// the project's .gale/ dir. Otherwise returns ~/.gale/.
+// current scope. If a project gale.toml (or .tool-versions)
+// exists, returns the project's .gale/ dir. Otherwise
+// returns ~/.gale/.
 func resolveGaleDir() (string, error) {
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("getting working dir: %w", err)
-	}
-
-	// Check for project gale.toml. galeDirForConfig handles
-	// the cwd-under-~/.gale case, where FindGaleConfig
-	// resolves to the GLOBAL config and a naive
-	// Dir(cfg)/.gale would be bogus (gh#96).
-	projectConfig, err := config.FindGaleConfig(cwd)
-	if err == nil {
-		return galeDirForConfig(projectConfig)
-	}
-
-	// Fall back to global.
-	return galeConfigDir()
+	galeDir, _, err := resolveScopedPaths(false, false)
+	return galeDir, err
 }
 
 // shellEscape escapes a string for use inside single

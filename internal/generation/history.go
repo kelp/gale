@@ -7,7 +7,6 @@ import (
 	"path/filepath"
 	"sort"
 	"strconv"
-	"strings"
 
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
@@ -57,7 +56,7 @@ func List(galeDir, storeRoot string) ([]GenInfo, error) {
 		gens = append(gens, GenInfo{
 			Number:   n,
 			Current:  n == cur,
-			Packages: packagesFromGen(genDir, storeRoot),
+			Packages: genVersions(genDir, storeRoot),
 		})
 	}
 
@@ -66,45 +65,6 @@ func List(galeDir, storeRoot string) ([]GenInfo, error) {
 	})
 
 	return gens, nil
-}
-
-// packagesFromGen resolves symlinks in a generation's bin/
-// directory back to the store to determine package names and
-// versions. Returns map[name]version.
-func packagesFromGen(genDir, storeRoot string) map[string]string {
-	binDir := filepath.Join(genDir, "bin")
-	entries, err := os.ReadDir(binDir)
-	if err != nil {
-		return nil
-	}
-
-	// Resolve storeRoot through symlinks so relative path
-	// computation works on macOS where /var → /private/var.
-	absStore, err := filepath.EvalSymlinks(storeRoot)
-	if err != nil {
-		return nil
-	}
-
-	pkgs := make(map[string]string)
-	for _, e := range entries {
-		linkPath := filepath.Join(binDir, e.Name())
-		realPath, err := filepath.EvalSymlinks(linkPath)
-		if err != nil {
-			continue
-		}
-		rel, err := filepath.Rel(absStore, realPath)
-		if err != nil {
-			continue
-		}
-		// rel looks like "name/version/bin/exe".
-		parts := strings.SplitN(rel, string(filepath.Separator), 4)
-		if len(parts) < 2 {
-			continue
-		}
-		name, version := parts[0], parts[1]
-		pkgs[name] = version
-	}
-	return pkgs
 }
 
 // Diff compares two generations and returns the packages
@@ -121,8 +81,8 @@ func Diff(galeDir, storeRoot string, from, to int) (*GenDiff, error) {
 		return nil, fmt.Errorf("generation %d: %w", to, err)
 	}
 
-	fromPkgs := packagesFromGen(fromDir, storeRoot)
-	toPkgs := packagesFromGen(toDir, storeRoot)
+	fromPkgs := genVersions(fromDir, storeRoot)
+	toPkgs := genVersions(toDir, storeRoot)
 
 	d := &GenDiff{From: from, To: to}
 
@@ -184,7 +144,7 @@ func Rollback(galeDir, storeRoot string, target int) error {
 		// Mirrors Build's post-swap farm rebuild.
 		// Best-effort — a farm error does not invalidate
 		// the swap.
-		pkgs := packagesFromGen(genDir, storeRoot)
+		pkgs := genVersions(genDir, storeRoot)
 		if err := farm.Rebuild(
 			FarmStoreDirs(pkgs, storeRoot), farm.Dir(galeDir),
 		); err != nil {

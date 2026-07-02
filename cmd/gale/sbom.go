@@ -8,7 +8,6 @@ import (
 	"io"
 	"net/url"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"text/tabwriter"
@@ -157,20 +156,15 @@ func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
 		return []sbomConfig{{path: path}}, nil
 	}
 
-	cwd, err := os.Getwd()
+	path, err := resolveReadOnlyConfigPath(false, false)
 	if err != nil {
-		return nil, fmt.Errorf("getting working dir: %w", err)
+		return nil, fmt.Errorf("resolving config: %w", err)
 	}
-	globalDir, err := galeConfigDir()
-	if err != nil {
-		return nil, fmt.Errorf("finding config dir: %w", err)
-	}
-	_, path, err := resolveSbomConfig(cwd, globalDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+	if _, statErr := os.Stat(path); statErr != nil {
+		if errors.Is(statErr, os.ErrNotExist) {
 			return nil, nil
 		}
-		return nil, fmt.Errorf("reading config: %w", err)
+		return nil, fmt.Errorf("stat %s: %w", path, statErr)
 	}
 	return []sbomConfig{{path: path}}, nil
 }
@@ -341,32 +335,6 @@ func shortenURL(rawURL string) string {
 		return rawURL
 	}
 	return u.Host
-}
-
-// resolveSbomConfig reads gale.toml, trying the project
-// config first (found by walking up from cwd), then
-// falling back to the global config in globalDir. Returns
-// an error wrapping os.ErrNotExist when neither exists so
-// callers can distinguish "no config" from other read
-// failures.
-func resolveSbomConfig(cwd, globalDir string) ([]byte, string, error) {
-	path, err := config.FindGaleConfig(cwd)
-	if err == nil {
-		data, readErr := os.ReadFile(path)
-		if readErr == nil {
-			return data, path, nil
-		}
-		if !errors.Is(readErr, os.ErrNotExist) {
-			return nil, "", readErr
-		}
-	}
-
-	globalPath := filepath.Join(globalDir, "gale.toml")
-	data, err := os.ReadFile(globalPath)
-	if err != nil {
-		return nil, "", err
-	}
-	return data, globalPath, nil
 }
 
 func init() {

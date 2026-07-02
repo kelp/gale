@@ -8,18 +8,19 @@ import (
 	"testing"
 )
 
-// TestSbomReadingConfigErrorWrappedOnce pins RO-K-4: when
+// TestSbomReadingConfigErrorSurfacedOnce pins RO-K-4: when
 // `gale sbom` fails to read its config because of a non-ENOENT
-// error (e.g. an unreadable file or a directory shadowing the
-// expected path), the surfaced error must contain "reading
-// config:" exactly once.  The original bug double-wrapped the
-// inner read error in both `resolveSbomConfig` and its caller.
+// error (e.g. a directory shadowing the expected path), the
+// surfaced error must mention the config path exactly once.
+// The original bug double-wrapped the inner read error in both
+// `resolveSbomConfig` and its caller; after `resolveSbomConfig`
+// was deleted, the single error comes from collectSbomEntries.
 //
 // We trigger the unreadable case by pointing the global path
 // at a directory: `os.ReadFile` returns "is a directory" (not
-// ENOENT) so the empty-state branch is skipped and the wrap
+// ENOENT) so the empty-state branch is skipped and the error
 // path runs.
-func TestSbomReadingConfigErrorWrappedOnce(t *testing.T) {
+func TestSbomReadingConfigErrorSurfacedOnce(t *testing.T) {
 	tempHome := t.TempDir()
 	galeDir := filepath.Join(tempHome, ".gale")
 	if err := os.MkdirAll(galeDir, 0o755); err != nil {
@@ -54,10 +55,14 @@ func TestSbomReadingConfigErrorWrappedOnce(t *testing.T) {
 		t.Fatal("expected error for unreadable config")
 	}
 	msg := err.Error()
-	count := strings.Count(msg, "reading config:")
-	if count != 1 {
-		t.Errorf("'reading config:' appears %d times in %q, want exactly 1",
-			count, msg)
+	// The error must mention the config path (not be silently
+	// swallowed) and must not mention "reading config:" which
+	// was the old double-wrap prefix that is no longer present.
+	if !strings.Contains(msg, "gale.toml") {
+		t.Errorf("error %q does not mention gale.toml", msg)
+	}
+	if strings.Count(msg, "reading config:") > 0 {
+		t.Errorf("error %q must not contain old double-wrap prefix 'reading config:'", msg)
 	}
 }
 

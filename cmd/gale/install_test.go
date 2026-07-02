@@ -8,7 +8,9 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
+	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -103,7 +105,7 @@ func TestInstallHasHostFlag(t *testing.T) {
 	}
 }
 
-func TestValidateInstallFlags(t *testing.T) {
+func TestValidateScopeFlagsForInstall(t *testing.T) {
 	tests := []struct {
 		name    string
 		global  bool
@@ -118,7 +120,7 @@ func TestValidateInstallFlags(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := validateInstallFlags(tt.global, tt.project)
+			err := validateScopeFlags(tt.global, tt.project)
 			if tt.wantErr && err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -403,20 +405,6 @@ func TestResolveScope(t *testing.T) {
 	}
 }
 
-func TestNewInstallerForRecipe(t *testing.T) {
-	// Verify that newInstallerForRecipe returns an
-	// Installer with a non-nil Verifier so Sigstore
-	// attestation is checked for binary installs.
-	storeRoot := t.TempDir()
-	inst := newInstallerForRecipe(
-		"/tmp/recipes/j/jq.toml", storeRoot,
-	)
-	if inst.Verifier == nil {
-		t.Fatal("Verifier is nil — attestation will be " +
-			"silently skipped")
-	}
-}
-
 func TestResolverForRecipeInBucketedRepo(t *testing.T) {
 	// When the recipe is inside a letter-bucketed repo,
 	// resolverForRecipe should use the local repo resolver.
@@ -630,6 +618,9 @@ func TestInstallFromRecipeFileRotatesGeneration(t *testing.T) {
 		GalePath:  configPath,
 		GaleDir:   galeDir,
 		StoreRoot: storeRoot,
+		Installer: &installer.Installer{
+			Store: store.NewStore(storeRoot),
+		},
 	}
 
 	if err := installFromRecipeFile(ctx, recipePath, out); err != nil {
@@ -738,6 +729,9 @@ func TestInstallFromRecipeFileRotatesGenWhenOtherPackagesMissing(t *testing.T) {
 		GalePath:  configPath,
 		GaleDir:   galeDir,
 		StoreRoot: storeRoot,
+		Installer: &installer.Installer{
+			Store: store.NewStore(storeRoot),
+		},
 	}
 
 	if err := installFromRecipeFile(ctx, recipePath, out); err != nil {
@@ -839,6 +833,9 @@ func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
 		GalePath:  configPath,
 		GaleDir:   galeDir,
 		StoreRoot: storeRoot,
+		Installer: &installer.Installer{
+			Store: store.NewStore(storeRoot),
+		},
 	}
 	err := installFromLocalSource(ctx, "testpkg", recipePath,
 		srcDir, out)

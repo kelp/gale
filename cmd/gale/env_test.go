@@ -8,20 +8,6 @@ import (
 	"testing"
 )
 
-// chdirTo changes the working directory to dir for the duration
-// of the test and restores it on cleanup.
-func chdirTo(t *testing.T, dir string) {
-	t.Helper()
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chdir(dir); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chdir(orig) })
-}
-
 // TestEnvSurfacesMalformedProjectConfig verifies that a
 // malformed project gale.toml causes `gale env` to return an
 // error rather than silently exiting 0. Matches the behaviour
@@ -172,12 +158,7 @@ func TestEnvVarsUseShellQuoting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(orig) })
-	os.Chdir(dir)
+	chdirTo(t, dir)
 
 	var buf bytes.Buffer
 	envCmd.SetOut(&buf)
@@ -212,12 +193,7 @@ func TestEnvVarsEscapeEmbeddedSingleQuotes(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	orig, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chdir(orig) })
-	os.Chdir(dir)
+	chdirTo(t, dir)
 
 	var buf bytes.Buffer
 	envCmd.SetOut(&buf)
