@@ -282,8 +282,15 @@ Standards this project enforces because AI coding
 assistants regress on them. They restate rules from
 above as imperatives, plus a few that no linter
 catches. Follow them when generating or editing code
-here.
+here. For tier 2–3 changes, read
+[`change-discipline.md`](change-discipline.md) first.
 
+- **Trace before edit (tier ≥2).** Pick a change tier
+  (see change-discipline). For tier 2–3, write the
+  six-point pre-change trace (invariant, pipeline,
+  caller grep, commands, test anchors, blast radius)
+  before editing code. Grep at change time — interfaces
+  change; invariants do not.
 - **Reuse before writing.** Search
   `cmd/gale/context.go` and the relevant `internal/`
   package before adding a helper. Re-implementing
@@ -305,6 +312,12 @@ here.
   expect.
 - **TDD is mandatory.** Write the failing test first
   and confirm it fails before writing the fix.
+- **Pipeline bugs need pipeline tests.** A fix in
+  `internal/foo` alone is insufficient when the failure
+  is config ↔ generation skew, staleness loops, or gc
+  retention. Put the repro in `cmd/gale/` or
+  `integration/` at the tier change-discipline
+  recommends.
 - **Do not swallow errors or drop edge cases.** An
   ignored error or an unhandled nil/empty/zero input
   is a bug, even when the happy path works.
