@@ -211,7 +211,9 @@ Also exports `[vars]` from gale.toml. `gale run` and
 `just tag <ver>` then `just release <ver>` drives CI.
 Full details in `docs/dev/releasing.md`.
 
-After the release is live, bump TWO `gale.toml` files:
+After the release is live, bump TWO `gale.toml` files.
+Treat the two bumps as one atomic step — never stop after
+the first:
 
 - `../gale-recipes/recipes/g/gale.toml` — so users on
   any machine pick up the new version.
@@ -383,6 +385,31 @@ Key rules:
   but only takes effect together with the root override.
   `internal/attestation/sigstoretest/` mints synthetic
   trust material and signed bundles for offline tests.
+
+## Regression-Prone Areas
+
+Lessons paid for in past regressions. Read before
+touching these subsystems.
+
+- Staleness checks must compare against the canonical
+  version-revision a reinstall would write. On-disk
+  metadata state carries meaning: a missing
+  `.gale-deps.toml` and an empty one are different
+  cases. Getting this wrong causes infinite
+  reinstall/rebuild loops that stall direnv (013b4a4,
+  688ce7d, af4c3f6).
+- `internal/build/build.go` and the darwin fixup path
+  are the most regression-prone code in the repo. Gate
+  patchelf on `DT_NEEDED` — running `--set-rpath` on a
+  static Go ELF corrupts it (75440bb). Skip `.dSYM` and
+  `.o` files. Always re-sign after any Mach-O mutation
+  and preserve entitlements.
+- Any change to sync, gc, or remove must be exercised
+  across all three scopes (global, project, `--host`).
+  Cross-scope deletion bugs recur (ad4e685, 289d13b).
+- In tests, never let a random port, map order, or
+  temp-dir name feed a cache key or expected output;
+  it produces coin-flip flakes (940a67a).
 
 ## Testing Homebrew Formula
 
