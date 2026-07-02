@@ -70,9 +70,9 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 		return nil, err
 	}
 
-	workspace, err := os.MkdirTemp(TmpDir(), "gale-build-*")
+	workspace, err := makeBuildWorkspace(TmpDir())
 	if err != nil {
-		return nil, fmt.Errorf("create workspace: %w", err)
+		return nil, err
 	}
 	defer os.RemoveAll(workspace)
 
@@ -116,9 +116,9 @@ func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, debug bool, deps 
 		return nil, err
 	}
 
-	workspace, err := os.MkdirTemp(TmpDir(), "gale-build-*")
+	workspace, err := makeBuildWorkspace(TmpDir())
 	if err != nil {
-		return nil, fmt.Errorf("create workspace: %w", err)
+		return nil, err
 	}
 	defer os.RemoveAll(workspace)
 
