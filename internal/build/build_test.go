@@ -1166,6 +1166,12 @@ func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
 				"mkdir -p $PREFIX/bin && echo '#!/bin/sh' > $PREFIX/bin/hello && chmod +x $PREFIX/bin/hello",
 			},
 		},
+		// openssl and zstd are runtime deps: the shipped
+		// binary links them, so they belong in the recorded
+		// runtime closure (gh#157).
+		Dependencies: recipe.Dependencies{
+			Runtime: []string{"openssl", "zstd"},
+		},
 	}
 
 	outputDir := t.TempDir()

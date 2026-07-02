@@ -209,10 +209,12 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 	// archive. Without this, the installer falls back to
 	// locally-resolved versions, which can mis-detect
 	// staleness when a user has pinned deps that diverge from
-	// the build environment.
+	// the build environment. Only the runtime closure is
+	// recorded — build-only tools cannot be linked by the
+	// shipped binary (gh#157).
 	if deps != nil && len(deps.NamedDirs) > 0 {
 		md := depsmeta.Metadata{
-			Deps: depsmeta.FromNamedDirs(deps.NamedDirs),
+			Deps: runtimeDepsMetadata(r, deps),
 		}
 		if err := depsmeta.Write(prefixDir, md); err != nil {
 			return nil, fmt.Errorf("write deps metadata: %w", err)
@@ -234,6 +236,22 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		Archive: archivePath,
 		SHA256:  hash,
 	}, nil
+}
+
+// runtimeDepsMetadata records only the recipe's declared
+// runtime deps in .gale-deps.toml, resolved to the exact
+// version-revisions installed for this build. deps.NamedDirs
+// holds the full build-environment closure (build + runtime,
+// transitive); recording all of it made a bump to any
+// build-only tool (cmake, rust, go) mark the package stale and
+// pin those tools in the store though the shipped binary never
+// links them (gh#157). Transitive runtime deps need not appear
+// here: each runtime dep's own metadata lists its runtime deps,
+// so consumers that walk the metadata chain reach the full
+// runtime closure.
+func runtimeDepsMetadata(r *recipe.Recipe, deps *BuildDeps) []depsmeta.ResolvedDep {
+	runtimeNames := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH).Runtime
+	return depsmeta.FromNamedDirsFiltered(deps.NamedDirs, runtimeNames)
 }
 
 // BuildGit clones a git repo and builds from the clone.
