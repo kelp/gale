@@ -2,12 +2,11 @@ package installer
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/recipe"
 )
 
@@ -30,46 +29,6 @@ func curlRecipe(version string, revision int) *recipe.Recipe {
 	}
 }
 
-// Test 1: Write then Read round-trips a non-empty DepsMetadata.
-func TestWriteReadRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	want := DepsMetadata{
-		Deps: []ResolvedDep{
-			{Name: "curl", Version: "8.19.0", Revision: 1},
-			{Name: "zlib", Version: "1.3.1", Revision: 2},
-		},
-	}
-	if err := WriteDepsMetadata(dir, want); err != nil {
-		t.Fatalf("WriteDepsMetadata error: %v", err)
-	}
-	got, err := ReadDepsMetadata(dir)
-	if err != nil {
-		t.Fatalf("ReadDepsMetadata error: %v", err)
-	}
-	if len(got.Deps) != len(want.Deps) {
-		t.Fatalf("got %d deps, want %d", len(got.Deps), len(want.Deps))
-	}
-	for i, dep := range want.Deps {
-		g := got.Deps[i]
-		if g.Name != dep.Name || g.Version != dep.Version || g.Revision != dep.Revision {
-			t.Errorf("dep[%d]: got %+v, want %+v", i, g, dep)
-		}
-	}
-}
-
-// Test 3: Read returns error when file exists but is malformed.
-func TestReadMalformedFileReturnsError(t *testing.T) {
-	dir := t.TempDir()
-	metaPath := filepath.Join(dir, ".gale-deps.toml")
-	if err := os.WriteFile(metaPath, []byte("not valid toml {{{"), 0o644); err != nil {
-		t.Fatalf("setup: %v", err)
-	}
-	_, err := ReadDepsMetadata(dir)
-	if err == nil {
-		t.Fatal("expected error for malformed TOML, got nil")
-	}
-}
-
 // Test 4: IsStale returns true when metadata file is missing.
 func TestIsStaleReturnsTrueWhenMetadataMissing(t *testing.T) {
 	dir := t.TempDir()
@@ -78,7 +37,7 @@ func TestIsStaleReturnsTrueWhenMetadataMissing(t *testing.T) {
 	resolver := func(name string) (*recipe.Recipe, error) {
 		return curlRecipe("8.19.0", 1), nil
 	}
-	stale, err := IsStale(dir, r, resolver)
+	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -90,12 +49,12 @@ func TestIsStaleReturnsTrueWhenMetadataMissing(t *testing.T) {
 // Test 5: IsStale returns false when recorded deps match current recipes.
 func TestIsStaleReturnsFalseWhenDepsMatch(t *testing.T) {
 	dir := t.TempDir()
-	md := DepsMetadata{
-		Deps: []ResolvedDep{
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
 			{Name: "curl", Version: "8.19.0", Revision: 1},
 		},
 	}
-	if err := WriteDepsMetadata(dir, md); err != nil {
+	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
@@ -106,7 +65,7 @@ func TestIsStaleReturnsFalseWhenDepsMatch(t *testing.T) {
 		return curlRecipe("8.19.0", 1), nil
 	}
 
-	stale, err := IsStale(dir, r, resolver)
+	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -121,12 +80,12 @@ func TestIsStaleReturnsFalseWhenDepsMatch(t *testing.T) {
 // Test 6: IsStale returns true when a dep's revision has bumped.
 func TestIsStaleReturnsTrueWhenRevisionBumped(t *testing.T) {
 	dir := t.TempDir()
-	md := DepsMetadata{
-		Deps: []ResolvedDep{
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
 			{Name: "curl", Version: "8.19.0", Revision: 1},
 		},
 	}
-	if err := WriteDepsMetadata(dir, md); err != nil {
+	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
@@ -134,7 +93,7 @@ func TestIsStaleReturnsTrueWhenRevisionBumped(t *testing.T) {
 		"curl": curlRecipe("8.19.0", 2),
 	})
 
-	stale, err := IsStale(dir, r, resolver)
+	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -146,12 +105,12 @@ func TestIsStaleReturnsTrueWhenRevisionBumped(t *testing.T) {
 // Test 7: IsStale returns true when a dep's version has bumped.
 func TestIsStaleReturnsTrueWhenVersionBumped(t *testing.T) {
 	dir := t.TempDir()
-	md := DepsMetadata{
-		Deps: []ResolvedDep{
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
 			{Name: "curl", Version: "8.19.0", Revision: 1},
 		},
 	}
-	if err := WriteDepsMetadata(dir, md); err != nil {
+	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
@@ -159,7 +118,7 @@ func TestIsStaleReturnsTrueWhenVersionBumped(t *testing.T) {
 		"curl": curlRecipe("8.20.0", 1),
 	})
 
-	stale, err := IsStale(dir, r, resolver)
+	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -171,12 +130,12 @@ func TestIsStaleReturnsTrueWhenVersionBumped(t *testing.T) {
 // Test 8: IsStale returns the resolver's error when a dep cannot be resolved.
 func TestIsStaleReturnsResolverError(t *testing.T) {
 	dir := t.TempDir()
-	md := DepsMetadata{
-		Deps: []ResolvedDep{
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
 			{Name: "curl", Version: "8.19.0", Revision: 1},
 		},
 	}
-	if err := WriteDepsMetadata(dir, md); err != nil {
+	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
@@ -184,7 +143,7 @@ func TestIsStaleReturnsResolverError(t *testing.T) {
 		return nil, fmt.Errorf("recipe not found: %s", name)
 	}
 
-	_, err := IsStale(dir, r, resolver)
+	_, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err == nil {
 		t.Fatal("IsStale must return a non-nil error when the resolver fails")
 	}
@@ -194,15 +153,13 @@ func TestIsStaleReturnsResolverError(t *testing.T) {
 }
 
 // Test 10: IsStale returns false for a package with zero declared deps when
-// a valid (empty) metadata file is present. A package that genuinely has no
-// deps is fresh — "file absent" (stale migration) must be distinguished from
-// "file present with empty dep list" (fresh zero-dep package).
+// a valid (empty) metadata file is present.
 func TestIsStaleReturnsFalseForZeroDepPackage(t *testing.T) {
 	storeDir := t.TempDir()
 
 	// Write an empty metadata file (simulates a previous install of a zero-dep package).
-	if err := WriteDepsMetadata(storeDir, DepsMetadata{}); err != nil {
-		t.Fatalf("WriteDepsMetadata error: %v", err)
+	if err := depsmeta.Write(storeDir, depsmeta.Metadata{}); err != nil {
+		t.Fatalf("depsmeta.Write error: %v", err)
 	}
 
 	// Recipe with no declared deps.
@@ -214,7 +171,7 @@ func TestIsStaleReturnsFalseForZeroDepPackage(t *testing.T) {
 		return nil, fmt.Errorf("unexpected resolver call for %s", name)
 	}
 
-	stale, err := IsStale(storeDir, r, resolver)
+	stale, err := IsStale(storeDir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -224,20 +181,16 @@ func TestIsStaleReturnsFalseForZeroDepPackage(t *testing.T) {
 }
 
 // Test 9: IsStale ignores deps not declared in the current recipe.
-// The resolver must be called for curl (the declared dep) and must NOT be
-// called for openssl (an old dep no longer in the recipe). Calling openssl
-// would return an error, so any implementation that iterates metadata deps
-// instead of recipe deps will fail.
 func TestIsStaleIgnoresUndeclaredDepsInMetadata(t *testing.T) {
 	dir := t.TempDir()
 	// Metadata has two entries: curl (current) and openssl (old, not in recipe).
-	md := DepsMetadata{
-		Deps: []ResolvedDep{
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
 			{Name: "curl", Version: "8.19.0", Revision: 1},
 			{Name: "openssl", Version: "3.0.0", Revision: 1},
 		},
 	}
-	if err := WriteDepsMetadata(dir, md); err != nil {
+	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
 	// Recipe only declares curl — openssl is no longer a dep.
@@ -252,7 +205,7 @@ func TestIsStaleIgnoresUndeclaredDepsInMetadata(t *testing.T) {
 		return nil, fmt.Errorf("recipe not found: %s", name)
 	}
 
-	stale, err := IsStale(dir, r, resolver)
+	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("unexpected error (openssl must not be resolved): %v", err)
 	}
@@ -274,191 +227,81 @@ func TestIsStaleIgnoresUndeclaredDepsInMetadata(t *testing.T) {
 	}
 }
 
-// --- HasDepsMetadata tests ---
-
-// Missing .gale-deps.toml file reports no metadata. This is the soft-migration
-// signal: installs that predate the revision system carry no metadata file
-// and should be flagged stale without needing to resolve their recipe.
-func TestHasDepsMetadata_MissingFile(t *testing.T) {
+// TestIsStaleWithPlatformScopedConstraintViolated tests that IsStale
+// returns true when a platform-scoped constraint is violated. Before
+// option (a) was fully applied, IsStale read r.Dependencies.Constraints
+// directly and never saw constraints scoped to a platform entry.
+// This test ensures that DependenciesForPlatform is consulted, so
+// platform-scoped constraints are visible to the staleness check.
+func TestIsStaleWithPlatformScopedConstraintViolated(t *testing.T) {
 	dir := t.TempDir()
-	if HasDepsMetadata(dir) {
-		t.Fatal("expected HasDepsMetadata=false when file is missing")
+	// expat was recorded at 2.7.4 (violates >=2.7.5-2 constraint).
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
+			{Name: "expat", Version: "2.7.4", Revision: 1},
+		},
+	}
+	if err := depsmeta.Write(dir, md); err != nil {
+		t.Fatalf("depsmeta.Write error: %v", err)
+	}
+
+	// Build a recipe that has expat only as a platform-scoped dep
+	// with a minimum version constraint.
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "mypkg", Version: "1.0.0"},
+		Dependencies: recipe.Dependencies{
+			Platform: map[string]recipe.PlatformDependencies{
+				"linux-amd64": {
+					Runtime:     []string{"expat"},
+					Constraints: map[string]string{"expat": ">=2.7.5-2"},
+				},
+			},
+		},
+	}
+
+	resolver := func(name string) (*recipe.Recipe, error) {
+		return &recipe.Recipe{
+			Package: recipe.Package{Name: name, Version: "2.7.6", Revision: 1},
+		}, nil
+	}
+
+	// IsStale must return true: the recorded version (2.7.4) violates
+	// the platform-scoped constraint (>=2.7.5-2). Without calling
+	// DependenciesForPlatform, IsStale would see no constraint and no
+	// declared dep, and return false — a silent miss.
+	stale, err := IsStale(dir, r, "linux", "amd64", resolver)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !stale {
+		t.Error("IsStale must return true when platform-scoped constraint is violated")
 	}
 }
 
-// Present .gale-deps.toml file reports metadata exists, even when the file
-// is empty (a valid zero-dep install). Pairs with the missing-file test so
-// the bool distinguishes "missing" from "present-but-empty".
-func TestHasDepsMetadata_PresentFile(t *testing.T) {
+// TestIsStaleNilResolverReturn: resolver returns (nil, nil) for a
+// declared dep; IsStale must return a non-nil error (not panic).
+func TestIsStaleNilResolverReturn(t *testing.T) {
 	dir := t.TempDir()
-	if err := WriteDepsMetadata(dir, DepsMetadata{}); err != nil {
-		t.Fatalf("WriteDepsMetadata: %v", err)
-	}
-	if !HasDepsMetadata(dir) {
-		t.Fatal("expected HasDepsMetadata=true when file is present")
-	}
-}
-
-// --- BuildDepsToResolved tests ---
-
-// Behavior 1: Nil BuildDeps returns nil — verified by also checking that a
-// non-nil input with one entry returns a non-nil slice, distinguishing the
-// nil case from a broken implementation that always returns nil.
-func TestBuildDepsToResolved_NilReturnsNil(t *testing.T) {
-	// nil input must return nil
-	got := BuildDepsToResolved(nil)
-	if got != nil {
-		t.Errorf("expected nil for nil input, got %v", got)
-	}
-	// non-nil input with one entry must return non-nil (ensures stub isn't hiding a bug)
-	nonNil := &build.BuildDeps{
-		NamedDirs: map[string]string{"curl": "/store/curl/8.0.0"},
-	}
-	gotNonNil := BuildDepsToResolved(nonNil)
-	if gotNonNil == nil {
-		t.Errorf("expected non-nil result for non-nil input with one dep, got nil")
-	}
-}
-
-// Behavior 2: Empty NamedDirs (nil map) returns empty or nil slice, but a
-// single-entry map returns a non-empty slice, proving the function reads NamedDirs.
-func TestBuildDepsToResolved_EmptyNamedDirsNilMap(t *testing.T) {
-	deps := &build.BuildDeps{NamedDirs: nil}
-	got := BuildDepsToResolved(deps)
-	if len(got) != 0 {
-		t.Errorf("expected empty slice for nil NamedDirs, got %v", got)
-	}
-	// Confirm a non-empty map yields results (guards against always-empty stub).
-	withOne := &build.BuildDeps{
-		NamedDirs: map[string]string{"zlib": "/store/zlib/1.3.1"},
-	}
-	gotOne := BuildDepsToResolved(withOne)
-	if len(gotOne) != 1 {
-		t.Errorf("expected 1 dep for single-entry NamedDirs, got %d", len(gotOne))
-	}
-}
-
-// Behavior 2 (variant): Empty NamedDirs (empty map) returns empty or nil slice.
-func TestBuildDepsToResolved_EmptyNamedDirsEmptyMap(t *testing.T) {
-	deps := &build.BuildDeps{NamedDirs: map[string]string{}}
-	got := BuildDepsToResolved(deps)
-	if len(got) != 0 {
-		t.Errorf("expected empty slice for empty NamedDirs, got %v", got)
-	}
-	// Confirm a non-empty map yields results.
-	withOne := &build.BuildDeps{
-		NamedDirs: map[string]string{"openssl": "/store/openssl/3.0.0"},
-	}
-	gotOne := BuildDepsToResolved(withOne)
-	if len(gotOne) != 1 {
-		t.Errorf("expected 1 dep for single-entry NamedDirs, got %d", len(gotOne))
-	}
-}
-
-// Behavior 3: <version>-<revision> basename parses into (name, version, revision).
-func TestBuildDepsToResolved_VersionRevisionBasename(t *testing.T) {
-	deps := &build.BuildDeps{
-		NamedDirs: map[string]string{
-			"curl": "/Users/x/.gale/pkg/curl/8.19.0-2",
+	md := depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
+			{Name: "curl", Version: "8.19.0", Revision: 1},
 		},
 	}
-	got := BuildDepsToResolved(deps)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 dep, got %d: %v", len(got), got)
+	if err := depsmeta.Write(dir, md); err != nil {
+		t.Fatalf("setup: %v", err)
 	}
-	d := got[0]
-	if d.Name != "curl" {
-		t.Errorf("Name: got %q, want %q", d.Name, "curl")
+	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
+	// Resolver returns nil recipe with no error — the contract described
+	// in installer.go:30 ("Returns nil if the package has no recipe").
+	resolver := func(name string) (*recipe.Recipe, error) {
+		return nil, nil //nolint:nilnil // deliberate: exercises the (nil, nil) resolver contract
 	}
-	if d.Version != "8.19.0" {
-		t.Errorf("Version: got %q, want %q", d.Version, "8.19.0")
-	}
-	if d.Revision != 2 {
-		t.Errorf("Revision: got %d, want %d", d.Revision, 2)
-	}
-}
 
-// Behavior 4: Bare basename (no revision suffix) defaults revision to 1.
-func TestBuildDepsToResolved_BareBasenameDefaultsRevisionToOne(t *testing.T) {
-	deps := &build.BuildDeps{
-		NamedDirs: map[string]string{
-			"curl": "/Users/x/.gale/pkg/curl/8.19.0",
-		},
+	_, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	if err == nil {
+		t.Fatal("IsStale must return a non-nil error when resolver returns (nil, nil)")
 	}
-	got := BuildDepsToResolved(deps)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 dep, got %d: %v", len(got), got)
-	}
-	d := got[0]
-	if d.Version != "8.19.0" {
-		t.Errorf("Version: got %q, want %q", d.Version, "8.19.0")
-	}
-	if d.Revision != 1 {
-		t.Errorf("Revision: got %d, want 1 (default for bare basename)", d.Revision)
-	}
-}
-
-// Behavior 5: Multi-digit revision is parsed correctly.
-func TestBuildDepsToResolved_MultiDigitRevision(t *testing.T) {
-	deps := &build.BuildDeps{
-		NamedDirs: map[string]string{
-			"curl": "/Users/x/.gale/pkg/curl/8.19.0-42",
-		},
-	}
-	got := BuildDepsToResolved(deps)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 dep, got %d: %v", len(got), got)
-	}
-	d := got[0]
-	if d.Version != "8.19.0" {
-		t.Errorf("Version: got %q, want %q", d.Version, "8.19.0")
-	}
-	if d.Revision != 42 {
-		t.Errorf("Revision: got %d, want 42", d.Revision)
-	}
-}
-
-// Behavior 6: Non-numeric suffix (pre-release like 1.0.0-rc1) treated as bare
-// version — the whole basename is the version and revision defaults to 1.
-func TestBuildDepsToResolved_NonNumericSuffixTreatedAsBareVersion(t *testing.T) {
-	deps := &build.BuildDeps{
-		NamedDirs: map[string]string{
-			"foo": "/pkg/foo/1.0.0-rc1",
-		},
-	}
-	got := BuildDepsToResolved(deps)
-	if len(got) != 1 {
-		t.Fatalf("expected 1 dep, got %d: %v", len(got), got)
-	}
-	d := got[0]
-	if d.Name != "foo" {
-		t.Errorf("Name: got %q, want %q", d.Name, "foo")
-	}
-	if d.Version != "1.0.0-rc1" {
-		t.Errorf("Version: got %q, want %q", d.Version, "1.0.0-rc1")
-	}
-	if d.Revision != 1 {
-		t.Errorf("Revision: got %d, want 1 (non-numeric suffix is not a revision)", d.Revision)
-	}
-}
-
-// Behavior 7: Output is sorted by name for reproducibility.
-func TestBuildDepsToResolved_OutputSortedByName(t *testing.T) {
-	deps := &build.BuildDeps{
-		NamedDirs: map[string]string{
-			"zebra": "/store/zebra/1.0",
-			"apple": "/store/apple/2.0",
-			"mango": "/store/mango/3.0-1",
-		},
-	}
-	got := BuildDepsToResolved(deps)
-	if len(got) != 3 {
-		t.Fatalf("expected 3 deps, got %d: %v", len(got), got)
-	}
-	wantOrder := []string{"apple", "mango", "zebra"}
-	for i, want := range wantOrder {
-		if got[i].Name != want {
-			t.Errorf("dep[%d].Name: got %q, want %q (result must be sorted by name)", i, got[i].Name, want)
-		}
+	if !strings.Contains(err.Error(), "curl") {
+		t.Errorf("error should mention the dep name 'curl', got: %v", err)
 	}
 }

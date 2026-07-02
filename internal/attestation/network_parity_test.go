@@ -246,7 +246,7 @@ func verifyLegacyArchive(t *testing.T, v *attestation.SigstoreVerifier, c parity
 func downloadParityArchive(t *testing.T, c parityCoords) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), c.pkg+".tar.zst")
-	if err := download.FetchWithAuthNamed(parityBlobURL(c), path, parityToken(t, c.pkg), ""); err != nil {
+	if err := download.FetchWithAuth(parityBlobURL(c), path, parityToken(t, c.pkg)); err != nil {
 		t.Fatalf("download archive for %s@%s: %v", c.pkg, c.version, err)
 	}
 	got, err := download.HashFile(path)

@@ -1132,23 +1132,26 @@ var textFixupDirs = []string{
 	"bin", "sbin", "libexec", "share", "etc", "lib", "include",
 }
 
-// ReplacePrefixInTextFiles walks prefixDir and replaces all
-// occurrences of buildPrefix in text files with replacement.
-// Binary files (those containing null bytes in the first 512
-// bytes) are skipped. Directories scanned: textFixupDirs
-// (lib for .la files and scripts, include for generated
-// config headers).
-func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
+// rewriteTextFiles walks textFixupDirs under rootDir. For each
+// text file <= 10 MB, transform is called with the current
+// content. If transform returns a non-empty new string that
+// differs from the original, the file is overwritten with the
+// new content using its existing mode. Build and store output
+// is trusted; unreadable files are skipped.
+func rewriteTextFiles(
+	rootDir string,
+	transform func(content string) (string, bool),
+) error {
 	for _, d := range textFixupDirs {
-		dir := filepath.Join(prefixDir, d)
+		dir := filepath.Join(rootDir, d)
 		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
 			continue
 		}
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — build output is trusted, not user-controlled
+		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — build/store output is trusted
 			if err != nil || info.IsDir() {
 				return err
 			}
-			// Skip large files (> 10MB) — unlikely to be
+			// Skip large files (> 10 MB) — unlikely to be
 			// text config/scripts.
 			if info.Size() > 10*1024*1024 {
 				return nil
@@ -1160,19 +1163,32 @@ func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
 			if !isTextContent(data) {
 				return nil
 			}
-			if !strings.Contains(string(data), prefixDir) {
+			newContent, changed := transform(string(data))
+			if !changed {
 				return nil
 			}
-			newData := strings.ReplaceAll(
-				string(data), prefixDir, replacement,
-			)
-			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
+			return os.WriteFile(path, []byte(newContent), info.Mode()) //nolint:gosec
 		})
 		if err != nil {
-			return fmt.Errorf("fixup text files in %s: %w", d, err)
+			return fmt.Errorf("rewrite text files in %s: %w", d, err)
 		}
 	}
 	return nil
+}
+
+// ReplacePrefixInTextFiles walks prefixDir and replaces all
+// occurrences of buildPrefix in text files with replacement.
+// Binary files (those containing null bytes in the first 512
+// bytes) are skipped. Directories scanned: textFixupDirs
+// (lib for .la files and scripts, include for generated
+// config headers).
+func ReplacePrefixInTextFiles(prefixDir, replacement string) error {
+	return rewriteTextFiles(prefixDir, func(content string) (string, bool) {
+		if !strings.Contains(content, prefixDir) {
+			return "", false
+		}
+		return strings.ReplaceAll(content, prefixDir, replacement), true
+	})
 }
 
 // RestorePrefixPlaceholder replaces PrefixPlaceholder with
@@ -1187,43 +1203,32 @@ func RestorePrefixPlaceholder(storeDir string) error {
 // when install output is staged in a temporary directory before
 // being moved into its final store path.
 func RestorePrefixPlaceholderTo(rootDir, replacement string) error {
-	for _, d := range textFixupDirs {
-		dir := filepath.Join(rootDir, d)
-		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-			continue
+	return rewriteTextFiles(rootDir, func(content string) (string, bool) {
+		if !strings.Contains(content, PrefixPlaceholder) {
+			return "", false
 		}
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — store content is trusted
-			if err != nil || info.IsDir() {
-				return err
-			}
-			if info.Size() > 10*1024*1024 {
-				return nil
-			}
-			data, readErr := os.ReadFile(path) //nolint:gosec // G122 — build/store output is trusted
-			if readErr != nil {
-				return nil //nolint:nilerr // skip unreadable files
-			}
-			if !isTextContent(data) {
-				return nil
-			}
-			if !strings.Contains(string(data), PrefixPlaceholder) {
-				return nil
-			}
-			newData := strings.ReplaceAll(
-				string(data), PrefixPlaceholder, replacement,
-			)
-			return os.WriteFile(path, []byte(newData), info.Mode()) //nolint:gosec
-		})
-		if err != nil {
-			return fmt.Errorf("restore prefix in %s: %w", d, err)
-		}
-	}
-	return nil
+		return strings.ReplaceAll(content, PrefixPlaceholder, replacement), true
+	})
 }
 
 // stalePathRe matches absolute paths containing the .gale/pkg/
 // marker, bounded by common shell/config delimiters.
 var stalePathRe = regexp.MustCompile(`/[^\s"'<>:()|&;,$]*\.gale/pkg/[^\s"'<>:()|&;,$]*`)
+
+// relocateStalePath rewrites a single stalePathRe match to use
+// currentStoreRoot instead of its original store prefix.
+func relocateStalePath(match, currentStoreRoot string) string {
+	const marker = ".gale/pkg/"
+	idx := strings.Index(match, marker)
+	if idx < 0 {
+		return match
+	}
+	newPath := filepath.Join(currentStoreRoot, match[idx+len(marker):])
+	if match == newPath {
+		return match
+	}
+	return newPath
+}
 
 // RelocateStalePathsInTextFiles rewrites foreign .gale/pkg/
 // paths embedded in text files under prefixDir so they use
@@ -1234,49 +1239,12 @@ var stalePathRe = regexp.MustCompile(`/[^\s"'<>:()|&;,$]*\.gale/pkg/[^\s"'<>:()|
 // larger than 10 MB are skipped.
 func RelocateStalePathsInTextFiles(prefixDir, currentStoreRoot string) error {
 	currentStoreRoot = filepath.Clean(currentStoreRoot)
-	marker := ".gale/pkg/"
-	for _, d := range textFixupDirs {
-		dir := filepath.Join(prefixDir, d)
-		if _, err := os.Stat(dir); errors.Is(err, os.ErrNotExist) {
-			continue
-		}
-		err := filepath.Walk(dir, func(path string, info os.FileInfo, err error) error { //nolint:gosec // G122 — store content is trusted
-			if err != nil || info.IsDir() {
-				return err
-			}
-			if info.Size() > 10*1024*1024 {
-				return nil
-			}
-			data, readErr := os.ReadFile(path) //nolint:gosec // G122 — build/store output is trusted
-			if readErr != nil {
-				return nil //nolint:nilerr // skip unreadable files
-			}
-			if !isTextContent(data) {
-				return nil
-			}
-			content := string(data)
-			newContent := stalePathRe.ReplaceAllStringFunc(content, func(match string) string {
-				idx := strings.Index(match, marker)
-				if idx < 0 {
-					return match
-				}
-				suffix := match[idx+len(marker):]
-				newPath := filepath.Join(currentStoreRoot, suffix)
-				if match == newPath {
-					return match
-				}
-				return newPath
-			})
-			if newContent == content {
-				return nil
-			}
-			return os.WriteFile(path, []byte(newContent), info.Mode()) //nolint:gosec
+	return rewriteTextFiles(prefixDir, func(content string) (string, bool) {
+		newContent := stalePathRe.ReplaceAllStringFunc(content, func(m string) string {
+			return relocateStalePath(m, currentStoreRoot)
 		})
-		if err != nil {
-			return fmt.Errorf("relocate stale paths in %s: %w", d, err)
-		}
-	}
-	return nil
+		return newContent, newContent != content
+	})
 }
 
 // isTextContent returns true if data appears to be text

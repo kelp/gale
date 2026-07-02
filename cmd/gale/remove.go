@@ -25,10 +25,8 @@ var removeCmd = &cobra.Command{
 	Short: "Remove a package",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if removeGlobal && removeProject {
-			return fmt.Errorf(
-				"cannot use both --global and --project",
-			)
+		if err := validateScopeFlags(removeGlobal, removeProject); err != nil {
+			return err
 		}
 
 		name := args[0]
@@ -111,9 +109,7 @@ var removeCmd = &cobra.Command{
 		if host != "" {
 			sections = []string{host}
 		} else {
-			sections = locatePackageSections(
-				ctx.GalePath, name, config.CurrentHost(),
-			)
+			sections = locatePackageSections(ctx.GalePath, name)
 		}
 		for _, section := range sections {
 			if err := config.RemovePackage(
@@ -221,9 +217,7 @@ func init() {
 // both shared and host-overlay entries. Removing only one
 // leaves the package in the effective config while we
 // delete its store dir — see TestRemoveCleansHostOverlayAndShared.
-// `current` is accepted for future preference rules but is
-// not used: every match must be cleared regardless.
-func locatePackageSections(configPath, name, _ string) []string {
+func locatePackageSections(configPath, name string) []string {
 	cfg, err := rawGaleConfig(configPath)
 	if err != nil {
 		return nil

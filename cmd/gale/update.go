@@ -30,8 +30,8 @@ var updateCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newCmdOutput(cmd)
 
-		if updateGlobal && updateProject {
-			return fmt.Errorf("cannot use both --global and --project")
+		if err := validateScopeFlags(updateGlobal, updateProject); err != nil {
+			return err
 		}
 
 		// --path requires exactly one package name.
@@ -367,14 +367,6 @@ func isGitHash(s string) bool {
 	return true
 }
 
-// isNewerVersion reports whether candidate is strictly newer
-// than current. Delegates to internal/version so update and
-// outdated share one ordering — including gale revision
-// semantics (numeric `-<N>` is newer than bare).
-func isNewerVersion(candidate, current string) bool {
-	return ver.IsNewer(candidate, current)
-}
-
 // updateAction returns the version to install and whether
 // the update should be skipped. When the registry version
 // matches the current version AND the package exists in the
@@ -386,7 +378,7 @@ func updateAction(
 	candidate, current string,
 	inStore bool,
 ) (version string, skip bool) {
-	newer := isNewerVersion(candidate, current)
+	newer := ver.IsNewer(candidate, current)
 	if !newer && inStore {
 		return current, true
 	}
@@ -410,7 +402,7 @@ func updateAction(
 // version) writing the bare pin unchanged.
 func noInstallPin(bare, full, current string) string {
 	if stripNumericRevision(current) == bare &&
-		isNewerVersion(full, current) {
+		ver.IsNewer(full, current) {
 		return full
 	}
 	return bare

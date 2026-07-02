@@ -9,31 +9,11 @@ import (
 	"github.com/kelp/gale/internal/version"
 )
 
-// BinaryDep records one entry from a `.binaries.toml` per-platform
-// `deps` array. It's the same shape as depsmeta.ResolvedDep but
-// lives here to avoid a dependency cycle (depsmeta is the
-// on-disk format for the archive-internal `.gale-deps.toml`; this
-// type is the registry-level view of the same closure).
-//
-// Informational only at install time — the archive's own
-// `.gale-deps.toml` remains authoritative. See docs/revisions.md.
-type BinaryDep struct {
-	Name     string `toml:"name"`
-	Version  string `toml:"version"`
-	Revision int    `toml:"revision"`
-}
-
 // BinaryIndex represents a .binaries.toml file that maps
-// platform keys to SHA256 hashes (and optionally the linked
-// dep closure) for prebuilt binaries.
+// platform keys to SHA256 hashes for prebuilt binaries.
 type BinaryIndex struct {
 	Version   string            `toml:"version"`
 	Platforms map[string]string `toml:"-"`
-	// Deps maps platform key → list of resolved (name, version,
-	// revision) entries recorded by CI when the prebuilt was
-	// built. Empty when the file was written before C4 landed,
-	// or when the build had no declared deps.
-	Deps map[string][]BinaryDep `toml:"-"`
 	// Digests maps platform key → "sha256:<64hex>" OCI manifest
 	// digest recorded by CI when the prebuilt was pushed. Empty
 	// when the file predates the field or the digest is absent.
@@ -78,7 +58,6 @@ func ParseBinaryIndex(data string) (*BinaryIndex, error) {
 
 	idx := &BinaryIndex{
 		Platforms: make(map[string]string),
-		Deps:      make(map[string][]BinaryDep),
 		Digests:   make(map[string]string),
 	}
 
@@ -109,11 +88,6 @@ func ParseBinaryIndex(data string) (*BinaryIndex, error) {
 				idx.Platforms[key] = s
 			}
 		}
-		if depsRaw, ok := sub["deps"]; ok {
-			if deps := parseBinaryDeps(depsRaw); len(deps) > 0 {
-				idx.Deps[key] = deps
-			}
-		}
 		if dig, ok := sub["manifest_digest"]; ok {
 			if s, ok := dig.(string); ok && validManifestDigest(s) {
 				idx.Digests[key] = s
@@ -122,53 +96,6 @@ func ParseBinaryIndex(data string) (*BinaryIndex, error) {
 	}
 
 	return idx, nil
-}
-
-// parseBinaryDeps converts the raw TOML value for a platform's
-// `deps = [...]` into typed BinaryDep entries. Invalid entries
-// (non-table, missing fields) are skipped — the field is
-// informational, so a malformed entry degrades to empty rather
-// than failing the whole parse.
-func parseBinaryDeps(raw interface{}) []BinaryDep {
-	arr, ok := raw.([]map[string]interface{})
-	if !ok {
-		// BurntSushi decodes inline tables and arrays of tables
-		// into different concrete types. Handle both.
-		iarr, ok2 := raw.([]interface{})
-		if !ok2 {
-			return nil
-		}
-		for _, v := range iarr {
-			m, ok := v.(map[string]interface{})
-			if ok {
-				arr = append(arr, m)
-			}
-		}
-	}
-	var out []BinaryDep
-	for _, m := range arr {
-		var dep BinaryDep
-		if s, ok := m["name"].(string); ok {
-			dep.Name = s
-		}
-		if s, ok := m["version"].(string); ok {
-			dep.Version = s
-		}
-		switch n := m["revision"].(type) {
-		case int64:
-			dep.Revision = int(n)
-		case int:
-			dep.Revision = n
-		}
-		if dep.Name == "" || dep.Version == "" {
-			continue
-		}
-		if dep.Revision <= 0 {
-			dep.Revision = 1
-		}
-		out = append(out, dep)
-	}
-	return out
 }
 
 // parseBinaryHistory converts the raw TOML value for the

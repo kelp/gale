@@ -10,6 +10,7 @@ import (
 
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/registry"
 )
 
 // TestSummarizeOutdatedExitsNonZeroWhenAllSkipped pins
@@ -156,8 +157,9 @@ func TestCheckOutdatedContinuesPastPerPackageErrors(t *testing.T) {
 // TestIsTransportErrorDetectsCommonShapes pins the heuristic
 // used by checkOutdated to short-circuit the loop. These
 // strings come from net.OpError, the http stdlib timeout
-// message, and our cache contract's offline error.
+// message, and the registry offline sentinel.
 func TestIsTransportErrorDetectsCommonShapes(t *testing.T) {
+	// String-matched transport errors (net.OpError, stdlib timeout).
 	transport := []string{
 		"dial tcp 127.0.0.1:1: connect: connection refused",
 		"dial tcp: lookup nope.invalid: no such host",
@@ -165,12 +167,19 @@ func TestIsTransportErrorDetectsCommonShapes(t *testing.T) {
 		"read tcp: i/o timeout",
 		"context deadline exceeded",
 		"context canceled",
-		"GALE_OFFLINE=1 and no cached entry for jq.toml",
 	}
 	for _, s := range transport {
 		if !isTransportError(errors.New(s)) {
 			t.Errorf("expected transport error for: %q", s)
 		}
+	}
+
+	// The offline sentinel must be detected via errors.Is, not
+	// string-matching. Wrap it as cachedGet does (with %w).
+	offlineErr := fmt.Errorf("%w for jq.toml", registry.ErrOfflineNoCache)
+	if !isTransportError(offlineErr) {
+		t.Errorf("expected transport error for wrapped ErrOfflineNoCache: %v",
+			offlineErr)
 	}
 
 	notTransport := []string{

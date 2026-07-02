@@ -4,45 +4,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/recipe"
 )
-
-// ResolvedDep records one dep's full identity at install
-// time. Persisted in <storeDir>/.gale-deps.toml.
-type ResolvedDep = depsmeta.ResolvedDep
-
-// DepsMetadata is the on-disk form of a package's
-// built-against dep closure.
-type DepsMetadata = depsmeta.Metadata
-
-// WriteDepsMetadata writes the metadata file into storeDir.
-// Overwrites any existing file.
-func WriteDepsMetadata(storeDir string, md DepsMetadata) error {
-	return depsmeta.Write(storeDir, md)
-}
-
-// HasDepsMetadata reports whether <storeDir>/.gale-deps.toml
-// exists. Callers use this to distinguish "old install that
-// predates the revision system" (file missing → stale) from
-// "fresh install with no deps" (file present but empty).
-// Checking this before resolving a recipe lets sync and doctor
-// detect soft-migration candidates even when the installed
-// version is no longer in the registry's .versions index.
-func HasDepsMetadata(storeDir string) bool {
-	return depsmeta.Has(storeDir)
-}
-
-// ReadDepsMetadata reads <storeDir>/.gale-deps.toml.
-// Returns an empty DepsMetadata (no error) if the file
-// does not exist. Returns an error if the file exists
-// but fails to parse.
-func ReadDepsMetadata(storeDir string) (DepsMetadata, error) {
-	return depsmeta.Read(storeDir)
-}
 
 // IsStale reports whether an installed package is stale
 // relative to the current recipes of its declared
@@ -50,16 +15,21 @@ func ReadDepsMetadata(storeDir string) (DepsMetadata, error) {
 // a dep version-revision that differs from what the
 // current recipe for that dep produces.
 //
+// goos and goarch identify the current platform (typically
+// runtime.GOOS and runtime.GOARCH). They are passed to
+// DependenciesForPlatform so that platform-scoped dep lists
+// and constraints are included in the staleness check.
+//
 // A missing .gale-deps.toml causes IsStale to return
 // true (stale) so a soft migration reinstalls old
 // installs that predate this metadata.
 //
-// Only the Runtime deps declared on `r` are considered:
-// build-only tools (cmake, rust, go) and external system
-// libraries are ignored, because the shipped binary cannot
-// link them, so a bump to one must not force a re-download
-// (gh#157).
-func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, error) {
+// Only the Runtime deps declared on `r` (for the given
+// platform) are considered: build-only tools (cmake, rust,
+// go) and external system libraries are ignored, because
+// the shipped binary cannot link them, so a bump to one
+// must not force a re-download (gh#157).
+func IsStale(storeDir string, r *recipe.Recipe, goos, goarch string, resolver RecipeResolver) (bool, error) {
 	// Check whether the metadata file is present before reading it.
 	// A missing file means the package predates this metadata (soft
 	// migration → stale). A present file with zero deps is a valid
@@ -84,19 +54,17 @@ func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, 
 		metaMap[dep.Name] = depKey{Version: dep.Version, Revision: dep.Revision}
 	}
 
-	// Collect declared runtime deps. Build-only deps are
+	// Collect declared runtime deps only. Build-only deps are
 	// deliberately excluded (gh#157): the shipped binary
-	// links only its runtime closure. Use the platform
-	// overlay so the check matches what the builder recorded
-	// (runtimeDepsMetadata also resolves via
-	// DependenciesForPlatform); a platform runtime override
-	// otherwise leaves the package permanently stale.
-	runtimeDeps := r.DependenciesForPlatform(
-		runtime.GOOS, runtime.GOARCH,
-	).Runtime
-	declared := make([]string, 0, len(runtimeDeps))
+	// links only its runtime closure. DependenciesForPlatform
+	// merges the platform overlay so the check matches what
+	// the builder recorded (runtimeDepsMetadata also resolves
+	// via DependenciesForPlatform) and so platform-scoped
+	// constraints are included in the staleness check.
+	deps := r.DependenciesForPlatform(goos, goarch)
+	declared := make([]string, 0, len(deps.Runtime))
 	seen := make(map[string]bool)
-	for _, dep := range runtimeDeps {
+	for _, dep := range deps.Runtime {
 		if !seen[dep] {
 			seen[dep] = true
 			declared = append(declared, dep)
@@ -108,6 +76,9 @@ func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, 
 		resolved, err := resolver(name)
 		if err != nil {
 			return false, fmt.Errorf("resolve %s: %w", name, err)
+		}
+		if resolved == nil {
+			return false, fmt.Errorf("no recipe found for %s", name)
 		}
 
 		current := depKey{
@@ -128,7 +99,7 @@ func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, 
 		// recipe authors opt out of automatic
 		// propagation for revisions that don't actually
 		// affect them.
-		if expr, has := r.Dependencies.Constraints[name]; has && expr != "" {
+		if expr, has := deps.Constraints[name]; has && expr != "" {
 			c, cerr := recipe.ParseConstraint(expr)
 			if cerr != nil {
 				return false, fmt.Errorf(
@@ -154,14 +125,4 @@ func IsStale(storeDir string, r *recipe.Recipe, resolver RecipeResolver) (bool, 
 	}
 
 	return false, nil
-}
-
-// BuildDepsToResolved converts a BuildDeps into the flat
-// (name, version, revision) list persisted in .gale-deps.toml.
-// Thin wrapper around depsmeta.FromNamedDirs.
-func BuildDepsToResolved(deps *build.BuildDeps) []ResolvedDep {
-	if deps == nil {
-		return nil
-	}
-	return depsmeta.FromNamedDirs(deps.NamedDirs)
 }

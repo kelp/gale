@@ -57,6 +57,27 @@ func TestIsNewer(t *testing.T) {
 	}
 }
 
+func TestBase(t *testing.T) {
+	tests := []struct {
+		v    string
+		want string
+	}{
+		{"1.8.1-4", "1.8.1"},   // numeric suffix stripped
+		{"1.8.1", "1.8.1"},     // no suffix unchanged
+		{"0.10.0-2", "0.10.0"}, // stripped
+		{"1.0-rc1", "1.0-rc1"}, // non-numeric suffix kept
+		{"1.2-0", "1.2-0"},     // zero revision kept
+	}
+	for _, tt := range tests {
+		t.Run(tt.v, func(t *testing.T) {
+			got := Base(tt.v)
+			if got != tt.want {
+				t.Errorf("Base(%q) = %q, want %q", tt.v, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSplitRevision(t *testing.T) {
 	tests := []struct {
 		v        string

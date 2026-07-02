@@ -14,17 +14,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// registryOverride lets tests inject a custom registry. When
-// nil, newRegistry() is used.
-var registryOverride func() *registry.Registry
-
-func infoRegistry() *registry.Registry {
-	if registryOverride != nil {
-		return registryOverride()
-	}
-	return newRegistry()
-}
-
 var (
 	infoGlobal  bool
 	infoProject bool
@@ -35,7 +24,7 @@ var infoCmd = &cobra.Command{
 	Short: "Show package information",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runInfo(cmd.OutOrStdout(), args[0])
+		return runInfo(cmd.OutOrStdout(), newRegistry(), args[0])
 	},
 }
 
@@ -50,7 +39,7 @@ var infoCmd = &cobra.Command{
 // lookup to a single config — `info -g jq` from inside a
 // project reads ~/.gale/gale.toml directly, bypassing the
 // project-shadowing default.
-func runInfo(w io.Writer, arg string) error {
+func runInfo(w io.Writer, reg *registry.Registry, arg string) error {
 	if err := validateScopeFlags(infoGlobal, infoProject); err != nil {
 		return err
 	}
@@ -104,28 +93,11 @@ func runInfo(w io.Writer, arg string) error {
 	// users asking for a specific @version want registry
 	// metadata, not whatever happens to be pinned locally.
 	if version == "" {
-		// Check project config first.
-		if projectPath, pErr := config.FindGaleConfig(cwd); pErr == nil {
-			if found, err := printConfigInfo(
-				w, name, projectPath, "project",
-			); err != nil {
-				return err
-			} else if found {
-				return nil
-			}
-		}
-
-		// Check global config.
-		globalDir, err := galeConfigDir()
+		found, err := findInstalledInfo(w, name, cwd)
 		if err != nil {
 			return err
 		}
-		globalPath := filepath.Join(globalDir, "gale.toml")
-		if found, err := printConfigInfo(
-			w, name, globalPath, "global",
-		); err != nil {
-			return err
-		} else if found {
+		if found {
 			return nil
 		}
 	}
@@ -134,8 +106,37 @@ func runInfo(w io.Writer, arg string) error {
 	// registry. FetchRecipeMetadata skips the .binaries.toml
 	// roundtrip the legacy code paid on every invocation; see
 	// audit/readonly/network-perf/0005.
-	reg := infoRegistry()
+	return fetchAndPrintRegistryInfo(w, reg, name, version)
+}
+
+// findInstalledInfo searches the project config (if present) then
+// the global config for name, printing details to w on the first
+// match. Returns true when the package was found and printed.
+func findInstalledInfo(w io.Writer, name, cwd string) (bool, error) {
+	if projectPath, pErr := config.FindGaleConfig(cwd); pErr == nil {
+		if found, err := printConfigInfo(w, name, projectPath, "project"); err != nil {
+			return false, err
+		} else if found {
+			return true, nil
+		}
+	}
+
+	globalDir, err := galeConfigDir()
+	if err != nil {
+		return false, err
+	}
+	globalPath := filepath.Join(globalDir, "gale.toml")
+	return printConfigInfo(w, name, globalPath, "global")
+}
+
+// fetchAndPrintRegistryInfo fetches recipe metadata from the
+// registry and prints it to w. When version is non-empty the
+// exact version is fetched; otherwise the latest metadata is used.
+func fetchAndPrintRegistryInfo(
+	w io.Writer, reg *registry.Registry, name, version string,
+) error {
 	var r *recipe.Recipe
+	var err error
 	if version != "" {
 		r, err = reg.FetchRecipeVersion(name, version)
 		if err != nil {
@@ -162,7 +163,6 @@ func runInfo(w io.Writer, arg string) error {
 		fmt.Fprintf(w, "Source:  %s\n", r.Source.URL)
 	}
 	fmt.Fprintln(w, "(not installed)")
-
 	return nil
 }
 

@@ -9,12 +9,10 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
-	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
@@ -34,7 +32,7 @@ var installCmd = &cobra.Command{
 	Short: "Install a package",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateInstallFlags(installGlobal, installProject); err != nil {
+		if err := validateScopeFlags(installGlobal, installProject); err != nil {
 			return err
 		}
 
@@ -178,17 +176,6 @@ func init() {
 	rootCmd.AddCommand(installCmd)
 }
 
-// validateInstallFlags returns an error if conflicting flags
-// are set.
-func validateInstallFlags(global, project bool) error {
-	if global && project {
-		return fmt.Errorf(
-			"cannot use both --global and --project",
-		)
-	}
-	return nil
-}
-
 // resolveScope determines whether to use global config.
 // Returns true for global, false for project. When no
 // flag is set, defaults to project if project config
@@ -209,11 +196,11 @@ func resolveScope(global, project bool, cwd string) bool {
 }
 
 func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output) error {
-	// When --recipe is provided, override resolver for
-	// recipe lookup and dep resolution.
-	resolver := ctx.Resolver
+	// Shallow-copy ctx.Installer so the Downloads limiter is
+	// inherited, then override Resolver when --recipe is set.
+	inst := *ctx.Installer
 	if recipePath != "" {
-		resolver = resolverForRecipe(recipePath)
+		inst.Resolver = resolverForRecipe(recipePath)
 	}
 
 	// Resolve recipe.
@@ -225,7 +212,7 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 		}
 		r = parsed
 	} else {
-		fetched, err := resolver(name)
+		fetched, err := inst.Resolver(name)
 		if err != nil {
 			return fmt.Errorf("fetching recipe: %w", err)
 		}
@@ -238,16 +225,10 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 		)
 	}
 
-	inst := &installer.Installer{
-		Store:    store.NewStore(ctx.StoreRoot),
-		Resolver: resolver,
-		Verifier: attestation.NewVerifier(),
-	}
-
 	out.Info(fmt.Sprintf("Installing %s from git (%s)...",
 		r.Package.Name, r.Source.Repo))
 
-	result, err := inst.InstallGitWithFinalize(r, func(res *installer.InstallResult) error {
+	result, err := (&inst).InstallGitWithFinalize(r, func(res *installer.InstallResult) error {
 		// Git installs produce a dev version derived from the
 		// repo state; sync it onto the recipe so Full() emits
 		// the matching <version>-<revision> string.
@@ -288,7 +269,10 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	}
 	r.Package.Version = version
 
-	inst := newInstallerForRecipe(resolvedRecipe, ctx.StoreRoot)
+	// Shallow-copy ctx.Installer to inherit the Downloads
+	// limiter, then override Resolver for local recipe resolution.
+	inst := *ctx.Installer
+	inst.Resolver = resolverForRecipe(resolvedRecipe)
 
 	// Always rebuild local source — the source tree may have
 	// changed without a version bump. Do not short-circuit
@@ -297,7 +281,7 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	out.Info(fmt.Sprintf("Installing %s@%s from local source...",
 		r.Package.Name, r.Package.Version))
 
-	result, err := inst.InstallLocalWithFinalize(r, absSource,
+	result, err := (&inst).InstallLocalWithFinalize(r, absSource,
 		func(res *installer.InstallResult) error {
 			return ctx.FinalizeRecipeInstall(r, res.SHA256, res.ManifestDigest)
 		})
@@ -404,24 +388,16 @@ func resolverForRecipe(recipePath string) installer.RecipeResolver {
 	return newRegistry().FetchRecipe
 }
 
-// newInstallerForRecipe constructs an Installer for
-// installing from a recipe file or building from local
-// source.
-func newInstallerForRecipe(recipePath, storeRoot string) *installer.Installer {
-	return &installer.Installer{
-		Store:    store.NewStore(storeRoot),
-		Resolver: resolverForRecipe(recipePath),
-		Verifier: attestation.NewVerifier(),
-	}
-}
-
 func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Output) error {
 	r, err := loadRecipeFile(recipePath, false)
 	if err != nil {
 		return err
 	}
 
-	inst := newInstallerForRecipe(recipePath, ctx.StoreRoot)
+	// Shallow-copy ctx.Installer to inherit the Downloads
+	// limiter, then override Resolver for local recipe resolution.
+	inst := *ctx.Installer
+	inst.Resolver = resolverForRecipe(recipePath)
 
 	out.Info(fmt.Sprintf("Installing %s@%s...",
 		r.Package.Name, r.Package.Version))
@@ -431,7 +407,7 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 	// just-installed package before it lands in gale.toml
 	// (gh#69 — the --recipe path missed the race-0004 fix the
 	// registry, --path, and --git paths already received).
-	result, err := inst.InstallWithFinalize(r, false,
+	result, err := (&inst).InstallWithFinalize(r, false,
 		func(res *installer.InstallResult) error {
 			return ctx.FinalizeRecipeInstall(r, res.SHA256, res.ManifestDigest)
 		})

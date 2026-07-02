@@ -58,6 +58,28 @@ func isDSYMBundle(path string) bool {
 	return strings.Contains(path, ".dSYM/")
 }
 
+// walkPrefixMachO calls fn for every Mach-O file under
+// prefixDir that is not an object file and not inside a
+// .dSYM bundle. The whole prefix tree is walked — not
+// just bin/ and lib/ — so Mach-O helpers under libexec/
+// and sbin/ get the same fixups. Mirrors walkPrefixELF
+// in fixup_linux.go.
+func walkPrefixMachO(prefixDir string, fn func(path string)) error {
+	return filepath.Walk(prefixDir,
+		func(path string, info os.FileInfo, err error) error {
+			if err != nil || info.IsDir() {
+				return nil //nolint:nilerr // skip unreadable files
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				return nil // patch targets once, not via links
+			}
+			if isMachO(path) && !isObjectFile(path) && !isDSYMBundle(path) {
+				fn(path)
+			}
+			return nil
+		})
+}
+
 // FixupBinaries rewrites dynamic library paths in all
 // binaries and shared libraries under prefixDir so they
 // use @rpath instead of absolute build-time paths.
@@ -66,17 +88,9 @@ func FixupBinaries(prefixDir string) error {
 	// Some packages install binaries outside bin/ and
 	// lib/ (e.g., git uses libexec/git-core/).
 	var files []string
-	err := filepath.Walk(prefixDir,
-		func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil //nolint:nilerr // skip unreadable files
-			}
-			if isMachO(path) && !isObjectFile(path) && !isDSYMBundle(path) {
-				files = append(files, path)
-			}
-			return nil
-		})
-	if err != nil {
+	if err := walkPrefixMachO(prefixDir, func(path string) {
+		files = append(files, path)
+	}); err != nil {
 		return fmt.Errorf("scan prefix: %w", err)
 	}
 
@@ -91,66 +105,77 @@ func FixupBinaries(prefixDir string) error {
 		string(filepath.Separator)
 
 	for _, file := range files {
-		inLib := strings.HasPrefix(file, libDir)
+		if err := fixupMachOFile(file, prefixDir, libDir); err != nil {
+			return err
+		}
+	}
 
-		// Fix dylib ID for libraries.
+	return nil
+}
+
+// fixupMachOFile rewrites one Mach-O file's dylib ID and
+// dependency paths to use @rpath, adds the appropriate rpath
+// entries, and re-signs the file only if gale modified it.
+func fixupMachOFile(file, prefixDir, libDir string) error {
+	inLib := strings.HasPrefix(file, libDir)
+
+	// Fix dylib ID for libraries.
+	if inLib {
+		name := filepath.Base(file)
+		if err := run("install_name_tool", "-id",
+			"@rpath/"+name, file); err != nil {
+			return fmt.Errorf("set dylib id %s: %w",
+				name, err)
+		}
+	}
+
+	// Rewrite dependency paths that point into the
+	// prefix (build-time paths).
+	var changed bool
+	deps, err := otoolDeps(file)
+	if err != nil {
+		return fmt.Errorf("otool deps %s: %w",
+			filepath.Base(file), err)
+	}
+	for _, dep := range deps {
+		if !strings.HasPrefix(dep, prefixDir) {
+			continue
+		}
+		base := filepath.Base(dep)
+		if err := run("install_name_tool", "-change",
+			dep, "@rpath/"+base, file); err != nil {
+			return fmt.Errorf(
+				"change %s in %s: %w", dep, file, err,
+			)
+		}
+		changed = true
+	}
+
+	// Add rpath entries so binaries/dylibs can find
+	// shared libs at runtime. Only needed when we
+	// rewrote deps or set a dylib ID.
+	if changed || inLib {
 		if inLib {
-			name := filepath.Base(file)
-			if err := run("install_name_tool", "-id",
-				"@rpath/"+name, file); err != nil {
-				return fmt.Errorf("set dylib id %s: %w",
-					name, err)
-			}
+			_ = run("install_name_tool", "-add_rpath",
+				"@loader_path", file)
+		} else {
+			_ = run("install_name_tool", "-add_rpath",
+				"@executable_path/../lib", file)
 		}
+	}
 
-		// Rewrite dependency paths that point into the
-		// prefix (build-time paths).
-		var changed bool
-		deps, err := otoolDeps(file)
-		if err != nil {
-			return fmt.Errorf("otool deps %s: %w",
+	// Normalize LC_UUID and re-sign ONLY binaries gale
+	// actually modified. An untouched Mach-O (e.g. qemu's
+	// self-signed mains, carrying an HVF entitlement) is left
+	// byte-identical: re-signing it serves no purpose and
+	// would strip the entitlement (issue #27). Apple Silicon
+	// SIGKILLs unsigned Mach-Os on exec, so a failed re-sign
+	// of a binary we DID modify must fail the build rather
+	// than ship a broken tarball.
+	if changed || inLib {
+		if err := normalizeAndResign(file); err != nil {
+			return fmt.Errorf("normalize %s: %w",
 				filepath.Base(file), err)
-		}
-		for _, dep := range deps {
-			if !strings.HasPrefix(dep, prefixDir) {
-				continue
-			}
-			base := filepath.Base(dep)
-			if err := run("install_name_tool", "-change",
-				dep, "@rpath/"+base, file); err != nil {
-				return fmt.Errorf(
-					"change %s in %s: %w", dep, file, err,
-				)
-			}
-			changed = true
-		}
-
-		// Add rpath entries so binaries/dylibs can find
-		// shared libs at runtime. Only needed when we
-		// rewrote deps or set a dylib ID.
-		if changed || inLib {
-			if inLib {
-				_ = run("install_name_tool", "-add_rpath",
-					"@loader_path", file)
-			} else {
-				_ = run("install_name_tool", "-add_rpath",
-					"@executable_path/../lib", file)
-			}
-		}
-
-		// Normalize LC_UUID and re-sign ONLY binaries gale
-		// actually modified. An untouched Mach-O (e.g. qemu's
-		// self-signed mains, carrying an HVF entitlement) is left
-		// byte-identical: re-signing it serves no purpose and
-		// would strip the entitlement (issue #27). Apple Silicon
-		// SIGKILLs unsigned Mach-Os on exec, so a failed re-sign
-		// of a binary we DID modify must fail the build rather
-		// than ship a broken tarball.
-		if shouldResign(changed, inLib) {
-			if err := normalizeAndResign(file); err != nil {
-				return fmt.Errorf("normalize %s: %w",
-					filepath.Base(file), err)
-			}
 		}
 	}
 
@@ -199,16 +224,9 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 
 	// Walk the entire prefix tree for Mach-O files.
 	var files []string
-	_ = filepath.Walk(prefixDir,
-		func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil //nolint:nilerr
-			}
-			if isMachO(path) && !isObjectFile(path) && !isDSYMBundle(path) {
-				files = append(files, path)
-			}
-			return nil
-		})
+	_ = walkPrefixMachO(prefixDir, func(path string) {
+		files = append(files, path)
+	})
 
 	if len(files) == 0 {
 		return nil
@@ -505,19 +523,9 @@ func otoolDeps(path string) ([]string, error) {
 // suffix (<pkg>/<version>/lib) is preserved.
 func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 	var files []string
-	err := filepath.Walk(prefixDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if info.IsDir() || !info.Mode().IsRegular() {
-			return nil
-		}
-		if isMachO(path) && !isObjectFile(path) && !isDSYMBundle(path) {
-			files = append(files, path)
-		}
-		return nil
-	})
-	if err != nil {
+	if err := walkPrefixMachO(prefixDir, func(path string) {
+		files = append(files, path)
+	}); err != nil {
 		return fmt.Errorf("walk prefix: %w", err)
 	}
 
@@ -586,27 +594,24 @@ func RelocateStaleRpaths(prefixDir, currentStoreRoot string) error {
 // skipped — they are never executed and install_name_tool
 // cannot modify them either.
 func EnsureCodeSigned(prefixDir string) error {
-	return filepath.Walk(prefixDir,
-		func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() {
-				return nil //nolint:nilerr // skip unreadable files
-			}
-			if !isMachO(path) || isObjectFile(path) || isDSYMBundle(path) {
-				return nil
-			}
-			// codesign -v exits 0 on any valid signature
-			// (including ad-hoc) and non-zero otherwise.
-			if exec.Command("codesign", "-v", path).Run() == nil {
-				return nil
-			}
-			clearSigningDetritus(path)
-			if err := run("codesign", "--force", "--sign",
-				"-", path); err != nil {
-				return fmt.Errorf("codesign %s: %w",
-					filepath.Base(path), err)
-			}
-			return nil
-		})
+	var firstErr error
+	_ = walkPrefixMachO(prefixDir, func(path string) {
+		if firstErr != nil {
+			return
+		}
+		// codesign -v exits 0 on any valid signature
+		// (including ad-hoc) and non-zero otherwise.
+		if exec.Command("codesign", "-v", path).Run() == nil {
+			return
+		}
+		clearSigningDetritus(path)
+		if err := run("codesign", "--force", "--sign",
+			"-", path); err != nil {
+			firstErr = fmt.Errorf("codesign %s: %w",
+				filepath.Base(path), err)
+		}
+	})
+	return firstErr
 }
 
 // isSuspiciousDepRef reports whether a LC_LOAD_DYLIB entry

@@ -433,3 +433,32 @@ func aliasName(stem string) string {
 	}
 	return stem + ".dylib"
 }
+
+// TestPackageName pins the packageName extraction logic.
+// The function must return "" when the grandparent dir is
+// not "pkg" — a malformed symlink target (e.g. "." or "/")
+// would otherwise produce a spurious farm-conflict error.
+func TestPackageName(t *testing.T) {
+	cases := []struct {
+		storeDir string
+		want     string
+	}{
+		// Happy path: <root>/pkg/<name>/<version>.
+		{"/home/user/.gale/pkg/curl/8.0.0", "curl"},
+		// Grandparent is not "pkg" — malformed target.
+		{"/home/user/.gale/other/curl/8.0.0", ""},
+		// Only one level deep.
+		{"/pkg/curl", ""},
+		// Root.
+		{"/", ""},
+		// Empty string.
+		{"", ""},
+	}
+	for _, c := range cases {
+		got := packageName(c.storeDir)
+		if got != c.want {
+			t.Errorf("packageName(%q) = %q, want %q",
+				c.storeDir, got, c.want)
+		}
+	}
+}

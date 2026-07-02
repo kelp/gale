@@ -18,57 +18,24 @@ jq = "1.7.1"
 ripgrep = "latest"
 `
 
-func TestParseGaleConfigPackagesNotNil(t *testing.T) {
+func TestParseGaleConfigPackages(t *testing.T) {
 	cfg, err := ParseGaleConfig(galeWithPackages)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
 	}
 	if cfg.Packages == nil {
 		t.Fatal("expected non-nil Packages map")
 	}
-}
-
-func TestParseGaleConfigPackagesCount(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithPackages)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
 	if len(cfg.Packages) != 2 {
 		t.Errorf("Packages length = %d, want 2", len(cfg.Packages))
 	}
-}
-
-func TestParseGaleConfigPackageJqVersion(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithPackages)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if cfg.Packages["jq"] != "1.7.1" {
-		t.Errorf("Packages[jq] = %q, want %q",
-			cfg.Packages["jq"], "1.7.1")
-	}
-}
-
-func TestParseGaleConfigPackageRipgrepVersion(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithPackages)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if cfg.Packages["ripgrep"] != "latest" {
-		t.Errorf("Packages[ripgrep] = %q, want %q",
-			cfg.Packages["ripgrep"], "latest")
+	for key, want := range map[string]string{
+		"jq":      "1.7.1",
+		"ripgrep": "latest",
+	} {
+		if got := cfg.Packages[key]; got != want {
+			t.Errorf("Packages[%s] = %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -80,58 +47,24 @@ DATABASE_URL = "postgres://localhost/myapp"
 LOG_LEVEL = "debug"
 `
 
-func TestParseGaleConfigVarsNotNil(t *testing.T) {
+func TestParseGaleConfigVars(t *testing.T) {
 	cfg, err := ParseGaleConfig(galeWithVars)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
 	}
 	if cfg.Vars == nil {
 		t.Fatal("expected non-nil Vars map")
 	}
-}
-
-func TestParseGaleConfigVarsCount(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithVars)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
 	if len(cfg.Vars) != 2 {
 		t.Errorf("Vars length = %d, want 2", len(cfg.Vars))
 	}
-}
-
-func TestParseGaleConfigVarsDatabaseURL(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithVars)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	want := "postgres://localhost/myapp"
-	if cfg.Vars["DATABASE_URL"] != want {
-		t.Errorf("Vars[DATABASE_URL] = %q, want %q",
-			cfg.Vars["DATABASE_URL"], want)
-	}
-}
-
-func TestParseGaleConfigVarsLogLevel(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithVars)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if cfg.Vars["LOG_LEVEL"] != "debug" {
-		t.Errorf("Vars[LOG_LEVEL] = %q, want %q",
-			cfg.Vars["LOG_LEVEL"], "debug")
+	for key, want := range map[string]string{
+		"DATABASE_URL": "postgres://localhost/myapp",
+		"LOG_LEVEL":    "debug",
+	} {
+		if got := cfg.Vars[key]; got != want {
+			t.Errorf("Vars[%s] = %q, want %q", key, got, want)
+		}
 	}
 }
 
@@ -141,13 +74,11 @@ const appConfigWithRepos = `
 [[repos]]
 name = "core"
 url = "https://github.com/kelp/gale-recipes"
-key = "gale-ed25519:abc123"
 priority = 1
 
 [[repos]]
 name = "community"
 url = "https://github.com/acme/gale-recipes"
-key = "gale-ed25519:def456..."
 priority = 2
 `
 
@@ -193,20 +124,6 @@ func TestParseAppConfigRepoURL(t *testing.T) {
 	}
 }
 
-func TestParseAppConfigRepoKey(t *testing.T) {
-	cfg, err := ParseAppConfig(appConfigWithRepos)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg == nil {
-		t.Fatal("expected non-nil config")
-	}
-	if cfg.Repos[0].Key != "gale-ed25519:abc123" {
-		t.Errorf("Repos[0].Key = %q, want %q",
-			cfg.Repos[0].Key, "gale-ed25519:abc123")
-	}
-}
-
 func TestParseAppConfigRepoPriority(t *testing.T) {
 	cfg, err := ParseAppConfig(appConfigWithRepos)
 	if err != nil {
@@ -237,11 +154,6 @@ func TestParseAppConfigSecondRepo(t *testing.T) {
 	if cfg.Repos[1].URL != wantURL {
 		t.Errorf("Repos[1].URL = %q, want %q",
 			cfg.Repos[1].URL, wantURL)
-	}
-	wantKey := "gale-ed25519:def456..."
-	if cfg.Repos[1].Key != wantKey {
-		t.Errorf("Repos[1].Key = %q, want %q",
-			cfg.Repos[1].Key, wantKey)
 	}
 	if cfg.Repos[1].Priority != 2 {
 		t.Errorf("Repos[1].Priority = %d, want 2",

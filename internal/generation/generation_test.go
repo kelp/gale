@@ -136,10 +136,11 @@ func TestBuildLinksMultipleExecutablesFromOnePackage(t *testing.T) {
 	}
 }
 
-// H5: strict Build errors (naming pkg@ver) when a store dir
-// for a listed package is missing, rather than silently
-// committing a generation that doesn't match gale.toml.
-func TestBuildReturnsErrorWhenStoreDirMissing(t *testing.T) {
+// H5: Build skips (with a warning on stderr) packages whose
+// store dir is missing — it does not error. The generation is
+// committed without those packages so successfully installed
+// packages still land on PATH (Issue #20).
+func TestBuildSkipsMissingStorePackages(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 
@@ -150,34 +151,32 @@ func TestBuildReturnsErrorWhenStoreDirMissing(t *testing.T) {
 		"awscli": "2.34.19",
 	}
 
-	err := Build(pkgs, galeDir, storeRoot)
-	if err == nil {
-		t.Fatal("expected Build to return an error for missing store dir")
-	}
-	msg := err.Error()
-	for _, want := range []string{"awscli", "2.34.19"} {
-		if !strings.Contains(msg, want) {
-			t.Errorf("error %q does not mention %q", msg, want)
-		}
+	// Build must succeed even though awscli is missing.
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
 	}
 
-	// The would-be-new generation dir must be cleaned up so
-	// the failed rebuild doesn't leave orphans behind.
-	if _, err := os.Stat(filepath.Join(galeDir, "gen", "1")); !os.IsNotExist(err) {
-		t.Errorf("gen/1 should be removed on error, err=%v", err)
+	// jq must be in the generation.
+	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "jq")); err != nil {
+		t.Fatalf("jq symlink missing: %v", err)
 	}
 
-	// current symlink must not be swapped to a broken
-	// generation. No prior current existed, so it stays
-	// absent.
-	if _, err := os.Lstat(filepath.Join(galeDir, "current")); !os.IsNotExist(err) {
-		t.Errorf("current symlink should not exist after failed Build, err=%v", err)
+	// awscli must not appear (it was skipped).
+	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "aws")); !os.IsNotExist(err) {
+		t.Fatalf("aws symlink should not exist, err=%v", err)
+	}
+
+	// current symlink must point at gen/1.
+	if _, err := os.Lstat(filepath.Join(galeDir, "current")); err != nil {
+		t.Fatalf("current symlink does not exist: %v", err)
 	}
 }
 
-// H5: strict Build must not swap current when a store dir
-// disappears mid-rebuild. Previous current stays intact.
-func TestBuildPreservesCurrentOnMissingStoreDir(t *testing.T) {
+// H5: Build advances the generation even when some packages'
+// store dirs are missing. The previous current symlink advances
+// (not preserved) because a new generation was committed
+// successfully with the packages that are on disk.
+func TestBuildAdvancesCurrentWhenSomeStoreDirsMissing(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 
@@ -191,60 +190,26 @@ func TestBuildPreservesCurrentOnMissingStoreDir(t *testing.T) {
 		t.Fatalf("read current before: %v", err)
 	}
 
-	// Adding a package whose store dir doesn't exist must
-	// leave the existing current symlink alone.
+	// Build with fd missing — must succeed and advance current.
 	pkgs := map[string]string{
 		"jq": "1.8.1",
 		"fd": "10.4.2",
 	}
-	if err := Build(pkgs, galeDir, storeRoot); err == nil {
-		t.Fatal("expected Build to error for missing fd store dir")
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build with missing fd: %v", err)
 	}
 
 	after, err := os.Readlink(filepath.Join(galeDir, "current"))
 	if err != nil {
 		t.Fatalf("read current after: %v", err)
 	}
-	if before != after {
-		t.Errorf("current moved on failed Build: before=%q after=%q", before, after)
+	if before == after {
+		t.Errorf("current did not advance: before=%q after=%q (Build should have committed gen 2)",
+			before, after)
 	}
 }
 
-// H5: BuildLenient is the partner of strict Build — it
-// silently skips packages whose store dir is missing so
-// `gale sync` can land partial-batch successes on PATH
-// (Issue #20). Strict Build errors instead (see
-// TestBuildReturnsErrorWhenStoreDirMissing).
-func TestBuildLenientSkipsMissingStorePackages(t *testing.T) {
-	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
-
-	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
-
-	pkgs := map[string]string{
-		"jq":     "1.8.1",
-		"awscli": "2.34.19",
-	}
-
-	if err := BuildLenient(pkgs, galeDir, storeRoot); err != nil {
-		t.Fatalf("BuildLenient error: %v", err)
-	}
-
-	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "jq")); err != nil {
-		t.Fatalf("jq symlink missing: %v", err)
-	}
-
-	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "aws")); !os.IsNotExist(err) {
-		t.Fatalf("aws symlink should not exist, err=%v", err)
-	}
-
-	currentPath := filepath.Join(galeDir, "current")
-	if _, err := os.Lstat(currentPath); err != nil {
-		t.Fatalf("current symlink does not exist: %v", err)
-	}
-}
-
-// Lenient build carries a package forward from the previous
+// Build carries a package forward from the previous
 // generation when gale.toml pins a version that isn't in the
 // store. Scenario: user edits gale.toml to a future version
 // before the recipe lands in the registry, or the registry
@@ -252,7 +217,7 @@ func TestBuildLenientSkipsMissingStorePackages(t *testing.T) {
 // is still in the store under its old version — without
 // carry-forward, the old, working symlink is silently dropped
 // from PATH (the original bug this guards against).
-func TestBuildLenientCarriesForwardMissingVersion(t *testing.T) {
+func TestBuildCarriesForwardMissingVersion(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 
@@ -265,8 +230,8 @@ func TestBuildLenientCarriesForwardMissingVersion(t *testing.T) {
 		"starship": "1.24.2",
 		"jq":       "1.8.1",
 	}
-	if err := BuildLenient(prev, galeDir, storeRoot); err != nil {
-		t.Fatalf("seed BuildLenient error: %v", err)
+	if err := Build(prev, galeDir, storeRoot); err != nil {
+		t.Fatalf("seed Build error: %v", err)
 	}
 
 	// gale.toml now pins a version that doesn't exist in the
@@ -275,8 +240,8 @@ func TestBuildLenientCarriesForwardMissingVersion(t *testing.T) {
 		"starship": "1.25.1",
 		"jq":       "1.8.1",
 	}
-	if err := BuildLenient(next, galeDir, storeRoot); err != nil {
-		t.Fatalf("BuildLenient error: %v", err)
+	if err := Build(next, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build error: %v", err)
 	}
 
 	link := filepath.Join(galeDir, "gen", "2", "bin", "starship")
@@ -300,9 +265,9 @@ func TestBuildLenientCarriesForwardMissingVersion(t *testing.T) {
 }
 
 // No previous generation means nothing to carry forward —
-// lenient build must still silently skip the missing package,
+// Build must still silently skip the missing package,
 // matching the Issue #20 contract.
-func TestBuildLenientSkipsWhenNoPreviousGeneration(t *testing.T) {
+func TestBuildSkipsWhenNoPreviousGeneration(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 
@@ -312,8 +277,8 @@ func TestBuildLenientSkipsWhenNoPreviousGeneration(t *testing.T) {
 		"jq":       "1.8.1",
 		"starship": "1.25.1",
 	}
-	if err := BuildLenient(pkgs, galeDir, storeRoot); err != nil {
-		t.Fatalf("BuildLenient error: %v", err)
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build error: %v", err)
 	}
 
 	if _, err := os.Lstat(filepath.Join(galeDir, "gen", "1", "bin", "starship")); !os.IsNotExist(err) {
@@ -686,44 +651,6 @@ func TestResolveReturnsZeroWhenNoCurrent(t *testing.T) {
 	}
 	if target != "" {
 		t.Errorf("Resolve target = %q, want empty", target)
-	}
-}
-
-// --- Behavior 5: Next returns incremented generation number ---
-
-func TestNextReturnsIncrementedNumber(t *testing.T) {
-	galeDir := t.TempDir()
-
-	// Set up current generation as 5.
-	gensDir := filepath.Join(galeDir, "gen", "5", "bin")
-	if err := os.MkdirAll(gensDir, 0o755); err != nil {
-		t.Fatalf("failed to create gen dir: %v", err)
-	}
-	if err := os.Symlink(
-		filepath.Join("gen", "5"),
-		filepath.Join(galeDir, "current"),
-	); err != nil {
-		t.Fatalf("failed to create current symlink: %v", err)
-	}
-
-	got, err := Next(galeDir)
-	if err != nil {
-		t.Fatalf("Next error: %v", err)
-	}
-	if got != 6 {
-		t.Errorf("Next = %d, want 6", got)
-	}
-}
-
-func TestNextReturnsOneWhenNoCurrentExists(t *testing.T) {
-	galeDir := t.TempDir()
-
-	got, err := Next(galeDir)
-	if err != nil {
-		t.Fatalf("Next error: %v", err)
-	}
-	if got != 1 {
-		t.Errorf("Next = %d, want 1", got)
 	}
 }
 
@@ -1171,7 +1098,7 @@ func TestPopulateGenerationCreatesSymlinks(t *testing.T) {
 		"fd": "10.4.2",
 	}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, false); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -1215,7 +1142,7 @@ func TestPopulateGenerationAlphabeticalConflictResolution(t *testing.T) {
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, false); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -1254,7 +1181,7 @@ func TestPopulateGenerationRootLevelFiles(t *testing.T) {
 
 	pkgs := map[string]string{"go": "1.26.1"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, false); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 

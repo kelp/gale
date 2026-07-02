@@ -44,7 +44,7 @@ func TestRebuildGenerationProjectDoesNotTouchGlobal(t *testing.T) {
 
 	// Build an empty global generation.
 	if err := rebuildGeneration(
-		globalDir, storeRoot, globalConfig,
+		globalDir, storeRoot, globalConfig, nil,
 	); err != nil {
 		t.Fatalf("rebuild global: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestRebuildGenerationProjectDoesNotTouchGlobal(t *testing.T) {
 
 	// Build project generation.
 	if err := rebuildGeneration(
-		projGaleDir, storeRoot, projConfig,
+		projGaleDir, storeRoot, projConfig, nil,
 	); err != nil {
 		t.Fatalf("rebuild project: %v", err)
 	}
@@ -224,7 +224,7 @@ func TestRebuildGenerationGlobalDoesNotTouchProject(t *testing.T) {
 	}
 	projGaleDir := filepath.Join(projRoot, ".gale")
 	if err := rebuildGeneration(
-		projGaleDir, storeRoot, projConfig,
+		projGaleDir, storeRoot, projConfig, nil,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -249,7 +249,7 @@ func TestRebuildGenerationGlobalDoesNotTouchProject(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := rebuildGeneration(
-		globalDir, storeRoot, globalConfig,
+		globalDir, storeRoot, globalConfig, nil,
 	); err != nil {
 		t.Fatal(err)
 	}

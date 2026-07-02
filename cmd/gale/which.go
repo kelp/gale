@@ -22,7 +22,7 @@ var whichCmd = &cobra.Command{
 		if err := validateScopeFlags(whichGlobal, whichProject); err != nil {
 			return err
 		}
-		galeDir, _, err := resolveReadOnlyGaleDirForWhich(
+		galeDir, err := resolveReadOnlyGaleDirForWhich(
 			whichGlobal, whichProject,
 		)
 		if err != nil {
@@ -45,41 +45,12 @@ var whichCmd = &cobra.Command{
 }
 
 // resolveReadOnlyGaleDirForWhich returns the .gale dir used
-// for binary lookup. Unlike resolveReadOnlyGaleDir, it does
-// not require gale.toml to exist — `which` resolves against
-// the generation symlinks, not the config.
-func resolveReadOnlyGaleDirForWhich(global, project bool) (galeDir, configPath string, err error) {
-	if global {
-		galeDir, err = galeConfigDir()
-		if err != nil {
-			return "", "", err
-		}
-		configPath, err = globalConfigPath()
-		return galeDir, configPath, err
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", "", fmt.Errorf("getting working dir: %w", err)
-	}
-	if project {
-		projPath, err := projectConfigPath(cwd)
-		if err != nil {
-			return "", "", fmt.Errorf(
-				"no project found — run 'gale init' first",
-			)
-		}
-		return filepath.Join(filepath.Dir(projPath), ".gale"), projPath, nil
-	}
-	// Auto.
-	if projPath, err := projectConfigPath(cwd); err == nil {
-		return filepath.Join(filepath.Dir(projPath), ".gale"), projPath, nil
-	}
-	galeDir, err = galeConfigDir()
-	if err != nil {
-		return "", "", err
-	}
-	configPath, err = globalConfigPath()
-	return galeDir, configPath, err
+// for binary lookup. Does not require gale.toml to exist —
+// `which` resolves against the generation symlinks, not the
+// config. Uses galeDirForConfig so the gh#96 guard applies.
+func resolveReadOnlyGaleDirForWhich(global, project bool) (string, error) {
+	galeDir, _, err := resolveScopedPaths(global, project)
+	return galeDir, err
 }
 
 // resolveWhich finds which package provides a binary by

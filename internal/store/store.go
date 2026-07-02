@@ -415,52 +415,38 @@ func lockHeld(path string) bool {
 // `gale remove jq@1.8.1` still work regardless of which
 // revision layout the store actually holds.
 func (s *Store) Remove(name, version string) error {
-	exact := filepath.Join(s.Root, name, version)
-	if _, err := os.Stat(exact); err == nil {
-		lockPath := filepath.Join(s.Root, name, version+".lock")
-		err := filelock.With(lockPath, func() error {
-			// ErrNotExist guard is load-bearing: two concurrent
-			// removers can both pass the Stat above, then race
-			// under the lock; the loser must tolerate ENOENT.
-			if err := os.RemoveAll(exact); err != nil &&
-				!errors.Is(err, os.ErrNotExist) {
-				return fmt.Errorf("remove version directory: %w", err)
-			}
-			return nil
-		})
-		if err != nil {
-			return err
-		}
-		// Cleanup runs after our own lock is released so the
-		// flock probe inside cleanupEmptyNameDir does not see
-		// it as concurrently held (gh#77).
-		return cleanupEmptyNameDir(s.Root, name)
-	}
-
-	resolved, ok := s.resolveVersion(name, version)
-	if !ok {
-		return fmt.Errorf("remove %s@%s: %w", name, version, ErrNotInstalled)
-	}
-	dir := filepath.Join(s.Root, name, resolved)
+	dir := filepath.Join(s.Root, name, version)
 	if _, err := os.Stat(dir); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		resolved, ok := s.resolveVersion(name, version)
+		if !ok {
 			return fmt.Errorf("remove %s@%s: %w",
 				name, version, ErrNotInstalled)
 		}
-		return fmt.Errorf("stat version directory: %w", err)
+		dir = filepath.Join(s.Root, name, resolved)
+		if _, err := os.Stat(dir); err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return fmt.Errorf("remove %s@%s: %w",
+					name, version, ErrNotInstalled)
+			}
+			return fmt.Errorf("stat version directory: %w", err)
+		}
 	}
 
-	lockPath := filepath.Join(s.Root, name, resolved+".lock")
+	lockPath := dir + ".lock"
+	// ErrNotExist guard: two concurrent removers can race
+	// past Stat; the loser must tolerate ENOENT (gh#77).
 	if err := filelock.With(lockPath, func() error {
-		if err := os.RemoveAll(dir); err != nil && !errors.Is(err, os.ErrNotExist) {
+		if err := os.RemoveAll(dir); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove version directory: %w", err)
 		}
 		return nil
 	}); err != nil {
 		return err
 	}
-	// See the exact-match branch: cleanup runs lock-free so
-	// the flock probe treats our released lock as unheld.
+	// Cleanup runs after the lock is released so the flock
+	// probe inside cleanupEmptyNameDir does not see it as
+	// held (gh#77).
 	return cleanupEmptyNameDir(s.Root, name)
 }
 

@@ -462,6 +462,134 @@ func TestInstallBuildDepsBareDepSkipsConstraintCheck(t *testing.T) {
 	}
 }
 
+// TestInstallBuildDepsPlatformScopedConstraintViolated verifies that a
+// version constraint scoped to the current platform (stored in
+// Dependencies.Platform[key].Constraints) causes the install to fail
+// when the resolved dep does not satisfy it.
+//
+// Before this fix, copyRecipeForDeps copied r.Dependencies.Constraints
+// (the global map) into the recipe handed to installDepsInner, ignoring
+// the platform-merged constraints returned by DependenciesForPlatform.
+// A platform-scoped constraint was therefore silently skipped.
+func TestInstallBuildDepsPlatformScopedConstraintViolated(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	// Resolver returns expat at 2.7.4, below the platform-scoped >=2.7.5-2.
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if name == "expat" {
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name:     "expat",
+						Version:  "2.7.4",
+						Revision: 1,
+					},
+				}, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+
+	r := makeRecipe("git", "2.53.0", nil, []string{"expat"})
+	// Constraint scoped to the current platform only — not in the global
+	// Constraints map.
+	r.Dependencies.Platform = map[string]recipe.PlatformDependencies{
+		platform: {
+			Constraints: map[string]string{
+				"expat": ">=2.7.5-2",
+			},
+		},
+	}
+
+	_, err := inst.InstallBuildDeps(r)
+	if err == nil {
+		t.Fatal("expected error for platform-scoped constraint violation, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"expat", ">=2.7.5-2", "2.7.4"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+}
+
+// TestInstallBuildDepsTransitivePlatformScopedConstraintViolated verifies
+// that a platform-scoped constraint declared by a TRANSITIVE dep (a
+// dep-of-a-dep) is enforced when the resolved leaf violates it.
+//
+// installDepsInner recurses on a transitive dep's recipe RAW — it is not
+// re-wrapped by copyRecipeForDeps the way the top-level recipe is. A
+// platform-scoped constraint therefore lives only in the dep's
+// Dependencies.Platform map, never in its base Dependencies.Constraints.
+// The C4 check must read the platform-merged map (deps.Constraints,
+// recomputed via DependenciesForPlatform in each frame), not
+// r.Dependencies.Constraints. Reading the base-only map drops the
+// transitive platform-scoped constraint and the violating leaf installs
+// silently.
+//
+// mid is pre-installed so inst.Install(mid) short-circuits to the cached
+// path without validating mid's own deps — making the outer recursion the
+// sole validator of leaf's constraint and isolating the buggy lookup.
+func TestInstallBuildDepsTransitivePlatformScopedConstraintViolated(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	// mid is already in the store, so Install(mid) returns cached and
+	// does not re-validate leaf itself.
+	preInstall(t, s, "mid", "1.0.0-1")
+
+	platform := runtime.GOOS + "-" + runtime.GOARCH
+
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			switch name {
+			case "mid":
+				// mid declares a platform-scoped constraint on leaf.
+				mid := makeRecipe("mid", "1.0.0", nil, []string{"leaf"})
+				mid.Package.Revision = 1
+				mid.Dependencies.Platform = map[string]recipe.PlatformDependencies{
+					platform: {
+						Constraints: map[string]string{
+							"leaf": ">=2.7.5-2",
+						},
+					},
+				}
+				return mid, nil
+			case "leaf":
+				// leaf resolves below the platform-scoped constraint.
+				return &recipe.Recipe{
+					Package: recipe.Package{
+						Name:     "leaf",
+						Version:  "2.7.4",
+						Revision: 1,
+					},
+				}, nil
+			default:
+				return nil, fmt.Errorf("unknown: %s", name)
+			}
+		},
+	}
+
+	// Top-level recipe depends on mid (no constraint at this level).
+	r := makeRecipe("git", "2.53.0", nil, []string{"mid"})
+
+	_, err := inst.InstallBuildDeps(r)
+	if err == nil {
+		t.Fatal("expected error for transitive platform-scoped constraint violation, got nil")
+	}
+	msg := err.Error()
+	for _, want := range []string{"leaf", ">=2.7.5-2", "2.7.4"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error %q missing %q", msg, want)
+		}
+	}
+}
+
 func contains(ss []string, s string) bool {
 	for _, v := range ss {
 		if v == s {

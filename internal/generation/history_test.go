@@ -221,3 +221,143 @@ func TestRollbackNonexistentGeneration(t *testing.T) {
 		t.Fatal("expected Rollback to non-existent generation to return error")
 	}
 }
+
+// TestGenVersionsDanglingSymlinkSkipped pins the dangling-symlink
+// behavior of the unified gen-dir reader: a generation that
+// contains a dangling symlink (simulating a GC'd package) must
+// not cause List, Diff, or CurrentVersions to error or return a
+// phantom entry for the GC'd package. Only the live package must
+// appear.
+func TestGenVersionsDanglingSymlinkSkipped(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	// Build a real generation with one live package.
+	createStoreEntry(t, storeRoot, "jq", "1.7.1", []string{"jq"})
+	if err := Build(map[string]string{"jq": "1.7.1"}, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Inject a dangling symlink into gen/1/bin/, simulating a GC'd package.
+	genBinDir := filepath.Join(galeDir, "gen", "1", "bin")
+	danglingLink := filepath.Join(genBinDir, "ghost")
+	// Point at a store dir that doesn't exist.
+	if err := os.Symlink(
+		filepath.Join(storeRoot, "ghost", "9.9.9", "bin", "ghost"),
+		danglingLink,
+	); err != nil {
+		t.Fatalf("create dangling symlink: %v", err)
+	}
+
+	// List must return gen 1 with exactly one package (jq).
+	gens, err := List(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+	if len(gens) != 1 {
+		t.Fatalf("expected 1 generation, got %d", len(gens))
+	}
+	if len(gens[0].Packages) != 1 {
+		t.Errorf("gen 1 packages = %v, want {jq:1.7.1} only (dangling ghost must be skipped)",
+			gens[0].Packages)
+	}
+	if v, ok := gens[0].Packages["jq"]; !ok || v != "1.7.1" {
+		t.Errorf("gen 1 jq = %q (ok=%v), want 1.7.1", v, ok)
+	}
+
+	// CurrentVersions must also see only jq.
+	cur, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("CurrentVersions error: %v", err)
+	}
+	if len(cur) != 1 {
+		t.Errorf("CurrentVersions = %v, want {jq:1.7.1} only", cur)
+	}
+	if v, ok := cur["jq"]; !ok || v != "1.7.1" {
+		t.Errorf("CurrentVersions[jq] = %q (ok=%v), want 1.7.1", v, ok)
+	}
+
+	// Build a second generation so Diff and Rollback have two gens to work with.
+	// Gen 2 has the same packages as gen 1 (jq only).
+	if err := Build(map[string]string{"jq": "1.7.1"}, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build gen 2: %v", err)
+	}
+
+	// Diff gen 1 → gen 2 must show no changes. The dangling ghost in gen 1
+	// must not appear as a removed package.
+	d, err := Diff(galeDir, storeRoot, 1, 2)
+	if err != nil {
+		t.Fatalf("Diff error: %v", err)
+	}
+	if len(d.Added) != 0 || len(d.Removed) != 0 {
+		t.Errorf("Diff(1,2) = added=%v removed=%v, want empty (dangling ghost must not appear)",
+			d.Added, d.Removed)
+	}
+
+	// Rollback to gen 1 must succeed without error.
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
+		t.Fatalf("Rollback to gen 1 with dangling symlink: %v", err)
+	}
+	// Current must be gen 1 after rollback.
+	n, err := Current(galeDir)
+	if err != nil {
+		t.Fatalf("Current after rollback: %v", err)
+	}
+	if n != 1 {
+		t.Errorf("current = %d after rollback, want 1", n)
+	}
+}
+
+// TestGenVersionsLibOnlyPackageVisible tests that a package
+// installed only into lib/ (no bin/ entries) is visible in List
+// and CurrentVersions. The unified full-tree walk must surface
+// lib-only packages that the old bin-only packagesFromGen missed.
+func TestGenVersionsLibOnlyPackageVisible(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	// Create a package with only a lib/ entry (no bin/).
+	libDir := filepath.Join(storeRoot, "libfoo", "1.0", "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatalf("create lib dir: %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(libDir, "libfoo.so"), []byte("fake"), 0o644,
+	); err != nil {
+		t.Fatalf("create lib file: %v", err)
+	}
+
+	// Also a regular package with a bin/.
+	createStoreEntry(t, storeRoot, "jq", "1.7.1", []string{"jq"})
+
+	pkgs := map[string]string{"jq": "1.7.1", "libfoo": "1.0"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	gens, err := List(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("List error: %v", err)
+	}
+	if len(gens) != 1 {
+		t.Fatalf("expected 1 generation, got %d", len(gens))
+	}
+
+	// Both packages must appear.
+	if len(gens[0].Packages) != 2 {
+		t.Errorf("gen 1 packages = %v, want jq and libfoo", gens[0].Packages)
+	}
+	if v, ok := gens[0].Packages["libfoo"]; !ok || v != "1.0" {
+		t.Errorf("gen 1 libfoo = %q (ok=%v), want 1.0", v, ok)
+	}
+
+	// CurrentVersions must also include libfoo.
+	cur, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("CurrentVersions error: %v", err)
+	}
+	if v, ok := cur["libfoo"]; !ok || v != "1.0" {
+		t.Errorf("CurrentVersions[libfoo] = %q (ok=%v), want 1.0 (lib-only package must appear)",
+			v, ok)
+	}
+}

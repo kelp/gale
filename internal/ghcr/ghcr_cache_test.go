@@ -23,28 +23,55 @@ func resetState(t *testing.T, prevEndpoint string, prevNow func() time.Time) {
 	})
 }
 
+// setupTokenServer starts a test token server using handler, swaps the
+// package-level token endpoint, pins the clock to a fixed base time
+// with a mutable-clock harness, and registers cleanup. It returns an
+// advance function that shifts the clock forward; tests that only need
+// a static clock can ignore it.
+func setupTokenServer(
+	t *testing.T,
+	handler http.HandlerFunc,
+) func(time.Duration) {
+	t.Helper()
+
+	srv := httptest.NewServer(handler)
+	t.Cleanup(srv.Close)
+
+	prevEndpoint := SetTokenEndpoint(srv.URL)
+	prevNow := now
+
+	base := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	var (
+		nowMu   sync.Mutex
+		current = base
+	)
+	now = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
+		return current
+	}
+
+	resetState(t, prevEndpoint, prevNow)
+
+	return func(d time.Duration) {
+		nowMu.Lock()
+		current = current.Add(d)
+		nowMu.Unlock()
+	}
+}
+
 // --- Behavior 1: Cache hit returns the same token without re-issuing HTTP ---
 
 func TestCacheHitReturnsSameTokenWithoutReissuingHTTP(t *testing.T) {
 	var hits atomic.Int64
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			hits.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
-				"token":      "cached-token-abc",
-				"expires_in": 300,
-			})
-		},
-	))
-	defer srv.Close()
-
-	prevEndpoint := SetTokenEndpoint(srv.URL)
-	prevNow := now
-	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	now = func() time.Time { return baseTime }
-	resetState(t, prevEndpoint, prevNow)
+	setupTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":      "cached-token-abc",
+			"expires_in": 300,
+		})
+	})
 
 	tok1, err := Token("foo/bar")
 	if err != nil {
@@ -72,26 +99,16 @@ func TestCacheHitReturnsSameTokenWithoutReissuingHTTP(t *testing.T) {
 
 func TestDifferentRepositoriesCacheIndependently(t *testing.T) {
 	var hits atomic.Int64
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			hits.Add(1)
-			// Embed the path so each repo gets a distinct token.
-			tok := fmt.Sprintf("token-for-%s", r.URL.RawQuery)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
-				"token":      tok,
-				"expires_in": 300,
-			})
-		},
-	))
-	defer srv.Close()
-
-	prevEndpoint := SetTokenEndpoint(srv.URL)
-	prevNow := now
-	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	now = func() time.Time { return baseTime }
-	resetState(t, prevEndpoint, prevNow)
+	setupTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		// Embed the path so each repo gets a distinct token.
+		tok := fmt.Sprintf("token-for-%s", r.URL.RawQuery)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":      tok,
+			"expires_in": 300,
+		})
+	})
 
 	tokAB1, err := Token("a/b")
 	if err != nil {
@@ -133,35 +150,14 @@ func TestDifferentRepositoriesCacheIndependently(t *testing.T) {
 
 func TestExpiresInHonouredForCacheTTL(t *testing.T) {
 	var hits atomic.Int64
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			hits.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
-				"token":      fmt.Sprintf("ttl-token-%d", hits.Load()),
-				"expires_in": 10, // 10-second TTL
-			})
-		},
-	))
-	defer srv.Close()
-
-	prevEndpoint := SetTokenEndpoint(srv.URL)
-	prevNow := now
-	base := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
-	current := base
-	nowMu := sync.Mutex{}
-	now = func() time.Time {
-		nowMu.Lock()
-		defer nowMu.Unlock()
-		return current
-	}
-	advance := func(d time.Duration) {
-		nowMu.Lock()
-		current = current.Add(d)
-		nowMu.Unlock()
-	}
-	resetState(t, prevEndpoint, prevNow)
+	advance := setupTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":      fmt.Sprintf("ttl-token-%d", hits.Load()),
+			"expires_in": 10, // 10-second TTL
+		})
+	})
 
 	// t=0: first call — must hit HTTP
 	tok1, err := Token("expire/test")
@@ -206,35 +202,14 @@ func TestExpiresInHonouredForCacheTTL(t *testing.T) {
 
 func TestDefaultTTLFiveMinutesWhenExpiresInAbsent(t *testing.T) {
 	var hits atomic.Int64
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			hits.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			// No expires_in field — default TTL must apply.
-			json.NewEncoder(w).Encode(map[string]any{
-				"token": fmt.Sprintf("default-ttl-token-%d", hits.Load()),
-			})
-		},
-	))
-	defer srv.Close()
-
-	prevEndpoint := SetTokenEndpoint(srv.URL)
-	prevNow := now
-	base := time.Date(2024, 6, 1, 12, 0, 0, 0, time.UTC)
-	current := base
-	nowMu := sync.Mutex{}
-	now = func() time.Time {
-		nowMu.Lock()
-		defer nowMu.Unlock()
-		return current
-	}
-	advance := func(d time.Duration) {
-		nowMu.Lock()
-		current = current.Add(d)
-		nowMu.Unlock()
-	}
-	resetState(t, prevEndpoint, prevNow)
+	advance := setupTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		// No expires_in field — default TTL must apply.
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token": fmt.Sprintf("default-ttl-token-%d", hits.Load()),
+		})
+	})
 
 	// t=0: first call
 	tok1, err := Token("default/ttl")
@@ -293,24 +268,14 @@ func TestDefaultTTLFiveMinutesWhenExpiresInAbsent(t *testing.T) {
 
 func TestEnvTokenBypassesCacheAndHTTP(t *testing.T) {
 	var hits atomic.Int64
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			hits.Add(1)
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{
-				"token":      "server-cached-token",
-				"expires_in": 300, // 5-minute TTL
-			})
-		},
-	))
-	defer srv.Close()
-
-	prevEndpoint := SetTokenEndpoint(srv.URL)
-	prevNow := now
-	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	now = func() time.Time { return baseTime }
-	resetState(t, prevEndpoint, prevNow)
+	setupTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":      "server-cached-token",
+			"expires_in": 300, // 5-minute TTL
+		})
+	})
 
 	// Phase 1: warm the cache via a normal HTTP call.
 	tok1, err := Token("env/bypass")
@@ -376,35 +341,26 @@ func TestConcurrentTokenCallsCoalesceIntoOneHTTPRequest(t *testing.T) {
 	// With singleflight, this stays at 1; without it, it climbs to goroutines.
 	var inFlight atomic.Int64
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			hits.Add(1)
-			inFlight.Add(1)
-			// Wait up to 500ms so any extra in-flight HTTP requests (i.e.
-			// when singleflight is absent) have time to pile up and be
-			// counted. With singleflight, inFlight stays at 1 and we simply
-			// time out at 500ms — that latency is acceptable.
-			deadline := time.Now().Add(500 * time.Millisecond)
-			for time.Now().Before(deadline) {
-				if inFlight.Load() >= goroutines {
-					break
-				}
-				time.Sleep(5 * time.Millisecond)
+	setupTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		inFlight.Add(1)
+		// Wait up to 500ms so any extra in-flight HTTP requests (i.e.
+		// when singleflight is absent) have time to pile up and be
+		// counted. With singleflight, inFlight stays at 1 and we simply
+		// time out at 500ms — that latency is acceptable.
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if inFlight.Load() >= goroutines {
+				break
 			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(map[string]any{ //nolint:errcheck
-				"token":      "coalesced-token-xyz",
-				"expires_in": 300,
-			})
-		},
-	))
-	defer srv.Close()
-
-	prevEndpoint := SetTokenEndpoint(srv.URL)
-	prevNow := now
-	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	now = func() time.Time { return baseTime }
-	resetState(t, prevEndpoint, prevNow)
+			time.Sleep(5 * time.Millisecond)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"token":      "coalesced-token-xyz",
+			"expires_in": 300,
+		})
+	})
 
 	tokens := make([]string, goroutines)
 	errs := make([]error, goroutines)
@@ -464,30 +420,21 @@ func TestConcurrentTokenCallsPropagateErrorToWaiters(t *testing.T) {
 	var hits atomic.Int64
 	var inFlight atomic.Int64
 
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			hits.Add(1)
-			inFlight.Add(1)
-			// Hold the leader until waiters pile up (same pattern as the
-			// coalesce test), then respond with 500 so all goroutines get
-			// the leader's error via wg.Wait.
-			deadline := time.Now().Add(500 * time.Millisecond)
-			for time.Now().Before(deadline) {
-				if inFlight.Load() >= goroutines {
-					break
-				}
-				time.Sleep(5 * time.Millisecond)
+	setupTokenServer(t, func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		inFlight.Add(1)
+		// Hold the leader until waiters pile up (same pattern as the
+		// coalesce test), then respond with 500 so all goroutines get
+		// the leader's error via wg.Wait.
+		deadline := time.Now().Add(500 * time.Millisecond)
+		for time.Now().Before(deadline) {
+			if inFlight.Load() >= goroutines {
+				break
 			}
-			http.Error(w, "internal server error", http.StatusInternalServerError)
-		},
-	))
-	defer srv.Close()
-
-	prevEndpoint := SetTokenEndpoint(srv.URL)
-	prevNow := now
-	baseTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
-	now = func() time.Time { return baseTime }
-	resetState(t, prevEndpoint, prevNow)
+			time.Sleep(5 * time.Millisecond)
+		}
+		http.Error(w, "internal server error", http.StatusInternalServerError)
+	})
 
 	errs := make([]error, goroutines)
 

@@ -254,7 +254,7 @@ func TestInfoGlobalOverridesProjectShadow(t *testing.T) {
 	t.Cleanup(func() { infoGlobal = false })
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, "jq"); err != nil {
+	if err := runInfo(&buf, newRegistry(), "jq"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()
@@ -388,5 +388,170 @@ func TestResolveReadOnlyConfigPathGlobalForced(t *testing.T) {
 	want := filepath.Join(galeDir, "gale.toml")
 	if got != want {
 		t.Errorf("path = %q, want %q", got, want)
+	}
+}
+
+// TestResolveScopedPathsAutoNoConfig verifies that with no
+// gale.toml in the tree and no flags, the global dir is
+// returned.
+func TestResolveScopedPathsAutoNoConfig(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	tmp := filepath.Join(home, "work")
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	os.Chdir(tmp)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	galeDir, _, err := resolveScopedPaths(false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	want := filepath.Join(home, ".gale")
+	if galeDir != want {
+		t.Errorf("galeDir = %q, want %q", galeDir, want)
+	}
+}
+
+// TestResolveScopedPathsAutoWithProject verifies that with a
+// project gale.toml and no flags, the project dir is returned.
+func TestResolveScopedPathsAutoWithProject(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projDir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Resolve symlinks so macOS /var vs /private/var spellings
+	// compare equal: resolveScopedPaths derives its result from
+	// os.Getwd, which returns the resolved form. Resolve the
+	// existing projDir (the expected .gale child doesn't exist,
+	// so EvalSymlinks on the joined path would fail).
+	projDir, err := filepath.EvalSymlinks(projDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projDir, "gale.toml"),
+		[]byte("[packages]\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	galeDir, configPath, err := resolveScopedPaths(false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantGaleDir := filepath.Join(projDir, ".gale")
+	if galeDir != wantGaleDir {
+		t.Errorf("galeDir = %q, want %q", galeDir, wantGaleDir)
+	}
+	wantCfg := filepath.Join(projDir, "gale.toml")
+	if configPath != wantCfg {
+		t.Errorf("configPath = %q, want %q", configPath, wantCfg)
+	}
+}
+
+// TestResolveScopedPathsGlobalFlag verifies that --global returns
+// the global .gale dir regardless of project presence.
+func TestResolveScopedPathsGlobalFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	projDir := filepath.Join(home, "proj")
+	if err := os.MkdirAll(projDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(projDir, "gale.toml"),
+		[]byte("[packages]\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	galeDir, configPath, err := resolveScopedPaths(true, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	wantDir := filepath.Join(home, ".gale")
+	if galeDir != wantDir {
+		t.Errorf("galeDir = %q, want %q", galeDir, wantDir)
+	}
+	wantCfg := filepath.Join(home, ".gale", "gale.toml")
+	if configPath != wantCfg {
+		t.Errorf("configPath = %q, want %q", configPath, wantCfg)
+	}
+}
+
+// TestResolveScopedPathsProjectFlagMissing verifies that
+// --project without a project in the tree returns an error
+// containing the canonical error message.
+func TestResolveScopedPathsProjectFlagMissing(t *testing.T) {
+	tmp := t.TempDir()
+	orig, _ := os.Getwd()
+	os.Chdir(tmp)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	_, _, err := resolveScopedPaths(false, true)
+	if err == nil {
+		t.Fatal("expected error when --project outside any project")
+	}
+	if !strings.Contains(err.Error(), "no project found") {
+		t.Errorf("error %q should contain 'no project found'",
+			err.Error())
+	}
+}
+
+// TestResolveScopedPathsConflictFlags verifies that
+// --global --project returns an error.
+func TestResolveScopedPathsConflictFlags(t *testing.T) {
+	_, _, err := resolveScopedPaths(true, true)
+	if err == nil {
+		t.Fatal("expected error when both -g and -p set")
+	}
+}
+
+// TestResolveScopedPathsCwdInsideGaleHome verifies the gh#96
+// guard: when cwd is under ~/.gale/, the auto path returns the
+// global dir, not the bogus ~/.gale/.gale.
+func TestResolveScopedPathsCwdInsideGaleHome(t *testing.T) {
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "gale.toml"),
+		[]byte("[packages]\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+
+	orig, _ := os.Getwd()
+	os.Chdir(galeDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	gotDir, _, err := resolveScopedPaths(false, false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotDir == filepath.Join(galeDir, ".gale") {
+		t.Error("gh#96: returned ~/.gale/.gale, want ~/.gale")
+	}
+	if gotDir != galeDir {
+		t.Errorf("galeDir = %q, want %q", gotDir, galeDir)
 	}
 }

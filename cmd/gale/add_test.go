@@ -134,7 +134,7 @@ func TestAddStripsRevisionFromVersion(t *testing.T) {
 	// Call addToConfig directly with a canonical version string
 	// that includes a numeric revision suffix.
 	// The fix must strip "-1" and write bare "1.8.1".
-	if _, err := addToConfig("jq", "1.8.1-1", "", false, true); err != nil {
+	if _, err := addToConfig("jq", "1.8.1-1", "", configPath); err != nil {
 		t.Fatalf("addToConfig returned error: %v", err)
 	}
 
@@ -193,7 +193,7 @@ func TestAddPreservesNonNumericPrereleaseTag(t *testing.T) {
 
 	// "1.0.0-rc1": the "-rc1" suffix is a pre-release tag, not
 	// a numeric revision; it must be preserved.
-	if _, err := addToConfig("mytool", "1.0.0-rc1", "", false, true); err != nil {
+	if _, err := addToConfig("mytool", "1.0.0-rc1", "", configPath); err != nil {
 		t.Fatalf("addToConfig returned error: %v", err)
 	}
 

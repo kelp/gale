@@ -61,21 +61,13 @@ func emitLintIssues(
 		msg := fmt.Sprintf("%s: %s", path, issue.Message)
 		switch issue.Level {
 		case "error":
-			lintIssueOutput(out, lint.Issue{
-				Level:   issue.Level,
-				Message: msg,
-			})
+			out.Error(msg)
 			hasErrors = true
 		case "warning":
 			out.Warn(msg)
 		}
 	}
 	return hasErrors
-}
-
-// lintIssueOutput outputs an error-level lint issue.
-func lintIssueOutput(out *output.Output, issue lint.Issue) {
-	out.Error(issue.Message)
 }
 
 func init() {

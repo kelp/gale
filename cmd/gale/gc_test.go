@@ -41,7 +41,7 @@ func TestCollectReferencedPackages(t *testing.T) {
 	// references still register.
 	s := store.NewStore(t.TempDir())
 	out := output.New(os.Stderr, false)
-	ref := collectReferencedPackages(globalDir, projCfg, s, out)
+	ref := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil, nil, out)
 
 	want := map[string]bool{
 		"jq@1.7":       true,
@@ -73,7 +73,7 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 
 	s := store.NewStore(t.TempDir())
 	out := output.New(os.Stderr, false)
-	ref := collectReferencedPackages(globalDir, "", s, out)
+	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
 
 	if len(ref) != 1 {
 		t.Fatalf("got %d entries, want 1: %v",
@@ -109,7 +109,7 @@ func TestCollectReferencedPackagesResolvesBareToCanonical(t *testing.T) {
 
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
-	ref := collectReferencedPackages(globalDir, "", s, out)
+	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
 
 	if !ref["jq@1.8.1-3"] {
 		t.Errorf("expected referenced[jq@1.8.1-3] = true "+
@@ -203,8 +203,9 @@ func TestRemoveUnreferencedVersionsNoneToRemove(t *testing.T) {
 // suffixed dirs (jq/1.8.1-2/). gc must treat these as
 // referenced or it takes out live store entries.
 //
-// collectReferencedPackages resolves each config entry through
-// the store, so bare/canonical comparisons always line up.
+// collectReferencedPackagesWithResolver resolves each config
+// entry through the store, so bare/canonical comparisons
+// always line up.
 func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 	storeRoot := t.TempDir()
 	for _, ver := range []string{"1.8.1-2", "1.7.1-1"} {
@@ -225,7 +226,7 @@ func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref := collectReferencedPackages(globalDir, "", s, out)
+	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
 	n, _ := removeUnreferencedVersions(s, ref, false, out)
 
 	if n != 1 {
@@ -270,7 +271,7 @@ func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref := collectReferencedPackages(globalDir, "", s, out)
+	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
 	n, _ := removeUnreferencedVersions(s, ref, false, out)
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
@@ -368,7 +369,7 @@ func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref := collectReferencedPackages(globalDir, "", s, out)
+	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
 	n, _ := removeUnreferencedVersions(s, ref, false, out)
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
@@ -513,28 +514,15 @@ func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
 	}
 
 	// Run gc in dry-run mode and capture stderr.
-	orig, _ := os.Getwd()
-	os.Chdir(projDir)
-	t.Cleanup(func() { os.Chdir(orig) })
+	chdirTo(t, projDir)
 
 	dryRun = true
 	t.Cleanup(func() { dryRun = false })
 
-	r, w, err := os.Pipe()
-	if err != nil {
-		t.Fatal(err)
-	}
-	origStderr := os.Stderr
-	os.Stderr = w
-	t.Cleanup(func() { os.Stderr = origStderr })
-
-	runErr := gcCmd.RunE(gcCmd, nil)
-	w.Close()
-
-	var buf [8192]byte
-	n, _ := r.Read(buf[:])
-	stderr := string(buf[:n])
-	os.Stderr = origStderr
+	var runErr error
+	stderr := captureStderr(t, func() {
+		runErr = gcCmd.RunE(gcCmd, nil)
+	})
 
 	if runErr != nil {
 		t.Fatalf("gc command failed: %v", runErr)

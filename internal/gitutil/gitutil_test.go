@@ -132,6 +132,52 @@ func TestRemoteHeadInvalidRepoReturnsError(t *testing.T) {
 	}
 }
 
+// TestRemoteHeadErrorIncludesStderr verifies that when git
+// ls-remote fails, the error message includes git's stderr
+// text rather than just the bare exit code. A network or
+// repo-not-found failure should surface a useful diagnostic.
+func TestRemoteHeadErrorIncludesStderr(t *testing.T) {
+	// /nonexistent/repo is fast-local, guaranteed to fail
+	// with a git error printed to stderr.
+	_, err := RemoteHead("/nonexistent/repo", "")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	// git writes diagnostic text to stderr; the error
+	// message should contain more than a bare exit code.
+	msg := err.Error()
+	if msg == "git ls-remote /nonexistent/repo: exit status 128" {
+		t.Errorf(
+			"error is bare exit code (stderr not captured): %q",
+			msg,
+		)
+	}
+}
+
+// TestRemoteHeadStdoutOnlyOnSuccess verifies that stderr
+// from git ls-remote is NOT mixed into the parsed stdout.
+// git can write warnings to stderr even on success; using
+// CombinedOutput would break hash parsing in that case.
+func TestRemoteHeadStdoutOnlyOnSuccess(t *testing.T) {
+	// A real bare repo guarantees a clean stdout hash.
+	repo := setupBareRepo(t)
+	hash, err := RemoteHead(repo, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The hash must be a pure hex string, not mixed with
+	// any stderr text (e.g. "warning: …\nabc1234").
+	for _, c := range hash {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			t.Errorf(
+				"hash %q contains non-hex char %q "+
+					"(stderr may have been mixed in)",
+				hash, c,
+			)
+		}
+	}
+}
+
 // --- RepoURL tests ---
 
 func TestRepoURLExpandsShorthand(t *testing.T) {

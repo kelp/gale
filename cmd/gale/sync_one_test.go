@@ -29,6 +29,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/recipe"
@@ -67,12 +68,11 @@ func minimalRecipe(name, version string) *recipe.Recipe {
 }
 
 // writeDepsMetadata writes an empty .gale-deps.toml into storeDir,
-// marking the install as non-stale (HasDepsMetadata returns true,
+// marking the install as non-stale (depsmeta.Has returns true,
 // IsStale returns false when there are no declared deps).
 func writeDepsMetadataFile(t *testing.T, storeDir string) {
 	t.Helper()
-	if err := installer.WriteDepsMetadata(storeDir,
-		installer.DepsMetadata{}); err != nil {
+	if err := depsmeta.Write(storeDir, depsmeta.Metadata{}); err != nil {
 		t.Fatalf("writeDepsMetadata: %v", err)
 	}
 }
@@ -167,10 +167,10 @@ func TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate(t *testing.T) {
 // writeDepsWithFile writes a .gale-deps.toml into storeDir recording
 // the given resolved deps, so IsStale compares them against the
 // current recipe's resolved deps.
-func writeDepsWithFile(t *testing.T, storeDir string, deps ...installer.ResolvedDep) {
+func writeDepsWithFile(t *testing.T, storeDir string, deps ...depsmeta.ResolvedDep) {
 	t.Helper()
-	if err := installer.WriteDepsMetadata(storeDir,
-		installer.DepsMetadata{Deps: deps}); err != nil {
+	if err := depsmeta.Write(storeDir,
+		depsmeta.Metadata{Deps: deps}); err != nil {
 		t.Fatalf("writeDepsWithFile: %v", err)
 	}
 }
@@ -197,13 +197,13 @@ func TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild(t *testing.T) {
 
 	// Canonical (recipe) revision: records the current dep → not stale.
 	canonDir := seedStore(t, storeRoot, "mypkg", "1.0.0-1")
-	writeDepsWithFile(t, canonDir, installer.ResolvedDep{
+	writeDepsWithFile(t, canonDir, depsmeta.ResolvedDep{
 		Name: "foo", Version: "2.0.0", Revision: 1,
 	})
 	// Orphan higher revision: records an old dep → stale. A bare pin
 	// resolves to this dir on disk.
 	orphanDir := seedStore(t, storeRoot, "mypkg", "1.0.0-2")
-	writeDepsWithFile(t, orphanDir, installer.ResolvedDep{
+	writeDepsWithFile(t, orphanDir, depsmeta.ResolvedDep{
 		Name: "foo", Version: "1.0.0", Revision: 1,
 	})
 

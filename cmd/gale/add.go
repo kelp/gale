@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
@@ -21,7 +22,7 @@ var addCmd = &cobra.Command{
 	Short: "Add packages to gale.toml without installing",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateInstallFlags(addGlobal, addProject); err != nil {
+		if err := validateScopeFlags(addGlobal, addProject); err != nil {
 			return err
 		}
 
@@ -35,7 +36,7 @@ var addCmd = &cobra.Command{
 
 		if addProject {
 			if _, err := projectConfigPath(cwd); err != nil {
-				return fmt.Errorf("no project found — run 'gale init' first")
+				return errors.New(errNoProject)
 			}
 		}
 
@@ -51,13 +52,16 @@ var addCmd = &cobra.Command{
 			return r.Package.Version, nil
 		}
 
+		// Resolve scope and config path once — they cannot change
+		// between iterations.
+		useGlobal := resolveScope(addGlobal, addProject, cwd)
+		configPath, err := resolveConfigPath(useGlobal)
+		if err != nil {
+			return err
+		}
+
 		host := resolveHostFlag(addHost)
 		if host != "" {
-			useGlobal := resolveScope(addGlobal, addProject, cwd)
-			configPath, err := resolveConfigPath(useGlobal)
-			if err != nil {
-				return err
-			}
 			noticeNewHostSection(out, configPath, host)
 		}
 
@@ -78,11 +82,6 @@ var addCmd = &cobra.Command{
 			}
 
 			if dryRun {
-				useGlobal := resolveScope(addGlobal, addProject, cwd)
-				configPath, err := resolveConfigPath(useGlobal)
-				if err != nil {
-					return err
-				}
 				location := configPath
 				if host != "" {
 					location = fmt.Sprintf("%s [hosts.%s]",
@@ -93,17 +92,17 @@ var addCmd = &cobra.Command{
 				continue
 			}
 
-			configPath, err := addToConfig(
-				name, version, host, addGlobal, addProject,
+			writtenPath, err := addToConfig(
+				name, version, host, configPath,
 			)
 			if err != nil {
 				return err
 			}
 
-			location := configPath
+			location := writtenPath
 			if host != "" {
 				location = fmt.Sprintf("%s [hosts.%s]",
-					configPath, host)
+					writtenPath, host)
 			}
 			out.Success(fmt.Sprintf("Added %s@%s to %s",
 				name, version, location))

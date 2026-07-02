@@ -1,6 +1,7 @@
 package gitutil
 
 import (
+	"bytes"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -47,9 +48,12 @@ func RemoteHead(repo, ref string) (string, error) {
 	}
 
 	cmd := exec.Command("git", "ls-remote", url, target)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("git ls-remote %s: %w", url, err)
+		return "", fmt.Errorf("git ls-remote %s: %s: %w",
+			url, strings.TrimSpace(stderr.String()), err)
 	}
 
 	line := strings.TrimSpace(string(out))

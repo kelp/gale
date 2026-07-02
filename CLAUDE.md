@@ -69,7 +69,6 @@ internal/filelock/     POSIX file locking for store writes
 internal/httpclient/   shared *http.Client for all fetches
 internal/inspect/      binary linkage auditing (@rpath checks)
 internal/parallel/     bounded worker pool for fan-out work
-internal/prewarm/      concurrent ETag cache pre-population
 internal/projects/     machine-local project registry for gc
 internal/timing/       verbose phase-elapsed-time logging
 internal/version/      version comparison rules (update/outdated)

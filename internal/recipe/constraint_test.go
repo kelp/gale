@@ -39,9 +39,6 @@ func TestParseConstraint_BareVersionExactMatch(t *testing.T) {
 	if c.Revision != 1 {
 		t.Errorf("expected Revision=1 (default), got %d", c.Revision)
 	}
-	if c.Raw != "1.2.3" {
-		t.Errorf("expected Raw=\"1.2.3\", got %q", c.Raw)
-	}
 	if c.Any {
 		t.Error("expected Any=false")
 	}

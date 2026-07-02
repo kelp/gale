@@ -2,10 +2,8 @@ package main
 
 import (
 	"fmt"
-	"os"
 	"strconv"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/spf13/cobra"
 )
@@ -228,29 +226,8 @@ var genRollbackCmd = &cobra.Command{
 // generations commands. Like which, it does not require
 // gale.toml to exist — only the generation symlinks.
 func resolveGenerationsGaleDir(global, project bool) (string, error) {
-	if global {
-		return galeConfigDir()
-	}
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("getting working dir: %w", err)
-	}
-	if project {
-		projPath, err := config.FindGaleConfig(cwd)
-		if err != nil {
-			return "", fmt.Errorf(
-				"no project found — run 'gale init' first",
-			)
-		}
-		return galeDirForConfig(projPath)
-	}
-	// Auto. galeDirForConfig (not Dir(cfg)/.gale): under
-	// ~/.gale the found config is the GLOBAL one and the
-	// derived dir would be the bogus ~/.gale/.gale (gh#96).
-	if projPath, err := config.FindGaleConfig(cwd); err == nil {
-		return galeDirForConfig(projPath)
-	}
-	return galeConfigDir()
+	galeDir, _, err := resolveScopedPaths(global, project)
+	return galeDir, err
 }
 
 // addGenerationsScopeFlags registers -g/-p on the given

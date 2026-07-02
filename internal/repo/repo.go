@@ -1,12 +1,9 @@
 package repo
 
 import (
-	"errors"
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -14,17 +11,7 @@ import (
 type RepoConfig struct {
 	Name     string
 	URL      string
-	Key      string
-	Priority int
 	CacheDir string // local path where repo is cloned
-}
-
-// SearchResult represents a found recipe.
-type SearchResult struct {
-	RepoName string
-	Package  string
-	FilePath string
-	Priority int
 }
 
 // Manager manages recipe repositories.
@@ -86,112 +73,4 @@ func (m *Manager) Fetch(name string) error {
 			name, strings.TrimSpace(string(out)), err)
 	}
 	return nil
-}
-
-// listRecipes returns all .toml files in a repo's recipes/ directory.
-// Supports both flat layout (recipes/*.toml) and letter subdirectories
-// (recipes/j/jq.toml).
-func listRecipes(repo RepoConfig) ([]SearchResult, error) {
-	recipesDir := filepath.Join(repo.CacheDir, "recipes")
-	entries, err := os.ReadDir(recipesDir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("reading recipes for %s: %w",
-			repo.Name, err)
-	}
-
-	var results []SearchResult
-	for _, entry := range entries {
-		if entry.IsDir() {
-			// Recurse into subdirectory (letter buckets).
-			subDir := filepath.Join(recipesDir, entry.Name())
-			subEntries, err := os.ReadDir(subDir)
-			if err != nil {
-				return nil, fmt.Errorf("reading subdir %s: %w",
-					entry.Name(), err)
-			}
-			for _, sub := range subEntries {
-				if sub.IsDir() || !strings.HasSuffix(sub.Name(), ".toml") {
-					continue
-				}
-				pkg := strings.TrimSuffix(sub.Name(), ".toml")
-				results = append(results, SearchResult{
-					RepoName: repo.Name,
-					Package:  pkg,
-					FilePath: filepath.Join(subDir, sub.Name()),
-					Priority: repo.Priority,
-				})
-			}
-			continue
-		}
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".toml") {
-			continue
-		}
-		pkg := strings.TrimSuffix(name, ".toml")
-		results = append(results, SearchResult{
-			RepoName: repo.Name,
-			Package:  pkg,
-			FilePath: filepath.Join(recipesDir, name),
-			Priority: repo.Priority,
-		})
-	}
-	return results, nil
-}
-
-// Search finds recipes matching a package name across all repos.
-func (m *Manager) Search(query string) ([]SearchResult, error) {
-	var results []SearchResult
-	for _, repo := range m.Repos {
-		recipes, err := listRecipes(repo)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range recipes {
-			if strings.Contains(r.Package, query) {
-				results = append(results, r)
-			}
-		}
-	}
-	return results, nil
-}
-
-// Resolve finds the recipe for a package using priority order.
-// Returns nil when the package is not found.
-func (m *Manager) Resolve(name string) (*SearchResult, error) {
-	var best *SearchResult
-	for _, repo := range m.Repos {
-		recipes, err := listRecipes(repo)
-		if err != nil {
-			return nil, err
-		}
-		for _, r := range recipes {
-			if r.Package == name {
-				if best == nil || r.Priority < best.Priority {
-					match := r
-					best = &match
-				}
-				break
-			}
-		}
-	}
-	return best, nil
-}
-
-// ListAll lists all available recipes across repos.
-func (m *Manager) ListAll() ([]SearchResult, error) {
-	var results []SearchResult
-	for _, repo := range m.Repos {
-		recipes, err := listRecipes(repo)
-		if err != nil {
-			return nil, err
-		}
-		results = append(results, recipes...)
-	}
-	sort.Slice(results, func(i, j int) bool {
-		return results[i].Package < results[j].Package
-	})
-	return results, nil
 }

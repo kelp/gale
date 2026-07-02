@@ -350,7 +350,10 @@ func TestCheckRecipeToolNotFound(t *testing.T) {
 
 func TestRecipeToolsReturnsToolsAndCleanup(t *testing.T) {
 	checker := func(string) bool { return false }
-	tools, cleanup := RecipeTools(t.TempDir(), checker)
+	tools, cleanup, err := RecipeTools(t.TempDir(), checker)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	defer cleanup()
 
 	if len(tools) != 8 {

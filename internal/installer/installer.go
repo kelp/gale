@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -14,12 +15,12 @@ import (
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/parallel"
-	"github.com/kelp/gale/internal/prewarm"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/kelp/gale/internal/timing"
@@ -180,9 +181,6 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	if binaryViable {
 		depPaths, err = inst.InstallRuntimeDeps(r)
 	} else {
-		if len(r.Dependencies.Build) > 0 {
-			prewarm.PrewarmRecipeDeps(context.Background(), r.Dependencies.Build, inst.Resolver)
-		}
 		depPaths, err = inst.InstallBuildDeps(r)
 	}
 	if err != nil {
@@ -205,7 +203,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 				"resolve deps for metadata: %w", ferr,
 			)
 		}
-		if berr := installBinaryTo(bin, storeDir, canonicalDir, name, version, fallback, inst.Verifier, !staged, inst.Downloads); berr == nil {
+		if berr := inst.installBinaryTo(r, storeDir, canonicalDir, fallback, !staged); berr == nil {
 			method = MethodBinary
 			sha256 = bin.SHA256
 			manifestDigest = bin.ManifestDigest
@@ -271,23 +269,9 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	}, nil
 }
 
-// InstallLocal installs a recipe from a local source directory.
-// Skips binary install and downloads — builds directly from
-// sourceDir using build.BuildLocal. Always rebuilds even if
-// the version exists in the store, since local source may
-// have changed without a version bump.
-func (inst *Installer) InstallLocal(r *recipe.Recipe, sourceDir string) (*InstallResult, error) {
-	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
-	if err != nil {
-		return nil, fmt.Errorf("lock package: %w", err)
-	}
-	defer unlock()
-	return inst.installLocalLocked(r, sourceDir)
-}
-
-// installLocalLocked is the body of InstallLocal assuming the
-// per-package lock is held by the caller. Used by InstallLocal
-// and InstallLocalWithFinalize.
+// installLocalLocked is the body of local-source install
+// assuming the per-package lock is held by the caller.
+// Used by InstallLocalWithFinalize.
 func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*InstallResult, error) {
 	name := r.Package.Name
 	version := r.Package.Version
@@ -315,9 +299,6 @@ func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*
 	defer os.RemoveAll(buildDir) // clean up on any exit path
 
 	// Resolve and install build deps.
-	if len(r.Dependencies.Build) > 0 {
-		prewarm.PrewarmRecipeDeps(context.Background(), r.Dependencies.Build, inst.Resolver)
-	}
 	depPaths, err := inst.InstallBuildDeps(r)
 	if err != nil {
 		return nil, fmt.Errorf("install build deps: %w", err)
@@ -387,9 +368,6 @@ func (inst *Installer) installGitPrepare(r *recipe.Recipe) (*build.BuildResult, 
 	noop := func() {}
 
 	// Resolve and install build deps.
-	if len(r.Dependencies.Build) > 0 {
-		prewarm.PrewarmRecipeDeps(context.Background(), r.Dependencies.Build, inst.Resolver)
-	}
 	depPaths, err := inst.InstallBuildDeps(r)
 	if err != nil {
 		return nil, "", nil, noop, fmt.Errorf("install build deps: %w", err)
@@ -441,23 +419,6 @@ func (inst *Installer) installGitLocked(r *recipe.Recipe, buildResult *build.Bui
 		Method:  MethodSource,
 		SHA256:  buildResult.SHA256,
 	}, nil
-}
-
-// InstallGit clones a git repo and builds from the clone.
-// Returns the install result with the commit hash as version.
-func (inst *Installer) InstallGit(r *recipe.Recipe) (*InstallResult, error) {
-	buildResult, hash, depPaths, cleanup, err := inst.installGitPrepare(r)
-	defer cleanup()
-	if err != nil {
-		return nil, err
-	}
-
-	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, hash)
-	if err != nil {
-		return nil, fmt.Errorf("lock package: %w", err)
-	}
-	defer unlock()
-	return inst.installGitLocked(r, buildResult, hash, depPaths)
 }
 
 // InstallGitWithFinalize acquires the per-package lock (keyed on the
@@ -554,7 +515,18 @@ func replaceStoreDir(storeDir, buildDir string) error {
 // renamed into extractDir inside the store-gen lock so a
 // concurrent generation.Build sees either the pre-install
 // or the completed install — never an intermediate.
-func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, version string, depsFallback []ResolvedDep, v attestation.Verifier, inPlace bool, dl *parallel.Limiter) error {
+func (inst *Installer) installBinaryTo(
+	r *recipe.Recipe,
+	extractDir, finalStoreDir string,
+	depsFallback []depsmeta.ResolvedDep,
+	inPlace bool,
+) error {
+	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
+	name := r.Package.Name
+	version := r.Package.Version
+	v := inst.Verifier
+	dl := inst.Downloads
+
 	// Enforce the recipe's declared trust policy before
 	// fetching anything. A recipe that ships a non-GHCR
 	// URL with the default (sigstore) policy is rejected
@@ -612,15 +584,11 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// attestation covers) and delete it after via defer. Binary
 	// installs run 8-way parallel, so the tempfile must be
 	// collision-free (os.CreateTemp guarantees this).
-	needAttest := bin.EffectiveTrust() == recipe.TrustSigstore && v != nil
-	var archiveOut string
-	if needAttest {
-		af, err := os.CreateTemp(build.TmpDir(), "gale-verify-*.tar.zst")
-		if err != nil {
-			return fmt.Errorf("create attestation tempfile: %w", err)
-		}
-		archiveOut = af.Name()
-		af.Close()
+	needAttest, archiveOut, err := setupAttestTempfile(bin, v)
+	if err != nil {
+		return err
+	}
+	if archiveOut != "" {
 		defer os.Remove(archiveOut)
 	}
 
@@ -692,9 +660,9 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// install as stale. The legacy-stale path is
 	// preserved for installs that genuinely predate this
 	// metadata (no file on disk at all).
-	if !HasDepsMetadata(stagingDir) {
-		md := DepsMetadata{Deps: depsFallback}
-		if err := WriteDepsMetadata(stagingDir, md); err != nil {
+	if !depsmeta.Has(stagingDir) {
+		md := depsmeta.Metadata{Deps: depsFallback}
+		if err := depsmeta.Write(stagingDir, md); err != nil {
 			return fmt.Errorf("write deps metadata: %w", err)
 		}
 	}
@@ -705,6 +673,24 @@ func installBinaryTo(bin *recipe.Binary, extractDir, finalStoreDir, name, versio
 	// the store-gen lock: they don't touch the canonical store
 	// dir, and a network stall must not block a concurrent sync.
 	return commitExtracted(stagingDir, extractDir, finalStoreDir, storeRoot, inPlace)
+}
+
+// setupAttestTempfile creates a collision-free tempfile for tee-ing
+// the raw download archive when sigstore attestation is required.
+// Returns (needAttest, tempfilePath, error). When attestation is not
+// needed, tempfilePath is empty and the caller must not defer-remove
+// it. The caller is responsible for defer os.Remove(tempfilePath).
+func setupAttestTempfile(bin *recipe.Binary, v attestation.Verifier) (bool, string, error) {
+	if bin.EffectiveTrust() != recipe.TrustSigstore || v == nil {
+		return false, "", nil
+	}
+	af, err := os.CreateTemp(build.TmpDir(), "gale-verify-*.tar.zst")
+	if err != nil {
+		return false, "", fmt.Errorf("create attestation tempfile: %w", err)
+	}
+	path := af.Name()
+	af.Close()
+	return true, path, nil
 }
 
 // fixupExtracted runs the post-extract fixup pipeline on dir,
@@ -1006,7 +992,7 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 // Build-only deps are excluded (gh#157): recording them
 // would pin build tools in the store for gc/farm even though
 // the binary never links them, and IsStale ignores them.
-func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]ResolvedDep, error) {
+func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedDep, error) {
 	if inst.Resolver == nil {
 		return nil, nil
 	}
@@ -1019,7 +1005,7 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]ResolvedDep, error
 			names = append(names, d)
 		}
 	}
-	resolved := make([]ResolvedDep, 0, len(names))
+	resolved := make([]depsmeta.ResolvedDep, 0, len(names))
 	for _, name := range names {
 		dr, err := inst.Resolver(name)
 		if err != nil {
@@ -1032,7 +1018,7 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]ResolvedDep, error
 				"no recipe found for dependency %q", name,
 			)
 		}
-		resolved = append(resolved, ResolvedDep{
+		resolved = append(resolved, depsmeta.ResolvedDep{
 			Name:     name,
 			Version:  dr.Package.Version,
 			Revision: dr.Package.Revision,
@@ -1095,71 +1081,23 @@ func mergeBuildDeps(a, b *build.BuildDeps) *build.BuildDeps {
 	return out
 }
 
-// copyRecipeForDeps creates a shallow copy of a Recipe with
-// deep-copied Build.Platform and Binary maps, and the given
-// merged build deps. This prevents map aliasing between the
-// copy and the original.
+// copyRecipeForDeps returns a copy of r with Dependencies replaced
+// by deps. The four map fields are cloned so mutations on the copy
+// cannot affect the caller's recipe.
 func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recipe {
-	var platformCopy map[string]recipe.PlatformBuild
-	if r.Build.Platform != nil {
-		platformCopy = make(
-			map[string]recipe.PlatformBuild, len(r.Build.Platform),
-		)
-		for k, v := range r.Build.Platform {
-			platformCopy[k] = v
-		}
-	}
-
-	var binaryCopy map[string]recipe.Binary
-	if r.Binary != nil {
-		binaryCopy = make(
-			map[string]recipe.Binary, len(r.Binary),
-		)
-		for k, v := range r.Binary {
-			binaryCopy[k] = v
-		}
-	}
-
-	var depPlatformCopy map[string]recipe.PlatformDependencies
-	if r.Dependencies.Platform != nil {
-		depPlatformCopy = make(map[string]recipe.PlatformDependencies, len(r.Dependencies.Platform))
-		for k, v := range r.Dependencies.Platform {
-			depPlatformCopy[k] = v
-		}
-	}
-
-	// Preserve the Constraints map so the recursive
-	// installDepsInner can enforce version constraints the
-	// parent recipe declared (C4). Without this copy, the
-	// merged-deps recipe handed to installDepsInner loses
-	// every constraint entry.
-	var constraintsCopy map[string]string
-	if r.Dependencies.Constraints != nil {
-		constraintsCopy = make(map[string]string, len(r.Dependencies.Constraints))
-		for k, v := range r.Dependencies.Constraints {
-			constraintsCopy[k] = v
-		}
-	}
-
-	return &recipe.Recipe{
-		Package: r.Package,
-		Source:  r.Source,
-		Build: recipe.Build{
-			System:    r.Build.System,
-			Steps:     r.Build.Steps,
-			Debug:     r.Build.Debug,
-			Env:       r.Build.Env,
-			Toolchain: r.Build.Toolchain,
-			Platform:  platformCopy,
-		},
-		Binary: binaryCopy,
-		Dependencies: recipe.Dependencies{
-			Build:       deps.Build,
-			Runtime:     deps.Runtime,
-			Constraints: constraintsCopy,
-			Platform:    depPlatformCopy,
-		},
-	}
+	cp := *r
+	cp.Dependencies = deps
+	// Clone maps shared with the original so future mutations in
+	// installDepsInner cannot affect the caller's recipe.
+	cp.Build.Platform = maps.Clone(r.Build.Platform)
+	cp.Binary = maps.Clone(r.Binary)
+	cp.Dependencies.Platform = maps.Clone(r.Dependencies.Platform)
+	// Preserve Constraints from deps (the platform-merged view returned
+	// by DependenciesForPlatform) so installDepsInner enforces the
+	// parent's version constraints (C4), including platform-scoped
+	// overrides. maps.Clone handles nil.
+	cp.Dependencies.Constraints = maps.Clone(deps.Constraints)
+	return &cp
 }
 
 // installDepsInner recursively installs build and runtime
@@ -1222,7 +1160,7 @@ func (inst *Installer) installDepsInner(
 			// resolved version. Bare-string deps have no entry in
 			// Constraints and skip this check, preserving today's
 			// "resolve to latest" behavior.
-			if expr, has := r.Dependencies.Constraints[dep]; has && expr != "" {
+			if expr, has := deps.Constraints[dep]; has && expr != "" {
 				c, cerr := recipe.ParseConstraint(expr)
 				if cerr != nil {
 					return fmt.Errorf(
@@ -1396,15 +1334,19 @@ func extractBuildTo(result *build.BuildResult, extractDir, finalStoreDir string,
 	}
 	// Keep the archive's own .gale-deps.toml when present: a
 	// source build emits a runtime-only closure (gh#157), and
-	// overwriting it here with BuildDepsToResolved(deps) — the
-	// full build environment — would re-leak build-only tools
-	// into the store dir, re-pinning them for gc/farm and
-	// re-triggering spurious staleness. Only synthesize
-	// metadata when the archive shipped none (legacy or
-	// zero-dep archives), mirroring extractStreamed.
-	if !HasDepsMetadata(workDir) {
-		md := DepsMetadata{Deps: BuildDepsToResolved(deps)}
-		if err := WriteDepsMetadata(workDir, md); err != nil {
+	// overwriting it here with the full build environment
+	// (deps.NamedDirs) would re-leak build-only tools into the
+	// store dir, re-pinning them for gc/farm and re-triggering
+	// spurious staleness. Only synthesize metadata when the
+	// archive shipped none (legacy or zero-dep archives),
+	// mirroring extractStreamed.
+	if !depsmeta.Has(workDir) {
+		var namedDirs map[string]string
+		if deps != nil {
+			namedDirs = deps.NamedDirs
+		}
+		md := depsmeta.Metadata{Deps: depsmeta.FromNamedDirs(namedDirs)}
+		if err := depsmeta.Write(workDir, md); err != nil {
 			return fmt.Errorf("write deps metadata: %w", err)
 		}
 	}

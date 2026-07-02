@@ -1326,10 +1326,12 @@ func TestFullOnStructLiteralWithRevisionThree(t *testing.T) {
 
 // --- Behavior: constraint-table syntax in dependency lists ---
 
-// TestBareRuntimeDepsConstraintsNilOrEmpty tests that a recipe with
-// bare-string runtime deps produces no Constraints entries (behavior 1).
-func TestBareRuntimeDepsConstraintsNilOrEmpty(t *testing.T) {
-	input := `
+// parseWithDeps wraps the standard [package]/[source] preamble around
+// depsTOML and calls Parse, fataling on error. It lets the dep-constraint
+// tests focus on the [dependencies] section alone.
+func parseWithDeps(t *testing.T, depsTOML string) *Recipe {
+	t.Helper()
+	const preamble = `
 [package]
 name = "foo"
 version = "1.0.0"
@@ -1338,198 +1340,155 @@ version = "1.0.0"
 url = "https://example.com/foo.tar.gz"
 sha256 = "abc123"
 
-[dependencies]
-runtime = ["a", "b"]
 `
-	r, err := Parse(input)
+	r, err := Parse(preamble + depsTOML)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("Parse failed: %v", err)
 	}
-	if len(r.Dependencies.Runtime) != 2 {
-		t.Fatalf("Runtime length = %d, want 2", len(r.Dependencies.Runtime))
-	}
-	if r.Dependencies.Runtime[0] != "a" || r.Dependencies.Runtime[1] != "b" {
-		t.Errorf("Runtime = %v, want [a b]", r.Dependencies.Runtime)
-	}
-	if len(r.Dependencies.Constraints) != 0 {
-		t.Errorf("Constraints = %v, want nil or empty", r.Dependencies.Constraints)
+	return r
+}
+
+// TestBareStringDepsProduceNoConstraints verifies that bare-string deps in
+// both runtime and build sections produce no Constraints entries
+// (behaviors 1 and 4a).
+func TestBareStringDepsProduceNoConstraints(t *testing.T) {
+	for _, tc := range []struct {
+		section string
+		toml    string
+		deps    func(*Recipe) []string
+	}{
+		{
+			section: "runtime",
+			toml:    "[dependencies]\nruntime = [\"a\", \"b\"]\n",
+			deps:    func(r *Recipe) []string { return r.Dependencies.Runtime },
+		},
+		{
+			section: "build",
+			toml:    "[dependencies]\nbuild = [\"a\", \"b\"]\n",
+			deps:    func(r *Recipe) []string { return r.Dependencies.Build },
+		},
+	} {
+		t.Run(tc.section, func(t *testing.T) {
+			r := parseWithDeps(t, tc.toml)
+			got := tc.deps(r)
+			if len(got) != 2 {
+				t.Fatalf("%s length = %d, want 2", tc.section, len(got))
+			}
+			if got[0] != "a" || got[1] != "b" {
+				t.Errorf("%s = %v, want [a b]", tc.section, got)
+			}
+			if len(r.Dependencies.Constraints) != 0 {
+				t.Errorf("Constraints = %v, want nil or empty",
+					r.Dependencies.Constraints)
+			}
+		})
 	}
 }
 
-// TestBareRuntimeDepsConstraintsNilOrEmptyBuild tests that a recipe with
-// bare-string build deps produces no Constraints entries (behavior 4a).
-func TestBareRuntimeDepsConstraintsNilOrEmptyBuild(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-build = ["a", "b"]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Build) != 2 {
-		t.Fatalf("Build length = %d, want 2", len(r.Dependencies.Build))
-	}
-	if r.Dependencies.Build[0] != "a" || r.Dependencies.Build[1] != "b" {
-		t.Errorf("Build = %v, want [a b]", r.Dependencies.Build)
-	}
-	if len(r.Dependencies.Constraints) != 0 {
-		t.Errorf("Constraints = %v, want nil or empty", r.Dependencies.Constraints)
-	}
-}
-
-// TestTableFormRuntimeExtractsNameAndConstraint tests that a recipe with a
-// single inline-table runtime dep extracts the name into Runtime and stores
-// the version constraint in Constraints (behavior 2).
-func TestTableFormRuntimeExtractsNameAndConstraint(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-runtime = [{name = "expat", version = ">=2.7.5-2"}]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Runtime) != 1 {
-		t.Fatalf("Runtime length = %d, want 1", len(r.Dependencies.Runtime))
-	}
-	if r.Dependencies.Runtime[0] != "expat" {
-		t.Errorf("Runtime[0] = %q, want %q", r.Dependencies.Runtime[0], "expat")
-	}
-	if r.Dependencies.Constraints == nil {
-		t.Fatal("Constraints is nil, want map containing expat")
-	}
-	if got := r.Dependencies.Constraints["expat"]; got != ">=2.7.5-2" {
-		t.Errorf("Constraints[expat] = %q, want %q", got, ">=2.7.5-2")
+// TestTableFormExtractsNameAndConstraint verifies that a single
+// inline-table dep extracts the name into the right slice and stores
+// the version constraint in Constraints (behaviors 2 and 4b).
+func TestTableFormExtractsNameAndConstraint(t *testing.T) {
+	for _, tc := range []struct {
+		section    string
+		toml       string
+		deps       func(*Recipe) []string
+		depName    string
+		constraint string
+	}{
+		{
+			section:    "runtime",
+			toml:       "[dependencies]\nruntime = [{name = \"expat\", version = \">=2.7.5-2\"}]\n",
+			deps:       func(r *Recipe) []string { return r.Dependencies.Runtime },
+			depName:    "expat",
+			constraint: ">=2.7.5-2",
+		},
+		{
+			section:    "build",
+			toml:       "[dependencies]\nbuild = [{name = \"cmake\", version = \">=3.26\"}]\n",
+			deps:       func(r *Recipe) []string { return r.Dependencies.Build },
+			depName:    "cmake",
+			constraint: ">=3.26",
+		},
+	} {
+		t.Run(tc.section, func(t *testing.T) {
+			r := parseWithDeps(t, tc.toml)
+			got := tc.deps(r)
+			if len(got) != 1 {
+				t.Fatalf("%s length = %d, want 1", tc.section, len(got))
+			}
+			if got[0] != tc.depName {
+				t.Errorf("%s[0] = %q, want %q",
+					tc.section, got[0], tc.depName)
+			}
+			if r.Dependencies.Constraints == nil {
+				t.Fatalf("Constraints is nil, want map containing %s",
+					tc.depName)
+			}
+			if c := r.Dependencies.Constraints[tc.depName]; c != tc.constraint {
+				t.Errorf("Constraints[%s] = %q, want %q",
+					tc.depName, c, tc.constraint)
+			}
+		})
 	}
 }
 
-// TestTableFormBuildExtractsNameAndConstraint tests that a recipe with a
-// single inline-table build dep extracts the name into Build and stores the
-// version constraint in Constraints (behavior 4b).
-func TestTableFormBuildExtractsNameAndConstraint(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-build = [{name = "cmake", version = ">=3.26"}]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Build) != 1 {
-		t.Fatalf("Build length = %d, want 1", len(r.Dependencies.Build))
-	}
-	if r.Dependencies.Build[0] != "cmake" {
-		t.Errorf("Build[0] = %q, want %q", r.Dependencies.Build[0], "cmake")
-	}
-	if r.Dependencies.Constraints == nil {
-		t.Fatal("Constraints is nil, want map containing cmake")
-	}
-	if got := r.Dependencies.Constraints["cmake"]; got != ">=3.26" {
-		t.Errorf("Constraints[cmake] = %q, want %q", got, ">=3.26")
-	}
-}
-
-// TestMixedBareAndTableRuntimeDeps tests that a recipe mixing bare strings
-// and inline-table entries in runtime produces the correct Runtime slice and
-// Constraints map (behavior 3).
-func TestMixedBareAndTableRuntimeDeps(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-runtime = ["curl", {name = "expat", version = ">=2.7.5-2"}]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Runtime) != 2 {
-		t.Fatalf("Runtime length = %d, want 2", len(r.Dependencies.Runtime))
-	}
-	if r.Dependencies.Runtime[0] != "curl" {
-		t.Errorf("Runtime[0] = %q, want %q", r.Dependencies.Runtime[0], "curl")
-	}
-	if r.Dependencies.Runtime[1] != "expat" {
-		t.Errorf("Runtime[1] = %q, want %q", r.Dependencies.Runtime[1], "expat")
-	}
-	if r.Dependencies.Constraints == nil {
-		t.Fatal("Constraints is nil, want map containing expat")
-	}
-	if got := r.Dependencies.Constraints["expat"]; got != ">=2.7.5-2" {
-		t.Errorf("Constraints[expat] = %q, want %q", got, ">=2.7.5-2")
-	}
-	if _, hasCurl := r.Dependencies.Constraints["curl"]; hasCurl {
-		t.Error("Constraints should not contain bare-string dep 'curl'")
-	}
-}
-
-// TestMixedBareAndTableBuildDeps tests the same mixing behavior for build
-// deps (behavior 4c).
-func TestMixedBareAndTableBuildDeps(t *testing.T) {
-	input := `
-[package]
-name = "foo"
-version = "1.0.0"
-
-[source]
-url = "https://example.com/foo.tar.gz"
-sha256 = "abc123"
-
-[dependencies]
-build = ["autoconf", {name = "cmake", version = ">=3.26"}]
-`
-	r, err := Parse(input)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Dependencies.Build) != 2 {
-		t.Fatalf("Build length = %d, want 2", len(r.Dependencies.Build))
-	}
-	if r.Dependencies.Build[0] != "autoconf" {
-		t.Errorf("Build[0] = %q, want %q", r.Dependencies.Build[0], "autoconf")
-	}
-	if r.Dependencies.Build[1] != "cmake" {
-		t.Errorf("Build[1] = %q, want %q", r.Dependencies.Build[1], "cmake")
-	}
-	if r.Dependencies.Constraints == nil {
-		t.Fatal("Constraints is nil, want map containing cmake")
-	}
-	if got := r.Dependencies.Constraints["cmake"]; got != ">=3.26" {
-		t.Errorf("Constraints[cmake] = %q, want %q", got, ">=3.26")
-	}
-	if _, hasAutoconf := r.Dependencies.Constraints["autoconf"]; hasAutoconf {
-		t.Error("Constraints should not contain bare-string dep 'autoconf'")
+// TestMixedBareAndTableDeps verifies that mixing bare strings and
+// inline-table entries produces the correct slice and Constraints map
+// (behaviors 3 and 4c).
+func TestMixedBareAndTableDeps(t *testing.T) {
+	for _, tc := range []struct {
+		section    string
+		toml       string
+		deps       func(*Recipe) []string
+		bareDep    string
+		tableDep   string
+		constraint string
+	}{
+		{
+			section:    "runtime",
+			toml:       "[dependencies]\nruntime = [\"curl\", {name = \"expat\", version = \">=2.7.5-2\"}]\n",
+			deps:       func(r *Recipe) []string { return r.Dependencies.Runtime },
+			bareDep:    "curl",
+			tableDep:   "expat",
+			constraint: ">=2.7.5-2",
+		},
+		{
+			section:    "build",
+			toml:       "[dependencies]\nbuild = [\"autoconf\", {name = \"cmake\", version = \">=3.26\"}]\n",
+			deps:       func(r *Recipe) []string { return r.Dependencies.Build },
+			bareDep:    "autoconf",
+			tableDep:   "cmake",
+			constraint: ">=3.26",
+		},
+	} {
+		t.Run(tc.section, func(t *testing.T) {
+			r := parseWithDeps(t, tc.toml)
+			got := tc.deps(r)
+			if len(got) != 2 {
+				t.Fatalf("%s length = %d, want 2", tc.section, len(got))
+			}
+			if got[0] != tc.bareDep {
+				t.Errorf("%s[0] = %q, want %q",
+					tc.section, got[0], tc.bareDep)
+			}
+			if got[1] != tc.tableDep {
+				t.Errorf("%s[1] = %q, want %q",
+					tc.section, got[1], tc.tableDep)
+			}
+			if r.Dependencies.Constraints == nil {
+				t.Fatalf("Constraints is nil, want map containing %s",
+					tc.tableDep)
+			}
+			if c := r.Dependencies.Constraints[tc.tableDep]; c != tc.constraint {
+				t.Errorf("Constraints[%s] = %q, want %q",
+					tc.tableDep, c, tc.constraint)
+			}
+			if _, has := r.Dependencies.Constraints[tc.bareDep]; has {
+				t.Errorf("Constraints should not contain bare dep %q",
+					tc.bareDep)
+			}
+		})
 	}
 }
 
@@ -1604,5 +1563,192 @@ runtime = [{name = "bar"}]
 	// Constraints should either be nil or not contain "bar".
 	if got, ok := r.Dependencies.Constraints["bar"]; ok && got != "" {
 		t.Errorf("Constraints[bar] = %q, want absent or empty", got)
+	}
+}
+
+// --- Platform-scoped constraints ---
+
+// TestPlatformDepConstraintScopedToPlatformEntry tests that a
+// version-constrained dep inside a platform table stores the
+// constraint on PlatformDependencies.Constraints, not on the
+// global Dependencies.Constraints.
+func TestPlatformDepConstraintScopedToPlatformEntry(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+build = ["autoconf"]
+
+[dependencies.linux-amd64]
+runtime = [{name = "expat", version = ">=2.7.5-2"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Global Constraints must not contain the platform-scoped dep.
+	if _, ok := r.Dependencies.Constraints["expat"]; ok {
+		t.Error("global Constraints should not contain platform-scoped dep expat")
+	}
+	// The platform entry must carry its own Constraints.
+	pd, ok := r.Dependencies.Platform["linux-amd64"]
+	if !ok {
+		t.Fatal("expected linux-amd64 platform deps entry")
+	}
+	if pd.Constraints == nil {
+		t.Fatal("PlatformDependencies.Constraints is nil, want map with expat")
+	}
+	if got := pd.Constraints["expat"]; got != ">=2.7.5-2" {
+		t.Errorf("pd.Constraints[expat] = %q, want >=2.7.5-2", got)
+	}
+}
+
+// TestDependenciesForPlatformMergesPlatformConstraints tests that
+// DependenciesForPlatform merges platform-scoped constraints into
+// the returned Dependencies.Constraints map.
+func TestDependenciesForPlatformMergesPlatformConstraints(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies]
+build = [{name = "cmake", version = ">=3.26"}]
+
+[dependencies.linux-amd64]
+runtime = [{name = "expat", version = ">=2.7.5-2"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	deps := r.DependenciesForPlatform("linux", "amd64")
+	// Global constraint must be present.
+	if got := deps.Constraints["cmake"]; got != ">=3.26" {
+		t.Errorf("Constraints[cmake] = %q, want >=3.26", got)
+	}
+	// Platform constraint must be merged in.
+	if got := deps.Constraints["expat"]; got != ">=2.7.5-2" {
+		t.Errorf("Constraints[expat] = %q, want >=2.7.5-2 after merge", got)
+	}
+}
+
+// TestDependenciesForPlatformNonMatchingPlatformNoMerge tests that
+// DependenciesForPlatform does not merge constraints from a
+// platform entry that does not match the requested platform.
+func TestDependenciesForPlatformNonMatchingPlatformNoMerge(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[dependencies.linux-amd64]
+runtime = [{name = "expat", version = ">=2.7.5-2"}]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	deps := r.DependenciesForPlatform("darwin", "arm64")
+	if _, ok := deps.Constraints["expat"]; ok {
+		t.Error("Constraints should not contain expat for darwin-arm64")
+	}
+}
+
+// TestToStringSliceSilentlyDropsNonStringElements tests that
+// toStringSlice silently drops non-string elements in the raw array.
+// This is intentional: wrong-typed build steps are a recipe authoring
+// error that lint catches; keeping parse tolerant avoids breaking
+// forward-compat with unknown array types.
+func TestToStringSliceSilentlyDropsNonStringElements(t *testing.T) {
+	raw := []interface{}{"step1", 42, "step2", true, nil}
+	got := toStringSlice(raw)
+	want := []string{"step1", "step2"}
+	if len(got) != len(want) {
+		t.Fatalf("toStringSlice: got %v (len %d), want %v (len %d)",
+			got, len(got), want, len(want))
+	}
+	for i, v := range want {
+		if got[i] != v {
+			t.Errorf("toStringSlice[%d] = %q, want %q", i, got[i], v)
+		}
+	}
+}
+
+// TestToStringStringMapSilentlyDropsNonStringValues tests that
+// toStringStringMap silently drops non-string values in the raw map.
+// This is intentional: wrong-typed env values are a recipe authoring
+// error that lint catches; keeping parse tolerant avoids breaking
+// forward-compat with unknown map value types.
+func TestToStringStringMapSilentlyDropsNonStringValues(t *testing.T) {
+	raw := map[string]interface{}{
+		"KEY1": "value1",
+		"KEY2": 99,
+		"KEY3": "value3",
+		"KEY4": true,
+	}
+	got := toStringStringMap(raw)
+	// Only string values must survive.
+	if len(got) != 2 {
+		t.Fatalf("toStringStringMap: got %v (len %d), want 2 string entries",
+			got, len(got))
+	}
+	if got["KEY1"] != "value1" {
+		t.Errorf("KEY1 = %q, want value1", got["KEY1"])
+	}
+	if got["KEY3"] != "value3" {
+		t.Errorf("KEY3 = %q, want value3", got["KEY3"])
+	}
+}
+
+// TestParseBuildSkipListIncludesToolchain tests that a recipe with a
+// top-level toolchain key and a platform sub-table parses without
+// error. This pins the explicit skip-list fix (toolchain was absent).
+func TestParseBuildSkipListIncludesToolchain(t *testing.T) {
+	input := `
+[package]
+name = "foo"
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo.tar.gz"
+sha256 = "abc123"
+
+[build]
+system = "make"
+toolchain = "gcc"
+steps = ["make install"]
+
+[build.linux-amd64]
+toolchain = "clang"
+steps = ["CC=clang make install"]
+`
+	r, err := Parse(input)
+	if err != nil {
+		t.Fatalf("unexpected error parsing recipe with toolchain: %v", err)
+	}
+	if r.Build.Toolchain != "gcc" {
+		t.Errorf("Build.Toolchain = %q, want gcc", r.Build.Toolchain)
+	}
+	pb, ok := r.Build.Platform["linux-amd64"]
+	if !ok {
+		t.Fatal("expected linux-amd64 platform build entry")
+	}
+	if pb.Toolchain != "clang" {
+		t.Errorf("platform Toolchain = %q, want clang", pb.Toolchain)
 	}
 }

@@ -120,161 +120,115 @@ func TestVerifySHA256NonexistentFileReturnsError(t *testing.T) {
 	}
 }
 
-// --- Behavior 3: Extract tar.gz ---
+// extractCases is the format matrix used by the three
+// table-driven extract behavior tests below.
+var extractCases = []struct {
+	name    string
+	ext     string
+	create  func(*testing.T, string, map[string]string)
+	extract func(string, string) error
+}{
+	{"tar.gz", ".tar.gz", createTarGz, ExtractTarGz},
+	{"zip", ".zip", createZip, ExtractZip},
+	{"tar.zst", ".tar.zst", createTarZstd, ExtractTarZstd},
+	{"tar.xz", ".tar.xz", createTarXz, ExtractTarXz},
+	{"tar.bz2", ".tar.bz2", createTarBz2, ExtractTarBz2},
+}
 
-func TestExtractTarGzPreservesFileContents(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.gz")
-	createTarGz(t, archivePath, map[string]string{
-		"hello.txt": "hello world",
-	})
+// --- Behaviors 3/4/7/9/10: extract across all formats ---
 
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
+func TestExtractPreservesFileContents(t *testing.T) {
+	for _, tc := range extractCases {
+		t.Run(tc.name, func(t *testing.T) {
+			archivePath := filepath.Join(
+				t.TempDir(), "test"+tc.ext,
+			)
+			tc.create(t, archivePath, map[string]string{
+				"hello.txt": "hello world",
+			})
 
-	if err := ExtractTarGz(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
+			destDir := filepath.Join(t.TempDir(), "extracted")
+			if err := os.MkdirAll(destDir, 0o755); err != nil {
+				t.Fatalf("create dest dir: %v", err)
+			}
+			if err := tc.extract(archivePath, destDir); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	got, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "hello world" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "hello world")
+			got, err := os.ReadFile(
+				filepath.Join(destDir, "hello.txt"),
+			)
+			if err != nil {
+				t.Fatalf("read extracted file: %v", err)
+			}
+			if string(got) != "hello world" {
+				t.Errorf("file contents = %q, want %q",
+					string(got), "hello world")
+			}
+		})
 	}
 }
 
-func TestExtractTarGzPreservesRelativePaths(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.gz")
-	createTarGz(t, archivePath, map[string]string{
-		"subdir/nested.txt": "nested content",
-	})
+func TestExtractPreservesRelativePaths(t *testing.T) {
+	for _, tc := range extractCases {
+		t.Run(tc.name, func(t *testing.T) {
+			archivePath := filepath.Join(
+				t.TempDir(), "test"+tc.ext,
+			)
+			tc.create(t, archivePath, map[string]string{
+				"subdir/nested.txt": "nested content",
+			})
 
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
+			destDir := filepath.Join(t.TempDir(), "extracted")
+			if err := os.MkdirAll(destDir, 0o755); err != nil {
+				t.Fatalf("create dest dir: %v", err)
+			}
+			if err := tc.extract(archivePath, destDir); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	if err := ExtractTarGz(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"),
-	)
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "nested content" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "nested content")
-	}
-}
-
-func TestExtractTarGzMultipleFiles(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.gz")
-	createTarGz(t, archivePath, map[string]string{
-		"a.txt": "aaa",
-		"b.txt": "bbb",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarGz(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, name := range []string{"a.txt", "b.txt"} {
-		if _, err := os.Stat(
-			filepath.Join(destDir, name),
-		); err != nil {
-			t.Errorf("expected file %q to exist: %v", name, err)
-		}
+			got, err := os.ReadFile(
+				filepath.Join(destDir, "subdir", "nested.txt"),
+			)
+			if err != nil {
+				t.Fatalf("read extracted file: %v", err)
+			}
+			if string(got) != "nested content" {
+				t.Errorf("file contents = %q, want %q",
+					string(got), "nested content")
+			}
+		})
 	}
 }
 
-// --- Behavior 4: Extract zip ---
+func TestExtractMultipleFiles(t *testing.T) {
+	for _, tc := range extractCases {
+		t.Run(tc.name, func(t *testing.T) {
+			archivePath := filepath.Join(
+				t.TempDir(), "test"+tc.ext,
+			)
+			tc.create(t, archivePath, map[string]string{
+				"a.txt": "aaa",
+				"b.txt": "bbb",
+			})
 
-func TestExtractZipPreservesFileContents(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.zip")
-	createZip(t, archivePath, map[string]string{
-		"hello.txt": "hello world",
-	})
+			destDir := filepath.Join(t.TempDir(), "extracted")
+			if err := os.MkdirAll(destDir, 0o755); err != nil {
+				t.Fatalf("create dest dir: %v", err)
+			}
+			if err := tc.extract(archivePath, destDir); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractZip(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "hello world" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "hello world")
-	}
-}
-
-func TestExtractZipPreservesRelativePaths(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.zip")
-	createZip(t, archivePath, map[string]string{
-		"subdir/nested.txt": "nested content",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractZip(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"),
-	)
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "nested content" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "nested content")
-	}
-}
-
-func TestExtractZipMultipleFiles(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.zip")
-	createZip(t, archivePath, map[string]string{
-		"a.txt": "aaa",
-		"b.txt": "bbb",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractZip(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, name := range []string{"a.txt", "b.txt"} {
-		if _, err := os.Stat(
-			filepath.Join(destDir, name),
-		); err != nil {
-			t.Errorf("expected file %q to exist: %v", name, err)
-		}
+			for _, name := range []string{"a.txt", "b.txt"} {
+				if _, err := os.Stat(
+					filepath.Join(destDir, name),
+				); err != nil {
+					t.Errorf("expected file %q to exist: %v",
+						name, err)
+				}
+			}
+		})
 	}
 }
 
@@ -692,252 +646,86 @@ func TestExtractTarGzAllowsSymlinkWithinDestDir(t *testing.T) {
 
 // --- Security: safe absolute symlink allowlist ---
 
-func TestExtractTarGzAllowsSymlinkToDevNull(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "devnull.tar.gz")
-	destDir := t.TempDir()
-
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
-	content := "regular file"
-	tw.WriteHeader(&tar.Header{
-		Name: "file.txt",
-		Mode: 0o644,
-		Size: int64(len(content)),
-	})
-	tw.Write([]byte(content))
-
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "null",
-		Linkname: "/dev/null",
-	})
-
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	err = ExtractTarGz(archive, destDir)
-	if err != nil {
-		t.Fatalf("unexpected error for /dev/null symlink: %v", err)
-	}
-}
-
-func TestExtractTarGzSymlinkToDevNullCreatesCorrectSymlink(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "devnull.tar.gz")
-	destDir := t.TempDir()
-
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
-	content := "regular file"
-	tw.WriteHeader(&tar.Header{
-		Name: "file.txt",
-		Mode: 0o644,
-		Size: int64(len(content)),
-	})
-	tw.Write([]byte(content))
-
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "null",
-		Linkname: "/dev/null",
-	})
-
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	if err = ExtractTarGz(archive, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
+// TestExtractTarGzAbsoluteSymlinks verifies that absolute symlinks
+// with various targets (device nodes, developer paths, non-existent
+// paths) are extracted as symlinks rather than rejected. Each case
+// checks: no error on extract AND the symlink exists with the right
+// target.
+func TestExtractTarGzAbsoluteSymlinks(t *testing.T) {
+	cases := []struct {
+		name     string // archive entry name
+		linkname string // symlink target
+	}{
+		{
+			name:     "null",
+			linkname: "/dev/null",
+		},
+		{
+			name:     "zero",
+			linkname: "/dev/zero",
+		},
+		{
+			name:     "link",
+			linkname: "/tmp/some/arbitrary/path",
+		},
+		{
+			name: "queries",
+			// mirrors the helix release case where an upstream
+			// developer's local path leaked into the tarball
+			linkname: "/Users/someone/code/project/file",
+		},
+		{
+			name: "invalid-symlink",
+			// mirrors the helm testdata case
+			linkname: "/non/existing/file",
+		},
 	}
 
-	linkPath := filepath.Join(destDir, "null")
-	info, err := os.Lstat(linkPath)
-	if err != nil {
-		t.Fatalf("symlink not created: %v", err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected symlink, got %v", info.Mode())
-	}
+	for _, tc := range cases {
+		t.Run(tc.name+":"+tc.linkname, func(t *testing.T) {
+			archive := filepath.Join(t.TempDir(), "abs.tar.gz")
+			destDir := t.TempDir()
 
-	target, err := os.Readlink(linkPath)
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
-	}
-	if target != "/dev/null" {
-		t.Errorf("symlink target = %q, want %q", target, "/dev/null")
-	}
-}
+			f, err := os.Create(archive)
+			if err != nil {
+				t.Fatalf("create archive: %v", err)
+			}
+			gw := gzip.NewWriter(f)
+			tw := tar.NewWriter(gw)
 
-// TestExtractTarGzAllowsAbsoluteSymlinkToArbitraryPath verifies that
-// an absolute symlink pointing to an arbitrary path outside destDir
-// is extracted as a (potentially dangling) symlink rather than failing.
-func TestExtractTarGzAllowsAbsoluteSymlinkToArbitraryPath(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "arb.tar.gz")
-	destDir := t.TempDir()
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeSymlink,
+				Name:     tc.name,
+				Linkname: tc.linkname,
+			}); err != nil {
+				t.Fatalf("write symlink header: %v", err)
+			}
 
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
+			tw.Close()
+			gw.Close()
+			f.Close()
 
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "link",
-		Linkname: "/tmp/some/arbitrary/path",
-	})
+			if err := ExtractTarGz(archive, destDir); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	if err := ExtractTarGz(archive, destDir); err != nil {
-		t.Fatalf("unexpected error for absolute symlink to arbitrary path: %v", err)
-	}
-
-	// Symlink must exist (even though the target doesn't).
-	linkPath := filepath.Join(destDir, "link")
-	info, err := os.Lstat(linkPath)
-	if err != nil {
-		t.Fatalf("symlink not created: %v", err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected symlink, got %v", info.Mode())
-	}
-	target, err := os.Readlink(linkPath)
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
-	}
-	if target != "/tmp/some/arbitrary/path" {
-		t.Errorf("symlink target = %q, want %q", target, "/tmp/some/arbitrary/path")
-	}
-}
-
-// TestExtractTarGzAllowsAbsoluteSymlinkToDeveloperPath mirrors the helix
-// release case where an upstream developer's local path leaked into the
-// tarball (e.g. runtime/grammars/sources/move/queries -> /Users/someone/...).
-func TestExtractTarGzAllowsAbsoluteSymlinkToDeveloperPath(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "dev.tar.gz")
-	destDir := t.TempDir()
-
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "queries",
-		Linkname: "/Users/someone/code/project/file",
-	})
-
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	if err := ExtractTarGz(archive, destDir); err != nil {
-		t.Fatalf("unexpected error for developer path symlink: %v", err)
-	}
-
-	linkPath := filepath.Join(destDir, "queries")
-	info, err := os.Lstat(linkPath)
-	if err != nil {
-		t.Fatalf("symlink not created: %v", err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected symlink, got %v", info.Mode())
-	}
-	target, err := os.Readlink(linkPath)
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
-	}
-	if target != "/Users/someone/code/project/file" {
-		t.Errorf("symlink target = %q, want %q",
-			target, "/Users/someone/code/project/file")
-	}
-}
-
-// TestExtractTarGzAllowsAbsoluteSymlinkToNonExistent mirrors the helm
-// testdata case: invalid-symlink -> /non/existing/file.
-func TestExtractTarGzAllowsAbsoluteSymlinkToNonExistent(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "nonex.tar.gz")
-	destDir := t.TempDir()
-
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "invalid-symlink",
-		Linkname: "/non/existing/file",
-	})
-
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	if err := ExtractTarGz(archive, destDir); err != nil {
-		t.Fatalf("unexpected error for symlink to non-existent path: %v", err)
-	}
-
-	linkPath := filepath.Join(destDir, "invalid-symlink")
-	info, err := os.Lstat(linkPath)
-	if err != nil {
-		t.Fatalf("symlink not created: %v", err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		t.Fatalf("expected symlink, got %v", info.Mode())
-	}
-	target, err := os.Readlink(linkPath)
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
-	}
-	if target != "/non/existing/file" {
-		t.Errorf("symlink target = %q, want %q", target, "/non/existing/file")
-	}
-}
-
-func TestExtractTarGzAllowsSymlinkToDevZero(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "devzero.tar.gz")
-	destDir := t.TempDir()
-
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "zero",
-		Linkname: "/dev/zero",
-	})
-
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	err = ExtractTarGz(archive, destDir)
-	if err != nil {
-		t.Fatalf("unexpected error for /dev/zero symlink: %v", err)
+			linkPath := filepath.Join(destDir, tc.name)
+			info, err := os.Lstat(linkPath)
+			if err != nil {
+				t.Fatalf("symlink not created: %v", err)
+			}
+			if info.Mode()&os.ModeSymlink == 0 {
+				t.Fatalf("expected symlink, got %v", info.Mode())
+			}
+			target, err := os.Readlink(linkPath)
+			if err != nil {
+				t.Fatalf("readlink: %v", err)
+			}
+			if target != tc.linkname {
+				t.Errorf("symlink target = %q, want %q",
+					target, tc.linkname)
+			}
+		})
 	}
 }
 
@@ -1182,85 +970,6 @@ func writeTarEntries(t *testing.T, tw *tar.Writer, files map[string]string) {
 		}
 		if _, err := tw.Write([]byte(content)); err != nil {
 			t.Fatalf("write tar content: %v", err)
-		}
-	}
-}
-
-// --- Behavior 7: Extract tar.zst ---
-
-func TestExtractTarZstdPreservesFileContents(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.zst")
-	createTarZstd(t, archivePath, map[string]string{
-		"hello.txt": "hello world",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarZstd(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "hello world" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "hello world")
-	}
-}
-
-func TestExtractTarZstdPreservesRelativePaths(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.zst")
-	createTarZstd(t, archivePath, map[string]string{
-		"subdir/nested.txt": "nested content",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarZstd(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"),
-	)
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "nested content" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "nested content")
-	}
-}
-
-func TestExtractTarZstdMultipleFiles(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.zst")
-	createTarZstd(t, archivePath, map[string]string{
-		"a.txt": "aaa",
-		"b.txt": "bbb",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarZstd(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	for _, name := range []string{"a.txt", "b.txt"} {
-		if _, err := os.Stat(
-			filepath.Join(destDir, name),
-		); err != nil {
-			t.Errorf("expected file %q to exist: %v", name, err)
 		}
 	}
 }
@@ -1568,195 +1277,6 @@ func TestCreateTarZstdDeterministic(t *testing.T) {
 			"symlink target should be relative, got %q",
 			target,
 		)
-	}
-}
-
-// --- FetchWithAuth tests ---
-
-func TestFetchWithAuthSendsAuthHeader(t *testing.T) {
-	var gotAuth string
-	srv := httptest.NewTLSServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			gotAuth = r.Header.Get("Authorization")
-			fmt.Fprint(w, "content")
-		},
-	))
-	defer srv.Close()
-
-	restore := SetHTTPClient(srv.Client())
-	defer restore()
-
-	dest := filepath.Join(t.TempDir(), "out.bin")
-	err := FetchWithAuth(srv.URL+"/blob", dest, "my-token-123")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if gotAuth != "Bearer my-token-123" {
-		t.Errorf("Authorization = %q, want %q",
-			gotAuth, "Bearer my-token-123")
-	}
-}
-
-func TestFetchWithAuthWritesFile(t *testing.T) {
-	want := "binary-content-here"
-	srv := httptest.NewTLSServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			fmt.Fprint(w, want)
-		},
-	))
-	defer srv.Close()
-
-	restore := SetHTTPClient(srv.Client())
-	defer restore()
-
-	dest := filepath.Join(t.TempDir(), "out.bin")
-	err := FetchWithAuth(srv.URL+"/blob", dest, "tok")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	got, err := os.ReadFile(dest)
-	if err != nil {
-		t.Fatalf("read file: %v", err)
-	}
-	if string(got) != want {
-		t.Errorf("file content = %q, want %q", got, want)
-	}
-}
-
-func TestFetchWithAuthRejectsPlainHTTP(t *testing.T) {
-	dest := filepath.Join(t.TempDir(), "out.bin")
-	err := FetchWithAuth(
-		"http://example.com/blob", dest, "my-token",
-	)
-	if err == nil {
-		t.Fatal("expected error for plain HTTP with bearer token")
-	}
-	if !strings.Contains(err.Error(), "https") {
-		t.Errorf("error = %q, want it to mention https",
-			err.Error())
-	}
-}
-
-func TestFetchWithAuthErrorsOnNon200(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "denied", http.StatusForbidden)
-		},
-	))
-	defer srv.Close()
-
-	dest := filepath.Join(t.TempDir(), "out.bin")
-	err := FetchWithAuth(srv.URL+"/blob", dest, "tok")
-	if err == nil {
-		t.Fatal("expected error for 403 status")
-	}
-}
-
-// --- Behavior 9: Extract tar.xz ---
-
-func TestExtractTarXzPreservesFileContents(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.xz")
-	createTarXz(t, archivePath, map[string]string{
-		"hello.txt": "hello world",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarXz(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "hello world" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "hello world")
-	}
-}
-
-func TestExtractTarXzPreservesRelativePaths(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.xz")
-	createTarXz(t, archivePath, map[string]string{
-		"subdir/nested.txt": "nested content",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarXz(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"),
-	)
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "nested content" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "nested content")
-	}
-}
-
-// --- Behavior 10: Extract tar.bz2 ---
-
-func TestExtractTarBz2PreservesFileContents(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.bz2")
-	createTarBz2(t, archivePath, map[string]string{
-		"hello.txt": "hello world",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarBz2(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(filepath.Join(destDir, "hello.txt"))
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "hello world" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "hello world")
-	}
-}
-
-func TestExtractTarBz2PreservesRelativePaths(t *testing.T) {
-	archivePath := filepath.Join(t.TempDir(), "test.tar.bz2")
-	createTarBz2(t, archivePath, map[string]string{
-		"subdir/nested.txt": "nested content",
-	})
-
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarBz2(archivePath, destDir); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := os.ReadFile(
-		filepath.Join(destDir, "subdir", "nested.txt"),
-	)
-	if err != nil {
-		t.Fatalf("failed to read extracted file: %v", err)
-	}
-	if string(got) != "nested content" {
-		t.Errorf("file contents = %q, want %q",
-			string(got), "nested content")
 	}
 }
 

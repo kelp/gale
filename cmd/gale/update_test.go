@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/output"
+	ver "github.com/kelp/gale/internal/version"
 )
 
 func TestWarnSkippingPinnedUpdate(t *testing.T) {
@@ -103,7 +104,7 @@ func TestIsGitHash(t *testing.T) {
 	}
 }
 
-func TestIsNewerVersion(t *testing.T) {
+func TestVersionIsNewer(t *testing.T) {
 	tests := []struct {
 		current   string
 		candidate string
@@ -154,10 +155,10 @@ func TestIsNewerVersion(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.current+"→"+tt.candidate, func(t *testing.T) {
-			got := isNewerVersion(tt.candidate, tt.current)
+			got := ver.IsNewer(tt.candidate, tt.current)
 			if got != tt.want {
 				t.Errorf(
-					"isNewerVersion(%q, %q) = %v, want %v",
+					"ver.IsNewer(%q, %q) = %v, want %v",
 					tt.candidate, tt.current, got, tt.want,
 				)
 			}

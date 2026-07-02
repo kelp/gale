@@ -117,7 +117,7 @@ func downloadArchive(name, sha256 string) (string, error) {
 	}
 	f.Close()
 
-	if err := download.FetchWithAuthNamed(blobURL, f.Name(), token, ""); err != nil {
+	if err := download.FetchWithAuth(blobURL, f.Name(), token); err != nil {
 		os.Remove(f.Name())
 		return "", err
 	}

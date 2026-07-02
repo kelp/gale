@@ -41,7 +41,7 @@ Unlike 'gale update', switch:
 
 		out := newCmdOutput(cmd)
 
-		if err := validateInstallFlags(switchGlobal, switchProject); err != nil {
+		if err := validateScopeFlags(switchGlobal, switchProject); err != nil {
 			return err
 		}
 

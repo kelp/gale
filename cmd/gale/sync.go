@@ -4,12 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
@@ -29,10 +29,8 @@ var syncCmd = &cobra.Command{
 	Short: "Install all packages in gale.toml",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if syncGlobal && syncProject {
-			return fmt.Errorf(
-				"cannot use both --global and --project",
-			)
+		if err := validateScopeFlags(syncGlobal, syncProject); err != nil {
+			return err
 		}
 		return runSync(syncRecipes, syncBuild, syncGlobal,
 			syncProject, "")
@@ -46,39 +44,17 @@ var syncCmd = &cobra.Command{
 func runSync(recipesPath string, buildOnly, global, project bool, projectDir string) error {
 	out := newOutput()
 
-	ctx, err := newCmdContext(recipesPath, false, false)
+	ctx, err := newCmdContext(recipesPath, global, project)
 	if err != nil {
 		return err
 	}
 
-	// Explicit project directory takes precedence over
-	// scope flags. Used by syncIfNeeded when shell/run
-	// are invoked with --project.
+	// Explicit project directory takes precedence over scope
+	// flags. Used by syncIfNeeded when shell/run are invoked
+	// with --project.
 	if projectDir != "" {
 		ctx.GalePath = filepath.Join(projectDir, "gale.toml")
 		ctx.GaleDir = filepath.Join(projectDir, ".gale")
-	} else if global || project {
-		// Validate that --project requires an existing project.
-		if project {
-			cwd, cwdErr := os.Getwd()
-			if cwdErr != nil {
-				return fmt.Errorf("getting working dir: %w", cwdErr)
-			}
-			if _, pErr := projectConfigPath(cwd); pErr != nil {
-				return fmt.Errorf("no project found — run 'gale init' first")
-			}
-		}
-		// Override scope when -g or -p is set.
-		galePath, pathErr := resolveConfigPath(global)
-		if pathErr != nil {
-			return pathErr
-		}
-		galeDir, dirErr := galeDirForConfig(galePath)
-		if dirErr != nil {
-			return dirErr
-		}
-		ctx.GalePath = galePath
-		ctx.GaleDir = galeDir
 	}
 
 	// newCmdContext registered the auto-detected scope; the
@@ -117,10 +93,9 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	// download). The same resolved parallelism bounds the
 	// Installer's Downloads limiter, so package-level fan-out and
 	// per-package dep downloads share one configured ceiling.
-	syncWorkers := ctx.Parallelism
 	// Errors slice is always nil — runSyncOne captures all errors in
 	// syncOutcome fields, never returns one.
-	outcomes, _ := parallel.Map(context.Background(), items, syncWorkers,
+	outcomes, _ := parallel.Map(context.Background(), items, ctx.Parallelism,
 		func(_ context.Context, w syncItem) (syncOutcome, error) {
 			return runSyncOne(ctx, lf, w, dryRun), nil
 		})
@@ -199,7 +174,7 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		ctx.versionedRecipeResolver(),
 	)
 
-	if err := finishSync(dryRun, failed, installed, configChanged, ctx.RebuildGenerationLenient); err != nil {
+	if err := finishSync(dryRun, failed, installed, configChanged, ctx.RebuildGenerationCanonical); err != nil {
 		if failed > 0 {
 			out.Warn(fmt.Sprintf(
 				"Sync finished with %d error(s)", failed,
@@ -344,7 +319,7 @@ func installedStale(ctx *cmdContext, w syncItem) bool {
 	r, err := ctx.ResolveVersionedRecipe(w.name, w.version)
 	if err != nil {
 		storeDir, ok := ctx.Installer.Store.StorePath(w.name, w.version)
-		return ok && !installer.HasDepsMetadata(storeDir)
+		return ok && !depsmeta.Has(storeDir)
 	}
 
 	// Prefer the recipe's canonical dir; fall back to the bare
@@ -356,11 +331,11 @@ func installedStale(ctx *cmdContext, w syncItem) bool {
 	if !ok {
 		return false
 	}
-	if !installer.HasDepsMetadata(storeDir) {
+	if !depsmeta.Has(storeDir) {
 		// Pre-revision install — soft migration: mark stale.
 		return true
 	}
-	stale, staleErr := installer.IsStale(storeDir, r, ctx.Resolver)
+	stale, staleErr := installer.IsStale(storeDir, r, runtime.GOOS, runtime.GOARCH, ctx.Resolver)
 	return staleErr == nil && stale
 }
 

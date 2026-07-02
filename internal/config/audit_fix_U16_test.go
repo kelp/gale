@@ -1,7 +1,6 @@
 package config
 
 import (
-	"os"
 	"path/filepath"
 	"testing"
 )
@@ -12,19 +11,10 @@ import (
 // detect whether a --host value already has a matching section,
 // so they can print a visible notice before creating a new one.
 
-func writeU16Config(t *testing.T, content string) string {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "gale.toml")
-	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	return path
-}
-
 // TestHostSectionExistsExactKey: a host that names an existing
 // exact [hosts.<key>] section exists.
 func TestHostSectionExistsExactKey(t *testing.T) {
-	path := writeU16Config(t, "[packages]\n"+
+	path := writeTempGaleToml(t, "[packages]\n"+
 		"  jq = \"1.8.1\"\n\n"+
 		"[hosts.\"travis-mb.local\".packages]\n"+
 		"  rg = \"14.1.0\"\n")
@@ -37,7 +27,7 @@ func TestHostSectionExistsExactKey(t *testing.T) {
 // TestHostSectionExistsTypo: a typo'd host matches nothing and
 // reports false — this is the case that must trigger the notice.
 func TestHostSectionExistsTypo(t *testing.T) {
-	path := writeU16Config(t, "[packages]\n"+
+	path := writeTempGaleToml(t, "[packages]\n"+
 		"  jq = \"1.8.1\"\n\n"+
 		"[hosts.\"travis-mb.local\".packages]\n"+
 		"  rg = \"14.1.0\"\n")
@@ -51,7 +41,7 @@ func TestHostSectionExistsTypo(t *testing.T) {
 // existing glob section key exists (HostKeyMatches direction:
 // key pattern → host).
 func TestHostSectionExistsGlobKey(t *testing.T) {
-	path := writeU16Config(t,
+	path := writeTempGaleToml(t,
 		"[hosts.\"travis-mb*\".packages]\n"+
 			"  rg = \"14.1.0\"\n")
 
@@ -64,7 +54,7 @@ func TestHostSectionExistsGlobKey(t *testing.T) {
 // names an existing glob key exists. `--host mac-*` targeting an
 // existing [hosts."mac-*"] section must not look "new".
 func TestHostSectionExistsGlobFlag(t *testing.T) {
-	path := writeU16Config(t,
+	path := writeTempGaleToml(t,
 		"[hosts.\"mac-*\".packages]\n"+
 			"  rg = \"14.1.0\"\n")
 
@@ -78,7 +68,7 @@ func TestHostSectionExistsGlobFlag(t *testing.T) {
 // direction: host pattern → key). Suppression is cheap; a false
 // "new section" notice on an intentional glob is noise.
 func TestHostSectionExistsGlobFlagCoveringExactKey(t *testing.T) {
-	path := writeU16Config(t,
+	path := writeTempGaleToml(t,
 		"[hosts.\"mac-mini\".packages]\n"+
 			"  rg = \"14.1.0\"\n")
 
@@ -95,7 +85,7 @@ func TestHostSectionExistsGlobFlagCoveringExactKey(t *testing.T) {
 // identical [hosts."mac-1,mac-2"] section warns "new section" on
 // every run even though AddPackage reuses the literal key.
 func TestHostSectionExistsCommaListKey(t *testing.T) {
-	path := writeU16Config(t,
+	path := writeTempGaleToml(t,
 		"[hosts.\"mac-1,mac-2\".packages]\n"+
 			"  rg = \"14.1.0\"\n")
 
@@ -110,7 +100,7 @@ func TestHostSectionExistsCommaListKey(t *testing.T) {
 // on disk (the mutators normalize and reuse it), so no "new
 // section" notice should fire.
 func TestHostSectionExistsLegacyDottedHeader(t *testing.T) {
-	path := writeU16Config(t,
+	path := writeTempGaleToml(t,
 		"[hosts.travis-mb.local.packages]\n"+
 			"  rg = \"14.1.0\"\n")
 
@@ -122,7 +112,7 @@ func TestHostSectionExistsLegacyDottedHeader(t *testing.T) {
 // TestHostSectionExistsPinnedOnlySection: a host declared only via
 // [hosts.<key>.pinned] still exists.
 func TestHostSectionExistsPinnedOnlySection(t *testing.T) {
-	path := writeU16Config(t,
+	path := writeTempGaleToml(t,
 		"[hosts.\"travis-mb.local\".pinned]\n"+
 			"  rg = true\n")
 

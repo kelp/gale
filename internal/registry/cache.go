@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -48,10 +49,16 @@ var renameDir = os.Rename
 // and has no equivalent timeout.
 const negativeCacheTTL = 1 * time.Hour
 
-// errHTTP404 is the error returned for a 404 response (live or
-// negative-cache replay). Surfaced as text "HTTP 404" so the
-// existing string-match in fetchBinaries continues to work.
-var errHTTP404 = fmt.Errorf("HTTP 404")
+// errHTTP404 is the sentinel returned for a 404 response (live or
+// negative-cache replay). Declared with errors.New so callers can
+// use errors.Is for identity comparison instead of string-matching.
+var errHTTP404 = errors.New("HTTP 404")
+
+// ErrOfflineNoCache is returned when Offline=true and no cached
+// entry exists for the requested URL. Exported so callers in other
+// packages (e.g. cmd/gale/outdated.go) can detect the condition
+// with errors.Is rather than matching the error message text.
+var ErrOfflineNoCache = errors.New("offline: no cached entry")
 
 // cacheResult is the return value of cachedGet. Body is the
 // response (whether from network or cache); Stale is set true
@@ -128,9 +135,7 @@ func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, erro
 		if markerFresh {
 			return cacheResult{}, errHTTP404
 		}
-		return cacheResult{}, fmt.Errorf(
-			"GALE_OFFLINE=1 and no cached entry for %s", url,
-		)
+		return cacheResult{}, fmt.Errorf("%w for %s", ErrOfflineNoCache, url)
 	}
 
 	// Fresh negative cache short-circuits before the wire.
@@ -253,6 +258,9 @@ func plainGet(ctx context.Context, url string) ([]byte, error) {
 		return nil, err
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode == http.StatusNotFound {
+		return nil, errHTTP404
+	}
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("HTTP %d", resp.StatusCode)
 	}

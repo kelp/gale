@@ -7,88 +7,78 @@ import (
 	"sync"
 )
 
-// Package-level accumulator for packages whose .versions index
-// mispins a commit, forcing a ref-tip binary fallback. This mirrors
-// the timing package's package-level state pattern. The
-// dependency-closure resolver calls FetchRecipe from multiple
-// goroutines, so all access is mutex-guarded.
+// recorder is a concurrency-safe accumulator for package names.
+// It records each name at most once (deduplication) and drains
+// the full list on take(). Both record and take are safe for
+// concurrent use from multiple goroutines.
+type recorder struct {
+	mu    sync.Mutex
+	seen  map[string]bool
+	names []string
+}
+
+// record adds name to the accumulator. Duplicate names are
+// recorded once.
+func (r *recorder) record(name string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.seen == nil {
+		r.seen = map[string]bool{}
+	}
+	if r.seen[name] {
+		return
+	}
+	r.seen[name] = true
+	r.names = append(r.names, name)
+}
+
+// take returns the accumulated names (sorted and deduped) and
+// clears the recorded state. Returns nil when nothing accumulated.
+func (r *recorder) take() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.names) == 0 {
+		return nil
+	}
+	out := make([]string, len(r.names))
+	copy(out, r.names)
+	r.names = nil
+	r.seen = map[string]bool{}
+	sort.Strings(out)
+	return out
+}
+
+// Package-level accumulators for mispinned and version-skewed
+// packages. The dependency-closure resolver calls FetchRecipe
+// from multiple goroutines, so all access is mutex-guarded via
+// the recorder type.
 var (
-	mispinMu    sync.Mutex
-	mispinSeen  = map[string]bool{}
-	mispinNames []string
+	mispins recorder
+	skews   recorder
 )
 
 // recordMispin records that name took the ref-tip binary fallback
 // because its pinned commit lacked the matching binary. Duplicate
 // names are recorded once. Safe for concurrent use.
-func recordMispin(name string) {
-	mispinMu.Lock()
-	defer mispinMu.Unlock()
-	if mispinSeen[name] {
-		return
-	}
-	mispinSeen[name] = true
-	mispinNames = append(mispinNames, name)
-}
+func recordMispin(name string) { mispins.record(name) }
 
 // TakeMispinned returns the accumulated mispinned package names
 // (sorted and deduped) and clears the recorded state. Returns
 // nil/empty when nothing accumulated.
-func TakeMispinned() []string {
-	mispinMu.Lock()
-	defer mispinMu.Unlock()
-	if len(mispinNames) == 0 {
-		return nil
-	}
-	out := make([]string, len(mispinNames))
-	copy(out, mispinNames)
-	mispinNames = nil
-	mispinSeen = map[string]bool{}
-	sort.Strings(out)
-	return out
-}
+func TakeMispinned() []string { return mispins.take() }
 
-// Package-level accumulator for version-skewed packages, drained
-// independently from the mispin accumulator. A skew fires when the
-// resolved-latest version has no binary at its pinned commit AND none
-// at ref-tip, forcing a fall back to the legacy main-tip recipe.
-var (
-	skewMu    sync.Mutex
-	skewSeen  = map[string]bool{}
-	skewNames []string
-)
+// recordSkew records that name fell back to the main-tip recipe
+// because its resolved-latest version had no binary. Duplicate
+// names are recorded once. Safe for concurrent use.
+func recordSkew(name string) { skews.record(name) }
 
-// recordSkew records that name fell back to the main-tip recipe because
-// its resolved-latest version had no binary. Duplicate names are
-// recorded once. Safe for concurrent use.
-func recordSkew(name string) {
-	skewMu.Lock()
-	defer skewMu.Unlock()
-	if skewSeen[name] {
-		return
-	}
-	skewSeen[name] = true
-	skewNames = append(skewNames, name)
-}
-
-// TakeSkewed returns the accumulated skewed package names (sorted and
-// deduped) and clears the recorded state. A skew is distinct from a
-// mispin: it fires when the resolved-latest version has no binary at
-// its pinned commit AND none at ref-tip, forcing a fall back to the
-// legacy main-tip recipe. Returns nil/empty when nothing accumulated.
-func TakeSkewed() []string {
-	skewMu.Lock()
-	defer skewMu.Unlock()
-	if len(skewNames) == 0 {
-		return nil
-	}
-	out := make([]string, len(skewNames))
-	copy(out, skewNames)
-	skewNames = nil
-	skewSeen = map[string]bool{}
-	sort.Strings(out)
-	return out
-}
+// TakeSkewed returns the accumulated skewed package names (sorted
+// and deduped) and clears the recorded state. A skew is distinct
+// from a mispin: it fires when the resolved-latest version has no
+// binary at its pinned commit AND none at ref-tip, forcing a fall
+// back to the legacy main-tip recipe. Returns nil/empty when
+// nothing accumulated.
+func TakeSkewed() []string { return skews.take() }
 
 // SkewSummary formats a one-line summary of skewed packages, or "" for
 // empty input.

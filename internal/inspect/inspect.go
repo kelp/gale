@@ -25,9 +25,6 @@ var storeRe = regexp.MustCompile(
 
 // binaryRefs holds what we extracted from one binary file.
 type binaryRefs struct {
-	// rel is the path relative to the install prefix,
-	// used for reporting.
-	rel string
 	// rpaths are absolute (or @-relative) LC_RPATH /
 	// RUNPATH entries in the order they appear.
 	rpaths []string
@@ -79,7 +76,6 @@ func ScanInstalled(
 		if rErr != nil {
 			rel = path
 		}
-		refs.rel = rel
 
 		// Expand @loader_path / @executable_path to
 		// concrete dirs so rpath walks find the libs.

@@ -56,22 +56,16 @@ func SetHTTPClient(c *http.Client) func() {
 	return func() { httpClient = saved }
 }
 
-// Fetch downloads a file from url to destPath.
+// Fetch downloads a file from rawURL to destPath.
 // Intermediate directories are created as needed.
 // On HTTP error or failure, the destination file is removed.
-func Fetch(url, destPath string) error {
-	return FetchNamed(url, destPath, "")
-}
-
-// FetchNamed downloads a file with an explicit display
-// name for progress output. If name is empty, the URL
-// basename is used.
-func FetchNamed(rawURL, destPath, displayName string) error {
+// If the primary URL fails, known mirror fallbacks are tried.
+func Fetch(rawURL, destPath string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
 
-	err := fetchOnce(rawURL, destPath, displayName)
+	err := fetchOnce(rawURL, destPath)
 	if err == nil {
 		return nil
 	}
@@ -86,9 +80,7 @@ func FetchNamed(rawURL, destPath, displayName string) error {
 			alt := fb + suffix
 			fmt.Fprintf(os.Stderr,
 				"  > Mirror fallback: %s\n", alt)
-			if ferr := fetchOnce(
-				alt, destPath, displayName,
-			); ferr == nil {
+			if ferr := fetchOnce(alt, destPath); ferr == nil {
 				fmt.Fprintf(os.Stderr,
 					"  > Mirror fetched from: %s\n", alt)
 				return nil
@@ -99,34 +91,11 @@ func FetchNamed(rawURL, destPath, displayName string) error {
 	return err
 }
 
-// fetchOnce performs a single HTTP GET and writes to destPath.
-func fetchOnce(rawURL, destPath, displayName string) error {
-	resp, err := httpClient.Get(rawURL) //nolint:gosec // G107 — URL is caller-provided
-	if err != nil {
-		return fmt.Errorf("fetch %s: %w", rawURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
-	}
-
-	name := displayName
-	if name == "" {
-		name = filepath.Base(rawURL)
-	}
-	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
-}
-
-// FetchWithAuth downloads a file from url to destPath with a
-// bearer token in the Authorization header.
-func FetchWithAuth(url, destPath, bearerToken string) error {
-	return FetchWithAuthNamed(url, destPath, bearerToken, "")
-}
-
-// FetchWithAuthNamed downloads with auth and an explicit
-// display name for progress output.
-func FetchWithAuthNamed(rawURL, destPath, bearerToken, displayName string) error {
+// FetchWithAuth downloads a file from rawURL to destPath with a
+// bearer token in the Authorization header. HTTPS is required so
+// the token is never sent in the clear. No mirror fallbacks: the
+// token is scoped to the primary host.
+func FetchWithAuth(rawURL, destPath, bearerToken string) error {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("parse URL: %w", err)
@@ -158,10 +127,23 @@ func FetchWithAuthNamed(rawURL, destPath, bearerToken, displayName string) error
 		return fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
 	}
 
-	name := displayName
-	if name == "" {
-		name = filepath.Base(rawURL)
+	name := filepath.Base(rawURL)
+	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
+}
+
+// fetchOnce performs a single HTTP GET and writes to destPath.
+func fetchOnce(rawURL, destPath string) error {
+	resp, err := httpClient.Get(rawURL) //nolint:gosec // G107 — URL is caller-provided
+	if err != nil {
+		return fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
+	}
+
+	name := filepath.Base(rawURL)
 	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
 }
 

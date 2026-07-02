@@ -19,14 +19,21 @@ import (
 )
 
 // RecipeTools returns the tools available for recipe
-// creation. recipeDir is where recipes are written
-// (letter-bucketed). The caller must call Cleanup
-// after the agent finishes to remove temp downloads.
-func RecipeTools(recipeDir string, checkRecipe func(string) bool) ([]Tool, func()) {
+// creation, a cleanup function, and any error from
+// creating the temp download directory. recipeDir is
+// where recipes are written (letter-bucketed). The
+// caller must check error before deferring cleanup;
+// on error, cleanup is a no-op.
+func RecipeTools(
+	recipeDir string,
+	checkRecipe func(string) bool,
+) ([]Tool, func(), error) {
 	// Downloads go in a temp dir that gets cleaned up.
 	downloadDir, err := os.MkdirTemp("", "gale-download-*")
 	if err != nil {
-		downloadDir = os.TempDir()
+		return nil, func() {}, fmt.Errorf(
+			"create download dir: %w", err,
+		)
 	}
 
 	cleanup := func() { os.RemoveAll(downloadDir) }
@@ -40,7 +47,7 @@ func RecipeTools(recipeDir string, checkRecipe func(string) bool) ([]Tool, func(
 		homebrewFormulaTool(),
 		writeRecipeTool(recipeDir),
 		lintRecipeTool(recipeDir),
-	}, cleanup
+	}, cleanup, nil
 }
 
 // containedPath verifies that path resolves inside
@@ -293,20 +300,7 @@ func listFilesTool() Tool {
 				return "", fmt.Errorf("parse response: %w", err)
 			}
 
-			// Return just names and types.
-			type entry struct {
-				Name string `json:"name"`
-				Type string `json:"type"`
-			}
-			simplified := make([]entry, len(entries))
-			for i, e := range entries {
-				simplified[i] = entry{
-					Name: e.Name,
-					Type: e.Type,
-				}
-			}
-
-			result, _ := json.Marshal(simplified)
+			result, _ := json.Marshal(entries)
 			return string(result), nil
 		},
 	}

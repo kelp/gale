@@ -27,16 +27,9 @@ func TestInfoCommandRegistered(t *testing.T) {
 	}
 }
 
-// withTestRegistry points the default registry at the given URL
-// for the duration of the test. Restores the previous override
-// on cleanup.
-func withTestRegistry(t *testing.T, url string) {
-	t.Helper()
-	prev := registryOverride
-	registryOverride = func() *registry.Registry {
-		return registry.NewWithURL(url)
-	}
-	t.Cleanup(func() { registryOverride = prev })
+// testRegistry returns a *registry.Registry pointed at url.
+func testRegistry(url string) *registry.Registry {
+	return registry.NewWithURL(url)
 }
 
 // withIsolatedHome points HOME at a temp dir so info doesn't
@@ -110,10 +103,10 @@ func TestInfoParsesAtVersion(t *testing.T) {
 	defer srv.Close()
 
 	withIsolatedHome(t)
-	withTestRegistry(t, srv.URL)
+	reg := testRegistry(srv.URL)
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, "testpkg@1.0.0"); err != nil {
+	if err := runInfo(&buf, reg, "testpkg@1.0.0"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()
@@ -139,7 +132,7 @@ func TestInfoRejectsInvalidName(t *testing.T) {
 	defer srv.Close()
 
 	withIsolatedHome(t)
-	withTestRegistry(t, srv.URL)
+	reg := testRegistry(srv.URL)
 
 	bad := []string{
 		"jq?foo=bar", "%2e%2e/etc", "jq/sub", "../etc",
@@ -148,7 +141,7 @@ func TestInfoRejectsInvalidName(t *testing.T) {
 	for _, name := range bad {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
-			err := runInfo(&buf, name)
+			err := runInfo(&buf, reg, name)
 			if err == nil {
 				t.Fatalf("expected validation error for %q", name)
 			}
@@ -174,10 +167,10 @@ func TestInfoWritesThroughCmdStdout(t *testing.T) {
 	defer srv.Close()
 
 	withIsolatedHome(t)
-	withTestRegistry(t, srv.URL)
+	reg := testRegistry(srv.URL)
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, "testpkg"); err != nil {
+	if err := runInfo(&buf, reg, "testpkg"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()
@@ -212,10 +205,10 @@ func TestInfoMakesOneRequest(t *testing.T) {
 	defer srv.Close()
 
 	withIsolatedHome(t)
-	withTestRegistry(t, srv.URL)
+	reg := testRegistry(srv.URL)
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, "testpkg"); err != nil {
+	if err := runInfo(&buf, reg, "testpkg"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	if count != 1 {
@@ -235,7 +228,7 @@ func TestInfoInstalledFromConfig(t *testing.T) {
 	defer srv.Close()
 
 	home := withIsolatedHome(t)
-	withTestRegistry(t, srv.URL)
+	reg := testRegistry(srv.URL)
 
 	galeDir := filepath.Join(home, ".gale")
 	if err := os.MkdirAll(galeDir, 0o755); err != nil {
@@ -252,7 +245,7 @@ testpkg = "1.0.0"
 	}
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, "testpkg"); err != nil {
+	if err := runInfo(&buf, reg, "testpkg"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()

@@ -41,7 +41,7 @@ func carryForwardMissingVersions(
 	pkgs map[string]string, storeRoot, galeDir string, prevGen int,
 ) map[string]string {
 	prevGenDir := filepath.Join(galeDir, "gen", strconv.Itoa(prevGen))
-	prev := previousGenVersions(prevGenDir, storeRoot)
+	prev := genVersions(prevGenDir, storeRoot)
 	if len(prev) == 0 {
 		return pkgs
 	}
@@ -68,19 +68,45 @@ func carryForwardMissingVersions(
 	return out
 }
 
-// previousGenVersions returns a name → version map by reading
-// the symlinks under prevGenDir. Each symlink in a generation
-// points at <storeRoot>/<name>/<version>/...; the first two
-// path components after storeRoot give the (name, version)
-// pair. Unparseable links are skipped — best-effort, since the
-// caller only uses this as a hint for carry-forward.
-func previousGenVersions(prevGenDir, storeRoot string) map[string]string {
+// genVersions returns a name → version map by reading symlinks
+// under genDir. Each symlink in a generation points at
+// <storeRoot>/<name>/<version>/...; the first two path
+// components after storeRoot give the (name, version) pair.
+// The full directory tree is walked (not just bin/) so
+// lib-only packages (shared dylib deps with no bin/ entries)
+// are included. First-seen-wins for packages with multiple
+// symlinks in the gen (e.g. bin/ and lib/ both point into the
+// same store dir).
+//
+// The (name, version) pair is read from the link TEXT, then the
+// owning store dir <storeRoot>/<name>/<version> is stat'd to
+// decide inclusion. This splits two cases the old leaf-resolving
+// reader conflated:
+//
+//   - The store DIR is gone (the package was GC'd): skipped, so
+//     List/Diff/CurrentVersions never report a phantom (the
+//     dangling-symlink contract).
+//   - The store dir exists but the leaf file is absent (an
+//     incomplete install, or a bin symlink the package never
+//     populated): retained, so gc (gh#115) keeps a version the
+//     active generation still references rather than dropping it
+//     over a missing leaf.
+func genVersions(genDir, storeRoot string) map[string]string {
+	// Resolve storeRoot through symlinks so relative path
+	// computation works on macOS where /var → /private/var.
+	absStore, err := filepath.EvalSymlinks(storeRoot)
+	if err != nil {
+		absStore = storeRoot
+	}
+
 	out := map[string]string{}
 	//nolint:errcheck // best-effort walk; per-entry errors below are intentionally swallowed
-	filepath.Walk(prevGenDir, func(path string, info os.FileInfo, err error) error {
+	filepath.Walk(genDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil || info.Mode()&os.ModeSymlink == 0 {
 			return nil //nolint:nilerr // skip unreadable entries, keep walking
 		}
+		// Read the link text rather than resolving it: the leaf
+		// target may be absent while the store dir still exists.
 		target, readErr := os.Readlink(path)
 		if readErr != nil {
 			return nil //nolint:nilerr // skip unreadable link, keep walking
@@ -88,21 +114,55 @@ func previousGenVersions(prevGenDir, storeRoot string) map[string]string {
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(filepath.Dir(path), target)
 		}
-		rel, relErr := filepath.Rel(storeRoot, target)
-		if relErr != nil || strings.HasPrefix(rel, "..") {
-			return nil //nolint:nilerr // target outside store; not ours
+		// Match the target against both the symlink-resolved store
+		// root (absStore, for macOS /var → /private/var) and the
+		// raw storeRoot. The link text is unresolved, so depending
+		// on which path the caller passed, either form may share a
+		// prefix with the target.
+		rel := relWithinStore(absStore, target)
+		if rel == "" {
+			rel = relWithinStore(storeRoot, target)
+		}
+		if rel == "" {
+			return nil // target outside store; not ours
 		}
 		parts := strings.Split(rel, string(filepath.Separator))
 		if len(parts) < 2 {
 			return nil
 		}
 		name, version := parts[0], parts[1]
+		// Skip when the owning store dir is gone (GC'd package):
+		// a dangling link to a removed store dir must not surface.
+		// Stat both store-root spellings — only one need exist.
+		if !storeDirExists(absStore, name, version) &&
+			!storeDirExists(storeRoot, name, version) {
+			return nil
+		}
 		if _, seen := out[name]; !seen {
 			out[name] = version
 		}
 		return nil
 	})
 	return out
+}
+
+// relWithinStore returns the path of target relative to root
+// when target lies inside root, or "" otherwise. A target that
+// resolves to root itself or escapes it (rel starts with "..")
+// returns "".
+func relWithinStore(root, target string) string {
+	rel, err := filepath.Rel(root, target)
+	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+		return ""
+	}
+	return rel
+}
+
+// storeDirExists reports whether <root>/<name>/<version> is an
+// existing directory in the store.
+func storeDirExists(root, name, version string) bool {
+	info, err := os.Stat(filepath.Join(root, name, version))
+	return err == nil && info.IsDir()
 }
 
 // CurrentVersions returns the package name → version map of
@@ -121,7 +181,7 @@ func CurrentVersions(galeDir, storeRoot string) (map[string]string, error) {
 		return map[string]string{}, nil
 	}
 	prevGenDir := filepath.Join(galeDir, "gen", strconv.Itoa(cur))
-	return previousGenVersions(prevGenDir, storeRoot), nil
+	return genVersions(prevGenDir, storeRoot), nil
 }
 
 // ActiveStoreDirs resolves each (name, version) in pkgs to
@@ -203,23 +263,20 @@ func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
 var galeReadme []byte
 
 // Build creates a new generation from the package map
-// and atomically swaps the current symlink. Previous
+// and atomically swaps the current symlink. Packages whose
+// store dir is missing are silently skipped with a warning
+// on stderr: gale.toml legitimately lists packages that
+// aren't installed locally (`gale add` without sync, a
+// fresh clone on a new host, an unsupported-platform skip),
+// and erroring the rebuild would desync PATH from config
+// (gh#68). The missing package is reported on stderr so the
+// user learns which package fell off PATH. Previous
 // generations are retained for history and rollback.
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
-	return build(pkgs, galeDir, storeRoot, false)
+	return build(pkgs, galeDir, storeRoot)
 }
 
-// BuildLenient is Build but silently skips packages whose
-// store dir is missing. Used by sync, whose Issue #20
-// contract is to keep partial progress usable when some
-// installs in a batch failed — the failure propagates via
-// a separate error path, so the generation still needs to
-// reflect what's actually on disk.
-func BuildLenient(pkgs map[string]string, galeDir, storeRoot string) error {
-	return build(pkgs, galeDir, storeRoot, true)
-}
-
-func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) error {
+func build(pkgs map[string]string, galeDir, storeRoot string) error {
 	// Use the store-rooted lock path so project-scoped and global
 	// Build calls contend on the same lock file as the installer.
 	// filepath.Dir(storeRoot) is always the global galeDir
@@ -233,12 +290,11 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 			return fmt.Errorf("read current generation: %w", err)
 		}
 
-		// Lenient builds carry forward any package whose
-		// pinned store dir is missing — keeps a working
-		// version on PATH when gale.toml pins something
-		// that hasn't been installed yet. Strict Build
-		// errors on that case instead.
-		if lenient && prev > 0 {
+		// Carry forward any package whose pinned store dir
+		// is missing — keeps a working version on PATH when
+		// gale.toml pins something that hasn't been installed
+		// yet (e.g. `gale add` without sync, a fresh clone).
+		if prev > 0 {
 			pkgs = carryForwardMissingVersions(
 				pkgs, storeRoot, galeDir, prev,
 			)
@@ -276,7 +332,7 @@ func build(pkgs map[string]string, galeDir, storeRoot string, lenient bool) erro
 		// subsequent error so we don't leave orphaned dirs.
 		cleanup := func() { os.RemoveAll(genDir) }
 
-		if err := populateGeneration(genDir, pkgs, storeRoot, lenient); err != nil {
+		if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
 			cleanup()
 			return err
 		}
@@ -416,8 +472,9 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 // populateGeneration symlinks each package's store
 // contents into genDir. Packages are sorted
 // alphabetically so the first package wins on
-// filename conflicts.
-func populateGeneration(genDir string, pkgs map[string]string, storeRoot string, lenient bool) error {
+// filename conflicts. Missing store dirs are silently
+// skipped with a warning (see Build).
+func populateGeneration(genDir string, pkgs map[string]string, storeRoot string) error {
 	names := make([]string, 0, len(pkgs))
 	for name := range pkgs {
 		names = append(names, name)
@@ -430,25 +487,15 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				// All CLI rebuilds go through BuildLenient
-				// since gh#68: gale.toml legitimately lists
-				// packages that aren't installed locally
-				// (`gale add` without sync, a fresh clone),
-				// and failing the rebuild would desync PATH
-				// from config. Skip the package, but warn so
-				// the user learns which package fell off PATH
-				// — a sync batch where one install fails must
-				// still land the successful installs (Issue
-				// #20). Strict Build keeps the loud failure
-				// for callers that know every package should
-				// be present.
-				if !lenient {
-					return fmt.Errorf(
-						"%s@%s is missing from the store (%s); "+
-							"run `gale install %s` or `gale sync` to restore",
-						name, version, pkgDir, name,
-					)
-				}
+				// gale.toml legitimately lists packages that
+				// aren't installed locally (`gale add` without
+				// sync, a fresh clone, an unsupported-platform
+				// skip). Failing the rebuild would desync PATH
+				// from config (gh#68). Skip the package, but
+				// warn so the user learns which package fell
+				// off PATH — a sync batch where one install
+				// fails must still land the successful installs
+				// (Issue #20).
 				fmt.Fprintf(os.Stderr,
 					"generation: skipping %s@%s: store dir missing (%s); "+
 						"run `gale sync` to restore\n",
@@ -496,11 +543,11 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string,
 
 // validateGenerationSymlinks walks genDir and returns an
 // error if any symlink target doesn't resolve. Defense in
-// depth for Build/BuildLenient: catches store mutations
-// racing with the generation rebuild and ensures the swap
-// never activates a generation with broken PATH entries.
-// Reads per-file stat, not a full SHA verify — we only
-// care that the target exists on disk.
+// depth for Build: catches store mutations racing with the
+// generation rebuild and ensures the swap never activates
+// a generation with broken PATH entries. Reads per-file
+// stat, not a full SHA verify — we only care that the
+// target exists on disk.
 func validateGenerationSymlinks(genDir string) error {
 	return filepath.Walk(genDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
@@ -596,16 +643,6 @@ func Resolve(galeDir string) (int, string, error) {
 		)
 	}
 	return n, target, nil
-}
-
-// Next returns the next generation number (Current+1,
-// or 1 if none exists).
-func Next(galeDir string) (int, error) {
-	cur, err := Current(galeDir)
-	if err != nil {
-		return 0, err
-	}
-	return cur + 1, nil
 }
 
 // swapCurrentSymlink atomically points the current symlink

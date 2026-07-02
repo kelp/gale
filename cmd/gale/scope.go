@@ -1,15 +1,21 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 )
 
+// errNoProject is the canonical message returned when
+// --project is forced but no project gale.toml (or
+// .tool-versions) exists in the directory tree. One
+// definition site so all commands agree on the wording.
+const errNoProject = "no project found — run 'gale init' first"
+
 // validateScopeFlags returns an error if both --global and
-// --project are set. Used by read-only commands that accept
-// scope overrides. Mutation commands use the equivalent
-// validateInstallFlags.
+// --project are set. Used by all commands that accept scope
+// overrides.
 func validateScopeFlags(global, project bool) error {
 	if global && project {
 		return fmt.Errorf(
@@ -19,44 +25,73 @@ func validateScopeFlags(global, project bool) error {
 	return nil
 }
 
-// resolveReadOnlyConfigPath returns the gale.toml path for
-// a read-only command. When --project is forced but no
-// project gale.toml exists in the directory tree, returns
-// an error. When --global is forced, returns the global
-// path. When neither flag is set, prefers the project
-// config if one exists, falling back to global.
+// resolveScopedPaths returns the active .gale dir and the
+// gale.toml path for the given scope flags. The gale dir is
+// returned even when no gale.toml exists on disk — commands
+// like which and generations operate on generation symlinks,
+// not the config file itself.
 //
-// Unlike resolveConfigPath (used by mutation commands),
-// the project path is only returned when the file actually
-// exists — read-only commands have nothing meaningful to
-// show for a non-existent project config.
-func resolveReadOnlyConfigPath(global, project bool) (string, error) {
-	if global && project {
-		return "", fmt.Errorf(
-			"cannot use both --global and --project",
-		)
+// Uses galeDirForConfig for every gale-dir derivation so the
+// gh#96 guard (cwd inside ~/.gale/) is always applied. Uses
+// projectConfigPath (not config.FindGaleConfig directly) so
+// .tool-versions projects count in every command.
+func resolveScopedPaths(
+	global, project bool,
+) (galeDir, configPath string, err error) {
+	if err = validateScopeFlags(global, project); err != nil {
+		return "", "", err
 	}
+
+	if global {
+		galeDir, err = galeConfigDir()
+		if err != nil {
+			return "", "", err
+		}
+		configPath, err = globalConfigPath()
+		return galeDir, configPath, err
+	}
+
 	cwd, err := os.Getwd()
 	if err != nil {
-		return "", fmt.Errorf("getting working dir: %w", err)
+		return "", "", fmt.Errorf("getting working dir: %w", err)
 	}
-	if global {
-		return globalConfigPath()
-	}
+
 	if project {
-		projectPath, err := projectConfigPath(cwd)
-		if err != nil {
-			return "", fmt.Errorf(
-				"no project found — run 'gale init' first",
-			)
+		projPath, pErr := projectConfigPath(cwd)
+		if pErr != nil {
+			return "", "", errors.New(errNoProject)
 		}
-		return projectPath, nil
+		galeDir, err = galeDirForConfig(projPath)
+		if err != nil {
+			return "", "", err
+		}
+		return galeDir, projPath, nil
 	}
-	// Auto-detect: project first, then global.
-	if projectPath, err := projectConfigPath(cwd); err == nil {
-		return projectPath, nil
+
+	// Auto: project preferred when it exists.
+	if projPath, pErr := projectConfigPath(cwd); pErr == nil {
+		galeDir, err = galeDirForConfig(projPath)
+		if err != nil {
+			return "", "", err
+		}
+		return galeDir, projPath, nil
 	}
-	return globalConfigPath()
+
+	// Fall back to global.
+	galeDir, err = galeConfigDir()
+	if err != nil {
+		return "", "", err
+	}
+	configPath, err = globalConfigPath()
+	return galeDir, configPath, err
+}
+
+// resolveReadOnlyConfigPath returns the gale.toml path for
+// a read-only command. Routes through resolveScopedPaths so
+// the gh#96 guard and .tool-versions support apply uniformly.
+func resolveReadOnlyConfigPath(global, project bool) (string, error) {
+	_, configPath, err := resolveScopedPaths(global, project)
+	return configPath, err
 }
 
 // globalConfigPath returns ~/.gale/gale.toml.

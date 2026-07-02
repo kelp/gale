@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sort"
@@ -202,6 +203,9 @@ func checkOutdated(
 // status errors (404 for a renamed recipe) don't trip this
 // since they're per-package, not registry-wide.
 func isTransportError(err error) bool {
+	if errors.Is(err, registry.ErrOfflineNoCache) {
+		return true
+	}
 	s := err.Error()
 	switch {
 	case strings.Contains(s, "no such host"),
@@ -209,8 +213,7 @@ func isTransportError(err error) bool {
 		strings.Contains(s, "i/o timeout"),
 		strings.Contains(s, "Client.Timeout"),
 		strings.Contains(s, "context deadline"),
-		strings.Contains(s, "context canceled"),
-		strings.Contains(s, "GALE_OFFLINE=1 and no cached entry"):
+		strings.Contains(s, "context canceled"):
 		return true
 	}
 	return false

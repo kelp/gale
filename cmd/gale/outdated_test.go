@@ -1,63 +1,52 @@
 package main
 
 import (
-	"go/ast"
-	"go/parser"
-	"go/token"
 	"sort"
+	"strings"
 	"testing"
+
+	"github.com/kelp/gale/internal/recipe"
 )
 
-// TestOutdatedSortsByName pins audit RO-J:output-format/0004:
-// outdated's display order must be sorted by package name. Go
-// map iteration is randomised, so iterating `cfg.Packages`
-// directly produces non-deterministic output that peer
-// read-only commands (list, sbom, env, inspect) already avoid.
-//
-// Static check: outdated.go must call sort.* before iterating
-// cfg.Packages, so the resulting items slice has a stable
-// order.
-func TestOutdatedSortsByName(t *testing.T) {
-	fset := token.NewFileSet()
-	f, err := parser.ParseFile(
-		fset, "outdated.go", nil, 0,
-	)
-	if err != nil {
-		t.Fatalf("parsing outdated.go: %v", err)
+// TestOutdatedSortedOutput pins audit RO-J:output-format/0004:
+// checkOutdated must return items in name-sorted order even when
+// the input map has packages in non-alphabetical iteration order.
+// This is a behavioral test: it calls checkOutdated directly with
+// a multi-entry input and asserts the returned slice is sorted.
+func TestOutdatedSortedOutput(t *testing.T) {
+	// Packages in non-alphabetical order (map iteration is random).
+	pkgs := map[string]string{
+		"zz-tool": "1.0.0",
+		"aa-tool": "1.0.0",
+		"mm-tool": "1.0.0",
 	}
 
-	callsSort := false
-	rangesOverPackagesDirectly := false
+	// Resolver returns a newer version for every package so all
+	// appear in result.Items.
+	resolver := func(name string) (*recipe.Recipe, error) {
+		return &recipe.Recipe{
+			Package: recipe.Package{
+				Name:    name,
+				Version: "2.0.0",
+			},
+		}, nil
+	}
 
-	ast.Inspect(f, func(n ast.Node) bool {
-		// Detect any call to sort.* (sort.Strings, sort.Slice,
-		// etc.).
-		if call, ok := n.(*ast.CallExpr); ok {
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-				if ident, ok := sel.X.(*ast.Ident); ok {
-					if ident.Name == "sort" {
-						callsSort = true
-					}
-				}
-			}
-		}
-		// Detect `for ... := range cfg.Packages` (map iter).
-		if rs, ok := n.(*ast.RangeStmt); ok {
-			if sel, ok := rs.X.(*ast.SelectorExpr); ok {
-				if sel.Sel.Name == "Packages" {
-					rangesOverPackagesDirectly = true
-				}
-			}
-		}
-		return true
-	})
+	// Use a nil output to discard any warnings.
+	out := newCmdOutput(outdatedCmd)
+	result := checkOutdated(pkgs, resolver, out)
 
-	if rangesOverPackagesDirectly && !callsSort {
-		t.Errorf(
-			"outdated.go iterates cfg.Packages (a map) without " +
-				"calling sort.* — output order will vary " +
-				"between runs. Build a sorted keys slice first.",
-		)
+	if len(result.Items) != len(pkgs) {
+		t.Fatalf("expected %d items, got %d",
+			len(pkgs), len(result.Items))
+	}
+
+	for i := 1; i < len(result.Items); i++ {
+		if result.Items[i].Name < result.Items[i-1].Name {
+			t.Errorf("items not sorted: %q before %q",
+				result.Items[i-1].Name,
+				result.Items[i].Name)
+		}
 	}
 }
 
@@ -76,7 +65,7 @@ func TestFormatOutdatedPreservesOrder(t *testing.T) {
 	lines := formatOutdated(items)
 	want := []string{"go", "jq", "zlib"}
 	for i, w := range want {
-		if !contains(lines[i], w) {
+		if !strings.Contains(lines[i], w) {
 			t.Errorf("line %d = %q, want it to start with %s",
 				i, lines[i], w)
 		}
@@ -130,27 +119,13 @@ func TestFormatOutdated(t *testing.T) {
 			// latest version.
 			for i, line := range lines {
 				item := tt.items[i]
-				if !contains(line, item.Name) ||
-					!contains(line, item.Current) ||
-					!contains(line, item.Latest) {
+				if !strings.Contains(line, item.Name) ||
+					!strings.Contains(line, item.Current) ||
+					!strings.Contains(line, item.Latest) {
 					t.Errorf("line %q missing info for %s",
 						line, item.Name)
 				}
 			}
 		})
 	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) &&
-		findSubstring(s, substr)
-}
-
-func findSubstring(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
-		}
-	}
-	return false
 }

@@ -117,7 +117,7 @@ steps = ["make install PREFIX=${PREFIX}"]
 	for _, issue := range issues {
 		switch issue.Level {
 		case "error":
-			lintIssueOutput(out, issue)
+			out.Error(issue.Message)
 		case "warning":
 			out.Info(issue.Message)
 		}

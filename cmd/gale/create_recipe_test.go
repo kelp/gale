@@ -1,11 +1,75 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/kelp/gale/internal/ai"
+	"github.com/kelp/gale/internal/output"
 )
+
+// TestRecipeCreatorSeenInitialized verifies that the
+// seen map is initialized on first call so recursive
+// calls can use it without a nil-map panic.
+func TestRecipeCreatorSeenInitialized(t *testing.T) {
+	rc := &recipeCreator{
+		client:   ai.NewClient(""),
+		maxDepth: 3,
+		out:      output.New(os.Stderr, false),
+	}
+	// seen must be nil before first call.
+	if rc.seen != nil {
+		t.Fatal("expected seen to be nil initially")
+	}
+	// create will return ErrNotConfigured (no API key),
+	// but seen must be initialized before RunAgent is
+	// called.
+	_ = rc.create("owner/repo", 0)
+	if rc.seen == nil {
+		t.Fatal("expected seen to be initialized after create")
+	}
+}
+
+// TestRecipeCreatorStructCompiles verifies the struct and
+// create method are accessible with the expected fields.
+func TestRecipeCreatorStructCompiles(t *testing.T) {
+	out := output.New(os.Stderr, false)
+	rc := &recipeCreator{
+		client:   ai.NewClient("key"),
+		maxDepth: 2,
+		out:      out,
+	}
+	if rc.client == nil {
+		t.Fatal("expected non-nil client")
+	}
+	if rc.maxDepth != 2 {
+		t.Errorf("maxDepth = %d, want 2", rc.maxDepth)
+	}
+}
+
+// TestLoadAppConfigErrNotExistIsWrapped verifies that
+// errors.Is(err, os.ErrNotExist) works for the error
+// returned by loadAppConfig when config.toml is absent.
+// This is the key invariant the RunE rewrite relies on.
+func TestLoadAppConfigErrNotExistIsWrapped(t *testing.T) {
+	orig := os.Getenv("HOME")
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+	defer t.Setenv("HOME", orig)
+
+	_, err := loadAppConfig()
+	if err == nil {
+		t.Skip("config.toml exists in temp HOME (unexpected)")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf(
+			"expected err to wrap os.ErrNotExist, got: %v", err,
+		)
+	}
+}
 
 func TestParseMissingDepValid(t *testing.T) {
 	name, repo, ok := parseMissingDep(

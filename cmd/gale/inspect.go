@@ -34,8 +34,9 @@ Issue kinds:
   undeclared-dep     binary references a gale-store package not in the recipe
   over-declared-dep  recipe declares a runtime dep no binary references
   version-skew       two binaries reference different versions of the same dep`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runInspect,
+	Args:         cobra.MaximumNArgs(1),
+	RunE:         runInspect,
+	SilenceUsage: true,
 }
 
 func init() {
@@ -147,7 +148,7 @@ func runInspect(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(allIssues) > 0 {
-		os.Exit(1)
+		return fmt.Errorf("%d issue(s) found", len(allIssues))
 	}
 	return nil
 }

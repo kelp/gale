@@ -12,11 +12,9 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
-	"strings"
-	"unicode"
 
 	"github.com/BurntSushi/toml"
+	"github.com/kelp/gale/internal/store"
 )
 
 // File is the basename of the metadata file written into a
@@ -91,7 +89,7 @@ func FromNamedDirs(namedDirs map[string]string) []ResolvedDep {
 		if name == "" || dir == "" {
 			continue
 		}
-		version, revision := parseVersionRevision(filepath.Base(dir))
+		version, revision := store.SplitRevision(filepath.Base(dir))
 		result = append(result, ResolvedDep{
 			Name:     name,
 			Version:  version,
@@ -129,29 +127,4 @@ func FromNamedDirsFiltered(namedDirs map[string]string, keep []string) []Resolve
 		}
 	}
 	return FromNamedDirs(filtered)
-}
-
-func parseVersionRevision(base string) (string, int) {
-	idx := strings.LastIndex(base, "-")
-	if idx >= 0 {
-		suffix := base[idx+1:]
-		if isAllDigits(suffix) {
-			if rev, err := strconv.Atoi(suffix); err == nil {
-				return base[:idx], rev
-			}
-		}
-	}
-	return base, 1
-}
-
-func isAllDigits(s string) bool {
-	if s == "" {
-		return false
-	}
-	for _, r := range s {
-		if !unicode.IsDigit(r) {
-			return false
-		}
-	}
-	return true
 }

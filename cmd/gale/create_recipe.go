@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,21 +18,6 @@ import (
 var validRepoPattern = regexp.MustCompile(
 	`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`,
 )
-
-// loadAIClient creates an AI client from config.toml, or nil
-// if no API key is configured.
-func loadAIClient() *ai.Client {
-	cfg, err := loadAppConfig()
-	if err != nil {
-		return nil
-	}
-
-	if cfg.Anthropic.APIKey == "" {
-		return nil
-	}
-
-	return ai.NewClient(cfg.Anthropic.APIKey)
-}
 
 var (
 	createRecipeOutput   string
@@ -57,25 +43,33 @@ to stdout. Use -o <dir> to specify an output directory.`,
 		repo := normalizeRepo(args[0])
 		out := newCmdOutput(cmd)
 
-		client := loadAIClient()
-		if client == nil {
+		cfg, err := loadAppConfig()
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("reading config: %w", err)
+		}
+
+		apiKey := ""
+		promptFile := ""
+		if cfg != nil {
+			apiKey = cfg.Anthropic.APIKey
+			promptFile = cfg.Anthropic.PromptFile
+		}
+
+		if apiKey == "" {
 			return fmt.Errorf(
 				"create-recipe requires an AI API key in " +
 					"~/.gale/config.toml",
 			)
 		}
 
-		var promptFile string
-		if cfg, err := loadAppConfig(); err == nil {
-			promptFile = cfg.Anthropic.PromptFile
+		rc := &recipeCreator{
+			client:     ai.NewClient(apiKey),
+			promptFile: promptFile,
+			outputDir:  resolveRecipeOutputDir(createRecipeOutput),
+			out:        out,
+			maxDepth:   createRecipeMaxDepth,
 		}
-
-		outputDir := resolveRecipeOutputDir(createRecipeOutput)
-		maxDepth := createRecipeMaxDepth
-		return runCreateRecipe(
-			repo, client, promptFile, outputDir, out,
-			0, maxDepth, nil,
-		)
+		return rc.create(repo, 0)
 	},
 }
 
@@ -87,6 +81,148 @@ func init() {
 		"max-depth", 6,
 		"Maximum dependency recursion depth")
 	rootCmd.AddCommand(createRecipeCmd)
+}
+
+// recipeCreator holds the invariant fields for a recipe
+// creation run, including recursive dependency creation.
+type recipeCreator struct {
+	client     *ai.Client
+	promptFile string
+	outputDir  string
+	out        *output.Output
+	maxDepth   int
+	seen       map[string]bool
+}
+
+// create runs the recipe creation agent for repo at the
+// given recursion depth. It handles recursive dependency
+// resolution: when the agent reports a missing dependency,
+// the dependency is created first and the original recipe
+// is retried.
+func (rc *recipeCreator) create(repo string, depth int) error {
+	if rc.seen == nil {
+		rc.seen = make(map[string]bool)
+	}
+
+	tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
+	if err != nil {
+		return fmt.Errorf("creating temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if depth == 0 {
+		rc.out.Info(fmt.Sprintf("Creating recipe for %s...", repo))
+	} else {
+		rc.out.Info(fmt.Sprintf(
+			"Creating dependency recipe for %s (depth %d/%d)...",
+			repo, depth, rc.maxDepth,
+		))
+	}
+
+	checker := buildRecipeChecker(rc.outputDir)
+	tools, cleanup, err := ai.RecipeTools(tmpDir, checker)
+	if err != nil {
+		return fmt.Errorf("setting up tools: %w", err)
+	}
+	defer cleanup()
+
+	result, err := rc.client.RunAgent(
+		ai.RecipePrompt(rc.promptFile),
+		fmt.Sprintf(
+			"Create a gale recipe for the GitHub repository %s. "+
+				"Use the tools to fetch repo info, list files to detect the "+
+				"build system, check that dependencies have recipes, "+
+				"download the source tarball, compute its SHA256, "+
+				"write the recipe, and lint it. "+
+				"When done, respond with ONLY the path to the recipe "+
+				"file, nothing else.",
+			repo,
+		),
+		tools,
+		15,
+	)
+	if err != nil {
+		return fmt.Errorf("recipe generation: %w", err)
+	}
+
+	// Check for missing dependency signal and resolve recursively.
+	if name, depRepo, ok := parseMissingDep(result); ok {
+		return rc.handleMissingDep(repo, name, depRepo, depth)
+	}
+
+	// Find the generated recipe file in tmpDir.
+	recipePath := findRecipeFile(tmpDir)
+	if recipePath == "" {
+		return fmt.Errorf(
+			"agent did not produce a recipe file:\n%s",
+			result,
+		)
+	}
+
+	return rc.writeOrPrintRecipe(recipePath)
+}
+
+// handleMissingDep resolves a missing dependency by creating its
+// recipe first (at depth+1), then retrying the original repo. It
+// enforces the output-dir requirement, max-depth cap, and cycle
+// detection before recursing.
+func (rc *recipeCreator) handleMissingDep(
+	repo, name, depRepo string, depth int,
+) error {
+	if rc.outputDir == "" {
+		return fmt.Errorf(
+			"dependency %q not found; use -o to specify "+
+				"an output directory for recursive creation",
+			name,
+		)
+	}
+	if depth >= rc.maxDepth {
+		return fmt.Errorf(
+			"dependency chain reached max depth (%d)\n"+
+				"Create the bottom dependency first:\n\n"+
+				"  gale create-recipe %s\n\n"+
+				"Or increase the limit with --max-depth %d",
+			rc.maxDepth, depRepo, rc.maxDepth+2,
+		)
+	}
+	if err := checkDepCycle(name, depRepo, rc.seen); err != nil {
+		return err
+	}
+	rc.out.Info(fmt.Sprintf(
+		"Dependency %q not found, creating from %s...",
+		name, depRepo,
+	))
+	if err := rc.create(depRepo, depth+1); err != nil {
+		return fmt.Errorf("creating dependency %s: %w", name, err)
+	}
+	// Retry the original recipe at the same depth.
+	return rc.create(repo, depth)
+}
+
+// writeOrPrintRecipe moves the generated recipe to outputDir (when
+// set) or prints it to stdout. Warnings about missed deps and
+// missing releases are emitted after a successful write.
+func (rc *recipeCreator) writeOrPrintRecipe(recipePath string) error {
+	if rc.outputDir != "" {
+		destPath, err := moveRecipe(recipePath, rc.outputDir)
+		if err != nil {
+			return fmt.Errorf("writing recipe: %w", err)
+		}
+		rc.out.Success(fmt.Sprintf("Recipe written to %s", destPath))
+
+		// Warn about deps the agent missed and recipes
+		// that may need manual review.
+		warnMissingDeps(destPath, rc.outputDir, rc.out)
+		warnNoRelease(destPath, rc.out)
+		return nil
+	}
+	data, err := os.ReadFile(recipePath)
+	if err != nil {
+		return fmt.Errorf("reading recipe: %w", err)
+	}
+	fmt.Print(string(data))
+	rc.out.Success("Recipe printed to stdout")
+	return nil
 }
 
 // normalizeRepo extracts owner/repo from various
@@ -154,132 +290,6 @@ func findRecipeFile(dir string) string {
 		return nil
 	})
 	return found
-}
-
-// runCreateRecipe runs the recipe creation agent and
-// handles recursive dependency resolution. If the agent
-// reports a missing dependency, the dep is created first
-// and the original recipe is retried.
-func runCreateRecipe(
-	repo string,
-	client *ai.Client,
-	promptFile string,
-	outputDir string,
-	out *output.Output,
-	depth int,
-	maxDepth int,
-	seen map[string]bool,
-) error {
-	if seen == nil {
-		seen = make(map[string]bool)
-	}
-
-	tmpDir, err := os.MkdirTemp("", "gale-recipe-*")
-	if err != nil {
-		return fmt.Errorf("creating temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	if depth == 0 {
-		out.Info(fmt.Sprintf("Creating recipe for %s...", repo))
-	} else {
-		out.Info(fmt.Sprintf(
-			"Creating dependency recipe for %s (depth %d/%d)...",
-			repo, depth, maxDepth,
-		))
-	}
-
-	checker := buildRecipeChecker(outputDir)
-	tools, cleanup := ai.RecipeTools(tmpDir, checker)
-	defer cleanup()
-
-	result, err := client.RunAgent(
-		ai.RecipePrompt(promptFile),
-		fmt.Sprintf(
-			"Create a gale recipe for the GitHub repository %s. "+
-				"Use the tools to fetch repo info, list files to detect the "+
-				"build system, check that dependencies have recipes, "+
-				"download the source tarball, compute its SHA256, "+
-				"write the recipe, and lint it. "+
-				"When done, respond with ONLY the path to the recipe "+
-				"file, nothing else.",
-			repo,
-		),
-		tools,
-		15,
-	)
-	if err != nil {
-		return fmt.Errorf("recipe generation: %w", err)
-	}
-
-	// Check for missing dependency signal.
-	if name, depRepo, ok := parseMissingDep(result); ok {
-		if outputDir == "" {
-			return fmt.Errorf(
-				"dependency %q not found; use -o to specify "+
-					"an output directory for recursive creation",
-				name,
-			)
-		}
-		if depth >= maxDepth {
-			return fmt.Errorf(
-				"dependency chain reached max depth (%d)\n"+
-					"Create the bottom dependency first:\n\n"+
-					"  gale create-recipe %s\n\n"+
-					"Or increase the limit with --max-depth %d",
-				maxDepth, depRepo, maxDepth+2,
-			)
-		}
-		if err := checkDepCycle(name, depRepo, seen); err != nil {
-			return err
-		}
-		out.Info(fmt.Sprintf(
-			"Dependency %q not found, creating from %s...",
-			name, depRepo,
-		))
-		if err := runCreateRecipe(
-			depRepo, client, promptFile,
-			outputDir, out, depth+1, maxDepth, seen,
-		); err != nil {
-			return fmt.Errorf("creating dependency %s: %w",
-				name, err)
-		}
-		// Retry the original recipe at the same depth.
-		return runCreateRecipe(
-			repo, client, promptFile,
-			outputDir, out, depth, maxDepth, seen,
-		)
-	}
-
-	// Find the generated recipe file in tmpDir.
-	recipePath := findRecipeFile(tmpDir)
-	if recipePath == "" {
-		return fmt.Errorf(
-			"agent did not produce a recipe file:\n%s",
-			result,
-		)
-	}
-
-	if outputDir != "" {
-		destPath, err := moveRecipe(recipePath, outputDir)
-		if err != nil {
-			return fmt.Errorf("writing recipe: %w", err)
-		}
-		out.Success(fmt.Sprintf("Recipe written to %s", destPath))
-
-		// Warn about deps the agent missed and recipes
-		// that may need manual review.
-		warnMissingDeps(destPath, outputDir, out)
-		warnNoRelease(destPath, out)
-	} else {
-		data, err := os.ReadFile(recipePath)
-		if err != nil {
-			return fmt.Errorf("reading recipe: %w", err)
-		}
-		fmt.Print(string(data))
-		out.Success("Recipe printed to stdout")
-	}
-	return nil
 }
 
 // warnMissingDeps reads a recipe file and warns about

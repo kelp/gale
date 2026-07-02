@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
@@ -609,7 +610,7 @@ func TestInstallBinaryWritesEmptyDepsForZeroDepRecipe(t *testing.T) {
 			"recipe: %v", err)
 	}
 
-	md, err := ReadDepsMetadata(filepath.Join(storeRoot,
+	md, err := depsmeta.Read(filepath.Join(storeRoot,
 		"testpkg", "1.0-1"))
 	if err != nil {
 		t.Fatalf("read deps metadata: %v", err)
@@ -898,9 +899,9 @@ func TestInstallLocalRebuildsWhenAlreadyInstalled(t *testing.T) {
 		},
 	}
 
-	result, err := inst.InstallLocal(r, srcDir)
+	result, err := inst.InstallLocalWithFinalize(r, srcDir, nil)
 	if err != nil {
-		t.Fatalf("InstallLocal: %v", err)
+		t.Fatalf("InstallLocalWithFinalize: %v", err)
 	}
 	// Should rebuild, not return cached.
 	if result.Method != "source" {
@@ -938,9 +939,9 @@ func TestInstallLocalBuildsFromSource(t *testing.T) {
 		},
 	}
 
-	result, err := inst.InstallLocal(r, sourceDir)
+	result, err := inst.InstallLocalWithFinalize(r, sourceDir, nil)
 	if err != nil {
-		t.Fatalf("InstallLocal: %v", err)
+		t.Fatalf("InstallLocalWithFinalize: %v", err)
 	}
 	if result.Method != "source" {
 		t.Errorf("Method = %q, want %q", result.Method, "source")
@@ -1043,14 +1044,14 @@ func TestInstallLocalPreservesExistingStoreOnReplaceFailure(t *testing.T) {
 	}
 	defer func() { renameDir = origRename }()
 
-	_, err = inst.InstallLocal(r, srcDir)
+	_, err = inst.InstallLocalWithFinalize(r, srcDir, nil)
 	if err == nil {
-		t.Fatal("expected InstallLocal error")
+		t.Fatal("expected InstallLocalWithFinalize error")
 	}
 
 	data, err := os.ReadFile(oldBin)
 	if err != nil {
-		t.Fatalf("read old binary after failed InstallLocal: %v", err)
+		t.Fatalf("read old binary after failed InstallLocalWithFinalize: %v", err)
 	}
 	if string(data) != "old" {
 		t.Fatalf("old binary content = %q, want %q", string(data), "old")
@@ -1483,6 +1484,64 @@ func TestInstallBuildDepsDeepCopiesMaps(t *testing.T) {
 	}
 }
 
+// TestCopyRecipeForDepsIsolateMaps verifies that the four maps
+// (Build.Platform, Binary, Dependencies.Platform,
+// Dependencies.Constraints) are deep-copied so that mutations on
+// the returned copy do not affect the original recipe.
+func TestCopyRecipeForDepsIsolateMaps(t *testing.T) {
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "foo", Version: "1.0"},
+		Build: recipe.Build{
+			Platform: map[string]recipe.PlatformBuild{
+				"darwin-arm64": {Steps: []string{"make"}},
+			},
+		},
+		Binary: map[string]recipe.Binary{
+			"darwin-arm64": {URL: "https://example.com/orig.tar.zst"},
+		},
+		Dependencies: recipe.Dependencies{
+			Build:   []string{"cmake"},
+			Runtime: []string{"libfoo"},
+			Constraints: map[string]string{
+				"cmake": ">=3.20",
+			},
+			Platform: map[string]recipe.PlatformDependencies{
+				"linux-amd64": {Build: []string{"linux-only"}},
+			},
+		},
+	}
+
+	cp := copyRecipeForDeps(r, r.Dependencies)
+
+	// Constraints must be present on copy.
+	if cp.Dependencies.Constraints["cmake"] != ">=3.20" {
+		t.Errorf("copy missing Constraints entry: got %v",
+			cp.Dependencies.Constraints)
+	}
+
+	// Mutate every map on the copy; originals must be unchanged.
+	cp.Build.Platform["linux-amd64"] = recipe.PlatformBuild{Steps: []string{"new"}}
+	cp.Binary["linux-amd64"] = recipe.Binary{URL: "https://example.com/new.tar.zst"}
+	cp.Dependencies.Constraints["cmake"] = ">=4.0"
+	cp.Dependencies.Platform["linux-amd64"] = recipe.PlatformDependencies{Build: []string{"extra"}}
+
+	if len(r.Build.Platform) != 1 {
+		t.Errorf("Build.Platform aliased: got %d entries, want 1",
+			len(r.Build.Platform))
+	}
+	if len(r.Binary) != 1 {
+		t.Errorf("Binary aliased: got %d entries, want 1", len(r.Binary))
+	}
+	if r.Dependencies.Constraints["cmake"] != ">=3.20" {
+		t.Errorf("Constraints aliased: got %q, want >=3.20",
+			r.Dependencies.Constraints["cmake"])
+	}
+	if len(r.Dependencies.Platform) != 1 {
+		t.Errorf("Dependencies.Platform aliased: got %d entries, want 1",
+			len(r.Dependencies.Platform))
+	}
+}
+
 // --- BUG-1: File-based locking for concurrent Install ---
 
 func TestLockPackageSerializesConcurrentAccess(t *testing.T) {
@@ -1721,7 +1780,7 @@ func TestInstallReleasesStoreGenLock(t *testing.T) {
 	}
 }
 
-// TestInstallLocalBlocksOnStoreGenLock asserts InstallLocal
+// TestInstallLocalBlocksOnStoreGenLock asserts InstallLocalWithFinalize
 // also honors the store-gen lock. The replaceStoreDir rename
 // plus farm.Populate inside extractBuild must be serialized
 // with generation.Build; otherwise a local install and a
@@ -1764,14 +1823,14 @@ func TestInstallLocalBlocksOnStoreGenLock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := inst.InstallLocal(r, sourceDir)
+		_, err := inst.InstallLocalWithFinalize(r, sourceDir, nil)
 		done <- err
 	}()
 
 	select {
 	case err := <-done:
 		t.Fatalf(
-			"InstallLocal completed while store-gen lock held: %v",
+			"InstallLocalWithFinalize completed while store-gen lock held: %v",
 			err,
 		)
 	case <-time.After(500 * time.Millisecond):
@@ -1785,7 +1844,7 @@ func TestInstallLocalBlocksOnStoreGenLock(t *testing.T) {
 	)
 	if _, err := os.Stat(binPath); err == nil {
 		t.Fatal(
-			"InstallLocal wrote bin/testpkg while store-gen lock held",
+			"InstallLocalWithFinalize wrote bin/testpkg while store-gen lock held",
 		)
 	}
 
@@ -1794,14 +1853,14 @@ func TestInstallLocalBlocksOnStoreGenLock(t *testing.T) {
 	select {
 	case err := <-done:
 		if err != nil {
-			t.Fatalf("InstallLocal error after release: %v", err)
+			t.Fatalf("InstallLocalWithFinalize error after release: %v", err)
 		}
 	case <-time.After(30 * time.Second):
-		t.Fatal("InstallLocal did not complete after lock release")
+		t.Fatal("InstallLocalWithFinalize did not complete after lock release")
 	}
 
 	if _, err := os.Stat(binPath); err != nil {
-		t.Errorf("binary not in store after InstallLocal: %v", err)
+		t.Errorf("binary not in store after InstallLocalWithFinalize: %v", err)
 	}
 }
 
@@ -2447,7 +2506,7 @@ func TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds(t *testing.T) {
 	// Metadata records the runtime dep only. The build-only
 	// dep must be absent (gh#157) so it isn't pinned for
 	// gc/farm and a build-dep bump doesn't force a re-download.
-	md, err := ReadDepsMetadata(filepath.Join(storeRoot,
+	md, err := depsmeta.Read(filepath.Join(storeRoot,
 		"victim", "1.0-1"))
 	if err != nil {
 		t.Fatalf("read metadata: %v", err)
@@ -2712,7 +2771,7 @@ func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
 	// runtime-filtered .gale-deps.toml must survive extraction
 	// (extractBuildTo must not overwrite it with the full
 	// build closure).
-	md, err := ReadDepsMetadata(filepath.Join(storeRoot,
+	md, err := depsmeta.Read(filepath.Join(storeRoot,
 		"victim", "1.0-1"))
 	if err != nil {
 		t.Fatalf("read metadata: %v", err)
@@ -2824,7 +2883,7 @@ func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 	// empty (gh#157). Recording bdep would pin it for
 	// gc/farm even though the binary never links it.
 	storeDir := filepath.Join(storeRoot, "victim", "1.0-1")
-	md, err := ReadDepsMetadata(storeDir)
+	md, err := depsmeta.Read(storeDir)
 	if err != nil {
 		t.Fatalf("read metadata: %v", err)
 	}
@@ -2837,7 +2896,7 @@ func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 	// IsStale to compare. bdep is a build-only dep, so the
 	// bump must NOT mark victim stale (gh#157).
 	bdepRev = 2
-	stale, err := IsStale(storeDir, victim, resolver)
+	stale, err := IsStale(storeDir, victim, runtime.GOOS, runtime.GOARCH, resolver)
 	if err != nil {
 		t.Fatalf("IsStale: %v", err)
 	}

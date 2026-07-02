@@ -88,6 +88,7 @@ func setupScript(t *testing.T, env *testscript.Env) error {
 
 	ghcr := support.StartFakeGHCR(t, payloads)
 	env.Values["ghcr"] = ghcr
+	env.Values["payloads"] = payloads
 	env.Setenv("GHCR_URL", ghcr.URL)
 	// Point gale's OCI-referrer attestation fetch (gale verify) at the
 	// fake registry so it stays hermetic. Only ghcr.BaseURL() reads

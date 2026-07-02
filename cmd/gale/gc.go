@@ -98,7 +98,7 @@ var gcCmd = &cobra.Command{
 				if generationLinksSupersededOrphan(
 					globalDir, storeRoot, globalCfg, pinResolve,
 				) {
-					if err := rebuildGenerationLenient(
+					if err := rebuildGeneration(
 						globalDir, storeRoot, globalCfg, pinResolve,
 					); err != nil {
 						out.Warn(fmt.Sprintf(
@@ -111,7 +111,7 @@ var gcCmd = &cobra.Command{
 				if generationLinksSupersededOrphan(
 					projGaleDir, storeRoot, projPath, pinResolve,
 				) {
-					if err := rebuildGenerationLenient(
+					if err := rebuildGeneration(
 						projGaleDir, storeRoot, projPath, pinResolve,
 					); err != nil {
 						out.Warn(fmt.Sprintf(
@@ -348,7 +348,7 @@ func expandInstalledDeps(s *store.Store, referenced map[string]bool) {
 		keys = append(keys, key)
 	}
 	for _, key := range keys {
-		at := lastIndex(key, '@')
+		at := strings.LastIndexByte(key, '@')
 		if at < 0 {
 			continue
 		}
@@ -427,19 +427,6 @@ func removeUnreferencedVersions(
 		}
 	}
 	return removed, failed
-}
-
-// collectReferencedPackages is the config-only variant
-// (no runtime-dep expansion). Kept for callers that don't
-// have a recipe resolver available — e.g. doctor's orphan
-// check, which would prefer the cheaper config-only view.
-func collectReferencedPackages(
-	globalDir, projPath string,
-	s *store.Store, out *output.Output,
-) map[string]bool {
-	return collectReferencedPackagesWithResolver(
-		globalDir, projPath, s, nil, nil, out,
-	)
 }
 
 // collectReferencedPackagesAllHosts is the host-union
@@ -737,7 +724,7 @@ func expandRuntimeDeps(
 	queue := make([]string, 0, len(referenced))
 	visited := make(map[string]bool, len(referenced))
 	for key := range referenced {
-		at := lastIndex(key, '@')
+		at := strings.LastIndexByte(key, '@')
 		if at < 0 {
 			continue
 		}
@@ -906,18 +893,6 @@ func hasScratchPrefix(name string) bool {
 		}
 	}
 	return false
-}
-
-// lastIndex returns the position of the last occurrence of c
-// in s, or -1 if absent. Local helper so the runtime-dep walk
-// doesn't need to import strings just for IndexByte.
-func lastIndex(s string, c byte) int {
-	for i := len(s) - 1; i >= 0; i-- {
-		if s[i] == c {
-			return i
-		}
-	}
-	return -1
 }
 
 func init() {
