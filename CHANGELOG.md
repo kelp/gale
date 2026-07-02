@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Security
+
+- build: bump the Go directive to 1.26.4, clearing the 12 stdlib
+  vulnerabilities fixed across go1.26.2 through go1.26.4.
+  `govulncheck ./...` now reports no vulnerabilities affecting
+  gale (#159).
+
 ### Added
 
 - Native in-process Sigstore attestation verification (sigstore-go).
