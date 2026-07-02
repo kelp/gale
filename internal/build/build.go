@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -70,9 +71,9 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 		return nil, err
 	}
 
-	workspace, err := os.MkdirTemp(TmpDir(), "gale-build-*")
+	workspace, err := makeBuildWorkspace(TmpDir())
 	if err != nil {
-		return nil, fmt.Errorf("create workspace: %w", err)
+		return nil, err
 	}
 	defer os.RemoveAll(workspace)
 
@@ -116,9 +117,9 @@ func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, debug bool, deps 
 		return nil, err
 	}
 
-	workspace, err := os.MkdirTemp(TmpDir(), "gale-build-*")
+	workspace, err := makeBuildWorkspace(TmpDir())
 	if err != nil {
-		return nil, fmt.Errorf("create workspace: %w", err)
+		return nil, err
 	}
 	defer os.RemoveAll(workspace)
 
@@ -337,6 +338,21 @@ type BuildDeps struct {
 	BinDirs   []string          // bin/ dirs for PATH
 	StoreDirs []string          // root store dirs for lib/include/pkgconfig
 	NamedDirs map[string]string // dep name → store directory
+}
+
+// Canonicalize sorts and dedupes the slice fields in place.
+// The installer records deps in goroutine-completion order, so
+// without this the -L/-Wl,-rpath flags and the build PATH
+// shuffle between runs of the same build — the shipped Mach-O
+// then differs in LC_RPATH order and, through the linker's
+// content-based hash, in LC_UUID (gale-recipes#79).
+// Deterministic dep ordering is a precondition for
+// byte-reproducible artifacts.
+func (d *BuildDeps) Canonicalize() {
+	slices.Sort(d.BinDirs)
+	d.BinDirs = slices.Compact(d.BinDirs)
+	slices.Sort(d.StoreDirs)
+	d.StoreDirs = slices.Compact(d.StoreDirs)
 }
 
 // BuildContext holds parameters passed through build steps

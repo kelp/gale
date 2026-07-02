@@ -138,17 +138,17 @@ func FixupBinaries(prefixDir string) error {
 			}
 		}
 
-		// Re-sign ONLY binaries gale actually modified. An
-		// untouched Mach-O (e.g. qemu's self-signed mains,
-		// carrying an HVF entitlement) is left byte-identical:
-		// re-signing it serves no purpose and would strip the
-		// entitlement (issue #27). Apple Silicon SIGKILLs
-		// unsigned Mach-Os on exec, so a failed re-sign of a
-		// binary we DID modify must fail the build rather than
-		// ship a broken tarball.
+		// Normalize LC_UUID and re-sign ONLY binaries gale
+		// actually modified. An untouched Mach-O (e.g. qemu's
+		// self-signed mains, carrying an HVF entitlement) is left
+		// byte-identical: re-signing it serves no purpose and
+		// would strip the entitlement (issue #27). Apple Silicon
+		// SIGKILLs unsigned Mach-Os on exec, so a failed re-sign
+		// of a binary we DID modify must fail the build rather
+		// than ship a broken tarball.
 		if shouldResign(changed, inLib) {
-			if err := resign(file); err != nil {
-				return fmt.Errorf("codesign %s: %w",
+			if err := normalizeAndResign(file); err != nil {
+				return fmt.Errorf("normalize %s: %w",
 					filepath.Base(file), err)
 			}
 		}

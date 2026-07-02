@@ -8,6 +8,12 @@
   native side's runtime-resolved path (OCI referrer vs file
   fallback) instead of a static matrix pin, ending false
   divergences on artifacts published before OCI referrers.
+- darwin source builds are byte-reproducible: the fixup rewrites
+  LC_UUID per architecture slice from a content hash after
+  install-name normalization, build workspace paths have a fixed
+  length, and dependency directory ordering is canonicalized
+  instead of following goroutine-completion order
+  (kelp/gale-recipes#79).
 
 ## v0.20.0 — 2026-07-01
 
