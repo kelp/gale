@@ -426,6 +426,15 @@ func TestResolveScopedPathsAutoWithProject(t *testing.T) {
 	if err := os.MkdirAll(projDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Resolve symlinks so macOS /var vs /private/var spellings
+	// compare equal: resolveScopedPaths derives its result from
+	// os.Getwd, which returns the resolved form. Resolve the
+	// existing projDir (the expected .gale child doesn't exist,
+	// so EvalSymlinks on the joined path would fail).
+	projDir, err := filepath.EvalSymlinks(projDir)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.WriteFile(
 		filepath.Join(projDir, "gale.toml"),
 		[]byte("[packages]\n"), 0o644,
