@@ -4,6 +4,12 @@
 
 ### Fixed
 
+- farm: dotted-stem sonames like `libpython3.14.so.1.0` (stem
+  `python3.14`) are now linked into `~/.gale/lib/`. The
+  `linuxVersioned` stem class excluded `.`, so these libraries never
+  matched and never entered the shared dylib farm; the class now
+  allows `.` while the `$`-anchored numeric tail keeps the version
+  pinned to the final `.so.` (#165).
 - Attestation parity: gh's verification mode now follows the
   native side's runtime-resolved path (OCI referrer vs file
   fallback) instead of a static matrix pin, ending false
