@@ -84,12 +84,12 @@ func TestNetworkParity(t *testing.T) {
 	forceProductionEnv(t)
 
 	c := resolveParityCoords(t)
-	writeParityCoords(t, c)
 	t.Logf("target %s@%s: manifest digest %s, archive sha256 %s",
 		c.pkg, c.version, c.digest, c.sha256)
 
 	v := attestation.NewVerifier()
 	bundles, legacy := fetchParityBundle(t, c)
+	writeParityCoords(t, c, legacy)
 	if legacy {
 		verifyLegacyArchive(t, v, c)
 		return
@@ -181,17 +181,25 @@ func coordsFrom(t *testing.T, pkg, version string, platforms, digests map[string
 // writeParityCoords writes the resolved coordinates as KEY=value
 // lines when GALE_PARITY_OUT names a file, so the CI parity job can
 // feed the exact same artifact to `gh attestation verify`. Written
-// before verification so the gh side runs even when the native side
-// fails — that divergence is the whole point of the workflow.
-func writeParityCoords(t *testing.T, c parityCoords) {
+// after bundle resolution but before verification, so the gh side
+// runs even when the native side fails — that divergence is the whole
+// point of the workflow. PARITY_RESOLVED_MODE reports which path the
+// native side took (oci for an OCI referrer, file for the legacy
+// Attestations API fallback) so the gh side mirrors it instead of
+// guessing statically.
+func writeParityCoords(t *testing.T, c parityCoords, legacy bool) {
 	t.Helper()
 	path := os.Getenv(parityOutEnv)
 	if path == "" {
 		return
 	}
+	mode := "oci"
+	if legacy {
+		mode = "file"
+	}
 	data := fmt.Sprintf(
-		"PARITY_PACKAGE=%s\nPARITY_VERSION=%s\nPARITY_ARCHIVE_SHA256=%s\nPARITY_MANIFEST_DIGEST=%s\n",
-		c.pkg, c.version, c.sha256, c.digest,
+		"PARITY_PACKAGE=%s\nPARITY_VERSION=%s\nPARITY_ARCHIVE_SHA256=%s\nPARITY_MANIFEST_DIGEST=%s\nPARITY_RESOLVED_MODE=%s\n",
+		c.pkg, c.version, c.sha256, c.digest, mode,
 	)
 	if err := os.WriteFile(path, []byte(data), 0o600); err != nil {
 		t.Fatalf("write parity coords to %s: %v", path, err)

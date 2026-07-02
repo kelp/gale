@@ -30,27 +30,40 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # mode is the expected native path. A concrete value (oci or
+          # file) asserts native resolved that path — a mismatch fails
+          # the job. mode: auto follows whatever native resolves at
+          # runtime without asserting.
+          #
           # Pinned known-good artifact. An empty package selects the
           # test's built-in pin (jq@1.8.1-5 linux-amd64; see the
-          # pinned* constants in network_parity_test.go).
+          # pinned* constants in network_parity_test.go). It has an OCI
+          # referrer, so mode: oci asserts that path.
           - name: jq-pinned
             package: ""
             version: ""
             mode: oci
-          # Current head artifacts, verified via their OCI referrer
-          # bundles (empty version = the .binaries.toml flat head).
+          # Current head artifacts (empty version = the .binaries.toml
+          # flat head). mode: auto follows native's runtime-resolved
+          # path — an OCI referrer when one exists, else the file
+          # fallback — because a head built before its referrer was
+          # published still resolves to file, and gh must query the
+          # same subject native did. Once every head predating
+          # gale-recipes#109 has been republished with a referrer,
+          # re-pin these to mode: oci so a publish-side referrer
+          # regression fails loudly again.
           - name: gale-head
             package: gale
             version: ""
-            mode: oci
+            mode: auto
           - name: ripgrep-head
             package: ripgrep
             version: ""
-            mode: oci
+            mode: auto
           # Legacy artifact published before Sigstore bundles were
           # attached as OCI referrers (no referrer on GHCR; bundle
           # only in the GitHub Attestations API). Exercises the
-          # file-fallback path on both sides.
+          # file-fallback path on both sides; mode: file asserts it.
           - name: gale-legacy-file-fallback
             package: gale
             version: "0.18.0-1"
@@ -93,7 +106,7 @@ jobs:
         env:
           PARITY_TARGET_PACKAGE: ${{ matrix.package }}
           PARITY_TARGET_VERSION: ${{ matrix.version }}
-          PARITY_MODE: ${{ matrix.mode }}
+          PARITY_EXPECTED_MODE: ${{ matrix.mode }}
         run: |
           set -euo pipefail
 
@@ -112,15 +125,27 @@ jobs:
           echo "native verdict: ${native}"
 
           if [ ! -f "${OUT}" ]; then
-            echo "::error::artifact coordinates were not resolved (registry/ledger fetch failed — not a parity divergence)"
+            echo "::error::artifact coordinates were not resolved (coordinate resolution or bundle fetch failed — not a parity divergence)"
             exit 1
           fi
           # shellcheck disable=SC1090
           source "${OUT}"
           echo "artifact: ${PARITY_PACKAGE}@${PARITY_VERSION} manifest=${PARITY_MANIFEST_DIGEST} archive=${PARITY_ARCHIVE_SHA256}"
+          echo "resolved mode: ${PARITY_RESOLVED_MODE} (expected: ${PARITY_EXPECTED_MODE})"
 
-          echo "==> gh attestation verify (mode: ${PARITY_MODE})"
-          if [ "${PARITY_MODE}" = "file" ]; then
+          # matrix.mode is a concrete expectation (oci/file) or "auto".
+          # A concrete value asserts native took the path this entry is
+          # meant to exercise; "auto" follows the resolved path without
+          # asserting. gh always mirrors PARITY_RESOLVED_MODE so it
+          # queries the same subject native did.
+          if [ "${PARITY_EXPECTED_MODE}" != "auto" ] && \
+             [ "${PARITY_EXPECTED_MODE}" != "${PARITY_RESOLVED_MODE}" ]; then
+            echo "::error::mode mismatch on ${PARITY_PACKAGE}@${PARITY_VERSION}: matrix expects ${PARITY_EXPECTED_MODE}, native resolved ${PARITY_RESOLVED_MODE}"
+            exit 1
+          fi
+
+          echo "==> gh attestation verify (mode: ${PARITY_RESOLVED_MODE})"
+          if [ "${PARITY_RESOLVED_MODE}" = "file" ]; then
             # Legacy path: gh must verify the archive file, matching
             # the native VerifyFile fallback (the manifest digest has
             # no attestation for pre-referrer artifacts).
