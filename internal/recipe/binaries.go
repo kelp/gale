@@ -52,6 +52,13 @@ type BinaryIndex struct {
 // carry only sha256 and manifest_digest — never deps.
 type BinaryHistoryEntry struct {
 	Version string
+	// Commit is the recipe *.toml commit that produced this entry
+	// (the reviewed head SHA recorded by CI, gh#121). Empty for
+	// entries written before the field existed; the registry then
+	// resolves the recipe by other means (ref-tip override or
+	// .versions). Stored raw — hash validation happens in the
+	// registry before the value is used in a URL.
+	Commit string
 	// Platforms maps platform key → sha256 layer-blob hash.
 	Platforms map[string]string
 	// Digests maps platform key → "sha256:<64hex>" OCI manifest
@@ -186,6 +193,12 @@ func parseBinaryHistory(raw interface{}) []BinaryHistoryEntry {
 			if key == "version" {
 				if s, ok := val.(string); ok {
 					entry.Version = s
+				}
+				continue
+			}
+			if key == "commit" {
+				if s, ok := val.(string); ok {
+					entry.Commit = s
 				}
 				continue
 			}
@@ -345,9 +358,12 @@ func MergeBinaries(r *Recipe, idx *BinaryIndex, ghcrBase string) {
 // single [[history]] ledger entry, the same way MergeBinaries does
 // from the flat head section. The version gate (binaryIndexMatchesRecipe)
 // still applies, so a ledger entry is only merged into a recipe whose
-// version it matches. Used by ledger-based resolution (gh#121).
-func MergeBinariesFromHistory(r *Recipe, entry BinaryHistoryEntry, ghcrBase string) {
-	mergeBinaryPlatforms(r, entry.Version, entry.Platforms, entry.Digests, ghcrBase)
+// version it matches; it reports whether the gate passed, so callers
+// resolving a recipe FOR the entry (the per-commit historical path)
+// can reject a recipe whose version disagrees with the entry rather
+// than return it binary-less. Used by ledger-based resolution (gh#121).
+func MergeBinariesFromHistory(r *Recipe, entry BinaryHistoryEntry, ghcrBase string) bool {
+	return mergeBinaryPlatforms(r, entry.Version, entry.Platforms, entry.Digests, ghcrBase)
 }
 
 // MergeBinariesForRecipe merges binaries for r from idx, preferring
@@ -412,10 +428,11 @@ func MergeBinariesFromLedgerHead(r *Recipe, idx *BinaryIndex, ghcrBase string) b
 
 // mergeBinaryPlatforms is the shared body of MergeBinaries and
 // MergeBinariesFromHistory: when version matches the recipe, it
-// fills r.Binary with one GHCR blob entry per platform.
-func mergeBinaryPlatforms(r *Recipe, indexVersion string, platforms, digests map[string]string, ghcrBase string) {
+// fills r.Binary with one GHCR blob entry per platform and returns
+// true. A version mismatch is a no-op returning false.
+func mergeBinaryPlatforms(r *Recipe, indexVersion string, platforms, digests map[string]string, ghcrBase string) bool {
 	if !binaryIndexMatchesRecipe(r, indexVersion) {
-		return
+		return false
 	}
 	r.Binary = make(map[string]Binary, len(platforms))
 	for platform, sha := range platforms {
@@ -429,6 +446,7 @@ func mergeBinaryPlatforms(r *Recipe, indexVersion string, platforms, digests map
 			ManifestDigest: digests[platform],
 		}
 	}
+	return true
 }
 
 func binaryIndexMatchesRecipe(r *Recipe, indexVersion string) bool {

@@ -536,7 +536,9 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 // fetchVersionFromLedger resolves a requested version against the
 // [[history]] ledger. Head requests keep the coherence guard:
 // when the ref-tip recipe lags the ledger head, ok=false so the
-// caller falls through to .versions. Historical requests use the
+// caller falls through to .versions. Historical requests prefer
+// the historically-correct recipe at the entry's recorded commit
+// (gh#121); entries without a usable commit fall back to the
 // ref-tip recipe with version overridden from the ledger entry and
 // binaries merged from that entry (gh#130).
 func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recipe, bool) {
@@ -548,13 +550,19 @@ func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recip
 	if !ok {
 		return nil, false
 	}
+	ghcrBase := ghcrBaseFromURL(r.BaseURL)
+	head, headOK := idx.PickHistoryLatest()
+	isHead := headOK && entry.Version == head.Version
+	if !isHead {
+		if rec, ok := r.fetchHistoricalAtCommit(name, entry, ghcrBase); ok {
+			return rec, true
+		}
+	}
 	rec, err := r.fetchRecipe(name, false)
 	if err != nil {
 		return nil, false
 	}
-	ghcrBase := ghcrBaseFromURL(r.BaseURL)
-	head, headOK := idx.PickHistoryLatest()
-	if headOK && entry.Version == head.Version {
+	if isHead {
 		if !recipe.MergeBinariesFromLedgerHead(rec, idx, ghcrBase) {
 			return nil, false
 		}
@@ -563,6 +571,43 @@ func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recip
 	recipe.ApplyHistoryVersion(rec, entry.Version)
 	recipe.MergeBinariesFromHistory(rec, entry, ghcrBase)
 	if rec.BinaryForPlatform(runtime.GOOS, runtime.GOARCH) == nil {
+		return nil, false
+	}
+	return rec, true
+}
+
+// fetchHistoricalAtCommit fetches the historically-correct recipe
+// for a [[history]] ledger entry at its recorded recipe commit and
+// merges the entry's per-platform binaries into it — no second
+// .binaries.toml fetch, the entry already carries sha256 and
+// manifest_digest. ok=false when the entry has no commit (predates
+// the field), the commit is malformed, the fetch or parse fails,
+// or the recipe at the commit does not match the entry's version;
+// the caller then falls back to the ref-tip override path (gh#130).
+func (r *Registry) fetchHistoricalAtCommit(
+	name string, entry recipe.BinaryHistoryEntry, ghcrBase string,
+) (*recipe.Recipe, bool) {
+	if !validCommitHash.MatchString(entry.Commit) {
+		return nil, false
+	}
+	bucket := string(name[0])
+	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
+		r.repoBase(), entry.Commit, bucket, name)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	cr, err := r.cachedGet(ctx, recipeURL)
+	if err != nil {
+		return nil, false
+	}
+	rec, err := recipe.Parse(string(cr.Body))
+	if err != nil {
+		return nil, false
+	}
+	// A recipe whose version disagrees with the entry means the
+	// ledger points at the wrong commit — reject it rather than
+	// return a recipe that mismatches the requested pin.
+	if !recipe.MergeBinariesFromHistory(rec, entry, ghcrBase) {
 		return nil, false
 	}
 	return rec, true

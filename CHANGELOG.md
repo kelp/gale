@@ -4,6 +4,13 @@
 
 ### Changed
 
+- registry: historical `@version` installs prefer the recipe at the
+  ledger entry's recorded `commit` (written by gale-recipes CI since
+  gale-recipes#141), so old versions resolve their historically
+  correct source URL, deps, and build steps — including source-only
+  entries with no prebuilt for the host platform. Entries without a
+  usable commit keep the ref-tip override of #130; `.versions`
+  remains the final fallback (#121).
 - claude-review: allow Cloud Agent (`cursor[bot]`) to trigger the
   review workflow, replacing the temporary actor skip added in #140.
 - install/update/sync: collapse per-dylib `farm: replacing …`

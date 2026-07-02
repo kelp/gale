@@ -816,3 +816,50 @@ func TestParseBinaryIndexHistoryDropsMalformed(t *testing.T) {
 		t.Error("linux-arm64 digest should be retained")
 	}
 }
+
+// --- Behavior 12: [[history]] entries carry an optional commit ---
+
+// A ledger whose newest entry records the recipe *.toml commit that
+// produced it (gh#121 item 3); the older entry predates the field.
+const historyWithCommitTOML = `version = "1.8.1-5"
+
+[[history]]
+version = "1.7.1-1"
+linux-amd64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111" }
+
+[[history]]
+version = "1.8.1-5"
+commit = "abc1234def5678901234567890abcdef12345678"
+linux-amd64 = { sha256 = "5555555555555555555555555555555555555555555555555555555555555555" }
+`
+
+func TestParseBinaryIndexHistoryCommit(t *testing.T) {
+	idx, err := ParseBinaryIndex(historyWithCommitTOML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry, ok := idx.PickHistory("1.8.1-5")
+	if !ok {
+		t.Fatal("PickHistory(1.8.1-5) ok = false")
+	}
+	want := "abc1234def5678901234567890abcdef12345678"
+	if entry.Commit != want {
+		t.Errorf("Commit = %q, want %q", entry.Commit, want)
+	}
+}
+
+// An entry that predates the commit field parses to an empty Commit,
+// not an error — the registry resolves its recipe by other means.
+func TestParseBinaryIndexHistoryNoCommit(t *testing.T) {
+	idx, err := ParseBinaryIndex(historyWithCommitTOML)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	entry, ok := idx.PickHistory("1.7.1-1")
+	if !ok {
+		t.Fatal("PickHistory(1.7.1-1) ok = false")
+	}
+	if entry.Commit != "" {
+		t.Errorf("Commit = %q, want empty (entry predates field)", entry.Commit)
+	}
+}

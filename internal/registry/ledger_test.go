@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"runtime"
 	"strings"
@@ -560,6 +561,185 @@ darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865
 	}
 	if rec.Package.Version != "1.7.1" {
 		t.Fatalf("version = %q, want 1.7.1 (.versions fallback)", rec.Package.Version)
+	}
+}
+
+// --- Per-entry commit: historical recipe at the recorded commit ---
+
+// ledgerBinariesWithCommit returns the ledger fixture with the
+// historical 1.7.1-1 entry carrying the given recipe commit.
+func ledgerBinariesWithCommit(commit string) string {
+	return fmt.Sprintf(`version = "1.8.1-5"
+
+[[history]]
+version = "1.7.1-1"
+commit = %q
+darwin-arm64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111", manifest_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+linux-amd64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111", manifest_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+linux-arm64 = { sha256 = "1111111111111111111111111111111111111111111111111111111111111111", manifest_digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111" }
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089", manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b" }
+linux-amd64 = { sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455bc55d74788", manifest_digest = "sha256:9f35d79850663818a8be0eca27bb9680af73b3c6a79d08f17c49d5f336bc4ac0" }
+linux-arm64 = { sha256 = "62a2c004ef2ed6f2c17cf94e61598f82c717a79b3f648392a5f467fee2b0e4da", manifest_digest = "sha256:148c92fbecb0938286cb1a46791de4a7cf230b0bbda90fe0fd4719577a2ef0ef" }
+`, commit)
+}
+
+// The historically-correct 1.7.1 recipe as it existed at the ledger
+// entry's commit — distinct source URL so tests can tell it apart
+// from the ref-tip recipe.
+const historicalRecipe171 = `[package]
+name = "jq"
+version = "1.7.1"
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://example.com/jq-1.7.1.tar.gz"
+sha256 = "historic171"
+`
+
+// A recipe at the ledger commit whose version disagrees with the
+// ledger entry — a mispinned commit must not leak this recipe.
+const mismatchRecipe200 = `[package]
+name = "jq"
+version = "2.0.0"
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://example.com/jq-2.0.0.tar.gz"
+sha256 = "mismatch200"
+`
+
+// A historical entry that records its recipe commit resolves the
+// recipe at that commit — source URL, deps, and build steps come
+// from the historical recipe, not the ref-tip recipe with its
+// version overridden (gh#121 item 3). No .versions file required.
+func TestFetchRecipeVersionHistoricalCommitFetchesRecipe(t *testing.T) {
+	commit := "fedcba9876543210fedcba9876543210fedcba98"
+	srv := httptest.NewServer(fileHandler(map[string]string{
+		"/recipes/j/jq.toml":                ledgerRecipeRev5,
+		"/recipes/j/jq.binaries.toml":       ledgerBinariesWithCommit(commit),
+		"/" + commit + "/recipes/j/jq.toml": historicalRecipe171,
+		// No .versions served: resolution is ledger-only.
+	}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.7.1" {
+		t.Fatalf("version = %q, want 1.7.1", rec.Package.Version)
+	}
+	if rec.Source.URL != "https://example.com/jq-1.7.1.tar.gz" {
+		t.Errorf("Source.URL = %q, want the historical recipe's URL "+
+			"(got the ref-tip recipe?)", rec.Source.URL)
+	}
+	b, ok := rec.Binary[ledgerPlatform()]
+	if !ok {
+		t.Fatalf("no binary for %s", ledgerPlatform())
+	}
+	if !strings.HasPrefix(b.SHA256, "1111") {
+		t.Errorf("SHA256 = %q, want 1.7.1 ledger sha (1111...)", b.SHA256)
+	}
+}
+
+// A commit-bearing entry with no prebuilt for any platform still
+// resolves: the historically-correct recipe supports a source
+// build, so the host-binary requirement of the ref-tip-override
+// path does not apply (gh#121 item 3).
+func TestFetchRecipeVersionHistoricalCommitSourceOnly(t *testing.T) {
+	commit := "fedcba9876543210fedcba9876543210fedcba98"
+	ledger := fmt.Sprintf(`version = "1.8.1-5"
+
+[[history]]
+version = "1.7.1-1"
+commit = %q
+
+[[history]]
+version = "1.8.1-5"
+darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865fcbff17b089", manifest_digest = "sha256:c58a902b972e03ba83c1fe66af2dbb53a24b1d71da14dc089783d9ba2442658b" }
+`, commit)
+	srv := httptest.NewServer(fileHandler(map[string]string{
+		"/recipes/j/jq.toml":                ledgerRecipeRev5,
+		"/recipes/j/jq.binaries.toml":       ledger,
+		"/" + commit + "/recipes/j/jq.toml": historicalRecipe171,
+		// No .versions served: resolution is ledger-only.
+	}))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rec.Package.Version != "1.7.1" {
+		t.Fatalf("version = %q, want 1.7.1", rec.Package.Version)
+	}
+	if rec.BinaryForPlatform(runtime.GOOS, runtime.GOARCH) != nil {
+		t.Error("binary present, want none (source-only entry)")
+	}
+}
+
+// When the commit path cannot produce the historical recipe —
+// malformed commit, unfetchable commit, or a recipe at the commit
+// whose version mismatches the entry — resolution falls back to
+// the ref-tip recipe with the version overridden (gh#130), never
+// leaking the mismatched recipe.
+func TestFetchRecipeVersionHistoricalCommitFallsBackToOverride(t *testing.T) {
+	goodCommit := "fedcba9876543210fedcba9876543210fedcba98"
+	cases := []struct {
+		name   string
+		commit string
+		files  map[string]string
+	}{
+		{name: "malformed commit", commit: "not-a-commit"},
+		{name: "unfetchable commit", commit: goodCommit},
+		{
+			name: "recipe version mismatch", commit: goodCommit,
+			files: map[string]string{
+				"/" + goodCommit + "/recipes/j/jq.toml": mismatchRecipe200,
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			files := map[string]string{
+				"/recipes/j/jq.toml":          ledgerRecipeRev5,
+				"/recipes/j/jq.binaries.toml": ledgerBinariesWithCommit(tc.commit),
+			}
+			for k, v := range tc.files {
+				files[k] = v
+			}
+			srv := httptest.NewServer(fileHandler(files))
+			defer srv.Close()
+
+			reg := testRegistry(srv.URL)
+			rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if rec.Package.Version != "1.7.1" {
+				t.Fatalf("version = %q, want 1.7.1 (override fallback)",
+					rec.Package.Version)
+			}
+			if rec.Source.URL == "https://example.com/jq-2.0.0.tar.gz" {
+				t.Error("mismatched recipe leaked through the commit path")
+			}
+			b, ok := rec.Binary[ledgerPlatform()]
+			if !ok {
+				t.Fatalf("no binary for %s", ledgerPlatform())
+			}
+			if !strings.HasPrefix(b.SHA256, "1111") {
+				t.Errorf("SHA256 = %q, want the entry sha (1111...)", b.SHA256)
+			}
+		})
 	}
 }
 
