@@ -46,6 +46,19 @@
 
 ### Fixed
 
+- install/build: `.gale-deps.toml` now records only a package's
+  runtime dependency closure, not the full build-environment closure.
+  Build-only tools (cmake, rust, go and their transitive deps) leaked
+  into the metadata, so a revision bump to any of them marked the
+  package stale and forced a re-download, and left the tool pinned in
+  the store against gc/farm collection, even though the shipped binary
+  can never link it. The source-build writer, the binary-install
+  metadata fallback, and `extractBuildTo` (which had been overwriting
+  the archive's runtime-only metadata with the full closure) all now
+  emit the runtime-only set, and `IsStale` ignores build deps and
+  reads the platform-overlaid runtime list so a platform runtime
+  override no longer leaves a package permanently stale. Pre-existing
+  installs stay over-broad until their next natural republish (#157).
 - registry: resolve historical `@version` installs from the
   `[[history]]` ledger in `.binaries.toml`, not the `.versions`
   commit-pin file. Unblocks the gale-recipes `.versions` cutover
