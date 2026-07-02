@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Attestation parity: gh's verification mode now follows the
+  native side's runtime-resolved path (OCI referrer vs file
+  fallback) instead of a static matrix pin, ending false
+  divergences on artifacts published before OCI referrers.
+
 ## v0.20.0 — 2026-07-01
 
 ### Security
