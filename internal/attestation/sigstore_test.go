@@ -281,12 +281,86 @@ func TestVerifyOCIDigestFormsAndRepoCase(t *testing.T) {
 	}
 }
 
-func TestNewSigstoreVerifierNonNilRoots(t *testing.T) {
-	sv := NewSigstoreVerifier()
+func TestNewVerifierNonNilRoots(t *testing.T) {
+	sv := NewVerifier()
 	if sv == nil {
-		t.Fatal("NewSigstoreVerifier returned nil")
+		t.Fatal("NewVerifier returned nil")
 	}
 	if sv.roots == nil {
-		t.Fatal("NewSigstoreVerifier returned verifier with nil roots")
+		t.Fatal("NewVerifier returned verifier with nil roots")
 	}
+}
+
+// TestProductionOptionsSCTSelection pins the option-set selection
+// directly, in particular the security property that
+// GALE_SIGSTORE_TEST_NO_SCT ALONE is inert: without the
+// trusted-root override the full production set (SCT + tlog +
+// observer timestamps, 3 options) is returned regardless of the
+// flag. Only override AND flag together yield the reduced
+// 2-option set without the SCT requirement.
+func TestProductionOptionsSCTSelection(t *testing.T) {
+	tests := []struct {
+		name    string
+		envPath string
+		flag    string
+		wantLen int
+	}{
+		{"no override no flag", "", "", 3},
+		{"flag alone is inert", "", "1", 3},
+		{"override alone keeps SCT", "/tmp/root.json", "", 3},
+		{"override plus flag drops SCT", "/tmp/root.json", "1", 2},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv(testNoSCTEnv, tt.flag)
+			sv := &SigstoreVerifier{
+				roots: &trustRootSource{envPath: tt.envPath},
+			}
+			if got := len(sv.productionOptions()); got != tt.wantLen {
+				t.Fatalf("productionOptions returned %d options, want %d",
+					got, tt.wantLen)
+			}
+		})
+	}
+}
+
+// TestProductionOptionsNoSCTSeam is the first test of the
+// production option-selection path (opts == nil). Fixture bundles
+// carry no SCT, so under the production options they must fail on
+// the SCT requirement; setting GALE_SIGSTORE_TEST_NO_SCT alongside
+// the trusted-root override drops that requirement and the same
+// bundle verifies end-to-end.
+func TestProductionOptionsNoSCTSeam(t *testing.T) {
+	fx, err := sigstoretest.New()
+	if err != nil {
+		t.Fatalf("new fixture: %v", err)
+	}
+	trJSON, err := fx.TrustedRootJSON()
+	if err != nil {
+		t.Fatalf("trusted root JSON: %v", err)
+	}
+	rootPath := writeTempFile(t, trJSON)
+	artifact, hexDigest := testArtifact()
+	bundleJSON := mintBundle(t, fx, artifact, nil)
+
+	t.Setenv(TrustedRootEnv, rootPath)
+
+	t.Run("without flag fails on SCT", func(t *testing.T) {
+		sv := &SigstoreVerifier{roots: newTrustRootSource()}
+		err := sv.verifyBundleJSONL(hexDigest, sigstoretest.Repo, bundleJSON)
+		if err == nil {
+			t.Fatal("verify succeeded under production options; " +
+				"fixture bundle has no SCT, want an error")
+		}
+	})
+
+	t.Run("with flag verifies end-to-end", func(t *testing.T) {
+		t.Setenv(testNoSCTEnv, "1")
+		sv := &SigstoreVerifier{roots: newTrustRootSource()}
+		if err := sv.verifyBundleJSONL(
+			hexDigest, sigstoretest.Repo, bundleJSON,
+		); err != nil {
+			t.Fatalf("verify with no-SCT seam: %v", err)
+		}
+	})
 }

@@ -104,7 +104,7 @@ func TestTrustRootTUFFailureFallsBackToEmbedded(t *testing.T) {
 
 func TestNewTrustRootSourceReadsEnvAndCacheDir(t *testing.T) {
 	want := filepath.Join(t.TempDir(), "trusted_root.json")
-	t.Setenv(trustedRootEnv, want)
+	t.Setenv(TrustedRootEnv, want)
 
 	src := newTrustRootSource()
 	if src.envPath != want {

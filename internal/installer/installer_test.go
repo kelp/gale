@@ -3252,18 +3252,15 @@ func gitRun(t *testing.T, dir string, args ...string) {
 // default so the install continues; callers set ociErr to
 // drive the API-fallback path.
 type recordingVerifier struct {
-	calledFile        bool
-	calledOCIReferrer bool
-	capturedOCI       string
-	capturedBundle    []byte
-	capturedIsDir     bool
-	capturedSHA       string
-	statErr           error
-	ociErr            error
+	calledFile     bool
+	calledOCI      bool
+	capturedDigest string
+	capturedBundle []byte
+	capturedIsDir  bool
+	capturedSHA    string
+	statErr        error
+	ociErr         error
 }
-
-func (rv *recordingVerifier) Available() bool           { return true }
-func (rv *recordingVerifier) UnavailableReason() string { return "" }
 
 func (rv *recordingVerifier) VerifyFile(filePath, repo string) error {
 	rv.calledFile = true
@@ -3291,10 +3288,10 @@ func (rv *recordingVerifier) VerifyFile(filePath, repo string) error {
 	return nil
 }
 
-func (rv *recordingVerifier) VerifyOCIReferrer(ociURI, repo string, bundle []byte) error {
-	rv.calledOCIReferrer = true
-	rv.capturedOCI = ociURI
-	rv.capturedBundle = bundle
+func (rv *recordingVerifier) VerifyOCI(manifestDigest, repo string, bundles []byte) error {
+	rv.calledOCI = true
+	rv.capturedDigest = manifestDigest
+	rv.capturedBundle = bundles
 	return rv.ociErr
 }
 
@@ -3324,9 +3321,7 @@ type binaryInstallFixture struct {
 // blobURL returns the fake GHCR blob URL for the archive. It uses a
 // ghcr.io host so checkBinaryTrustPolicy accepts the sigstore trust
 // policy; the fixture's hostRewrite transports redirect the actual
-// request to the local test server. The repository path
-// "owner/repo/testpkg" makes binaryOCIURI derive
-// "oci://ghcr.io/owner/repo/testpkg@<digest>".
+// request to the local test server.
 func (fx *binaryInstallFixture) blobURL() string {
 	return fmt.Sprintf(
 		"https://ghcr.io/v2/owner/repo/testpkg/blobs/sha256:%s", fx.hash,
@@ -3414,9 +3409,9 @@ func stubReferrerBundle(t *testing.T, fn func(ctx context.Context, blobURL, mani
 }
 
 // TestInstallBinaryVerifiesOCIReferrer asserts that installBinaryTo
-// fetches the referrer bundle and verifies the OCI image reference via
-// VerifyOCIReferrer for sigstore-trusted prebuilt binaries when a
-// referrer bundle exists.
+// fetches the referrer bundle and verifies the manifest digest via
+// VerifyOCI for sigstore-trusted prebuilt binaries when a referrer
+// bundle exists.
 func TestInstallBinaryVerifiesOCIReferrer(t *testing.T) {
 	fx := setupBinaryInstallTest(t)
 
@@ -3447,27 +3442,25 @@ func TestInstallBinaryVerifiesOCIReferrer(t *testing.T) {
 		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
 	}
 
-	if !fx.rv.calledOCIReferrer {
-		t.Fatal("VerifyOCIReferrer was never called; Verifier not wired into install path")
+	if !fx.rv.calledOCI {
+		t.Fatal("VerifyOCI was never called; Verifier not wired into install path")
 	}
 
-	wantOCI := fmt.Sprintf("oci://ghcr.io/owner/repo/testpkg@%s", fx.digest)
-	if fx.rv.capturedOCI != wantOCI {
-		t.Errorf("VerifyOCIReferrer received %q, want %q", fx.rv.capturedOCI, wantOCI)
+	if fx.rv.capturedDigest != fx.digest {
+		t.Errorf("VerifyOCI received %q, want %q", fx.rv.capturedDigest, fx.digest)
 	}
 	// Adapter contract pin (gh#129): whatever shape the verifier
-	// receives (today a full oci:// URI, after the interface shrink
-	// the digest directly), it must carry the exact manifest digest
+	// receives, it must carry the exact manifest digest
 	// "sha256:<hex>" of the artifact — the value the
 	// lockfile/binaries metadata records. Containment, not equality,
-	// so this pin survives the signature change with only a field
+	// so this pin survives signature changes with only a field
 	// rename.
-	if !strings.Contains(fx.rv.capturedOCI, fx.digest) {
-		t.Errorf("VerifyOCIReferrer argument %q does not contain "+
-			"the manifest digest %q", fx.rv.capturedOCI, fx.digest)
+	if !strings.Contains(fx.rv.capturedDigest, fx.digest) {
+		t.Errorf("VerifyOCI argument %q does not contain "+
+			"the manifest digest %q", fx.rv.capturedDigest, fx.digest)
 	}
 	if !bytes.Equal(fx.rv.capturedBundle, wantBundle) {
-		t.Errorf("VerifyOCIReferrer bundle = %q, want %q",
+		t.Errorf("VerifyOCI bundle = %q, want %q",
 			fx.rv.capturedBundle, wantBundle)
 	}
 	if fx.rv.calledFile {
@@ -3493,7 +3486,7 @@ func TestInstallBinaryVerifiesOCIReferrer(t *testing.T) {
 //
 // The assertions are non-vacuous because the recordingVerifier
 // defaults ociErr to nil: without the production ErrNoReferrer
-// fall-through this install would call VerifyOCIReferrer and leave
+// fall-through this install would call VerifyOCI and leave
 // calledFile/capturedSHA zero-valued. capturedSHA == fx.hash proves a
 // real FILE carrying the archive bytes (not a directory or empty
 // stub) was handed to VerifyFile.
@@ -3524,8 +3517,8 @@ func TestInstallBinaryFallsBackToFileWhenNoReferrer(t *testing.T) {
 	if result.Method != MethodBinary {
 		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
 	}
-	if fx.rv.calledOCIReferrer {
-		t.Error("VerifyOCIReferrer fired despite ErrNoReferrer; " +
+	if fx.rv.calledOCI {
+		t.Error("VerifyOCI fired despite ErrNoReferrer; " +
 			"the file fallback must not call the referrer verifier")
 	}
 	if !fx.rv.calledFile {
@@ -3543,7 +3536,7 @@ func TestInstallBinaryFallsBackToFileWhenNoReferrer(t *testing.T) {
 
 // TestInstallBinaryFailsClosedOnReferrerVerifyError proves the
 // fallback is fail-CLOSED: once a referrer bundle is found, a real
-// VerifyOCIReferrer failure (signature mismatch) must NOT trigger the
+// VerifyOCI failure (signature mismatch) must NOT trigger the
 // file fallback, and the binary install must be rejected. After the
 // binary is rejected the installer attempts a source build; the
 // recipe's unreachable source URL makes that build fail
@@ -3585,8 +3578,8 @@ func TestInstallBinaryFailsClosedOnReferrerVerifyError(t *testing.T) {
 	}
 
 	result, err := fx.inst.Install(r)
-	if !fx.rv.calledOCIReferrer {
-		t.Fatal("VerifyOCIReferrer was never called; Verifier not wired into install path")
+	if !fx.rv.calledOCI {
+		t.Fatal("VerifyOCI was never called; Verifier not wired into install path")
 	}
 	if fx.rv.calledFile {
 		t.Error("VerifyFile fired after a referrer-verify error; " +
@@ -3622,50 +3615,35 @@ func sigstoreTestRecipe(fx *binaryInstallFixture, sourceURL string) *recipe.Reci
 }
 
 // unavailableVerifier is a recordingVerifier whose attestation
-// toolchain reports itself unavailable (today: gh CLI missing or
-// too old). Its verify methods still record the call but return an
-// error — an unavailable verifier can never produce a positive
-// verification result.
+// machinery cannot verify anything (e.g. the sigstore trust root
+// is unreachable). Its verify methods still record the call but
+// return an error — an unavailable verifier can never produce a
+// positive verification result.
 type unavailableVerifier struct {
 	recordingVerifier
 }
 
-func (uv *unavailableVerifier) Available() bool { return false }
-
-func (uv *unavailableVerifier) UnavailableReason() string {
-	return "gh CLI not found"
-}
-
-func (uv *unavailableVerifier) VerifyOCIReferrer(ociURI, repo string, bundle []byte) error {
-	_ = uv.recordingVerifier.VerifyOCIReferrer(ociURI, repo, bundle)
-	return fmt.Errorf("attestation verification unavailable: gh CLI not found")
+func (uv *unavailableVerifier) VerifyOCI(manifestDigest, repo string, bundles []byte) error {
+	_ = uv.recordingVerifier.VerifyOCI(manifestDigest, repo, bundles)
+	return fmt.Errorf("attestation verification unavailable: sigstore trust root unreachable")
 }
 
 func (uv *unavailableVerifier) VerifyFile(filePath, repo string) error {
 	_ = uv.recordingVerifier.VerifyFile(filePath, repo)
-	return fmt.Errorf("attestation verification unavailable: gh CLI not found")
+	return fmt.Errorf("attestation verification unavailable: sigstore trust root unreachable")
 }
 
 // TestInstallBinarySigstoreTrustUnavailableVerifierFails pins the
 // gh#129 acceptance criterion: when a recipe's trust policy is
-// sigstore and a Verifier is wired up but reports itself
-// unavailable, the binary install must FAIL CLOSED — never proceed
-// on sha256 alone.
+// sigstore and a Verifier is wired up but cannot verify, the binary
+// install must FAIL CLOSED — never proceed on sha256 alone.
 //
-// Today installBinaryTo computes
-//
-//	needAttest := trust == sigstore && v != nil && v.Available()
-//
-// so Available() == false silently skips attestation and the
-// install succeeds (fail-open). This test is RED against that code.
-//
-// NOTE for the implementer: the gh#129 fix removes Available() from
-// the Verifier interface entirely (needAttest := trust == sigstore
-// && v != nil; a non-nil verifier ALWAYS verifies). When the
-// interface shrinks, update this test to express the same scenario
-// as "verifier returns an error" — unavailableVerifier's verify
-// methods already do exactly that, so only the Available /
-// UnavailableReason methods should need deleting.
+// installBinaryTo computes needAttest := trust == sigstore &&
+// v != nil, so a non-nil verifier is ALWAYS consulted; there is no
+// availability probe to skip past. unavailableVerifier's verify
+// methods record the call and return an error, so the binary path
+// is rejected and the source-build fallback (unreachable here)
+// fails, surfacing a non-nil install error.
 func TestInstallBinarySigstoreTrustUnavailableVerifierFails(t *testing.T) {
 	fx := setupBinaryInstallTest(t)
 	uv := &unavailableVerifier{}
@@ -3692,7 +3670,7 @@ func TestInstallBinarySigstoreTrustUnavailableVerifierFails(t *testing.T) {
 	}
 	// The verifier must have been consulted — an unavailable
 	// verifier is not a license to skip verification.
-	if !uv.calledOCIReferrer && !uv.calledFile {
+	if !uv.calledOCI && !uv.calledFile {
 		t.Error("verifier was never consulted; attestation was " +
 			"skipped instead of failing closed")
 	}
@@ -3777,8 +3755,8 @@ func TestInstallBinaryEmitsAttestationTimingPhase(t *testing.T) {
 	if result.Method != MethodBinary {
 		t.Errorf("Method = %q, want %q", result.Method, MethodBinary)
 	}
-	if !fx.rv.calledOCIReferrer {
-		t.Fatal("VerifyOCIReferrer was never called; Verifier not wired into install path")
+	if !fx.rv.calledOCI {
+		t.Fatal("VerifyOCI was never called; Verifier not wired into install path")
 	}
 
 	if !strings.Contains(buf.String(), "[timing] attestation") {

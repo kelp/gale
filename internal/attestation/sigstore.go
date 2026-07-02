@@ -13,6 +13,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -30,6 +31,15 @@ const githubOIDCIssuer = "https://token.actions.githubusercontent.com"
 // every accepted attestation statement.
 const provenancePredicateType = "https://slsa.dev/provenance/v1"
 
+// testNoSCTEnv, when set alongside the trusted-root override
+// (TrustedRootEnv), drops the Signed Certificate Timestamp
+// requirement from the production verifier options. It exists
+// because synthetic test fixtures cannot mint SCTs. It adds no
+// attack surface: whoever controls the trusted-root env already
+// controls the root of trust entirely. With the production root
+// (no override) the flag is inert.
+const testNoSCTEnv = "GALE_SIGSTORE_TEST_NO_SCT"
+
 // SigstoreVerifier verifies GitHub Artifact Attestation bundles
 // in-process with sigstore-go.
 type SigstoreVerifier struct {
@@ -44,8 +54,8 @@ type SigstoreVerifier struct {
 	err  error
 }
 
-// NewSigstoreVerifier returns a production-configured verifier.
-func NewSigstoreVerifier() *SigstoreVerifier {
+// NewVerifier returns a production-configured verifier.
+func NewVerifier() *SigstoreVerifier {
 	return &SigstoreVerifier{roots: newTrustRootSource()}
 }
 
@@ -130,11 +140,7 @@ func (s *SigstoreVerifier) verifier() (*verify.Verifier, error) {
 		}
 		opts := s.opts
 		if opts == nil {
-			opts = []verify.VerifierOption{
-				verify.WithSignedCertificateTimestamps(1),
-				verify.WithTransparencyLog(1),
-				verify.WithObserverTimestamps(1),
-			}
+			opts = s.productionOptions()
 		}
 		v, err := verify.NewVerifier(tr, opts...)
 		if err != nil {
@@ -144,6 +150,29 @@ func (s *SigstoreVerifier) verifier() (*verify.Verifier, error) {
 		s.v = v
 	})
 	return s.v, s.err
+}
+
+// productionOptions returns the verifier options used when no
+// override is configured: an embedded SCT, a transparency log
+// entry, and an observer timestamp.
+//
+// Test containment seam: when BOTH the trusted-root override
+// (TrustedRootEnv) and testNoSCTEnv are set, the SCT requirement
+// is dropped in favor of the tlog integrated timestamp. See
+// testNoSCTEnv for the rationale; the env-root condition keeps
+// the flag inert under the production root.
+func (s *SigstoreVerifier) productionOptions() []verify.VerifierOption {
+	if s.roots.envPath != "" && os.Getenv(testNoSCTEnv) != "" {
+		return []verify.VerifierOption{
+			verify.WithTransparencyLog(1),
+			verify.WithObserverTimestamps(1),
+		}
+	}
+	return []verify.VerifierOption{
+		verify.WithSignedCertificateTimestamps(1),
+		verify.WithTransparencyLog(1),
+		verify.WithObserverTimestamps(1),
+	}
 }
 
 // verifyBundleLine verifies one bundle against the policy, then

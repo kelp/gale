@@ -1,5 +1,6 @@
 // Package support holds the integration-test harness:
-// a fake GHCR blob server, a mock gh CLI, fixture
+// a fake GHCR blob server, a synthetic Sigstore fixture
+// for minting real attestation bundles, a fixture
 // tarball builder, and the testscript commands that
 // glue them into .txtar scripts.
 package support
@@ -18,6 +19,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/kelp/gale/internal/attestation/sigstoretest"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/rogpeppe/go-internal/testscript"
@@ -190,20 +192,39 @@ func (fg *FakeGHCR) handle(w http.ResponseWriter, r *http.Request) {
 
 // AttestReferrer registers an OCI referrers index, a referrer
 // manifest, and a Sigstore bundle blob for the package's image
-// manifest under the kelp/gale-recipes/<name> repository path. It
-// returns the synthetic image manifest digest the caller records in
-// the lockfile so `gale verify` derives the same referrers URL.
+// manifest under the kelp/gale-recipes/<name> repository path. The
+// bundle is a REAL signed sigstoretest bundle: its subject digest
+// equals the returned image manifest digest, and its certificate
+// identity (SAN + SourceRepositoryURI) names identityRepo
+// ("owner/name"). Pass a repo other than the one gale verifies
+// against (kelp/gale-recipes) to mint a bundle that must fail
+// verification on identity mismatch.
 //
-// The bytes are minimal but shaped exactly like what gale parses:
+// It returns the manifest digest the caller records in the lockfile
+// (so gale derives the same referrers URL and verifies the same
+// subject) plus the trusted_root.json bytes the bundle chains to,
+// for GALE_SIGSTORE_TRUSTED_ROOT.
+//
+// The OCI bytes are minimal but shaped exactly like what gale parses:
 //   - referrers index: {"manifests":[{digest, artifactType:
 //     "application/vnd.dev.sigstore.bundle.v0.3+json"}]}
 //   - referrer manifest: {"layers":[{digest: <bundle blob digest>}]}
-//   - bundle blob: an opaque JSON bundle handed to gh via --bundle.
-func (fg *FakeGHCR) AttestReferrer(name string) (string, error) {
+//   - bundle blob: the signed Sigstore bundle JSON.
+func (fg *FakeGHCR) AttestReferrer(name, identityRepo string) (string, []byte, error) {
 	repoPath := "kelp/gale-recipes/" + name
 	base := "/v2/" + repoPath
 
-	bundle := []byte(`{"mediaType":"application/vnd.dev.sigstore.bundle.v0.3+json"}`)
+	// The image manifest bytes are synthetic: gale only uses the
+	// digest to build the referrers URL and as the attestation
+	// subject, never re-fetching the image manifest on the verify
+	// path. Make them deterministic from the package name.
+	manifestBytes := []byte("image-manifest:" + name)
+	manifestDigest := "sha256:" + hexSHA(manifestBytes)
+
+	bundle, trustedRoot, err := mintBundle(manifestBytes, identityRepo)
+	if err != nil {
+		return "", nil, err
+	}
 	bundleDigest := "sha256:" + hexSHA(bundle)
 	fg.RegisterContent(base+"/blobs/"+bundleDigest, bundle)
 
@@ -211,15 +232,11 @@ func (fg *FakeGHCR) AttestReferrer(name string) (string, error) {
 		"layers": []map[string]string{{"digest": bundleDigest}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal referrer manifest: %w", err)
+		return "", nil, fmt.Errorf("marshal referrer manifest: %w", err)
 	}
 	refDigest := "sha256:" + hexSHA(refManifest)
 	fg.RegisterContent(base+"/manifests/"+refDigest, refManifest)
 
-	// The image manifest digest is synthetic: gale only uses it to
-	// build the referrers URL, never re-fetching the image manifest on
-	// the verify path. Make it deterministic from the package name.
-	manifestDigest := "sha256:" + hexSHA([]byte("image-manifest:"+name))
 	index, err := json.Marshal(map[string]any{
 		"manifests": []map[string]string{{
 			"digest":       refDigest,
@@ -228,11 +245,36 @@ func (fg *FakeGHCR) AttestReferrer(name string) (string, error) {
 		}},
 	})
 	if err != nil {
-		return "", fmt.Errorf("marshal referrers index: %w", err)
+		return "", nil, fmt.Errorf("marshal referrers index: %w", err)
 	}
 	fg.RegisterContent(base+"/referrers/"+manifestDigest, index)
 
-	return manifestDigest, nil
+	return manifestDigest, trustedRoot, nil
+}
+
+// mintBundle creates a fresh ephemeral Sigstore fixture and signs a
+// bundle over subject whose certificate identity names identityRepo.
+// It returns the bundle JSON plus the fixture's trusted_root.json. A
+// fresh fixture per call keeps parallel testscripts independent —
+// generation is in-memory and takes ~10ms.
+func mintBundle(subject []byte, identityRepo string) (bundleJSON, trustedRoot []byte, err error) {
+	fx, err := sigstoretest.New()
+	if err != nil {
+		return nil, nil, fmt.Errorf("sigstore fixture: %w", err)
+	}
+	trustedRoot, err = fx.TrustedRootJSON()
+	if err != nil {
+		return nil, nil, fmt.Errorf("trusted root json: %w", err)
+	}
+	opts := sigstoretest.GitHubOpts(subject)
+	opts.SourceRepositoryURI = "https://github.com/" + identityRepo
+	opts.SAN = opts.SourceRepositoryURI +
+		"/.github/workflows/build.yml@refs/heads/main"
+	bundleJSON, err = fx.SignedBundle(opts)
+	if err != nil {
+		return nil, nil, fmt.Errorf("mint signed bundle: %w", err)
+	}
+	return bundleJSON, trustedRoot, nil
 }
 
 func hexSHA(b []byte) string {
@@ -257,63 +299,6 @@ func setLockManifestDigest(lockPath, pkg, manifestDigest string) error {
 		return fmt.Errorf("write lockfile: %w", err)
 	}
 	return nil
-}
-
-// FakeGH is the mocked gh CLI used for attestation paths.
-// Scripts rewrite its behavior via gale-gh-returns.
-type FakeGH struct {
-	Dir   string // prepend to PATH; contains the gh binary
-	state string // script reads exit code/stdout/stderr from here
-}
-
-// WriteFakeGH creates a shell script named "gh" in a new
-// dir. Default state: exit 0 with no output. Every
-// invocation appends its full argv to <dir>/log so tests
-// can assert on the args gale passed.
-func WriteFakeGH(t *testing.T, workDir string) *FakeGH {
-	t.Helper()
-	dir := filepath.Join(workDir, "fake-gh")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	state := filepath.Join(dir, "state")
-	if err := os.WriteFile(state, []byte("0\n\n\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	script := filepath.Join(dir, "gh")
-	// `gh attestation --help` is the availability probe in
-	// internal/attestation.probe(). Always succeed for that
-	// invocation so tests can drive only the verify-call
-	// behaviour via gale-gh-returns. Otherwise a
-	// gale-gh-returns exit=1 trips the probe first and
-	// `gale verify` short-circuits to "verification
-	// unavailable" before ever invoking attestation verify.
-	body := "#!/bin/sh\n" +
-		"state=\"" + state + "\"\n" +
-		"log=\"" + filepath.Join(dir, "log") + "\"\n" +
-		"printf '%s\\n' \"$*\" >> \"$log\"\n" +
-		"if [ \"$1\" = \"attestation\" ] && [ \"$2\" = \"--help\" ]; then\n" +
-		"  exit 0\n" +
-		"fi\n" +
-		"exitcode=$(sed -n '1p' \"$state\")\n" +
-		"stdout=$(sed -n '2p' \"$state\")\n" +
-		"stderr=$(sed -n '3p' \"$state\")\n" +
-		"[ -n \"$stdout\" ] && printf '%s\\n' \"$stdout\"\n" +
-		"[ -n \"$stderr\" ] && printf '%s\\n' \"$stderr\" >&2\n" +
-		"exit \"${exitcode:-0}\"\n"
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return &FakeGH{Dir: dir, state: state}
-}
-
-// SetState rewrites the gh script's state file.
-func (g *FakeGH) SetState(exitCode int, stdout, stderr string) error {
-	body := fmt.Sprintf("%d\n%s\n%s\n",
-		exitCode,
-		strings.ReplaceAll(stdout, "\n", " "),
-		strings.ReplaceAll(stderr, "\n", " "))
-	return os.WriteFile(g.state, []byte(body), 0o644)
 }
 
 // --- testscript commands ---
@@ -386,73 +371,46 @@ func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 //
 // Usage:
 //
-//	gale-attest-referrer <package> <lockfile>
+//	gale-attest-referrer <package> <lockfile> <identity-repo>
 //
 // It wires the fake GHCR to serve an OCI referrers index, a referrer
-// manifest, and a Sigstore bundle blob for <package>, then rewrites
-// <lockfile> so the package carries the matching manifest_digest. This
-// drives `gale verify` down the tokenless OCI-referrer path entirely
+// manifest, and a real signed Sigstore bundle for <package> whose
+// certificate identity names <identity-repo> (pass anything other
+// than kelp/gale-recipes to mint a bundle that must fail
+// verification on identity mismatch). It rewrites <lockfile> so the
+// package carries the matching manifest_digest and writes the
+// fixture's trusted root to $WORK/trusted_root.json. Scripts then
+// point GALE_SIGSTORE_TRUSTED_ROOT at that file and set
+// GALE_SIGSTORE_TEST_NO_SCT=1 (synthetic fixtures cannot mint SCTs)
+// so `gale verify` runs native in-process verification entirely
 // against the fake registry — no real network, no GitHub token.
 func CmdAttestReferrer(ts *testscript.TestScript, neg bool, args []string) {
 	if neg {
 		ts.Fatalf("gale-attest-referrer does not support negation")
 	}
-	if len(args) != 2 {
-		ts.Fatalf("gale-attest-referrer: needs <package> <lockfile>")
+	if len(args) != 3 {
+		ts.Fatalf("gale-attest-referrer: needs <package> <lockfile> <identity-repo>")
 	}
 	ghcr, _ := ts.Value("ghcr").(*FakeGHCR)
 	if ghcr == nil {
 		ts.Fatalf("gale-attest-referrer: no ghcr in env")
 	}
-	manifestDigest, err := ghcr.AttestReferrer(args[0])
+	manifestDigest, trustedRoot, err := ghcr.AttestReferrer(args[0], args[2])
 	if err != nil {
 		ts.Fatalf("gale-attest-referrer: %v", err)
+	}
+	// G306 — a world-readable trust root fixture inside the
+	// script work dir; not sensitive material.
+	rootPath := ts.MkAbs("trusted_root.json")
+	if err := os.WriteFile(rootPath, trustedRoot, 0o644); err != nil { //nolint:gosec
+		ts.Fatalf("gale-attest-referrer: write trusted root: %v", err)
 	}
 	if err := setLockManifestDigest(ts.MkAbs(args[1]), args[0], manifestDigest); err != nil {
 		ts.Fatalf("gale-attest-referrer: %v", err)
 	}
 }
 
-// CmdGHReturns is the "gale-gh-returns" script command.
-//
-// Usage:
-//
-//	gale-gh-returns exit=<int> [stdout=<line>] [stderr=<line>]
-func CmdGHReturns(ts *testscript.TestScript, neg bool, args []string) {
-	if neg {
-		ts.Fatalf("gale-gh-returns does not support negation")
-	}
-	gh, _ := ts.Value("gh").(*FakeGH)
-	if gh == nil {
-		ts.Fatalf("gale-gh-returns: no gh in env")
-	}
-	m := parseKV(args)
-	exitCode := 0
-	if v, ok := m["exit"]; ok {
-		// Sscanf failure leaves exitCode at 0 — same as
-		// omitting the key. That matches the test contract:
-		// "exit=" alone means success.
-		_, _ = fmt.Sscanf(v, "%d", &exitCode)
-	}
-	if err := gh.SetState(exitCode, m["stdout"], m["stderr"]); err != nil {
-		ts.Fatalf("gale-gh-returns: %v", err)
-	}
-}
-
 // --- helpers ---
-
-func parseKV(args []string) map[string]string {
-	m := make(map[string]string, len(args))
-	for _, a := range args {
-		i := strings.IndexByte(a, '=')
-		if i < 0 {
-			m[a] = ""
-			continue
-		}
-		m[a[:i]] = a[i+1:]
-	}
-	return m
-}
 
 // renderFile reads a single template file, substitutes
 // placeholders, and writes it to dst (stripping a trailing

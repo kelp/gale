@@ -15,9 +15,9 @@ import (
 	"github.com/sigstore/sigstore-go/pkg/tuf"
 )
 
-// trustedRootEnv is the env var naming a trusted_root.json path
+// TrustedRootEnv is the env var naming a trusted_root.json path
 // override (test seam; wins unconditionally).
-const trustedRootEnv = "GALE_SIGSTORE_TRUSTED_ROOT"
+const TrustedRootEnv = "GALE_SIGSTORE_TRUSTED_ROOT"
 
 // tufCacheValidityDays is how long the TUF cache is trusted before
 // a network refresh (matches the gh CLI's one-day validity).
@@ -51,16 +51,18 @@ type trustRootSource struct {
 // (reads the env var, derives cacheDir from the user home dir).
 func newTrustRootSource() *trustRootSource {
 	return &trustRootSource{
-		envPath:  os.Getenv(trustedRootEnv),
-		cacheDir: defaultTUFCacheDir(),
+		envPath:  os.Getenv(TrustedRootEnv),
+		cacheDir: TUFCacheDir(),
 		tufURL:   tuf.DefaultMirror,
 		warn:     os.Stderr,
 	}
 }
 
-// defaultTUFCacheDir returns the production TUF cache directory,
-// falling back to a temp-dir path when the home dir is unknown.
-func defaultTUFCacheDir() string {
+// TUFCacheDir returns the production TUF cache directory
+// (~/.gale/cache/sigstore-tuf), falling back to a temp-dir path
+// when the home dir is unknown. Exported so `gale doctor` can
+// report the cache state.
+func TUFCacheDir() string {
 	base, err := os.UserHomeDir()
 	if err != nil {
 		base = os.TempDir()

@@ -1,14 +1,17 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
@@ -68,7 +71,7 @@ var doctorChecks = []doctorCheck{
 	{"PATH", checkPATH},
 	{"direnv", checkDirenvIntegration},
 	{"orphans", checkOrphans},
-	{"gh CLI", checkGhCLI},
+	{"sigstore trust root", checkSigstoreRoot},
 }
 
 var doctorCmd = &cobra.Command{
@@ -769,18 +772,76 @@ func checkOrphans(ctx *doctorContext) bool {
 	return true // orphans are a warning, not a failure
 }
 
-// checkGhCLI checks for the gh CLI (attestation verification).
-func checkGhCLI(ctx *doctorContext) bool {
-	if _, err := exec.LookPath("gh"); err != nil {
-		ctx.out.Warn("gh CLI not found — attestation " +
-			"verification disabled\n  " +
-			"Install: https://cli.github.com")
-		return true // warn, not a failure
+// checkSigstoreRoot reports the state of the Sigstore TUF cache
+// used by attestation verification. Informational only: it always
+// returns true because verification falls back to the embedded
+// trusted-root snapshot when the cache is missing or stale, so no
+// cache state is a doctor failure.
+func checkSigstoreRoot(ctx *doctorContext) bool {
+	if override := os.Getenv(attestation.TrustedRootEnv); override != "" {
+		// The override path is user-supplied by design; doctor
+		// only reports whether it exists.
+		if _, err := os.Stat(override); err != nil { //nolint:gosec
+			ctx.out.Warn(fmt.Sprintf(
+				"%s override set but file missing: %s\n  "+
+					"attestation verification will fail until it exists",
+				attestation.TrustedRootEnv, override,
+			))
+			return true
+		}
+		ctx.out.Warn(fmt.Sprintf(
+			"%s override active: %s\n  attestation verification "+
+				"trusts this root instead of the Sigstore TUF root",
+			attestation.TrustedRootEnv, override,
+		))
+		return true
 	}
-	ctx.out.Success(
-		"gh CLI available (attestation verification)",
-	)
-	return true
+
+	cacheDir := attestation.TUFCacheDir()
+	info, err := os.Stat(cacheDir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		ctx.out.Warn("sigstore TUF cache not yet populated — " +
+			"will fetch on first sigstore install")
+	case err != nil:
+		ctx.out.Warn(fmt.Sprintf(
+			"sigstore TUF cache unreadable: %v", err,
+		))
+	case !info.IsDir():
+		ctx.out.Warn(fmt.Sprintf(
+			"sigstore TUF cache is not a directory: %s", cacheDir,
+		))
+	case time.Since(newestModTime(cacheDir)) > 24*time.Hour:
+		ctx.out.Warn("sigstore TUF cache stale — " +
+			"will refresh on next verification")
+	default:
+		ctx.out.Success(
+			"sigstore trust root cached and fresh " +
+				"(attestation verification)",
+		)
+	}
+	return true // informational, never a failure
+}
+
+// newestModTime returns the newest modification time of any file
+// under dir (the dir itself when empty or unwalkable). Used to
+// judge TUF cache freshness: the TUF client rewrites metadata files
+// in place, so the directory mtime alone can under-report.
+func newestModTime(dir string) time.Time {
+	var newest time.Time
+	if info, err := os.Stat(dir); err == nil {
+		newest = info.ModTime()
+	}
+	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil //nolint:nilerr // freshness is best-effort
+		}
+		if info, ierr := d.Info(); ierr == nil && info.ModTime().After(newest) {
+			newest = info.ModTime()
+		}
+		return nil
+	})
+	return newest
 }
 
 func repairDoctor(ctx *doctorContext) error {
