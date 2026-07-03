@@ -22,12 +22,14 @@ import (
 )
 
 // darwinVersioned matches libFOO.N.dylib, libFOO.N.M.dylib,
-// libFOO.N.M.P.dylib. Mach-O puts the version before the
-// extension, so a dotted-stem library like libpython3.14.dylib
-// already matches (the "3" ends the stem, ".14" reads as the
-// version) — dotted stems need no darwin-specific fix (gh#165).
+// libFOO.N.M.P.dylib. The stem class allows '.' so a stem with
+// a non-numeric dotted segment like libMagick++-7.Q16HDRI.5.dylib
+// (stem "Magick++-7.Q16HDRI") matches; the required trailing
+// `.[0-9]+(...)*` plus the `$`-anchored `.dylib` keep the
+// version pinned to the final numeric segment, so the stem
+// can't swallow it and unversioned dylibs still fail (gh#168).
 var darwinVersioned = regexp.MustCompile(
-	`^lib[A-Za-z0-9_+\-]+\.[0-9]+(\.[0-9]+)*\.dylib$`,
+	`^lib[A-Za-z0-9_+.\-]+\.[0-9]+(\.[0-9]+)*\.dylib$`,
 )
 
 // linuxVersioned matches libFOO.so.N, libFOO.so.N.M,
