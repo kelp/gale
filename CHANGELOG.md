@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- build: the Linux rpath fixup no longer runs patchelf on
+  dynamically linked Go binaries, which patchelf 0.18.0 corrupts
+  silently (exit 0, then a segfault at startup). The prior guard
+  skipped only fully static ELFs, so a Go binary built without
+  `CGO_ENABLED=0` still carried `libc.so.6` and got patched. The
+  fixup now skips any ELF carrying Go build info unless the rpath
+  would actually resolve one of its shared-lib deps, and after any
+  successful patchelf rewrite it re-reads a Go binary's build info
+  and fails the build loudly rather than ship a corrupt artifact
+  (#166).
+
 ## v0.21.1 — 2026-07-03
 
 ### Fixed
