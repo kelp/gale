@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -84,7 +83,11 @@ func runListAll(stdout, stderr io.Writer) error {
 
 	wrote := false
 	if projErr == nil {
-		if _, statErr := os.Stat(projectPath); statErr == nil {
+		ok, existsErr := configOrToolVersionsExists(projectPath)
+		if existsErr != nil {
+			return existsErr
+		}
+		if ok {
 			fmt.Fprintln(stdout, "Project:")
 			if err := printConfigList(
 				stdout, stderr, projectPath, "  ",
@@ -116,18 +119,13 @@ func runListAll(stdout, stderr io.Writer) error {
 // gale.toml. Headers and entries go to stdout indented with
 // prefix; the empty-state notice goes to stderr.
 func printConfigList(stdout, stderr io.Writer, configPath, prefix string) error {
-	data, err := os.ReadFile(configPath)
+	// readConfigOrToolVersions gives .tool-versions projects the
+	// same fallback sync, env, and sbom get (gh#169); when both
+	// files are absent it returns an empty config, which flows to
+	// the empty-state notice below.
+	cfg, err := readConfigOrToolVersions(configPath)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintln(stderr, "No packages declared.")
-			return nil
-		}
-		return fmt.Errorf("reading config: %w", err)
-	}
-
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		return fmt.Errorf("parsing config: %w", err)
+		return err
 	}
 
 	host := config.CurrentHost()

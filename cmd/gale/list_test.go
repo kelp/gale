@@ -426,3 +426,72 @@ func TestListInstalledPackageHasNoMarker(t *testing.T) {
 		t.Errorf("installed pkg should not be flagged: %q", out)
 	}
 }
+
+// chdirToolVersionsProject creates a temp HOME with a project
+// dir holding only a .tool-versions (jq 1.7.0) and chdirs into
+// it. Shared by the gh#169 regression tests below.
+func chdirToolVersionsProject(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	proj := filepath.Join(home, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(proj, ".tool-versions"),
+		[]byte("jq 1.7.0\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	orig, _ := os.Getwd()
+	os.Chdir(proj)
+	t.Cleanup(func() { os.Chdir(orig) })
+}
+
+// TestListToolVersionsProject pins gh#169: a .tool-versions-only
+// tree counts as a project (projectConfigPath returns its
+// would-be gale.toml path), so list must read the .tool-versions
+// fallback like sync, env, and sbom do — not print the empty
+// state.
+func TestListToolVersionsProject(t *testing.T) {
+	chdirToolVersionsProject(t)
+
+	listScope = "all"
+	t.Cleanup(func() { listScope = "all" })
+
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
+	if !strings.Contains(buf.String(), "jq@1.7.0") {
+		t.Errorf("missing jq@1.7.0 from .tool-versions:\nstdout: %q\nstderr: %q",
+			buf.String(), errBuf.String())
+	}
+}
+
+// TestListAllToolVersionsProject pins the --all leg of gh#169:
+// the project section must appear when the project consists of
+// only a .tool-versions file.
+func TestListAllToolVersionsProject(t *testing.T) {
+	chdirToolVersionsProject(t)
+
+	listScope = "all"
+	listAll = true
+	t.Cleanup(func() { listScope, listAll = "all", false })
+
+	var buf, errBuf bytes.Buffer
+	if err := runList(&buf, &errBuf); err != nil {
+		t.Fatalf("runList: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "Project:") {
+		t.Errorf("missing Project header:\nstdout: %q\nstderr: %q",
+			out, errBuf.String())
+	}
+	if !strings.Contains(out, "jq@1.7.0") {
+		t.Errorf("missing jq@1.7.0 from .tool-versions:\nstdout: %q\nstderr: %q",
+			out, errBuf.String())
+	}
+}
