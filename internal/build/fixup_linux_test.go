@@ -526,6 +526,296 @@ func TestFixupBinariesSkipsStaticELF(t *testing.T) {
 	}
 }
 
+// buildCgoGoBinary builds a dynamically linked Go binary under
+// pkgDir/bin and returns its path. Importing "C" forces cgo, so the
+// result carries a DT_NEEDED libc entry (unlike a pure-Go static
+// build) AND Go build info — the exact shape #166 is about. When
+// ldflags/cPreamble/goBody are non-empty the binary links and calls
+// an extra shared library, so callers can exercise the "Go binary
+// that genuinely needs a dep lib" path. A missing go or cc
+// toolchain skips the test.
+func buildCgoGoBinary(t *testing.T, pkgDir, ldflags, cPreamble, goBody string) string {
+	t.Helper()
+	if _, err := exec.LookPath("go"); err != nil {
+		t.Skip("go toolchain not available")
+	}
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available")
+	}
+	binDir := filepath.Join(pkgDir, "bin")
+	srcDir := filepath.Join(pkgDir, "src")
+	for _, d := range []string{binDir, srcDir} {
+		if err := os.MkdirAll(d, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(srcDir, "go.mod"),
+		[]byte("module galebuildtest\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	mainGo := "package main\n\n/*\n" + ldflags + "\n" + cPreamble +
+		"\n*/\nimport \"C\"\n\nfunc main() {\n\t" + goBody + "\n}\n"
+	if err := os.WriteFile(filepath.Join(srcDir, "main.go"),
+		[]byte(mainGo), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	binPath := filepath.Join(binDir, "app")
+	cmd := exec.Command("go", "build", "-o", binPath, ".")
+	cmd.Dir = srcDir
+	cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Skipf("go build (cgo) failed: %v\n%s", err, out)
+	}
+	return binPath
+}
+
+// goBuildInfoReadable reports whether debug/buildinfo can still
+// parse path — the direct signal that a Go binary survived a fixup
+// pass intact (patchelf 0.18.0 corrupts it silently, #166).
+func goBuildInfoReadable(t *testing.T, path string) bool {
+	t.Helper()
+	out, err := exec.Command("go", "version", "-m", path).CombinedOutput()
+	if err != nil {
+		t.Logf("go version -m %s: %v\n%s", path, err, out)
+		return false
+	}
+	return true
+}
+
+// TestFixupBinariesSkipsGoBinary guards issue #166: patchelf 0.18.0
+// exits 0 but silently corrupts a dynamically linked (cgo) Go
+// binary. FixupBinaries sets only an own-lib rpath ($ORIGIN/../lib);
+// a cgo Go binary that links just libc gains nothing from it, so the
+// binary must pass through byte-for-byte and keep valid Go build
+// info rather than be patched.
+func TestFixupBinariesSkipsGoBinary(t *testing.T) {
+	pkgDir := t.TempDir()
+	binPath := buildCgoGoBinary(t, pkgDir, "", "", "")
+
+	before, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := FixupBinaries(pkgDir); err != nil {
+		t.Fatalf("FixupBinaries: %v", err)
+	}
+
+	after, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("FixupBinaries mutated a cgo Go binary (%d -> %d bytes); "+
+			"patchelf must not rewrite Go ELFs that gain no rpath (#166)",
+			len(before), len(after))
+	}
+	if !goBuildInfoReadable(t, binPath) {
+		t.Error("Go build info unreadable after FixupBinaries (#166 corruption)")
+	}
+}
+
+// TestAddDepRpathsSkipsGoBinaryWithoutDepLibs is the AddDepRpaths
+// mirror of #166. Even when a dep ships a shared lib (so the pass is
+// not short-circuited), a cgo Go binary that does not link that lib
+// gains nothing from the farm rpath and must be left byte-for-byte.
+func TestAddDepRpathsSkipsGoBinaryWithoutDepLibs(t *testing.T) {
+	if _, err := exec.LookPath("patchelf"); err != nil {
+		t.Skip("patchelf not available")
+	}
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available")
+	}
+
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	if err := os.MkdirAll(depLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void){return 7;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylib := filepath.Join(depLib, "libdep.so")
+	if out, err := exec.Command(
+		"cc", "-shared", "-fPIC",
+		"-Wl,-soname,libdep.so", "-o", dylib, libSrc,
+	).CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	// cgo Go binary linking only libc, NOT libdep.so.
+	pkgDir := t.TempDir()
+	binPath := buildCgoGoBinary(t, pkgDir, "", "", "")
+
+	before, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+		t.Fatalf("AddDepRpaths: %v", err)
+	}
+
+	after, err := os.ReadFile(binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("AddDepRpaths mutated a cgo Go binary that links no dep "+
+			"lib (%d -> %d bytes); the farm rpath resolves nothing for it "+
+			"(#166)", len(before), len(after))
+	}
+	if !goBuildInfoReadable(t, binPath) {
+		t.Error("Go build info unreadable after AddDepRpaths (#166 corruption)")
+	}
+}
+
+// TestGoRpathGate pins the #166 gate primitives directly, so the
+// decision is tested deterministically regardless of whether the
+// host patchelf actually corrupts Go binaries. A cgo Go binary that
+// links only libc must NOT be seen as needing an rpath into the dep
+// lib dirs (it would be skipped); one that links a dep's shared lib
+// MUST (it would still be patched); a plain C binary is not a Go
+// binary at all and is never subject to the gate.
+func TestGoRpathGate(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available")
+	}
+
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	if err := os.MkdirAll(depLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void){return 7;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylib := filepath.Join(depLib, "libdep.so")
+	if out, err := exec.Command(
+		"cc", "-shared", "-fPIC",
+		"-Wl,-soname,libdep.so", "-o", dylib, libSrc,
+	).CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+	libDirs := []string{depLib}
+
+	goOnlyLibc := buildCgoGoBinary(t, t.TempDir(), "", "", "")
+	if !isGoBinary(goOnlyLibc) {
+		t.Error("cgo build should be recognized as a Go binary")
+	}
+	if rpathResolvesNeededLib(goOnlyLibc, libDirs) {
+		t.Error("a Go binary linking only libc must not be seen as " +
+			"needing the dep lib rpath")
+	}
+
+	goDep := buildCgoGoBinary(t, t.TempDir(),
+		"#cgo LDFLAGS: -L"+depLib+" -ldep",
+		"extern int dep_func(void);",
+		"_ = C.dep_func()")
+	if !rpathResolvesNeededLib(goDep, libDirs) {
+		t.Error("a Go binary linking the dep lib must be seen as " +
+			"needing the dep lib rpath")
+	}
+
+	cBin := buildBinaryWithRpath(t, "$ORIGIN")
+	if isGoBinary(cBin) {
+		t.Error("a plain C binary must not be treated as a Go binary")
+	}
+}
+
+// TestAddDepRpathsFailsLoudlyOnCorruptingPatchelf guards the second
+// #166 layer: after patchelf reports success on a Go binary, the
+// fixup re-reads its build info and must fail the build loudly if it
+// is gone, rather than shipping a silently corrupted binary. A fake
+// patchelf that exits 0 but writes non-ELF bytes stands in for the
+// 0.18.0 corruption bug. The Go binary links a dep's shared lib so
+// the #166 gate does NOT skip it and patchelf actually runs — this
+// also exercises the error propagation out of the walk closure.
+func TestAddDepRpathsFailsLoudlyOnCorruptingPatchelf(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available")
+	}
+
+	depDir := t.TempDir()
+	depLib := filepath.Join(depDir, "lib")
+	if err := os.MkdirAll(depLib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libSrc := filepath.Join(depDir, "dep.c")
+	if err := os.WriteFile(libSrc,
+		[]byte("int dep_func(void){return 7;}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	dylib := filepath.Join(depLib, "libdep.so")
+	if out, err := exec.Command(
+		"cc", "-shared", "-fPIC",
+		"-Wl,-soname,libdep.so", "-o", dylib, libSrc,
+	).CombinedOutput(); err != nil {
+		t.Skipf("cc -shared failed: %v\n%s", err, out)
+	}
+
+	pkgDir := t.TempDir()
+	binPath := buildCgoGoBinary(t, pkgDir,
+		"#cgo LDFLAGS: -L"+depLib+" -ldep",
+		"extern int dep_func(void);",
+		"_ = C.dep_func()")
+
+	// Sanity: without a corrupting patchelf this Go binary is the
+	// non-skipped case the gate keeps patching.
+	if !isGoBinary(binPath) || !rpathResolvesNeededLib(binPath, []string{depLib}) {
+		t.Fatalf("setup: expected a Go binary that needs the dep lib rpath")
+	}
+
+	fakeDir := t.TempDir()
+	fake := filepath.Join(fakeDir, "patchelf")
+	script := "#!/bin/sh\nf=\"\"\nfor a; do f=\"$a\"; done\n" +
+		"printf 'not an elf' > \"$f\"\nexit 0\n"
+	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", fakeDir+":"+os.Getenv("PATH"))
+
+	err := AddDepRpaths(pkgDir, []string{depDir})
+	if err == nil {
+		t.Fatal("AddDepRpaths returned nil after patchelf corrupted a Go " +
+			"binary; a silently corrupted binary must fail the build (#166)")
+	}
+	if !strings.Contains(err.Error(), "build info") {
+		t.Errorf("expected a build-info verification error, got: %v", err)
+	}
+}
+
+// TestVerifyELFAfterPatch covers the post-patch verification helper:
+// a non-Go file is never checked (wasGo false is a no-op), a valid
+// Go binary passes, and a Go binary whose bytes were corrupted fails
+// because its build info can no longer be read.
+func TestVerifyELFAfterPatch(t *testing.T) {
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available")
+	}
+
+	cBin := buildBinaryWithRpath(t, "$ORIGIN")
+	if err := verifyELFAfterPatch(cBin, false); err != nil {
+		t.Errorf("a non-Go file must be a no-op (wasGo=false): %v", err)
+	}
+
+	goBin := buildCgoGoBinary(t, t.TempDir(), "", "", "")
+	if err := verifyELFAfterPatch(goBin, true); err != nil {
+		t.Errorf("valid Go binary should pass verification: %v", err)
+	}
+
+	if err := os.WriteFile(goBin, []byte("garbage"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := verifyELFAfterPatch(goBin, true); err == nil {
+		t.Error("a corrupted Go binary must fail verification")
+	}
+}
+
 // TestAddDepRpathsSkipsStaticELF is the AddDepRpaths mirror of
 // issue #134: a static binary under a prefix with dep libs present
 // must not be touched.

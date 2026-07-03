@@ -3,6 +3,7 @@
 package build
 
 import (
+	"debug/buildinfo"
 	"debug/elf"
 	"fmt"
 	"os"
@@ -51,6 +52,65 @@ func elfHasDynamicDeps(path string) bool {
 	return err == nil && len(needed) > 0
 }
 
+// isGoBinary reports whether path is an ELF that carries Go build
+// info. patchelf 0.18.0 exits 0 but silently corrupts a
+// dynamically linked Go binary's layout (#166), so a Go ELF must
+// not be rewritten unless the rpath being added would actually
+// resolve one of its shared-lib deps (see rpathResolvesNeededLib).
+func isGoBinary(path string) bool {
+	_, err := buildinfo.ReadFile(path)
+	return err == nil
+}
+
+// rpathResolvesNeededLib reports whether any DT_NEEDED soname of the
+// ELF at path names a shared library present under one of libDirs.
+// A cgo Go binary that links only system libraries (libc, libpthread)
+// has no soname under the package's own lib/ or a gale dep's lib/, so
+// an rpath pointed there resolves nothing: patching it only risks the
+// #166 corruption with nothing to gain. When the file cannot be
+// parsed, return false so the Go gate skips it rather than patch a
+// binary we cannot reason about.
+func rpathResolvesNeededLib(path string, libDirs []string) bool {
+	f, err := elf.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	needed, err := f.DynString(elf.DT_NEEDED)
+	if err != nil {
+		return false
+	}
+	for _, soname := range needed {
+		for _, dir := range libDirs {
+			if _, err := os.Stat(filepath.Join(dir, soname)); err == nil {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// verifyELFAfterPatch re-checks a binary after a successful patchelf
+// mutation. When the binary carried Go build info before the patch
+// (wasGo), that info must still be readable afterward — patchelf
+// 0.18.0 can report success while corrupting a Go binary (#166), and
+// the build must fail loudly here rather than ship a silently broken
+// artifact. Non-Go files are left to patchelf's own error handling,
+// matching the prior tolerance for truncated or special ELF files.
+func verifyELFAfterPatch(path string, wasGo bool) error {
+	if !wasGo {
+		return nil
+	}
+	if _, err := buildinfo.ReadFile(path); err != nil {
+		return fmt.Errorf(
+			"verify patched Go binary %s lost build info (patchelf corruption): %w",
+			path, err,
+		)
+	}
+	return nil
+}
+
 // walkPrefixELF calls fn for every regular ELF file under
 // prefixDir. The whole prefix tree is walked — not just bin/
 // and lib/ — so ELF helpers under libexec/ and sbin/ get the
@@ -97,8 +157,19 @@ func FixupBinaries(prefixDir string) error {
 		return nil
 	}
 
+	// The own-lib rpath reaches only <prefix>/lib, so that is the
+	// sole dir a Go binary here could resolve a dep from (#166).
+	ownLibDirs := []string{filepath.Join(prefixDir, "lib")}
+
 	for _, file := range files {
 		if !elfHasDynamicDeps(file) {
+			continue
+		}
+		wasGo := isGoBinary(file)
+		if wasGo && !rpathResolvesNeededLib(file, ownLibDirs) {
+			// #166: patchelf 0.18.0 corrupts dynamically linked Go
+			// binaries. A Go binary that links no lib under
+			// <prefix>/lib gains nothing from this rpath, so skip it.
 			continue
 		}
 		// Set rpath to find libs relative to the binary.
@@ -112,6 +183,9 @@ func FixupBinaries(prefixDir string) error {
 			// special ELF files — skip silently.
 			_ = out
 			continue
+		}
+		if err := verifyELFAfterPatch(file, wasGo); err != nil {
+			return err
 		}
 	}
 
@@ -188,11 +262,30 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		return nil
 	}
 
+	// The rpath resolves the package's own libs (<prefix>/lib) and
+	// dep dylibs (each dep store's lib/, farmed at install). A Go
+	// binary that links none of these gains nothing from it (#166).
+	libDirs := []string{filepath.Join(prefixDir, "lib")}
+	for _, storeDir := range depStoreDirs {
+		libDirs = append(libDirs, filepath.Join(storeDir, "lib"))
+	}
+
 	// Walk the whole prefix for ELF files. Both rpath
 	// components are computed per file so deeper layouts
 	// (libexec/git-core/, sbin/) get the right $ORIGIN depth.
+	var verifyErr error
 	_ = walkPrefixELF(prefixDir, func(path string) {
+		if verifyErr != nil {
+			return
+		}
 		if !elfHasDynamicDeps(path) {
+			return
+		}
+		wasGo := isGoBinary(path)
+		if wasGo && !rpathResolvesNeededLib(path, libDirs) {
+			// #166: never rewrite a dynamically linked Go binary
+			// that would resolve nothing through this rpath;
+			// patchelf 0.18.0 corrupts it silently.
 			return
 		}
 		// The own-lib rpath reaches the package's own libs;
@@ -202,10 +295,15 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 			relativeFarmRpathLinux(prefixDir, path)
 		cmd := exec.Command(patchelf,
 			"--set-rpath", rpath, path)
-		_ = cmd.Run() // skip errors on special ELF files
+		if err := cmd.Run(); err != nil {
+			return // skip errors on special ELF files
+		}
+		if err := verifyELFAfterPatch(path, wasGo); err != nil {
+			verifyErr = err
+		}
 	})
 
-	return nil
+	return verifyErr
 }
 
 // EnsureCodeSigned is a no-op on Linux. Exists so platform-
