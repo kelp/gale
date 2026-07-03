@@ -245,11 +245,17 @@ func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
 			continue
 		}
 		for _, dep := range md.Deps {
-			version := dep.Version
-			if dep.Revision > 0 {
-				version = fmt.Sprintf("%s-%d", dep.Version, dep.Revision)
-			}
-			depDir := resolveStoreDir(storeRoot, dep.Name, version)
+			// Resolve by bare version so the store returns the
+			// highest installed revision. The version pin holds
+			// SONAME/ABI identity; the revision floats to what is
+			// actually on disk, matching how top-level generation
+			// entries resolve. Pinning the recorded dep.Revision
+			// exactly dropped a dep from the farm whenever its
+			// installed revision advanced past the revision a
+			// dependent recorded in .gale-deps.toml (gh#172). The
+			// recorded revision still drives staleness elsewhere;
+			// this floats only farm resolution.
+			depDir := resolveStoreDir(storeRoot, dep.Name, dep.Version)
 			if !seen[depDir] {
 				seen[depDir] = true
 				queue = append(queue, depDir)
