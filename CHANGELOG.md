@@ -4,6 +4,16 @@
 
 ### Fixed
 
+- build: an implicit build-system toolchain no longer shadows an
+  explicitly pinned variant on the build PATH. A recipe with
+  `system = "zig"` that pins `zig15` in `[dependencies.build]`
+  used to compile with the implicit `zig` because a single sorted
+  bin-dir list put `pkg/zig/...` ahead of `pkg/zig15/...`. Explicit
+  build deps now take PATH priority over implicit system deps,
+  with each group kept deterministic (#174).
+- list: `gale list` now reads `.tool-versions`-only projects the
+  same way `sync`, `env`, and `sbom` do, so a project with no
+  `gale.toml` reports its packages instead of nothing (#169).
 - farm: a dependency whose installed revision advanced past the
   revision recorded in a dependent's `.gale-deps.toml` silently
   dropped out of the shared dylib farm, breaking the revision
