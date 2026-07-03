@@ -28,14 +28,16 @@ diff_files() {
 }
 
 # Pipeline-sensitive production paths (tier 3). Match non-test .go files.
+# Only the cross-cutting cmd/gale seams count: a package-local fix in
+# internal/generation or internal/farm with a same-package regression
+# test is the correct shape (e.g. bf6f506, 79d69ac) and must not be
+# forced to carry a cmd/integration test.
 sensitive_prod="$(
   diff_files \
     cmd/gale/context.go \
     cmd/gale/sync.go \
     cmd/gale/gc.go \
     cmd/gale/generations.go \
-    internal/generation \
-    internal/farm \
   | grep -E '\.go$' | grep -v '_test\.go$' || true
 )"
 

@@ -99,7 +99,7 @@ command (install / update / switch / …)
   → farm populate (during generation build)
 ```
 
-Entry points: `cmd/gale/context.go` (`finalizeInstall`,
+Entry points: `cmd/gale/context.go` (`FinalizeInstall`,
 `writeConfigAndLock`, `configVersionForRecipe`), command
 `RunE` handlers that call them.
 
@@ -181,7 +181,7 @@ callers and string literals from hits.
 | Area | Grep seeds | Commands | Test families |
 |------|------------|----------|---------------|
 | Version identity | `Full()`, `canonicalize`, `stripNumericRevision`, `configVersionForRecipe` | install, switch, update, sync, gc | `audit_fix_U1_*`, `internal/version/`, `rebuild_generation_test.go` |
-| Finalize path | `finalizeInstall`, `writeConfigAndLock`, `FinalizeRecipeInstall`, `updateLockfile` | install, update, switch, remove, pin | `context_test.go`, `audit_fix_U1_*`, `audit_fix_U11_*` |
+| Finalize path | `FinalizeInstall`, `writeConfigAndLock`, `FinalizeRecipeInstall`, `updateLockfile` | install, update, switch, remove, pin | `context_test.go`, `audit_fix_U1_*`, `audit_fix_U11_*` |
 | Sync / staleness | `runSync`, `Reinstall`, `isSuperseded`, `canonicalizeForBuild` | sync | `sync_*_test.go`, `audit_fix_U1_*` (gh#49) |
 | Generation / farm | `rebuildGeneration`, `generation.Build`, `farm`, `Rollback` | sync, gc, generations, rollback | `generation/audit_fix_*`, `audit_fix_U2_*`, `rebuild_generation_test.go` |
 | GC / retention | `storeRetentionKey`, `generationLinksSuperseded`, `projects.Register` | gc, doctor | `audit_fix_U4_*`, `gc_test.go`, `projects_*_test.go` |
