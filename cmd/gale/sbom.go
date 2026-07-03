@@ -3,12 +3,10 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
-	"path/filepath"
 	"runtime"
 	"sort"
 	"text/tabwriter"
@@ -122,7 +120,7 @@ func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
 		}
 		var configs []sbomConfig
 		if projPath, err := projectConfigPath(cwd); err == nil {
-			ok, existsErr := sbomConfigExists(projPath)
+			ok, existsErr := configOrToolVersionsExists(projPath)
 			if existsErr != nil {
 				return nil, existsErr
 			}
@@ -151,7 +149,7 @@ func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	ok, err := sbomConfigExists(path)
+	ok, err := configOrToolVersionsExists(path)
 	if err != nil {
 		return nil, err
 	}
@@ -159,24 +157,6 @@ func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
 		return nil, nil
 	}
 	return []sbomConfig{{path: path}}, nil
-}
-
-// sbomConfigExists reports whether the resolved config path has
-// anything to read: the gale.toml itself, or the project's
-// .tool-versions sibling that readConfigOrToolVersions falls
-// back to when gale.toml is absent (projectConfigPath returns
-// the would-be gale.toml path for .tool-versions-only trees).
-func sbomConfigExists(path string) (bool, error) {
-	if _, err := os.Stat(path); err == nil {
-		return true, nil
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return false, fmt.Errorf("stat %s: %w", path, err)
-	}
-	tv := filepath.Join(filepath.Dir(path), ".tool-versions")
-	if _, err := os.Stat(tv); err == nil {
-		return true, nil
-	}
-	return false, nil
 }
 
 // collectSbomEntries reads each config + lockfile and returns

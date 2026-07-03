@@ -185,6 +185,26 @@ func readConfigOrToolVersions(configPath string) (*config.GaleConfig, error) {
 	return cfg, nil
 }
 
+// configOrToolVersionsExists reports whether the resolved
+// config path has anything to read: the gale.toml itself, or
+// the project's .tool-versions sibling that
+// readConfigOrToolVersions falls back to when gale.toml is
+// absent (projectConfigPath returns the would-be gale.toml
+// path for .tool-versions-only trees). Used by the sbom and
+// list --all project legs.
+func configOrToolVersionsExists(path string) (bool, error) {
+	if _, err := os.Stat(path); err == nil {
+		return true, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("stat %s: %w", path, err)
+	}
+	tv := filepath.Join(filepath.Dir(path), ".tool-versions")
+	if _, err := os.Stat(tv); err == nil {
+		return true, nil
+	}
+	return false, nil
+}
+
 // LoadConfig reads and parses the gale.toml that this
 // context points to. If gale.toml doesn't exist, falls
 // back to reading .tool-versions in the same directory.
