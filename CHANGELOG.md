@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- farm: a dependency whose installed revision advanced past the
+  revision recorded in a dependent's `.gale-deps.toml` silently
+  dropped out of the shared dylib farm, breaking the revision
+  system's promise that SONAME-compatible dep upgrades are
+  absorbed without rebuilds. Surfaced as `import ssl` failing in
+  the prebuilt python on Linux after openssl moved to a new
+  revision. Farm resolution now floats each dep to its highest
+  installed revision; the recorded revision still drives
+  staleness (#172).
+
 ## v0.21.0 — 2026-07-03
 
 ### Fixed
