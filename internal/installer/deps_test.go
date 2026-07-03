@@ -226,6 +226,61 @@ func TestInstallBuildDepsEmpty(t *testing.T) {
 	}
 }
 
+// TestInstallBuildDepsClassifiesImplicitSystemDep asserts that a
+// recipe pinning an explicit toolchain variant (zig15) while
+// system = "zig" pulls in the implicit "zig" toolchain routes the
+// two into separate groups: the explicit pin into BinDirs, the
+// implicit system dep into SystemBinDirs. buildEnv then joins
+// BinDirs ahead of SystemBinDirs so the pin wins the build PATH
+// (gale#174).
+func TestInstallBuildDepsClassifiesImplicitSystemDep(t *testing.T) {
+	storeRoot := t.TempDir()
+	s := store.NewStore(storeRoot)
+
+	preInstall(t, s, "zig", "0.16.0")
+	preInstall(t, s, "zig15", "0.15.2")
+
+	recipes := map[string]*recipe.Recipe{
+		"zig":   makeRecipe("zig", "0.16.0", nil, nil),
+		"zig15": makeRecipe("zig15", "0.15.2", nil, nil),
+	}
+	inst := &Installer{
+		Store: s,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			if r, ok := recipes[name]; ok {
+				return r, nil
+			}
+			return nil, fmt.Errorf("unknown: %s", name)
+		},
+	}
+
+	r := makeRecipe("zmx", "0.6.0", []string{"zig15"}, nil)
+	r.Build.System = "zig"
+
+	deps, err := inst.InstallBuildDeps(r)
+	if err != nil {
+		t.Fatalf("InstallBuildDeps: %v", err)
+	}
+
+	explicitBin := filepath.Join(storeRoot, "zig15", "0.15.2", "bin")
+	systemBin := filepath.Join(storeRoot, "zig", "0.16.0", "bin")
+
+	if !contains(deps.BinDirs, explicitBin) {
+		t.Errorf("explicit zig15 bin not in BinDirs: %v", deps.BinDirs)
+	}
+	if contains(deps.BinDirs, systemBin) {
+		t.Errorf("implicit zig bin leaked into BinDirs: %v", deps.BinDirs)
+	}
+	if !contains(deps.SystemBinDirs, systemBin) {
+		t.Errorf("implicit zig bin not in SystemBinDirs: %v",
+			deps.SystemBinDirs)
+	}
+	if contains(deps.SystemBinDirs, explicitBin) {
+		t.Errorf("explicit zig15 bin leaked into SystemBinDirs: %v",
+			deps.SystemBinDirs)
+	}
+}
+
 func TestInstallBuildDepsTransitiveNamedDirs(t *testing.T) {
 	storeRoot := t.TempDir()
 	s := store.NewStore(storeRoot)

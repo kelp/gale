@@ -335,9 +335,19 @@ func runStep(bc *BuildContext, env []string, step string) error {
 // BuildDeps holds paths from installed build dependencies,
 // used to construct the build environment.
 type BuildDeps struct {
-	BinDirs   []string          // bin/ dirs for PATH
-	StoreDirs []string          // root store dirs for lib/include/pkgconfig
-	NamedDirs map[string]string // dep name → store directory
+	// BinDirs holds bin/ dirs from explicit [dependencies.build]
+	// entries (and their transitive closures). They take PATH
+	// priority so an explicit toolchain pin (e.g. zig15) wins over
+	// the implicit system toolchain (gale#174).
+	BinDirs []string
+	// SystemBinDirs holds bin/ dirs from implicit system-build
+	// tools merged in by withSystemDeps (e.g. "zig" for
+	// system = "zig"). Joined after BinDirs so an explicit pin of
+	// the same tool family shadows the implicit default rather than
+	// the reverse.
+	SystemBinDirs []string
+	StoreDirs     []string          // root store dirs for lib/include/pkgconfig
+	NamedDirs     map[string]string // dep name → store directory
 }
 
 // Canonicalize sorts and dedupes the slice fields in place.
@@ -351,6 +361,11 @@ type BuildDeps struct {
 func (d *BuildDeps) Canonicalize() {
 	slices.Sort(d.BinDirs)
 	d.BinDirs = slices.Compact(d.BinDirs)
+	// Sort the implicit group independently: it keeps its own
+	// deterministic order and stays a distinct PATH segment joined
+	// after BinDirs, so explicit pins keep priority (gale#174).
+	slices.Sort(d.SystemBinDirs)
+	d.SystemBinDirs = slices.Compact(d.SystemBinDirs)
 	slices.Sort(d.StoreDirs)
 	d.StoreDirs = slices.Compact(d.StoreDirs)
 }
@@ -677,7 +692,9 @@ func depBinTool(deps *BuildDeps, tool string) string {
 	if deps == nil {
 		return ""
 	}
-	for _, dir := range deps.BinDirs {
+	// Search explicit dep bins first, then implicit system-tool
+	// bins, matching the build PATH precedence (gale#174).
+	for _, dir := range slices.Concat(deps.BinDirs, deps.SystemBinDirs) {
 		p := filepath.Join(dir, tool)
 		if info, err := os.Stat(p); err == nil &&
 			!info.IsDir() && info.Mode()&0o111 != 0 {
@@ -724,8 +741,15 @@ func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	// see the scoped buildHome.
 	realHome, _ := os.UserHomeDir()
 	path := buildPath(realHome, toolsDir)
-	if deps != nil && len(deps.BinDirs) > 0 {
-		path = strings.Join(deps.BinDirs, ":") + ":" + path
+	if deps != nil {
+		// Explicit dep bin dirs first, implicit system-tool bin
+		// dirs last, so an explicit toolchain pin shadows the
+		// implicit system default on PATH (gale#174).
+		depDirs := append(append([]string{}, deps.BinDirs...),
+			deps.SystemBinDirs...)
+		if len(depDirs) > 0 {
+			path = strings.Join(depDirs, ":") + ":" + path
+		}
 	}
 	env := bc.baseEnv(buildHome, path, buildTmp)
 
