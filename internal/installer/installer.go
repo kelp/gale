@@ -942,13 +942,13 @@ func verifyPrebuiltAttestation(bin *recipe.Binary, archiveOut, token string, v a
 // InstallBuildOnlyDeps instead so build-only deps can be
 // skipped when a prebuilt binary install succeeds.
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
-	deps := withSystemDeps(
+	deps, implicit := withSystemDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
 		r.Build.System,
 	)
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, seen, &sync.Mutex{})
+	return inst.installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
 }
 
 // InstallRuntimeDeps installs only the runtime-tagged
@@ -964,7 +964,7 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 	deps.Build = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, seen, &sync.Mutex{})
+	return inst.installDepsInner(rCopy, nil, seen, &sync.Mutex{})
 }
 
 // InstallBuildOnlyDeps installs only the build-tagged
@@ -974,14 +974,14 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 // deps: now we top up with the build-only pieces before
 // running the source build.
 func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
-	deps := withSystemDeps(
+	deps, implicit := withSystemDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
 		r.Build.System,
 	)
 	deps.Runtime = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, seen, &sync.Mutex{})
+	return inst.installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
 }
 
 // ResolveDirectDeps returns the (name, version, revision)
@@ -1028,25 +1028,30 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedD
 }
 
 // withSystemDeps returns deps with build.SystemDeps(system)
-// merged into deps.Build (deduped). Returns the input
-// unchanged when there are no system deps to merge.
-func withSystemDeps(deps recipe.Dependencies, system string) recipe.Dependencies {
+// merged into deps.Build (deduped), plus the set of names it
+// added implicitly. Callers route the implicit set's bin dirs
+// into BuildDeps.SystemBinDirs so an explicit toolchain pin keeps
+// PATH priority over the system default (gale#174). Returns the
+// input unchanged and a nil set when there are no system deps.
+func withSystemDeps(deps recipe.Dependencies, system string) (recipe.Dependencies, map[string]bool) {
 	sysDeps := build.SystemDeps(system)
 	if len(sysDeps) == 0 {
-		return deps
+		return deps, nil
 	}
 	explicit := make(map[string]bool, len(deps.Build))
 	for _, d := range deps.Build {
 		explicit[d] = true
 	}
 	merged := append([]string{}, deps.Build...)
+	implicit := make(map[string]bool)
 	for _, d := range sysDeps {
 		if !explicit[d] {
 			merged = append(merged, d)
+			implicit[d] = true
 		}
 	}
 	deps.Build = merged
-	return deps
+	return deps, implicit
 }
 
 // mergeBuildDeps returns a BuildDeps whose slices and
@@ -1062,8 +1067,9 @@ func mergeBuildDeps(a, b *build.BuildDeps) *build.BuildDeps {
 		return a
 	}
 	out := &build.BuildDeps{
-		BinDirs:   append([]string{}, a.BinDirs...),
-		StoreDirs: append([]string{}, a.StoreDirs...),
+		BinDirs:       append([]string{}, a.BinDirs...),
+		SystemBinDirs: append([]string{}, a.SystemBinDirs...),
+		StoreDirs:     append([]string{}, a.StoreDirs...),
 		NamedDirs: make(map[string]string,
 			len(a.NamedDirs)+len(b.NamedDirs)),
 	}
@@ -1071,6 +1077,7 @@ func mergeBuildDeps(a, b *build.BuildDeps) *build.BuildDeps {
 		out.NamedDirs[k] = v
 	}
 	out.BinDirs = append(out.BinDirs, b.BinDirs...)
+	out.SystemBinDirs = append(out.SystemBinDirs, b.SystemBinDirs...)
 	out.StoreDirs = append(out.StoreDirs, b.StoreDirs...)
 	for k, v := range b.NamedDirs {
 		if _, exists := out.NamedDirs[k]; !exists {
@@ -1103,8 +1110,18 @@ func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recip
 // installDepsInner recursively installs build and runtime
 // dependencies. The seen map prevents cycles and deduplicates
 // diamond dependency graphs.
+//
+// implicit names the direct deps that withSystemDeps merged in as
+// system-build tools; their bin dirs go to SystemBinDirs so an
+// explicit toolchain pin keeps PATH priority (gale#174). Only the
+// top-level call classifies: the recursion passes nil, so every
+// transitive dep (of an explicit or an implicit dep alike) lands
+// in the explicit BinDirs group. A transitive tool never competes
+// with a sibling top-level pin for the same slot, so this keeps
+// the split simple and deterministic.
 func (inst *Installer) installDepsInner(
 	r *recipe.Recipe,
+	implicit map[string]bool,
 	seen map[string]bool,
 	seenMu *sync.Mutex,
 ) (*build.BuildDeps, error) {
@@ -1205,8 +1222,11 @@ func (inst *Installer) installDepsInner(
 
 			// Recurse for transitive deps before recording this
 			// dep, so the merged result keeps the dep ahead of its
-			// own transitive closure as the serial loop did.
-			transitive, err := inst.installDepsInner(depRecipe, seen, seenMu)
+			// own transitive closure as the serial loop did. nil
+			// implicit: transitive deps join the explicit BinDirs
+			// group (see installDepsInner doc).
+			//nolint:contextcheck // installDepsInner takes no ctx by design; the fan-out ctx only bounds the leaf fetches
+			transitive, err := inst.installDepsInner(depRecipe, nil, seen, seenMu)
 			if err != nil {
 				return fmt.Errorf("transitive deps of %q: %w",
 					dep, err)
@@ -1220,10 +1240,19 @@ func (inst *Installer) installDepsInner(
 			}
 			result.NamedDirs[dep] = storeDir
 			if binErr == nil {
-				result.BinDirs = append(result.BinDirs, binDir)
+				if implicit[dep] {
+					result.SystemBinDirs = append(
+						result.SystemBinDirs, binDir,
+					)
+				} else {
+					result.BinDirs = append(result.BinDirs, binDir)
+				}
 			}
 			result.BinDirs = append(
 				result.BinDirs, transitive.BinDirs...,
+			)
+			result.SystemBinDirs = append(
+				result.SystemBinDirs, transitive.SystemBinDirs...,
 			)
 			result.StoreDirs = append(
 				result.StoreDirs, transitive.StoreDirs...,
