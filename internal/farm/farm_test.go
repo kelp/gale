@@ -25,6 +25,19 @@ func TestIsVersionedDylib(t *testing.T) {
 		{"darwin", "libc++.1.dylib", true},
 		{"darwin", "libfoo.a", false},
 		{"darwin", "random.txt", false},
+		// darwin: non-numeric dotted stems must match — the
+		// stem carries a dotted, non-numeric segment before
+		// the final numeric version tail (gh#168).
+		{"darwin", "libMagick++-7.Q16HDRI.5.dylib", true},
+		{"darwin", "libFoo-1.Bar.2.dylib", true},
+		// darwin: numeric dotted stems keep matching.
+		{"darwin", "libpython3.14.dylib", true},
+		// darwin: the version tail stays required — a dotted
+		// non-numeric segment with no trailing numeric tail
+		// must NOT match, or the farm would swallow
+		// unversioned libs (gh#168 over-match guard).
+		{"darwin", "libMagick++-7.Q16HDRI.dylib", false},
+		{"darwin", "libbar.dylib", false},
 		// linux
 		{"linux", "libcurl.so.4", true},
 		{"linux", "libssl.so.3.1.4", true},
@@ -40,6 +53,41 @@ func TestIsVersionedDylib(t *testing.T) {
 			t.Errorf("IsVersionedDylib(%q) = %v, want %v",
 				c.name, got, c.want)
 		}
+	}
+}
+
+// populateAndReadFarmLink populates the farm from storeDir
+// and returns the resolved target of the farm symlink for
+// dylib. Fails the test if the symlink is absent.
+func populateAndReadFarmLink(
+	t *testing.T, storeDir, farmDir, dylib string,
+) string {
+	t.Helper()
+	if err := Populate(storeDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+	target, err := os.Readlink(filepath.Join(farmDir, dylib))
+	if err != nil {
+		t.Fatalf("expected farm symlink for %s: %v", dylib, err)
+	}
+	return target
+}
+
+// TestPopulateNonNumericDottedStem confirms the gh#168 fix end
+// to end: a dylib whose stem carries a non-numeric dotted
+// segment (libMagick++-7.Q16HDRI.5.dylib) lands in the farm,
+// not just that the regex matches.
+func TestPopulateNonNumericDottedStem(t *testing.T) {
+	root := t.TempDir()
+	farmDir := filepath.Join(root, "lib")
+	stem := "libMagick++-7.Q16HDRI"
+	dylib := versionedName(stem, "5")
+	storeDir := storeLayout(t, root, "imagemagick", "7.1.1",
+		[]string{dylib, aliasName(stem)})
+
+	target := populateAndReadFarmLink(t, storeDir, farmDir, dylib)
+	if want := filepath.Join(storeDir, "lib", dylib); target != want {
+		t.Errorf("target = %q, want %q", target, want)
 	}
 }
 
