@@ -14,6 +14,14 @@
   successful patchelf rewrite it re-reads a Go binary's build info
   and fails the build loudly rather than ship a corrupt artifact
   (#166).
+- farm: dylibs whose stem carries a non-numeric dotted segment,
+  like `libMagick++-7.Q16HDRI.5.dylib` (stem
+  `Magick++-7.Q16HDRI`), are now linked into `~/.gale/lib/` on
+  macOS. The `darwinVersioned` stem class excluded `.`, so these
+  libraries never matched and never entered the shared dylib
+  farm; the class now allows `.` while the `$`-anchored `.dylib`
+  and required numeric tail keep the version pinned to the final
+  numeric segment (#168).
 
 ## v0.21.1 — 2026-07-03
 
