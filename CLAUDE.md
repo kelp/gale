@@ -532,3 +532,46 @@ a plain "no" already conveys it.
   say so.
 - When reviewing your own work, actively look for claims you're not
   confident in and call them out.
+
+### Subagent Delegation
+
+Fable (the session model) is the orchestrator and advisor: it plans,
+decides, reviews, and synthesizes in the main thread. Cheaper models do
+the token-intensive work. When a task can be handed off cleanly, hand
+it off via the Agent tool; don't do it inline just because you can.
+
+When to delegate:
+
+- Codebase exploration likely to span more than 2-3 file reads
+- Research questions (docs, web, repos) with a clear deliverable
+- Executing a fully specified plan or mechanical change
+- Any bounded subtask whose intermediate output would otherwise
+  pollute the main context window
+
+Model selection. Always pass `model` explicitly; left unset, subagents
+inherit the session model, which is usually the most expensive tier.
+
+- **Sonnet** (default): the workhorse. Search, extraction,
+  summarizing, and executing a fully specified plan; any task where
+  the hard reasoning already happened upstream.
+- **Opus**: next tier up, still strong. Implementation with real
+  design decisions, ordinary debugging, standard code review.
+- **Fable** (top, spend sparingly): the hardest design questions,
+  subtle bug hunting, adversarial review of tricky code, cross-file
+  refactor planning. Mostly reserved for the main thread itself.
+
+When unsure, start cheap and escalate. Escalate-if-thin catches thin
+results, not confidently wrong ones: for judgment-heavy work (reviews,
+audits), either start a tier higher or verify the claims you'll act on
+in the main thread first.
+
+How to delegate well:
+
+- Pick the most specific agent type available (e.g. Explore, Plan)
+  before falling back to general-purpose.
+- Run independent subagents in parallel: one message, multiple Agent
+  calls.
+- Brief the agent like a colleague who just walked in: goal, context,
+  what's been ruled out, expected output shape, length cap if you
+  want one.
+- Verify what the agent did; don't trust the summary blind.
