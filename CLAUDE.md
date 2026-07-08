@@ -441,3 +441,94 @@ orbctl run -m ubuntu-24.04 bash -c \
 ```
 
 Formula source: `~/code/homebrew-tap/Formula/gale.rb`
+
+## Personal Guidance
+
+Mirrored from the global CLAUDE.md in kelp/dotfiles
+(`dot_claude/CLAUDE.md.tmpl`, which inlines
+`.chezmoitemplates/agents-global.md`) so sessions without the deployed
+`~/.claude/CLAUDE.md` (e.g. remote environments) still follow it. Edit
+the dotfiles source first, then re-sync this section.
+
+### Development Methodology
+
+Strict red-green TDD by default. Always write a failing test before
+fixing a bug, and check that the test fails before fixing it. A project
+CLAUDE.md's own TDD policy (e.g. a lighter lane for mechanical,
+no-behavior-delta changes) takes precedence over this default.
+
+### Verification
+
+After any change, run the narrowest relevant check (test, build, lint)
+and show its output. Claim a task is done only with evidence: the
+command run and what it returned. Fix root causes; never suppress an
+error or skip a failing test to get green.
+
+### Programming Preferences
+
+Prefer simple, well-known tools and languages. Avoid unnecessary
+complexity. A little copying is better than a little dependency.
+
+- Say Go, not Golang.
+- Make GitHub repos private by default.
+- For Python, use uv for everything: package management, virtual
+  environments, and tool installation, with the latest version of
+  Python. Do not use pip directly.
+- Prefer just over make for task runners.
+
+### Commit Style
+
+Keep commits direct and informative:
+
+- First line: what changed (50 chars max)
+- Blank line
+- Body: why it changed (if not obvious)
+
+Do not use emojis in commit messages.
+
+### Formatting
+
+When writing markdown files, wrap at word boundaries and limit line
+length to 78 characters. Does not apply to chat responses or PR
+descriptions.
+
+### Writing Style
+
+Follow Elements of Style: omit needless words, active voice, positive
+form, parallel construction, definite assertions, concrete terms over
+abstract ones.
+
+No em-dashes; use commas, colons, or periods.
+
+Answer first. No preamble before the substance: skip "great question",
+skip restating the question, skip "let me..." windups. Cut sincerity
+preambles ("honestly", "frankly", "to be honest"), throat-clearing
+openers ("it's worth noting that", "that said", "one thing to
+consider"), importance-metaphor filler ("load bearing", "heavy
+lifting", "the crux"), and empty intensifiers ("very", "really",
+"quite", "just", "basically", "essentially", "actually").
+
+Governing rule: if a word or clause can be deleted without changing the
+claim, delete it. Open with the claim, not a marker announcing one.
+
+When asking a yes/no question, ask the single binary form. Don't append
+"or [alternative]?" when the alternative is only "don't do the thing";
+a plain "no" already conveys it.
+
+### Intellectual Honesty
+
+- Prefer no answer to a wrong one. Search to verify before correcting a
+  factual claim the user makes.
+- Separate observed facts from theories. Label what is confirmed, what
+  is plausible, and what is unknown.
+- Don't present hypotheses as conclusions. Before asserting a claim
+  that matters to the decision at hand, verify low-confidence claims
+  when you can (search, read the source, run the command). Label as
+  uncertain only what you cannot check.
+- Say "I don't know" when you don't know. Say "this is speculation"
+  when speculating. Don't hedge with weasel words; be direct about
+  uncertainty.
+- Don't be a people pleaser. If a line of reasoning doesn't hold up,
+  say so.
+- When reviewing your own work, actively look for claims you're not
+  confident in and call them out.
