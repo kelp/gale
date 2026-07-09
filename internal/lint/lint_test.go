@@ -351,6 +351,118 @@ steps = ["go build -o ${PREFIX}/bin/foo"]
 	}
 }
 
+// --- Warning: go build without CGO_ENABLED ---
+
+const cgoRecipeHeader = `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[dependencies]
+build = ["go"]
+`
+
+var cgoEnabledCases = []struct {
+	name     string
+	build    string
+	wantWarn bool
+}{
+	{
+		name: "bare go build warns",
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "bare go install warns",
+		build: `[build]
+steps = ["go install ./cmd/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "per-platform bare go build warns",
+		build: `[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "inline CGO_ENABLED=0 ok",
+		build: `[build]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "inline CGO_ENABLED=1 opt-in ok",
+		build: `[build]
+steps = ["CGO_ENABLED=1 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "env command with CGO_ENABLED=0 ok",
+		build: `[build]
+steps = ["env GOOS=linux CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "build env table CGO_ENABLED=0 ok",
+		build: `[build]
+env = { CGO_ENABLED = "0" }
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "build env table CGO_ENABLED=1 opt-in ok",
+		build: `[build]
+env = { CGO_ENABLED = "1" }
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "per-platform env table CGO_ENABLED=0 ok",
+		build: `[build.linux-amd64]
+env = { CGO_ENABLED = "0" }
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "export step sets CGO_ENABLED ok",
+		build: `[build]
+steps = ["export CGO_ENABLED=0", "go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "cargo install does not match",
+		build: `[build]
+steps = ["cargo install --path . --root ${PREFIX}"]`,
+		wantWarn: false,
+	},
+	{
+		name: "make.bash does not match",
+		build: `[build]
+steps = ["CGO_ENABLED=0 bash make.bash"]`,
+		wantWarn: false,
+	},
+}
+
+func TestLintCgoEnabled(t *testing.T) {
+	for _, tt := range cgoEnabledCases {
+		t.Run(tt.name, func(t *testing.T) {
+			issues := Lint(cgoRecipeHeader+tt.build+"\n", "")
+			got := hasWarning(issues, "cgo_enabled")
+			if got != tt.wantWarn {
+				t.Errorf("cgo_enabled warning = %v, want %v; issues: %v",
+					got, tt.wantWarn, issues)
+			}
+		})
+	}
+}
+
 func TestLintCargoBuildMissingRustDep(t *testing.T) {
 	data := `
 [package]

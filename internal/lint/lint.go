@@ -102,6 +102,7 @@ var rules = []lintRule{
 	lintSourceRepo,
 	lintReleasedAt,
 	lintBuildSteps,
+	lintCgoEnabled,
 	lintPlatforms,
 	lintBinariesIndexRevision,
 }
@@ -303,6 +304,35 @@ func lintBuildSteps(
 	checkBuildDeps(steps, buildDepNames(r.Dependencies), addWarn)
 }
 
+// lintCgoEnabled warns when a step runs go build/install and
+// the recipe never sets CGO_ENABLED — inline in a step or via
+// a [build] env table. Any explicit assignment (0 or 1)
+// suppresses: the author made a deliberate linkage choice.
+func lintCgoEnabled(
+	r *recipe, _ string,
+	_ func(string), addWarn func(string),
+) {
+	goCmd := ""
+	for _, s := range extractSteps(r.Build) {
+		if strings.Contains(s, "CGO_ENABLED=") {
+			return
+		}
+		for _, cmd := range goBuildCmds {
+			if containsCommand(s, cmd) {
+				goCmd = cmd
+			}
+		}
+	}
+	if goCmd == "" || buildEnvSets(r.Build, "CGO_ENABLED") {
+		return
+	}
+	addWarn(fmt.Sprintf(
+		"build step runs %q without CGO_ENABLED=0; dynamically "+
+			"linked Go binaries break across glibc versions (set "+
+			"CGO_ENABLED=1 explicitly if cgo is required)", goCmd,
+	))
+}
+
 // lintPlatforms warns about unrecognized platform strings.
 func lintPlatforms(
 	r *recipe, _ string,
@@ -371,6 +401,37 @@ func extractSteps(build map[string]interface{}) []string {
 	return nil
 }
 
+// buildEnvSets reports whether the [build] env table — or any
+// platform sub-table's env — sets key. Unlike extractSteps it
+// scans every platform: for suppressing a warning, a broader
+// scan only reduces false positives.
+func buildEnvSets(build map[string]interface{}, key string) bool {
+	if build == nil {
+		return false
+	}
+	if envHas(build["env"], key) {
+		return true
+	}
+	for _, v := range build {
+		if m, ok := v.(map[string]interface{}); ok {
+			if envHas(m["env"], key) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// envHas reports whether raw is an env table containing key.
+func envHas(raw interface{}, key string) bool {
+	env, ok := raw.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	_, ok = env[key]
+	return ok
+}
+
 func toStringSlice(v interface{}) []string {
 	arr, ok := v.([]interface{})
 	if !ok {
@@ -412,8 +473,12 @@ type depPattern struct {
 	dep     string   // expected dep name
 }
 
+// goBuildCmds are the go compile commands checked by both the
+// build-dep rule and lintCgoEnabled.
+var goBuildCmds = []string{"go build", "go install"}
+
 var depPatterns = []depPattern{
-	{substrs: []string{"go build", "go install"}, dep: "go"},
+	{substrs: goBuildCmds, dep: "go"},
 	{substrs: []string{"cargo build", "cargo install"}, dep: "rust"},
 	{substrs: []string{"cmake"}, dep: "cmake"},
 	{substrs: []string{"zig build"}, dep: "zig"},
