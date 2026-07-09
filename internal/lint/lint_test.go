@@ -431,6 +431,22 @@ steps = ["go build -o ${PREFIX}/bin/foo"]`,
 		wantWarn: false,
 	},
 	{
+		name: "go build in second platform table warns",
+		build: `[build.darwin-arm64]
+steps = ["make install PREFIX=${PREFIX}"]
+[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "flag on one platform suppresses for all",
+		build: `[build.darwin-arm64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
 		name: "export step sets CGO_ENABLED ok",
 		build: `[build]
 steps = ["export CGO_ENABLED=0", "go build -o ${PREFIX}/bin/foo"]`,

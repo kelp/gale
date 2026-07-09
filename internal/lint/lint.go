@@ -313,7 +313,7 @@ func lintCgoEnabled(
 	_ func(string), addWarn func(string),
 ) {
 	goCmd := ""
-	for _, s := range extractSteps(r.Build) {
+	for _, s := range extractAllSteps(r.Build) {
 		if strings.Contains(s, "CGO_ENABLED=") {
 			return
 		}
@@ -399,6 +399,24 @@ func extractSteps(build map[string]interface{}) []string {
 		}
 	}
 	return nil
+}
+
+// extractAllSteps returns the union of top-level [build] steps
+// and every platform sub-table's steps. extractSteps stops at
+// the first steps list it finds, which is enough for
+// required-field checks; the cgo rule must see all platforms
+// so a go build in any of them is detected.
+func extractAllSteps(build map[string]interface{}) []string {
+	if build == nil {
+		return nil
+	}
+	steps := toStringSlice(build["steps"])
+	for _, v := range build {
+		if m, ok := v.(map[string]interface{}); ok {
+			steps = append(steps, toStringSlice(m["steps"])...)
+		}
+	}
+	return steps
 }
 
 // buildEnvSets reports whether the [build] env table — or any
