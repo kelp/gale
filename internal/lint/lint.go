@@ -449,9 +449,16 @@ func cgoBuildVariants(r *recipe) []buildVariant {
 	topEnv := r.Build["env"]
 	var covered []string
 	var variants []buildVariant
+	declared := r.Package.Platforms
 	for _, k := range sortedKeys(r.Build) {
 		m, ok := r.Build[k].(map[string]interface{})
 		if !ok || !validPlatforms[k] {
+			continue
+		}
+		// A table for a platform outside the declared list
+		// never runs: build.checkPlatform rejects the
+		// platform before any step executes.
+		if len(declared) > 0 && !slices.Contains(declared, k) {
 			continue
 		}
 		covered = append(covered, k)

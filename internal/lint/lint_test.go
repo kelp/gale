@@ -451,6 +451,18 @@ steps = ["go build -o ${PREFIX}/bin/foo"]`,
 		wantWarn: true,
 	},
 	{
+		// A build table for a platform outside the declared
+		// list never runs (build.checkPlatform rejects the
+		// platform before any step executes).
+		name:      "undeclared platform table does not warn",
+		platforms: `platforms = ["darwin-arm64"]`,
+		build: `[build.darwin-arm64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
 		// A platform env table replaces the top-level env
 		// wholesale (recipe.BuildForPlatform), so this
 		// platform's go build never sees the top-level flag.
