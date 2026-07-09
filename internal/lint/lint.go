@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
+	"sort"
 	"strings"
 	"time"
 
@@ -318,7 +320,7 @@ func lintCgoEnabled(
 	if buildEnvSets(r.Build, "CGO_ENABLED") {
 		return
 	}
-	for _, s := range extractAllSteps(r.Build) {
+	for _, s := range cgoCheckSteps(r) {
 		if strings.Contains(s, "CGO_ENABLED=") {
 			continue
 		}
@@ -405,22 +407,61 @@ func extractSteps(build map[string]interface{}) []string {
 	return nil
 }
 
-// extractAllSteps returns the union of top-level [build] steps
-// and every platform sub-table's steps. extractSteps stops at
-// the first steps list it finds, which is enough for
-// required-field checks; the cgo rule must see all platforms
-// so a go build in any of them is detected.
-func extractAllSteps(build map[string]interface{}) []string {
-	if build == nil {
+// cgoCheckSteps returns the build steps that can execute on
+// some eligible platform: every platform sub-table's steps,
+// plus the top-level steps — unless every declared platform
+// overrides steps, which makes the top-level list dead
+// (recipe.BuildForPlatform replaces steps wholesale). With no
+// declared platform list the recipe is eligible everywhere,
+// so the top-level steps always stay live. extractSteps is
+// not reused here: it stops at the first steps list it finds,
+// which is enough for required-field checks but would hide a
+// go build on the other platforms.
+func cgoCheckSteps(r *recipe) []string {
+	if r.Build == nil {
 		return nil
 	}
-	steps := toStringSlice(build["steps"])
-	for _, v := range build {
-		if m, ok := v.(map[string]interface{}); ok {
-			steps = append(steps, toStringSlice(m["steps"])...)
+	var overridden []string
+	var steps []string
+	for _, k := range sortedKeys(r.Build) {
+		m, ok := r.Build[k].(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if s := toStringSlice(m["steps"]); s != nil {
+			steps = append(steps, s...)
+			overridden = append(overridden, k)
 		}
 	}
+	if !allOverridden(r.Package.Platforms, overridden) {
+		steps = append(steps, toStringSlice(r.Build["steps"])...)
+	}
 	return steps
+}
+
+// sortedKeys returns m's keys in sorted order so warnings are
+// deterministic regardless of map iteration order.
+func sortedKeys(m map[string]interface{}) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// allOverridden reports whether platforms is non-empty and
+// every entry appears in overridden.
+func allOverridden(platforms, overridden []string) bool {
+	if len(platforms) == 0 {
+		return false
+	}
+	for _, p := range platforms {
+		if !slices.Contains(overridden, p) {
+			return false
+		}
+	}
+	return true
 }
 
 // buildEnvSets reports whether the [build] env table — or any

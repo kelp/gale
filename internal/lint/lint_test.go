@@ -353,13 +353,16 @@ steps = ["go build -o ${PREFIX}/bin/foo"]
 
 // --- Warning: go build without CGO_ENABLED ---
 
-const cgoRecipeHeader = `
+const cgoRecipePackage = `
 [package]
 name = "foo"
 version = "1.0"
 description = "A tool"
 license = "MIT"
 homepage = "https://example.com"
+`
+
+const cgoRecipeSource = `
 [source]
 repo = "owner/foo"
 url = "https://example.com/foo.tar.gz"
@@ -369,9 +372,10 @@ build = ["go"]
 `
 
 var cgoEnabledCases = []struct {
-	name     string
-	build    string
-	wantWarn bool
+	name      string
+	platforms string // extra [package] keys, e.g. platforms
+	build     string
+	wantWarn  bool
 }{
 	{
 		name: "bare go build warns",
@@ -447,6 +451,38 @@ steps = ["go build -o ${PREFIX}/bin/foo"]`,
 		wantWarn: true,
 	},
 	{
+		// Platform steps replace the top-level list wholesale
+		// (recipe.BuildForPlatform), so with every declared
+		// platform overridden the top-level go build is dead.
+		name:      "dead top-level steps do not warn",
+		platforms: `platforms = ["linux-amd64"]`,
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name:      "top-level steps run on non-overridden platform",
+		platforms: `platforms = ["linux-amd64", "darwin-arm64"]`,
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.darwin-arm64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		// Without a declared platform list the recipe is
+		// eligible everywhere, so the top-level steps stay
+		// live no matter how many platforms override them.
+		name: "no declared platforms keeps top-level live",
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
 		// Each step runs in its own sh -c with a fixed env
 		// (build.runStep), so an export never reaches the
 		// next step — the go build still defaults to cgo.
@@ -472,7 +508,9 @@ steps = ["CGO_ENABLED=0 bash make.bash"]`,
 func TestLintCgoEnabled(t *testing.T) {
 	for _, tt := range cgoEnabledCases {
 		t.Run(tt.name, func(t *testing.T) {
-			issues := Lint(cgoRecipeHeader+tt.build+"\n", "")
+			data := cgoRecipePackage + tt.platforms +
+				cgoRecipeSource + tt.build + "\n"
+			issues := Lint(data, "")
 			got := hasWarning(issues, "cgo_enabled")
 			if got != tt.wantWarn {
 				t.Errorf("cgo_enabled warning = %v, want %v; issues: %v",
