@@ -305,32 +305,36 @@ func lintBuildSteps(
 }
 
 // lintCgoEnabled warns when a step runs go build/install and
-// the recipe never sets CGO_ENABLED — inline in a step or via
-// a [build] env table. Any explicit assignment (0 or 1)
-// suppresses: the author made a deliberate linkage choice.
+// CGO_ENABLED is not set in that same step or a [build] env
+// table. Any explicit assignment (0 or 1) suppresses: the
+// author made a deliberate linkage choice. The check is
+// per-step because each step runs in its own sh -c with a
+// fixed env (build.runStep) — an export in an earlier step or
+// a flag on another platform's step never reaches this one.
 func lintCgoEnabled(
 	r *recipe, _ string,
 	_ func(string), addWarn func(string),
 ) {
-	goCmd := ""
-	for _, s := range extractAllSteps(r.Build) {
-		if strings.Contains(s, "CGO_ENABLED=") {
-			return
-		}
-		for _, cmd := range goBuildCmds {
-			if containsCommand(s, cmd) {
-				goCmd = cmd
-			}
-		}
-	}
-	if goCmd == "" || buildEnvSets(r.Build, "CGO_ENABLED") {
+	if buildEnvSets(r.Build, "CGO_ENABLED") {
 		return
 	}
-	addWarn(fmt.Sprintf(
-		"build step runs %q without CGO_ENABLED=0; dynamically "+
-			"linked Go binaries break across glibc versions (set "+
-			"CGO_ENABLED=1 explicitly if cgo is required)", goCmd,
-	))
+	for _, s := range extractAllSteps(r.Build) {
+		if strings.Contains(s, "CGO_ENABLED=") {
+			continue
+		}
+		for _, cmd := range goBuildCmds {
+			if !containsCommand(s, cmd) {
+				continue
+			}
+			addWarn(fmt.Sprintf(
+				"build step runs %q without CGO_ENABLED=0; "+
+					"dynamically linked Go binaries break across "+
+					"glibc versions (set CGO_ENABLED=1 explicitly "+
+					"if cgo is required)", cmd,
+			))
+			return
+		}
+	}
 }
 
 // lintPlatforms warns about unrecognized platform strings.

@@ -439,18 +439,21 @@ steps = ["go build -o ${PREFIX}/bin/foo"]`,
 		wantWarn: true,
 	},
 	{
-		name: "flag on one platform suppresses for all",
+		name: "flag on one platform does not cover another",
 		build: `[build.darwin-arm64]
 steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]
 [build.linux-amd64]
 steps = ["go build -o ${PREFIX}/bin/foo"]`,
-		wantWarn: false,
+		wantWarn: true,
 	},
 	{
-		name: "export step sets CGO_ENABLED ok",
+		// Each step runs in its own sh -c with a fixed env
+		// (build.runStep), so an export never reaches the
+		// next step — the go build still defaults to cgo.
+		name: "export in earlier step does not suppress",
 		build: `[build]
 steps = ["export CGO_ENABLED=0", "go build -o ${PREFIX}/bin/foo"]`,
-		wantWarn: false,
+		wantWarn: true,
 	},
 	{
 		name: "cargo install does not match",
