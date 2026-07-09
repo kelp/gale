@@ -307,36 +307,50 @@ func lintBuildSteps(
 }
 
 // lintCgoEnabled warns when a step runs go build/install and
-// CGO_ENABLED is not set in that same step or a [build] env
-// table. Any explicit assignment (0 or 1) suppresses: the
-// author made a deliberate linkage choice. The check is
-// per-step because each step runs in its own sh -c with a
-// fixed env (build.runStep) — an export in an earlier step or
-// a flag on another platform's step never reaches this one.
+// CGO_ENABLED is not set in that same step or in the env table
+// that step actually receives. Any explicit assignment (0 or 1)
+// suppresses: the author made a deliberate linkage choice. The
+// check is per-step because each step runs in its own sh -c
+// with a fixed env (build.runStep) — an export in an earlier
+// step never reaches this one — and per-variant because a
+// platform sub-table replaces the top-level steps and env
+// wholesale (recipe.BuildForPlatform).
 func lintCgoEnabled(
 	r *recipe, _ string,
 	_ func(string), addWarn func(string),
 ) {
-	if buildEnvSets(r.Build, "CGO_ENABLED") {
+	for _, v := range cgoBuildVariants(r) {
+		cmd := cgoViolation(v)
+		if cmd == "" {
+			continue
+		}
+		addWarn(fmt.Sprintf(
+			"build step runs %q without CGO_ENABLED=0; "+
+				"dynamically linked Go binaries break across "+
+				"glibc versions (set CGO_ENABLED=1 explicitly "+
+				"if cgo is required)", cmd,
+		))
 		return
 	}
-	for _, s := range cgoCheckSteps(r) {
+}
+
+// cgoViolation returns the go command a variant runs without
+// CGO_ENABLED, or "" if the variant is clean.
+func cgoViolation(v buildVariant) string {
+	if envHas(v.env, "CGO_ENABLED") {
+		return ""
+	}
+	for _, s := range v.steps {
 		if strings.Contains(s, "CGO_ENABLED=") {
 			continue
 		}
 		for _, cmd := range goBuildCmds {
-			if !containsCommand(s, cmd) {
-				continue
+			if containsCommand(s, cmd) {
+				return cmd
 			}
-			addWarn(fmt.Sprintf(
-				"build step runs %q without CGO_ENABLED=0; "+
-					"dynamically linked Go binaries break across "+
-					"glibc versions (set CGO_ENABLED=1 explicitly "+
-					"if cgo is required)", cmd,
-			))
-			return
 		}
 	}
+	return ""
 }
 
 // lintPlatforms warns about unrecognized platform strings.
@@ -407,36 +421,53 @@ func extractSteps(build map[string]interface{}) []string {
 	return nil
 }
 
-// cgoCheckSteps returns the build steps that can execute on
-// some eligible platform: every platform sub-table's steps,
-// plus the top-level steps — unless every declared platform
-// overrides steps, which makes the top-level list dead
-// (recipe.BuildForPlatform replaces steps wholesale). With no
-// declared platform list the recipe is eligible everywhere,
-// so the top-level steps always stay live. extractSteps is
-// not reused here: it stops at the first steps list it finds,
-// which is enough for required-field checks but would hide a
-// go build on the other platforms.
-func cgoCheckSteps(r *recipe) []string {
+// buildVariant pairs the steps one platform executes with the
+// env table those steps receive. recipe.BuildForPlatform
+// replaces steps and env wholesale when a platform sub-table
+// defines them, so they must be checked together, not pooled
+// across the recipe.
+type buildVariant struct {
+	steps []string
+	env   interface{}
+}
+
+// cgoBuildVariants returns the (steps, env) combinations that
+// can execute on some eligible platform: one per platform
+// sub-table (falling back to the top-level steps or env where
+// the table omits them, as BuildForPlatform does), plus the
+// plain top-level variant — unless every declared platform has
+// a sub-table, which makes it dead. With no declared platform
+// list the recipe is eligible everywhere, so the top-level
+// variant always stays live. extractSteps is not reused here:
+// it stops at the first steps list it finds, which is enough
+// for required-field checks but would hide the other platforms.
+func cgoBuildVariants(r *recipe) []buildVariant {
 	if r.Build == nil {
 		return nil
 	}
-	var overridden []string
-	var steps []string
+	topSteps := toStringSlice(r.Build["steps"])
+	topEnv := r.Build["env"]
+	var covered []string
+	var variants []buildVariant
 	for _, k := range sortedKeys(r.Build) {
 		m, ok := r.Build[k].(map[string]interface{})
-		if !ok {
+		if !ok || !validPlatforms[k] {
 			continue
 		}
-		if s := toStringSlice(m["steps"]); s != nil {
-			steps = append(steps, s...)
-			overridden = append(overridden, k)
+		covered = append(covered, k)
+		v := buildVariant{steps: toStringSlice(m["steps"]), env: m["env"]}
+		if v.steps == nil {
+			v.steps = topSteps
 		}
+		if v.env == nil {
+			v.env = topEnv
+		}
+		variants = append(variants, v)
 	}
-	if !allOverridden(r.Package.Platforms, overridden) {
-		steps = append(steps, toStringSlice(r.Build["steps"])...)
+	if !allCovered(r.Package.Platforms, covered) {
+		variants = append(variants, buildVariant{topSteps, topEnv})
 	}
-	return steps
+	return variants
 }
 
 // sortedKeys returns m's keys in sorted order so warnings are
@@ -450,39 +481,18 @@ func sortedKeys(m map[string]interface{}) []string {
 	return keys
 }
 
-// allOverridden reports whether platforms is non-empty and
-// every entry appears in overridden.
-func allOverridden(platforms, overridden []string) bool {
+// allCovered reports whether platforms is non-empty and every
+// entry appears in covered.
+func allCovered(platforms, covered []string) bool {
 	if len(platforms) == 0 {
 		return false
 	}
 	for _, p := range platforms {
-		if !slices.Contains(overridden, p) {
+		if !slices.Contains(covered, p) {
 			return false
 		}
 	}
 	return true
-}
-
-// buildEnvSets reports whether the [build] env table — or any
-// platform sub-table's env — sets key. Unlike extractSteps it
-// scans every platform: for suppressing a warning, a broader
-// scan only reduces false positives.
-func buildEnvSets(build map[string]interface{}, key string) bool {
-	if build == nil {
-		return false
-	}
-	if envHas(build["env"], key) {
-		return true
-	}
-	for _, v := range build {
-		if m, ok := v.(map[string]interface{}); ok {
-			if envHas(m["env"], key) {
-				return true
-			}
-		}
-	}
-	return false
 }
 
 // envHas reports whether raw is an env table containing key.

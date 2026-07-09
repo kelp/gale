@@ -451,6 +451,40 @@ steps = ["go build -o ${PREFIX}/bin/foo"]`,
 		wantWarn: true,
 	},
 	{
+		// A platform env table replaces the top-level env
+		// wholesale (recipe.BuildForPlatform), so this
+		// platform's go build never sees the top-level flag.
+		name: "platform env shadows top-level flag",
+		build: `[build]
+env = { CGO_ENABLED = "0" }
+steps = ["make install PREFIX=${PREFIX}"]
+[build.linux-amd64]
+env = { GOFLAGS = "-trimpath" }
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "other platform env does not suppress",
+		build: `[build.darwin-arm64]
+env = { CGO_ENABLED = "0" }
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		// An env-only platform table inherits the top-level
+		// steps but replaces the env, so the inherited go
+		// build runs without the flag on that platform.
+		name:      "env-only platform table keeps top-level steps live",
+		platforms: `platforms = ["linux-amd64"]`,
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+env = { GOFLAGS = "-trimpath" }`,
+		wantWarn: true,
+	},
+	{
 		// Platform steps replace the top-level list wholesale
 		// (recipe.BuildForPlatform), so with every declared
 		// platform overridden the top-level go build is dead.
