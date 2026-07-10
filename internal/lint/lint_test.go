@@ -351,6 +351,221 @@ steps = ["go build -o ${PREFIX}/bin/foo"]
 	}
 }
 
+// --- Warning: go build without CGO_ENABLED ---
+
+const cgoRecipePackage = `
+[package]
+name = "foo"
+version = "1.0"
+description = "A tool"
+license = "MIT"
+homepage = "https://example.com"
+`
+
+const cgoRecipeSource = `
+[source]
+repo = "owner/foo"
+url = "https://example.com/foo.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+[dependencies]
+build = ["go"]
+`
+
+var cgoEnabledCases = []struct {
+	name      string
+	platforms string // extra [package] keys, e.g. platforms
+	build     string
+	wantWarn  bool
+}{
+	{
+		name: "bare go build warns",
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "bare go install warns",
+		build: `[build]
+steps = ["go install ./cmd/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "per-platform bare go build warns",
+		build: `[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "inline CGO_ENABLED=0 ok",
+		build: `[build]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "inline CGO_ENABLED=1 opt-in ok",
+		build: `[build]
+steps = ["CGO_ENABLED=1 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "env command with CGO_ENABLED=0 ok",
+		build: `[build]
+steps = ["env GOOS=linux CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "build env table CGO_ENABLED=0 ok",
+		build: `[build]
+env = { CGO_ENABLED = "0" }
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "build env table CGO_ENABLED=1 opt-in ok",
+		build: `[build]
+env = { CGO_ENABLED = "1" }
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "per-platform env table CGO_ENABLED=0 ok",
+		build: `[build.linux-amd64]
+env = { CGO_ENABLED = "0" }
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name: "go build in second platform table warns",
+		build: `[build.darwin-arm64]
+steps = ["make install PREFIX=${PREFIX}"]
+[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "flag on one platform does not cover another",
+		build: `[build.darwin-arm64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		// A build table for a platform outside the declared
+		// list never runs (build.checkPlatform rejects the
+		// platform before any step executes).
+		name:      "undeclared platform table does not warn",
+		platforms: `platforms = ["darwin-arm64"]`,
+		build: `[build.darwin-arm64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		// A platform env table replaces the top-level env
+		// wholesale (recipe.BuildForPlatform), so this
+		// platform's go build never sees the top-level flag.
+		name: "platform env shadows top-level flag",
+		build: `[build]
+env = { CGO_ENABLED = "0" }
+steps = ["make install PREFIX=${PREFIX}"]
+[build.linux-amd64]
+env = { GOFLAGS = "-trimpath" }
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "other platform env does not suppress",
+		build: `[build.darwin-arm64]
+env = { CGO_ENABLED = "0" }
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		// An env-only platform table inherits the top-level
+		// steps but replaces the env, so the inherited go
+		// build runs without the flag on that platform.
+		name:      "env-only platform table keeps top-level steps live",
+		platforms: `platforms = ["linux-amd64"]`,
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+env = { GOFLAGS = "-trimpath" }`,
+		wantWarn: true,
+	},
+	{
+		// Platform steps replace the top-level list wholesale
+		// (recipe.BuildForPlatform), so with every declared
+		// platform overridden the top-level go build is dead.
+		name:      "dead top-level steps do not warn",
+		platforms: `platforms = ["linux-amd64"]`,
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: false,
+	},
+	{
+		name:      "top-level steps run on non-overridden platform",
+		platforms: `platforms = ["linux-amd64", "darwin-arm64"]`,
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.darwin-arm64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		// Without a declared platform list the recipe is
+		// eligible everywhere, so the top-level steps stay
+		// live no matter how many platforms override them.
+		name: "no declared platforms keeps top-level live",
+		build: `[build]
+steps = ["go build -o ${PREFIX}/bin/foo"]
+[build.linux-amd64]
+steps = ["CGO_ENABLED=0 go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		// Each step runs in its own sh -c with a fixed env
+		// (build.runStep), so an export never reaches the
+		// next step — the go build still defaults to cgo.
+		name: "export in earlier step does not suppress",
+		build: `[build]
+steps = ["export CGO_ENABLED=0", "go build -o ${PREFIX}/bin/foo"]`,
+		wantWarn: true,
+	},
+	{
+		name: "cargo install does not match",
+		build: `[build]
+steps = ["cargo install --path . --root ${PREFIX}"]`,
+		wantWarn: false,
+	},
+	{
+		name: "make.bash does not match",
+		build: `[build]
+steps = ["CGO_ENABLED=0 bash make.bash"]`,
+		wantWarn: false,
+	},
+}
+
+func TestLintCgoEnabled(t *testing.T) {
+	for _, tt := range cgoEnabledCases {
+		t.Run(tt.name, func(t *testing.T) {
+			data := cgoRecipePackage + tt.platforms +
+				cgoRecipeSource + tt.build + "\n"
+			issues := Lint(data, "")
+			got := hasWarning(issues, "cgo_enabled")
+			if got != tt.wantWarn {
+				t.Errorf("cgo_enabled warning = %v, want %v; issues: %v",
+					got, tt.wantWarn, issues)
+			}
+		})
+	}
+}
+
 func TestLintCargoBuildMissingRustDep(t *testing.T) {
 	data := `
 [package]
