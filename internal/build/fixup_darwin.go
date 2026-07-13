@@ -351,9 +351,10 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 // "libgit2.dylib" or the intermediate "libgit2.1.dylib") to the
 // versioned real dylib basename the shared farm provides, by
 // following the symlink chain in the dep store lib dirs. The farm
-// holds only the deepest real versioned file (farm.Populate skips
-// symlinks), so resolving refBase through the dep store yields
-// exactly the farmed name.
+// now holds versioned symlink aliases too, but the deepest real
+// versioned file is always farmed, so rewriting refBase to it
+// stays correct and keeps prebuilts loadable on farms built by
+// older gale versions (which farmed only the real file).
 //
 // Returns ("", false) when no dep provides refBase, when refBase
 // already names the real file, or when that real file is not a
