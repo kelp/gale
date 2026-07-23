@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.21.3 — 2026-07-22
+
+### Added
+
+- lint: recipes are now checked for cgo linkage hazards. A
+  `go build` step that omits an explicit `CGO_ENABLED` setting is
+  flagged, because the default (cgo on when a C toolchain is
+  present) yields a dynamically linked binary that then needs the
+  shared-dylib farm at runtime. The check evaluates `CGO_ENABLED`
+  per step rather than per recipe, scans every platform build
+  table, pairs each step with its effective env, and skips dead
+  top-level steps and undeclared platform tables to avoid false
+  positives.
+
+### Fixed
+
+- farm: libtool-style soname aliases (for example
+  `libusb-1.0.so.0 -> libusb-1.0.so.0.6.0`) are now linked into
+  `~/.gale/lib/`. `farm.Populate` skipped symlinks, so the
+  versioned soname never entered the farm; on Linux a dependent
+  that dynamically links a farmed dep referenced that soname via
+  ELF `DT_NEEDED` and failed to load at startup on machines
+  without a distro copy of the library (macOS was masked because
+  the darwin fixup rewrites the reference to the real file).
+  Populate and drift detection now share one predicate — any
+  versioned basename that resolves to a regular file is farmed —
+  so real files and symlink aliases both land while dangling
+  links are skipped. Farms built by older gale versions surface
+  the missing aliases as `doctor` drift and repair on rebuild
+  (#181, gale-recipes#184).
+
 ## v0.21.2 — 2026-07-03
 
 ### Fixed
