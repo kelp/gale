@@ -142,6 +142,144 @@ func TestPopulateAddsVersionedDylibs(t *testing.T) {
 	}
 }
 
+// TestPopulateFarmsVersionedSymlinkAliases covers the libtool
+// install layout: the real file is libusb-1.0.so.0.6.0 and the
+// soname libusb-1.0.so.0 is a symlink to it. ELF DT_NEEDED (and
+// Mach-O install names) reference the soname, so the farm must
+// hold the versioned alias too — otherwise ld.so on a machine
+// without a distro copy of the lib fails to resolve it even
+// though the dependent's RUNPATH points at the farm (openocd on
+// Linux was the first dynamic dep-linker to hit this).
+func TestPopulateFarmsVersionedSymlinkAliases(t *testing.T) {
+	root := t.TempDir()
+	farmDir := filepath.Join(root, "lib")
+	realFile := versionedName("libusb", "0.6.0")
+	soname := versionedName("libusb", "0")
+	storeDir := storeLayout(t, root, "libusb", "1.0.30-1",
+		[]string{realFile})
+	libDir := filepath.Join(storeDir, "lib")
+	if err := os.Symlink(
+		realFile, filepath.Join(libDir, soname),
+	); err != nil {
+		t.Fatal(err)
+	}
+	// Unversioned alias symlink must stay un-farmed.
+	if err := os.Symlink(
+		realFile, filepath.Join(libDir, aliasName("libusb")),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Populate(storeDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	target, err := os.Readlink(filepath.Join(farmDir, soname))
+	if err != nil {
+		t.Fatalf("soname alias %s not farmed: %v", soname, err)
+	}
+	if want := filepath.Join(libDir, soname); target != want {
+		t.Errorf("soname target = %q, want %q", target, want)
+	}
+	if _, err := os.Readlink(
+		filepath.Join(farmDir, realFile),
+	); err != nil {
+		t.Errorf("real file %s should still be farmed: %v",
+			realFile, err)
+	}
+	if _, err := os.Lstat(filepath.Join(
+		farmDir, aliasName("libusb"),
+	)); err == nil {
+		t.Errorf("unversioned alias should not be farmed")
+	}
+}
+
+// TestPopulateSkipsDanglingVersionedSymlink: a versioned symlink
+// whose target is gone must not be farmed — a farm entry chain
+// ending nowhere would surface as a broken lib at runtime.
+func TestPopulateSkipsDanglingVersionedSymlink(t *testing.T) {
+	root := t.TempDir()
+	farmDir := filepath.Join(root, "lib")
+	storeDir := storeLayout(t, root, "foo", "1.0", nil)
+	libDir := filepath.Join(storeDir, "lib")
+	dangling := versionedName("libfoo", "1")
+	if err := os.Symlink(
+		"libfoo-gone", filepath.Join(libDir, dangling),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Populate(storeDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := os.Lstat(
+		filepath.Join(farmDir, dangling),
+	); err == nil {
+		t.Errorf("dangling symlink %s should not be farmed",
+			dangling)
+	}
+}
+
+// TestCheckDriftReportsMissingSonameAlias keeps CheckDrift
+// symmetric with Populate: a farm missing the versioned soname
+// alias (e.g. built by an older gale) must be flagged so
+// `gale doctor --repair` rebuilds it.
+func TestCheckDriftReportsMissingSonameAlias(t *testing.T) {
+	root := t.TempDir()
+	farmDir := filepath.Join(root, "lib")
+	realFile := versionedName("libusb", "0.6.0")
+	soname := versionedName("libusb", "0")
+	storeDir := storeLayout(t, root, "libusb", "1.0.30-1",
+		[]string{realFile})
+	libDir := filepath.Join(storeDir, "lib")
+	if err := os.Symlink(
+		realFile, filepath.Join(libDir, soname),
+	); err != nil {
+		t.Fatal(err)
+	}
+	// Simulate an old-gale farm: only the real file linked.
+	if err := os.MkdirAll(farmDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join(libDir, realFile),
+		filepath.Join(farmDir, realFile),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	issues, err := CheckDrift([]string{storeDir}, farmDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawMissing bool
+	for _, iss := range issues {
+		if strings.Contains(iss, "missing farm entry") &&
+			strings.Contains(iss, soname) {
+			sawMissing = true
+		}
+	}
+	if !sawMissing {
+		t.Errorf("expected missing-entry issue for %s, got %v",
+			soname, issues)
+	}
+
+	// After a Populate (what --repair does via Rebuild), the
+	// drift must clear.
+	if err := Populate(storeDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+	issues, err = CheckDrift([]string{storeDir}, farmDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 0 {
+		t.Errorf("expected no drift after repopulate, got %v",
+			issues)
+	}
+}
+
 func TestPopulateSkipsPackagesWithoutVersionedDylibs(t *testing.T) {
 	root := t.TempDir()
 	farmDir := filepath.Join(root, "lib")

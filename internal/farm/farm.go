@@ -105,11 +105,14 @@ func Populate(storeDir, farmDir string) error {
 		if !IsVersionedDylib(name) {
 			continue
 		}
-		// Only farm regular files. Versioned aliases like
-		// libexpat.1.dylib are symlinks to the real file
-		// (libexpat.1.11.3.dylib); farming only the real
-		// file avoids redundant entries.
-		info, err := os.Lstat(filepath.Join(libDir, name))
+		// Farm real files AND versioned symlink aliases.
+		// libtool installs the real file as libfoo.so.N.M.P
+		// with the soname libfoo.so.N as a symlink to it, and
+		// ELF DT_NEEDED / Mach-O install names reference the
+		// soname — so the alias must resolve through the farm
+		// too. Stat follows the chain, so dangling aliases
+		// drop out here.
+		info, err := os.Stat(filepath.Join(libDir, name))
 		if err != nil {
 			continue
 		}
@@ -277,11 +280,12 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 			if !IsVersionedDylib(l.Name()) {
 				continue
 			}
-			// Only check regular files — skip versioned
-			// aliases (symlinks) to avoid flagging them as
-			// missing when only the real file is farmed.
+			// Same predicate as Populate: real files and
+			// symlink aliases that resolve to a regular file
+			// are farmed, so both must be present. Dangling
+			// aliases are skipped by both.
 			lp := filepath.Join(libDir, l.Name())
-			lInfo, err := os.Lstat(lp)
+			lInfo, err := os.Stat(lp)
 			if err != nil || !lInfo.Mode().IsRegular() {
 				continue
 			}
