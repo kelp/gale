@@ -433,6 +433,9 @@ func TestFinalizeInstallErrorsWhenTargetMissing(t *testing.T) {
 }
 
 func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: read-only dirs are still writable")
+	}
 	tmp := t.TempDir()
 	galeDir := filepath.Join(tmp, ".gale")
 	storeRoot := filepath.Join(tmp, "pkg")
@@ -659,6 +662,9 @@ func TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion(t *testing.T) {
 // wrapping it with "rebuild generation" context. Install and switch
 // callers cannot add context they don't have; the wrapper belongs here.
 func TestFinalizeInstallWrapsRebuildError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: read-only dirs are still writable")
+	}
 	tmp := t.TempDir()
 	galeDir := filepath.Join(tmp, ".gale")
 	storeRoot := filepath.Join(tmp, "pkg")

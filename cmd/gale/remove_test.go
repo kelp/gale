@@ -14,6 +14,9 @@ import (
 // is updated before the store is modified. If the config
 // write fails, the store entry must still exist.
 func TestRemoveConfigBeforeStore(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: the read-only config dir is still writable")
+	}
 	// Isolate ~/.gale: the command path registers the project
 	// (gh#115) and this test also writes to defaultStoreRoot().
 	t.Setenv("HOME", t.TempDir())

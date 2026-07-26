@@ -5,8 +5,9 @@
 # Machine-specific
 gale.lock
 
-# Claude Code
-.claude/
+# Claude Code — .claude/ is tracked (agent bootstrap, hooks, settings).
+# Only machine-local overrides stay out.
+.claude/settings.local.json
 
 # Build artifacts
 *.tar.zst

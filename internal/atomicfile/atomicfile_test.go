@@ -75,6 +75,9 @@ func TestWriteCreatesParentDirs(t *testing.T) {
 }
 
 func TestWriteCleansUpOnError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: read-only dirs are still writable")
+	}
 	tmpDir := t.TempDir()
 	readOnlyDir := filepath.Join(tmpDir, "readonly")
 
