@@ -287,6 +287,9 @@ func TestIsStaleVersionDiffers(t *testing.T) {
 // --- Read: unreadable file returns error ---
 
 func TestReadUnreadableFileErrors(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("mode-0 files are readable as root")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gale.lock")
 	if err := os.WriteFile(path,
@@ -355,6 +358,9 @@ func TestWriteCreatesParentDir(t *testing.T) {
 // --- Write: preserves original on rename failure ---
 
 func TestWritePreservesOriginalOnFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: read-only dirs are still writable")
+	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "gale.lock")
 
@@ -465,6 +471,9 @@ func TestWriteOmitsEmptySHA256(t *testing.T) {
 // --- IsStale: lock file stat error (not ENOENT) ---
 
 func TestIsStaleStatLockError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: mode-0 dirs are still traversable")
+	}
 	dir := t.TempDir()
 	lockPath := filepath.Join(dir, "subdir", "gale.lock")
 

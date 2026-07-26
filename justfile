@@ -37,6 +37,16 @@ fmt-check:
 fmt:
     gofumpt -w cmd internal integration
 
+# Install the agent-sandbox toolchain. Blocks until the background
+# SessionStart bootstrap finishes, so it doubles as "wait for it".
+# See docs/dev/agent-environment.md.
+agent-bootstrap:
+    scripts/agent-bootstrap.sh --force
+
+# Show what the agent bootstrap installed, and what failed.
+agent-status:
+    @cat ~/.cache/gale-agent-bootstrap/status 2>/dev/null || echo "agent bootstrap has not run — try 'just agent-bootstrap'"
+
 # Install git hooks (pre-commit gofumpt check). Run once per clone.
 hooks:
     git config core.hooksPath .githooks

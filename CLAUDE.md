@@ -30,6 +30,34 @@ just release 0.2.0 # push tag — CI builds and publishes
                    # see docs/dev/releasing.md)
 ```
 
+## Agent Sandbox Environment
+
+Agent containers (Claude Code on the web and similar)
+ship none of the tools above. A `SessionStart` hook runs
+`scripts/agent-bootstrap.sh` in the background to install
+them. Full reference:
+[`docs/dev/agent-environment.md`](docs/dev/agent-environment.md).
+
+Three things to know before the first command:
+
+- **The bootstrap is async.** To wait for it, run it
+  again — `just agent-bootstrap` takes an flock and
+  blocks until the in-flight run finishes.
+  `just agent-status` shows what landed.
+- **`gale install`, `gale build` and `gale sync` cannot
+  work in the sandbox.** The egress proxy blocks GHCR's
+  blob host, so the binary path fails, and the
+  source-build fallback's upstream hosts are blocked
+  too — it burns minutes, then fails. A PreToolUse hook
+  blocks these commands. `gale lint` is offline-clean
+  and unaffected.
+- **The container runs as root**, so tests asserting a
+  permission error skip themselves
+  (`os.Geteuid() == 0`). They still run on CI.
+
+`gh` and `api.github.com` are unavailable; GitHub work
+goes through the GitHub MCP tools.
+
 ## Scratch Space
 
 `tmp/` at the repo root is scratch space for tests and

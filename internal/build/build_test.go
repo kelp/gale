@@ -2763,6 +2763,9 @@ func TestRestorePrefixPlaceholderSkipsBinaries(t *testing.T) {
 // --- BUG FIX 1: buildEnv returns error on MkdirTemp failure ---
 
 func TestBuildEnvReturnsErrorOnTmpDirFailure(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: MkdirTemp succeeds in a read-only dir")
+	}
 	// Save original HOME for cleanup.
 	oldHome := os.Getenv("HOME")
 	defer os.Setenv("HOME", oldHome)
