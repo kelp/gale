@@ -1,6 +1,7 @@
 package lockfile
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -11,11 +12,17 @@ import (
 	"testing"
 )
 
+// v1Guard is the mandatory downgrade guard, written verbatim. It is
+// kept separate from the fixture so the guard tests can remove or
+// corrupt exactly these bytes.
+const v1Guard = `[packages."!gale-lock-v1"]
+version = 1
+`
+
 // v1Fixture is a hand-written v1 lockfile. It pins the on-disk key
 // names: this file is a persisted format shared with committed
 // repositories, so a rename here breaks every checked-in lockfile.
-const v1Fixture = `version = 1
-
+const v1Fixture = "version = 1\n\n" + v1Guard + `
 [targets.default]
 roots = ["jq@1.8.1-2", "ripgrep@14.1.1-1"]
 
@@ -309,6 +316,107 @@ func TestV1SelectorKeyRoundTrip(t *testing.T) {
 	if !reflect.DeepEqual(reread.Targets.Host, hosts) {
 		t.Errorf("selector keys changed across a round trip:\n got %#v\nwant %#v",
 			reread.Targets.Host, hosts)
+	}
+}
+
+// TestReadV1RejectsBadGuard: the guard is what stops an
+// already-shipped gale from rewriting a v1 lock in the flat schema.
+// A file that claims version 1 without a well-formed guard is still
+// downgrade-destructible, so accepting one would leave exactly the
+// hole the guard exists to close.
+func TestReadV1RejectsBadGuard(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "absent",
+			content: strings.Replace(v1Fixture, v1Guard, "", 1),
+		},
+		{
+			name: "wrong value",
+			content: strings.Replace(v1Fixture, v1Guard,
+				"[packages.\"!gale-lock-v1\"]\nversion = 2\n", 1),
+		},
+		{
+			// A string here is precisely what the legacy decoder
+			// accepts, so it would not stop an old gale at all.
+			name: "string version",
+			content: strings.Replace(v1Fixture, v1Guard,
+				"[packages.\"!gale-lock-v1\"]\nversion = \"1\"\n", 1),
+		},
+		{
+			name: "carries artifacts",
+			content: strings.Replace(v1Fixture, v1Guard,
+				v1Guard+"\n[packages.\"!gale-lock-v1\".artifacts.\"darwin/arm64\"]\n"+
+					"sha256 = \"aaaa\"\nmethod = \"binary\"\ngraph_digest = \"sha256:x\"\n", 1),
+		},
+		{
+			// The guard field on a real node would make that node
+			// ambiguous with the guard and is never written.
+			name: "guard field on a real package",
+			content: strings.Replace(v1Fixture,
+				`[packages."jq@1.8.1-2".artifacts."darwin/arm64"]`,
+				"[packages.\"jq@1.8.1-2\"]\nversion = 1\n\n"+
+					`[packages."jq@1.8.1-2".artifacts."darwin/arm64"]`, 1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ReadV1(writeTemp(t, tt.content))
+			if !errors.Is(err, ErrDowngradeGuard) {
+				t.Fatalf("err = %v, want ErrDowngradeGuard", err)
+			}
+		})
+	}
+}
+
+// TestV1GuardIsWireOnly: the guard exists on disk and nowhere else.
+// Plan construction must never see it as a package node, and must
+// never have to remember to skip one.
+func TestV1GuardIsWireOnly(t *testing.T) {
+	lf, err := ReadV1(writeTemp(t, v1Fixture))
+	if err != nil {
+		t.Fatalf("ReadV1: %v", err)
+	}
+	if _, ok := lf.Packages["!gale-lock-v1"]; ok {
+		t.Errorf("guard leaked into the package map: %v", lf.Packages)
+	}
+
+	out := filepath.Join(t.TempDir(), "gale.lock")
+	if err := WriteV1(out, lf); err != nil {
+		t.Fatalf("WriteV1: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !strings.Contains(string(data), `[packages."!gale-lock-v1"]`) {
+		t.Errorf("WriteV1 omitted the downgrade guard:\n%s", data)
+	}
+}
+
+// TestLegacyReadRefusesV1: the guard's whole point. An old gale
+// reading a v1 lock must stop, not decode it into near-empty
+// packages and rewrite it in the flat schema. The assertion is
+// refusal plus byte-identity, not destruction.
+func TestLegacyReadRefusesV1(t *testing.T) {
+	path := writeTemp(t, v1Fixture)
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+
+	if _, err := Read(path); err == nil {
+		t.Fatal("legacy Read accepted a v1 lockfile")
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("legacy read modified the lockfile")
 	}
 }
 

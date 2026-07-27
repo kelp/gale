@@ -37,6 +37,13 @@ var (
 	// Refusing is the same bargain as ErrUnknownVersion, one level
 	// down.
 	ErrUnknownField = errors.New("unknown lockfile field")
+
+	// ErrDowngradeGuard reports a v1 lockfile whose reserved guard
+	// entry is absent or malformed. Such a file still claims version
+	// 1 but is destructible by an already-shipped gale, which is the
+	// exact hole the guard closes, so it is refused rather than
+	// repaired.
+	ErrDowngradeGuard = errors.New("malformed lockfile downgrade guard")
 )
 
 // Artifact is one package built or fetched for one platform. The
@@ -95,6 +102,90 @@ type schemaProbe struct {
 	Version *int `toml:"version"`
 }
 
+// guardKey is the reserved [packages] entry that stops an
+// already-shipped gale from rewriting a v1 lockfile in the flat
+// schema. It cannot collide with a real node, which is always
+// name@version-revision. Its value is an integer where the legacy
+// LockedPackage.Version is a string, so the legacy decoder fails on
+// type and old gale stops instead of discarding an enforced lock.
+const guardKey = "!gale-lock-v1"
+
+// wirePackage is the on-disk shape of a [packages.*] table when
+// reading. Version is decoded permissively: a string there is
+// exactly what the legacy decoder accepts, so rejecting it must be
+// ours to do and must name the guard rather than surfacing a TOML
+// type mismatch. It is never encoded; outPackage is the writer's
+// shape.
+type wirePackage struct {
+	Version   any                 `toml:"version"`
+	Artifacts map[string]Artifact `toml:"artifacts"`
+}
+
+// wireV1 is the on-disk document, guard included. The guard is a
+// wire-level concern only: ReadV1 strips it and WriteV1 injects it,
+// so plan construction never sees it as a node and never needs to
+// remember to skip one.
+type wireV1 struct {
+	Version  int                    `toml:"version"`
+	Targets  Targets                `toml:"targets"`
+	Packages map[string]wirePackage `toml:"packages"`
+}
+
+// outPackage is the writer's shape. Version is a pointer so it is
+// emitted for the guard alone.
+type outPackage struct {
+	Version   *int                `toml:"version,omitempty"`
+	Artifacts map[string]Artifact `toml:"artifacts,omitempty"`
+}
+
+// outV1 mirrors wireV1 for encoding.
+type outV1 struct {
+	Version  int                   `toml:"version"`
+	Targets  Targets               `toml:"targets"`
+	Packages map[string]outPackage `toml:"packages"`
+}
+
+// stripGuard validates the downgrade guard and returns the package
+// nodes without it. A file claiming version 1 without a well-formed
+// guard is still destructible by an old gale, so it is refused
+// rather than repaired.
+func stripGuard(w *wireV1) (map[string]Package, error) {
+	guard, ok := w.Packages[guardKey]
+	if !ok {
+		return nil, fmt.Errorf(
+			"%w: reserved entry [packages.%q] is missing",
+			ErrDowngradeGuard, guardKey,
+		)
+	}
+	if v, isInt := guard.Version.(int64); !isInt || v != SchemaVersion {
+		return nil, fmt.Errorf(
+			"%w: [packages.%q] version must be the integer %d, found %v",
+			ErrDowngradeGuard, guardKey, SchemaVersion, guard.Version,
+		)
+	}
+	if len(guard.Artifacts) > 0 {
+		return nil, fmt.Errorf(
+			"%w: [packages.%q] must carry no artifacts",
+			ErrDowngradeGuard, guardKey,
+		)
+	}
+
+	pkgs := make(map[string]Package, len(w.Packages)-1)
+	for name, p := range w.Packages {
+		if name == guardKey {
+			continue
+		}
+		if p.Version != nil {
+			return nil, fmt.Errorf(
+				"%w: package %q carries the reserved guard field",
+				ErrDowngradeGuard, name,
+			)
+		}
+		pkgs[name] = Package{Artifacts: p.Artifacts}
+	}
+	return pkgs, nil
+}
+
 // ReadV1 reads a v1 lockfile. A missing file wraps fs.ErrNotExist
 // so callers can distinguish "no lock" (unlocked mode) from a lock
 // that is present but unusable.
@@ -118,8 +209,8 @@ func ReadV1(path string) (*V1, error) {
 		)
 	}
 
-	var lf V1
-	md, err := toml.Decode(string(data), &lf)
+	var w wireV1
+	md, err := toml.Decode(string(data), &w)
 	if err != nil {
 		return nil, fmt.Errorf("parsing lock file: %w", err)
 	}
@@ -128,10 +219,12 @@ func ReadV1(path string) (*V1, error) {
 			"%s: %w: %s", path, ErrUnknownField, joinKeys(undecoded),
 		)
 	}
-	if lf.Packages == nil {
-		lf.Packages = make(map[string]Package)
+
+	pkgs, err := stripGuard(&w)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", path, err)
 	}
-	return &lf, nil
+	return &V1{Version: w.Version, Targets: w.Targets, Packages: pkgs}, nil
 }
 
 // joinKeys renders undecoded keys in their dotted TOML form so the
@@ -155,8 +248,25 @@ func WriteV1(path string, lf *V1) error {
 			ErrUnknownVersion, lf.Version, SchemaVersion,
 		)
 	}
+	out := outV1{
+		Version:  lf.Version,
+		Targets:  lf.Targets,
+		Packages: make(map[string]outPackage, len(lf.Packages)+1),
+	}
+	guardVersion := SchemaVersion
+	out.Packages[guardKey] = outPackage{Version: &guardVersion}
+	for name, p := range lf.Packages {
+		if name == guardKey {
+			return fmt.Errorf(
+				"%w: package %q collides with the reserved entry",
+				ErrDowngradeGuard, name,
+			)
+		}
+		out.Packages[name] = outPackage{Artifacts: p.Artifacts}
+	}
+
 	var buf bytes.Buffer
-	if err := toml.NewEncoder(&buf).Encode(lf); err != nil {
+	if err := toml.NewEncoder(&buf).Encode(out); err != nil {
 		return fmt.Errorf("encoding lock file: %w", err)
 	}
 	return atomicfile.Write(path, buf.Bytes())
