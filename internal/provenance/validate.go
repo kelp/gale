@@ -2,6 +2,7 @@ package provenance
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/kelp/gale/internal/lockgraph"
@@ -92,8 +93,17 @@ func (r Record) validateHashes() error {
 // canonical, which is what makes Record.node total, and enforces
 // that a binary record carries no build dependencies.
 func (r Record) validateDeps() error {
-	for _, list := range [][]string{r.RuntimeDeps, r.BuildDeps} {
-		for _, key := range list {
+	// A slice, not a map: map order is unspecified, so with both
+	// lists malformed the reported field would vary run to run.
+	lists := []struct {
+		field string
+		keys  []string
+	}{
+		{"runtime_deps", r.RuntimeDeps},
+		{"build_deps", r.BuildDeps},
+	}
+	for _, l := range lists {
+		for _, key := range l.keys {
 			name, version, ok := strings.Cut(key, "@")
 			if !ok {
 				return fmt.Errorf(
@@ -103,6 +113,16 @@ func (r Record) validateDeps() error {
 			if err := checkCanonical(name, version); err != nil {
 				return fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
+		}
+		// Sorted order is part of the format, not a constructor
+		// habit. Enforcing it only in New would let Write persist a
+		// record that ReadUnverified accepts and VerifyAgainstLock
+		// then rejects against the same graph, because the
+		// comparator compares lists element by element.
+		if !slices.IsSorted(l.keys) {
+			return fmt.Errorf(
+				"%w: %s is not sorted: %v", ErrInvalid, l.field, l.keys,
+			)
 		}
 	}
 	// A prebuilt artifact was not produced from build dependencies

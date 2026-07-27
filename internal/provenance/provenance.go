@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -206,7 +207,19 @@ func New(storeRoot string, n lockgraph.Node) (Record, error) {
 	if err != nil {
 		return Record{}, err
 	}
-	r := Record{
+	r := recordFrom(n, digest)
+	if err := r.validate(); err != nil {
+		return Record{}, err
+	}
+	return r, nil
+}
+
+// recordFrom is the single place a node becomes a record. Both the
+// writer and the lock-relative comparator go through it, so a
+// comparator can never drift from the writer by normalizing
+// differently: any change here changes both sides at once.
+func recordFrom(n lockgraph.Node, digest string) Record {
+	return Record{
 		Name:           n.Name,
 		Version:        n.Version,
 		Platform:       n.GOOS + "/" + n.GOARCH,
@@ -217,10 +230,6 @@ func New(storeRoot string, n lockgraph.Node) (Record, error) {
 		BuildDeps:      buildDepsFor(n),
 		GraphDigest:    digest,
 	}
-	if err := r.validate(); err != nil {
-		return Record{}, err
-	}
-	return r, nil
 }
 
 // buildDepsFor records build dependencies only for a source
@@ -235,6 +244,92 @@ func buildDepsFor(n lockgraph.Node) []string {
 		return nil
 	}
 	return edgeKeys(n, lockgraph.KindBuild)
+}
+
+// VerifyAgainstLock checks a stored record against the node the lock
+// says should be there, using a graph digest the caller recomputed
+// from the lock rather than from the store.
+//
+// This is the third trust level, and it exists here so there is only
+// one of it. The activation gate and the locked cache-hit path both
+// need it, and both need the same normalization: the same fields
+// compared, and recipe-derived build edges ignored for a binary
+// node. Two independent implementations of that comparison would
+// diverge, and the direction they diverge in is "accepts something
+// it should have refused".
+//
+// Unlike VerifyAgainstStore this reads nothing but the record, so a
+// source artifact whose build dependencies were collected long ago
+// still verifies: the digest binds the closure it was produced from
+// without that closure needing to exist.
+func VerifyAgainstLock(dir string, want lockgraph.Node, wantDigest string) (Record, error) {
+	got, err := ReadUnverified(dir)
+	if err != nil {
+		// Under a lock, absent provenance is a conflict rather than
+		// a lesser state: the lock names bytes that nothing on disk
+		// attests. Classifying it here keeps the policy in the one
+		// verifier both the gate and the cache-hit path call,
+		// instead of leaving each to reinterpret the error. ErrAbsent
+		// stays in the chain for callers that distinguish it.
+		return Record{}, fmt.Errorf("%w: %w", ErrInvalid, err)
+	}
+	if mismatch := firstMismatch(got, recordFrom(want, wantDigest)); mismatch != "" {
+		return Record{}, fmt.Errorf("%s: %w: %s", dir, ErrInvalid, mismatch)
+	}
+	return got, nil
+}
+
+// firstMismatch names the first field on which a stored record and
+// the expected one disagree, so the error says what is wrong rather
+// than that something is.
+//
+// graph_digest is checked last, deliberately. It changes whenever
+// anything below it changes, so checking it first would report it
+// for every drift and name the symptom instead of the cause. It is
+// the right answer only when every directly comparable field
+// already agrees, which is exactly the case where the closure
+// beneath this node moved.
+func firstMismatch(got, want Record) string {
+	scalars := []struct {
+		field     string
+		got, want string
+	}{
+		{"name", got.Name, want.Name},
+		{"version", got.Version, want.Version},
+		{"platform", got.Platform, want.Platform},
+		{"sha256", got.SHA256, want.SHA256},
+		{"manifest_digest", got.ManifestDigest, want.ManifestDigest},
+		{"method", got.Method, want.Method},
+	}
+	for _, s := range scalars {
+		if s.got != s.want {
+			return fmt.Sprintf("%s is %q, lock says %q", s.field, s.got, s.want)
+		}
+	}
+	lists := []struct {
+		field     string
+		got, want []string
+	}{
+		{"runtime_deps", got.RuntimeDeps, want.RuntimeDeps},
+		{"build_deps", got.BuildDeps, want.BuildDeps},
+	}
+	for _, l := range lists {
+		// slices.Equal, not reflect.DeepEqual: a nil list and an
+		// empty one are the same record. TOML omits an empty array
+		// on write and yields nil on read, so the distinction cannot
+		// survive a round trip and must not be a conflict.
+		if !slices.Equal(l.got, l.want) {
+			return fmt.Sprintf("%s is %v, lock says %v", l.field, l.got, l.want)
+		}
+	}
+	if got.GraphDigest != want.GraphDigest {
+		return fmt.Sprintf(
+			"graph_digest is %q, lock says %q; every directly compared "+
+				"field agrees, so the closure beneath this package changed",
+			got.GraphDigest, want.GraphDigest,
+		)
+	}
+	return ""
 }
 
 // VerifyAgainstStore reads a store directory's provenance and
@@ -374,9 +469,20 @@ func (rs *resolver) verify(name, version string) (Record, error) {
 }
 
 // edgeKeys lists the node's edges of one kind as canonical
-// identifiers. Both kinds are recorded regardless of serialization:
-// the digest rule governs what is hashed, not what the record
-// describes.
+// identifiers, sorted.
+//
+// Sorting is required, not cosmetic. lockgraph.Digest sorts its
+// edge lines, so permuting a node's edges leaves the digest
+// identical; without sorting here the same graph would produce
+// records that differ only in array order, and a comparator using
+// slice equality would call that an integrity conflict. Callers
+// also build edge lists from maps, whose order is unstable by
+// design.
+//
+// Duplicates are preserved rather than collapsed: lockgraph
+// serializes a repeated edge twice, so removing one here would make
+// the record describe a different graph from the one the digest
+// covers.
 func edgeKeys(n lockgraph.Node, kind lockgraph.Kind) []string {
 	var keys []string
 	for _, e := range n.Edges {
@@ -384,6 +490,7 @@ func edgeKeys(n lockgraph.Node, kind lockgraph.Kind) []string {
 			keys = append(keys, lockgraph.Key(e.Name, e.Version))
 		}
 	}
+	slices.Sort(keys)
 	return keys
 }
 
@@ -396,15 +503,31 @@ func edgeFromKey(kind lockgraph.Kind, key string) lockgraph.Edge {
 }
 
 // checkCanonical rejects an identity that is not spelled
-// name@<version>-<revision>. store.HasNumericRevisionSuffix is the
-// repo's canonical classifier for that spelling; this package does
+// name@<version>-<revision>, and that does not address exactly one
+// store directory. store.HasNumericRevisionSuffix is the repo's
+// canonical classifier for the revision spelling; this package does
 // not keep its own copy.
+//
+// The path-component rule is a boundary, not a style check.
+// Identities reach here from provenance files on disk, which are
+// untrusted input, and resolution joins them onto the store root.
+// A dependency named "../../outside" would otherwise resolve and be
+// read from anywhere the process can reach.
 func checkCanonical(name, version string) error {
-	if name == "" {
-		return fmt.Errorf("%w: empty package name", ErrNotCanonical)
-	}
 	if strings.Contains(name, "@") {
 		return fmt.Errorf("%w: name %q contains @", ErrNotCanonical, name)
+	}
+	if !safeComponent(name) {
+		return fmt.Errorf(
+			"%w: name %q is not a single path component",
+			ErrNotCanonical, name,
+		)
+	}
+	if !safeComponent(version) {
+		return fmt.Errorf(
+			"%w: version %q is not a single path component",
+			ErrNotCanonical, version,
+		)
 	}
 	if !store.HasNumericRevisionSuffix(version) {
 		return fmt.Errorf(
@@ -413,4 +536,18 @@ func checkCanonical(name, version string) error {
 		)
 	}
 	return nil
+}
+
+// safeComponent reports whether s addresses exactly one directory
+// entry: non-empty, no separator, and not a traversal element.
+func safeComponent(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	if strings.ContainsAny(s, `/\`) {
+		return false
+	}
+	// Belt and braces against anything Clean would rewrite, so the
+	// string that is validated is the string that is joined.
+	return filepath.Clean(s) == s
 }

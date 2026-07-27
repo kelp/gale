@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -568,5 +569,365 @@ func TestNewUnusableDepIsUnavailable(t *testing.T) {
 				t.Errorf("error does not name the edge: %v", err)
 			}
 		})
+	}
+}
+
+// TestRecordRejectsPathTraversal: identities arrive from provenance
+// files on disk, which are untrusted, and resolution joins them onto
+// the store root. filepath.Join cleans as it joins, so a dependency
+// named "../../outside" resolves outside the store entirely and its
+// record would be read from wherever the process can reach. The
+// revision-suffix rule alone does not stop any of these.
+func TestRecordRejectsPathTraversal(t *testing.T) {
+	escapes := []string{
+		"../../outside@1.0-1",
+		"a/b@1.0-1",
+		`a\b@1.0-1`,
+		"..@1.0-1",
+		".@1.0-1",
+		"@1.0-1",
+	}
+	for _, dep := range escapes {
+		t.Run(dep, func(t *testing.T) {
+			dir := t.TempDir()
+			r := recordFor(t, onigNode(), nil)
+			r.RuntimeDeps = []string{dep}
+			writeRaw(t, dir, encodeForTest(t, r))
+			if _, err := ReadUnverified(dir); !errors.Is(err, ErrInvalid) {
+				t.Fatalf("err = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
+// TestRecordRejectsTraversalInVersion: the version is the second
+// path element, so it escapes just as well as the name.
+func TestRecordRejectsTraversalInVersion(t *testing.T) {
+	dir := t.TempDir()
+	r := recordFor(t, onigNode(), nil)
+	r.Version = "../../outside-1"
+	writeRaw(t, dir, encodeForTest(t, r))
+	if _, err := ReadUnverified(dir); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
+	}
+}
+
+// TestOnDiskKeys pins the persisted format against a hand-written
+// fixture. A round-trip test cannot do this: renaming a TOML tag in
+// the struct changes writer and reader together, so the round trip
+// still passes while every record written by the previous release
+// becomes unreadable.
+func TestOnDiskKeys(t *testing.T) {
+	const fixture = `name = "jq"
+version = "1.8.1-2"
+platform = "darwin/arm64"
+sha256 = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+manifest_digest = "sha256:3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+method = "binary"
+runtime_deps = ["oniguruma@6.9.10-1"]
+graph_digest = "sha256:3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+`
+	dir := t.TempDir()
+	writeRaw(t, dir, fixture)
+	got, err := ReadUnverified(dir)
+	if err != nil {
+		t.Fatalf("ReadUnverified: %v", err)
+	}
+	want := Record{
+		Name:           "jq",
+		Version:        "1.8.1-2",
+		Platform:       "darwin/arm64",
+		SHA256:         shaJQ,
+		ManifestDigest: digestM,
+		Method:         lockgraph.MethodBinary,
+		RuntimeDeps:    []string{"oniguruma@6.9.10-1"},
+		GraphDigest:    digestM,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("on-disk keys decoded to %#v, want %#v", got, want)
+	}
+
+	// And the writer must emit those same key names.
+	assertWriterEmits(t, want, []string{
+		"name =", "version =", "platform =", "sha256 =",
+		"manifest_digest =", "method =", "runtime_deps =", "graph_digest =",
+	})
+}
+
+// TestOnDiskKeysSource covers build_deps, which a binary fixture
+// can never reach: the binary record is forbidden from carrying
+// build deps, so renaming that one TOML tag would pass every other
+// wire-format assertion in this file.
+func TestOnDiskKeysSource(t *testing.T) {
+	const fixture = `name = "jq"
+version = "1.8.1-2"
+platform = "darwin/arm64"
+sha256 = "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a"
+method = "source"
+runtime_deps = ["oniguruma@6.9.10-1"]
+build_deps = ["autoconf@2.72-1"]
+graph_digest = "sha256:3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c3c"
+`
+	dir := t.TempDir()
+	writeRaw(t, dir, fixture)
+	got, err := ReadUnverified(dir)
+	if err != nil {
+		t.Fatalf("ReadUnverified: %v", err)
+	}
+	want := Record{
+		Name:        "jq",
+		Version:     "1.8.1-2",
+		Platform:    "darwin/arm64",
+		SHA256:      shaJQ,
+		Method:      lockgraph.MethodSource,
+		RuntimeDeps: []string{"oniguruma@6.9.10-1"},
+		BuildDeps:   []string{"autoconf@2.72-1"},
+		GraphDigest: digestM,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("on-disk keys decoded to %#v, want %#v", got, want)
+	}
+	assertWriterEmits(t, want, []string{"build_deps ="})
+}
+
+// assertWriterEmits pins that the writer produces the given on-disk
+// key names, so a struct tag rename cannot pass by changing reader
+// and writer together.
+func assertWriterEmits(t *testing.T, r Record, keys []string) {
+	t.Helper()
+	out := t.TempDir()
+	if err := Write(out, r); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(out, File))
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	for _, key := range keys {
+		if !strings.Contains(string(data), key) {
+			t.Errorf("writer omitted %q:\n%s", key, data)
+		}
+	}
+}
+
+// TestEdgeOrderIsCanonical: lockgraph sorts its edge lines, so
+// permuting a node's edges leaves the digest identical. Without
+// sorting here the records would differ only in array order, and a
+// comparator using slice equality would report a false integrity
+// conflict on two records of the same graph.
+func TestEdgeOrderIsCanonical(t *testing.T) {
+	n := onigNode()
+	n.Method = lockgraph.MethodSource
+	n.Edges = []lockgraph.Edge{
+		{Kind: lockgraph.KindBuild, Name: "zlib", Version: "1.3-1"},
+		{Kind: lockgraph.KindBuild, Name: "autoconf", Version: "2.72-1"},
+	}
+	storeRoot := t.TempDir()
+	for _, dep := range n.Edges {
+		d := onigNode()
+		d.Name, d.Version = dep.Name, dep.Version
+		installAt(t, storeRoot, dep.Name, dep.Version, recordFor(t, d, nil))
+	}
+
+	forward, err := New(storeRoot, n)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	slices.Reverse(n.Edges)
+	reversed, err := New(storeRoot, n)
+	if err != nil {
+		t.Fatalf("New (reversed): %v", err)
+	}
+	if !reflect.DeepEqual(forward, reversed) {
+		t.Errorf("edge order changed the record:\n got %#v\nwant %#v",
+			reversed, forward)
+	}
+	if !slices.IsSorted(forward.BuildDeps) {
+		t.Errorf("BuildDeps not sorted: %v", forward.BuildDeps)
+	}
+}
+
+// TestVerifyAgainstLockIgnoresBinaryBuildEdges: a locked binary node
+// carries recipe-derived build edges that provenance deliberately
+// omits. The comparator must apply the same rule as the writer, or
+// every locked binary install reads as a conflict.
+func TestVerifyAgainstLockIgnoresBinaryBuildEdges(t *testing.T) {
+	storeRoot := t.TempDir()
+	rec, err := New(storeRoot, onigNode())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dir := filepath.Join(storeRoot, "oniguruma", "6.9.10-1")
+	installAt(t, storeRoot, "oniguruma", "6.9.10-1", rec)
+
+	locked := onigNode()
+	locked.Edges = []lockgraph.Edge{
+		{Kind: lockgraph.KindBuild, Name: "autoconf", Version: "2.72-1"},
+	}
+	if _, err := VerifyAgainstLock(dir, locked, rec.GraphDigest); err != nil {
+		t.Fatalf("VerifyAgainstLock: %v", err)
+	}
+}
+
+// TestVerifyAgainstLockDetectsDrift names the field that disagreed,
+// because "integrity failure" without the field is unactionable at
+// the point a user meets it.
+func TestVerifyAgainstLockDetectsDrift(t *testing.T) {
+	storeRoot := t.TempDir()
+	rec, err := New(storeRoot, onigNode())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dir := filepath.Join(storeRoot, "oniguruma", "6.9.10-1")
+	installAt(t, storeRoot, "oniguruma", "6.9.10-1", rec)
+
+	tests := []struct {
+		name  string
+		want  func(*lockgraph.Node)
+		field string
+	}{
+		{"sha", func(n *lockgraph.Node) { n.SHA256 = shaJQ }, "sha256"},
+		{"method", func(n *lockgraph.Node) { n.Method = lockgraph.MethodSource }, "method"},
+		{"platform", func(n *lockgraph.Node) { n.GOARCH = "amd64" }, "platform"},
+		{
+			"runtime dep",
+			func(n *lockgraph.Node) {
+				n.Edges = []lockgraph.Edge{
+					{Kind: lockgraph.KindRuntime, Name: "zlib", Version: "1.3-1"},
+				}
+			},
+			"runtime_deps",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			locked := onigNode()
+			tt.want(&locked)
+			// The expected digest is recomputed from the mutated
+			// node, as a real lock-derived digest would be. Reusing
+			// the old digest would make every case report
+			// graph_digest and prove nothing about the field it
+			// claims to test.
+			wantDigest := digestOf(t, locked, map[string]string{
+				"zlib@1.3-1": digestM,
+			})
+			_, err := VerifyAgainstLock(dir, locked, wantDigest)
+			if !errors.Is(err, ErrInvalid) {
+				t.Fatalf("err = %v, want ErrInvalid", err)
+			}
+			if !strings.Contains(err.Error(), tt.field) {
+				t.Errorf("error does not name %s: %v", tt.field, err)
+			}
+		})
+	}
+}
+
+// digestOf computes a node's digest for tests that need the digest
+// a lock would carry rather than the one already on disk.
+func digestOf(t *testing.T, n lockgraph.Node, deps map[string]string) string {
+	t.Helper()
+	d, err := lockgraph.Digest(n, deps)
+	if err != nil {
+		t.Fatalf("Digest: %v", err)
+	}
+	return d
+}
+
+// TestVerifyAgainstLockReportsGraphDigestLast is the case the drift
+// table cannot reach: every directly comparable field agrees and
+// only the closure beneath the node moved. graph_digest is the
+// correct diagnostic here and the wrong one everywhere else, which
+// is why it is compared after the fields that explain it.
+func TestVerifyAgainstLockReportsGraphDigestLast(t *testing.T) {
+	storeRoot := t.TempDir()
+	dep := recordFor(t, onigNode(), nil)
+	installAt(t, storeRoot, "oniguruma", "6.9.10-1", dep)
+	rec, err := New(storeRoot, jqNode())
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dir := filepath.Join(storeRoot, "jq", "1.8.1-2")
+	installAt(t, storeRoot, "jq", "1.8.1-2", rec)
+
+	// Same node, same edges, same hashes: only the dependency's own
+	// digest differs, as it would after the dependency was rebuilt.
+	moved := digestOf(t, jqNode(), map[string]string{
+		"oniguruma@6.9.10-1": digestM,
+	})
+	_, err = VerifyAgainstLock(dir, jqNode(), moved)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
+	}
+	if !strings.Contains(err.Error(), "graph_digest") {
+		t.Errorf("error does not name graph_digest: %v", err)
+	}
+}
+
+// TestVerifyAgainstLockTreatsAbsentAsConflict: under a lock, a
+// directory the lock names and nothing attests is a conflict, not a
+// lesser state. Classifying it in the shared verifier is what stops
+// the gate and the cache-hit path reinterpreting it differently.
+func TestVerifyAgainstLockTreatsAbsentAsConflict(t *testing.T) {
+	storeRoot := t.TempDir()
+	dir := filepath.Join(storeRoot, "oniguruma", "6.9.10-1")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	_, err := VerifyAgainstLock(dir, onigNode(), digestM)
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("err = %v, want ErrInvalid", err)
+	}
+	// ErrAbsent stays in the chain for callers that distinguish it.
+	if !errors.Is(err, ErrAbsent) {
+		t.Errorf("ErrAbsent lost from the chain: %v", err)
+	}
+}
+
+// TestUnsortedDepsRejectedThroughPublicPath: canonical ordering is
+// part of the format, not a habit of the constructor. Enforcing it
+// only in New would let Write persist a record ReadUnverified
+// accepts and VerifyAgainstLock then rejects against the same graph.
+func TestUnsortedDepsRejectedThroughPublicPath(t *testing.T) {
+	dir := t.TempDir()
+	r := recordFor(t, onigNode(), nil)
+	r.RuntimeDeps = []string{"zlib@1.3-1", "autoconf@2.72-1"} // unsorted
+
+	if err := Write(dir, r); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("Write err = %v, want ErrInvalid", err)
+	}
+	writeRaw(t, dir, encodeForTest(t, r))
+	if _, err := ReadUnverified(dir); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("ReadUnverified err = %v, want ErrInvalid", err)
+	}
+}
+
+// TestVerifyAgainstLockSurvivesCollectedBuildDeps is the reason this
+// function exists rather than reusing VerifyAgainstStore: section 12
+// permits build deps to be gone, and the lock-relative check must
+// not care.
+func TestVerifyAgainstLockSurvivesCollectedBuildDeps(t *testing.T) {
+	storeRoot := t.TempDir()
+	tool := onigNode()
+	tool.Name, tool.Version = "autoconf", "2.72-1"
+	installAt(t, storeRoot, "autoconf", "2.72-1", recordFor(t, tool, nil))
+
+	src := onigNode()
+	src.Name, src.Version = "jq", "1.8.1-2"
+	src.Method = lockgraph.MethodSource
+	src.Edges = []lockgraph.Edge{
+		{Kind: lockgraph.KindBuild, Name: "autoconf", Version: "2.72-1"},
+	}
+	rec, err := New(storeRoot, src)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	dir := filepath.Join(storeRoot, "jq", "1.8.1-2")
+	installAt(t, storeRoot, "jq", "1.8.1-2", rec)
+
+	if err := os.RemoveAll(filepath.Join(storeRoot, "autoconf")); err != nil {
+		t.Fatalf("remove build dep: %v", err)
+	}
+	if _, err := VerifyAgainstLock(dir, src, rec.GraphDigest); err != nil {
+		t.Fatalf("VerifyAgainstLock after gc: %v", err)
 	}
 }
