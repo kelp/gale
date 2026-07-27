@@ -20,6 +20,7 @@ import (
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
+	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
@@ -408,7 +409,10 @@ func (inst *Installer) installGitLocked(r *recipe.Recipe, buildResult *build.Bui
 		return nil, fmt.Errorf("create store dir: %w", err)
 	}
 
-	if err := extractBuild(buildResult, storeDir, depPaths); err != nil {
+	// A git install stores under the bare commit hash; its canonical
+	// identity carries the implicit revision 1.
+	artifact := sourceArtifact(r, canonicalVersion(hash), depPaths)
+	if err := extractBuild(buildResult, storeDir, depPaths, artifact); err != nil {
 		os.RemoveAll(storeDir)
 		return nil, fmt.Errorf("extracting git build: %w", err)
 	}
@@ -660,11 +664,29 @@ func (inst *Installer) installBinaryTo(
 	// install as stale. The legacy-stale path is
 	// preserved for installs that genuinely predate this
 	// metadata (no file on disk at all).
-	if !depsmeta.Has(stagingDir) {
+	present, err := stagedDepsPresent(stagingDir)
+	if err != nil {
+		return err
+	}
+	if !present {
 		md := depsmeta.Metadata{Deps: depsFallback}
 		if err := depsmeta.Write(stagingDir, md); err != nil {
 			return fmt.Errorf("write deps metadata: %w", err)
 		}
+	}
+
+	// Record what this install verified, beside the metadata and
+	// before the commit rename, so the canonical dir never appears
+	// without its provenance. Identity is the recipe's canonical
+	// version-revision, never the store dir's basename.
+	if err := recordProvenance(storeRoot, stagingDir, commitArtifact{
+		Name:           name,
+		Version:        r.Package.Full(),
+		Method:         lockgraph.MethodBinary,
+		SHA256:         bin.SHA256,
+		ManifestDigest: bin.ManifestDigest,
+	}); err != nil {
+		return err
 	}
 
 	// Commit: rename the fully-finalized staging dir into the
@@ -1287,7 +1309,8 @@ func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *
 	if err != nil {
 		return "", fmt.Errorf("building from local source: %w", err)
 	}
-	return result.SHA256, extractBuild(result, storeDir, deps)
+	return result.SHA256, extractBuild(result, storeDir, deps,
+		sourceArtifact(r, r.Package.Full(), deps))
 }
 
 // installFromSourceTo runs the source build and extracts the
@@ -1305,7 +1328,14 @@ func installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, dep
 	if err != nil {
 		return "", fmt.Errorf("building from source: %w", err)
 	}
-	return result.SHA256, extractBuildTo(result, extractDir, finalStoreDir, deps, inPlace)
+	return result.SHA256, extractBuildTo(extractRequest{
+		Result:        result,
+		ExtractDir:    extractDir,
+		FinalStoreDir: finalStoreDir,
+		Deps:          deps,
+		Artifact:      sourceArtifact(r, r.Package.Full(), deps),
+		InPlace:       inPlace,
+	})
 }
 
 // extractBuild extracts a build archive into the store dir
@@ -1319,8 +1349,28 @@ func installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, dep
 // package or race with farm.Populate. Extraction itself
 // happens in a transient staging sibling outside the lock —
 // non-locking readers skip it (isTransientStoreEntry).
-func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps) error {
-	return extractBuildTo(result, storeDir, storeDir, deps, true)
+func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps, a commitArtifact) error {
+	return extractBuildTo(extractRequest{
+		Result:        result,
+		ExtractDir:    storeDir,
+		FinalStoreDir: storeDir,
+		Deps:          deps,
+		Artifact:      a,
+		InPlace:       true,
+	})
+}
+
+// extractRequest is one source-build extraction: the archive, where it
+// lands, and what to attest for it. A struct rather than a parameter
+// list because the two are already at the argument limit and provenance
+// adds a third concern.
+type extractRequest struct {
+	Result        *build.BuildResult
+	ExtractDir    string
+	FinalStoreDir string
+	Deps          *build.BuildDeps
+	Artifact      commitArtifact
+	InPlace       bool
 }
 
 // extractBuildTo extracts result.Archive into extractDir,
@@ -1329,7 +1379,9 @@ func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildD
 // that is promoted into extractDir under the store-gen lock
 // (with farm wiring); otherwise extractDir is the caller's own
 // staging dir and the caller commits both (commitStaged).
-func extractBuildTo(result *build.BuildResult, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) error {
+func extractBuildTo(req extractRequest) error {
+	result, deps := req.Result, req.Deps
+	extractDir, finalStoreDir, inPlace := req.ExtractDir, req.FinalStoreDir, req.InPlace
 	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
 
 	// Extract + fix up in a transient staging sibling, then
@@ -1369,7 +1421,11 @@ func extractBuildTo(result *build.BuildResult, extractDir, finalStoreDir string,
 	// spurious staleness. Only synthesize metadata when the
 	// archive shipped none (legacy or zero-dep archives),
 	// mirroring extractStreamed.
-	if !depsmeta.Has(workDir) {
+	present, err := stagedDepsPresent(workDir)
+	if err != nil {
+		return err
+	}
+	if !present {
 		var namedDirs map[string]string
 		if deps != nil {
 			namedDirs = deps.NamedDirs
@@ -1378,6 +1434,20 @@ func extractBuildTo(result *build.BuildResult, extractDir, finalStoreDir string,
 		if err := depsmeta.Write(workDir, md); err != nil {
 			return fmt.Errorf("write deps metadata: %w", err)
 		}
+	}
+	// Record what the build verified before the directory becomes
+	// visible. workDir is the staging sibling when inPlace, and the
+	// caller's own staging dir otherwise; either way the record lands
+	// with the payload rather than after it.
+	//
+	// The hash comes from the build result here rather than from the
+	// artifact the caller assembled. The result is the one authority on
+	// what was produced, and a second copy travelling alongside it
+	// could only ever disagree.
+	a := req.Artifact
+	a.SHA256 = result.SHA256
+	if err := recordProvenance(storeRoot, workDir, a); err != nil {
+		return err
 	}
 	if !inPlace {
 		return nil

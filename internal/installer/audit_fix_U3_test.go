@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/build"
@@ -23,6 +24,10 @@ type u3TarEntry struct {
 	name    string
 	content string
 	mode    int64
+	// link makes this entry a symlink to the given target instead of
+	// a regular file. The extractor deliberately writes an absolute
+	// target as-is, so this is how a test plants one.
+	link string
 }
 
 func createU3TarZstd(t *testing.T, entries []u3TarEntry) string {
@@ -38,6 +43,17 @@ func createU3TarZstd(t *testing.T, entries []u3TarEntry) string {
 	}
 	tw := tar.NewWriter(zw)
 	for _, e := range entries {
+		if e.link != "" {
+			if err := tw.WriteHeader(&tar.Header{
+				Typeflag: tar.TypeSymlink,
+				Name:     e.name,
+				Linkname: e.link,
+				Mode:     0o777,
+			}); err != nil {
+				t.Fatalf("write symlink header: %v", err)
+			}
+			continue
+		}
 		if err := tw.WriteHeader(&tar.Header{
 			Typeflag: tar.TypeReg,
 			Name:     e.name,
@@ -90,7 +106,7 @@ func TestExtractBuildInPlace_FailedExtractionNotInstalled(t *testing.T) {
 	})
 	result := &build.BuildResult{Archive: archive}
 
-	if err := extractBuild(result, storeDir, nil); err == nil {
+	if err := extractBuild(result, storeDir, nil, sourceOf("u3src", "1.0-1")); err == nil {
 		t.Fatal("expected extraction error from poisoned archive")
 	}
 	if s.IsInstalled("u3src", "1.0-1") {
@@ -210,11 +226,19 @@ func TestExtractBuildInPlace_FarmConflictFails(t *testing.T) {
 	archive := createU3TarZstd(t, []u3TarEntry{
 		{name: "lib/" + lib, content: "B", mode: 0o644},
 	})
-	result := &build.BuildResult{Archive: archive}
+	// A real hash: the commit path now builds provenance from the
+	// build result, so an empty one would fail this install before it
+	// ever reached the farm and the assertion below would pass for the
+	// wrong reason.
+	result := &build.BuildResult{Archive: archive, SHA256: hashFile(t, archive)}
 
-	if err := extractBuild(result, bDir, nil); err == nil {
+	err = extractBuild(result, bDir, nil, sourceOf("u3libb", "1.0-1"))
+	if err == nil {
 		t.Fatal("in-place source install swallowed the farm " +
 			"basename conflict that binary and staged installs " +
 			"treat as fatal (gh#42)")
+	}
+	if !strings.Contains(err.Error(), "farm") {
+		t.Fatalf("failed before the farm conflict: %v", err)
 	}
 }

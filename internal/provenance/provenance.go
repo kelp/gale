@@ -193,11 +193,11 @@ func ReadUnverified(dir string) (Record, error) {
 // rather than looked up, because a missed lookup is
 // indistinguishable from an unprovenanced dependency.
 func New(storeRoot string, n lockgraph.Node) (Record, error) {
-	if err := checkCanonical(n.Name, n.Version); err != nil {
+	if err := CheckIdentity(n.Name, n.Version); err != nil {
 		return Record{}, err
 	}
 	for _, e := range n.Edges {
-		if err := checkCanonical(e.Name, e.Version); err != nil {
+		if err := CheckIdentity(e.Name, e.Version); err != nil {
 			return Record{}, err
 		}
 	}
@@ -353,7 +353,7 @@ func firstMismatch(got, want Record) string {
 // that closure to still exist. Those callers use ReadUnverified
 // plus that comparison.
 func VerifyAgainstStore(storeRoot, name, version, platform string) (Record, error) {
-	if err := checkCanonical(name, version); err != nil {
+	if err := CheckIdentity(name, version); err != nil {
 		return Record{}, err
 	}
 	return newResolver(storeRoot, platform).verify(name, version)
@@ -502,18 +502,25 @@ func edgeFromKey(kind lockgraph.Kind, key string) lockgraph.Edge {
 	return lockgraph.Edge{Kind: kind, Name: name, Version: version}
 }
 
-// checkCanonical rejects an identity that is not spelled
+// CheckIdentity rejects an identity that is not spelled
 // name@<version>-<revision>, and that does not address exactly one
 // store directory. store.HasNumericRevisionSuffix is the repo's
 // canonical classifier for the revision spelling; this package does
 // not keep its own copy.
+//
+// It is exported so a caller assembling a node can screen dependency
+// identities it read from disk before New sees them. New treats a
+// noncanonical identity as a caller error, which is right for the node
+// itself and wrong for a dependency: an edge gale cannot even name is
+// unusable, and under the all-or-nothing rule that means no record
+// rather than a failed install.
 //
 // The path-component rule is a boundary, not a style check.
 // Identities reach here from provenance files on disk, which are
 // untrusted input, and resolution joins them onto the store root.
 // A dependency named "../../outside" would otherwise resolve and be
 // read from anywhere the process can reach.
-func checkCanonical(name, version string) error {
+func CheckIdentity(name, version string) error {
 	if strings.Contains(name, "@") {
 		return fmt.Errorf("%w: name %q contains @", ErrNotCanonical, name)
 	}

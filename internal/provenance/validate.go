@@ -54,7 +54,7 @@ func (r Record) validateRequired() error {
 }
 
 func (r Record) validateIdentity() error {
-	if err := checkCanonical(r.Name, r.Version); err != nil {
+	if err := CheckIdentity(r.Name, r.Version); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	// Exactly one separator: strings.Cut splits once, so a bare Cut
@@ -110,7 +110,7 @@ func (r Record) validateDeps() error {
 					"%w: dependency %q is not name@version", ErrInvalid, key,
 				)
 			}
-			if err := checkCanonical(name, version); err != nil {
+			if err := CheckIdentity(name, version); err != nil {
 				return fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 		}
