@@ -76,6 +76,6 @@ func executeRoot() error {
 
 func Execute() {
 	if err := executeRoot(); err != nil {
-		os.Exit(1)
+		os.Exit(exitCodeFor(err))
 	}
 }

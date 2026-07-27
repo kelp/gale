@@ -38,6 +38,14 @@ var (
 	// down.
 	ErrUnknownField = errors.New("unknown lockfile field")
 
+	// ErrMalformed reports a lockfile that is present but cannot be
+	// parsed at all. It shares a class with the schema errors above
+	// rather than being an ordinary failure: in every case the lock
+	// exists and cannot be modeled, and the remedy is to regenerate
+	// it. Without the sentinel a syntax error or a mistyped value
+	// would be indistinguishable from a build or network failure.
+	ErrMalformed = errors.New("malformed lockfile")
+
 	// ErrDowngradeGuard reports a v1 lockfile whose reserved guard
 	// entry is absent or malformed. Such a file still claims version
 	// 1 but is destructible by an already-shipped gale, which is the
@@ -197,7 +205,7 @@ func ReadV1(path string) (*V1, error) {
 
 	var probe schemaProbe
 	if _, err := toml.Decode(string(data), &probe); err != nil {
-		return nil, fmt.Errorf("parsing lock file: %w", err)
+		return nil, fmt.Errorf("%s: %w: %w", path, ErrMalformed, err)
 	}
 	if probe.Version == nil {
 		return nil, fmt.Errorf("%s: %w", path, ErrLegacySchema)
@@ -212,7 +220,7 @@ func ReadV1(path string) (*V1, error) {
 	var w wireV1
 	md, err := toml.Decode(string(data), &w)
 	if err != nil {
-		return nil, fmt.Errorf("parsing lock file: %w", err)
+		return nil, fmt.Errorf("%s: %w: %w", path, ErrMalformed, err)
 	}
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
 		return nil, fmt.Errorf(

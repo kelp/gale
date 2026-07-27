@@ -319,6 +319,44 @@ func TestV1SelectorKeyRoundTrip(t *testing.T) {
 	}
 }
 
+// TestReadV1Malformed: a lock that is present but unparseable is
+// not an ordinary failure. It belongs with the schema errors, since
+// in every one of those cases the lock exists and cannot be
+// modeled, and a bare TOML error would leave a pipeline unable to
+// tell it from a build break.
+func TestReadV1Malformed(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "syntax error",
+			content: "version = 1\n[targets\n",
+		},
+		{
+			// Caught by the body decode rather than the probe, so
+			// this pins the second parse site as well.
+			name: "type mismatch",
+			content: strings.Replace(v1Fixture,
+				`roots = ["jq@1.8.1-2", "ripgrep@14.1.1-1"]`,
+				"roots = 5", 1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ReadV1(writeTemp(t, tt.content))
+			if !errors.Is(err, ErrMalformed) {
+				t.Fatalf("err = %v, want ErrMalformed", err)
+			}
+			// The decoder's own message names the line, which is
+			// the only actionable part for a hand-edited file.
+			if !strings.Contains(err.Error(), "toml:") {
+				t.Errorf("error dropped the decoder's detail: %v", err)
+			}
+		})
+	}
+}
+
 // TestReadV1RejectsBadGuard: the guard is what stops an
 // already-shipped gale from rewriting a v1 lock in the flat schema.
 // A file that claims version 1 without a well-formed guard is still
