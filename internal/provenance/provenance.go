@@ -47,14 +47,6 @@ var (
 	// exactly as ErrAbsent; the two are distinguished for the
 	// store-level decisions above, not for degrees of trust.
 	ErrInvalid = errors.New("invalid provenance")
-
-	// ErrNotCanonical reports an identity that is not spelled as a
-	// canonical version-revision. It is a caller error, raised
-	// rather than absorbed: a noncanonical identity would miss its
-	// store directory and be indistinguishable from an
-	// unprovenanced dependency, silently degrading every record
-	// above it.
-	ErrNotCanonical = errors.New("identity is not canonical")
 )
 
 // Record is what gale verified for one store directory.
@@ -193,11 +185,11 @@ func ReadUnverified(dir string) (Record, error) {
 // rather than looked up, because a missed lookup is
 // indistinguishable from an unprovenanced dependency.
 func New(storeRoot string, n lockgraph.Node) (Record, error) {
-	if err := CheckIdentity(n.Name, n.Version); err != nil {
+	if err := store.CheckIdentity(n.Name, n.Version); err != nil {
 		return Record{}, err
 	}
 	for _, e := range n.Edges {
-		if err := CheckIdentity(e.Name, e.Version); err != nil {
+		if err := store.CheckIdentity(e.Name, e.Version); err != nil {
 			return Record{}, err
 		}
 	}
@@ -353,7 +345,7 @@ func firstMismatch(got, want Record) string {
 // that closure to still exist. Those callers use ReadUnverified
 // plus that comparison.
 func VerifyAgainstStore(storeRoot, name, version, platform string) (Record, error) {
-	if err := CheckIdentity(name, version); err != nil {
+	if err := store.CheckIdentity(name, version); err != nil {
 		return Record{}, err
 	}
 	return newResolver(storeRoot, platform).verify(name, version)
@@ -500,61 +492,4 @@ func edgeKeys(n lockgraph.Node, kind lockgraph.Kind) []string {
 func edgeFromKey(kind lockgraph.Kind, key string) lockgraph.Edge {
 	name, version, _ := strings.Cut(key, "@")
 	return lockgraph.Edge{Kind: kind, Name: name, Version: version}
-}
-
-// CheckIdentity rejects an identity that is not spelled
-// name@<version>-<revision>, and that does not address exactly one
-// store directory. store.HasNumericRevisionSuffix is the repo's
-// canonical classifier for the revision spelling; this package does
-// not keep its own copy.
-//
-// It is exported so a caller assembling a node can screen dependency
-// identities it read from disk before New sees them. New treats a
-// noncanonical identity as a caller error, which is right for the node
-// itself and wrong for a dependency: an edge gale cannot even name is
-// unusable, and under the all-or-nothing rule that means no record
-// rather than a failed install.
-//
-// The path-component rule is a boundary, not a style check.
-// Identities reach here from provenance files on disk, which are
-// untrusted input, and resolution joins them onto the store root.
-// A dependency named "../../outside" would otherwise resolve and be
-// read from anywhere the process can reach.
-func CheckIdentity(name, version string) error {
-	if strings.Contains(name, "@") {
-		return fmt.Errorf("%w: name %q contains @", ErrNotCanonical, name)
-	}
-	if !safeComponent(name) {
-		return fmt.Errorf(
-			"%w: name %q is not a single path component",
-			ErrNotCanonical, name,
-		)
-	}
-	if !safeComponent(version) {
-		return fmt.Errorf(
-			"%w: version %q is not a single path component",
-			ErrNotCanonical, version,
-		)
-	}
-	if !store.HasNumericRevisionSuffix(version) {
-		return fmt.Errorf(
-			"%w: %s has no revision suffix", ErrNotCanonical,
-			lockgraph.Key(name, version),
-		)
-	}
-	return nil
-}
-
-// safeComponent reports whether s addresses exactly one directory
-// entry: non-empty, no separator, and not a traversal element.
-func safeComponent(s string) bool {
-	if s == "" || s == "." || s == ".." {
-		return false
-	}
-	if strings.ContainsAny(s, `/\`) {
-		return false
-	}
-	// Belt and braces against anything Clean would rewrite, so the
-	// string that is validated is the string that is joined.
-	return filepath.Clean(s) == s
 }

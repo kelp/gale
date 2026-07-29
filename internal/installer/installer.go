@@ -537,7 +537,7 @@ func (inst *Installer) installBinaryTo(
 	// here: we can't produce an attestation for an
 	// arbitrary third-party host, and silently skipping
 	// attestation for non-GHCR URLs was the C3 bypass.
-	if err := checkBinaryTrustPolicy(bin); err != nil {
+	if err := bin.CheckTrustPolicy(); err != nil {
 		return err
 	}
 
@@ -546,7 +546,7 @@ func (inst *Installer) installBinaryTo(
 	// Resolve bearer token for GHCR URLs; empty string for
 	// non-GHCR (FetchAndExtractTarZstd omits the header).
 	var token string
-	if isGHCR(bin.URL) {
+	if recipe.IsGHCR(bin.URL) {
 		repo := repoFromURL(bin.URL)
 		var err error
 		token, err = ghcr.Token(repo)
@@ -820,57 +820,6 @@ func commitExtracted(stagingDir, extractDir, finalStoreDir, storeRoot string, in
 	return swap()
 }
 
-// checkBinaryTrustPolicy enforces the recipe-declared
-// verification policy for a [binary.<platform>] entry.
-//
-// Decision table, indexed by the effective trust (empty
-// defaults to sigstore):
-//
-//   - sigstore + GHCR URL: accept. Attestation is
-//     verified later when the Verifier is available.
-//   - sigstore + non-GHCR URL: reject. We cannot produce
-//     a Sigstore attestation for a third-party host that
-//     isn't signing under our CI identity. Silently
-//     skipping attestation here was the C3 bypass.
-//   - sha256-only: accept regardless of host. Recipe has
-//     explicitly opted out of attestation; only the
-//     SHA256 is verified downstream.
-//
-// The returned error text names the field (trust) and the
-// policy value (sigstore) so the installer's fallback log
-// surfaces an actionable message.
-func checkBinaryTrustPolicy(bin *recipe.Binary) error {
-	switch bin.EffectiveTrust() {
-	case recipe.TrustSHA256Only:
-		return nil
-	case recipe.TrustSigstore:
-		if !isGHCR(bin.URL) {
-			return fmt.Errorf(
-				"binary trust policy: %q requires a ghcr.io URL "+
-					"(got %q); set trust = %q to opt out",
-				recipe.TrustSigstore, bin.URL, recipe.TrustSHA256Only,
-			)
-		}
-		return nil
-	default:
-		return fmt.Errorf(
-			"binary trust policy: unknown trust value %q",
-			bin.Trust,
-		)
-	}
-}
-
-// isGHCR returns true if the URL host is ghcr.io. Only
-// ghcr.io receives bearer tokens — never send credentials
-// to arbitrary hosts based on path patterns alone.
-func isGHCR(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	return u.Host == "ghcr.io"
-}
-
 // verifyManifestDigest enforces digest-based fetch (gh#121). When a
 // binary carries a manifest digest, gale pulls the OCI manifest by
 // that digest and confirms it references exactly the layer the
@@ -964,7 +913,7 @@ func verifyPrebuiltAttestation(bin *recipe.Binary, archiveOut, token string, v a
 // InstallBuildOnlyDeps instead so build-only deps can be
 // skipped when a prebuilt binary install succeeds.
 func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
-	deps, implicit := withSystemDeps(
+	deps, implicit := build.EffectiveDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
 		r.Build.System,
 	)
@@ -996,7 +945,7 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 // deps: now we top up with the build-only pieces before
 // running the source build.
 func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
-	deps, implicit := withSystemDeps(
+	deps, implicit := build.EffectiveDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
 		r.Build.System,
 	)
@@ -1047,33 +996,6 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedD
 		})
 	}
 	return resolved, nil
-}
-
-// withSystemDeps returns deps with build.SystemDeps(system)
-// merged into deps.Build (deduped), plus the set of names it
-// added implicitly. Callers route the implicit set's bin dirs
-// into BuildDeps.SystemBinDirs so an explicit toolchain pin keeps
-// PATH priority over the system default (gale#174). Returns the
-// input unchanged and a nil set when there are no system deps.
-func withSystemDeps(deps recipe.Dependencies, system string) (recipe.Dependencies, map[string]bool) {
-	sysDeps := build.SystemDeps(system)
-	if len(sysDeps) == 0 {
-		return deps, nil
-	}
-	explicit := make(map[string]bool, len(deps.Build))
-	for _, d := range deps.Build {
-		explicit[d] = true
-	}
-	merged := append([]string{}, deps.Build...)
-	implicit := make(map[string]bool)
-	for _, d := range sysDeps {
-		if !explicit[d] {
-			merged = append(merged, d)
-			implicit[d] = true
-		}
-	}
-	deps.Build = merged
-	return deps, implicit
 }
 
 // mergeBuildDeps returns a BuildDeps whose slices and

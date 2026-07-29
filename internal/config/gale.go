@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -133,8 +134,20 @@ func hostKeySpecificity(sectionKey string) int {
 // which in turn win over globs. Within each tier, keys are
 // sorted alphabetically for deterministic merge order.
 func matchingHostKeys(hosts map[string]HostConfig, host string) []string {
-	keys := make([]string, 0, len(hosts))
-	for k := range hosts {
+	return MatchingHostKeys(slices.Collect(maps.Keys(hosts)), host)
+}
+
+// MatchingHostKeys returns the selector keys that apply to host, in
+// application order: least specific first, so overlaying them in
+// sequence leaves exact-name sections overriding globs.
+//
+// It takes keys rather than a config map because the same precedence
+// governs gale.toml's [hosts.<key>] sections and the lockfile's
+// [targets.host.<key>] tables, and two implementations of one
+// ordering rule would eventually disagree about which selector wins.
+func MatchingHostKeys(candidates []string, host string) []string {
+	keys := make([]string, 0, len(candidates))
+	for _, k := range candidates {
 		if HostKeyMatches(k, host) {
 			keys = append(keys, k)
 		}

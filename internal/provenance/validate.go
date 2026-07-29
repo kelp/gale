@@ -6,10 +6,8 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/store"
 )
-
-// hexDigits is the length of a hex-encoded SHA256.
-const hexDigits = 64
 
 // validate reports whether the record is usable in full. The
 // individual checks below are examples of one rule, "the record
@@ -54,7 +52,7 @@ func (r Record) validateRequired() error {
 }
 
 func (r Record) validateIdentity() error {
-	if err := CheckIdentity(r.Name, r.Version); err != nil {
+	if err := store.CheckIdentity(r.Name, r.Version); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalid, err)
 	}
 	// Exactly one separator: strings.Cut splits once, so a bare Cut
@@ -70,17 +68,17 @@ func (r Record) validateIdentity() error {
 }
 
 func (r Record) validateHashes() error {
-	if !isHex(r.SHA256) {
+	if !lockgraph.IsHexSHA256(r.SHA256) {
 		return fmt.Errorf(
-			"%w: sha256 %q is not %d hex digits", ErrInvalid, r.SHA256, hexDigits,
+			"%w: sha256 %q is not 64 hex digits", ErrInvalid, r.SHA256,
 		)
 	}
-	if !isDigest(r.GraphDigest) {
+	if !lockgraph.IsDigest(r.GraphDigest) {
 		return fmt.Errorf(
 			"%w: graph_digest %q is not sha256:<hex>", ErrInvalid, r.GraphDigest,
 		)
 	}
-	if r.ManifestDigest != "" && !isDigest(r.ManifestDigest) {
+	if r.ManifestDigest != "" && !lockgraph.IsDigest(r.ManifestDigest) {
 		return fmt.Errorf(
 			"%w: manifest_digest %q is not sha256:<hex>",
 			ErrInvalid, r.ManifestDigest,
@@ -110,7 +108,7 @@ func (r Record) validateDeps() error {
 					"%w: dependency %q is not name@version", ErrInvalid, key,
 				)
 			}
-			if err := CheckIdentity(name, version); err != nil {
+			if err := store.CheckIdentity(name, version); err != nil {
 				return fmt.Errorf("%w: %w", ErrInvalid, err)
 			}
 		}
@@ -136,21 +134,4 @@ func (r Record) validateDeps() error {
 		)
 	}
 	return nil
-}
-
-func isHex(s string) bool {
-	if len(s) != hexDigits {
-		return false
-	}
-	for _, c := range s {
-		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
-			return false
-		}
-	}
-	return true
-}
-
-func isDigest(s string) bool {
-	rest, ok := strings.CutPrefix(s, "sha256:")
-	return ok && isHex(rest)
 }

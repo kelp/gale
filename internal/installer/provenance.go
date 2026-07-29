@@ -154,7 +154,7 @@ func stagedEdges(
 		// Screened here rather than left to provenance.New, which
 		// reports a noncanonical identity as a caller error — right for
 		// the artifact's own identity, wrong for a dependency's.
-		if provenance.CheckIdentity(e.Name, e.Version) != nil {
+		if store.CheckIdentity(e.Name, e.Version) != nil {
 			return nil, false
 		}
 	}
@@ -265,7 +265,7 @@ func sourceArtifact(
 func buildEdgeDeps(
 	r *recipe.Recipe, deps *build.BuildDeps,
 ) ([]depsmeta.ResolvedDep, bool) {
-	effective, _ := withSystemDeps(
+	effective, _ := build.EffectiveDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
 		r.Build.System,
 	)

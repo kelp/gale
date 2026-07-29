@@ -81,6 +81,34 @@ func Key(name, version string) string {
 	return name + "@" + version
 }
 
+// hexDigits is the length of a hex-encoded SHA256.
+const hexDigits = 64
+
+// IsHexSHA256 reports whether s is a bare artifact hash: exactly 64
+// lowercase hex digits. Case matters because the value is compared
+// verbatim and serialized into the digest, so an uppercase spelling of
+// the same hash is a different string everywhere it counts.
+func IsHexSHA256(s string) bool {
+	if len(s) != hexDigits {
+		return false
+	}
+	for _, c := range s {
+		if (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// IsDigest reports whether s is a prefixed digest, "sha256:" followed
+// by a bare hash. It lives here because this package produces that
+// spelling, so every reader checking one is checking this package's
+// output format.
+func IsDigest(s string) bool {
+	rest, ok := strings.CutPrefix(s, "sha256:")
+	return ok && IsHexSHA256(rest)
+}
+
 // key is the node's own identifier.
 func (n Node) key() string {
 	return Key(n.Name, n.Version)

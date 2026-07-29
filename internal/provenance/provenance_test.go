@@ -13,6 +13,7 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/store"
 )
 
 // Hashes are the real shape, 64 hex digits, because validation
@@ -291,8 +292,8 @@ func TestNewRejectsNoncanonical(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := New(t.TempDir(), tt.node())
-			if !errors.Is(err, ErrNotCanonical) {
-				t.Fatalf("err = %v, want ErrNotCanonical", err)
+			if !errors.Is(err, store.ErrNotCanonical) {
+				t.Fatalf("err = %v, want store.ErrNotCanonical", err)
 			}
 		})
 	}

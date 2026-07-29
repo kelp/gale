@@ -1249,9 +1249,9 @@ func TestIsGHCR(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isGHCR(tt.url)
+			got := recipe.IsGHCR(tt.url)
 			if got != tt.want {
-				t.Errorf("isGHCR(%q) = %v, want %v",
+				t.Errorf("recipe.IsGHCR(%q) = %v, want %v",
 					tt.url, got, tt.want)
 			}
 		})
@@ -1911,9 +1911,9 @@ func TestIsGHCRRejectsNonGHCRHosts(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := isGHCR(tt.url)
+			got := recipe.IsGHCR(tt.url)
 			if got != tt.want {
-				t.Errorf("isGHCR(%q) = %v, want %v",
+				t.Errorf("recipe.IsGHCR(%q) = %v, want %v",
 					tt.url, got, tt.want)
 			}
 		})
@@ -2188,7 +2188,7 @@ func TestReinstallBlocksOnStoreGenLockBeforeReplace(t *testing.T) {
 // that ships a non-GHCR binary URL without explicit
 // trust = "sha256-only" is rejected rather than silently
 // bypassing attestation. This closes the C3 bypass at
-// installer.go:324-329 where isGHCR(bin.URL) gated the
+// installer.go:324-329 where recipe.IsGHCR(bin.URL) gated the
 // attestation check, letting any non-GHCR URL skip it.
 func TestInstallBinaryNonGHCRDefaultTrustFails(t *testing.T) {
 	// Build a tar.zst and a source tarball so we can
@@ -2375,9 +2375,9 @@ func TestCheckBinaryTrustPolicy(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkBinaryTrustPolicy(&tt.bin)
+			err := tt.bin.CheckTrustPolicy()
 			if (err != nil) != tt.wantErr {
-				t.Errorf("checkBinaryTrustPolicy(%+v) err=%v, wantErr=%v",
+				t.Errorf("CheckTrustPolicy(%+v) err=%v, wantErr=%v",
 					tt.bin, err, tt.wantErr)
 			}
 		})

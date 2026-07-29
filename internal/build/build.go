@@ -53,10 +53,8 @@ func checkPlatform(r *recipe.Recipe) error {
 		return nil // no restriction
 	}
 	current := runtime.GOOS + "-" + runtime.GOARCH
-	for _, p := range r.Package.Platforms {
-		if p == current {
-			return nil
-		}
+	if r.Package.SupportsPlatform(current) {
+		return nil
 	}
 	return fmt.Errorf("%s: %w (%s not in %v)",
 		r.Package.Name, ErrUnsupportedPlatform,
@@ -414,6 +412,41 @@ func SystemDeps(system string) []string {
 	default:
 		return nil
 	}
+}
+
+// EffectiveDeps returns deps with SystemDeps(system) merged into
+// Build (deduped), plus the set of names it added implicitly.
+// Callers route the implicit set's bin dirs into
+// BuildDeps.SystemBinDirs so an explicit toolchain pin keeps PATH
+// priority over the system default (gale#174). Returns the input
+// unchanged and a nil set when there are no system deps.
+//
+// It lives here, beside SystemDeps, because it is the single answer
+// to "what did this recipe actually build against": the installer
+// needs it to install and to attest, and plan construction needs it
+// to validate a locked node's build edges. Two copies would let a
+// lock record one set and an install perform another.
+func EffectiveDeps(
+	deps recipe.Dependencies, system string,
+) (recipe.Dependencies, map[string]bool) {
+	sysDeps := SystemDeps(system)
+	if len(sysDeps) == 0 {
+		return deps, nil
+	}
+	explicit := make(map[string]bool, len(deps.Build))
+	for _, d := range deps.Build {
+		explicit[d] = true
+	}
+	merged := append([]string{}, deps.Build...)
+	implicit := make(map[string]bool)
+	for _, d := range sysDeps {
+		if !explicit[d] {
+			merged = append(merged, d)
+			implicit[d] = true
+		}
+	}
+	deps.Build = merged
+	return deps, implicit
 }
 
 // baseEnv returns the core environment variables: PREFIX,

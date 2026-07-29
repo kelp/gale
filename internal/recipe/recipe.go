@@ -2,6 +2,8 @@ package recipe
 
 import (
 	"fmt"
+	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/BurntSushi/toml"
@@ -55,6 +57,61 @@ func (b Binary) EffectiveTrust() string {
 	return b.Trust
 }
 
+// CheckTrustPolicy enforces the declared verification policy for a
+// [binary.<platform>] entry.
+//
+// Decision table, indexed by the effective trust (empty defaults to
+// sigstore):
+//
+//   - sigstore + GHCR URL: accept. Attestation is verified later when
+//     the Verifier is available.
+//   - sigstore + non-GHCR URL: reject. We cannot produce a Sigstore
+//     attestation for a third-party host that isn't signing under our
+//     CI identity. Silently skipping attestation here was the C3
+//     bypass.
+//   - sha256-only: accept regardless of host. The recipe has
+//     explicitly opted out of attestation; only the SHA256 is
+//     verified downstream.
+//
+// It lives on the type that carries the policy so both consumers ask
+// one question: the installer before fetching, and plan construction
+// before committing to a locked binary that cannot fall back to
+// source.
+//
+// The returned error text names the field (trust) and the policy
+// value (sigstore) so the installer's fallback log surfaces an
+// actionable message.
+func (b Binary) CheckTrustPolicy() error {
+	switch b.EffectiveTrust() {
+	case TrustSHA256Only:
+		return nil
+	case TrustSigstore:
+		if !IsGHCR(b.URL) {
+			return fmt.Errorf(
+				"binary trust policy: %q requires a ghcr.io URL "+
+					"(got %q); set trust = %q to opt out",
+				TrustSigstore, b.URL, TrustSHA256Only,
+			)
+		}
+		return nil
+	default:
+		return fmt.Errorf(
+			"binary trust policy: unknown trust value %q", b.Trust,
+		)
+	}
+}
+
+// IsGHCR reports whether the URL host is ghcr.io. Only ghcr.io
+// receives bearer tokens — never send credentials to arbitrary hosts
+// based on path patterns alone.
+func IsGHCR(rawURL string) bool {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return false
+	}
+	return u.Host == "ghcr.io"
+}
+
 // BinaryForPlatform returns the binary for the given OS and
 // architecture, or nil if none exists. Keys are "GOOS-GOARCH".
 func (r *Recipe) BinaryForPlatform(goos, goarch string) *Binary {
@@ -89,6 +146,18 @@ func (p Package) Full() string {
 		rev = 1
 	}
 	return fmt.Sprintf("%s-%d", p.Version, rev)
+}
+
+// SupportsPlatform reports whether the package may be installed on
+// the given "<goos>-<goarch>" key. An empty Platforms list means no
+// restriction. The platform is a parameter rather than the host's own
+// because the lock writers reason about platforms they are not
+// running on.
+func (p Package) SupportsPlatform(key string) bool {
+	if len(p.Platforms) == 0 {
+		return true
+	}
+	return slices.Contains(p.Platforms, key)
 }
 
 // Source holds the source archive location and checksum.

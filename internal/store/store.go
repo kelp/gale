@@ -223,6 +223,65 @@ func HasNumericRevisionSuffix(version string) bool {
 	return true
 }
 
+// ErrNotCanonical reports an identity that is not spelled as a
+// canonical version-revision, or that does not address exactly one
+// store directory.
+var ErrNotCanonical = errors.New("identity is not canonical")
+
+// CheckIdentity rejects an identity that is not spelled
+// name@<version>-<revision>, and that does not address exactly one
+// store directory.
+//
+// It lives here because that is what the rule is about: every caller
+// validating an identity is protecting a join onto the store root,
+// and HasNumericRevisionSuffix, the revision classifier it rests on,
+// is already this package's. Three packages consume it — provenance
+// screening dependency edges read off disk, the installer screening
+// an archive's metadata, and lockplan screening a lockfile before a
+// local --recipes directory joins a name onto a path.
+//
+// The path-component rule is a boundary, not a style check. These
+// identities arrive from files gale did not write, so a dependency
+// named "../../outside" would otherwise resolve and be read from
+// anywhere the process can reach.
+func CheckIdentity(name, version string) error {
+	if strings.Contains(name, "@") {
+		return fmt.Errorf("%w: name %q contains @", ErrNotCanonical, name)
+	}
+	if !safeComponent(name) {
+		return fmt.Errorf(
+			"%w: name %q is not a single path component",
+			ErrNotCanonical, name,
+		)
+	}
+	if !safeComponent(version) {
+		return fmt.Errorf(
+			"%w: version %q is not a single path component",
+			ErrNotCanonical, version,
+		)
+	}
+	if !HasNumericRevisionSuffix(version) {
+		return fmt.Errorf(
+			"%w: %s@%s has no revision suffix", ErrNotCanonical, name, version,
+		)
+	}
+	return nil
+}
+
+// safeComponent reports whether s addresses exactly one directory
+// entry: non-empty, no separator, and not a traversal element.
+func safeComponent(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	if strings.ContainsAny(s, `/\`) {
+		return false
+	}
+	// Belt and braces against anything Clean would rewrite, so the
+	// string that is validated is the string that is joined.
+	return filepath.Clean(s) == s
+}
+
 // SplitRevision splits a "<base>-<N>" version into (base, N).
 // A version without a numeric revision suffix is returned
 // unchanged with revision 1 — the recipe default (an absent
