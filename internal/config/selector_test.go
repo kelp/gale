@@ -77,6 +77,22 @@ func hostWitnessCases() []hostWitnessCase {
 			wantErr:  true,
 		},
 		{
+			// filepath.Match treats a backslash as an escape, so `host\*`
+			// matches the literal "host*". The automaton reads it as two
+			// ordinary bytes, and the two disagree about which hostnames
+			// exist. Losing a witness that way is the unsafe direction.
+			name:     "escape character is unsupported",
+			patterns: []string{`host\*`, "host*"},
+			wantErr:  true,
+		},
+		{
+			// filepath.Match's `*` does not cross a separator, while the
+			// automaton's does.
+			name:     "path separator is unsupported",
+			patterns: []string{"host/x", "host*"},
+			wantErr:  true,
+		},
+		{
 			// The byte automaton and filepath.Match disagree about
 			// multi-byte characters, so non-ASCII is refused too.
 			name:     "non-ASCII is unsupported",

@@ -381,7 +381,7 @@ func TestExtractBuild_RecordsSourceBuildDeps(t *testing.T) {
 	a.BuildDeps = []depsmeta.ResolvedDep{
 		{Name: "cmake", Version: "3.0", Revision: 1},
 	}
-	err := extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
+	err := (&Installer{}).extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
 		storeDir, nil, a)
 	if err != nil {
 		t.Fatalf("extractBuild: %v", err)
@@ -441,7 +441,7 @@ func TestExtractBuild_UnprovenancedBuildDepBlocksRecord(t *testing.T) {
 	a.BuildDeps = []depsmeta.ResolvedDep{
 		{Name: "cmake", Version: "3.0", Revision: 1},
 	}
-	err := extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
+	err := (&Installer{}).extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
 		storeDir, nil, a)
 	if err != nil {
 		t.Fatalf("extractBuild: %v", err)
@@ -643,7 +643,7 @@ func TestExtractBuild_DanglingDepsSymlinkStaysInsideStaging(t *testing.T) {
 	deps := &build.BuildDeps{NamedDirs: map[string]string{
 		"libfoo": filepath.Join(storeRoot, "libfoo", "1.0-1"),
 	}}
-	err := extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
+	err := (&Installer{}).extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
 		storeDir, deps, sourceOf("srcpkg", "2.0-1"))
 	if err != nil {
 		t.Fatalf("extractBuild: %v", err)
@@ -751,7 +751,7 @@ func TestExtractBuild_ProvenanceHashComesFromBuildResult(t *testing.T) {
 
 	a := sourceOf("srcpkg", "2.0-1")
 	a.SHA256 = fakeSHA // must be ignored
-	err := extractBuild(&build.BuildResult{Archive: archive, SHA256: hash},
+	err := (&Installer{}).extractBuild(&build.BuildResult{Archive: archive, SHA256: hash},
 		storeDir, nil, a)
 	if err != nil {
 		t.Fatalf("extractBuild: %v", err)

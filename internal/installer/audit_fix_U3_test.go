@@ -106,7 +106,7 @@ func TestExtractBuildInPlace_FailedExtractionNotInstalled(t *testing.T) {
 	})
 	result := &build.BuildResult{Archive: archive}
 
-	if err := extractBuild(result, storeDir, nil, sourceOf("u3src", "1.0-1")); err == nil {
+	if err := (&Installer{}).extractBuild(result, storeDir, nil, sourceOf("u3src", "1.0-1")); err == nil {
 		t.Fatal("expected extraction error from poisoned archive")
 	}
 	if s.IsInstalled("u3src", "1.0-1") {
@@ -232,7 +232,7 @@ func TestExtractBuildInPlace_FarmConflictFails(t *testing.T) {
 	// wrong reason.
 	result := &build.BuildResult{Archive: archive, SHA256: hashFile(t, archive)}
 
-	err = extractBuild(result, bDir, nil, sourceOf("u3libb", "1.0-1"))
+	err = (&Installer{}).extractBuild(result, bDir, nil, sourceOf("u3libb", "1.0-1"))
 	if err == nil {
 		t.Fatal("in-place source install swallowed the farm " +
 			"basename conflict that binary and staged installs " +

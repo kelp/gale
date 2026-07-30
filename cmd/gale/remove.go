@@ -9,6 +9,7 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
@@ -133,6 +134,23 @@ var removeCmd = &cobra.Command{
 			))
 		}
 
+		// Decide the store removal before the generation
+		// rebuild, because deciding it runs the cross-project
+		// farm guard, and a guard refusal must land before
+		// the generation swap and before any farm or store
+		// mutation (design §4, acceptance test 28).
+		installed := st.IsInstalled(name, version)
+		var dropStoreDir string
+		if installed {
+			var err error
+			dropStoreDir, err = storeRemovalPlan(
+				ctx, st, name, version, out,
+			)
+			if err != nil {
+				return err
+			}
+		}
+
 		// Rebuild the generation for this scope. Do this
 		// before removing from the store so the generation
 		// is updated with the new config (package removed)
@@ -141,48 +159,27 @@ var removeCmd = &cobra.Command{
 			return fmt.Errorf("rebuild generation: %w", err)
 		}
 
-		// Remove the declared version from the store —
-		// unless another scope's gale.toml still references
-		// it. The store is shared: deleting an entry the
-		// global config (or an enclosing project's) still
-		// lists would leave that scope's generation symlinks
-		// dangling without warning (gh#67).
-		if st.IsInstalled(name, version) {
-			// Resolve the canonical on-disk dir (<v>-<rev>)
-			// once. st.Remove resolves internally, but
-			// farm.Depopulate prefix-matches symlink targets
-			// against this path, so the bare config version
-			// made it a guaranteed no-op that leaked farm
-			// entries (gh#74).
-			storeDir := st.ResolveDir(name, version)
-			if otherScopeReferences(
-				st, name, storeDir, ctx.versionedRecipeResolver(), out,
-			) {
-				out.Info(fmt.Sprintf(
-					"%s@%s still referenced by another "+
-						"gale.toml — keeping store entry",
-					name, version,
-				))
-			} else {
-				if err := st.Remove(name, version); err != nil {
-					return fmt.Errorf("removing from store: %w",
-						err)
-				}
-				// Clean up farm symlinks pointing into the
-				// removed store dir. Best-effort; a failure
-				// here leaves stale symlinks that `gale
-				// inspect` would surface.
-				if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
-					if err := farm.Depopulate(storeDir, farmDir); err != nil {
-						out.Warn(fmt.Sprintf(
-							"farm depopulate: %v", err,
-						))
-					}
-				}
-				out.Info(fmt.Sprintf("Removed %s@%s from store",
-					name, version))
+		switch {
+		case dropStoreDir != "":
+			if err := st.Remove(name, version); err != nil {
+				return fmt.Errorf("removing from store: %w",
+					err)
 			}
-		} else {
+			// Clean up farm symlinks pointing into the
+			// removed store dir. Best-effort; a failure
+			// here leaves stale symlinks that `gale
+			// inspect` would surface. The claimant guard
+			// already ran in storeRemovalPlan.
+			if farmDir := farm.DirFromStoreDir(dropStoreDir); farmDir != "" {
+				if err := farm.Depopulate(dropStoreDir, farmDir); err != nil {
+					out.Warn(fmt.Sprintf(
+						"farm depopulate: %v", err,
+					))
+				}
+			}
+			out.Info(fmt.Sprintf("Removed %s@%s from store",
+				name, version))
+		case !installed:
 			out.Warn(fmt.Sprintf(
 				"%s@%s not found in store", name, version,
 			))
@@ -202,6 +199,50 @@ func init() {
 		"Remove from [hosts.<host>.packages] "+
 			"(use 'current' for this machine)")
 	rootCmd.AddCommand(removeCmd)
+}
+
+// storeRemovalPlan decides whether the store entry for an
+// installed package will be removed, and when it will, runs the
+// cross-project farm guard over the depopulation that removal
+// implies. Returns the resolved store dir to remove, or "" when
+// another scope's gale.toml still references it — the store is
+// shared, and deleting an entry the global config (or an enclosing
+// project's) still lists would leave that scope's generation
+// symlinks dangling without warning (gh#67).
+//
+// The dir is resolved to the canonical on-disk form (<v>-<rev>)
+// once. st.Remove resolves internally, but farm.Depopulate
+// prefix-matches symlink targets against this path, so the bare
+// config version made it a guaranteed no-op that leaked farm
+// entries (gh#74).
+//
+// The guard excludes the initiating scope: its proposed closure no
+// longer contains the package, so its own superseded claim must
+// not veto its own remove (design §4, acceptance test 37).
+func storeRemovalPlan(
+	ctx *cmdContext, st *store.Store, name, version string,
+	out *output.Output,
+) (string, error) {
+	storeDir := st.ResolveDir(name, version)
+	if otherScopeReferences(
+		st, name, storeDir, ctx.versionedRecipeResolver(), out,
+	) {
+		out.Info(fmt.Sprintf(
+			"%s@%s still referenced by another "+
+				"gale.toml — keeping store entry",
+			name, version,
+		))
+		return "", nil
+	}
+	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
+		if err := farm.GuardDepopulate(
+			storeDir, farmDir,
+			generation.FarmClaimants(ctx.StoreRoot, ctx.GaleDir),
+		); err != nil {
+			return "", err
+		}
+	}
+	return storeDir, nil
 }
 
 // locatePackageSections returns every section in the

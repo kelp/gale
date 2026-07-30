@@ -580,6 +580,9 @@ partial rebuild.
   method is `binary`, before any dep or store mutation. It is
   honored only unlocked or when the locked method is source.
 - A locked `binary` method never silently falls back to source.
+- Where a writer cannot completely enumerate host-selector
+  interactions, it treats all lock targets as potentially
+  co-applicable.
 - Every existing project has a legacy sync-written gale.lock, so
   the first sync after upgrade fails everywhere, including inside
   direnv. The error must be one actionable line, `gale doctor`
@@ -640,6 +643,42 @@ profiles are never rewritten as a side effect of a concrete-host
 operation. If a project declares no default packages, plain `gale
 lock` errors and lists the declared selectors rather than writing
 an empty default target.
+
+A writer's target roots are the packages it verified in this run, plus
+prior roots of the same target carried forward. A prior root is carried
+when gale.toml still declares it, its pin still matches, and its
+subgraph in the existing lock is **complete**, meaning all three of:
+the root records at least one artifact; for every platform it records,
+every serialized dependency resolves to a node that also records that
+platform; and the serialized graph is acyclic. Reachability alone is
+not enough, because a cyclic graph is closed under it and still has no
+commit order.
+
+A declared package that was **not** selected for this run and cannot be
+safely carried is **omitted** from roots, producing the same stale
+state `gale add` produces deliberately, and the writer names it so the
+caller can print the remedy.
+
+Omission never applies to a root this run selected. If any of those
+fails verification the whole write fails atomically, leaving the
+previous lockfile byte-identical; there is no partial success in which
+a requested package silently disappears from the lock.
+
+Omitting a sibling rather than failing follows the same rule as
+other-platform minting below: omit what cannot be backed, and never
+write an entry that looks supported and must fail on use. Failing
+instead would make `gale install`, named below as a remedy for the
+`gale add` stale state, a dead end whenever a second declared package
+happened to be unlocked. Locking only the packages this run touched
+would be worse still: it would replace a complete committed target and
+destroy every sibling's locked data.
+
+Roots subset-of declared is **stale**, a reachable and recoverable
+state whose remedy is rewriting the lock. A root with no corresponding
+package node is **not** a state any writer may produce: it reads as a
+tampered lock, whose remedy is repairing its contents. That asymmetry
+is why a carried root's subgraph is proven complete rather than
+assumed.
 
 Other rules:
 
@@ -713,6 +752,42 @@ Other rules:
   is re-pinning to a new version-revision. The gc remedy is never
   offered: gc retains packages referenced by configs or active
   generations, so it cannot remove a conflicting artifact.
+- Lock targets are keyed by gale.toml's host selectors, and a writer
+  must decide which of them can apply to one machine in order to check
+  the one-version rule against every graph a reader can plan. That
+  decision is defined over a restricted grammar: ASCII letters,
+  digits, `-`, `.`, `_`, `*`, commas separating alternatives, and the
+  ASCII spaces or tabs that may pad them. Every other `filepath.Match`
+  construct, including `?`, character classes, `\` escapes, and the
+  `/` separator, is outside it. The restriction is what makes the
+  decision complete rather than approximate, since over that grammar
+  byte-wise and rune-wise matching agree and `*` has no separator
+  exception. The implementation enforces exactly this grammar, as an
+  allowlist rather than a list of forbidden metacharacters, because a
+  denylist must enumerate every construct the matcher gives meaning to
+  and missing one is silent.
+
+  A selector outside the grammar is not rejected, because gale.toml
+  has always accepted whatever `filepath.Match` accepts. Instead the
+  writer loses the ability to enumerate effective selector sets and
+  falls back to checking every target at once. Search exhaustion
+  triggers the same fallback, so a bounded search never returns
+  partial coverage.
+
+  "Every target at once" means the concatenation of all targets' **raw
+  root identities**, with no name-keyed replacement. Replacement is
+  only legitimate between selectors known to co-apply, which is
+  exactly what could not be determined; collapsing by name would let a
+  more specific target's root overwrite a conflicting one and hide the
+  disagreement. Two mutually exclusive versions therefore report a
+  conflict, which is the intended conservative false positive: the
+  fallback can report a conflict between targets that could never
+  apply to one machine, and it cannot miss one.
+
+  Coverage enumerates distinct effective selector *sets*, not selector
+  pairs. A third selector matching the same hostname masks a
+  disagreement between two others through replacement, while a
+  different hostname matching only those two still exposes it.
 
 ## 12. Activation gating
 

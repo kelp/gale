@@ -2,6 +2,7 @@ package installer
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -45,6 +46,18 @@ type Installer struct {
 	// and no silent skip.
 	Verifier   attestation.Verifier
 	SourceOnly bool // skip binary, build from source
+
+	// FarmGuard, when set, is the cross-project farm claimant
+	// guard (design §4): it is called with the canonical store
+	// dirs whose sonames an install is about to write into the
+	// shared farm, after the store commit and before any farm
+	// mutation, and a non-nil error aborts the install with the
+	// farm untouched. Production wiring passes a closure over
+	// farm.GuardPopulate with the initiating scope's claimants;
+	// nil skips the guard (unwired callers and tests). It takes a
+	// batch so deferring population to a post-validation pass can
+	// guard the whole plan with one call.
+	FarmGuard func(storeDirs []string) error
 
 	// BinaryFallbackLog receives a one-line warning when a
 	// binary install fails and the installer falls back to a
@@ -208,6 +221,14 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 			method = MethodBinary
 			sha256 = bin.SHA256
 			manifestDigest = bin.ManifestDigest
+		} else if errors.Is(berr, farm.ErrClaimConflict) {
+			// A farm-guard refusal is a cross-project conflict,
+			// not a defect of the artifact: a source build of the
+			// same version claims the same sonames and would only
+			// hit the same refusal at the generation rebuild,
+			// after minutes of wasted work. Abort instead of
+			// demoting to source.
+			return nil, berr
 		} else {
 			// Binary install failed — fall back to source build.
 			// Reaching here means the recipe advertised a binary
@@ -246,7 +267,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	}
 
 	if method != MethodBinary {
-		hash, buildErr := installFromSourceTo(r, storeDir, canonicalDir, depPaths, !staged)
+		hash, buildErr := inst.installFromSourceTo(r, storeDir, canonicalDir, depPaths, !staged)
 		if buildErr != nil {
 			// Clean up failed install.
 			os.RemoveAll(storeDir)
@@ -256,7 +277,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	}
 
 	if staged {
-		if err := commitStaged(inst.Store.Root, canonicalDir, storeDir); err != nil {
+		if err := inst.commitStaged(inst.Store.Root, canonicalDir, storeDir); err != nil {
 			return nil, fmt.Errorf("install staged output: %w", err)
 		}
 	}
@@ -305,7 +326,7 @@ func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*
 		return nil, fmt.Errorf("install build deps: %w", err)
 	}
 
-	hash, buildErr := installFromLocalSource(r, sourceDir, buildDir, depPaths)
+	hash, buildErr := inst.installFromLocalSource(r, sourceDir, buildDir, depPaths)
 	if buildErr != nil {
 		return nil, fmt.Errorf("build from local source: %w", buildErr)
 	}
@@ -412,7 +433,7 @@ func (inst *Installer) installGitLocked(r *recipe.Recipe, buildResult *build.Bui
 	// A git install stores under the bare commit hash; its canonical
 	// identity carries the implicit revision 1.
 	artifact := sourceArtifact(r, canonicalVersion(hash), depPaths)
-	if err := extractBuild(buildResult, storeDir, depPaths, artifact); err != nil {
+	if err := inst.extractBuild(buildResult, storeDir, depPaths, artifact); err != nil {
 		os.RemoveAll(storeDir)
 		return nil, fmt.Errorf("extracting git build: %w", err)
 	}
@@ -464,22 +485,40 @@ func (inst *Installer) InstallGitWithFinalize(r *recipe.Recipe, finalize func(*I
 // pre-install or completed install — never an intermediate.
 //
 // If the rename fails, replaceStoreDir restores the prior
-// canonical dir from its .bak sibling. If farm.Populate
-// fails after a successful rename, the canonical dir is
-// already the new version; the caller will see the error
+// canonical dir from its .bak sibling. If the farm guard or
+// farm.Populate fails after a successful rename, the canonical
+// dir is already the new version; the caller will see the error
 // and the farm will be repopulated on the next sync.
-func commitStaged(storeRoot, canonicalDir, stagingDir string) error {
+//
+// The farm guard runs between the rename and Populate: the
+// guard compares the lib paths farm links will carry, which
+// exist under the canonical dir only after the rename, and the
+// farm must not have been touched when it refuses.
+func (inst *Installer) commitStaged(storeRoot, canonicalDir, stagingDir string) error {
 	return withStoreGenLock(storeRoot, func() error {
 		if err := replaceStoreDir(canonicalDir, stagingDir); err != nil {
 			return err
 		}
 		if farmDir := farm.DirFromStoreDir(canonicalDir); farmDir != "" {
+			if err := inst.guardFarm(canonicalDir); err != nil {
+				return err
+			}
 			if err := farm.Populate(canonicalDir, farmDir); err != nil {
 				return fmt.Errorf("populate farm: %w", err)
 			}
 		}
 		return nil
 	})
+}
+
+// guardFarm runs the cross-project farm claimant guard for one
+// canonical store dir about to enter the shared farm. Nil
+// FarmGuard means unwired (tests): no guard.
+func (inst *Installer) guardFarm(canonicalDir string) error {
+	if inst.FarmGuard == nil {
+		return nil
+	}
+	return inst.FarmGuard([]string{canonicalDir})
 }
 
 func replaceStoreDir(storeDir, buildDir string) error {
@@ -694,7 +733,14 @@ func (inst *Installer) installBinaryTo(
 	// fetch + verify + fixups above intentionally stay outside
 	// the store-gen lock: they don't touch the canonical store
 	// dir, and a network stall must not block a concurrent sync.
-	return commitExtracted(stagingDir, extractDir, finalStoreDir, storeRoot, inPlace)
+	return commitExtracted(commitRequest{
+		StagingDir:    stagingDir,
+		ExtractDir:    extractDir,
+		FinalStoreDir: finalStoreDir,
+		StoreRoot:     storeRoot,
+		InPlace:       inPlace,
+		FarmGuard:     inst.FarmGuard,
+	})
 }
 
 // setupAttestTempfile creates a collision-free tempfile for tee-ing
@@ -781,43 +827,66 @@ func fixupExtracted(dir, finalStoreDir, storeRoot string) error {
 // install (at worst missing farm links, which farm.Rebuild
 // restores on the next gen swap).
 //
-// When inPlace is true, the swap and farm.Populate run under
+// When InPlace is true, the swap and farm.Populate run under
 // the store-gen lock so a concurrent generation.Build sees
 // either the pre-install state or the completed install —
-// never an intermediate. When inPlace is false, the caller is
+// never an intermediate. When InPlace is false, the caller is
 // staging into a sibling dir and owns the final commit
-// (commitStaged), including the farm wiring.
-func commitExtracted(stagingDir, extractDir, finalStoreDir, storeRoot string, inPlace bool) error {
+// (commitStaged), including the farm wiring and its guard.
+func commitExtracted(req commitRequest) error {
 	swap := func() error {
-		// extractDir was created empty by Store.Create (or is
+		// ExtractDir was created empty by Store.Create (or is
 		// the caller's empty staging target). Remove it so the
 		// rename can land in its place.
-		if err := os.RemoveAll(extractDir); err != nil && !os.IsNotExist(err) {
+		if err := os.RemoveAll(req.ExtractDir); err != nil && !os.IsNotExist(err) {
 			return fmt.Errorf("remove empty extract dir: %w", err)
 		}
-		if err := renameDir(stagingDir, extractDir); err != nil {
+		if err := renameDir(req.StagingDir, req.ExtractDir); err != nil {
 			return fmt.Errorf("promote staging dir: %w", err)
 		}
-		if !inPlace {
+		if !req.InPlace {
 			return nil
 		}
 		// Populate the shared lib farm with symlinks to this
-		// package's versioned dylibs. A conflict (two packages
-		// claiming the same dylib) is a recipe bug — fail the
-		// install on EVERY path (gh#42) so the bad recipe gets
-		// fixed instead of silently shipping a farm where one
-		// package wins.
-		if farmDir := farm.DirFromStoreDir(finalStoreDir); farmDir != "" {
-			if err := farm.Populate(finalStoreDir, farmDir); err != nil {
+		// package's versioned dylibs, running the cross-project
+		// claimant guard first: the guard compares the lib paths
+		// the links will carry, which exist only after the rename
+		// above, and a refusal must leave the farm untouched
+		// (design §4). A conflict (two packages claiming the same
+		// dylib) is a recipe bug — fail the install on EVERY path
+		// (gh#42) so the bad recipe gets fixed instead of
+		// silently shipping a farm where one package wins.
+		if farmDir := farm.DirFromStoreDir(req.FinalStoreDir); farmDir != "" {
+			if req.FarmGuard != nil {
+				if err := req.FarmGuard([]string{req.FinalStoreDir}); err != nil {
+					return err
+				}
+			}
+			if err := farm.Populate(req.FinalStoreDir, farmDir); err != nil {
 				return fmt.Errorf("populate farm: %w", err)
 			}
 		}
 		return nil
 	}
-	if inPlace {
-		return withStoreGenLock(storeRoot, swap)
+	if req.InPlace {
+		return withStoreGenLock(req.StoreRoot, swap)
 	}
 	return swap()
+}
+
+// commitRequest is one staging-dir promotion into the canonical
+// store dir. A struct rather than a parameter list for the same
+// reason as extractRequest: the positional form was at the
+// argument limit before the farm guard joined it.
+type commitRequest struct {
+	StagingDir    string
+	ExtractDir    string
+	FinalStoreDir string
+	StoreRoot     string
+	InPlace       bool
+	// FarmGuard is the cross-project farm claimant guard; nil
+	// means unwired (tests). See Installer.FarmGuard.
+	FarmGuard func([]string) error
 }
 
 // verifyManifestDigest enforces digest-based fetch (gh#121). When a
@@ -1220,7 +1289,7 @@ func (inst *Installer) installDepsInner(
 	return &result, nil
 }
 
-func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *build.BuildDeps) (string, error) {
+func (inst *Installer) installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *build.BuildDeps) (string, error) {
 	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
@@ -1231,15 +1300,16 @@ func installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *
 	if err != nil {
 		return "", fmt.Errorf("building from local source: %w", err)
 	}
-	return result.SHA256, extractBuild(result, storeDir, deps,
+	return result.SHA256, inst.extractBuild(result, storeDir, deps,
 		sourceArtifact(r, r.Package.Full(), deps))
 }
 
 // installFromSourceTo runs the source build and extracts the
 // archive into extractDir. inPlace mirrors installBinaryTo:
 // true means extractDir is the live canonical dir; false
-// means the caller is staging.
-func installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) (string, error) {
+// means the caller is staging. A method so the in-place commit
+// inherits the installer's farm guard.
+func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) (string, error) {
 	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
@@ -1257,6 +1327,7 @@ func installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, dep
 		Deps:          deps,
 		Artifact:      sourceArtifact(r, r.Package.Full(), deps),
 		InPlace:       inPlace,
+		FarmGuard:     inst.FarmGuard,
 	})
 }
 
@@ -1271,7 +1342,9 @@ func installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, dep
 // package or race with farm.Populate. Extraction itself
 // happens in a transient staging sibling outside the lock —
 // non-locking readers skip it (isTransientStoreEntry).
-func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps, a commitArtifact) error {
+// A method so the in-place commit inherits the installer's farm
+// guard.
+func (inst *Installer) extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps, a commitArtifact) error {
 	return extractBuildTo(extractRequest{
 		Result:        result,
 		ExtractDir:    storeDir,
@@ -1279,6 +1352,7 @@ func extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildD
 		Deps:          deps,
 		Artifact:      a,
 		InPlace:       true,
+		FarmGuard:     inst.FarmGuard,
 	})
 }
 
@@ -1293,6 +1367,10 @@ type extractRequest struct {
 	Deps          *build.BuildDeps
 	Artifact      commitArtifact
 	InPlace       bool
+	// FarmGuard is the cross-project farm claimant guard,
+	// forwarded to the in-place commit; nil means unwired
+	// (tests). See Installer.FarmGuard.
+	FarmGuard func([]string) error
 }
 
 // extractBuildTo extracts result.Archive into extractDir,
@@ -1374,7 +1452,14 @@ func extractBuildTo(req extractRequest) error {
 	if !inPlace {
 		return nil
 	}
-	return commitExtracted(workDir, extractDir, finalStoreDir, storeRoot, true)
+	return commitExtracted(commitRequest{
+		StagingDir:    workDir,
+		ExtractDir:    extractDir,
+		FinalStoreDir: finalStoreDir,
+		StoreRoot:     storeRoot,
+		InPlace:       true,
+		FarmGuard:     req.FarmGuard,
+	})
 }
 
 // lockPackage acquires an exclusive file lock for a package

@@ -101,22 +101,40 @@ func HostSelectorSets(selectors []string) ([]string, error) {
 // approximate: with only literals and `*`, byte-wise and rune-wise
 // matching agree, because `*` consumes any bytes and a literal ASCII byte
 // is its own rune.
+// It is an allowlist, not a list of forbidden metacharacters. A denylist
+// has to enumerate every construct filepath.Match gives meaning to, and
+// missing one is silent: `\` escapes the next character there while the
+// automaton reads it as an ordinary byte, and `*` does not cross a `/`
+// there while the automaton's does. Either disagreement loses witnesses,
+// which is the unsafe direction. Listing what is permitted cannot fail
+// that way.
 func checkSupported(sel string) error {
 	for i := 0; i < len(sel); i++ {
-		switch c := sel[i]; {
-		case c >= 0x80:
+		if !permittedSelectorByte(sel[i]) {
 			return fmt.Errorf(
-				"%w: %q contains a non-ASCII character", ErrUnsupportedSelector, sel,
-			)
-		case c == '?' || c == '[' || c == ']':
-			return fmt.Errorf(
-				"%w: %q uses %q; supported forms are a hostname, "+
-					"a comma-separated list, and a `*` glob",
-				ErrUnsupportedSelector, sel, string(c),
+				"%w: %q contains %q; a host selector may use letters, "+
+					"digits, `-`, `.`, `_`, `*`, and commas",
+				ErrUnsupportedSelector, sel, string(sel[i]),
 			)
 		}
 	}
 	return nil
+}
+
+// permittedSelectorByte reports whether a byte may appear in a selector
+// this package can decide overlap for: the characters a hostname is made
+// of, plus `*` for globbing and the comma and spaces that separate
+// alternatives.
+func permittedSelectorByte(c byte) bool {
+	switch {
+	case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9':
+		return true
+	case c == '-', c == '.', c == '_':
+		return true
+	case c == '*', c == ',', c == ' ', c == '\t':
+		return true
+	}
+	return false
 }
 
 // signature encodes which selectors a hostname matches.

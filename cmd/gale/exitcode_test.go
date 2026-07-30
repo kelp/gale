@@ -7,7 +7,11 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kelp/gale/internal/activation"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/provenance"
 )
 
 // TestExitCodeFor pins the taxonomy CI scripts branch on. The split
@@ -16,12 +20,17 @@ import (
 // lock needs regenerating, which a pipeline can often do itself.
 // Every case wraps the sentinel, because callers add context with
 // %w and the classifier must traverse the chain rather than compare.
-func TestExitCodeFor(t *testing.T) {
-	tests := []struct {
-		name string
-		err  error
-		want int
-	}{
+// exitCodeCase is one error and the exit code it must classify as.
+type exitCodeCase struct {
+	name string
+	err  error
+	want int
+}
+
+// exitCodeCases is a function rather than an inline literal so the test
+// body stays short enough to read as assertions.
+func exitCodeCases() []exitCodeCase {
+	return []exitCodeCase{
 		{
 			name: "success",
 			err:  nil,
@@ -52,7 +61,58 @@ func TestExitCodeFor(t *testing.T) {
 			err:  fmt.Errorf("sync: %w", lockfile.ErrDowngradeGuard),
 			want: exitLockUnusable,
 		},
+		{
+			name: "cross-project farm conflict",
+			err:  fmt.Errorf("sync: %w", farm.ErrClaimConflict),
+			want: exitLockIntegrity,
+		},
+		{
+			// The guard fails closed on a claimant whose lock is
+			// unusable, wrapping that lock's sentinel. The refusal
+			// is still the farm guard's: regenerating the
+			// INITIATING scope's lock cannot fix another scope's
+			// file, so the pipeline-actionable class 4 would
+			// mislead. Class 3 (a human decides) wins.
+			name: "farm conflict over an unreadable claimant",
+			err: fmt.Errorf("sync: %w",
+				fmt.Errorf("%w: cannot read the closure of project "+
+					"/b: %w", farm.ErrClaimConflict,
+					lockfile.ErrMalformed)),
+			want: exitLockIntegrity,
+		},
+		{
+			name: "unserializable locked closure",
+			err:  fmt.Errorf("gate: %w", lockgraph.ErrMissingDep),
+			want: exitLockUnusable,
+		},
+		{
+			name: "cyclic locked closure",
+			err:  fmt.Errorf("gate: %w", lockgraph.ErrCycle),
+			want: exitLockUnusable,
+		},
+		{
+			name: "provenance disagrees with the lock",
+			err:  fmt.Errorf("gate: %w", provenance.ErrInvalid),
+			want: exitLockIntegrity,
+		},
+		{
+			// Absent provenance under a lock arrives wrapped in
+			// ErrInvalid, so it must classify as an integrity conflict
+			// rather than falling through to an ordinary failure.
+			name: "no provenance where the lock names bytes",
+			err:  fmt.Errorf("%w: %w", provenance.ErrInvalid, provenance.ErrAbsent),
+			want: exitLockIntegrity,
+		},
+		{
+			name: "activation drift",
+			err:  fmt.Errorf("gate: %w", activation.ErrDrift),
+			want: exitActivationDrift,
+		},
 	}
+}
+
+func TestExitCodeFor(t *testing.T) {
+	tests := exitCodeCases()
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := exitCodeFor(tt.err); got != tt.want {

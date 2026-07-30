@@ -386,6 +386,18 @@ func build(pkgs map[string]string, galeDir, storeRoot string, validate func() er
 			return err
 		}
 
+		// Run the cross-project farm guard BEFORE the swap: a
+		// refusal must leave the previous generation active and
+		// the farm untouched (design §4). The returned set is
+		// the proposed closure plus every other scope's claim,
+		// so the wipe-and-recreate rebuild below cannot delete
+		// a soname only another scope's binaries resolve.
+		active, err := guardedRebuildDirs(pkgs, galeDir, storeRoot)
+		if err != nil {
+			cleanup()
+			return err
+		}
+
 		// Atomic swap: create a temporary symlink then rename.
 		if err := swapCurrentSymlink(galeDir, next); err != nil {
 			cleanup()
@@ -394,12 +406,12 @@ func build(pkgs map[string]string, galeDir, storeRoot string, validate func() er
 
 		// Rebuild the shared-lib farm from this
 		// generation's packages plus their recorded dep
-		// closure (gh#43). Older revisions may still be
-		// in the store (awaiting `gale gc`), but they
-		// aren't on PATH and must not leak into the farm.
-		// Best-effort — a farm error does not invalidate
-		// the generation swap.
-		active := FarmStoreDirs(pkgs, storeRoot)
+		// closure (gh#43) and every other scope's claimed
+		// closure. Older revisions may still be in the
+		// store (awaiting `gale gc`), but they aren't on
+		// PATH, aren't claimed, and must not leak into the
+		// farm. Best-effort — a farm error does not
+		// invalidate the generation swap.
 		if err := farm.Rebuild(
 			active, farm.Dir(galeDir),
 		); err != nil {

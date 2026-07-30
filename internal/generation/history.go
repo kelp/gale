@@ -133,6 +133,17 @@ func Rollback(galeDir, storeRoot string, target int) error {
 			return fmt.Errorf("generation %d does not exist: %w",
 				target, err)
 		}
+
+		// Farm guard before the swap, mirroring Build: the
+		// rolled-to closure is this scope's proposed claim, and
+		// a refusal must leave the current generation active
+		// and the farm untouched (design §4).
+		pkgs := genVersions(genDir, storeRoot)
+		active, err := guardedRebuildDirs(pkgs, galeDir, storeRoot)
+		if err != nil {
+			return err
+		}
+
 		if err := swapCurrentSymlink(galeDir, target); err != nil {
 			return err
 		}
@@ -140,13 +151,13 @@ func Rollback(galeDir, storeRoot string, target int) error {
 		// Rebuild the farm from the rolled-to generation's
 		// package set so binaries resolve the dylib
 		// revisions they were built against, not the ones
-		// the rolled-from generation installed (gh#44).
+		// the rolled-from generation installed (gh#44),
+		// plus every other scope's claimed closure.
 		// Mirrors Build's post-swap farm rebuild.
 		// Best-effort — a farm error does not invalidate
 		// the swap.
-		pkgs := genVersions(genDir, storeRoot)
 		if err := farm.Rebuild(
-			FarmStoreDirs(pkgs, storeRoot), farm.Dir(galeDir),
+			active, farm.Dir(galeDir),
 		); err != nil {
 			fmt.Fprintf(os.Stderr,
 				"farm: rebuild after rollback: %v\n", err)

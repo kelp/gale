@@ -3,7 +3,11 @@ package main
 import (
 	"errors"
 
+	"github.com/kelp/gale/internal/activation"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/provenance"
 )
 
 // Exit codes. A Go error type is invisible to the shell scripts
@@ -48,6 +52,28 @@ func exitCodeFor(err error) int {
 	switch {
 	case err == nil:
 		return 0
+	// Order matters here, and each of the three cases below is checked
+	// ahead of something that would otherwise swallow it.
+	case errors.Is(err, activation.ErrDrift):
+		// Before the integrity class, because drift is the narrower
+		// condition and the two must never collapse: a carried-forward
+		// package reading as tampering trains users to ignore the
+		// message that means tampering.
+		return exitActivationDrift
+	case errors.Is(err, farm.ErrClaimConflict):
+		// Before the lock-unusable sentinels: the guard fails closed on
+		// an unreadable claimant by wrapping that scope's lock error,
+		// and regenerating the initiating scope's lock — the class-4
+		// remedy — cannot fix another scope's file. A farm refusal is
+		// always class 3, whatever it wraps.
+		return exitLockIntegrity
+	case errors.Is(err, provenance.ErrInvalid):
+		// A store directory's record disagrees with the lock, or there
+		// is no record at all where the lock names bytes. Both mean
+		// something on disk is not what the lock says, which is the
+		// class that deserves a human. ErrAbsent arrives wrapped in
+		// ErrInvalid from VerifyAgainstLock, deliberately.
+		return exitLockIntegrity
 	case errors.Is(err, lockfile.ErrLegacySchema),
 		errors.Is(err, lockfile.ErrUnknownVersion),
 		errors.Is(err, lockfile.ErrUnknownField),
@@ -60,7 +86,12 @@ func exitCodeFor(err error) int {
 		errors.Is(err, lockfile.ErrMalformedRoot),
 		errors.Is(err, lockfile.ErrVersionConflict),
 		errors.Is(err, lockfile.ErrMissingNode),
-		errors.Is(err, lockfile.ErrMissingArtifact):
+		errors.Is(err, lockfile.ErrMissingArtifact),
+		// A locked closure that cannot be serialized is a lock that
+		// cannot be modeled: an edge pointing at a node the lock omits,
+		// or a cycle, for which no digest and no install order exist.
+		errors.Is(err, lockgraph.ErrMissingDep),
+		errors.Is(err, lockgraph.ErrCycle):
 		return exitLockUnusable
 	default:
 		return exitFailure

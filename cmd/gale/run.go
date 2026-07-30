@@ -15,8 +15,14 @@ var runCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		syncIfNeeded(os.Stderr, "")
 
-		galeDir, err := resolveGaleDir()
+		galeDir, configPath, err := resolveScopedPaths(false, false)
 		if err != nil {
+			return err
+		}
+		// Fatal, not a warning. `gale run` exists to execute the
+		// project's binaries, so proceeding past an integrity failure
+		// would run exactly the artifacts that disagree with the lock.
+		if err := gateActivation(galeDir, configPath); err != nil {
 			return err
 		}
 

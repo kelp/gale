@@ -10,6 +10,7 @@ import (
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
@@ -114,6 +115,17 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		Resolver:  resolver,
 		Verifier:  attestation.NewVerifier(),
 		Downloads: parallel.NewLimiter(n),
+		// Cross-project farm claimant guard (design §4): every
+		// farm population this installer performs is checked
+		// against the other scopes' claims first. The initiating
+		// scope (galeDir) is excluded — its claim is the install
+		// itself, and its old closure is superseded, not a veto.
+		FarmGuard: func(storeDirs []string) error {
+			return farm.GuardPopulate(
+				storeDirs,
+				generation.FarmClaimants(storeRoot, galeDir),
+			)
+		},
 	}
 
 	return &cmdContext{
