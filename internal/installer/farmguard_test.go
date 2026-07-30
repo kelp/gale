@@ -38,15 +38,23 @@ func guardStoreRoot(t *testing.T) string {
 
 // refuse is a FarmGuard that always refuses with the guard's
 // sentinel, standing in for a conflicting external claimant.
-func refuse([]string) error {
+func refuse([]farm.Placement) error {
 	return fmt.Errorf("test refusal: %w", farm.ErrClaimConflict)
 }
 
-// TestReinstallFarmGuardRefusalKeepsFarm: a staged reinstall runs
-// the farm guard before farm.Populate, so a refusal leaves the
-// shared farm untouched (acceptance test 28: refused before any
-// farm mutation).
-func TestReinstallFarmGuardRefusalKeepsFarm(t *testing.T) {
+// TestReinstallFarmGuardRefusalKeepsFarmAndStore: a staged
+// reinstall runs the farm guard before it touches anything, so a
+// refusal leaves both the shared farm and the canonical store dir
+// exactly as they were (acceptance test 28: refused before any farm
+// mutation).
+//
+// The store half is not incidental. Replacing the canonical dir
+// first would change bytes an existing generation already reaches,
+// and it would also let the operation erase its own evidence: an
+// external claimant resolving that same canonical path would
+// enumerate the NEW contents, so a conflict over the old ones could
+// no longer be seen.
+func TestReinstallFarmGuardRefusalKeepsFarmAndStore(t *testing.T) {
 	storeRoot := guardStoreRoot(t)
 	canonical := filepath.Join(storeRoot, "testpkg", "1.0-1")
 	libDir := filepath.Join(canonical, "lib")
@@ -95,6 +103,15 @@ func TestReinstallFarmGuardRefusalKeepsFarm(t *testing.T) {
 		filepath.Join(farmDir, guardSoname()),
 	); lerr != nil {
 		t.Errorf("farm mutated despite refusal: %v", lerr)
+	}
+	kept, rerr := os.ReadFile(filepath.Join(libDir, guardSoname()))
+	if rerr != nil {
+		t.Fatalf("canonical store dir gone despite refusal: %v", rerr)
+	}
+	if string(kept) != "old" {
+		t.Errorf("canonical dir holds %q, want the pre-install "+
+			"bytes %q: a refusal must replace nothing",
+			kept, "old")
 	}
 }
 
@@ -150,9 +167,10 @@ func TestInstallBinaryFarmGuardRefusalDoesNotFallBack(t *testing.T) {
 	}
 }
 
-// TestInstallFarmGuardReceivesCanonicalDir: the guard is handed the
-// canonical store dir (the path farm links will carry), not the
-// staging dir, and an agreeing guard does not disturb the install.
+// TestInstallFarmGuardReceivesCanonicalDir: the guard is judged at
+// the canonical store dir (the path farm links will carry) even
+// though it scans a staging dir, and an agreeing guard does not
+// disturb the install.
 func TestInstallFarmGuardReceivesCanonicalDir(t *testing.T) {
 	storeRoot := guardStoreRoot(t)
 	tarzst := createTarZstdWithFiles(t, map[string]string{
@@ -175,8 +193,10 @@ func TestInstallFarmGuardReceivesCanonicalDir(t *testing.T) {
 	var got []string
 	inst := &Installer{
 		Store: store.NewStore(storeRoot),
-		FarmGuard: func(dirs []string) error {
-			got = append(got, dirs...)
+		FarmGuard: func(ps []farm.Placement) error {
+			for _, p := range ps {
+				got = append(got, p.FinalDir)
+			}
 			return nil
 		},
 	}

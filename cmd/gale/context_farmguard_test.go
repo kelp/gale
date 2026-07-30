@@ -81,12 +81,12 @@ func TestNewCmdContextWiresFarmGuard(t *testing.T) {
 	}
 	// The wired guard sees project B's claim: repointing the
 	// claimed soname is refused, the claimed version is allowed.
-	if err := ctx.Installer.FarmGuard([]string{newDir}); !errors.Is(
+	if err := ctx.Installer.FarmGuard(farm.At(newDir)); !errors.Is(
 		err, farm.ErrClaimConflict,
 	) {
 		t.Errorf("conflicting install must be refused, got: %v", err)
 	}
-	if err := ctx.Installer.FarmGuard([]string{oldDir}); err != nil {
+	if err := ctx.Installer.FarmGuard(farm.At(oldDir)); err != nil {
 		t.Errorf("agreeing install must be allowed, got: %v", err)
 	}
 }

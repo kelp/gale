@@ -221,6 +221,73 @@ func ActiveVersions(pkgs map[string]string, storeRoot string) map[string]string 
 // store are skipped — the farm can only link what's on disk.
 // Visited dirs are not re-expanded, so dep cycles terminate.
 func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
+	dirs, _ := farmStoreDirs(pkgs, storeRoot, func(dir string, err error) error {
+		// Best-effort: an unreadable metadata file must
+		// not fail the whole farm rebuild.
+		fmt.Fprintf(os.Stderr,
+			"farm: read deps metadata in %s: %v\n", dir, err)
+		return nil
+	})
+	return dirs
+}
+
+// FarmStoreDirsStrict is FarmStoreDirs for callers that must not
+// act on a partial answer: an unreadable .gale-deps.toml stops the
+// walk and returns the error instead of warning past it.
+//
+// The farm claimant walk needs this. FarmStoreDirs' leniency is
+// correct for a rebuild, which should still repair every link it
+// can read, and wrong for a claim: a claim that quietly omits a
+// dep permits exactly the mutation it existed to refuse. It is the
+// same split the provenance reader draws against depsmeta's
+// leniency — tolerate a partial answer where a partial answer is
+// still useful, never where a decision rests on it.
+func FarmStoreDirsStrict(
+	pkgs map[string]string, storeRoot string,
+) ([]string, error) {
+	return farmStoreDirs(pkgs, storeRoot, func(dir string, err error) error {
+		// The remedy is part of the error because this one blocks
+		// every scope's installs and removals until it clears, and
+		// the obvious repairs do not work. Deleting just the
+		// metadata file is worse than the error: depsmeta.Read
+		// returns an empty closure for a missing file, so the walk
+		// then succeeds with a silently smaller claim, which is the
+		// fail-open this check exists to prevent. Reinstalling does
+		// not rewrite it either — an install over an existing store
+		// dir returns cached before it writes anything
+		// (installer.go:153), and IsStale compares recorded deps
+		// against resolved recipes without ever looking at whether a
+		// dep's directory is there.
+		//
+		// Deleting the whole directory is what works: the walk skips
+		// a dir that is not in the store, so the claim shrinks
+		// honestly rather than silently.
+		//
+		// Sync only reinstalls it if the deletion reaches a declared
+		// package. Sync evaluates declared roots alone, and an
+		// install over an existing dir returns cached before it
+		// installs any dep, so a cached ancestor anywhere on the
+		// chain stops the repair from descending: for A -> B -> C,
+		// deleting C and B leaves A cached and neither restored.
+		// Every directory on the path has to go, the declared
+		// package at the top of it included, which is what makes the
+		// reinstall walk all the way down.
+		return fmt.Errorf(
+			"read deps metadata in %s: %w (repair: delete that whole "+
+				"directory and every package directory on a dependency "+
+				"path up to and including a declared package, then run "+
+				"gale sync)",
+			dir, err,
+		)
+	})
+}
+
+// farmStoreDirs is the shared walk. onMetaErr decides whether an
+// unreadable dep file stops it.
+func farmStoreDirs(
+	pkgs map[string]string, storeRoot string,
+	onMetaErr func(dir string, err error) error,
+) ([]string, error) {
 	queue := ActiveStoreDirs(pkgs, storeRoot)
 	seen := make(map[string]bool, len(queue))
 	for _, d := range queue {
@@ -238,10 +305,9 @@ func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
 
 		md, err := depsmeta.Read(dir)
 		if err != nil {
-			// Best-effort: an unreadable metadata file must
-			// not fail the whole farm rebuild.
-			fmt.Fprintf(os.Stderr,
-				"farm: read deps metadata in %s: %v\n", dir, err)
+			if stop := onMetaErr(dir, err); stop != nil {
+				return nil, stop
+			}
 			continue
 		}
 		for _, dep := range md.Deps {
@@ -262,7 +328,7 @@ func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 //go:embed gale-readme.md

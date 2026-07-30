@@ -1,14 +1,17 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
+	"github.com/kelp/gale/internal/atomicfile"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
+	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
@@ -112,12 +115,45 @@ var removeCmd = &cobra.Command{
 		} else {
 			sections = locatePackageSections(ctx.GalePath, name)
 		}
+		// Kept so a refusal below can put gale.toml back exactly as
+		// it was. The store-removal decision has to read the config
+		// AFTER the edit — a package this scope still declares is
+		// "referenced" and its store dir is kept — so the guard that
+		// can refuse the whole operation cannot run before the write.
+		priorConfig, err := os.ReadFile(ctx.GalePath)
+		if err != nil {
+			return fmt.Errorf("reading config: %w", err)
+		}
 		for _, section := range sections {
 			if err := config.RemovePackage(
 				ctx.GalePath, section, name,
 			); err != nil {
 				return fmt.Errorf("removing from config: %w",
 					err)
+			}
+		}
+
+		// Decide the store removal before the generation
+		// rebuild, because deciding it runs the cross-project
+		// farm guard, and a guard refusal must land before
+		// the generation swap and before any farm or store
+		// mutation (design §4, acceptance test 28).
+		installed := st.IsInstalled(name, version)
+		var dropStoreDir string
+		if installed {
+			dropStoreDir, err = storeRemovalPlan(
+				ctx, st, name, version, out,
+			)
+			if err != nil {
+				// A refusal means the removal did not happen. Every
+				// error from here reports a decision, not a mutation,
+				// so restoring the manifest leaves the machine exactly
+				// as the command found it rather than in a state where
+				// the store holds a package gale.toml no longer names
+				// and the obvious retry reports it absent.
+				return errors.Join(
+					err, atomicfile.Write(ctx.GalePath, priorConfig),
+				)
 			}
 		}
 		out.Info(fmt.Sprintf(
@@ -134,23 +170,6 @@ var removeCmd = &cobra.Command{
 			))
 		}
 
-		// Decide the store removal before the generation
-		// rebuild, because deciding it runs the cross-project
-		// farm guard, and a guard refusal must land before
-		// the generation swap and before any farm or store
-		// mutation (design §4, acceptance test 28).
-		installed := st.IsInstalled(name, version)
-		var dropStoreDir string
-		if installed {
-			var err error
-			dropStoreDir, err = storeRemovalPlan(
-				ctx, st, name, version, out,
-			)
-			if err != nil {
-				return err
-			}
-		}
-
 		// Rebuild the generation for this scope. Do this
 		// before removing from the store so the generation
 		// is updated with the new config (package removed)
@@ -161,21 +180,8 @@ var removeCmd = &cobra.Command{
 
 		switch {
 		case dropStoreDir != "":
-			if err := st.Remove(name, version); err != nil {
-				return fmt.Errorf("removing from store: %w",
-					err)
-			}
-			// Clean up farm symlinks pointing into the
-			// removed store dir. Best-effort; a failure
-			// here leaves stale symlinks that `gale
-			// inspect` would surface. The claimant guard
-			// already ran in storeRemovalPlan.
-			if farmDir := farm.DirFromStoreDir(dropStoreDir); farmDir != "" {
-				if err := farm.Depopulate(dropStoreDir, farmDir); err != nil {
-					out.Warn(fmt.Sprintf(
-						"farm depopulate: %v", err,
-					))
-				}
+			if err := dropFromStore(ctx, name, version, out); err != nil {
+				return err
 			}
 			out.Info(fmt.Sprintf("Removed %s@%s from store",
 				name, version))
@@ -201,6 +207,106 @@ func init() {
 	rootCmd.AddCommand(removeCmd)
 }
 
+// guardDepopulate runs the cross-project farm claimant guard for a
+// store dir about to lose its farm entries.
+//
+// Claimants are the other scopes plus the initiating scope's own
+// resulting closure. Without the second, removing a package another
+// package in THIS scope still links deletes the farm entry that
+// dependent resolves through: the reference scan only reads
+// declared pins, so a package that is nobody's root and somebody's
+// dependency reads as unreferenced. Its OLD closure is never
+// claimed, or the scope would veto its own remove.
+func guardDepopulate(ctx *cmdContext, storeDir, name string) error {
+	farmDir := farm.DirFromStoreDir(storeDir)
+	if farmDir == "" {
+		return nil
+	}
+	self, err := generation.ProposedClaimant(
+		map[string]string{name: ""}, ctx.GaleDir, ctx.StoreRoot,
+	)
+	if err != nil {
+		return err
+	}
+	return farm.GuardDepopulate(
+		storeDir, farmDir,
+		append(generation.FarmClaimants(ctx.StoreRoot, ctx.GaleDir), self),
+	)
+}
+
+// dropFromStore performs the guarded removal: the claimant
+// snapshot, the check, the farm depopulate and the store deletion
+// all inside ONE hold of the generation lock, which is itself
+// nested inside the version lock.
+//
+// The earlier call in storeRemovalPlan cannot serve on its own. It
+// runs before the generation rebuild, which takes and releases this
+// same lock, so between that check and this depopulate another
+// scope can establish a claim on the soname and have it silently
+// deleted. A check is only worth what it is atomic with, so the
+// authoritative one lives here beside the farm mutation; the early
+// call remains because a refusal must land before the generation
+// swap, not after it.
+//
+// The two locks are taken in the installer's order, version lock
+// then generation lock, and that ordering is load-bearing. The
+// version lock is the same file lockPackage holds for the whole of
+// an install, and an install takes the generation lock underneath
+// it at commitStaged. Taking them the other way round closes an
+// AB-BA cycle on two blocking flock calls: `gale install foo` waits
+// for the generation lock while holding the package lock, `gale
+// remove foo` waits for the package lock while holding the
+// generation lock, and neither process ever wakes.
+//
+// Holding the version lock across the whole section is what makes
+// the deletion safe, not merely deadlock-free. Released early, this
+// interleaves: remove guards and depopulates, an installer commits
+// a fresh copy of that exact version and repopulates the farm, and
+// remove then deletes the directory the install just committed,
+// leaving farm links pointing into nothing. The generation lock
+// alone cannot prevent that, because the installer's commit is
+// itself the thing holding the version lock.
+func dropFromStore(
+	ctx *cmdContext, name, version string, out *output.Output,
+) error {
+	st := store.NewStore(ctx.StoreRoot)
+	err := st.RemoveWithin(name, version,
+		func(dir string, drop func() error) error {
+			return filelock.With(genLockPath(ctx.StoreRoot), func() error {
+				if beforeGuardedRemoval != nil {
+					beforeGuardedRemoval()
+				}
+				if err := guardDepopulate(ctx, dir, name); err != nil {
+					return err
+				}
+				// Farm cleanup is best-effort: a failure leaves stale
+				// symlinks that `gale inspect` surfaces, pointing into
+				// a store dir that is about to disappear. The deletion
+				// stays inside the generation lock so another scope's
+				// rebuild cannot repopulate this dir between the
+				// depopulate and the delete.
+				if farmDir := farm.DirFromStoreDir(dir); farmDir != "" {
+					if derr := farm.Depopulate(dir, farmDir); derr != nil {
+						out.Warn(fmt.Sprintf("farm depopulate: %v", derr))
+					}
+				}
+				return drop()
+			})
+		})
+	if err != nil {
+		return fmt.Errorf("removing from store: %w", err)
+	}
+	return nil
+}
+
+// beforeGuardedRemoval runs inside dropFromStore's critical section,
+// before the authoritative guard. Test seam only (nil in production,
+// like renameDir in the installer): it lets a test establish a
+// claimant in the window the early check cannot cover, which is the
+// race the second check exists to close, and observe that both
+// locks are held together there.
+var beforeGuardedRemoval func()
+
 // storeRemovalPlan decides whether the store entry for an
 // installed package will be removed, and when it will, runs the
 // cross-project farm guard over the depopulation that removal
@@ -216,9 +322,9 @@ func init() {
 // config version made it a guaranteed no-op that leaked farm
 // entries (gh#74).
 //
-// The guard excludes the initiating scope: its proposed closure no
-// longer contains the package, so its own superseded claim must
-// not veto its own remove (design §4, acceptance test 37).
+// This is the early guard call: it decides, and it runs before the
+// generation swap so a refusal lands before anything moves. The
+// authoritative one is dropFromStore's, beside the deletion.
 func storeRemovalPlan(
 	ctx *cmdContext, st *store.Store, name, version string,
 	out *output.Output,
@@ -234,13 +340,8 @@ func storeRemovalPlan(
 		))
 		return "", nil
 	}
-	if farmDir := farm.DirFromStoreDir(storeDir); farmDir != "" {
-		if err := farm.GuardDepopulate(
-			storeDir, farmDir,
-			generation.FarmClaimants(ctx.StoreRoot, ctx.GaleDir),
-		); err != nil {
-			return "", err
-		}
+	if err := guardDepopulate(ctx, storeDir, name); err != nil {
+		return "", err
 	}
 	return storeDir, nil
 }

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/projects"
@@ -138,6 +139,228 @@ func TestFarmClaimants_LockedScopeClaimsLockClosure(t *testing.T) {
 		if !want[d] {
 			t.Errorf("unexpected claimed dir %s (build deps must "+
 				"not be claimed)", d)
+		}
+	}
+}
+
+// TestFarmClaimants_LockedScopeAlsoClaimsActiveGeneration: a v1
+// lock says what a scope REQUIRES; its active generation says what
+// that scope's binaries are loading right now. Design §4 names the
+// second as the claim ("every other scope's current active
+// closure"), and the lock cannot replace it: between a repin and
+// the sync that satisfies it, the lock names the new version while
+// the live generation still links the old one. Claiming only the
+// lock would leave the running closure's soname unclaimed and free
+// for another scope to retarget under it.
+//
+// So both sources contribute, and where they name the same package
+// the generation wins. That tie-break is settled HERE rather than in
+// the guard, which refuses a claimant contradicting itself: only
+// this function knows which of the two dirs is the one a running
+// binary resolves through. The lock still contributes every package
+// the generation does not link at all, which is most of a closure —
+// transitive deps are not generation entries.
+func TestFarmClaimants_LockedScopeAlsoClaimsActiveGeneration(t *testing.T) {
+	f := newClaimsFixture(t)
+	running := f.install("curl", "8.18.0-1", "libcurl")
+	superseded := f.install("curl", "8.19.0-1", "libcurl")
+	runningDep := f.install("zstd", "1.5.5-1", "libzstd")
+	supersededDep := f.install("zstd", "1.5.6-1", "libzstd")
+	lockOnlyDep := f.install("brotli", "1.1.0-1", "libbrotli")
+	// zstd is reached only through curl's recorded deps, so it is a
+	// live claim that is not a generation entry.
+	if err := depsmeta.Write(running, depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
+			{Name: "zstd", Version: "1.5.5", Revision: 1},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := Build(
+		map[string]string{"curl": "8.18.0-1"},
+		filepath.Join(f.proj, ".gale"), f.storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	// The lock has moved to curl 8.19 with a newer zstd, and pulls
+	// in a dep the generation has never linked.
+	f.lockV1([]string{"curl@8.19.0-1"}, map[string]lockfile.Package{
+		"curl@8.19.0-1": artifact("binary",
+			[]string{"zstd@1.5.6-1", "brotli@1.1.0-1"}, nil),
+		"zstd@1.5.6-1":   artifact("binary", nil, nil),
+		"brotli@1.1.0-1": artifact("binary", nil, nil),
+	})
+
+	claimants := FarmClaimants(f.storeRoot, f.galeHome)
+	if len(claimants) != 1 {
+		t.Fatalf("claimants = %+v, want the project", claimants)
+	}
+	c := claimants[0]
+	if c.Err != nil {
+		t.Fatalf("claimant error: %v", c.Err)
+	}
+	got := map[string]bool{}
+	for _, d := range c.StoreDirs {
+		got[d] = true
+	}
+	for _, want := range []string{running, runningDep, lockOnlyDep} {
+		if !got[want] {
+			t.Errorf("StoreDirs = %v, missing %s", c.StoreDirs, want)
+		}
+	}
+	for _, unwanted := range []string{superseded, supersededDep} {
+		if got[unwanted] {
+			t.Errorf("StoreDirs = %v claims two versions of one "+
+				"package (%s); the live generation must win, or the "+
+				"guard refuses every operation while this scope has "+
+				"an unsynced repin", c.StoreDirs, unwanted)
+		}
+	}
+	// The consequence, stated as the guard sees it: a scope with an
+	// unsynced repin must not freeze the machine. Populating a
+	// package this claimant has no opinion about has to be allowed,
+	// which is false the moment the claim contradicts itself, since
+	// the guard rejects such a claimant before it ever looks at
+	// which soname the operation touches.
+	unrelated := f.install("jq", "1.8.1-1", "libjq")
+	if err := farm.GuardPopulate(
+		farm.At(unrelated), claimants,
+	); err != nil {
+		t.Errorf("populating an unrelated package must be allowed "+
+			"while another scope has an unsynced repin, got: %v", err)
+	}
+}
+
+// TestProposedClaimant_KeepsADependentsVersion: the initiating
+// scope is a claimant too (design §4 step 1), and its claim is the
+// closure the operation LEAVES BEHIND, not the one it starts with.
+//
+// The case that needs it: app is built against zlib 1, the user
+// installs zlib 2 as a direct root, and both export the same
+// soname. Every other check passes it. farm.Populate permits the
+// overwrite because both dirs belong to package zlib; the batch
+// being populated is one dir, so it cannot conflict with itself;
+// and a project generation rebuilds into its own lib dir, so the
+// whole-closure check at the rebuild boundary never runs for the
+// scope that did this. app is left resolving zlib 2.
+//
+// Superseding by name alone would not catch it either: zlib 1 is
+// still in the resulting closure, reached through app's recorded
+// deps rather than as a root. Recomputing the closure from the
+// post-operation package set is what keeps it.
+func TestProposedClaimant_KeepsADependentsVersion(t *testing.T) {
+	f := newClaimsFixture(t)
+	app := f.install("app", "1.0-1", "libapp")
+	oldZlib := f.install("zlib", "1.3-1", "libz")
+	newZlib := f.install("zlib", "2.0-1", "libz")
+	if err := depsmeta.Write(app, depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
+			{Name: "zlib", Version: "1.3", Revision: 1},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	galeDir := filepath.Join(f.proj, ".gale")
+	if err := Build(map[string]string{
+		"app": "1.0-1", "zlib": "1.3-1",
+	}, galeDir, f.storeRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	// Installing zlib 2 is refused: app still requires zlib 1.
+	self, err := ProposedClaimant(
+		map[string]string{"zlib": "2.0-1"}, galeDir, f.storeRoot,
+	)
+	if err != nil {
+		t.Fatalf("building the proposed claim: %v", err)
+	}
+	err = farm.GuardPopulate(farm.At(newZlib), []farm.Claimant{self})
+	if err == nil || !errors.Is(err, farm.ErrClaimConflict) {
+		t.Errorf("installing zlib 2 under a dependent built against "+
+			"zlib 1 must be refused, got: %v", err)
+	}
+
+	// The same operation with no dependent is an ordinary update
+	// and must be allowed, or every update deadlocks.
+	g := newClaimsFixture(t)
+	g.install("zlib", "1.3-1", "libz")
+	lone := g.install("zlib", "2.0-1", "libz")
+	loneDir := filepath.Join(g.proj, ".gale")
+	if err := Build(
+		map[string]string{"zlib": "1.3-1"}, loneDir, g.storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	selfLone, err := ProposedClaimant(
+		map[string]string{"zlib": "2.0-1"}, loneDir, g.storeRoot,
+	)
+	if err != nil {
+		t.Fatalf("building the proposed claim: %v", err)
+	}
+	if err := farm.GuardPopulate(
+		farm.At(lone), []farm.Claimant{selfLone},
+	); err != nil {
+		t.Errorf("a self-update with no dependent must be allowed, "+
+			"got: %v", err)
+	}
+	_ = oldZlib
+}
+
+// TestFarmClaimants_UnreadableDepsMetadataFailsClosed: the active
+// half of a claim walks each dir's recorded deps, and the helper
+// generations rebuild with treats an unreadable .gale-deps.toml as
+// best-effort — it warns and stops expanding. That contract is
+// right for a rebuild and wrong for a claim: the claimant would
+// come back holding the root and silently missing its runtime
+// closure, so the guard would allow an operation over a soname only
+// the dropped dep provides. A claim that cannot be read must fail
+// closed, like every other unreadable scope.
+func TestFarmClaimants_UnreadableDepsMetadataFailsClosed(t *testing.T) {
+	f := newClaimsFixture(t)
+	curl := f.install("curl", "8.19.0-1", "libcurl")
+	f.install("zstd", "1.5.6-1", "libzstd")
+	if err := os.WriteFile(
+		filepath.Join(curl, ".gale-deps.toml"),
+		[]byte("deps = [ this is not toml\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := Build(
+		map[string]string{"curl": "8.19.0-1"},
+		filepath.Join(f.proj, ".gale"), f.storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	claimants := FarmClaimants(f.storeRoot, f.galeHome)
+	if len(claimants) != 1 {
+		t.Fatalf("claimants = %+v, want the project", claimants)
+	}
+	if claimants[0].Err == nil {
+		t.Fatalf("claimant = %+v, want Err set: an unreadable dep "+
+			"closure must refuse the operation, not shrink the claim",
+			claimants[0])
+	}
+	if !strings.Contains(claimants[0].Err.Error(), "gale sync") {
+		t.Errorf("error %q must carry its repair: this one blocks "+
+			"every scope until it clears", claimants[0].Err)
+	}
+
+	// The escape hatch the error names has to exist, or a machine
+	// with one corrupt file stays wedged. Deleting the whole
+	// directory clears it, and the claim then shrinks honestly:
+	// bytes that are not in the store cannot be mapped into the
+	// farm, so nothing is being hidden. Deleting only the metadata
+	// file would clear it too, and THAT is the fail-open — the walk
+	// would succeed while quietly dropping the dep closure.
+	if err := os.RemoveAll(curl); err != nil {
+		t.Fatal(err)
+	}
+	repaired := FarmClaimants(f.storeRoot, f.galeHome)
+	for _, c := range repaired {
+		if c.Err != nil {
+			t.Errorf("deleting the directory left the guard wedged: %v",
+				c.Err)
 		}
 	}
 }

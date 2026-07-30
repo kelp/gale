@@ -7,6 +7,7 @@ import (
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/provenance"
 )
 
@@ -67,6 +68,13 @@ func exitCodeFor(err error) int {
 		// remedy — cannot fix another scope's file. A farm refusal is
 		// always class 3, whatever it wraps.
 		return exitLockIntegrity
+	case errors.Is(err, lockfile.ErrDigestMismatch):
+		// The lock asserts a digest its own contents do not produce,
+		// which §8's table puts in the integrity row beside an artifact
+		// SHA mismatch. Plan construction and the activation gate both
+		// reach it, of the same file, so the class cannot depend on
+		// which one looked first.
+		return exitLockIntegrity
 	case errors.Is(err, provenance.ErrInvalid):
 		// A store directory's record disagrees with the lock, or there
 		// is no record at all where the lock names bytes. Both mean
@@ -91,7 +99,12 @@ func exitCodeFor(err error) int {
 		// cannot be modeled: an edge pointing at a node the lock omits,
 		// or a cycle, for which no digest and no install order exist.
 		errors.Is(err, lockgraph.ErrMissingDep),
-		errors.Is(err, lockgraph.ErrCycle):
+		errors.Is(err, lockgraph.ErrCycle),
+		// An artifact outside the persisted format — an unknown method
+		// or a hash of the wrong shape — is read back and compared
+		// verbatim, so it describes a lock to regenerate rather than
+		// one to interpret generously.
+		errors.Is(err, lockplan.ErrMalformedArtifact):
 		return exitLockUnusable
 	default:
 		return exitFailure

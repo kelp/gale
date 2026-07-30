@@ -120,10 +120,34 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		// against the other scopes' claims first. The initiating
 		// scope (galeDir) is excluded — its claim is the install
 		// itself, and its old closure is superseded, not a veto.
-		FarmGuard: func(storeDirs []string) error {
+		FarmGuard: func(placements []farm.Placement) error {
+			// The initiating scope claims the closure this install
+			// leaves it with, so a second version of a package one
+			// of its own binaries links is refused rather than
+			// silently repointing the shared soname under it. Its
+			// OLD closure is never passed: that would be the verb
+			// veto §4 forbids, deadlocking the scope against its
+			// own update.
+			//
+			// One commit at a time, which is not the same as the
+			// whole operation. A sync installs every root before it
+			// rebuilds, so each call here sees the pre-sync
+			// generation and cannot see a conflict between two roots
+			// that only meet in the final closure. P7 replaces this
+			// with one guarded batch over the whole plan; see
+			// ProposedClaimant's own note.
+			self, err := generation.ProposedClaimant(
+				generation.ChangedBy(placements), galeDir, storeRoot,
+			)
+			if err != nil {
+				return err
+			}
 			return farm.GuardPopulate(
-				storeDirs,
-				generation.FarmClaimants(storeRoot, galeDir),
+				placements,
+				append(
+					generation.FarmClaimants(storeRoot, galeDir),
+					self,
+				),
 			)
 		},
 	}

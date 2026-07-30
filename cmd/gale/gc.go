@@ -660,7 +660,7 @@ func addPackageRefs(
 func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 	out := newOutput()
 	genRoot := filepath.Join(galeDir, "gen")
-	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
+	lockPath := genLockPath(storeRoot)
 	var removed int
 	_ = filelock.With(lockPath, func() error {
 		// Read curGen first (while holding the lock) so the

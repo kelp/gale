@@ -40,6 +40,20 @@ var (
 	// ErrMissingArtifact reports a locked node that records nothing
 	// for the platform being asked about.
 	ErrMissingArtifact = errors.New("platform missing from lock")
+
+	// ErrDigestMismatch reports a stored graph digest that does not
+	// survive recomputation from the locked closure. Recomputing is
+	// the point: a digest read and believed could certify itself.
+	//
+	// It lives here rather than in one of the packages that make the
+	// comparison because plan construction and the activation gate
+	// both make it, of the same file, and a lock asserting a digest
+	// its own contents do not produce must classify identically
+	// whichever one notices. Unlike its neighbours above this is an
+	// integrity violation, not a lock to regenerate: design §8's
+	// table names a graph_digest mismatch in the same row as an
+	// artifact SHA mismatch.
+	ErrDigestMismatch = errors.New("graph digest disagrees with the locked closure")
 )
 
 // ParseIdentity splits a canonical name@version-revision identity.

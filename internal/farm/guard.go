@@ -63,18 +63,50 @@ type Claimant struct {
 	Err error
 }
 
-// GuardPopulate checks that populating storeDirs would leave every
-// claim satisfied. The resulting mapping for each touched soname is
-// the storeDirs target; sonames the populate does not touch keep
-// their current entry, so only touched sonames can newly violate a
-// claim and only they are checked — an unrelated pre-existing
-// violation between two other scopes must not freeze this one.
+// Placement is one package about to enter the farm: where its libs
+// can be read right now, and the canonical store dir the farm links
+// will point into once it is committed.
 //
-// storeDirs is the batch being populated. Callers populating a
-// whole plan pass all of its dirs at once, so a plan that conflicts
-// with itself is refused here with no external claimant present.
-func GuardPopulate(storeDirs []string, claimants []Claimant) error {
-	proposed, err := sonameTargets("the proposed closure", storeDirs)
+// The two differ whenever the guard runs before the commit, which
+// is where it has to run: a guard that scans the canonical dir can
+// only see it after the install has already replaced it, and by
+// then a refusal cannot undo the bytes an existing generation
+// reaches. Scanning staging and reporting the canonical destination
+// is what lets the check precede the mutation it is checking.
+type Placement struct {
+	// ScanDir holds the lib directory to enumerate now: a staging
+	// dir before the commit, or the canonical dir when the bytes are
+	// already in place.
+	ScanDir string
+	// FinalDir is the canonical store dir the farm's links will
+	// carry. Every reported target and every conflict message names
+	// this path, never ScanDir.
+	FinalDir string
+}
+
+// At returns placements for dirs whose bytes are already at their
+// canonical paths, for callers with nothing staged.
+func At(storeDirs ...string) []Placement {
+	out := make([]Placement, 0, len(storeDirs))
+	for _, d := range storeDirs {
+		out = append(out, Placement{ScanDir: d, FinalDir: d})
+	}
+	return out
+}
+
+// GuardPopulate checks that populating placements would leave every
+// claim satisfied. The resulting mapping for each touched soname is
+// the placement's final target; sonames the populate does not touch
+// keep their current entry, so only touched sonames can newly
+// violate a claim and only they are checked — an unrelated
+// pre-existing violation between two other scopes must not freeze
+// this one.
+//
+// placements is the batch being populated. Callers populating a
+// whole plan pass all of it at once, so a plan that conflicts with
+// itself is refused here with no external claimant present.
+func GuardPopulate(placements []Placement, claimants []Claimant) error {
+	proposed, err := placedSonameTargets("the proposed closure", placements)
 	if err != nil {
 		return err
 	}
@@ -187,20 +219,33 @@ func eachClaim(
 }
 
 // sonameTargets maps every soname a set of store dirs provides to
-// the lib path a farm link for it would carry, using the same
+// the lib path a farm link for it would carry. Claims are always
+// read from bytes already at their canonical paths, so a claimant
+// never needs a placement.
+func sonameTargets(owner string, storeDirs []string) (map[string]string, error) {
+	return placedSonameTargets(owner, At(storeDirs...))
+}
+
+// placedSonameTargets is sonameTargets over placements: sonames are
+// enumerated from ScanDir and reported at FinalDir, using the same
 // farming predicate as Populate. One closure providing one soname
 // from two different store dirs is a conflict with itself: no farm
 // mapping can satisfy it, so it is refused here with no external
 // claimant needed.
-func sonameTargets(owner string, storeDirs []string) (map[string]string, error) {
+func placedSonameTargets(
+	owner string, placements []Placement,
+) (map[string]string, error) {
 	out := map[string]string{}
-	for _, dir := range dedupDirs(storeDirs) {
-		sonames, err := libSonames(dir)
+	for _, p := range dedupPlacements(placements) {
+		sonames, err := libSonames(p.ScanDir)
 		if err != nil {
 			return nil, fmt.Errorf("enumerating sonames of %s: %w", owner, err)
 		}
 		for _, soname := range slices.Sorted(maps.Keys(sonames)) {
-			target := sonames[soname]
+			// Rebuilt from FinalDir rather than taken from the scan:
+			// a staging path would compare unequal to every claimant's
+			// target and name the wrong identity in the message.
+			target := filepath.Join(p.FinalDir, "lib", soname)
 			if have, ok := out[soname]; ok && have != target {
 				return nil, fmt.Errorf(
 					"%w: %s claims %s from both %s and %s",
@@ -268,6 +313,27 @@ func depopulatedSonames(storeDir, farmDir string) (map[string]bool, error) {
 		}
 	}
 	return out, nil
+}
+
+// dedupPlacements drops duplicates (path-clean comparison on both
+// paths), preserving first-seen order, for the same reason
+// dedupDirs exists: closures legitimately overlap and a repeated
+// dir must not read as a self-conflict.
+func dedupPlacements(placements []Placement) []Placement {
+	seen := make(map[Placement]bool, len(placements))
+	out := make([]Placement, 0, len(placements))
+	for _, p := range placements {
+		clean := Placement{
+			ScanDir:  filepath.Clean(p.ScanDir),
+			FinalDir: filepath.Clean(p.FinalDir),
+		}
+		if seen[clean] {
+			continue
+		}
+		seen[clean] = true
+		out = append(out, p)
+	}
+	return out
 }
 
 // dedupDirs drops duplicate store dirs (path-clean comparison),

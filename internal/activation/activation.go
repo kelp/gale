@@ -92,9 +92,15 @@ func Check(req Request) error {
 	}
 }
 
-// checkV1 resolves the locked closure for this host and platform,
-// confirms it names everything the generation links, then verifies
-// each linked package's runtime closure against store provenance.
+// checkV1 settles the lock's own validity for this host and platform,
+// then compares the active generation against it, then verifies each
+// linked package's runtime closure against store provenance.
+//
+// That order is the whole reason the file's intrinsic checks come
+// first. A corrupt lock met by an empty or half-built generation
+// would otherwise report drift, and drift's remedy is "run gale
+// sync": telling a user to rebuild against a file that cannot be
+// honored, and inviting a pipeline reading exit 5 to do it for them.
 func checkV1(req Request, lf *lockfile.V1) error {
 	roots, err := lf.EffectiveRoots(req.Host)
 	if err != nil {
@@ -114,24 +120,43 @@ func checkV1(req Request, lf *lockfile.V1) error {
 	if err != nil {
 		return err
 	}
+	// Closure recomputes every digest bottom-up from the lock, and the
+	// recomputed value, never the file's, is what provenance is
+	// compared against: a hand-edited digest must not be able to
+	// certify itself.
+	digests, order, err := lockgraph.Closure(nodes)
+	if err != nil {
+		return err
+	}
+	if err := checkStoredDigests(req, lf, order, digests); err != nil {
+		return err
+	}
+	if err := checkGeneration(req, roots, locked); err != nil {
+		return err
+	}
+	return verifyRuntime(req.StoreRoot, nodes, digests,
+		runtimeKeys(nodes, seedsFor(req.Installed, locked)))
+}
+
+// checkGeneration compares the active generation against the lock in
+// both directions: nothing it links may go unnamed by the lock, and
+// nothing the lock roots may go unlinked. Both are drift, remedied by
+// a rebuild, which is why they are reported together and separately
+// from anything wrong with the lock itself.
+func checkGeneration(req Request, roots, locked map[string]string) error {
 	if unlocked := UnlockedVersions(req.Installed, locked, req.StoreRoot); len(unlocked) > 0 {
 		return fmt.Errorf(
 			"%w: it links %s, which %s does not name; run gale sync",
 			ErrDrift, strings.Join(unlocked, ", "), req.LockPath,
 		)
 	}
-	// Closure recomputes every digest bottom-up from the lock. The
-	// lock's own stored graph_digest is never believed, and never needs
-	// to be: the recomputed value is what provenance is compared
-	// against, so a hand-edited digest in the file cannot make
-	// anything verify. Plan construction is where the file's internal
-	// consistency is judged.
-	digests, _, err := lockgraph.Closure(nodes)
-	if err != nil {
-		return err
+	if missing := missingRoots(req.Installed, roots, req.StoreRoot); len(missing) > 0 {
+		return fmt.Errorf(
+			"%w: it does not link %s, which %s names as a root; run gale sync",
+			ErrDrift, strings.Join(missing, ", "), req.LockPath,
+		)
 	}
-	return verifyRuntime(req.StoreRoot, nodes, digests,
-		runtimeKeys(nodes, seedsFor(req.Installed, locked)))
+	return nil
 }
 
 // verifyRuntime compares each named store directory's provenance
@@ -150,6 +175,43 @@ func verifyRuntime(
 		dir := s.ResolveDir(n.Name, n.Version)
 		if _, err := provenance.VerifyAgainstLock(dir, n, digests[key]); err != nil {
 			return err
+		}
+	}
+	return nil
+}
+
+// checkStoredDigests requires every artifact's recorded graph_digest
+// to equal the digest its own locked closure computes.
+//
+// Provenance verification cannot reach this: the store record agrees
+// with the recomputed value, so only the file disagrees with itself.
+// lockplan.Build makes the same comparison, so without this check the
+// gate admits a project to a PATH built from a lock the next `gale
+// sync` refuses — the gate exists precisely because sync may not run.
+//
+// ErrDigestMismatch is an integrity violation (exit 3), not a lock to
+// regenerate: the file asserts a digest its own contents do not
+// produce, which is a disagreement about recorded bytes, and design
+// §8's table puts that in the same row as an artifact SHA mismatch.
+// The sentinel is lockfile's so plan construction and the gate report
+// the same class for the same file.
+//
+// Every key in digests came from nodeFor, which already proved the
+// package and its artifact for this platform exist.
+//
+// The walk follows Closure's topological order, which is already
+// deterministic, so the error names the same artifact on every run.
+func checkStoredDigests(
+	req Request, lf *lockfile.V1, order []string, digests map[string]string,
+) error {
+	for _, key := range order {
+		stored := lf.Packages[key].Artifacts[req.Platform].GraphDigest
+		if stored != digests[key] {
+			return fmt.Errorf(
+				"%w: %s: %s records graph digest %q, its closure computes %q; "+
+					"run gale lock",
+				lockfile.ErrDigestMismatch, req.LockPath, key, stored, digests[key],
+			)
 		}
 	}
 	return nil
@@ -217,6 +279,36 @@ func namesInstalled(s *store.Store, id, name, version string) bool {
 		return false
 	}
 	return filepath.Base(s.ResolveDir(name, lockedVersion)) == version
+}
+
+// missingRoots returns the locked roots the active generation does
+// not link, sorted.
+//
+// UnlockedVersions answers the opposite direction only, so without
+// this check an empty or half-built generation satisfies the gate
+// vacuously: nothing installed is unlocked, so nothing seeds the
+// runtime walk and verifyRuntime iterates over an empty set. Design
+// §12 refuses PATH_add when a root of the target graph is absent,
+// because a partial rebuild would otherwise put a project on a PATH
+// the lock never described.
+//
+// Roots only. Transitive deps are not generation entries at all, and
+// verifyRuntime already covers those reachable from what is linked.
+func missingRoots(installed, roots map[string]string, storeRoot string) []string {
+	s := store.NewStore(storeRoot)
+	var out []string
+	for name, id := range roots {
+		// namesInstalled compares resolved store directories, so a
+		// canonical "-1" root living in the bare directory an install
+		// predating revisions created counts as present. installed[name]
+		// is "" when the generation links nothing for that name, which
+		// resolves to no directory and so reports missing.
+		if !namesInstalled(s, id, name, installed[name]) {
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // seedsFor collects the locked identity of every package the

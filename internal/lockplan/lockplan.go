@@ -28,9 +28,11 @@ var (
 	ErrRecipeMismatch = errors.New("recipe disagrees with the lock")
 
 	// ErrDigestMismatch reports a stored graph digest that does not
-	// survive recomputation from the locked closure. Recomputing is
-	// the point: a digest read and believed could certify itself.
-	ErrDigestMismatch = errors.New("graph digest disagrees with the locked closure")
+	// survive recomputation from the locked closure. The sentinel is
+	// lockfile's, because the activation gate makes the same
+	// comparison of the same file and the two must classify alike;
+	// the name stays here so plan callers keep matching on it.
+	ErrDigestMismatch = lockfile.ErrDigestMismatch
 
 	// ErrMalformedArtifact reports an artifact outside the persisted
 	// format: an unknown method, or a hash that is not the shape the

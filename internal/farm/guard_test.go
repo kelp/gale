@@ -28,7 +28,7 @@ func TestFarmGuard_AgreeingClaimantAllowsMutation(t *testing.T) {
 		StoreDirs: []string{storeDir},
 	}
 
-	err := GuardPopulate([]string{storeDir}, []Claimant{agreeing})
+	err := GuardPopulate(At(storeDir), []Claimant{agreeing})
 	if err != nil {
 		t.Fatalf(
 			"agreeing external claimant must allow the mutation, got: %v",
@@ -63,7 +63,7 @@ func TestFarmGuard_SelfUpdateAllowed(t *testing.T) {
 		StoreDirs: []string{otherDir},
 	}
 	if err := GuardPopulate(
-		[]string{newDir}, []Claimant{unrelated},
+		At(newDir), []Claimant{unrelated},
 	); err != nil {
 		t.Fatalf("self-update with no external claim on the soname "+
 			"must be allowed, got: %v", err)
@@ -202,12 +202,70 @@ func wantConflict(t *testing.T, err error, names ...string) {
 	}
 }
 
+// TestFarmGuard_SelfContradictingClaimIsRefused: a claimant that
+// provides one soname from two store dirs describes a state no farm
+// mapping can satisfy, so the guard refuses rather than tie-breaking.
+//
+// This strictness is a contract with the claim SOURCE: whoever
+// assembles a claimant must resolve which version the scope
+// actually requires before handing it over (see
+// generation.FarmClaimants, where a scope's lock and its live
+// generation can name different versions of one package). A
+// tie-break here would silently pick one and let the refusal the
+// scope needed pass.
+func TestFarmGuard_SelfContradictingClaimIsRefused(t *testing.T) {
+	f := newConflictFixture(t)
+	contradictory := Claimant{
+		Label:     "project /home/other",
+		StoreDirs: []string{f.oldDir, f.newDir},
+	}
+	wantConflict(
+		t, GuardPopulate(At(f.oldDir), []Claimant{contradictory}),
+		"curl@8.19.0-1", "curl@8.20.0-1",
+	)
+}
+
+// TestFarmGuard_PlacementJudgesTheDestination: a placement is
+// enumerated from ScanDir and judged at FinalDir, so an install
+// staged elsewhere is checked against where its links will point,
+// not against where its bytes happen to sit right now.
+//
+// Both directions matter. A staged reinstall of the version a
+// claimant already requires must be ALLOWED, which fails if the
+// staging path is compared against the claimant's canonical target;
+// and a staged install that would repoint a claimed soname must
+// still be REFUSED, naming the canonical identity rather than a
+// temporary directory the user has never seen.
+func TestFarmGuard_PlacementJudgesTheDestination(t *testing.T) {
+	f := newConflictFixture(t)
+	staging := storeLayout(t, t.TempDir(), "curl", ".build-xyz",
+		[]string{versionedName("libcurl", "4")})
+
+	if err := GuardPopulate(
+		[]Placement{{ScanDir: staging, FinalDir: f.oldDir}},
+		[]Claimant{f.claimant},
+	); err != nil {
+		t.Errorf("staged reinstall of the claimed version must be "+
+			"allowed, got: %v", err)
+	}
+
+	err := GuardPopulate(
+		[]Placement{{ScanDir: staging, FinalDir: f.newDir}},
+		[]Claimant{f.claimant},
+	)
+	wantConflict(t, err, "curl@8.19.0-1", "curl@8.20.0-1")
+	if strings.Contains(err.Error(), staging) {
+		t.Errorf("refusal %q names the staging dir; it must name the "+
+			"canonical destination", err)
+	}
+}
+
 // TestFarmGuard_ConflictingClaimRefusesPopulate: repointing a
 // soname an external scope requires at another version is refused,
 // naming both versions.
 func TestFarmGuard_ConflictingClaimRefusesPopulate(t *testing.T) {
 	f := newConflictFixture(t)
-	err := GuardPopulate([]string{f.newDir}, []Claimant{f.claimant})
+	err := GuardPopulate(At(f.newDir), []Claimant{f.claimant})
 	wantConflict(t, err, "curl@8.19.0-1", "curl@8.20.0-1")
 }
 
@@ -239,7 +297,7 @@ func TestFarmGuard_SelfConflictRefusedWithoutExternalClaimant(t *testing.T) {
 	f := newConflictFixture(t)
 	dirs := []string{f.oldDir, f.newDir}
 
-	if err := GuardPopulate(dirs, nil); err == nil ||
+	if err := GuardPopulate(At(dirs...), nil); err == nil ||
 		!errors.Is(err, ErrClaimConflict) {
 		t.Errorf("populate self-conflict must be refused, got: %v", err)
 	}
@@ -265,7 +323,7 @@ func TestFarmGuard_UnreadableClaimantFailsClosed(t *testing.T) {
 		run  func() error
 	}{
 		{"populate", func() error {
-			return GuardPopulate([]string{f.newDir}, unreadable)
+			return GuardPopulate(At(f.newDir), unreadable)
 		}},
 		{"depopulate", func() error {
 			return GuardDepopulate(f.oldDir, f.farmDir, unreadable)

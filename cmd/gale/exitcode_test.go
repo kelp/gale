@@ -11,6 +11,7 @@ import (
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/provenance"
 )
 
@@ -102,6 +103,23 @@ func exitCodeCases() []exitCodeCase {
 			name: "no provenance where the lock names bytes",
 			err:  fmt.Errorf("%w: %w", provenance.ErrInvalid, provenance.ErrAbsent),
 			want: exitLockIntegrity,
+		},
+		{
+			// Section 8's table names a graph_digest mismatch in the
+			// integrity row. The lock asserts a digest its own contents
+			// do not produce, which is a disagreement about recorded
+			// bytes rather than a file to regenerate and retry.
+			name: "graph digest disagrees with the locked closure",
+			err:  fmt.Errorf("gate: %w", lockplan.ErrDigestMismatch),
+			want: exitLockIntegrity,
+		},
+		{
+			// An artifact outside the persisted format cannot be
+			// modeled, which is the class every other unmodelable lock
+			// carries; without the case it fell through to exit 1.
+			name: "malformed lock artifact",
+			err:  fmt.Errorf("plan: %w", lockplan.ErrMalformedArtifact),
+			want: exitLockUnusable,
 		},
 		{
 			name: "activation drift",

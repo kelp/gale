@@ -48,16 +48,23 @@ type Installer struct {
 	SourceOnly bool // skip binary, build from source
 
 	// FarmGuard, when set, is the cross-project farm claimant
-	// guard (design §4): it is called with the canonical store
-	// dirs whose sonames an install is about to write into the
-	// shared farm, after the store commit and before any farm
-	// mutation, and a non-nil error aborts the install with the
-	// farm untouched. Production wiring passes a closure over
-	// farm.GuardPopulate with the initiating scope's claimants;
-	// nil skips the guard (unwired callers and tests). It takes a
-	// batch so deferring population to a post-validation pass can
-	// guard the whole plan with one call.
-	FarmGuard func(storeDirs []string) error
+	// guard (design §4): it is called with the packages whose
+	// sonames an install is about to write into the shared farm,
+	// before the store commit and before any farm mutation, and a
+	// non-nil error aborts the install with both untouched.
+	// Production wiring passes a closure over farm.GuardPopulate
+	// with the initiating scope's claimants; nil skips the guard
+	// (unwired callers and tests). It takes a batch so deferring
+	// population to a post-validation pass can guard the whole
+	// plan with one call.
+	//
+	// Each placement scans the staging dir and names the canonical
+	// destination, because the guard must run while a refusal can
+	// still leave everything as it was — once the canonical dir is
+	// replaced, the operation has changed bytes an existing
+	// generation reaches and has also overwritten the very state a
+	// claimant would be enumerated from.
+	FarmGuard func(placements []farm.Placement) error
 
 	// BinaryFallbackLog receives a one-line warning when a
 	// binary install fails and the installer falls back to a
@@ -485,24 +492,29 @@ func (inst *Installer) InstallGitWithFinalize(r *recipe.Recipe, finalize func(*I
 // pre-install or completed install — never an intermediate.
 //
 // If the rename fails, replaceStoreDir restores the prior
-// canonical dir from its .bak sibling. If the farm guard or
-// farm.Populate fails after a successful rename, the canonical
-// dir is already the new version; the caller will see the error
-// and the farm will be repopulated on the next sync.
+// canonical dir from its .bak sibling. If farm.Populate fails
+// after a successful rename, the canonical dir is already the new
+// version; the caller will see the error and the farm will be
+// repopulated on the next sync.
 //
-// The farm guard runs between the rename and Populate: the
-// guard compares the lib paths farm links will carry, which
-// exist under the canonical dir only after the rename, and the
-// farm must not have been touched when it refuses.
+// The farm guard runs before the rename, reading the staging dir
+// and naming the canonical destination. Guarding after it would
+// mean a refusal had already replaced bytes the active generation
+// reaches, and would also let this operation destroy the evidence
+// it is being checked against: an external claimant on the same
+// canonical path would be enumerated from the new contents.
 func (inst *Installer) commitStaged(storeRoot, canonicalDir, stagingDir string) error {
 	return withStoreGenLock(storeRoot, func() error {
+		farmDir := farm.DirFromStoreDir(canonicalDir)
+		if farmDir != "" {
+			if err := inst.guardFarm(stagingDir, canonicalDir); err != nil {
+				return err
+			}
+		}
 		if err := replaceStoreDir(canonicalDir, stagingDir); err != nil {
 			return err
 		}
-		if farmDir := farm.DirFromStoreDir(canonicalDir); farmDir != "" {
-			if err := inst.guardFarm(canonicalDir); err != nil {
-				return err
-			}
+		if farmDir != "" {
 			if err := farm.Populate(canonicalDir, farmDir); err != nil {
 				return fmt.Errorf("populate farm: %w", err)
 			}
@@ -512,13 +524,16 @@ func (inst *Installer) commitStaged(storeRoot, canonicalDir, stagingDir string) 
 }
 
 // guardFarm runs the cross-project farm claimant guard for one
-// canonical store dir about to enter the shared farm. Nil
-// FarmGuard means unwired (tests): no guard.
-func (inst *Installer) guardFarm(canonicalDir string) error {
+// package about to enter the shared farm, reading scanDir and
+// reporting canonicalDir. Nil FarmGuard means unwired (tests): no
+// guard.
+func (inst *Installer) guardFarm(scanDir, canonicalDir string) error {
 	if inst.FarmGuard == nil {
 		return nil
 	}
-	return inst.FarmGuard([]string{canonicalDir})
+	return inst.FarmGuard([]farm.Placement{
+		{ScanDir: scanDir, FinalDir: canonicalDir},
+	})
 }
 
 func replaceStoreDir(storeDir, buildDir string) error {
@@ -835,6 +850,26 @@ func fixupExtracted(dir, finalStoreDir, storeRoot string) error {
 // (commitStaged), including the farm wiring and its guard.
 func commitExtracted(req commitRequest) error {
 	swap := func() error {
+		// The cross-project claimant guard runs before the rename,
+		// scanning the staging dir and naming the canonical
+		// destination the farm links will carry (design §4). A
+		// refusal must leave the store and the farm as it found
+		// them, which is only true while nothing has moved. A
+		// conflict (two packages claiming the same dylib) is a
+		// recipe bug — fail the install on EVERY path (gh#42) so
+		// the bad recipe gets fixed instead of silently shipping a
+		// farm where one package wins.
+		farmDir := ""
+		if req.InPlace {
+			farmDir = farm.DirFromStoreDir(req.FinalStoreDir)
+		}
+		if farmDir != "" && req.FarmGuard != nil {
+			if err := req.FarmGuard([]farm.Placement{{
+				ScanDir: req.StagingDir, FinalDir: req.FinalStoreDir,
+			}}); err != nil {
+				return err
+			}
+		}
 		// ExtractDir was created empty by Store.Create (or is
 		// the caller's empty staging target). Remove it so the
 		// rename can land in its place.
@@ -844,27 +879,13 @@ func commitExtracted(req commitRequest) error {
 		if err := renameDir(req.StagingDir, req.ExtractDir); err != nil {
 			return fmt.Errorf("promote staging dir: %w", err)
 		}
-		if !req.InPlace {
+		if farmDir == "" {
 			return nil
 		}
 		// Populate the shared lib farm with symlinks to this
-		// package's versioned dylibs, running the cross-project
-		// claimant guard first: the guard compares the lib paths
-		// the links will carry, which exist only after the rename
-		// above, and a refusal must leave the farm untouched
-		// (design §4). A conflict (two packages claiming the same
-		// dylib) is a recipe bug — fail the install on EVERY path
-		// (gh#42) so the bad recipe gets fixed instead of
-		// silently shipping a farm where one package wins.
-		if farmDir := farm.DirFromStoreDir(req.FinalStoreDir); farmDir != "" {
-			if req.FarmGuard != nil {
-				if err := req.FarmGuard([]string{req.FinalStoreDir}); err != nil {
-					return err
-				}
-			}
-			if err := farm.Populate(req.FinalStoreDir, farmDir); err != nil {
-				return fmt.Errorf("populate farm: %w", err)
-			}
+		// package's versioned dylibs.
+		if err := farm.Populate(req.FinalStoreDir, farmDir); err != nil {
+			return fmt.Errorf("populate farm: %w", err)
 		}
 		return nil
 	}
@@ -886,7 +907,7 @@ type commitRequest struct {
 	InPlace       bool
 	// FarmGuard is the cross-project farm claimant guard; nil
 	// means unwired (tests). See Installer.FarmGuard.
-	FarmGuard func([]string) error
+	FarmGuard func([]farm.Placement) error
 }
 
 // verifyManifestDigest enforces digest-based fetch (gh#121). When a
@@ -1370,7 +1391,7 @@ type extractRequest struct {
 	// FarmGuard is the cross-project farm claimant guard,
 	// forwarded to the in-place commit; nil means unwired
 	// (tests). See Installer.FarmGuard.
-	FarmGuard func([]string) error
+	FarmGuard func([]farm.Placement) error
 }
 
 // extractBuildTo extracts result.Archive into extractDir,

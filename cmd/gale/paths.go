@@ -66,3 +66,12 @@ func defaultStoreRoot() string {
 	}
 	return filepath.Join(home, ".gale", "pkg")
 }
+
+// genLockPath is the store-gen lock every generation rebuild, store
+// commit and guarded removal contends on. One spelling, because two
+// callers naming different files would each think they held it.
+// filepath.Dir(storeRoot) is the global gale dir at either scope,
+// since the store is shared.
+func genLockPath(storeRoot string) string {
+	return filepath.Join(filepath.Dir(storeRoot), "generation.lock")
+}

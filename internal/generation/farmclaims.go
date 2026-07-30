@@ -31,15 +31,25 @@ import (
 // to the guard itself, and passing its old claim here would
 // deadlock the scope against its own update, remove and repair.
 //
-// A scope's claim source depends on its lock. A v1 lock is the
-// authority on what the scope requires, so the claim is the lock's
-// recorded runtime closure — which must hold even while the scope
-// is mid-sync or not yet installed. Without a v1 lock (absent or
-// legacy — a legacy lock predates enforcement and records no
-// closure), the scope requires whatever it actually links, so the
-// claim is the active generation's farm closure. A scope that is
-// known but cannot be read is returned with Err set, and the guard
-// fails closed on it. Scopes with nothing to claim are dropped.
+// A scope claims its active generation's farm closure — what its
+// binaries resolve through the farm right now (design §4's "current
+// active closure") — and, where it has a v1 lock, the runtime
+// closure that lock records as well.
+//
+// Both, never one or the other. The lock is the authority on what
+// the scope REQUIRES, including a version this machine has not
+// installed yet, which provenance and the generation by
+// construction cannot describe. The generation is the authority on
+// what the scope is LOADING, which a lock stops describing the
+// moment a repin lands: between the edit and the sync that
+// satisfies it, the lock names the new version while the live
+// generation still links the old one. Substituting the lock for the
+// generation there unclaims a soname a running binary resolves
+// through, and another scope may then retarget it underneath.
+//
+// A scope that is known but cannot be read is returned with Err
+// set, and the guard fails closed on it. Scopes with nothing to
+// claim are dropped.
 func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 	galeHome := filepath.Dir(storeRoot)
 	regProjects, err := projects.List(galeHome)
@@ -90,11 +100,94 @@ func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 	return out
 }
 
+// ProposedClaimant builds the initiating scope's own claim: the
+// farm closure it will have once the operation completes.
+//
+// Design §4 step 1 names it a claimant alongside every other
+// scope, and without it a whole class of self-harm passes. A scope
+// installing a second version of a package one of its own binaries
+// links repoints the shared soname under that binary: farm.Populate
+// allows it because both dirs belong to the same package, the batch
+// being populated is one dir so it cannot conflict with itself, and
+// a project generation rebuilds into its own lib dir, so the
+// whole-closure check at the rebuild boundary never runs for the
+// scope that caused it.
+//
+// changed maps a package name to the store-dir basename the
+// operation leaves it at; an empty version removes it. The claim is
+// then recomputed from that package set rather than patched, which
+// is what separates a superseded root from a version a dependent
+// still records: an updated root disappears, while the same version
+// reached through another package's deps stays.
+//
+// A dir the operation is about to create contributes nothing here,
+// because it is not in the store yet. It does not need to: it is
+// the mapping being proposed, and the guard compares this claim
+// against it.
+//
+// LIMIT, and it is a real one: this models the ACTIVE generation
+// plus the change in front of it, which is the whole operation only
+// when the operation is a single commit against a settled scope. A
+// multi-package sync installs every root before it rebuilds
+// anything, so each per-commit call here sees the same pre-sync
+// generation, and two roots that first meet in the final closure —
+// say one recording zlib 1 and another zlib 2 — conflict in a
+// closure no single call ever sees. Catching that needs the
+// command's eventual package set together with the staged dep
+// metadata, which is P7's whole-plan batch. Until then this covers
+// a change against an established closure and does not enforce the
+// complete proposed-closure rule.
+func ProposedClaimant(
+	changed map[string]string, galeDir, storeRoot string,
+) (farm.Claimant, error) {
+	c := farm.Claimant{Label: "this scope"}
+	pkgs, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		return c, fmt.Errorf("reading active generation: %w", err)
+	}
+	for name, version := range changed {
+		if version == "" {
+			delete(pkgs, name)
+			continue
+		}
+		pkgs[name] = version
+	}
+	dirs, err := FarmStoreDirsStrict(pkgs, storeRoot)
+	if err != nil {
+		return c, fmt.Errorf("reading the proposed closure: %w", err)
+	}
+	c.StoreDirs = dirs
+	return c, nil
+}
+
+// ChangedBy reads the package set a batch of placements leaves
+// behind, keyed the way ProposedClaimant expects. A placement's
+// canonical dir is <storeRoot>/<name>/<version-revision>, which is
+// the only place the identity of a staged install is recorded.
+func ChangedBy(placements []farm.Placement) map[string]string {
+	out := make(map[string]string, len(placements))
+	for _, p := range placements {
+		dir := filepath.Clean(p.FinalDir)
+		out[filepath.Base(filepath.Dir(dir))] = filepath.Base(dir)
+	}
+	return out
+}
+
 // scopeClosureDirs resolves one scope's claimed closure to store
-// dirs, choosing the claim source by the scope's lock kind.
+// dirs: its active generation always, plus its v1 lock's runtime
+// closure when it has one.
 func scopeClosureDirs(
 	lockPath, galeDir, storeRoot, host, platform string,
 ) ([]string, error) {
+	pkgs, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("reading active generation: %w", err)
+	}
+	dirs, err := FarmStoreDirsStrict(pkgs, storeRoot)
+	if err != nil {
+		return nil, fmt.Errorf("reading active generation: %w", err)
+	}
+
 	view, err := lockfile.Load(lockPath)
 	if err != nil {
 		return nil, fmt.Errorf("reading lock: %w", err)
@@ -105,13 +198,15 @@ func scopeClosureDirs(
 		if err != nil {
 			return nil, err
 		}
-		return identityStoreDirs(storeRoot, ids)
-	case lockfile.KindAbsent, lockfile.KindLegacy:
-		pkgs, err := CurrentVersions(galeDir, storeRoot)
+		locked, err := identityStoreDirs(storeRoot, lockOnly(ids, dirs))
 		if err != nil {
-			return nil, fmt.Errorf("reading active generation: %w", err)
+			return nil, err
 		}
-		return FarmStoreDirs(pkgs, storeRoot), nil
+		return append(dirs, locked...), nil
+	case lockfile.KindAbsent, lockfile.KindLegacy:
+		// A legacy lock predates enforcement and records no closure,
+		// so it adds nothing to what the generation already claims.
+		return dirs, nil
 	default:
 		// A kind this build does not know claims something it
 		// cannot read; fail closed like any unreadable scope.
@@ -168,6 +263,47 @@ func lockRuntimeClosure(lf *lockfile.V1, host, platform string) ([]string, error
 	}
 	slices.Sort(out)
 	return out, nil
+}
+
+// lockOnly drops the locked identities of packages the active
+// generation already links, keeping the rest in order.
+//
+// The two sources disagree exactly when a repin has landed and its
+// sync has not: the lock names the new version while the generation
+// still links the old one. Both cannot be claimed, because one
+// soname cannot map to two store dirs and the guard refuses a
+// claimant that contradicts itself — which, left unresolved here,
+// would freeze every operation on the machine for as long as any
+// one project has an unsynced repin.
+//
+// The generation wins. Its binaries resolve that target right now,
+// and that is what another scope must not pull out from under them;
+// the locked version is loaded by nothing yet, and the scope's own
+// sync is what will claim it. The tie-break lives here because only
+// this function can tell which dir came from which source.
+//
+// genDirs, not the generation's package map: FarmStoreDirs walks
+// each entry's recorded deps too, so the live closure includes
+// transitive packages that are not generation entries at all, and
+// those tear against a lock exactly as roots do. It also drops dirs
+// missing from the store, so a generation entry with no bytes
+// suppresses nothing and the lock's claim stands.
+func lockOnly(ids, genDirs []string) []string {
+	live := make(map[string]bool, len(genDirs))
+	for _, dir := range genDirs {
+		live[filepath.Base(filepath.Dir(dir))] = true
+	}
+	out := make([]string, 0, len(ids))
+	for _, id := range ids {
+		name, _, err := lockfile.ParseIdentity(id)
+		// A malformed identity is kept so identityStoreDirs refuses
+		// it: silently dropping it would turn an unreadable claim
+		// into a smaller one.
+		if err != nil || !live[name] {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // identityStoreDirs resolves canonical identities to store dirs.

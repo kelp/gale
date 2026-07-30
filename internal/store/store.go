@@ -474,6 +474,31 @@ func lockHeld(path string) bool {
 // `gale remove jq@1.8.1` still work regardless of which
 // revision layout the store actually holds.
 func (s *Store) Remove(name, version string) error {
+	return s.RemoveWithin(name, version,
+		func(_ string, drop func() error) error { return drop() })
+}
+
+// RemoveWithin is Remove with a caller-supplied critical section: it
+// resolves name@version, holds that version's lock for the whole of
+// fn, and cleans the parent name dir after releasing. fn receives
+// the resolved dir and drop, the deletion itself, and decides where
+// in its own work the deletion happens.
+//
+// It exists so a caller that must order this lock against another
+// one can put its acquisition on the outside. The version lock is
+// the same file the installer holds for a whole install
+// (lockPackage), and an install takes the generation lock underneath
+// it. A caller that took the generation lock first and reached the
+// deletion second would close an AB-BA cycle on two blocking flock
+// calls. Calling Remove from inside such a section does not help
+// either: flock is per open-file-description, so re-acquiring in one
+// process blocks on itself.
+//
+// drop tolerates ENOENT: two concurrent removers can race past the
+// resolution above, and the loser must not fail (gh#77).
+func (s *Store) RemoveWithin(
+	name, version string, fn func(dir string, drop func() error) error,
+) error {
 	dir := filepath.Join(s.Root, name, version)
 	if _, err := os.Stat(dir); err != nil {
 		resolved, ok := s.resolveVersion(name, version)
@@ -491,15 +516,15 @@ func (s *Store) Remove(name, version string) error {
 		}
 	}
 
-	lockPath := dir + ".lock"
-	// ErrNotExist guard: two concurrent removers can race
-	// past Stat; the loser must tolerate ENOENT (gh#77).
-	if err := filelock.With(lockPath, func() error {
+	drop := func() error {
 		if err := os.RemoveAll(dir); err != nil &&
 			!errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove version directory: %w", err)
 		}
 		return nil
+	}
+	if err := filelock.With(dir+".lock", func() error {
+		return fn(dir, drop)
 	}); err != nil {
 		return err
 	}

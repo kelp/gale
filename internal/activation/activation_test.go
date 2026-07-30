@@ -274,6 +274,61 @@ func TestCheckDetectsIntegrityConflict(t *testing.T) {
 	}
 }
 
+// TestCheckRefusesAnEditedGraphDigest pins that the digest the lock
+// records for an artifact must agree with the digest that artifact's
+// own locked closure computes. Provenance verification cannot catch
+// this: the store record agrees with the recomputed value, so only
+// the file disagrees with itself. Plan construction already refuses
+// such a lock, so a gate that accepts it activates a project on a
+// lock the next `gale sync` will not honor.
+func TestCheckRefusesAnEditedGraphDigest(t *testing.T) {
+	f := newFixture(t)
+	f.lockPath = editedDigestLock(t, f, "jq@1.8.1-2")
+
+	err := Check(f.request(wholeGeneration()))
+	if !errors.Is(err, lockfile.ErrDigestMismatch) {
+		t.Fatalf("want lockfile.ErrDigestMismatch, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "jq@1.8.1-2") {
+		t.Errorf("error should name the artifact, got %q", err)
+	}
+}
+
+// editedDigestLock writes the fixture lock with one artifact's
+// graph_digest replaced by a different well-formed value. Nothing on
+// disk contradicts it: the store's provenance still agrees with the
+// digest the closure computes, so only the file disagrees with
+// itself.
+func editedDigestLock(t *testing.T, f fixture, key string) string {
+	t.Helper()
+	lf := v1Doc(t, f.nodes, "jq@1.8.1-2")
+	pkg := lf.Packages[key]
+	art := pkg.Artifacts[platform]
+	art.GraphDigest = "sha256:" + shaOther
+	pkg.Artifacts[platform] = art
+	return writeLock(t, lf)
+}
+
+// TestCheckReportsACorruptLockBeforeDrift pins the order of the two
+// comparisons: the lock's intrinsic validity is settled before the
+// generation is compared against it. A corrupt lock met by an empty
+// generation must not report drift, because "run gale sync" tells a
+// user to rebuild against a file that cannot be honored, and exit 5
+// invites a pipeline to do it automatically.
+func TestCheckReportsACorruptLockBeforeDrift(t *testing.T) {
+	f := newFixture(t)
+	f.lockPath = editedDigestLock(t, f, "jq@1.8.1-2")
+
+	err := Check(f.request(map[string]string{}))
+	if !errors.Is(err, lockfile.ErrDigestMismatch) {
+		t.Fatalf("want lockfile.ErrDigestMismatch, got %v", err)
+	}
+	if errors.Is(err, ErrDrift) {
+		t.Errorf("a corrupt lock is not a generation awaiting a "+
+			"rebuild: %v", err)
+	}
+}
+
 // TestCheckRefusesALegacyLock is acceptance 21's unit half. A legacy
 // lock records checksums nothing ever verified, so activation under
 // one is refused. Nothing here depends on an mtime: the gate runs on
@@ -335,6 +390,80 @@ func TestCheckDetectsCarryForward(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "jq@1.8.0-1") {
 		t.Errorf("error should name the unlocked identity, got %q", err)
+	}
+}
+
+// TestCheckRefusesAGenerationMissingALockedRoot is design §12's
+// refusal of `PATH_add` when a root of the target graph is absent
+// from the active generation. Without it the gate only asks whether
+// what is installed is locked, so an empty or half-built generation
+// answers yes vacuously and activates.
+func TestCheckRefusesAGenerationMissingALockedRoot(t *testing.T) {
+	cases := []struct {
+		name      string
+		roots     []string
+		installed map[string]string
+		wantNamed string
+	}{
+		{
+			name:      "an empty generation",
+			roots:     []string{"jq@1.8.1-2"},
+			installed: map[string]string{},
+			wantNamed: "jq@1.8.1-2",
+		},
+		{
+			// oniguruma is a root in its own right here, so its presence
+			// in jq's runtime closure does not make it a generation entry.
+			name:      "a partially built generation",
+			roots:     []string{"jq@1.8.1-2", "oniguruma@6.9.10-1"},
+			installed: map[string]string{"jq": "1.8.1-2"},
+			wantNamed: "oniguruma@6.9.10-1",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			f.lockPath = writeLock(t, v1Doc(t, f.nodes, tc.roots...))
+
+			err := Check(f.request(tc.installed))
+			if !errors.Is(err, ErrDrift) {
+				t.Fatalf("want ErrDrift, got %v", err)
+			}
+			if errors.Is(err, provenance.ErrInvalid) {
+				t.Errorf("a generation awaiting a rebuild is not "+
+					"tampering: %v", err)
+			}
+			if !strings.Contains(err.Error(), tc.wantNamed) {
+				t.Errorf("error should name the missing root, got %q", err)
+			}
+		})
+	}
+}
+
+// TestCheckAcceptsARevisionOneRootInABareDirectory guards the root
+// check against comparing version strings. A canonical "-1" identity
+// legitimately lives in a bare directory for installs predating
+// revisions, and a verbatim comparison would refuse activation for a
+// correct store.
+func TestCheckAcceptsARevisionOneRootInABareDirectory(t *testing.T) {
+	storeRoot := t.TempDir()
+	nodes := map[string]lockgraph.Node{
+		"jq@1.7-1": {
+			Name: "jq", Version: "1.7-1",
+			GOOS: "darwin", GOARCH: "arm64",
+			Method: lockgraph.MethodBinary, SHA256: shaJQ,
+		},
+	}
+	install(t, storeRoot, nodes, "jq@1.7-1", "1.7")
+
+	err := Check(Request{
+		LockPath:  writeLock(t, v1Doc(t, nodes, "jq@1.7-1")),
+		Platform:  platform,
+		StoreRoot: storeRoot,
+		Installed: map[string]string{"jq": "1.7"},
+	})
+	if err != nil {
+		t.Fatalf("Check: %v", err)
 	}
 }
 
