@@ -932,3 +932,33 @@ func TestVerifyAgainstLockSurvivesCollectedBuildDeps(t *testing.T) {
 		t.Fatalf("VerifyAgainstLock after gc: %v", err)
 	}
 }
+
+// TestClosureCollectsEveryReachableRecord: the lock writers need
+// every node the roots reach, not just the roots, and they need each
+// one verified against the store rather than believed. Returning the
+// records themselves is what lets a writer emit an artifact per node
+// without a second walk that could disagree with this one about which
+// nodes are in the closure.
+func TestClosureCollectsEveryReachableRecord(t *testing.T) {
+	storeRoot := t.TempDir()
+	dep := recordFor(t, onigNode(), nil)
+	installAt(t, storeRoot, "oniguruma", "6.9.10-1", dep)
+	parent := recordFor(t, jqNode(), map[string]string{
+		"oniguruma@6.9.10-1": dep.GraphDigest,
+	})
+	installAt(t, storeRoot, "jq", "1.8.1-2", parent)
+
+	got, err := Closure(storeRoot, "darwin/arm64", map[string]string{
+		"jq": "1.8.1-2",
+	})
+	if err != nil {
+		t.Fatalf("Closure: %v", err)
+	}
+	want := map[string]Record{
+		"jq@1.8.1-2":         parent,
+		"oniguruma@6.9.10-1": dep,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("closure = %#v, want %#v", got, want)
+	}
+}

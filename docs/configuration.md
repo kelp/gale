@@ -54,8 +54,17 @@ The key can be:
 
 - A single hostname: `[hosts.my-mac.packages]`
 - A comma-separated list: `[hosts."laptop,desktop".packages]`
-- A glob pattern: `[hosts."work-*".packages]`,
+- A glob pattern using `*`: `[hosts."work-*".packages]`,
   `[hosts."*".packages]`
+
+`*` is the only wildcard supported. Keys must be
+ASCII. Other pattern syntax, such as `?` or character
+classes, is not part of the format: `gale lock` cannot
+prove whether two such keys can match one machine, so
+it refuses to reason about them and checks every host
+section together instead, which can report a version
+conflict between sections that would never apply to
+the same host.
 
 Use the multi-host or glob forms to share one package
 list across machines without duplicating it. Quote

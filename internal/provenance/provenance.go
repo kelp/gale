@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -351,6 +352,65 @@ func VerifyAgainstStore(storeRoot, name, version, platform string) (Record, erro
 	return newResolver(storeRoot, platform).verify(name, version)
 }
 
+// Closure verifies every record reachable from roots and returns them
+// keyed by canonical identity. Roots map a package name to its
+// canonical version-revision, which is the shape a caller already
+// holds after resolving the roots it means to lock.
+//
+// The lock writers need the whole closure, not one node per root: an
+// artifact is emitted per node, and the roots alone do not name the
+// transitive dependencies the graph digest binds. One resolver serves
+// every root, so a diamond is walked once and every node in one
+// closure is judged against the same memoized outcomes.
+//
+// It carries VerifyAgainstStore's precondition, and for the same
+// reason: each record's digest is recomputed from the closure
+// currently installed. That holds at write time, when the closure was
+// just installed. It stops holding once build dependencies are
+// collected, so a caller relocking an old closure must install it
+// rather than reach for this.
+func Closure(storeRoot, platform string, roots map[string]string) (map[string]Record, error) {
+	rs := newResolver(storeRoot, platform)
+	out := make(map[string]Record, len(roots))
+	// Sorted so a closure with two unusable roots names the same one
+	// on every run.
+	for _, name := range slices.Sorted(maps.Keys(roots)) {
+		version := roots[name]
+		if err := store.CheckIdentity(name, version); err != nil {
+			return nil, err
+		}
+		if err := rs.collect(name, version, out); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// collect adds one identity's record and every record below it.
+//
+// Recursing over the record's own edges needs no serialization rule:
+// validate proves a binary record carries no build dependencies, so a
+// validated record's edges are already exactly the set lockgraph
+// serializes. Re-deriving that rule here would be a second copy of it,
+// free to drift.
+func (rs *resolver) collect(name, version string, out map[string]Record) error {
+	key := lockgraph.Key(name, version)
+	if _, done := out[key]; done {
+		return nil
+	}
+	r, err := rs.record(name, version)
+	if err != nil {
+		return fmt.Errorf("%s: %w", key, err)
+	}
+	out[key] = r
+	for _, e := range r.node().Edges {
+		if err := rs.collect(e.Name, e.Version, out); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // resolver verifies dependency digests bottom-up, memoizing both
 // outcomes. Verification is recursive, so a diamond would otherwise
 // re-walk a shared subtree once per path.
@@ -369,7 +429,12 @@ type resolver struct {
 // outcome is a memoized verification result. Failures are cached
 // too: on a legacy machine most dependencies fail, and re-walking
 // them once per parent is the common case, not the rare one.
+//
+// The record is memoized beside the digest so a caller that needs the
+// nodes themselves, not just their digests, cannot walk the closure a
+// second time and disagree with this one about what is in it.
 type outcome struct {
+	record Record
 	digest string
 	err    error
 }
@@ -400,13 +465,21 @@ func (rs *resolver) edgeDigests(edges []lockgraph.Edge) map[string]string {
 // digest returns a dependency's verified digest, memoizing both
 // outcomes.
 func (rs *resolver) digest(name, version string) (string, error) {
+	r, err := rs.record(name, version)
+	return r.GraphDigest, err
+}
+
+// record returns a verified record, memoizing both outcomes. Every
+// memoized read goes through here so the digest path and the closure
+// path share one cache and one verification.
+func (rs *resolver) record(name, version string) (Record, error) {
 	key := lockgraph.Key(name, version)
 	if o, cached := rs.cache[key]; cached {
-		return o.digest, o.err
+		return o.record, o.err
 	}
 	r, err := rs.verify(name, version)
-	rs.cache[key] = outcome{digest: r.GraphDigest, err: err}
-	return r.GraphDigest, err
+	rs.cache[key] = outcome{record: r, digest: r.GraphDigest, err: err}
+	return r, err
 }
 
 // verify reads a record and recomputes its digest from its own
