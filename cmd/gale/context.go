@@ -409,7 +409,9 @@ func rebuildGeneration(
 		return err
 	}
 	pkgs = canonicalizeForBuild(pkgs, pinResolve)
-	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
+	// nil: no plan to revalidate here yet — P7 threads a locked
+	// sync's validation callback through rebuildGeneration itself.
+	if err := generation.BuildWithValidate(pkgs, galeDir, storeRoot, nil); err != nil {
 		return err
 	}
 	autoPruneGenerations(galeDir, storeRoot)

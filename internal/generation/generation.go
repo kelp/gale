@@ -279,10 +279,30 @@ var galeReadme []byte
 // user learns which package fell off PATH. Previous
 // generations are retained for history and rollback.
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
-	return build(pkgs, galeDir, storeRoot)
+	return BuildWithValidate(pkgs, galeDir, storeRoot, nil)
 }
 
-func build(pkgs map[string]string, galeDir, storeRoot string) error {
+// BuildWithValidate is Build plus an optional revalidation callback
+// run immediately after the store-generation lock is acquired and
+// before anything about the new generation is created or mutated.
+// A locked sync (design section 6) uses this to re-check every plan
+// entry — canonical version-revision, artifact SHA, method, manifest
+// digest, graph_digest — right before activation, closing the gap
+// between an earlier per-artifact verification and the swap that
+// makes it live. The callback runs under the SAME lock acquisition
+// that guards generation construction, the current-symlink swap, and
+// the farm rebuild; a second acquisition would reopen exactly the
+// window this exists to close. On a callback error, build aborts
+// before creating the generation directory, so nothing is mutated:
+// no gen dir, no current-symlink change, no farm rebuild. A nil
+// validate makes this identical to plain Build.
+func BuildWithValidate(
+	pkgs map[string]string, galeDir, storeRoot string, validate func() error,
+) error {
+	return build(pkgs, galeDir, storeRoot, validate)
+}
+
+func build(pkgs map[string]string, galeDir, storeRoot string, validate func() error) error {
 	// Use the store-rooted lock path so project-scoped and global
 	// Build calls contend on the same lock file as the installer.
 	// filepath.Dir(storeRoot) is always the global galeDir
@@ -291,6 +311,16 @@ func build(pkgs map[string]string, galeDir, storeRoot string) error {
 	// sync race described in installer.go:storeGenLockPath.
 	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
 	return filelock.With(lockPath, func() error {
+		// Revalidate first, before touching Current or anything
+		// else — a caller's callback error must abort with zero
+		// mutation, and it must do so without ever releasing this
+		// lock in between (see BuildWithValidate doc).
+		if validate != nil {
+			if err := validate(); err != nil {
+				return err
+			}
+		}
+
 		prev, err := Current(galeDir)
 		if err != nil {
 			return fmt.Errorf("read current generation: %w", err)
