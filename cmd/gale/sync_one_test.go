@@ -101,13 +101,6 @@ func buildFakeCtx(
 	return ctx
 }
 
-// emptyLockFile returns a fresh, empty LockFile.
-func emptyLockFile() *lockfile.LockFile {
-	return &lockfile.LockFile{
-		Packages: make(map[string]lockfile.LockedPackage),
-	}
-}
-
 // TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate verifies that
 // when a package is already in the store with valid deps metadata
 // (IsStale false), runSyncOne returns upToDate=true and attempts
@@ -142,10 +135,9 @@ func TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "mypkg", version: "2.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if !out.upToDate {
 		t.Errorf("upToDate = false, want true for installed non-stale package")
@@ -231,10 +223,9 @@ func TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "mypkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if out.stale {
 		t.Error("stale = true, want false: the recipe's canonical " +
@@ -309,10 +300,9 @@ func TestRunSyncOneMissingFromStoreTriggersInstallAttempt(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "newpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	// The install was attempted (result may be nil because it
 	// failed, but installErr must be set OR result is non-nil).
@@ -381,10 +371,9 @@ func TestRunSyncOneInstalledButStaleTriggersReinstall(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "stalep", version: "3.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if !out.stale {
 		t.Error("stale = false, want true: package missing .gale-deps.toml")
@@ -422,10 +411,9 @@ func TestRunSyncOneResolverFailurePopulatesResolveErr(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "ghostpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if out.resolveErr == nil {
 		t.Error("resolveErr = nil, want non-nil resolver error")
@@ -482,10 +470,9 @@ func TestRunSyncOneInstallFailurePopulatesInstallErr(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "failpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if out.installErr == nil {
 		t.Error("installErr = nil, want non-nil: install used a closed server")
@@ -545,14 +532,6 @@ func TestRunSyncOneLockfileSHAMismatchSetsSHAChanged(t *testing.T) {
 
 	// Seed lockfile with a prior SHA for this package.
 	priorSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"shacheckpkg": {
-				Version: "1.0.0-1",
-				SHA256:  priorSHA,
-			},
-		},
-	}
 
 	// Use a server that serves a real (tiny) archive so
 	// Install can succeed and we get a result with a different SHA.
@@ -581,9 +560,13 @@ func TestRunSyncOneLockfileSHAMismatchSetsSHAChanged(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	w := syncItem{name: "shacheckpkg", version: "1.0.0"}
+	w := syncItem{
+		name: "shacheckpkg", version: "1.0.0",
+		locked:  lockfile.Entry{Version: "1.0.0-1", SHA256: priorSHA},
+		hasLock: true,
+	}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	// Against the stub: result==nil, so this assertion fails (RED).
 	// The real implementation must attempt install (result!=nil on
@@ -633,13 +616,12 @@ func TestRunSyncOneDryRunUpToDate(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "drypkg", version: "4.0.0"}
 
 	storePathBefore, _ := store.NewStore(storeRoot).StorePath("drypkg", "4.0.0")
 	entriesBefore, _ := os.ReadDir(storePathBefore)
 
-	out := runSyncOne(ctx, lf, w, true /* dryRun */)
+	out := runSyncOne(ctx, w, true /* dryRun */)
 
 	if !out.upToDate {
 		t.Error("upToDate = false, want true: package is installed and non-stale")
@@ -666,7 +648,12 @@ func TestRunSyncOneDryRunUpToDate(t *testing.T) {
 // which worker finished first.
 func TestSortedSyncItemsReturnsAlphabeticalOrder(t *testing.T) {
 	pkgs := map[string]string{"zeta": "1", "alpha": "2", "mu": "3"}
-	items := sortedSyncItems(pkgs)
+	items, err := sortedSyncItems(
+		pkgs, &lockfile.View{Kind: lockfile.KindAbsent}, "", "darwin/arm64",
+	)
+	if err != nil {
+		t.Fatalf("sortedSyncItems: %v", err)
+	}
 	if len(items) != 3 {
 		t.Fatalf("len(items) = %d, want 3", len(items))
 	}

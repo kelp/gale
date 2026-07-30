@@ -226,7 +226,7 @@ func TestBuildPlan_MissingEntries(t *testing.T) {
 			func(*testing.T) *lockfile.V1 {
 				return lockOf([]string{"a@1.0-1"}, map[string]lockfile.Package{})
 			},
-			ErrMissingNode,
+			lockfile.ErrMissingNode,
 		},
 		{
 			"missing dep entry",
@@ -235,7 +235,7 @@ func TestBuildPlan_MissingEntries(t *testing.T) {
 					"a@1.0-1": node(sha("aa"), lockgraph.MethodBinary, []string{"b@2.0-1"}, nil),
 				}))
 			},
-			ErrMissingNode,
+			lockfile.ErrMissingNode,
 		},
 		{
 			"missing platform entry",
@@ -246,7 +246,7 @@ func TestBuildPlan_MissingEntries(t *testing.T) {
 					}},
 				})
 			},
-			ErrMissingArtifact,
+			lockfile.ErrMissingArtifact,
 		},
 	}
 	for _, tc := range tests {
@@ -280,9 +280,12 @@ func TestBuildPlan_HostOverlayPrecedence(t *testing.T) {
 		},
 	})
 
+	// Declared is the effective manifest for this host, so it carries
+	// the overlay's version too: a gale.toml host section overrides the
+	// pin, not just the package list.
 	plan, err := Build(Request{
 		Lock: lock, Host: "work-mb", Platform: testPlatform,
-		Declared: map[string]string{"a": "1.0"}, Resolve: resolverFor(lock),
+		Declared: map[string]string{"a": "3.0"}, Resolve: resolverFor(lock),
 	})
 	if err != nil {
 		t.Fatalf("Build: %v", err)
@@ -303,28 +306,32 @@ func TestBuildPlan_HostOverlayPrecedence(t *testing.T) {
 // guessing at the other.
 func TestBuildPlan_StaleLockNamesBothDirections(t *testing.T) {
 	_, err := buildFrom(chain(t), map[string]string{"a": "1.0", "jq": "1.8"})
-	if !errors.Is(err, ErrStaleLock) {
-		t.Fatalf("err = %v, want ErrStaleLock", err)
+	if !errors.Is(err, lockfile.ErrStaleLock) {
+		t.Fatalf("err = %v, want lockfile.ErrStaleLock", err)
 	}
 	if !strings.Contains(err.Error(), "jq") {
 		t.Errorf("error does not name the unlocked root: %v", err)
 	}
 
 	_, err = buildFrom(chain(t), map[string]string{})
-	if !errors.Is(err, ErrStaleLock) {
-		t.Fatalf("err = %v, want ErrStaleLock", err)
+	if !errors.Is(err, lockfile.ErrStaleLock) {
+		t.Fatalf("err = %v, want lockfile.ErrStaleLock", err)
 	}
 	if !strings.Contains(err.Error(), "a") {
 		t.Errorf("error does not name the orphaned root: %v", err)
 	}
 }
 
-// TestBuildPlan_VersionDivergenceIsNotStale pins the deliberate
-// asymmetry: gale.toml holds a constraint and the lock holds the pin
-// it resolved to, so comparing versions would make every lock stale on
-// sight. Only the name sets are compared.
-func TestBuildPlan_VersionDivergenceIsNotStale(t *testing.T) {
-	if _, err := buildFrom(chain(t), map[string]string{"a": "*"}); err != nil {
+// TestBuildPlan_RevisionDivergenceIsNotStale pins the one asymmetry
+// the two files have by design: gale.toml records the bare version so
+// an entry tracks revision bumps automatically, and the lock records
+// the canonical version-revision it resolved to. Requiring string
+// equality would make every lock stale on sight.
+//
+// An edited pin is a different matter and does stale the lock; that is
+// lockfile.CheckDeclared's own coverage.
+func TestBuildPlan_RevisionDivergenceIsNotStale(t *testing.T) {
+	if _, err := buildFrom(chain(t), map[string]string{"a": "1.0"}); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 }
@@ -472,8 +479,8 @@ func TestBuildPlan_CrossRootVersionConflict(t *testing.T) {
 	))
 
 	_, err := buildFrom(lock, map[string]string{"a": "1.0", "c": "1.0"})
-	if !errors.Is(err, ErrVersionConflict) {
-		t.Fatalf("err = %v, want ErrVersionConflict", err)
+	if !errors.Is(err, lockfile.ErrVersionConflict) {
+		t.Fatalf("err = %v, want lockfile.ErrVersionConflict", err)
 	}
 	for _, want := range []string{"b@1.0-1", "b@2.0-1"} {
 		if !strings.Contains(err.Error(), want) {
@@ -700,8 +707,8 @@ func TestBuildPlan_DuplicateRootWithinOneTarget(t *testing.T) {
 	))
 
 	_, err := buildFrom(lock, map[string]string{"a": "1.0"})
-	if !errors.Is(err, ErrVersionConflict) {
-		t.Fatalf("err = %v, want ErrVersionConflict", err)
+	if !errors.Is(err, lockfile.ErrVersionConflict) {
+		t.Fatalf("err = %v, want lockfile.ErrVersionConflict", err)
 	}
 	for _, want := range []string{"a@1.0-1", "a@2.0-1"} {
 		if !strings.Contains(err.Error(), want) {

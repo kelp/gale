@@ -52,7 +52,15 @@ func exitCodeFor(err error) int {
 		errors.Is(err, lockfile.ErrUnknownVersion),
 		errors.Is(err, lockfile.ErrUnknownField),
 		errors.Is(err, lockfile.ErrDowngradeGuard),
-		errors.Is(err, lockfile.ErrMalformed):
+		errors.Is(err, lockfile.ErrMalformed),
+		// A lock whose contents cannot be modeled shares the class
+		// with one whose schema cannot: in every case the file is
+		// present and the remedy is to regenerate it (design §8).
+		errors.Is(err, lockfile.ErrStaleLock),
+		errors.Is(err, lockfile.ErrMalformedRoot),
+		errors.Is(err, lockfile.ErrVersionConflict),
+		errors.Is(err, lockfile.ErrMissingNode),
+		errors.Is(err, lockfile.ErrMissingArtifact):
 		return exitLockUnusable
 	default:
 		return exitFailure

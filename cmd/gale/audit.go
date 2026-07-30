@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/spf13/cobra"
 )
@@ -42,11 +43,14 @@ tampering.`,
 		if lpErr != nil {
 			return lpErr
 		}
-		lf, err := lockfile.Read(lp)
+		lv, err := lockfile.Load(lp)
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
-		pkg, ok := lf.Packages[name]
+		pkg, ok, err := lv.Entry(name, config.CurrentHost(), currentPlatform())
+		if err != nil {
+			return fmt.Errorf("reading lockfile: %w", err)
+		}
 		if !ok {
 			return fmt.Errorf(
 				"%s not found in lockfile — install it first", name,

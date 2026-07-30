@@ -185,7 +185,7 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 		if lpErr != nil {
 			return nil, lpErr
 		}
-		lf, err := lockfile.Read(lp)
+		lv, err := lockfile.Load(lp)
 		if err != nil {
 			return nil, fmt.Errorf("reading lockfile: %w", err)
 		}
@@ -211,15 +211,20 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 		// used by sync/outdated.
 		type item struct {
 			name, version string
-			lockedSHA     string
+			locked        lockfile.Entry
 			hasLock       bool
 		}
 		items := make([]item, 0, len(packages))
+		host := config.CurrentHost()
+		platform := currentPlatform()
 		for name, version := range packages {
-			locked, ok := lf.Packages[name]
+			locked, ok, err := lv.Entry(name, host, platform)
+			if err != nil {
+				return nil, fmt.Errorf("reading lockfile: %w", err)
+			}
 			items = append(items, item{
 				name: name, version: version,
-				lockedSHA: locked.SHA256, hasLock: ok,
+				locked: locked, hasLock: ok,
 			})
 		}
 		// 8 workers: per-item work is I/O-bound (store reads);
@@ -234,7 +239,7 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 					Method:  "source",
 				}
 				if p.hasLock {
-					e.ArchiveSHA256 = p.lockedSHA
+					e.ArchiveSHA256 = p.locked.SHA256
 				}
 				if r, err := ctx.ResolveVersionedRecipe(p.name, p.version); err == nil {
 					e.SourceURL = r.Source.URL
@@ -248,6 +253,15 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 							e.Method = "binary"
 						}
 					}
+				}
+				// The enforced schema records the method, and a
+				// recorded fact outranks the hash comparison above,
+				// which is a guess and becomes a wrong one as soon as
+				// the recipe moves: a locked binary would report as
+				// source, or the reverse. A legacy entry records no
+				// method, so the inference stands there.
+				if p.locked.Method != "" {
+					e.Method = p.locked.Method
 				}
 				return e, nil
 			})

@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"os"
+	"io/fs"
 	"sort"
 	"strings"
 
@@ -198,25 +198,51 @@ func stripGuard(w *wireV1) (map[string]Package, error) {
 // so callers can distinguish "no lock" (unlocked mode) from a lock
 // that is present but unusable.
 func ReadV1(path string) (*V1, error) {
-	data, err := os.ReadFile(path)
+	data, absent, err := readLockFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("reading lock file: %w", err)
+		return nil, err
 	}
+	if absent {
+		return nil, fmt.Errorf("reading lock file %s: %w", path, fs.ErrNotExist)
+	}
+	version, err := probeVersion(path, data)
+	if err != nil {
+		return nil, err
+	}
+	if version == nil {
+		return nil, fmt.Errorf("%s: %w", path, ErrLegacySchema)
+	}
+	if err := checkSchemaVersion(path, *version); err != nil {
+		return nil, err
+	}
+	return decodeV1(path, data)
+}
 
+// probeVersion decodes only the top-level version key, so a file can
+// be classified before its body is decoded against a struct that may
+// not match it. A nil result means the key is absent, which is the
+// legacy schema.
+func probeVersion(path string, data []byte) (*int, error) {
 	var probe schemaProbe
 	if _, err := toml.Decode(string(data), &probe); err != nil {
 		return nil, fmt.Errorf("%s: %w: %w", path, ErrMalformed, err)
 	}
-	if probe.Version == nil {
-		return nil, fmt.Errorf("%s: %w", path, ErrLegacySchema)
-	}
-	if *probe.Version != SchemaVersion {
-		return nil, fmt.Errorf(
+	return probe.Version, nil
+}
+
+// checkSchemaVersion rejects a schema this build does not model.
+func checkSchemaVersion(path string, version int) error {
+	if version != SchemaVersion {
+		return fmt.Errorf(
 			"%s: %w: found %d, this gale models %d",
-			path, ErrUnknownVersion, *probe.Version, SchemaVersion,
+			path, ErrUnknownVersion, version, SchemaVersion,
 		)
 	}
+	return nil
+}
 
+// decodeV1 decodes a document already known to claim version 1.
+func decodeV1(path string, data []byte) (*V1, error) {
 	var w wireV1
 	md, err := toml.Decode(string(data), &w)
 	if err != nil {

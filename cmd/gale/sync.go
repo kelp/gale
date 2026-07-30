@@ -9,6 +9,7 @@ import (
 	"sort"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
@@ -83,12 +84,17 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	if err != nil {
 		return err
 	}
-	lf, err := lockfile.Read(lp)
+	lv, err := lockfile.Load(lp)
 	if err != nil {
 		return fmt.Errorf("reading lockfile: %w", err)
 	}
 
-	items := sortedSyncItems(cfg.Packages)
+	items, err := sortedSyncItems(
+		cfg.Packages, lv, config.CurrentHost(), currentPlatform(),
+	)
+	if err != nil {
+		return err
+	}
 	// Per-package work is HTTP-bound (recipe fetch + binary
 	// download). The same resolved parallelism bounds the
 	// Installer's Downloads limiter, so package-level fan-out and
@@ -97,7 +103,8 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	// syncOutcome fields, never returns one.
 	outcomes, _ := parallel.Map(context.Background(), items, ctx.Parallelism,
 		func(_ context.Context, w syncItem) (syncOutcome, error) {
-			return runSyncOne(ctx, lf, w, dryRun), nil
+			//nolint:contextcheck // runSyncOne takes no ctx by design; the fan-out ctx only bounds the leaf fetches
+			return runSyncOne(ctx, w, dryRun), nil
 		})
 
 	var installed, failed int
@@ -263,6 +270,13 @@ func finishSync(dryRun bool, failed int, installed int, configChanged bool, rebu
 // syncItem is the per-package unit of work passed to runSyncOne.
 type syncItem struct {
 	name, version string
+	// locked is what the lockfile records for this package, resolved
+	// once up front. runSyncOne is handed the entry rather than the
+	// whole document because one map lookup is all it ever did, and
+	// under the enforced schema that lookup needs the host and platform
+	// the worker has no business knowing.
+	locked  lockfile.Entry
+	hasLock bool
 }
 
 // syncOutcome is the result of one runSyncOne call. It is
@@ -282,10 +296,17 @@ type syncOutcome struct {
 }
 
 // sortedSyncItems converts cfg.Packages to a syncItem slice
-// ordered by name. Used by runSync so per-package output is
-// emitted in a stable order across runs regardless of which
-// worker finished first.
-func sortedSyncItems(pkgs map[string]string) []syncItem {
+// ordered by name, each carrying what the lockfile records for it.
+// Used by runSync so per-package output is emitted in a stable order
+// across runs regardless of which worker finished first.
+//
+// A lockfile that cannot answer for a package fails the whole sync
+// rather than that one item: the file is shared by every package here,
+// so the fault is the lock's, and reporting it once beats repeating it
+// per package.
+func sortedSyncItems(
+	pkgs map[string]string, lv *lockfile.View, host, platform string,
+) ([]syncItem, error) {
 	names := make([]string, 0, len(pkgs))
 	for name := range pkgs {
 		names = append(names, name)
@@ -293,9 +314,16 @@ func sortedSyncItems(pkgs map[string]string) []syncItem {
 	sort.Strings(names)
 	items := make([]syncItem, len(names))
 	for i, name := range names {
-		items[i] = syncItem{name: name, version: pkgs[name]}
+		locked, ok, err := lv.Entry(name, host, platform)
+		if err != nil {
+			return nil, fmt.Errorf("reading lockfile: %w", err)
+		}
+		items[i] = syncItem{
+			name: name, version: pkgs[name],
+			locked: locked, hasLock: ok,
+		}
 	}
-	return items
+	return items, nil
 }
 
 // runSyncOne is the per-package body of sync, extracted so the
@@ -339,7 +367,7 @@ func installedStale(ctx *cmdContext, w syncItem) bool {
 	return staleErr == nil && stale
 }
 
-func runSyncOne(ctx *cmdContext, lf *lockfile.LockFile, w syncItem, dryRun bool) syncOutcome {
+func runSyncOne(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
 	outcome := syncOutcome{name: w.name, version: w.version}
 
 	// Step a/b: check if already installed and whether stale.
@@ -379,12 +407,12 @@ func runSyncOne(ctx *cmdContext, lf *lockfile.LockFile, w syncItem, dryRun bool)
 	outcome.result = result
 
 	// Step g: compare lockfile SHA.
-	if locked, ok := lf.Packages[w.name]; ok &&
-		locked.SHA256 != "" &&
+	if w.hasLock &&
+		w.locked.SHA256 != "" &&
 		result.SHA256 != "" &&
-		locked.SHA256 != result.SHA256 {
+		w.locked.SHA256 != result.SHA256 {
 		outcome.shaChanged = true
-		outcome.priorSHA = locked.SHA256
+		outcome.priorSHA = w.locked.SHA256
 	}
 
 	// Step h: write lockfile (non-fatal).

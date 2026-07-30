@@ -17,36 +17,12 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/build"
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/recipe"
-	"github.com/kelp/gale/internal/store"
 )
 
 var (
-	// ErrStaleLock reports a lock whose roots no longer match the
-	// manifest. It is separate from the missing-node errors because
-	// the remedy differs: this one is fixed by rewriting the lock,
-	// those by fixing the lock's contents.
-	ErrStaleLock = errors.New("lock does not match gale.toml")
-
-	// ErrMissingNode reports an edge or root the lock does not
-	// define. Under a lock this is fatal rather than an invitation to
-	// resolve the package live: resolving it is exactly the behavior
-	// the lock exists to prevent.
-	ErrMissingNode = errors.New("package missing from lock")
-
-	// ErrMissingArtifact reports a locked node with nothing for the
-	// platform being planned.
-	ErrMissingArtifact = errors.New("platform missing from lock")
-
-	// ErrMalformedRoot reports a root that is not spelled
-	// name@version-revision. It shares the lock-unusable class with
-	// the schema errors: the file cannot be modeled, so it must be
-	// regenerated rather than worked around.
-	ErrMalformedRoot = errors.New("malformed lock root")
-
 	// ErrRecipeMismatch reports a recipe that disagrees with the
 	// locked node it was resolved for.
 	ErrRecipeMismatch = errors.New("recipe disagrees with the lock")
@@ -55,12 +31,6 @@ var (
 	// survive recomputation from the locked closure. Recomputing is
 	// the point: a digest read and believed could certify itself.
 	ErrDigestMismatch = errors.New("graph digest disagrees with the locked closure")
-
-	// ErrVersionConflict reports one package reached at two versions.
-	// The store holds both happily, but a generation links exactly
-	// one, so planning both would defer the choice to symlink time
-	// and resolve it silently.
-	ErrVersionConflict = errors.New("package planned at conflicting versions")
 
 	// ErrMalformedArtifact reports an artifact outside the persisted
 	// format: an unknown method, or a hash that is not the shape the
@@ -121,11 +91,11 @@ func Build(req Request) (*Plan, error) {
 	if err := checkPlatform(req.Platform); err != nil {
 		return nil, err
 	}
-	roots, err := effectiveRoots(req.Lock.Targets, req.Host)
+	roots, err := req.Lock.EffectiveRoots(req.Host)
 	if err != nil {
 		return nil, err
 	}
-	if err := checkDeclared(roots, req.Declared); err != nil {
+	if err := lockfile.CheckDeclared(roots, req.Declared); err != nil {
 		return nil, err
 	}
 	nodes, err := traverse(req, roots)
@@ -191,110 +161,6 @@ func checkArtifact(key string, art lockfile.Artifact) error {
 	return nil
 }
 
-// checkIdentity validates one identity before anything consumes it.
-// The name@version split is this package's, because the lockfile is
-// where identities are spelled as one string; store owns what makes
-// the halves canonical, because the path-component requirement is
-// about addressing exactly one store directory. It bites here for
-// that same reason: a local --recipes directory joins the name onto a
-// path, so a name that is itself a path escapes it.
-func checkIdentity(id string) (string, string, error) {
-	name, version, ok := strings.Cut(id, "@")
-	if !ok || strings.Contains(version, "@") {
-		return "", "", fmt.Errorf(
-			"%w: %q is not name@version-revision", ErrMalformedRoot, id,
-		)
-	}
-	if err := store.CheckIdentity(name, version); err != nil {
-		return "", "", fmt.Errorf("%w: %w", ErrMalformedRoot, err)
-	}
-	return name, version, nil
-}
-
-// effectiveRoots merges the default target with every host selector
-// matching req.Host, in config's precedence order, keyed by package
-// name so a later selector replaces an earlier selector's pin for the
-// same package rather than adding a second one.
-func effectiveRoots(t lockfile.Targets, host string) (map[string]string, error) {
-	roots := make(map[string]string)
-	// Replacement across successively more specific selectors is the
-	// point of the overlay. Two identities for one package inside a
-	// single roots list is not replacement, it is a malformed lock:
-	// taking the last would pick a winner by list order, and neither
-	// selector precedence nor the traversal conflict check would ever
-	// see the loser.
-	apply := func(list []string) error {
-		within := make(map[string]string, len(list))
-		for _, id := range list {
-			name, _, err := checkIdentity(id)
-			if err != nil {
-				return err
-			}
-			if other, dup := within[name]; dup && other != id {
-				return fmt.Errorf(
-					"%w: one target roots both %s and %s",
-					ErrVersionConflict, other, id,
-				)
-			}
-			within[name] = id
-			roots[name] = id
-		}
-		return nil
-	}
-	if t.Default != nil {
-		if err := apply(t.Default.Roots); err != nil {
-			return nil, err
-		}
-	}
-	if host == "" {
-		return roots, nil
-	}
-	keys := config.MatchingHostKeys(slices.Collect(maps.Keys(t.Host)), host)
-	for _, k := range keys {
-		if err := apply(t.Host[k].Roots); err != nil {
-			return nil, err
-		}
-	}
-	return roots, nil
-}
-
-// checkDeclared compares the locked root set against the manifest by
-// name. Versions are deliberately not compared: gale.toml holds a
-// constraint and the lock holds the exact pin it resolved to, so
-// requiring them to match would make every lock stale on sight.
-func checkDeclared(roots, declared map[string]string) error {
-	var unlocked, orphaned []string
-	for name := range declared {
-		if _, ok := roots[name]; !ok {
-			unlocked = append(unlocked, name)
-		}
-	}
-	for name := range roots {
-		if _, ok := declared[name]; !ok {
-			orphaned = append(orphaned, name)
-		}
-	}
-	if len(unlocked) == 0 && len(orphaned) == 0 {
-		return nil
-	}
-	sort.Strings(unlocked)
-	sort.Strings(orphaned)
-	var parts []string
-	if len(unlocked) > 0 {
-		parts = append(parts, fmt.Sprintf(
-			"gale.toml declares %s with no locked root",
-			strings.Join(unlocked, ", "),
-		))
-	}
-	if len(orphaned) > 0 {
-		parts = append(parts, fmt.Sprintf(
-			"the lock roots %s which gale.toml no longer declares",
-			strings.Join(orphaned, ", "),
-		))
-	}
-	return fmt.Errorf("%w: %s", ErrStaleLock, strings.Join(parts, "; "))
-}
-
 // traverse walks the locked edges from the roots, resolving and
 // validating one recipe per node. Nodes already collected are skipped,
 // which also makes a cyclic graph terminate here; rejecting the cycle
@@ -319,7 +185,7 @@ func traverse(req Request, roots map[string]string) (map[string]Node, error) {
 		}
 		if other, dup := chosen[n.Name]; dup && other != key {
 			return nil, fmt.Errorf(
-				"%w: %s and %s are both required", ErrVersionConflict, other, key,
+				"%w: %s and %s are both required", lockfile.ErrVersionConflict, other, key,
 			)
 		}
 		chosen[n.Name] = key
@@ -336,25 +202,25 @@ func traverse(req Request, roots map[string]string) (map[string]Node, error) {
 
 // plannedNode reads one locked node and pairs it with its recipe.
 func plannedNode(req Request, key string) (Node, error) {
-	name, version, err := checkIdentity(key)
+	name, version, err := lockfile.ParseIdentity(key)
 	if err != nil {
 		return Node{}, err
 	}
 	pkg, ok := req.Lock.Packages[key]
 	if !ok {
-		return Node{}, fmt.Errorf("%w: %s", ErrMissingNode, key)
+		return Node{}, fmt.Errorf("%w: %s", lockfile.ErrMissingNode, key)
 	}
 	art, ok := pkg.Artifacts[req.Platform]
 	if !ok {
 		return Node{}, fmt.Errorf(
-			"%w: %s has no artifact for %s", ErrMissingArtifact, key, req.Platform,
+			"%w: %s has no artifact for %s", lockfile.ErrMissingArtifact, key, req.Platform,
 		)
 	}
 	if err := checkArtifact(key, art); err != nil {
 		return Node{}, err
 	}
 	for _, id := range append(append([]string{}, art.RuntimeDeps...), art.BuildDeps...) {
-		if _, _, err := checkIdentity(id); err != nil {
+		if _, _, err := lockfile.ParseIdentity(id); err != nil {
 			return Node{}, fmt.Errorf("%s: %w", key, err)
 		}
 	}

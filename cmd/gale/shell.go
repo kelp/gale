@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/spf13/cobra"
 )
 
@@ -107,7 +106,7 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 		))
 		return
 	}
-	stale, err := lockfile.IsStale(lp, cfg.Packages)
+	stale, err := lockIsStale(lp, cfg.Packages, config.CurrentHost())
 	if err != nil {
 		out.Warn(fmt.Sprintf(
 			"sync: checking lockfile: %v", err,

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -169,3 +170,91 @@ func TestSbomToolVersionsProject(t *testing.T) {
 			out, stderr.String())
 	}
 }
+
+// TestSbomV1MethodComesFromTheLock pins that the enforced schema is
+// authoritative about how a package's bytes were produced. The legacy
+// schema recorded no method, so sbom inferred one by comparing the
+// recorded hash against the current recipe's binary hash. That
+// inference is a guess, and once the recipe moves it is a wrong guess:
+// a locked binary reports as source, or the reverse.
+//
+// No recipe resolves in this test, so the inference cannot fire at all
+// and the default "source" stands. That is exactly what makes it a
+// clean test of precedence: only reading the locked method produces
+// "binary" here.
+func TestSbomV1MethodComesFromTheLock(t *testing.T) {
+	tempHome := t.TempDir()
+	t.Setenv("HOME", tempHome)
+
+	proj := filepath.Join(tempHome, "proj")
+	if err := os.MkdirAll(proj, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "gale.toml"),
+		[]byte("[packages]\n  jq = \"1.8.1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "gale.lock"),
+		[]byte(v1LockMethodFixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	_ = os.Chdir(proj)
+	t.Cleanup(func() { _ = os.Chdir(orig) })
+	sbomJSON = true
+	t.Cleanup(func() {
+		sbomGlobal, sbomProject, sbomAll, sbomJSON = false, false, false, false
+	})
+
+	var stdout, stderr bytes.Buffer
+	if err := runSbom(&stdout, &stderr, nil); err != nil {
+		t.Fatalf("runSbom: %v", err)
+	}
+
+	var entries []sbomEntry
+	if err := json.Unmarshal(stdout.Bytes(), &entries); err != nil {
+		t.Fatalf("decode sbom json %q: %v", stdout.String(), err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("got %d entries, want 1: %+v", len(entries), entries)
+	}
+	if entries[0].Method != "binary" {
+		t.Errorf("Method = %q, want the locked \"binary\"", entries[0].Method)
+	}
+	if entries[0].ArchiveSHA256 != "aaaa" {
+		t.Errorf("ArchiveSHA256 = %q, want aaaa", entries[0].ArchiveSHA256)
+	}
+}
+
+// v1LockMethodFixture locks jq as a binary artifact for every platform
+// the test may run on, so the assertion is about precedence rather than
+// about which machine ran it.
+const v1LockMethodFixture = `version = 1
+
+[packages."!gale-lock-v1"]
+version = 1
+
+[targets.default]
+roots = ["jq@1.8.1-1"]
+
+[packages."jq@1.8.1-1".artifacts."darwin/arm64"]
+sha256 = "aaaa"
+method = "binary"
+graph_digest = "sha256:cccc"
+
+[packages."jq@1.8.1-1".artifacts."darwin/amd64"]
+sha256 = "aaaa"
+method = "binary"
+graph_digest = "sha256:cccc"
+
+[packages."jq@1.8.1-1".artifacts."linux/amd64"]
+sha256 = "aaaa"
+method = "binary"
+graph_digest = "sha256:cccc"
+
+[packages."jq@1.8.1-1".artifacts."linux/arm64"]
+sha256 = "aaaa"
+method = "binary"
+graph_digest = "sha256:cccc"
+`

@@ -186,3 +186,87 @@ func TestWriteConfigAndLockRelockPreservesManifestDigest(t *testing.T) {
 			entry.ManifestDigest, testManifestDigest)
 	}
 }
+
+// v1LockFixture is a minimal but complete v1 lockfile, guard
+// included. It exists to pin what the legacy writers do when they
+// meet one.
+const v1LockFixture = `version = 1
+
+[packages."!gale-lock-v1"]
+version = 1
+
+[targets.default]
+roots = ["pkg@1.0.0-1"]
+
+[packages."pkg@1.0.0-1".artifacts."darwin/arm64"]
+sha256 = "aaaa"
+method = "binary"
+graph_digest = "sha256:cccc"
+`
+
+// TestUpdateLockfileRefusesToRewriteV1 pins why the legacy writers
+// may keep reading the flat schema while the readers learn both: the
+// downgrade guard makes a v1 file undecodable as flat, so a legacy
+// write-back fails instead of replacing an enforced lock with an
+// advisory one. The file must come back byte-identical.
+//
+// This is the guard doing the job it was added for, from inside the
+// same binary rather than from an older release. When the v1 writers
+// land the refusal is replaced by a real update; until then a silent
+// success here would be a lock quietly downgraded.
+func TestUpdateLockfileRefusesToRewriteV1(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "gale.lock")
+	if err := os.WriteFile(lockPath, []byte(v1LockFixture), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	if err := updateLockfile(
+		lockPath, "pkg", "1.0.0-1", "deadbeef", "",
+	); err == nil {
+		t.Error("updateLockfile rewrote a v1 lockfile, want refusal")
+	}
+
+	got, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if string(got) != v1LockFixture {
+		t.Errorf("v1 lockfile was modified:\n%s", got)
+	}
+}
+
+// TestUpdateLockfileRefusesDanglingSymlink closes the writer half of
+// the fail-open the readers just closed. The legacy reader reported a
+// gale.lock symlink with a missing target as absent, so the writer
+// derived a fresh document from an empty one and atomicfile.Write's
+// os.Rename replaced the symlink itself with a regular file.
+//
+// The symlink is a user artifact — a chezmoi-managed link into a shared
+// lock is the obvious case — and replacing it silently loses it. The
+// write must refuse, the link must survive, and the missing target must
+// stay missing.
+func TestUpdateLockfileRefusesDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	lockPath := filepath.Join(dir, "gale.lock")
+	target := filepath.Join(dir, "shared.lock")
+	if err := os.Symlink(target, lockPath); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	if err := updateLockfile(
+		lockPath, "pkg", "1.0.0-1", "deadbeef", "",
+	); err == nil {
+		t.Error("updateLockfile wrote through a dangling symlink, want refusal")
+	}
+
+	fi, err := os.Lstat(lockPath)
+	if err != nil {
+		t.Fatalf("lock path is gone: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("lock path is now a %s, want the symlink preserved", fi.Mode())
+	}
+	if _, err := os.Lstat(target); !os.IsNotExist(err) {
+		t.Errorf("symlink target was created: %v", err)
+	}
+}
