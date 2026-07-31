@@ -29,8 +29,16 @@ type exitCodeCase struct {
 }
 
 // exitCodeCases is a function rather than an inline literal so the test
-// body stays short enough to read as assertions.
+// body stays short enough to read as assertions. It is split by class
+// for length alone; the classification comments stay with their cases.
 func exitCodeCases() []exitCodeCase {
+	return append(exitCodeLockCases(), exitCodeStoreCases()...)
+}
+
+// exitCodeLockCases covers the errors that describe the lockfile
+// itself: its schema, its contents, and the farm guard that fails
+// closed on another scope's copy of it.
+func exitCodeLockCases() []exitCodeCase {
 	return []exitCodeCase{
 		{
 			name: "success",
@@ -91,6 +99,14 @@ func exitCodeCases() []exitCodeCase {
 			err:  fmt.Errorf("gate: %w", lockgraph.ErrCycle),
 			want: exitLockUnusable,
 		},
+	}
+}
+
+// exitCodeStoreCases covers the errors that describe the store beside
+// the lock: a directory's provenance record, what a recipe declares
+// for it, and the generation built from it.
+func exitCodeStoreCases() []exitCodeCase {
+	return []exitCodeCase{
 		{
 			name: "provenance disagrees with the lock",
 			err:  fmt.Errorf("gate: %w", provenance.ErrInvalid),
@@ -120,6 +136,28 @@ func exitCodeCases() []exitCodeCase {
 			name: "malformed lock artifact",
 			err:  fmt.Errorf("plan: %w", lockplan.ErrMalformedArtifact),
 			want: exitLockUnusable,
+		},
+		{
+			// `gale lock` found an installed artifact whose recorded
+			// hash disagrees with the recipe's declared one. Section 8
+			// puts an artifact SHA or manifest digest disagreement in
+			// the integrity row: the directory is validly provenanced,
+			// so nothing here is regenerable and a human decides which
+			// side is wrong.
+			name: "installed provenance disagrees with the recipe",
+			err:  fmt.Errorf("lock: %w", errRecipeDisagrees),
+			want: exitLockIntegrity,
+		},
+		{
+			// An occupied canonical directory with no record at all.
+			// Section 8's "store-dir provenance conflict": the store
+			// holds bytes for an identity that nothing attests, and
+			// rewriting the lock cannot change that, so the
+			// pipeline-actionable class 4 would send a script round a
+			// loop it can never exit.
+			name: "occupied store dir with no provenance",
+			err:  fmt.Errorf("lock: %w", errUnprovenancedStoreDir),
+			want: exitLockIntegrity,
 		},
 		{
 			name: "activation drift",

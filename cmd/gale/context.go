@@ -832,14 +832,30 @@ func lockRemedy(r lockwrite.UnlockedRoot) string {
 	if r.Target == "" {
 		return "gale install " + r.Name
 	}
-	if strings.Contains(r.Target, "'") {
+	flag, ok := hostFlagArg(r.Target)
+	if !ok {
 		return fmt.Sprintf(
 			"gale install %s --host, with the selector spelled as in "+
 				"[hosts.%q.packages]",
 			r.Name, r.Target,
 		)
 	}
-	return fmt.Sprintf("gale install %s --host '%s'", r.Name, r.Target)
+	return fmt.Sprintf("gale install %s %s", r.Name, flag)
+}
+
+// hostFlagArg renders the --host argument addressing one host
+// target's manifest section, quoted so a wildcard or comma-list
+// selector reaches gale instead of being expanded by the shell first.
+//
+// ok is false for a selector containing a single quote, which cannot
+// be spelled this way in one line. Callers name the section instead
+// of emitting a command that would not run. Shared by every remedy
+// that offers a --host command, so the quoting rule has one home.
+func hostFlagArg(target string) (string, bool) {
+	if strings.Contains(target, "'") {
+		return "", false
+	}
+	return "--host '" + target + "'", true
 }
 
 // stripNumericRevision removes a Debian-style "-N" suffix from

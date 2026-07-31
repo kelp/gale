@@ -75,6 +75,20 @@ func exitCodeFor(err error) int {
 		// reach it, of the same file, so the class cannot depend on
 		// which one looked first.
 		return exitLockIntegrity
+	case errors.Is(err, errRecipeDisagrees):
+		// A store directory's record and the recipe name different
+		// bytes for one identity. Section 8's table puts an artifact
+		// SHA or manifest digest disagreement in this row, and the
+		// directory is validly provenanced, so §11 allows no
+		// replacement: nothing a pipeline can regenerate, and a human
+		// has to decide whether upstream moved or the recipe did.
+		return exitLockIntegrity
+	case errors.Is(err, errUnprovenancedStoreDir):
+		// Section 8's "store-dir provenance conflict": the canonical
+		// directory holds bytes nothing attests. Rewriting the lock
+		// does not change what is on disk, so classifying it 4 would
+		// send a script into a regenerate-and-retry loop with no exit.
+		return exitLockIntegrity
 	case errors.Is(err, provenance.ErrInvalid):
 		// A store directory's record disagrees with the lock, or there
 		// is no record at all where the lock names bytes. Both mean

@@ -193,23 +193,23 @@ func checkRootsDeclared(req Request) error {
 		if !declared {
 			return fmt.Errorf(
 				"%s@%s was verified but %s does not declare it",
-				name, req.Roots[name], manifestSection(req.Target),
+				name, req.Roots[name], ManifestSection(req.Target),
 			)
 		}
 		if !lockfile.VersionMatches(req.Roots[name], want) {
 			return fmt.Errorf(
 				"%s@%s was verified but %s declares %s",
-				name, req.Roots[name], manifestSection(req.Target), want,
+				name, req.Roots[name], ManifestSection(req.Target), want,
 			)
 		}
 	}
 	return nil
 }
 
-// manifestSection names the gale.toml section a target mirrors, so a
+// ManifestSection names the gale.toml section a target mirrors, so a
 // disagreement between the two files is reported against the one the
 // user edits.
-func manifestSection(target string) string {
+func ManifestSection(target string) string {
 	if target == "" {
 		return "[packages]"
 	}
