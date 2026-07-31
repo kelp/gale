@@ -29,9 +29,21 @@ import (
 // `gale lock` (design §11), so a fixture using it exercises the
 // target-writing rules without also having to satisfy the recipe
 // agreement check a binary record carries.
-func seedSourceProvenance(t *testing.T, storeRoot, name, version string) {
+// Runtime dependencies are given as canonical name@version-revision
+// identities and must themselves be seeded first, since provenance.New
+// reads each dependency's own record to digest the edge.
+func seedSourceProvenance(
+	t *testing.T, storeRoot, name, version string, deps ...string,
+) {
 	t.Helper()
 	dir := seedStore(t, storeRoot, name, version)
+	edges := make([]lockgraph.Edge, 0, len(deps))
+	for _, dep := range deps {
+		depName, depVersion, _ := strings.Cut(dep, "@")
+		edges = append(edges, lockgraph.Edge{
+			Kind: lockgraph.KindRuntime, Name: depName, Version: depVersion,
+		})
+	}
 	rec, err := provenance.New(storeRoot, lockgraph.Node{
 		Name:    name,
 		Version: version,
@@ -39,6 +51,7 @@ func seedSourceProvenance(t *testing.T, storeRoot, name, version string) {
 		GOARCH:  runtime.GOARCH,
 		Method:  lockgraph.MethodSource,
 		SHA256:  testSHA,
+		Edges:   edges,
 	})
 	if err != nil {
 		t.Fatalf("provenance.New(%s): %v", name, err)

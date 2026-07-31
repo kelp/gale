@@ -109,6 +109,7 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	if len(declared) == 0 {
 		return noDeclarations(cfg, target, ctx.GalePath)
 	}
+	roots := make([]*recipe.Recipe, 0, len(declared))
 	for _, name := range slices.Sorted(maps.Keys(declared)) {
 		r, err := ctx.ResolveVersionedRecipe(name, declared[name])
 		if err != nil {
@@ -125,6 +126,7 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 			return err
 		}
 		ctx.noteLockRoot(target, name, r.Package.Full())
+		roots = append(roots, r)
 	}
 	// Returned explicitly rather than left to WriteLock's empty-target
 	// no-op: a dry run must not depend on a later function happening to
@@ -132,7 +134,18 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	if dryRun {
 		return nil
 	}
-	return ctx.WriteLock()
+	// `gale lock` is the only writer that mints (§11), so the mints are
+	// attached here rather than inside WriteLock, which every writer
+	// shares.
+	ctx.lockMints, ctx.mintSkips = mintOtherPlatforms(ctx.Resolver, roots)
+	if err := ctx.WriteLock(); err != nil {
+		return err
+	}
+	// After the write, for the same reason warnUnlocked is: what these
+	// describe is what the new lockfile leaves out, and a failed write
+	// leaves the previous one intact, omitting nothing.
+	warnSkippedPlatforms(out, ctx.mintSkips)
+	return nil
 }
 
 // lockRoot makes one declared package lockable: it decides whether

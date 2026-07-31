@@ -67,9 +67,44 @@ type AllRequest struct {
 	// Sections are the targets to regenerate, applied in order. Every
 	// target not named here is carried forward.
 	Sections []Section
+	// Mints are derived artifact sets for platforms this machine is
+	// not. Only `gale lock` supplies them (design §11); every other
+	// writer leaves this nil and mints nothing.
+	Mints []Mint
 	// Existing is the lock currently on disk, or nil when absent. It is
 	// read and never mutated.
 	Existing *lockfile.V1
+}
+
+// Mint is a derived artifact set for one platform this machine is
+// not: one artifact per node of that platform's closure, with the
+// graph digests already computed over it.
+//
+// Deriving it needs recipes and a resolver, so the caller does that
+// and this package only folds the result in. That split is the
+// package doc's contract kept: what is recorded here comes from
+// provenance, and the one thing that cannot — an artifact for a
+// platform this machine never installed — arrives already assembled,
+// rather than by handing a network-capable callback to a writer whose
+// inputs are otherwise the store.
+type Mint struct {
+	// Platform is GOOS/GOARCH, spelled as the lockfile keys artifacts.
+	Platform string
+	// Artifacts maps name@version-revision to that node's derived
+	// artifact. The set is a whole closure or nothing: a partial one
+	// would emit an edge with no node behind it.
+	Artifacts map[string]lockfile.Artifact
+}
+
+// PlatformSkip is one platform that was not minted, and why.
+//
+// Skipping is not an error and carries no sentinel. §11 makes minting
+// opportunistic precisely so a platform the user may not even use
+// cannot stop the lockfile being written; the caller prints these and
+// the run succeeds.
+type PlatformSkip struct {
+	Platform string
+	Reason   string
 }
 
 // UnlockedRoot is one declared package a write could not back, and
@@ -97,6 +132,9 @@ type Result struct {
 	// The document is internally complete without them; it is merely
 	// stale against the manifest, which is a state with named remedies.
 	Unlocked []UnlockedRoot
+	// Skipped names the offered mints the document did not take, so
+	// the caller can say which platforms the lock does not cover.
+	Skipped []PlatformSkip
 }
 
 // Build resolves one target's closure and returns the document to
@@ -153,13 +191,106 @@ func BuildAll(req AllRequest) (*Result, error) {
 			return nil, err
 		}
 	}
+	doc, skipped := applyMints(doc, req.Mints)
 	slices.SortFunc(unlocked, func(a, b UnlockedRoot) int {
 		if c := strings.Compare(a.Target, b.Target); c != 0 {
 			return c
 		}
 		return strings.Compare(a.Name, b.Name)
 	})
-	return &Result{Doc: doc, Unlocked: slices.Compact(unlocked)}, nil
+	return &Result{
+		Doc: doc, Unlocked: slices.Compact(unlocked), Skipped: skipped,
+	}, nil
+}
+
+// applyMints folds each derived platform into the document and keeps
+// it only while the document still validates.
+//
+// Fold, check, then commit or discard, one platform at a time. §11
+// makes minting opportunistic, so no derived platform may cost the
+// user the write: a mint that pulls a foreign version of a shared
+// dependency into a graph some host already roots would otherwise
+// fail checkEveryEffectiveGraph and take the whole lockfile with it.
+//
+// A nil document is left alone. There is nothing rooted to mint for,
+// and inventing a lockfile out of derived artifacts alone would put
+// an unlocked project into locked mode without verifying anything.
+func applyMints(doc *lockfile.V1, mints []Mint) (*lockfile.V1, []PlatformSkip) {
+	if doc == nil {
+		return nil, nil
+	}
+	sorted := slices.SortedFunc(slices.Values(mints), func(a, b Mint) int {
+		return strings.Compare(a.Platform, b.Platform)
+	})
+	var skipped []PlatformSkip
+	for _, m := range sorted {
+		next, err := mintInto(doc, m)
+		if err == nil {
+			err = checkEveryEffectiveGraph(next)
+		}
+		if err != nil {
+			skipped = append(skipped, PlatformSkip{
+				Platform: m.Platform, Reason: err.Error(),
+			})
+			continue
+		}
+		doc = next
+	}
+	return doc, skipped
+}
+
+// mintInto returns doc with one platform's derived artifacts added,
+// and refuses rather than replacing anything already recorded.
+//
+// Fill-only in both directions. A retained foreign artifact is what a
+// previous run actually verified, and a derived one is what recipes
+// currently claim; where the two disagree the recipe is not evidence
+// enough to overwrite a verified hash, and overwriting silently is
+// exactly how a substituted artifact would stop being visible. The
+// whole platform is refused rather than the one node, because the
+// digests were computed over the derived closure and a mixture of
+// the two would not reproduce.
+func mintInto(doc *lockfile.V1, m Mint) (*lockfile.V1, error) {
+	pkgs := maps.Clone(doc.Packages)
+	if pkgs == nil {
+		pkgs = make(map[string]lockfile.Package, len(m.Artifacts))
+	}
+	for _, key := range slices.Sorted(maps.Keys(m.Artifacts)) {
+		derived := m.Artifacts[key]
+		prior, recorded := pkgs[key].Artifacts[m.Platform]
+		if recorded {
+			if !sameArtifact(prior, derived) {
+				return nil, fmt.Errorf(
+					"%s already records a different %s artifact (sha256 %s, "+
+						"the recipes derive %s)",
+					key, m.Platform, prior.SHA256, derived.SHA256,
+				)
+			}
+			continue
+		}
+		arts := maps.Clone(pkgs[key].Artifacts)
+		if arts == nil {
+			arts = make(map[string]lockfile.Artifact, 1)
+		}
+		arts[m.Platform] = derived
+		pkgs[key] = lockfile.Package{Artifacts: arts}
+	}
+	return &lockfile.V1{
+		Version: doc.Version, Targets: doc.Targets, Packages: pkgs,
+	}, nil
+}
+
+// sameArtifact compares every field a lock records, so "already
+// recorded" means identical rather than merely same-hashed: an entry
+// agreeing on the hash while disagreeing on its edges or its digest
+// describes a different graph.
+func sameArtifact(a, b lockfile.Artifact) bool {
+	return a.SHA256 == b.SHA256 &&
+		a.ManifestDigest == b.ManifestDigest &&
+		a.Method == b.Method &&
+		a.GraphDigest == b.GraphDigest &&
+		slices.Equal(a.RuntimeDeps, b.RuntimeDeps) &&
+		slices.Equal(a.BuildDeps, b.BuildDeps)
 }
 
 // targetLabel names a target the way gale.lock spells it, so a

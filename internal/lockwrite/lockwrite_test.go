@@ -1387,3 +1387,202 @@ func TestBuildUnlockedCarriesItsTarget(t *testing.T) {
 		t.Errorf("Unlocked = %+v, want %+v", res.Unlocked, want)
 	}
 }
+
+// TestBuildKeepsWritingWhenAMintWouldConflict: an offered mint that
+// would break the one-version rule is dropped, and the write lands
+// without it.
+//
+// §11 makes minting opportunistic, so no derived platform may cost the
+// user the write. The conflict here is one the derivation cannot see:
+// the mint resolves jq's linux dependency to the version the recipes
+// name now, while another target already roots a package locked
+// against a different one on that platform. Only the assembled
+// document has both.
+func TestBuildKeepsWritingWhenAMintWouldConflict(t *testing.T) {
+	const linux = "linux/amd64"
+	storeRoot := t.TempDir()
+	_, jq := installChain(t, storeRoot)
+
+	existing := &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{
+				Roots: []string{"jq@1.8.1-2", "ripgrep@14.1.0-1"},
+			},
+		},
+		Packages: map[string]lockfile.Package{
+			"jq@1.8.1-2": {Artifacts: map[string]lockfile.Artifact{
+				platform: {
+					SHA256:         shaJQ,
+					ManifestDigest: digestM,
+					Method:         lockgraph.MethodBinary,
+					RuntimeDeps:    []string{"oniguruma@6.9.10-1"},
+					GraphDigest:    jq.GraphDigest,
+				},
+			}},
+			"oniguruma@6.9.10-1": {Artifacts: map[string]lockfile.Artifact{
+				platform: {
+					SHA256:      shaOnig,
+					Method:      lockgraph.MethodBinary,
+					GraphDigest: onigDigest(t, storeRoot),
+				},
+			}},
+			// Carried root, already locked on linux against libz 2.
+			"ripgrep@14.1.0-1": {Artifacts: map[string]lockfile.Artifact{
+				platform: artifactWith(shaOnig, nil),
+				linux:    artifactWith(shaOnig, []string{"libz@2.0.0-1"}),
+			}},
+			"libz@2.0.0-1": {Artifacts: map[string]lockfile.Artifact{
+				linux: artifactWith(shaJQ, nil),
+			}},
+		},
+	}
+
+	res, err := BuildAll(AllRequest{
+		StoreRoot: storeRoot,
+		Platform:  platform,
+		Sections: []Section{{
+			Roots:    map[string]string{"jq": "1.8.1-2"},
+			Declared: map[string]string{"jq": "1.8.1", "ripgrep": "14.1.0"},
+		}},
+		Mints: []Mint{{Platform: linux, Artifacts: map[string]lockfile.Artifact{
+			"jq@1.8.1-2":   artifactWith(shaJQ, []string{"libz@1.0.0-1"}),
+			"libz@1.0.0-1": artifactWith(shaOnig, nil),
+		}}},
+		Existing: existing,
+	})
+	if err != nil {
+		t.Fatalf("BuildAll: %v", err)
+	}
+	if _, ok := res.Doc.Packages["jq@1.8.1-2"].Artifacts[linux]; ok {
+		t.Errorf("jq records a %s artifact from the refused mint", linux)
+	}
+	if _, ok := res.Doc.Packages["libz@1.0.0-1"]; ok {
+		t.Errorf("the refused mint left libz@1.0.0-1 behind")
+	}
+	// The document it was refused against is untouched.
+	if _, ok := res.Doc.Packages["ripgrep@14.1.0-1"].Artifacts[linux]; !ok {
+		t.Errorf("ripgrep lost its %s artifact; packages = %v",
+			linux, res.Doc.Packages)
+	}
+	if len(res.Skipped) != 1 || res.Skipped[0].Platform != linux {
+		t.Fatalf("skipped = %+v, want one entry for %s", res.Skipped, linux)
+	}
+	if !strings.Contains(res.Skipped[0].Reason, "libz") {
+		t.Errorf("skip reason = %q, want the conflicting package named",
+			res.Skipped[0].Reason)
+	}
+}
+
+// TestBuildDoesNotOverwriteARetainedArtifactWithAMint: where a
+// retained foreign hash and a derived one disagree, the retained one
+// stands and the platform is reported.
+//
+// The retained value is what some run actually verified; the derived
+// one is what recipes claim now. A recipe is not evidence enough to
+// replace a verified hash, and overwriting silently is exactly how a
+// substituted upstream artifact would stop being visible — which is
+// the substitution the lock exists to detect.
+// The two cases are the two ways a retained artifact and a derived
+// one differ. A differing hash is the visible one. A matching hash
+// with a differing graph is the one a hash comparison alone would
+// wave through, leaving a foreign entry whose edges and digest
+// describe a closure the recipes no longer do.
+func TestBuildDoesNotOverwriteARetainedArtifactWithAMint(t *testing.T) {
+	const linux = "linux/amd64"
+	otherDigest := "sha256:" + strings.Repeat("5e", 32)
+	tests := []struct {
+		name     string
+		retained lockfile.Artifact
+		wantIn   []string
+	}{
+		{
+			name:     "a different hash",
+			retained: artifactWith(shaOnig, nil),
+			// Both hashes, because which one is wrong is the user's call.
+			wantIn: []string{shaOnig, shaJQ},
+		},
+		{
+			name: "the same hash over a different graph",
+			retained: lockfile.Artifact{
+				SHA256:      shaJQ,
+				Method:      lockgraph.MethodBinary,
+				GraphDigest: otherDigest,
+			},
+			wantIn: []string{"jq@1.8.1-2", linux},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			storeRoot := t.TempDir()
+			res, err := BuildAll(mintOverRetained(t, storeRoot, tc.retained))
+			if err != nil {
+				t.Fatalf("BuildAll: %v", err)
+			}
+			got := res.Doc.Packages["jq@1.8.1-2"].Artifacts[linux]
+			if !reflect.DeepEqual(got, tc.retained) {
+				t.Errorf("jq %s artifact = %+v, want the retained %+v",
+					linux, got, tc.retained)
+			}
+			if len(res.Skipped) != 1 || res.Skipped[0].Platform != linux {
+				t.Fatalf("skipped = %+v, want one entry for %s",
+					res.Skipped, linux)
+			}
+			for _, want := range tc.wantIn {
+				if !strings.Contains(res.Skipped[0].Reason, want) {
+					t.Errorf("skip reason = %q, want it to name %s",
+						res.Skipped[0].Reason, want)
+				}
+			}
+		})
+	}
+}
+
+// mintOverRetained builds the request both cases share: jq locked on
+// this platform and retained on linux, with a linux mint offered over
+// it.
+func mintOverRetained(
+	t *testing.T, storeRoot string, retained lockfile.Artifact,
+) AllRequest {
+	t.Helper()
+	_, jq := installChain(t, storeRoot)
+	return AllRequest{
+		StoreRoot: storeRoot,
+		Platform:  platform,
+		Sections: []Section{{
+			Roots:    map[string]string{"jq": "1.8.1-2"},
+			Declared: map[string]string{"jq": "1.8.1"},
+		}},
+		Mints: []Mint{{
+			Platform: "linux/amd64",
+			Artifacts: map[string]lockfile.Artifact{
+				"jq@1.8.1-2": artifactWith(shaJQ, nil),
+			},
+		}},
+		Existing: &lockfile.V1{
+			Version: lockfile.SchemaVersion,
+			Targets: lockfile.Targets{
+				Default: &lockfile.Target{Roots: []string{"jq@1.8.1-2"}},
+			},
+			Packages: map[string]lockfile.Package{
+				"jq@1.8.1-2": {Artifacts: map[string]lockfile.Artifact{
+					platform: {
+						SHA256:         shaJQ,
+						ManifestDigest: digestM,
+						Method:         lockgraph.MethodBinary,
+						RuntimeDeps:    []string{"oniguruma@6.9.10-1"},
+						GraphDigest:    jq.GraphDigest,
+					},
+					"linux/amd64": retained,
+				}},
+				"oniguruma@6.9.10-1": {Artifacts: map[string]lockfile.Artifact{
+					platform: {
+						SHA256:      shaOnig,
+						Method:      lockgraph.MethodBinary,
+						GraphDigest: onigDigest(t, storeRoot),
+					},
+				}},
+			},
+		},
+	}
+}

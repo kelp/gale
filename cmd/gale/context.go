@@ -61,6 +61,14 @@ type cmdContext struct {
 	// landed in yet, and would leave a failed second package with
 	// the first already locked.
 	lockTargets map[string]map[string]string
+
+	// lockMints are derived artifact sets for other platforms, and
+	// mintSkips the platforms that could not be derived. Only `gale
+	// lock` fills them (design §11); every other writer mints nothing.
+	// WriteLock appends the mints the document refused to mintSkips,
+	// so one list names every platform the lock does not cover.
+	lockMints []lockwrite.Mint
+	mintSkips []lockwrite.PlatformSkip
 }
 
 // newCmdContext resolves the config, store, and installer.
@@ -728,6 +736,7 @@ func (ctx *cmdContext) WriteLock() error {
 			StoreRoot: ctx.StoreRoot,
 			Platform:  currentPlatform(),
 			Sections:  sections,
+			Mints:     ctx.lockMints,
 			Existing:  doc,
 		})
 		if err != nil {
@@ -748,6 +757,10 @@ func (ctx *cmdContext) WriteLock() error {
 		// describes is what the NEW lockfile leaves out, and a failed
 		// write leaves the previous one intact, omitting nothing.
 		warnUnlocked(res.Unlocked)
+		// The platforms the document refused join the ones that could
+		// not be derived at all, so the caller reports both from one
+		// list rather than each from where it happened to be produced.
+		ctx.mintSkips = append(ctx.mintSkips, res.Skipped...)
 		return nil
 	})
 }
