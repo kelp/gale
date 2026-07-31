@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/lockfile"
@@ -48,6 +49,18 @@ func jqNode() lockgraph.Node {
 			{Kind: lockgraph.KindRuntime, Name: "oniguruma", Version: "6.9.10-1"},
 		},
 	}
+}
+
+// unlockedNames renders the omitted roots as bare names, for the
+// tests that care which packages were omitted rather than which
+// section declared them. TestBuildUnlockedCarriesItsTarget covers the
+// target.
+func unlockedNames(roots []UnlockedRoot) []string {
+	names := make([]string, 0, len(roots))
+	for _, r := range roots {
+		names = append(names, r.Name)
+	}
+	return names
 }
 
 // install writes n's provenance into the store through the real
@@ -486,7 +499,7 @@ func TestBuildOmitsWhatItCannotBack(t *testing.T) {
 				t.Errorf("roots = %v, want %v",
 					res.Doc.Targets.Default.Roots, tc.wantRoots)
 			}
-			if !slices.Equal(res.Unlocked, tc.wantUnlocked) {
+			if !slices.Equal(unlockedNames(res.Unlocked), tc.wantUnlocked) {
 				t.Errorf("Unlocked = %v, want %v", res.Unlocked, tc.wantUnlocked)
 			}
 			// A partial subgraph must not be written: it is exactly the
@@ -815,7 +828,7 @@ func TestBuildRefusesUnmodelableCarriedRoots(t *testing.T) {
 			if !slices.Equal(res.Doc.Targets.Default.Roots, []string{"jq@1.8.1-2"}) {
 				t.Errorf("roots = %v, want only jq", res.Doc.Targets.Default.Roots)
 			}
-			if !slices.Equal(res.Unlocked, []string{"ripgrep"}) {
+			if !slices.Equal(unlockedNames(res.Unlocked), []string{"ripgrep"}) {
 				t.Errorf("Unlocked = %v, want [ripgrep]", res.Unlocked)
 			}
 		})
@@ -990,5 +1003,387 @@ func TestBuildRejectsCrossTargetConflicts(t *testing.T) {
 				t.Fatalf("err = %v, want lockfile.ErrVersionConflict", err)
 			}
 		})
+	}
+}
+
+// carriedOnlyDoc is a complete prior document: one default root with
+// its whole subgraph recorded for platform.
+func carriedOnlyDoc() *lockfile.V1 {
+	return &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"jq@1.8.1-2"}},
+		},
+		Packages: map[string]lockfile.Package{
+			"jq@1.8.1-2": {Artifacts: map[string]lockfile.Artifact{
+				platform: artifactWith(shaJQ, []string{"oniguruma@6.9.10-1"}),
+			}},
+			"oniguruma@6.9.10-1": {Artifacts: map[string]lockfile.Artifact{
+				platform: artifactWith(shaOnig, nil),
+			}},
+		},
+	}
+}
+
+// TestBuildLocksATargetItOnlyCarries: a writer that verified nothing
+// this run still has a target to regenerate. `remove` is the case —
+// it installs nothing, and every root the target keeps is carried
+// from the previous document.
+//
+// Refusing here would leave remove unable to regenerate the section it
+// edited, which is what section 11's remove row requires. A target
+// that ends up with nothing at all is dropped rather than refused;
+// see TestBuildDropsATargetItCannotBack.
+//
+// The store is deliberately empty. A carried root is evidence from the
+// prior document, so re-resolving it against provenance would refuse a
+// remove on any machine whose other packages predate provenance.
+func TestBuildLocksATargetItOnlyCarries(t *testing.T) {
+	res, err := Build(Request{
+		StoreRoot: t.TempDir(),
+		Platform:  platform,
+		Declared:  map[string]string{"jq": "1.8.1"},
+		Existing:  carriedOnlyDoc(),
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if res.Doc.Targets.Default == nil ||
+		!slices.Equal(res.Doc.Targets.Default.Roots, []string{"jq@1.8.1-2"}) {
+		t.Errorf("default roots = %v, want [jq@1.8.1-2]", res.Doc.Targets.Default)
+	}
+	wantKeys := []string{"jq@1.8.1-2", "oniguruma@6.9.10-1"}
+	if gotKeys := slices.Sorted(maps.Keys(res.Doc.Packages)); !slices.Equal(gotKeys, wantKeys) {
+		t.Errorf("package keys = %v, want %v", gotKeys, wantKeys)
+	}
+	if len(res.Unlocked) != 0 {
+		t.Errorf("Unlocked = %v, want none: the prior subgraph backs jq", res.Unlocked)
+	}
+}
+
+// TestBuildDropsATargetItCannotBack: a target left with no verified
+// and no carryable roots is dropped, not refused. `remove` reaches
+// this whenever the surviving declarations are unlocked — on a
+// machine that never locked them, every one of them is — and §11
+// makes that the stale, recoverable state, never a hard failure.
+// The declarations that went unbacked are named so the caller can
+// print the remedy, and every other target survives.
+func TestBuildDropsATargetItCannotBack(t *testing.T) {
+	existing := &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"jq@1.8.1-2"}},
+			Host: map[string]lockfile.Target{
+				"linux-box": {Roots: []string{"ripgrep@14.1.0-1"}},
+			},
+		},
+		Packages: map[string]lockfile.Package{
+			"jq@1.8.1-2": {Artifacts: map[string]lockfile.Artifact{
+				platform: artifactWith(shaJQ, nil),
+			}},
+			"ripgrep@14.1.0-1": {Artifacts: map[string]lockfile.Artifact{
+				"linux/amd64": artifactWith(shaOnig, nil),
+			}},
+		},
+	}
+
+	res, err := Build(Request{
+		StoreRoot: t.TempDir(),
+		Platform:  platform,
+		// jq was removed; the surviving declaration has no prior root.
+		Declared: map[string]string{"bat": "0.24.0"},
+		Existing: existing,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if res.Doc.Targets.Default != nil {
+		t.Errorf("default target = %+v, want it dropped", res.Doc.Targets.Default)
+	}
+	if _, ok := res.Doc.Targets.Host["linux-box"]; !ok {
+		t.Errorf("host targets = %v, want linux-box preserved", res.Doc.Targets.Host)
+	}
+	if !slices.Equal(unlockedNames(res.Unlocked), []string{"bat"}) {
+		t.Errorf("Unlocked = %v, want [bat]", res.Unlocked)
+	}
+	wantKeys := []string{"ripgrep@14.1.0-1"}
+	if got := slices.Sorted(maps.Keys(res.Doc.Packages)); !slices.Equal(got, wantKeys) {
+		t.Errorf("package keys = %v, want %v", got, wantKeys)
+	}
+}
+
+// TestBuildOnAnAbsentLockWithNothingToRootWritesNothing: with no
+// prior document there is nothing to drop and nothing to root, and
+// a nil document is how the writer says "leave the lock path alone".
+// Inventing an empty one would put an unlocked project into locked
+// mode as a side effect of a removal.
+func TestBuildOnAnAbsentLockWithNothingToRootWritesNothing(t *testing.T) {
+	res, err := Build(Request{
+		StoreRoot: t.TempDir(),
+		Platform:  platform,
+		Declared:  map[string]string{"bat": "0.24.0"},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if res.Doc != nil {
+		t.Errorf("Doc = %+v, want nil", res.Doc)
+	}
+	if !slices.Equal(unlockedNames(res.Unlocked), []string{"bat"}) {
+		t.Errorf("Unlocked = %v, want [bat]", res.Unlocked)
+	}
+}
+
+// TestDropTargetPrunesUnreachedNodes: removing a section's last
+// package deletes its target rather than writing an empty one, and
+// takes with it every node no remaining target reaches. Leaving them
+// would grow the lock forever with graphs nothing plans.
+func TestDropTargetPrunesUnreachedNodes(t *testing.T) {
+	doc := carriedOnlyDoc()
+	doc.Targets.Host = map[string]lockfile.Target{
+		"linux-box": {Roots: []string{"ripgrep@14.1.0-1"}},
+	}
+	doc.Packages["ripgrep@14.1.0-1"] = lockfile.Package{
+		Artifacts: map[string]lockfile.Artifact{
+			"linux/amd64": artifactWith(shaOnig, []string{"pcre2@10.44-1"}),
+		},
+	}
+	doc.Packages["pcre2@10.44-1"] = lockfile.Package{
+		Artifacts: map[string]lockfile.Artifact{
+			"linux/amd64": artifactWith(shaJQ, nil),
+		},
+	}
+
+	got := dropTarget(doc, "")
+
+	if got.Targets.Default != nil {
+		t.Errorf("default target = %v, want it dropped", got.Targets.Default)
+	}
+	if _, ok := got.Targets.Host["linux-box"]; !ok {
+		t.Error("dropping the default target took the linux-box target with it")
+	}
+	wantKeys := []string{"pcre2@10.44-1", "ripgrep@14.1.0-1"}
+	if gotKeys := slices.Sorted(maps.Keys(got.Packages)); !slices.Equal(gotKeys, wantKeys) {
+		t.Errorf("package keys = %v, want %v", gotKeys, wantKeys)
+	}
+	if doc.Targets.Default == nil {
+		t.Error("dropTarget mutated the document it was handed")
+	}
+}
+
+// depNode builds a node whose only edge is a runtime dependency, for
+// fixtures that care about the shape of a graph rather than its
+// hashes.
+func depNode(name, version, dep, depVersion string) lockgraph.Node {
+	n := lockgraph.Node{
+		Name:    name,
+		Version: version,
+		GOOS:    "darwin",
+		GOARCH:  "arm64",
+		Method:  lockgraph.MethodBinary,
+		SHA256:  shaJQ,
+	}
+	if dep != "" {
+		n.Edges = []lockgraph.Edge{{
+			Kind: lockgraph.KindRuntime, Name: dep, Version: depVersion,
+		}}
+	}
+	return n
+}
+
+// TestBuildAllValidatesTheFinalDocumentOnly: two targets moving
+// together onto a new shared dependency are legal before and legal
+// after, while every intermediate state is illegal — rebuilding
+// either target first leaves the other still rooting the old version
+// of the shared dep, which is two versions of one package in the
+// graph the host sees.
+//
+// Validating per target would therefore make a valid multi-target
+// update impossible in both orders. `gale update` across a shared
+// dependency is exactly this shape.
+func TestBuildAllValidatesTheFinalDocumentOnly(t *testing.T) {
+	storeRoot := t.TempDir()
+	install(t, storeRoot, depNode("shared", "2.0-1", "", ""))
+	install(t, storeRoot, depNode("app", "2.0-1", "shared", "2.0-1"))
+	install(t, storeRoot, depNode("tool", "2.0-1", "shared", "2.0-1"))
+
+	existing := &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"app@1.0-1"}},
+			Host: map[string]lockfile.Target{
+				"box": {Roots: []string{"tool@1.0-1"}},
+			},
+		},
+		Packages: map[string]lockfile.Package{
+			"app@1.0-1": {Artifacts: map[string]lockfile.Artifact{
+				platform: artifactWith(shaJQ, []string{"shared@1.0-1"}),
+			}},
+			"tool@1.0-1": {Artifacts: map[string]lockfile.Artifact{
+				platform: artifactWith(shaJQ, []string{"shared@1.0-1"}),
+			}},
+			"shared@1.0-1": {Artifacts: map[string]lockfile.Artifact{
+				platform: artifactWith(shaOnig, nil),
+			}},
+		},
+	}
+
+	res, err := BuildAll(AllRequest{
+		StoreRoot: storeRoot,
+		Platform:  platform,
+		Existing:  existing,
+		Sections: []Section{
+			{
+				Target:   "",
+				Roots:    map[string]string{"app": "2.0-1"},
+				Declared: map[string]string{"app": "2.0"},
+			},
+			{
+				Target:   "box",
+				Roots:    map[string]string{"tool": "2.0-1"},
+				Declared: map[string]string{"tool": "2.0"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildAll: %v", err)
+	}
+	if !slices.Equal(res.Doc.Targets.Default.Roots, []string{"app@2.0-1"}) {
+		t.Errorf("default roots = %v, want [app@2.0-1]", res.Doc.Targets.Default.Roots)
+	}
+	if got := res.Doc.Targets.Host["box"].Roots; !slices.Equal(got, []string{"tool@2.0-1"}) {
+		t.Errorf("box roots = %v, want [tool@2.0-1]", got)
+	}
+	wantKeys := []string{"app@2.0-1", "shared@2.0-1", "tool@2.0-1"}
+	if got := slices.Sorted(maps.Keys(res.Doc.Packages)); !slices.Equal(got, wantKeys) {
+		t.Errorf("package keys = %v, want %v", got, wantKeys)
+	}
+}
+
+// TestBuildAllStillRefusesAConflictingFinalDocument keeps the other
+// half: folding first and checking last must not become checking
+// nothing. Two targets that land on different versions of one shared
+// dependency are a graph no generation can link, and the whole write
+// fails rather than emitting it.
+func TestBuildAllStillRefusesAConflictingFinalDocument(t *testing.T) {
+	storeRoot := t.TempDir()
+	install(t, storeRoot, depNode("shared", "1.0-1", "", ""))
+	install(t, storeRoot, depNode("shared", "2.0-1", "", ""))
+	install(t, storeRoot, depNode("app", "2.0-1", "shared", "2.0-1"))
+	install(t, storeRoot, depNode("tool", "2.0-1", "shared", "1.0-1"))
+
+	_, err := BuildAll(AllRequest{
+		StoreRoot: storeRoot,
+		Platform:  platform,
+		Sections: []Section{
+			{
+				Target:   "",
+				Roots:    map[string]string{"app": "2.0-1"},
+				Declared: map[string]string{"app": "2.0"},
+			},
+			{
+				Target:   "box",
+				Roots:    map[string]string{"tool": "2.0-1"},
+				Declared: map[string]string{"tool": "2.0"},
+			},
+		},
+	})
+	if !errors.Is(err, lockfile.ErrVersionConflict) {
+		t.Errorf("BuildAll error = %v, want ErrVersionConflict", err)
+	}
+}
+
+// TestBuildRefusesRootsTheManifestDoesNotBack: a root this run
+// verified still has to agree with the section being written, the
+// same way a carried root does.
+//
+// Writing one that does not is manufacturing §11's stale state: the
+// reader compares roots against gale.toml through CheckDeclared, so
+// such a lock reads as stale the moment it is used, and a writer that
+// emits it turns a recoverable fault into the normal outcome. The
+// graph check cannot catch it — a graph can be perfectly consistent
+// and describe packages nobody declared.
+func TestBuildRefusesRootsTheManifestDoesNotBack(t *testing.T) {
+	storeRoot := t.TempDir()
+	installChain(t, storeRoot)
+
+	cases := map[string]struct {
+		declared map[string]string
+		want     string
+	}{
+		// The two are separate messages because they are separate
+		// mistakes: a package the section never declared, and one
+		// declared at a version nobody installed.
+		"the section declares nothing": {
+			nil, "[packages] does not declare it",
+		},
+		"the section declares another pin": {
+			map[string]string{"jq": "1.7.0"}, "[packages] declares 1.7.0",
+		},
+		"the section declares another suffix": {
+			map[string]string{"jq": "1.8.1-1"}, "[packages] declares 1.8.1-1",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, err := Build(Request{
+				StoreRoot: storeRoot,
+				Platform:  platform,
+				Roots:     map[string]string{"jq": "1.8.1-2"},
+				Declared:  tc.declared,
+			})
+			if err == nil {
+				t.Fatalf("Build accepted a root the manifest does not back (declared %v)", tc.declared)
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Errorf("error = %q, want it to say %q", err, tc.want)
+			}
+		})
+	}
+}
+
+// TestBuildAcceptsABarePinBackingACanonicalRoot: gale.toml records
+// the bare version by design so an entry tracks revision bumps, so
+// the agreement check has to compare through VersionMatches. String
+// equality here would reject every ordinary install.
+func TestBuildAcceptsABarePinBackingACanonicalRoot(t *testing.T) {
+	storeRoot := t.TempDir()
+	installChain(t, storeRoot)
+
+	res, err := Build(Request{
+		StoreRoot: storeRoot,
+		Platform:  platform,
+		Roots:     map[string]string{"jq": "1.8.1-2"},
+		Declared:  map[string]string{"jq": "1.8.1"},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !slices.Equal(res.Doc.Targets.Default.Roots, []string{"jq@1.8.1-2"}) {
+		t.Errorf("default roots = %v, want [jq@1.8.1-2]", res.Doc.Targets.Default.Roots)
+	}
+}
+
+// TestBuildUnlockedCarriesItsTarget: an omitted root is reported with
+// the target it was declared for, because the remedy differs by
+// section — restoring a host overlay's root needs `gale install
+// --host <selector>`, and a bare name cannot say which selector.
+func TestBuildUnlockedCarriesItsTarget(t *testing.T) {
+	storeRoot := t.TempDir()
+	installChain(t, storeRoot)
+
+	res, err := Build(Request{
+		StoreRoot: storeRoot,
+		Platform:  platform,
+		Target:    "mac-*",
+		Roots:     map[string]string{"jq": "1.8.1-2"},
+		Declared:  map[string]string{"jq": "1.8.1", "fd": "9.0.0"},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	want := []UnlockedRoot{{Target: "mac-*", Name: "fd"}}
+	if !slices.Equal(res.Unlocked, want) {
+		t.Errorf("Unlocked = %+v, want %+v", res.Unlocked, want)
 	}
 }

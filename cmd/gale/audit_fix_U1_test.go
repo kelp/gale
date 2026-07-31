@@ -46,6 +46,8 @@ func TestFinalizeRecipeInstallPinsExplicitOlderRevision(t *testing.T) {
 	}
 	auditU1StorePkg(t, storeRoot, "foo", "1.2.3-1")
 	auditU1StorePkg(t, storeRoot, "foo", "1.2.3-2")
+	writeProvenance(t, storeRoot, "foo", "1.2.3-1")
+	writeProvenance(t, storeRoot, "foo", "1.2.3-2")
 
 	ctx := &cmdContext{
 		GalePath:  configPath,
@@ -55,7 +57,7 @@ func TestFinalizeRecipeInstallPinsExplicitOlderRevision(t *testing.T) {
 	r := &recipe.Recipe{Package: recipe.Package{
 		Name: "foo", Version: "1.2.3", Revision: 1,
 	}}
-	if err := ctx.FinalizeRecipeInstall(r, "deadbeef", ""); err != nil {
+	if err := ctx.FinalizeRecipeInstall(r); err != nil {
 		t.Fatalf("FinalizeRecipeInstall: %v", err)
 	}
 
@@ -99,6 +101,8 @@ func TestFinalizeRecipeInstallKeepsBarePinForLatestRevision(t *testing.T) {
 	}
 	auditU1StorePkg(t, storeRoot, "foo", "1.2.3-1")
 	auditU1StorePkg(t, storeRoot, "foo", "1.2.3-2")
+	writeProvenance(t, storeRoot, "foo", "1.2.3-1")
+	writeProvenance(t, storeRoot, "foo", "1.2.3-2")
 
 	ctx := &cmdContext{
 		GalePath:  configPath,
@@ -108,7 +112,7 @@ func TestFinalizeRecipeInstallKeepsBarePinForLatestRevision(t *testing.T) {
 	r := &recipe.Recipe{Package: recipe.Package{
 		Name: "foo", Version: "1.2.3", Revision: 2,
 	}}
-	if err := ctx.FinalizeRecipeInstall(r, "deadbeef", ""); err != nil {
+	if err := ctx.FinalizeRecipeInstall(r); err != nil {
 		t.Fatalf("FinalizeRecipeInstall: %v", err)
 	}
 

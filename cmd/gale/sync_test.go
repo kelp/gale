@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -34,59 +33,6 @@ func TestUpdateBuildFlag(t *testing.T) {
 	f := updateCmd.Flags().Lookup("build")
 	if f == nil {
 		t.Fatal("update: --build flag not found")
-	}
-}
-
-// TestSyncSHA256MismatchKeepsInstallAndUpdatesLockfile
-// pins the warn-and-update behavior on lockfile SHA
-// mismatch. The install itself verified the download
-// against the recipe's expected hash, so a disagreement
-// against the local lockfile only means the recipe
-// (or build output) has shifted since the last install
-// on this machine. Evicting a freshly-verified package
-// used to leave users stuck re-downloading and
-// re-building on every sync; now we keep it and update
-// the cache.
-func TestSyncSHA256MismatchKeepsInstallAndUpdatesLockfile(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  testpkg = \"1.0.0\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	lockPath := filepath.Join(tmp, "gale.lock")
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"testpkg": {
-				Version: "1.0.0",
-				SHA256:  "oldhasholdhasholdhasholdhash",
-			},
-		},
-	}
-	if err := lockfile.Write(lockPath, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	newHash := "newhashnewhashnewhashnewhashnewh"
-	if err := updateLockfile(
-		lockPath, "testpkg", "1.0.0", newHash, "",
-	); err != nil {
-		t.Fatalf("updateLockfile: %v", err)
-	}
-
-	got, err := lockfile.Read(lockPath)
-	if err != nil {
-		t.Fatalf("lockfile.Read: %v", err)
-	}
-	entry, ok := got.Packages["testpkg"]
-	if !ok {
-		t.Fatal("testpkg entry missing after update")
-	}
-	if entry.SHA256 != newHash {
-		t.Errorf("lockfile SHA256 = %q, want %q",
-			entry.SHA256, newHash)
 	}
 }
 
@@ -352,65 +298,13 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 	}
 }
 
-// TestSyncWritesLockfileHash documents that sync should
-// write SHA256 hashes to the lockfile after successful
-// installs. A full integration test would require mocking
-// the installer, so this test just verifies the code path
-// exists and the lockfilePath helper is called correctly.
-func TestSyncWritesLockfileHash(t *testing.T) {
-	t.Skip("integration test: requires store+registry infrastructure")
-}
-
 // NOTE (finding 0005): The bug where sync --dry-run emits "stale —
 // reinstalling" before the dry-run check cannot be unit-tested without
 // output-capture infrastructure (newOutput() writes directly to os.Stderr).
 
-// NOTE (finding 0006 — sync writes bare version to lockfile):
-//
-// Fix location: sync.go, around line 202 (inside runSync, after
-// reportResult).
-//
-// Buggy code:
-//   _ = updateLockfile(lp, name, version, result.SHA256)
-//   // `version` is the bare string from gale.toml ("1.8.1").
-//
-// Fix:
-//   _ = updateLockfile(lp, name, r.Package.Full(), result.SHA256)
-//   // r is in scope (fetched at line ~139 via ResolveVersionedRecipe).
-//   // r.Package.Full() returns "1.8.1-1" (canonical form with revision).
-//
-// Impact: install and update both use r.Package.Full() when writing to
-// the lockfile. Sync used the bare version from gale.toml. This
-// inconsistency means:
-//
-//   1. gale install jq writes "1.8.1-1" to the lockfile.
-//   2. gale sync reinstalls jq, overwrites lock entry with "1.8.1".
-//   3. lockfile.IsStale compares locked.Version ("1.8.1") against
-//      tomlPackages["jq"] ("1.8.1") — they match, no stale signal.
-//   4. But a subsequent install again writes "1.8.1-1" → mismatch
-//      with toml's "1.8.1" → IsStale returns true → perpetual resync.
-//
-// The unit-level test for the invariant is:
-// internal/lockfile/lockfile_test.go:TestIsStaleCanonicalAndBareVersionsAreEquivalent.
-
-// NOTE (finding 0008 — sync discards lockfile write errors):
-//
-// Fix location: sync.go, same line as finding 0006.
-//
-// Buggy code:
-//   _ = updateLockfile(lp, name, version, result.SHA256)
-//
-// Fix: propagate or log the error. The simplest approach:
-//   if err := updateLockfile(lp, name, r.Package.Full(), result.SHA256); err != nil {
-//       out.Warn(fmt.Sprintf("updating lockfile for %s: %v", name, err))
-//   }
-//
-// The fix for 0006 (using r.Package.Full()) and 0008 (not discarding
-// the error) are both on the same line, so they are fixed together.
-//
-// A unit test for this behavior requires mocking the lockfile write
-// path, which would require refactoring updateLockfile to accept an
-// injectable writer. The integration-level signal is that a read-only
-// lockfile causes sync to emit a warning rather than silently succeeding.
-// The fix is a one-line code movement in runSync — moving the stale info
-// message inside the !dryRun block.
+// NOTE (findings 0006 and 0008 — sync's lockfile write): both
+// described bugs in the per-package lockfile write sync used to
+// perform after each install. Sync no longer writes gale.lock at all
+// (design §11), so the line both fixes landed on is gone. The
+// canonical-version invariant they were about lives on in the lock
+// writers, which root r.Package.Full() and nothing else.

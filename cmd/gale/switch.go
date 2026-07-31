@@ -91,8 +91,8 @@ Unlike 'gale update', switch:
 		}
 
 		result, err := ctx.Installer.InstallWithFinalize(r, false,
-			func(res *installer.InstallResult) error {
-				return ctx.FinalizeRecipeInstall(r, res.SHA256, res.ManifestDigest)
+			func(_ *installer.InstallResult) error {
+				return ctx.FinalizeRecipeInstall(r)
 			})
 		if err != nil {
 			if errors.Is(err, build.ErrUnsupportedPlatform) {

@@ -18,9 +18,13 @@ exec gale init
 exec gale install hello -p --recipes=$WORK/recipes
 exists $WORK/proj/.gale/current/bin/hello
 
-# The lock `gale install` wrote is the legacy schema: flat entries
-# with checksums nothing ever enforced, and no platform dimension.
-exists $WORK/proj/gale.lock
+# Put the project back in the state an upgrade leaves it in: the
+# lock on disk is the legacy schema — flat entries with checksums
+# nothing ever enforced, and no platform dimension — written by the
+# gale that was installed before this one. `gale install` writes the
+# enforced schema now, so the legacy file is laid down directly
+# rather than produced as a side effect.
+cp $WORK/legacy.lock $WORK/proj/gale.lock
 ! grep 'version = 1' $WORK/proj/gale.lock
 
 # The gate the hook runs before PATH_add refuses activation, in one
@@ -51,7 +55,7 @@ stdout 'status=4'
 # there is nothing to hook. Its legacy lock does not stop `gale env`.
 cd $WORK
 exec gale install hello -g --recipes=$WORK/recipes
-exists $HOME/.gale/gale.lock
+cp $WORK/legacy.lock $HOME/.gale/gale.lock
 exec gale env -g
 stdout '^export PATH='
 
@@ -62,3 +66,9 @@ exec gale hook direnv
 stdout 'gale env --check \|\| return 1'
 stdout 'watch_file "\$lockfile"'
 ! stdout '2>/dev/null'
+
+-- legacy.lock --
+[packages]
+  [packages.hello]
+    version = "1.0-1"
+    sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

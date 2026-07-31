@@ -233,7 +233,7 @@ var updateCmd = &cobra.Command{
 			// install the new version; the lockfile stays
 			// untouched because it tracks installed artifacts.
 			if updateNoInstall {
-				if err := config.UpsertPackage(
+				if _, err := config.UpsertPackage(
 					ctx.GalePath, config.CurrentHost(),
 					name, noInstallPin(r.Package.Version,
 						r.Package.Full(), t.current),
@@ -253,8 +253,8 @@ var updateCmd = &cobra.Command{
 				name, t.current, r.Package.Full()))
 
 			result, err := ctx.Installer.InstallWithFinalize(r, false,
-				func(res *installer.InstallResult) error {
-					return ctx.WriteConfigAndLockForRecipe(r, res.SHA256, res.ManifestDigest)
+				func(_ *installer.InstallResult) error {
+					return ctx.WriteConfigForRecipe(r)
 				})
 			if err != nil {
 				out.Warn(fmt.Sprintf(
@@ -266,6 +266,14 @@ var updateCmd = &cobra.Command{
 
 			reportResult(out, result, "Updated", "built from source")
 			updated++
+		}
+
+		// One lock write for the whole run, before the generation
+		// rebuild: a generation must never activate a graph the
+		// lock does not describe. Packages that failed to update
+		// contributed no root, so what lands is what was verified.
+		if err := ctx.WriteLock(); err != nil {
+			return fmt.Errorf("writing lock: %w", err)
 		}
 
 		// Skip the generation rebuild under --no-install: the

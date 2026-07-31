@@ -136,7 +136,7 @@ func (lf *V1) EffectiveRoots(host string) (map[string]string, error) {
 // equality, because the two files spell one pin differently by
 // design: gale.toml records the bare version so an entry tracks
 // revision bumps automatically, and the lock records the canonical
-// version-revision it resolved to (see WriteConfigAndLock).
+// version-revision it resolved to (see cmdContext.WriteConfig).
 // Comparing them at all is what makes an edited pin visible: the
 // manifest holds an exact version, not a constraint, so a changed
 // pin means the lock no longer describes what was asked for.

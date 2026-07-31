@@ -171,7 +171,7 @@ func TestUpsertPackageDottedHostPreservesLocation(t *testing.T) {
 		"[packages]\njq = \"1.7.1\"\n\n"+
 			"[hosts.\"travis-macbook.local\".packages]\nripgrep = \"14.1.0\"\n")
 
-	if err := UpsertPackage(path, host, "ripgrep", "15.0.0"); err != nil {
+	if _, err := UpsertPackage(path, host, "ripgrep", "15.0.0"); err != nil {
 		t.Fatalf("UpsertPackage: %v", err)
 	}
 
@@ -247,7 +247,7 @@ func TestUpsertPackageLegacyUnquotedHostHeader(t *testing.T) {
 		"[packages]\njq = \"1.7.1\"\n\n"+
 			"[hosts.travis-macbook.local.packages]\nripgrep = \"14.1.0\"\n")
 
-	if err := UpsertPackage(path, host, "ripgrep", "15.0.0"); err != nil {
+	if _, err := UpsertPackage(path, host, "ripgrep", "15.0.0"); err != nil {
 		t.Fatalf("UpsertPackage: %v", err)
 	}
 

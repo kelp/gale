@@ -160,18 +160,13 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 				out.Warn(fmt.Sprintf(
 					"%s@%s SHA256 changed since last sync "+
 						"(lock: %s..., got: %s...) — "+
-						"updating lockfile",
+						"run 'gale lock' to record it",
 					name, version,
 					shortSHA(o.priorSHA),
 					shortSHA(o.result.SHA256),
 				))
 			}
 			reportResult(out, o.result, "Installed", "built from source")
-			if o.lockfileErr != nil {
-				out.Warn(fmt.Sprintf(
-					"updating lockfile for %s: %v", name, o.lockfileErr,
-				))
-			}
 			installed++
 		}
 	}
@@ -292,7 +287,6 @@ type syncOutcome struct {
 	result        *installer.InstallResult
 	shaChanged    bool
 	priorSHA      string
-	lockfileErr   error
 }
 
 // sortedSyncItems converts cfg.Packages to a syncItem slice
@@ -415,16 +409,10 @@ func runSyncOne(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
 		outcome.priorSHA = w.locked.SHA256
 	}
 
-	// Step h: write lockfile (non-fatal).
-	if result.SHA256 != "" {
-		lp, lpErr := lockfilePath(ctx.GalePath)
-		if lpErr != nil {
-			outcome.lockfileErr = lpErr
-		} else if wErr := updateLockfile(lp, w.name, r.Package.Full(), result.SHA256, result.ManifestDigest); wErr != nil {
-			outcome.lockfileErr = wErr
-		}
-	}
-
+	// Sync never writes gale.lock (design §11). It is a pure
+	// consumer of one: the lock says what to install, so a sync
+	// that also wrote it would ratify whatever it happened to
+	// install and there would be nothing left to enforce.
 	return outcome
 }
 

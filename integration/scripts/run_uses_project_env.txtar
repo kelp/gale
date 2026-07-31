@@ -11,14 +11,6 @@ exec gale init
 exec gale install hello -p --recipes=$WORK/recipes
 exists $WORK/proj/.gale/current/bin/hello
 
-# The activation gate refuses first (design §12): `gale install`
-# left a legacy lockfile behind, whose checksums nothing ever
-# enforced, so nothing attests the bytes the generation links.
-# `gale run` exists to execute those bytes, so it is fatal here
-# rather than a warning (acceptance 22).
-! exec gale run hello
-stderr 'legacy lockfile schema'
-
 # Unlocked mode keeps working. With no lockfile there is nothing to
 # enforce, and run resolves hello through the project env, which is
 # what this script exists to pin. GALE_OFFLINE keeps the sync that

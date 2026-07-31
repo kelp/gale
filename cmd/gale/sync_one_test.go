@@ -10,16 +10,9 @@ package main
 // TestSortedSyncItemsReturnsAlphabeticalOrder FAILS against the
 // sortedSyncItems stub (returns nil).
 //
-// Lockfile-write-failure contract (behaviour 7) is NOT tested
-// here: it is covered by the combination of:
-//   (a) TestUpdateLockfileSurfacesWriteFailure in
-//       lockfile_helper_test.go, which pins that updateLockfile
-//       surfaces write errors; and
-//   (b) the fact that runSyncOne stores that error in
-//       outcome.lockfileErr rather than returning it — which is
-//       asserted indirectly by the install-failure path
-//       (behaviour 5), where runSyncOne never returns an error
-//       from itself.
+// There is no lockfile-write behaviour here any more: sync never
+// writes gale.lock (design §11). TestSyncWritesNoLockfile in
+// lockwriter_test.go pins that.
 
 import (
 	"errors"

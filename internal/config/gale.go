@@ -629,13 +629,22 @@ func hostPinned(cfg *GaleConfig, host string) map[string]bool {
 // that should not move a host-scoped package to the shared
 // section. host may be empty (no preservation; equivalent to
 // AddPackage(path, "", ...)).
-func UpsertPackage(path, host, name, version string) error {
-	return withFileLock(path, func() error {
+//
+// It returns the host key of the section it wrote: host when the
+// overlay was updated in place, empty for shared [packages]. The
+// lock target a writer regenerates has to match the manifest
+// section actually written, and only this function knows which one
+// that was; deriving it again from the file would be the same rule
+// in two places, free to disagree.
+func UpsertPackage(path, host, name, version string) (string, error) {
+	written := ""
+	err := withFileLock(path, func() error {
 		content, err := readOrEmpty(path)
 		if err != nil {
 			return err
 		}
 		section := packagesPath()
+		written = ""
 		if host != "" {
 			content = normalizeLegacyHostHeader(content, host)
 			// Check if the package is already in the host section.
@@ -646,12 +655,17 @@ func UpsertPackage(path, host, name, version string) error {
 				endIdx := nextSectionIndex(lines, secIdx+1)
 				if keyLineIndex(lines, secIdx+1, endIdx, name) >= 0 {
 					section = hostSection
+					written = host
 				}
 			}
 		}
 		content = setTOMLStringKey(content, section, name, version)
 		return atomicfile.Write(path, content)
 	})
+	if err != nil {
+		return "", err
+	}
+	return written, nil
 }
 
 // AddPackage adds or updates a package in the gale.toml at path.

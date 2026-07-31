@@ -25,5 +25,5 @@ stdout 'hello from gale integration source build'
 
 # gale.toml uses the bare form (consolidation).
 grep 'hello-src = "1\.0"' $HOME/.gale/gale.toml
-# gale.lock pins canonical.
-grep 'version = "1\.0-1"' $HOME/.gale/gale.lock
+# gale.lock roots the canonical identity.
+grep 'roots = \["hello-src@1\.0-1"\]' $HOME/.gale/gale.lock

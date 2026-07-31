@@ -1,13 +1,16 @@
 package main
 
 import (
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/lockgraph"
 )
 
 // TestRemoveConfigBeforeStore verifies that the config
@@ -84,27 +87,52 @@ func TestRemoveConfigBeforeStore(t *testing.T) {
 	}
 }
 
-// TestRemoveWarnsWhenPackageNotInStore verifies that
-// removing a package that is in the config but not in
-// the store emits a warning instead of silently no-oping.
-func TestRemoveDeletesLockfileEntry(t *testing.T) {
+// TestRemoveRegeneratesLockTarget replaces the entry-deleting
+// contract this test pinned under the flat schema. An enforced lock
+// records the whole closure, so deleting one entry would leave the
+// removed package's dependencies rooted by nothing and its identity
+// still in the target. The target is rebuilt instead: the surviving
+// root stays, a dependency it shares with the removed package
+// survives, and the removed package's own subgraph goes with it.
+func TestRemoveRegeneratesLockTarget(t *testing.T) {
 	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
 	projDir := t.TempDir()
 	configPath := filepath.Join(projDir, "gale.toml")
 	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  testpkg = \"1.0\"\n"),
+		[]byte("[packages]\n  keep = \"1.0.0\"\n  drop = \"2.0.0\"\n"),
 		0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Create a lockfile with the package entry.
 	lockPath := filepath.Join(projDir, "gale.lock")
-	lf := lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"testpkg": {Version: "1.0", SHA256: "abc123"},
-		},
+	platform := currentPlatform()
+	art := func(deps ...string) lockfile.Artifact {
+		return lockfile.Artifact{
+			SHA256:      testSHA,
+			Method:      lockgraph.MethodBinary,
+			RuntimeDeps: deps,
+			GraphDigest: "sha256:" + testSHA,
+		}
 	}
-	if err := lockfile.Write(lockPath, &lf); err != nil {
+	node := func(deps ...string) lockfile.Package {
+		return lockfile.Package{
+			Artifacts: map[string]lockfile.Artifact{platform: art(deps...)},
+		}
+	}
+	if err := lockfile.WriteV1(lockPath, &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{
+				Roots: []string{"drop@2.0.0-1", "keep@1.0.0-1"},
+			},
+		},
+		Packages: map[string]lockfile.Package{
+			"keep@1.0.0-1":   node("shared@3.0.0-1"),
+			"drop@2.0.0-1":   node("shared@3.0.0-1", "solo@4.0.0-1"),
+			"shared@3.0.0-1": node(),
+			"solo@4.0.0-1":   node(),
+		},
+	}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -128,17 +156,313 @@ func TestRemoveDeletesLockfileEntry(t *testing.T) {
 	removeProject = true
 	t.Cleanup(func() { removeProject = false })
 
-	if err := removeCmd.RunE(removeCmd, []string{"testpkg"}); err != nil {
+	if err := removeCmd.RunE(removeCmd, []string{"drop"}); err != nil {
 		t.Fatalf("remove command failed: %v", err)
 	}
 
-	// Verify the lockfile entry is deleted.
-	lf2, err := lockfile.Read(lockPath)
+	lf, err := lockfile.ReadV1(lockPath)
 	if err != nil {
 		t.Fatalf("reading lockfile after remove: %v", err)
 	}
-	if _, ok := lf2.Packages["testpkg"]; ok {
-		t.Error("testpkg should be removed from lockfile")
+	if lf.Targets.Default == nil ||
+		!slices.Equal(lf.Targets.Default.Roots, []string{"keep@1.0.0-1"}) {
+		t.Errorf("default roots = %+v, want [keep@1.0.0-1]", lf.Targets.Default)
+	}
+	wantNodes := []string{"keep@1.0.0-1", "shared@3.0.0-1"}
+	if got := slices.Sorted(maps.Keys(lf.Packages)); !slices.Equal(got, wantNodes) {
+		t.Errorf("package nodes = %v, want %v (the shared dep survives, "+
+			"the removed package's own subgraph does not)", got, wantNodes)
+	}
+}
+
+// TestRemoveDropsTheTargetOfAnEmptiedSection: removing a section's
+// last package leaves no section to describe, so its target goes
+// rather than being written empty. An empty target would claim the
+// section declares nothing to lock, which is a different statement
+// from the section being gone, and every other target must survive
+// untouched.
+func TestRemoveDropsTheTargetOfAnEmptiedSection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GALE_HOST", "thisbox")
+	projDir := t.TempDir()
+	configPath := filepath.Join(projDir, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  drop = \"2.0.0\"\n\n"+
+			"[hosts.otherbox.packages]\n  keep = \"1.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lockPath := filepath.Join(projDir, "gale.lock")
+	node := func() lockfile.Package {
+		return lockfile.Package{
+			Artifacts: map[string]lockfile.Artifact{
+				currentPlatform(): {
+					SHA256:      testSHA,
+					Method:      lockgraph.MethodBinary,
+					GraphDigest: "sha256:" + testSHA,
+				},
+			},
+		}
+	}
+	if err := lockfile.WriteV1(lockPath, &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"drop@2.0.0-1"}},
+			Host: map[string]lockfile.Target{
+				"otherbox": {Roots: []string{"keep@1.0.0-1"}},
+			},
+		},
+		Packages: map[string]lockfile.Package{
+			"drop@2.0.0-1": node(),
+			"keep@1.0.0-1": node(),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	galeDir := filepath.Join(projDir, ".gale")
+	if err := os.MkdirAll(filepath.Join(galeDir, "gen", "1", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"), filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	removeProject = true
+	t.Cleanup(func() { removeProject = false })
+
+	if err := removeCmd.RunE(removeCmd, []string{"drop"}); err != nil {
+		t.Fatalf("remove command failed: %v", err)
+	}
+
+	lf, err := lockfile.ReadV1(lockPath)
+	if err != nil {
+		t.Fatalf("reading lockfile after remove: %v", err)
+	}
+	if lf.Targets.Default != nil {
+		t.Errorf("default target = %+v, want it dropped", lf.Targets.Default)
+	}
+	if _, ok := lf.Targets.Host["otherbox"]; !ok {
+		t.Errorf("host targets = %v, want otherbox preserved", lf.Targets.Host)
+	}
+	if got := slices.Sorted(maps.Keys(lf.Packages)); !slices.Equal(
+		got, []string{"keep@1.0.0-1"},
+	) {
+		t.Errorf("package nodes = %v, want [keep@1.0.0-1]", got)
+	}
+}
+
+// TestRemoveInAnUnlockedProjectWritesNoLock: a project with no
+// gale.lock is in unlocked mode, and removing a package must not
+// conjure one. The removal verifies nothing, so there is nothing to
+// carry and nothing to root; absent has to stay absent rather than
+// becoming an error or an invented lock.
+func TestRemoveInAnUnlockedProjectWritesNoLock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projDir := t.TempDir()
+	configPath := filepath.Join(projDir, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  a = \"1.0\"\n  b = \"2.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	galeDir := filepath.Join(projDir, ".gale")
+	if err := os.MkdirAll(filepath.Join(galeDir, "gen", "1", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"), filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	removeProject = true
+	t.Cleanup(func() { removeProject = false })
+
+	var runErr error
+	stderr := captureStderr(t, func() {
+		runErr = removeCmd.RunE(removeCmd, []string{"a"})
+	})
+	if runErr != nil {
+		t.Fatalf("remove in an unlocked project failed: %v", runErr)
+	}
+	// Nothing is stale against a lock that does not exist, so the
+	// surviving declaration gets no remedy printed at it. Unlocked
+	// mode is a supported state with its own warning, not a lock to
+	// repair.
+	if strings.Contains(stderr, "not locked") {
+		t.Errorf("remove named an unlocked package in a project with no lock:\n%s", stderr)
+	}
+
+	if _, err := os.Lstat(filepath.Join(projDir, "gale.lock")); !os.IsNotExist(err) {
+		data, _ := os.ReadFile(filepath.Join(projDir, "gale.lock"))
+		t.Errorf("remove created a lockfile:\n%s", data)
+	}
+	cfg, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(cfg), "a = ") {
+		t.Errorf("gale.toml still declares a:\n%s", cfg)
+	}
+}
+
+// TestRemoveNamesWhatItCouldNotLock: when the write leaves a
+// declared package with no root, §11 requires the writer to name it
+// so the caller can print the remedy. The lock is then stale against
+// gale.toml, which is recoverable and has to be visible — a silently
+// stale lock is the state the next sync fails on with no explanation
+// of how it got there.
+func TestRemoveNamesWhatItCouldNotLock(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	projDir := t.TempDir()
+	configPath := filepath.Join(projDir, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  drop = \"2.0.0\"\n  orphan = \"3.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The lock roots only the package being removed, so the survivor
+	// has no prior subgraph to carry.
+	lockPath := filepath.Join(projDir, "gale.lock")
+	if err := lockfile.WriteV1(lockPath, &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"drop@2.0.0-1"}},
+		},
+		Packages: map[string]lockfile.Package{
+			"drop@2.0.0-1": {Artifacts: map[string]lockfile.Artifact{
+				currentPlatform(): {
+					SHA256:      testSHA,
+					Method:      lockgraph.MethodBinary,
+					GraphDigest: "sha256:" + testSHA,
+				},
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	galeDir := filepath.Join(projDir, ".gale")
+	if err := os.MkdirAll(filepath.Join(galeDir, "gen", "1", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"), filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	removeProject = true
+	t.Cleanup(func() { removeProject = false })
+
+	var runErr error
+	stderr := captureStderr(t, func() {
+		runErr = removeCmd.RunE(removeCmd, []string{"drop"})
+	})
+	if runErr != nil {
+		t.Fatalf("remove failed: %v", runErr)
+	}
+	if !strings.Contains(stderr, "orphan is declared but not locked") {
+		t.Errorf("stderr does not name orphan as unlocked:\n%s", stderr)
+	}
+	if !strings.Contains(stderr, "gale install orphan") {
+		t.Errorf("stderr does not name the remedy:\n%s", stderr)
+	}
+}
+
+// TestRemoveRemedyNamesTheHostSection: the remedy printed for an
+// unlocked package has to restore the section it was declared in.
+// Plain `gale install` writes shared [packages] unless this machine's
+// exact overlay already lists the package, so for a host overlay the
+// only command that puts the root back where it belongs carries
+// --host. One line per package, too: `gale install` takes exactly one
+// package name, so a single line naming several is not runnable.
+func TestRemoveRemedyNamesTheHostSection(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GALE_HOST", "thisbox")
+	projDir := t.TempDir()
+	configPath := filepath.Join(projDir, "gale.toml")
+	if err := os.WriteFile(configPath,
+		[]byte("[hosts.otherbox.packages]\n  drop = \"2.0.0\"\n"+
+			"  orphan = \"3.0.0\"\n  second = \"4.0.0\"\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	lockPath := filepath.Join(projDir, "gale.lock")
+	if err := lockfile.WriteV1(lockPath, &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Host: map[string]lockfile.Target{
+				"otherbox": {Roots: []string{"drop@2.0.0-1"}},
+			},
+		},
+		Packages: map[string]lockfile.Package{
+			"drop@2.0.0-1": {Artifacts: map[string]lockfile.Artifact{
+				currentPlatform(): {
+					SHA256:      testSHA,
+					Method:      lockgraph.MethodBinary,
+					GraphDigest: "sha256:" + testSHA,
+				},
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	galeDir := filepath.Join(projDir, ".gale")
+	if err := os.MkdirAll(filepath.Join(galeDir, "gen", "1", "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"), filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	orig, _ := os.Getwd()
+	os.Chdir(projDir)
+	t.Cleanup(func() { os.Chdir(orig) })
+
+	removeProject = true
+	removeHost = "otherbox"
+	t.Cleanup(func() {
+		removeProject = false
+		removeHost = ""
+	})
+
+	var runErr error
+	stderr := captureStderr(t, func() {
+		runErr = removeCmd.RunE(removeCmd, []string{"drop"})
+	})
+	if runErr != nil {
+		t.Fatalf("remove failed: %v", runErr)
+	}
+	for _, want := range []string{
+		"gale install orphan --host 'otherbox'",
+		"gale install second --host 'otherbox'",
+	} {
+		if !strings.Contains(stderr, want) {
+			t.Errorf("stderr does not offer %q:\n%s", want, stderr)
+		}
 	}
 }
 

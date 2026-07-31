@@ -16,5 +16,5 @@ stderr 'update hello'
 ! exists $HOME/.gale/pkg/hello/1.0-2
 exists $HOME/.gale/pkg/hello/1.0-1
 
-# gale.lock still records the old canonical.
-grep 'version = "1\.0-1"' $HOME/.gale/gale.lock
+# gale.lock still roots the old canonical.
+grep 'roots = \["hello@1\.0-1"\]' $HOME/.gale/gale.lock

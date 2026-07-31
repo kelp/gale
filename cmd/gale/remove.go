@@ -156,19 +156,27 @@ var removeCmd = &cobra.Command{
 				)
 			}
 		}
+		// Regenerate the lock target behind every section the
+		// removal touched. Deleting the package's entry is not
+		// enough under the enforced schema: the lock records the
+		// whole closure, so the target is rebuilt from what the
+		// section still declares and the nodes nothing reaches any
+		// more are dropped, while a transitive dep a surviving root
+		// shares stays.
+		for _, section := range sections {
+			ctx.noteLockTarget(section)
+		}
+		if err := ctx.WriteLock(); err != nil {
+			return errors.Join(
+				fmt.Errorf("writing lock: %w", err),
+				atomicfile.Write(ctx.GalePath, priorConfig),
+			)
+		}
 		out.Info(fmt.Sprintf(
 			"Removed %s from %s (%s)",
 			name, ctx.GalePath,
 			formatSections(sections),
 		))
-
-		// Remove from lockfile. Warn on error but continue
-		// since the main operation (config + store) succeeded.
-		if err := ctx.RemoveLockEntry(name); err != nil {
-			out.Warn(fmt.Sprintf(
-				"Failed to update lockfile: %v", err,
-			))
-		}
 
 		// Rebuild the generation for this scope. Do this
 		// before removing from the store so the generation

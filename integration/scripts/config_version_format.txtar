@@ -12,14 +12,14 @@ gale-fixture recipes $WORK/recipes
 # install → bare in gale.toml, canonical in gale.lock
 exec gale install hello -g --recipes=$WORK/recipes
 grep 'hello = "1\.0"' $HOME/.gale/gale.toml
-grep 'version = "1\.0-1"' $HOME/.gale/gale.lock
+grep 'roots = \["hello@1\.0-1"\]' $HOME/.gale/gale.lock
 
 # Bump to rev 2 and update — same format rules.
 gale-fixture render recipes-rev2/h/hello.toml.tmpl $WORK/recipes/h/hello.toml
 exec gale update hello --recipes=$WORK/recipes
 
 grep 'hello = "1\.0"' $HOME/.gale/gale.toml
-grep 'version = "1\.0-2"' $HOME/.gale/gale.lock
+grep 'roots = \["hello@1\.0-2"\]' $HOME/.gale/gale.lock
 
 # add uses the same format too.
 exec gale add hello-dep -g --recipes=$WORK/recipes

@@ -15,24 +15,16 @@
 package lockwrite
 
 import (
-	"errors"
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/provenance"
 )
-
-// ErrNoRoots reports a request to lock a target with no packages.
-//
-// Refusing is not pedantry. Targets.Default is a pointer so a project
-// declaring only host overlays writes no default target at all, and an
-// empty target would erase the difference between "no shared roots"
-// and "shared roots, currently none".
-var ErrNoRoots = errors.New("no roots to lock")
 
 // Request is everything the writer needs to describe one target.
 type Request struct {
@@ -57,25 +49,180 @@ type Request struct {
 	Existing *lockfile.V1
 }
 
+// Section is one target's contribution to a write: which target to
+// regenerate, from which verified roots, against which manifest
+// section. The fields mean exactly what Request's do.
+type Section struct {
+	Target   string
+	Roots    map[string]string
+	Declared map[string]string
+}
+
+// AllRequest regenerates several targets in one document.
+type AllRequest struct {
+	// StoreRoot is the package store the closure was installed into.
+	StoreRoot string
+	// Platform is GOOS/GOARCH, the artifact dimension being written.
+	Platform string
+	// Sections are the targets to regenerate, applied in order. Every
+	// target not named here is carried forward.
+	Sections []Section
+	// Existing is the lock currently on disk, or nil when absent. It is
+	// read and never mutated.
+	Existing *lockfile.V1
+}
+
+// UnlockedRoot is one declared package a write could not back, and
+// the target it was declared for.
+//
+// The target travels with the name because the remedy depends on it:
+// restoring a root declared in a host overlay needs `gale install
+// --host <selector>`, since a plain install writes shared [packages]
+// unless this machine's exact overlay already lists the package. A
+// bare name cannot say which.
+type UnlockedRoot struct {
+	Target string
+	Name   string
+}
+
 // Result is the document to write plus what the write could not cover.
 type Result struct {
-	// Doc is the document to write.
+	// Doc is the document to write, or nil when there is nothing to
+	// write and no prior document to amend. Nil means leave the lock
+	// path alone: a removal in an unlocked project must not invent a
+	// lockfile and put it into locked mode as a side effect.
 	Doc *lockfile.V1
 	// Unlocked names the declared packages this write could back
 	// neither by fresh verification nor by a carried subgraph, sorted.
 	// The document is internally complete without them; it is merely
 	// stale against the manifest, which is a state with named remedies.
-	Unlocked []string
+	Unlocked []UnlockedRoot
 }
 
-// Build resolves the closure and returns the document to write.
+// Build resolves one target's closure and returns the document to
+// write. It is BuildAll for the single-section case.
 //
 // The closure comes from provenance rather than from recipes, because
 // the lock must record what was actually verified. A recipe knows what
 // should have been fetched; only a provenance record says what was.
 func Build(req Request) (*Result, error) {
-	if len(req.Roots) == 0 {
-		return nil, fmt.Errorf("%w for target %q", ErrNoRoots, req.Target)
+	return BuildAll(AllRequest{
+		StoreRoot: req.StoreRoot,
+		Platform:  req.Platform,
+		Existing:  req.Existing,
+		Sections: []Section{{
+			Target: req.Target, Roots: req.Roots, Declared: req.Declared,
+		}},
+	})
+}
+
+// BuildAll folds every section into one document and validates that
+// document once, at the end.
+//
+// Validating per section instead would judge each target against a
+// document in which the other touched targets still hold their old
+// roots, and that intermediate state can be illegal while both the
+// before and after states are legal: two roots moving together onto a
+// new shared dependency require the old version and the new one at the
+// same time, in whichever order they are rebuilt. `gale update` across
+// a shared dependency is exactly that shape.
+//
+// The check is not exported for the caller to run afterwards. A caller
+// that forgets it loses cross-target validation silently, which is the
+// same "one rule in two places" trap the writer exists to close.
+func BuildAll(req AllRequest) (*Result, error) {
+	doc := req.Existing
+	var unlocked []UnlockedRoot
+	for _, s := range req.Sections {
+		res, err := buildSection(Request{
+			StoreRoot: req.StoreRoot,
+			Platform:  req.Platform,
+			Target:    s.Target,
+			Roots:     s.Roots,
+			Declared:  s.Declared,
+			Existing:  doc,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("locking %s: %w", targetLabel(s.Target), err)
+		}
+		doc = res.Doc
+		unlocked = append(unlocked, res.Unlocked...)
+	}
+	if doc != nil {
+		if err := checkEveryEffectiveGraph(doc); err != nil {
+			return nil, err
+		}
+	}
+	slices.SortFunc(unlocked, func(a, b UnlockedRoot) int {
+		if c := strings.Compare(a.Target, b.Target); c != 0 {
+			return c
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	return &Result{Doc: doc, Unlocked: slices.Compact(unlocked)}, nil
+}
+
+// targetLabel names a target the way gale.lock spells it, so a
+// failure says which section could not be locked.
+func targetLabel(target string) string {
+	if target == "" {
+		return "[targets.default]"
+	}
+	return fmt.Sprintf("[targets.host.%q]", target)
+}
+
+// checkRootsDeclared refuses a freshly verified root the section
+// being written does not back.
+//
+// Carried roots are already held to this: priorRoot drops one whose
+// pin no longer matches. Fresh roots need the same test for the same
+// reason, and they are the ones that can be wrong in the worse
+// direction — a root nobody declares. The reader compares roots
+// against gale.toml through CheckDeclared, so emitting one it does
+// not back writes a lock that reads as stale on arrival, which is
+// §11's recoverable fault manufactured by the writer rather than met.
+//
+// The comparison goes through VersionMatches, not string equality:
+// gale.toml records the bare version by design so an entry tracks
+// revision bumps, and the lock records the canonical
+// version-revision, so the two spell one pin differently on every
+// ordinary install.
+func checkRootsDeclared(req Request) error {
+	for _, name := range slices.Sorted(maps.Keys(req.Roots)) {
+		want, declared := req.Declared[name]
+		if !declared {
+			return fmt.Errorf(
+				"%s@%s was verified but %s does not declare it",
+				name, req.Roots[name], manifestSection(req.Target),
+			)
+		}
+		if !lockfile.VersionMatches(req.Roots[name], want) {
+			return fmt.Errorf(
+				"%s@%s was verified but %s declares %s",
+				name, req.Roots[name], manifestSection(req.Target), want,
+			)
+		}
+	}
+	return nil
+}
+
+// manifestSection names the gale.toml section a target mirrors, so a
+// disagreement between the two files is reported against the one the
+// user edits.
+func manifestSection(target string) string {
+	if target == "" {
+		return "[packages]"
+	}
+	return fmt.Sprintf("[hosts.%q.packages]", target)
+}
+
+// buildSection folds one section into the document it is handed. It
+// does not validate the graph: BuildAll does that once over the
+// result, because a document mid-fold is not one any reader will ever
+// see. Agreement with the manifest is per section and belongs here.
+func buildSection(req Request) (*Result, error) {
+	if err := checkRootsDeclared(req); err != nil {
+		return nil, err
 	}
 	records, err := provenance.Closure(req.StoreRoot, req.Platform, req.Roots)
 	if err != nil {
@@ -83,6 +230,18 @@ func Build(req Request) (*Result, error) {
 	}
 	carried, unlocked := carriedRoots(req)
 	roots := append(sortedIdentities(req.Roots), carried...)
+	if len(roots) == 0 {
+		// Nothing verified and nothing carryable: the target is dropped
+		// rather than written empty, and rather than refused. An empty
+		// target would erase the difference between "no shared roots"
+		// and "shared roots, currently none"; refusing would turn §11's
+		// stale-but-recoverable state into a hard failure, which is what
+		// `remove` meets on any machine that has not locked the
+		// surviving declarations. They are named in Unlocked instead.
+		return &Result{
+			Doc: dropTarget(req.Existing, req.Target), Unlocked: unlocked,
+		}, nil
+	}
 	// Other targets' and carried nodes first, so this platform's freshly
 	// verified artifacts overwrite rather than merge with whatever a
 	// shared node looked like before.
@@ -95,15 +254,14 @@ func Build(req Request) (*Result, error) {
 		// keeps this platform's freshly verified node authoritative.
 		mergeAbsent(pkgs, foreign)
 	}
-	out := &lockfile.V1{
-		Version:  lockfile.SchemaVersion,
-		Targets:  targetsFor(req, roots),
-		Packages: pkgs,
-	}
-	if err := checkEveryEffectiveGraph(out); err != nil {
-		return nil, err
-	}
-	return &Result{Doc: out, Unlocked: unlocked}, nil
+	return &Result{
+		Doc: &lockfile.V1{
+			Version:  lockfile.SchemaVersion,
+			Targets:  targetsFor(req, roots),
+			Packages: pkgs,
+		},
+		Unlocked: unlocked,
+	}, nil
 }
 
 // checkEveryEffectiveGraph applies the one-version rule to every graph a
@@ -322,14 +480,16 @@ func serializedDeps(a lockfile.Artifact) []string {
 // asserting something untrue: the prior root must belong to the target
 // being rewritten, its version must still match the manifest's pin, and
 // its subgraph must be complete in the prior document.
-func carriedRoots(req Request) (carried, unlocked []string) {
+func carriedRoots(req Request) (carried []string, unlocked []UnlockedRoot) {
 	for _, name := range slices.Sorted(maps.Keys(req.Declared)) {
 		if _, fresh := req.Roots[name]; fresh {
 			continue
 		}
 		id, ok := priorRoot(req, name)
 		if !ok {
-			unlocked = append(unlocked, name)
+			unlocked = append(unlocked, UnlockedRoot{
+				Target: req.Target, Name: name,
+			})
 			continue
 		}
 		carried = append(carried, id)
@@ -458,17 +618,15 @@ func reachFor(
 	return out, whole
 }
 
-// reachPrior collects the prior nodes reachable from ids and reports
-// whether every edge resolved.
+// reachPrior collects the prior nodes reachable from ids.
 //
-// One walk serves three callers with different needs: carrying a root
-// forward (which requires completeness), retaining a foreign artifact
-// (same), and preserving another target's graph (which does not, because
-// this writer's job there is to keep what that target recorded, not to
-// repair a document a reader will reject on its own terms).
-func reachPrior(lf *lockfile.V1, ids []string) (map[string]lockfile.Package, bool) {
+// Unlike reachFor it reports no completeness, because its callers do
+// not need one: preserving another target's graph and dropping a
+// target both mean keeping what the other targets recorded, not
+// repairing a document a reader will reject on its own terms. A
+// dangling edge is therefore skipped rather than reported.
+func reachPrior(lf *lockfile.V1, ids []string) map[string]lockfile.Package {
 	out := make(map[string]lockfile.Package)
-	whole := true
 	var visit func(key string)
 	visit = func(key string) {
 		if _, done := out[key]; done {
@@ -476,7 +634,6 @@ func reachPrior(lf *lockfile.V1, ids []string) (map[string]lockfile.Package, boo
 		}
 		p, ok := lf.Packages[key]
 		if !ok {
-			whole = false
 			return
 		}
 		// Recorded before recursing, so a cyclic prior document
@@ -494,7 +651,7 @@ func reachPrior(lf *lockfile.V1, ids []string) (map[string]lockfile.Package, boo
 	for _, id := range ids {
 		visit(id)
 	}
-	return out, whole
+	return out
 }
 
 // nodeFor assembles one node: this platform's verified artifact, plus
@@ -571,8 +728,7 @@ func preserved(req Request, carried []string) map[string]lockfile.Package {
 	// Carried roots are seeded alongside the other targets' roots. Their
 	// completeness was already proven, so the incompleteness this walk
 	// tolerates can only come from another target.
-	nodes, _ := reachPrior(req.Existing, append(otherRoots(req), carried...))
-	return nodes
+	return reachPrior(req.Existing, append(otherRoots(req), carried...))
 }
 
 // otherRoots lists the roots of every target except the one being
@@ -645,4 +801,47 @@ func sortedIdentities(roots map[string]string) []string {
 	}
 	slices.Sort(ids)
 	return ids
+}
+
+// dropTarget removes one target from a document and with it every
+// node no remaining target reaches.
+//
+// A target with nothing left to root is dropped rather than written
+// empty, because an empty target claims the section declares nothing
+// to lock while dropping says the section no longer roots anything.
+// buildSection is the only caller, and `remove` is the only command
+// that reaches it.
+//
+// Pruning follows the same rule Build applies: nodes no target
+// reaches are dropped, so a removed root does not leave the lock
+// growing forever. A dangling edge in another target's graph is
+// tolerated here for the same reason it is there — preserving what a
+// target recorded is this writer's job, repairing it is not.
+//
+// A nil document stays nil: there is no lock to amend.
+func dropTarget(doc *lockfile.V1, target string) *lockfile.V1 {
+	if doc == nil {
+		return nil
+	}
+	// The prior targets minus this one are exactly what otherRoots
+	// enumerates, so the surviving roots and the surviving targets come
+	// from one definition of "every target except this one".
+	req := Request{Target: target, Existing: doc}
+	out := &lockfile.V1{
+		Version:  lockfile.SchemaVersion,
+		Packages: reachPrior(doc, otherRoots(req)),
+	}
+	if target != "" {
+		out.Targets.Default = doc.Targets.Default
+	}
+	for _, k := range slices.Sorted(maps.Keys(doc.Targets.Host)) {
+		if k == target {
+			continue
+		}
+		if out.Targets.Host == nil {
+			out.Targets.Host = make(map[string]lockfile.Target, len(doc.Targets.Host))
+		}
+		out.Targets.Host[k] = doc.Targets.Host[k]
+	}
+	return out
 }
