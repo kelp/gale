@@ -195,7 +195,11 @@ Consequences:
   provenance or graph disagreement with an existing canonical dir
   is a conflict error.
 - All `farm.Populate` calls are deferred to the post-validation
-  batch alongside the generation build. Invariant A alone does not
+  batch alongside the generation build. That batch is the
+  generation rebuild itself, and it is not new machinery: the
+  guard over the whole proposed closure runs before the `current`
+  swap, and the population runs after it, both inside the single
+  store-generation lock acquisition. Invariant A alone does not
   cover the farm: farm symlinks are version-independent, and
   `Populate` overwrites a link belonging to the same package at
   another version on sight (`internal/farm/farm.go:140-143`). So a
@@ -207,6 +211,34 @@ Consequences:
   either way: `internal/build/build.go:627` bakes the farm dir in
   as an `-Wl,-rpath` string, which does not require the farm to be
   populated at build time.
+- The batch's target is the **shared** farm
+  (`filepath.Dir(storeRoot)/lib`) in **both** scopes. This is the
+  one thing the original text left implicit and got wrong. Store
+  binaries carry an `-Wl,-rpath` derived from the store root
+  (`farm.DirFromStoreDir`, `build.go:660`), so the shared farm is
+  the only farm any binary resolves through, at either scope. The
+  darwin fixup's relative `@executable_path/../lib`
+  (`fixup_darwin.go:162-163`) is not a second consumer: dyld
+  resolves the executable's symlink to its real path before
+  substituting, and generation `bin` entries are symlinks into the
+  store, so it lands in the package's own store lib dir. A
+  project-scoped generation rebuild that targets
+  `<project>/.gale/lib` therefore reaches nothing: no PATH entry
+  adds it, no rpath names it, no `DYLD_*` or `LD_LIBRARY_PATH`
+  export references it. Rebuilding it is dead work and stops, so
+  the project-local farm directory is retired rather than
+  redirected, and the guard's project-scope exemption is removed
+  rather than narrowed: with the local directory untouched, an
+  exemption for it means nothing.
+- `farm.Dir(galeDir)` is retired with it. Once every call site
+  takes the store-derived farm it has no production callers
+  (`generation.go:482`, `history.go:160`, `doctor.go:538` are all
+  of them), and the whole defect class is a scope's `galeDir`
+  passed where the shared farm was meant. It is replaced by an
+  explicit `farm.DirFromStoreRoot(storeRoot)`;
+  `farm.DirFromStoreDir` stays for callers holding a package store
+  directory. Deleting the accessor that makes the confusion
+  expressible is the durable fix; correcting three callers is not.
 - Unlocked mode keeps today's streaming behavior.
 
 Rewritten acceptance criterion: *the mismatching artifact is never
@@ -230,11 +262,25 @@ or loads a library. The check must therefore run **before the
 mutation**, not after it.
 
 It also cannot be scoped to locked syncs. An unlocked sync, a
-`--no-frozen` run, `install`, `remove`, a repair, or a generation
-rebuild mutate the same farm and can violate a locked closure
-just as effectively. The guard therefore sits at **every farm
-mutation boundary**, and what makes it apply is the closure being
-harmed, never the privilege of the operation asking.
+`--no-frozen` run, `install`, `remove`, a repair, a generation
+rebuild, or a **generation rollback** mutate the same farm and can
+violate a locked closure just as effectively. The guard therefore
+sits at **every farm mutation boundary**, and what makes it apply
+is the closure being harmed, never the privilege of the operation
+asking.
+
+Rollback is named explicitly because it is the same defect at a
+second site, and a pre-existing one. `internal/generation/history.go`
+mirrors the rebuild exactly — guard, swap, then
+`farm.Rebuild(active, farm.Dir(galeDir))` — so at project scope it
+wipes the retired local directory and never repoints the farm its
+binaries actually resolve through. gh#44's rollback repair has
+therefore only ever worked at global scope. It is fixed here rather
+than deferred: a shared-farm reconciliation applied only to forward
+builds would leave two implementations of one activation invariant.
+Rollback guards the rolled-to package set plus the guarded union of
+every other claimant, targets only the shared farm, and carries its
+own project-scope regression test.
 
 The rule guards **create, remove, and retarget** of a claimed
 soname. All three verbs are load-bearing, because the mutation
@@ -262,6 +308,17 @@ as a verb test:
 2. Compute the farm mapping the operation would leave behind.
 3. Allow it exactly when that mapping satisfies every claim in
    the set.
+
+The claim is built **once per operation**, from the command's
+eventual package set, at the rebuild boundary — never once per
+commit. A per-commit claim models the active generation plus one
+change, so a sync that installs every root before it rebuilds
+cannot see a conflict between two roots that first meet in the
+final closure. This is also why the guard belongs to the
+generation rebuild rather than to a caller-supplied callback: the
+rebuild is the only place that holds the lock across the swap and
+already knows the eventual package set, and an invariant a caller
+must remember to pass is a convention, not an invariant.
 
 Everything follows from that and nothing else needs saying: an
 external claimant that *agrees* with the proposed mapping never
@@ -407,14 +464,54 @@ Executable contract for `BuildWithValidate`:
 3. On callback error, abort immediately, mutate nothing, and
    return the lock-integrity error.
 4. Hold the lock through generation construction, the `current`
-   swap, and the batched farm population, releasing it only after
-   all three complete or the operation aborts.
+   swap, and the batched shared-farm population. The guard over
+   the complete claimant set runs BEFORE the swap, so a conflict
+   aborts with nothing activated; the population runs AFTER it.
 
 Revalidate-then-release leaves a gap; a nested acquisition
 deadlocks; holding every package lock for the whole plan blocks
 other projects across a multi-minute source build. Late drift
 costs at most orphaned verified store entries, never a partial
 activation.
+
+**One activation commit point, followed by non-transactional
+reconciliation.** The original "all three complete or the
+operation aborts" promised an atomicity the implementation cannot
+deliver, so the boundary is stated explicitly. Before the
+`current` swap, validation and claimant conflicts are fatal and
+nothing activates. The swap IS the activation commit point. After
+it, shared-farm population is progressive, derivable state: a
+failure there does not roll back the generation, because undoing a
+completed swap would be a second fallible transaction that cannot
+reliably restore a partially mutated farm, which is worse than
+keeping a verified generation active and reporting degraded
+derived state.
+
+It is not silent either, and this costs a behavior change rather
+than only wording: `farm.Rebuild` currently logs each `Populate`
+failure and returns success (`farm.go:218-228`). It must aggregate
+and return them, and the generation rebuild must wrap that as a
+post-commit failure distinct from every pre-swap one, saying
+plainly that activation completed and farm reconciliation did not.
+A later *successful* generation rebuild repairs it through the
+same guarded-union reconciliation. `gale doctor` is deliberately
+not named as the remedy: doctor's own project-scope farm check
+reads the retired project-local directory (`doctor.go:538`), so it
+can be named only once corrected alongside the other two sites.
+
+Correcting it has a consequence worth stating. `CheckDrift`'s
+first pass walks every entry in the farm directory
+(`farm.go:249-266`), so a project-scope `gale doctor` reading the
+shared farm now reports broken links outside its own closure.
+That is intended: the state genuinely is shared. The diagnostic
+distinguishes the two classes without asserting ownership, since a
+broken extra may be stale or orphaned rather than owned by a live
+scope — "required by this scope" when the entry is in its active
+closure, "shared farm entry outside this scope's closure"
+otherwise. The second pass is unaffected: it walks only the
+checked scope's active store dirs, so a union-populated shared
+farm reads as no drift for entries belonging to others, which is
+what makes the redirection safe.
 
 ## 7. Provenance on store entries
 
