@@ -22,6 +22,7 @@ import (
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
@@ -29,6 +30,30 @@ import (
 )
 
 var renameDir = os.Rename
+
+// ErrUnplanned reports a package a locked operation was asked to
+// install that the plan does not name. Under a lock the plan is the
+// complete set of installs (design §3), so this is a wiring defect
+// rather than a lock defect: it means something reached the
+// installer without going through plan construction.
+var ErrUnplanned = errors.New("package is not in the locked plan")
+
+// ErrUnlockedSource reports a local-directory or git-HEAD install
+// attempted while a plan is set. Neither can be locked even in
+// principle: a git install's identity is a commit hash and a --path
+// install's bytes are whatever sits in the working tree, so no lock
+// can name either. They also bypass installLocked entirely, which
+// is what makes an explicit refusal necessary rather than merely
+// tidy: without it they would commit, and installLocalLocked would
+// replaceStoreDir, with no plan check anywhere on the path.
+//
+// Neither sentinel is mapped in cmd/gale/exitcode.go, deliberately.
+// Both mean the caller wired an operation the lock cannot describe,
+// which is an ordinary failure (exit 1), not a statement about the
+// lockfile's contents (3) or its usability (4).
+var ErrUnlockedSource = errors.New(
+	"cannot install from a local directory or git HEAD under a lock",
+)
 
 // RecipeResolver finds and parses a recipe by package name.
 // Returns nil if the package has no recipe.
@@ -46,6 +71,18 @@ type Installer struct {
 	// and no silent skip.
 	Verifier   attestation.Verifier
 	SourceOnly bool // skip binary, build from source
+
+	// Plan, when set, makes the lockfile the exclusive selector of
+	// versions, artifacts, methods and dependency edges (design §3).
+	// Every package this installer touches must name a node in it;
+	// one that does not is ErrUnplanned rather than a live
+	// resolution, because a single unplanned node is enough to
+	// reintroduce the behaviour the lock exists to remove.
+	//
+	// nil is unlocked mode, which is byte-for-byte today's
+	// behaviour: streaming installs, source fallback, and the
+	// staged stale-reinstall path.
+	Plan *lockplan.Plan
 
 	// FarmGuard, when set, is the cross-project farm claimant
 	// guard (design §4): it is called with the packages whose
@@ -141,6 +178,28 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	var storeDir string
 	staged := false
 
+	planned, locked, perr := inst.plannedNode(name, storeVersion)
+	if perr != nil {
+		return nil, perr
+	}
+	if locked {
+		// Under a lock the cache check is an attestation check, and
+		// it is also the whole of the "already installed" question:
+		// design §4 permits committing only ABSENT canonical dirs,
+		// so an occupied one either attests the locked bytes or is a
+		// conflict. force is deliberately not consulted — the staged
+		// replacement path it selects is in-plan replaceStoreDir,
+		// which §4 prohibits outright.
+		cached, hit, cerr := inst.lockedCacheHit(planned, name, version)
+		if cerr != nil {
+			return nil, cerr
+		}
+		if hit {
+			return &cached, nil
+		}
+		force = false
+	}
+
 	// Cache check. The default path accepts IsInstalled's
 	// back-compat fallback (bare pre-revision dirs count as
 	// "installed"), so dep installs don't needlessly
@@ -150,7 +209,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	// sibling staging dir first. The live canonical dir stays
 	// intact until the final replace succeeds, so a failed
 	// stale reinstall does not break the active generation.
-	if !force && inst.Store.IsInstalled(name, storeVersion) {
+	if !locked && !force && inst.Store.IsInstalled(name, storeVersion) {
 		return &InstallResult{
 			Name:    name,
 			Version: version,
@@ -185,6 +244,14 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	binaryViable := bin != nil && !inst.SourceOnly
+	// The locked method is binding in both directions. Plan
+	// construction already proved the recipe can serve it
+	// (lockplan.validateMethod), so this selects rather than
+	// checks: SourceOnly, which is a caller preference, cannot
+	// override a locked binary node either.
+	if locked {
+		binaryViable = planned.Method == lockgraph.MethodBinary
+	}
 
 	// Install runtime deps up front. The binary path needs
 	// them on disk (the prebuilt links against them); the
@@ -224,11 +291,25 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 				"resolve deps for metadata: %w", ferr,
 			)
 		}
-		if berr := inst.installBinaryTo(r, storeDir, canonicalDir, fallback, !staged); berr == nil {
+		berr := inst.installBinaryTo(r, storeDir, canonicalDir, fallback, !staged)
+		switch {
+		case berr == nil:
 			method = MethodBinary
 			sha256 = bin.SHA256
 			manifestDigest = bin.ManifestDigest
-		} else if errors.Is(berr, farm.ErrClaimConflict) {
+		case locked:
+			// A locked binary node never demotes to a source build
+			// (acceptance 8): the method is a locked field, so a
+			// source build would install bytes the lock never named
+			// and fail its own hash check minutes later. Leave
+			// nothing behind — the mismatching artifact must be
+			// absent from the store (acceptance 1).
+			os.RemoveAll(storeDir)
+			return nil, fmt.Errorf(
+				"locked binary install of %s: %w",
+				lockgraph.Key(name, storeVersion), berr,
+			)
+		case errors.Is(berr, farm.ErrClaimConflict):
 			// A farm-guard refusal is a cross-project conflict,
 			// not a defect of the artifact: a source build of the
 			// same version claims the same sonames and would only
@@ -236,7 +317,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 			// after minutes of wasted work. Abort instead of
 			// demoting to source.
 			return nil, berr
-		} else {
+		default:
 			// Binary install failed — fall back to source build.
 			// Reaching here means the recipe advertised a binary
 			// for this platform and the fetch/verify pipeline
@@ -366,6 +447,9 @@ func (inst *Installer) InstallLocalWithFinalize(
 	r *recipe.Recipe, sourceDir string,
 	finalize func(*InstallResult) error,
 ) (*InstallResult, error) {
+	if inst.Plan != nil {
+		return nil, fmt.Errorf("%w: %s", ErrUnlockedSource, r.Package.Name)
+	}
 	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
 	if err != nil {
 		return nil, fmt.Errorf("lock package: %w", err)
@@ -459,6 +543,12 @@ func (inst *Installer) installGitLocked(r *recipe.Recipe, buildResult *build.Bui
 // no-op. finalize errors are returned alongside the InstallResult so
 // the caller sees partial state.
 func (inst *Installer) InstallGitWithFinalize(r *recipe.Recipe, finalize func(*InstallResult) error) (*InstallResult, error) {
+	// Before installGitPrepare, which clones and builds before it
+	// ever takes the package lock: a guard further in would refuse
+	// only after minutes of work.
+	if inst.Plan != nil {
+		return nil, fmt.Errorf("%w: %s", ErrUnlockedSource, r.Package.Name)
+	}
 	buildResult, hash, depPaths, cleanup, err := inst.installGitPrepare(r)
 	defer cleanup()
 	if err != nil {
@@ -1054,7 +1144,7 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 // would pin build tools in the store for gc/farm even though
 // the binary never links them, and IsStale ignores them.
 func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedDep, error) {
-	if inst.Resolver == nil {
+	if !inst.canResolve() {
 		return nil, nil
 	}
 	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
@@ -1068,7 +1158,7 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedD
 	}
 	resolved := make([]depsmeta.ResolvedDep, 0, len(names))
 	for _, name := range names {
-		dr, err := inst.Resolver(name)
+		dr, err := inst.resolveDep(name)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"resolve dep %q: %w", name, err,
@@ -1163,7 +1253,7 @@ func (inst *Installer) installDepsInner(
 	allDeps := append([]string{}, deps.Build...)
 	allDeps = append(allDeps, deps.Runtime...)
 
-	if len(allDeps) == 0 || inst.Resolver == nil {
+	if len(allDeps) == 0 || !inst.canResolve() {
 		return &build.BuildDeps{}, nil
 	}
 
@@ -1191,7 +1281,7 @@ func (inst *Installer) installDepsInner(
 			seen[dep] = true
 			seenMu.Unlock()
 
-			depRecipe, err := inst.Resolver(dep)
+			depRecipe, err := inst.resolveDep(dep)
 			if err != nil {
 				return fmt.Errorf("resolve dep %q: %w", dep, err)
 			}
@@ -1340,6 +1430,14 @@ func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalSt
 	result, err := build.Build(r, tmpDir, r.Build.Debug, deps)
 	if err != nil {
 		return "", fmt.Errorf("building from source: %w", err)
+	}
+	// Before promotion, never after: the extract below is the commit
+	// point, and §4 invariant A forbids committing an artifact that
+	// has not verified against the lock.
+	if err := inst.checkSourceArtifact(
+		r.Package.Name, r.Package.Full(), result.SHA256,
+	); err != nil {
+		return "", err
 	}
 	return result.SHA256, extractBuildTo(extractRequest{
 		Result:        result,

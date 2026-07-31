@@ -716,3 +716,50 @@ func TestBuildPlan_DuplicateRootWithinOneTarget(t *testing.T) {
 		}
 	}
 }
+
+// TestPlan_ForNameCarriesGraphNode pins the two lookups P7's installer
+// makes. The installer resolves dependencies by package NAME — the
+// recursion in installDepsInner walks recipe dep names — so the plan
+// must answer by name, and answering is what makes the lock the
+// exclusive version selector. Each answer carries the lockgraph.Node
+// form, because provenance.VerifyAgainstLock is the cache-hit
+// comparator and it takes exactly that plus the digest. Rebuilding
+// either at the call site would be a second serializer, which the
+// reinstall-loop class of regression is made of.
+func TestPlan_ForNameCarriesGraphNode(t *testing.T) {
+	plan, err := buildFrom(chain(t), map[string]string{"a": "1.0"})
+	if err != nil {
+		t.Fatalf("build plan: %v", err)
+	}
+
+	dep, ok := plan.ForName("b")
+	if !ok {
+		t.Fatal("plan does not answer for the locked dep b")
+	}
+	if dep.Version != "2.0-1" {
+		t.Errorf("dep version = %q, want the locked 2.0-1", dep.Version)
+	}
+	if dep.Graph.Name != "b" || dep.Graph.Version != "2.0-1" {
+		t.Errorf("graph node = %s@%s, want b@2.0-1",
+			dep.Graph.Name, dep.Graph.Version)
+	}
+	if dep.Graph.GOOS != "darwin" || dep.Graph.GOARCH != "arm64" {
+		t.Errorf("graph node platform = %s/%s, want darwin/arm64",
+			dep.Graph.GOOS, dep.Graph.GOARCH)
+	}
+	if dep.Graph.SHA256 != dep.SHA256 {
+		t.Errorf("graph node sha %q disagrees with node sha %q",
+			dep.Graph.SHA256, dep.SHA256)
+	}
+
+	// The digest the plan recomputed is the one the comparator must
+	// be handed; a node carrying an empty one would compare every
+	// store dir against "" and pass nothing.
+	if dep.GraphDigest == "" {
+		t.Error("dep carries no graph digest")
+	}
+
+	if _, ok := plan.ForName("nosuch"); ok {
+		t.Error("plan answered for a package the lock does not name")
+	}
+}

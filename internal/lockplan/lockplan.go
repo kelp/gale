@@ -86,6 +86,28 @@ type Node struct {
 	// itself.
 	GraphDigest string
 	Recipe      *recipe.Recipe
+	// Graph is this node in the form the digest was computed over.
+	// It is retained rather than rebuilt at the call site because
+	// provenance.VerifyAgainstLock takes exactly this, and a second
+	// construction of it is a second serializer: the comparator and
+	// the writer disagreeing by one field is the reinstall-loop
+	// failure mode.
+	Graph lockgraph.Node
+}
+
+// ForName answers for a package name rather than a canonical
+// identity. The installer's dependency recursion walks recipe dep
+// names, and answering here is what makes the lock the exclusive
+// version selector on that path. One name maps to one node: a plan
+// is a single closure, and cross-root version conflicts already
+// failed in traverse.
+func (p *Plan) ForName(name string) (Node, bool) {
+	for _, n := range p.Nodes {
+		if n.Name == name {
+			return n, true
+		}
+	}
+	return Node{}, false
 }
 
 // Build constructs the plan for one platform.
@@ -106,7 +128,8 @@ func Build(req Request) (*Plan, error) {
 	}
 	// Closure rejects cycles and computes every digest bottom-up, so
 	// the order it returns is the order installs may commit in.
-	digests, order, err := lockgraph.Closure(graphOf(nodes, req.Platform))
+	graph := graphOf(nodes, req.Platform)
+	digests, order, err := lockgraph.Closure(graph)
 	if err != nil {
 		return nil, err
 	}
@@ -117,6 +140,8 @@ func Build(req Request) (*Plan, error) {
 				ErrDigestMismatch, key, n.GraphDigest, digests[key],
 			)
 		}
+		n.Graph = graph[key]
+		nodes[key] = n
 	}
 	return &Plan{Nodes: nodes, Order: order, Roots: sortedValues(roots)}, nil
 }
