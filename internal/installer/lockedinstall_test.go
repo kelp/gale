@@ -15,6 +15,7 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/download"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/provenance"
@@ -505,5 +506,175 @@ func TestInstallLocked_UnlockedSourcePathsRefuse(t *testing.T) {
 		serr, os.ErrNotExist,
 	) {
 		t.Errorf("refused install left store state behind: %v", serr)
+	}
+}
+
+// TestInstallLocked_DefersFarmPopulation is design §4's deferral
+// rule and the first half of acceptance 20.
+//
+// farm symlinks are version-independent, and farm.Populate
+// overwrites a link belonging to the same package at another version
+// on sight. So populating per commit redirects a link the ACTIVE
+// generation's binaries already resolve through, and if a later plan
+// node then fails, that generation is loading the new version with
+// no swap ever having happened. Under a plan every population is
+// deferred to the post-validation batch, which is what preserves
+// invariant B's no-partial-activation property.
+//
+// The per-commit guard goes with it: a guard call per commit cannot
+// see a conflict between two roots that first meet in the final
+// closure, so under a plan it is not merely redundant but
+// misleading.
+func TestInstallLocked_DefersFarmPopulation(t *testing.T) {
+	soname := guardSoname()
+	tarzst := createTarZstdWithFiles(t, map[string]string{
+		"lib/":          "",
+		"lib/" + soname: "bytes",
+	})
+	srv := serveFiles(t, map[string]string{"/pkg.tar.zst": tarzst})
+	r := lockedDepRecipe(
+		recipe.Package{Name: "testpkg", Version: "1.0", Revision: 1},
+		srv.URL+"/pkg.tar.zst", hashFile(t, tarzst), nil,
+	)
+
+	// Control: unlocked, the same install populates the shared farm
+	// per commit, exactly as today.
+	unlockedRoot := guardStoreRoot(t)
+	unlocked := &Installer{Store: store.NewStore(unlockedRoot)}
+	if _, err := unlocked.Install(r); err != nil {
+		t.Fatalf("unlocked install: %v", err)
+	}
+	if _, err := os.Readlink(filepath.Join(
+		filepath.Dir(unlockedRoot), "lib", soname,
+	)); err != nil {
+		t.Fatalf("unlocked install must still populate the farm: %v", err)
+	}
+
+	// Locked: the store commit happens, the farm does not.
+	storeRoot := guardStoreRoot(t)
+	guarded := 0
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+		Plan:  planOf(t, r, lockgraph.MethodBinary, hashFile(t, tarzst)),
+		FarmGuard: func([]farm.Placement) error {
+			guarded++
+			return nil
+		},
+	}
+	if _, err := inst.Install(r); err != nil {
+		t.Fatalf("locked install: %v", err)
+	}
+	if _, err := os.Lstat(filepath.Join(
+		storeRoot, "testpkg", "1.0-1", "lib", soname,
+	)); err != nil {
+		t.Fatalf("locked install did not commit to the store: %v", err)
+	}
+	farmLink := filepath.Join(filepath.Dir(storeRoot), "lib", soname)
+	if _, err := os.Lstat(farmLink); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("locked install populated the farm per commit "+
+			"(lstat %v): §4 defers every population to the "+
+			"post-validation batch", err)
+	}
+	if guarded != 0 {
+		t.Errorf("per-commit farm guard ran %d time(s) under a plan: "+
+			"a per-commit claim cannot see a conflict between two "+
+			"roots that first meet in the final closure", guarded)
+	}
+}
+
+// TestInstallLocked_LateMismatchLeavesTheFarmAtTheOldVersion is
+// acceptance 20, and it is specifically the LATE failure. A test
+// where nothing could have been populated before the mismatch does
+// not exercise the rule.
+//
+// The farm already resolves a soname to version X. The plan would
+// move it to Y: one node carrying that soname verifies and commits,
+// then a second node mismatches and fails the operation. Because
+// farm links are version-independent, a per-commit population would
+// already have repointed the soname at Y — and the generation swap
+// never happens, so the ACTIVE generation's binaries would be
+// loading Y through a farm entry no activation ever authorized.
+// Deferral is what makes the farm still point at X here.
+func TestInstallLocked_LateMismatchLeavesTheFarmAtTheOldVersion(t *testing.T) {
+	storeRoot := guardStoreRoot(t)
+	soname := guardSoname()
+
+	// Version X is installed and farmed: the state the active
+	// generation's binaries resolve through today.
+	oldDir := filepath.Join(storeRoot, "dep", "1.0-1")
+	if err := os.MkdirAll(filepath.Join(oldDir, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(oldDir, "lib", soname), []byte("old"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	farmDir := farm.DirFromStoreRoot(storeRoot)
+	if err := farm.Populate(oldDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// Version Y ships the same soname and verifies cleanly.
+	depTar := createTarZstdWithFiles(t, map[string]string{
+		"lib/":          "",
+		"lib/" + soname: "new",
+	})
+	// The second node does not: the server returns other bytes.
+	rootTar := createTestTarZstd(t, "bin/app", "real")
+	tampered := createTestTarZstd(t, "bin/app", "tampered")
+	srv := serveFiles(t, map[string]string{
+		"/dep.tar.zst":  depTar,
+		"/root.tar.zst": tampered,
+	})
+
+	depRecipe := lockedDepRecipe(
+		recipe.Package{Name: "dep", Version: "2.0", Revision: 1},
+		srv.URL+"/dep.tar.zst", hashFile(t, depTar), nil,
+	)
+	rootRecipe := lockedDepRecipe(
+		recipe.Package{Name: "app", Version: "1.0", Revision: 1},
+		srv.URL+"/root.tar.zst", hashFile(t, rootTar), []string{"dep"},
+	)
+
+	inst := &Installer{
+		Store:             store.NewStore(storeRoot),
+		BinaryFallbackLog: io.Discard,
+		Plan: planWith(t, []planSpec{
+			{
+				name: "app", version: "1.0-1",
+				method: lockgraph.MethodBinary, sha: hashFile(t, rootTar),
+				runtimeDeps: []string{"dep@2.0-1"}, recipe: rootRecipe,
+			},
+			{
+				name: "dep", version: "2.0-1",
+				method: lockgraph.MethodBinary, sha: hashFile(t, depTar),
+				recipe: depRecipe,
+			},
+		}),
+	}
+
+	if _, err := inst.Install(rootRecipe); err == nil {
+		t.Fatal("the mismatching root must fail the operation")
+	}
+
+	// The verified dep DID commit — the store is append-only and
+	// design §4 permits previously verified deps to remain cached.
+	if _, err := os.Lstat(
+		filepath.Join(storeRoot, "dep", "2.0-1", "lib", soname),
+	); err != nil {
+		t.Fatalf("the verified dep should still have committed: %v", err)
+	}
+
+	// The farm must not have followed it.
+	target, err := os.Readlink(filepath.Join(farmDir, soname))
+	if err != nil {
+		t.Fatalf("farm entry lost: %v", err)
+	}
+	if want := filepath.Join(oldDir, "lib", soname); target != want {
+		t.Errorf("farm points at %s, want %s: a verified node "+
+			"repointed the shared soname before the operation as a "+
+			"whole was authorized, so the active generation now "+
+			"loads bytes no swap ever activated", target, want)
 	}
 }

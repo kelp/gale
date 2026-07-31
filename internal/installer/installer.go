@@ -845,6 +845,7 @@ func (inst *Installer) installBinaryTo(
 		StoreRoot:     storeRoot,
 		InPlace:       inPlace,
 		FarmGuard:     inst.FarmGuard,
+		DeferFarm:     inst.Plan != nil,
 	})
 }
 
@@ -938,6 +939,17 @@ func fixupExtracted(dir, finalStoreDir, storeRoot string) error {
 // never an intermediate. When InPlace is false, the caller is
 // staging into a sibling dir and owns the final commit
 // (commitStaged), including the farm wiring and its guard.
+//
+// DeferFarm drops both the guard and the population, leaving only
+// the store commit. It is set under a locked plan (design §4): farm
+// links are version-independent and Populate overwrites a link
+// belonging to the same package at another version on sight, so
+// populating here would redirect a link the ACTIVE generation's
+// binaries already resolve through, and a later plan node failing
+// would leave that generation loading the new version with no swap
+// ever having happened. The per-commit guard goes with it, because
+// one claim per commit cannot see a conflict between two roots that
+// first meet in the plan's final closure.
 func commitExtracted(req commitRequest) error {
 	swap := func() error {
 		// The cross-project claimant guard runs before the rename,
@@ -950,7 +962,7 @@ func commitExtracted(req commitRequest) error {
 		// the bad recipe gets fixed instead of silently shipping a
 		// farm where one package wins.
 		farmDir := ""
-		if req.InPlace {
+		if req.InPlace && !req.DeferFarm {
 			farmDir = farm.DirFromStoreDir(req.FinalStoreDir)
 		}
 		if farmDir != "" && req.FarmGuard != nil {
@@ -998,6 +1010,10 @@ type commitRequest struct {
 	// FarmGuard is the cross-project farm claimant guard; nil
 	// means unwired (tests). See Installer.FarmGuard.
 	FarmGuard func([]farm.Placement) error
+	// DeferFarm drops the per-commit guard and population, leaving
+	// the store commit alone. Set under a locked plan; see
+	// commitExtracted.
+	DeferFarm bool
 }
 
 // verifyManifestDigest enforces digest-based fetch (gh#121). When a
@@ -1447,6 +1463,7 @@ func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalSt
 		Artifact:      sourceArtifact(r, r.Package.Full(), deps),
 		InPlace:       inPlace,
 		FarmGuard:     inst.FarmGuard,
+		DeferFarm:     inst.Plan != nil,
 	})
 }
 
@@ -1472,6 +1489,7 @@ func (inst *Installer) extractBuild(result *build.BuildResult, storeDir string, 
 		Artifact:      a,
 		InPlace:       true,
 		FarmGuard:     inst.FarmGuard,
+		DeferFarm:     inst.Plan != nil,
 	})
 }
 
@@ -1490,6 +1508,9 @@ type extractRequest struct {
 	// forwarded to the in-place commit; nil means unwired
 	// (tests). See Installer.FarmGuard.
 	FarmGuard func([]farm.Placement) error
+	// DeferFarm is forwarded to the commit below. See
+	// commitExtracted.
+	DeferFarm bool
 }
 
 // extractBuildTo extracts result.Archive into extractDir,
@@ -1578,6 +1599,7 @@ func extractBuildTo(req extractRequest) error {
 		StoreRoot:     storeRoot,
 		InPlace:       true,
 		FarmGuard:     req.FarmGuard,
+		DeferFarm:     req.DeferFarm,
 	})
 }
 

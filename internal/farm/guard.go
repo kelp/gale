@@ -200,10 +200,7 @@ func eachClaim(
 ) error {
 	for _, c := range claimants {
 		if c.Err != nil {
-			return fmt.Errorf(
-				"%w: cannot read the closure of %s: %w",
-				ErrClaimConflict, c.Label, c.Err,
-			)
+			return unreadableClaim(c)
 		}
 		claims, err := sonameTargets(c.Label, c.StoreDirs)
 		if err != nil {
@@ -359,10 +356,85 @@ func dedupDirs(dirs []string) []string {
 // both versions. Falls back to the raw path when the target does
 // not have the store shape.
 func identityOf(target string) string {
-	storeDir := filepath.Dir(filepath.Dir(target))
+	return identityOfDir(filepath.Dir(filepath.Dir(target)))
+}
+
+// identityOfDir is identityOf for callers that already hold the
+// store dir rather than a lib path inside it. Falls back to the raw
+// path when the layout does not yield a package name, so a message
+// is never worse than unhelpful.
+func identityOfDir(storeDir string) string {
 	name := packageName(storeDir)
 	if name == "" {
-		return target
+		return storeDir
 	}
 	return name + "@" + filepath.Base(storeDir)
+}
+
+// GuardStoreRemoval checks a store-directory deletion, which is two
+// mutations rather than one: the farm links pointing into the
+// directory go, and then the directory itself goes.
+//
+// GuardDepopulate models only the first, and models it accurately,
+// so it is kept rather than reinterpreted. What it cannot see is a
+// claim on the directory when no farm link currently points there.
+// That was unreachable while a project generation rebuild wiped its
+// own local lib dir; once the rebuild targets the shared farm it
+// runs before the removal and can erase the very link the guard
+// then looks for, leaving the check reading state its own command
+// already rewrote.
+//
+// The two tests are ANDed, not substituted. Scanning the directory's
+// sonames instead of the live farm would over-refuse: when a farm
+// entry resolves to another version, Depopulate leaves it alone and
+// a claim on that target survives the deletion, so refusing would
+// be a verb veto of the kind design §4 forbids.
+func GuardStoreRemoval(storeDir, farmDir string, claimants []Claimant) error {
+	if err := guardClaimedDir(storeDir, claimants); err != nil {
+		return err
+	}
+	return GuardDepopulate(storeDir, farmDir, claimants)
+}
+
+// guardClaimedDir refuses deleting a directory a claimant's closure
+// names. It is deliberately independent of the farm: a claimed
+// directory cannot satisfy anything once removed, whether or not a
+// symlink happens to point at it right now, and whether or not it
+// ships any dylibs at all.
+func guardClaimedDir(storeDir string, claimants []Claimant) error {
+	want := filepath.Clean(storeDir)
+	for _, c := range claimants {
+		if c.Err != nil {
+			return unreadableClaim(c)
+		}
+		for _, d := range c.StoreDirs {
+			if filepath.Clean(d) != want {
+				continue
+			}
+			return fmt.Errorf(
+				"%w: %s requires %s, removal would delete it",
+				ErrClaimConflict, c.Label, identityOfDir(want),
+			)
+		}
+	}
+	return nil
+}
+
+// unreadableClaim reports a claimant whose closure could not be
+// read. The check fails closed: a scope that cannot be enumerated
+// might claim anything, so proceeding would be a guess.
+//
+// The message names the blocking registration and what to do about
+// it, because the failure is machine-wide and its cause is
+// invisible from the command the user actually ran. Removing a
+// package in one project should not print an unexplained refusal
+// naming a project they have not touched in months.
+func unreadableClaim(c Claimant) error {
+	return fmt.Errorf(
+		"%w: cannot read the closure of %s, so no operation on the "+
+			"shared library farm can be checked; repair or remove "+
+			"that project (gale gc prunes registrations whose "+
+			"gale.toml is gone): %w",
+		ErrClaimConflict, c.Label, c.Err,
+	)
 }

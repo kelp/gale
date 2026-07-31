@@ -411,3 +411,199 @@ func TestRemoveUnclaimedSucceedsWithClaimantPresent(t *testing.T) {
 		t.Error("store dir should be removed")
 	}
 }
+
+// TestRemoveLateRefusalRestoresTheLock closes the gap the pair
+// review found in the compensation path.
+//
+// WriteLock commits the removal to gale.lock BEFORE the
+// authoritative farm guard runs beside the deletion. So a late
+// refusal that restored only gale.toml left the two disagreeing:
+// the manifest names a package the lock no longer locks, which is
+// precisely the stale-lock state, and the next sync fails on it.
+// A refused operation must leave every file it touched as it found
+// it, not merely the one that is easiest to put back.
+func TestRemoveLateRefusalRestoresTheLock(t *testing.T) {
+	f := newRemoveGuardFixture(t)
+	lockPath := filepath.Join(f.projA, "gale.lock")
+
+	// Project A starts with a lock naming curl, as a synced project
+	// would.
+	if err := lockfile.WriteV1(lockPath, &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"curl@8.19.0-1"}},
+		},
+		Packages: map[string]lockfile.Package{"curl@8.19.0-1": v1Node()},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	beforeGuardedRemoval = func() {
+		f.lockB([]string{"curl@8.19.0-1"}, map[string]lockfile.Package{
+			"curl@8.19.0-1": v1Node(),
+		})
+	}
+	t.Cleanup(func() { beforeGuardedRemoval = nil })
+
+	if err := removeCmd.RunE(removeCmd, []string{"curl"}); err == nil {
+		t.Fatal("the late claim must refuse the removal")
+	}
+
+	after, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("lock missing after a refused removal: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("a refused removal rewrote gale.lock:\n"+
+			"before:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestRemoveLateRefusalRestoresAbsentLock is the other half of the
+// snapshot: a project that was never locked must be left unlocked.
+//
+// Restoring an EMPTY lock instead of no lock would be worse than
+// doing nothing. An empty document is a lock naming no roots, which
+// is the stale-lock state against a gale.toml that still declares
+// packages, so every later sync in that project would fail on a file
+// a refused removal invented.
+func TestRemoveLateRefusalRestoresAbsentLock(t *testing.T) {
+	f := newRemoveGuardFixture(t)
+	lockPath := filepath.Join(f.projA, "gale.lock")
+
+	beforeGuardedRemoval = func() {
+		f.lockB([]string{"curl@8.19.0-1"}, map[string]lockfile.Package{
+			"curl@8.19.0-1": v1Node(),
+		})
+	}
+	t.Cleanup(func() { beforeGuardedRemoval = nil })
+
+	if err := removeCmd.RunE(removeCmd, []string{"curl"}); err == nil {
+		t.Fatal("the late claim must refuse the removal")
+	}
+
+	if _, err := os.Lstat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		got, _ := os.ReadFile(lockPath)
+		t.Errorf("a refused removal left a lock behind in a project "+
+			"that had none (lstat %v):\n%s", err, got)
+	}
+}
+
+// TestRemoveLateRefusalLeavesAConcurrentWriterAlone: the restore is
+// a compare-and-swap, not a blind write.
+//
+// The snapshot is taken before this command's WriteLock and the
+// refusal lands long after it, so another process can legitimately
+// own gale.lock by then. Undoing our write by discarding theirs
+// trades one inconsistency for a worse one: theirs is the state the
+// machine is actually in. When the token no longer matches, the
+// restore stands down and says so rather than overwriting.
+func TestRemoveLateRefusalLeavesAConcurrentWriterAlone(t *testing.T) {
+	f := newRemoveGuardFixture(t)
+	lockPath := filepath.Join(f.projA, "gale.lock")
+	concurrent := []byte("# written by another process\n")
+
+	beforeGuardedRemoval = func() {
+		f.lockB([]string{"curl@8.19.0-1"}, map[string]lockfile.Package{
+			"curl@8.19.0-1": v1Node(),
+		})
+		// Stand in for the other process, after this command wrote
+		// the lock and before the refusal restores it.
+		if err := os.WriteFile(lockPath, concurrent, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { beforeGuardedRemoval = nil })
+
+	err := removeCmd.RunE(removeCmd, []string{"curl"})
+	if err == nil {
+		t.Fatal("the late claim must refuse the removal")
+	}
+	if !strings.Contains(err.Error(), "changed since this command wrote it") {
+		t.Errorf("refusal must report that the lock was left alone, "+
+			"got: %v", err)
+	}
+	got, rerr := os.ReadFile(lockPath)
+	if rerr != nil {
+		t.Fatalf("read lock: %v", rerr)
+	}
+	if string(got) != string(concurrent) {
+		t.Errorf("the concurrent writer's lock was overwritten:\n%s", got)
+	}
+}
+
+// TestRemoveLateRefusalLeavesAConcurrentManifestAlone is the
+// manifest twin of the lock case. A real concurrent command changes
+// both files, so a compensation that restored gale.toml blindly
+// while correctly leaving gale.lock alone would manufacture exactly
+// the manifest/lock mismatch the lock restore exists to prevent,
+// and would discard the other command's edit on the way.
+func TestRemoveLateRefusalLeavesAConcurrentManifestAlone(t *testing.T) {
+	f := newRemoveGuardFixture(t)
+	cfgPath := filepath.Join(f.projA, "gale.toml")
+	concurrent := []byte("[packages]\n  curl = \"8.19.0\"\n  jq = \"1.8.1\"\n")
+
+	beforeGuardedRemoval = func() {
+		f.lockB([]string{"curl@8.19.0-1"}, map[string]lockfile.Package{
+			"curl@8.19.0-1": v1Node(),
+		})
+		if err := os.WriteFile(cfgPath, concurrent, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Cleanup(func() { beforeGuardedRemoval = nil })
+
+	err := removeCmd.RunE(removeCmd, []string{"curl"})
+	if err == nil {
+		t.Fatal("the late claim must refuse the removal")
+	}
+	got, rerr := os.ReadFile(cfgPath)
+	if rerr != nil {
+		t.Fatalf("read config: %v", rerr)
+	}
+	if string(got) != string(concurrent) {
+		t.Errorf("the concurrent command's gale.toml was overwritten "+
+			"by the compensation:\n%s", got)
+	}
+	if !strings.Contains(err.Error(), "changed since this command wrote it") {
+		t.Errorf("refusal must report the file it left alone, got: %v", err)
+	}
+}
+
+// TestFileSnapshotDistinguishesAbsentFromEmpty pins the P2 finding
+// directly, because the compare that depends on it is only reachable
+// through a race the other tests stage.
+//
+// bytes.Equal(nil, []byte{}) is true, so a snapshot carrying only
+// content cannot tell "no file" from "an empty file". A
+// compare-and-swap built on one would treat a concurrent writer's
+// empty file as still-ours and delete it.
+func TestFileSnapshotDistinguishesAbsentFromEmpty(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "absent")
+	empty := filepath.Join(dir, "empty")
+	if err := os.WriteFile(empty, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	absentSnap, err := readFileSnapshot(missing)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptySnap, err := readFileSnapshot(empty)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if absentSnap.Same(emptySnap) {
+		t.Error("an absent file and an empty one compare equal: a " +
+			"compare-and-swap on this would delete a concurrent " +
+			"writer's empty file believing it was still ours")
+	}
+	if !absentSnap.Same(FileSnapshot{}) {
+		t.Error("the zero snapshot must mean absent")
+	}
+}

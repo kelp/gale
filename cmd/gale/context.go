@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -706,15 +707,62 @@ func (ctx *cmdContext) noteLockRoot(target, name, version string) {
 // any future writer mutating gale.toml inside the section would
 // silently invert into an AB-BA deadlock.
 func (ctx *cmdContext) WriteLock() error {
-	if len(ctx.lockTargets) == 0 {
-		return nil
-	}
-	defer timing.Phase("lockfile-write")()
+	_, err := ctx.writeLockWitnessed()
+	return err
+}
+
+// FileSnapshot is a file's content together with whether it exists,
+// kept apart because they are different facts. bytes.Equal(nil,
+// []byte{}) is true, so a bare []byte cannot tell "no file" from "an
+// empty file", and a compare-and-swap built on one would treat the
+// two as interchangeable and delete state it should have kept.
+type FileSnapshot struct {
+	Exists bool
+	Bytes  []byte
+}
+
+// Same reports whether two snapshots describe the same file state.
+func (f FileSnapshot) Same(other FileSnapshot) bool {
+	return f.Exists == other.Exists && bytes.Equal(f.Bytes, other.Bytes)
+}
+
+// LockWitness is the lockfile's state either side of one WriteLock,
+// both observed INSIDE the critical section that produced the
+// change. That is what makes them usable as compare-and-swap tokens:
+// a Before read before the lock was taken, or an After read once it
+// was released, could each have caught a concurrent writer's file
+// instead of ours, so a later restore keyed on them could discard
+// that writer's work while believing it was undoing its own.
+type LockWitness struct {
+	Path   string
+	Before FileSnapshot
+	After  FileSnapshot
+}
+
+func (ctx *cmdContext) writeLockWitnessed() (LockWitness, error) {
 	lp, err := lockfilePath(ctx.GalePath)
 	if err != nil {
-		return fmt.Errorf("resolving lockfile path: %w", err)
+		return LockWitness{}, fmt.Errorf("resolving lockfile path: %w", err)
 	}
-	return filelock.With(lp+".lock", func() error {
+	w := LockWitness{Path: lp}
+	if len(ctx.lockTargets) == 0 {
+		return w, nil
+	}
+	defer timing.Phase("lockfile-write")()
+	// Assigned, not returned inline. In `return w, f()` the order in
+	// which w and the call are evaluated is unspecified, so the
+	// witness could be copied before the closure fills it in and the
+	// caller would get the pre-write snapshots as its token.
+	werr := filelock.With(lp+".lock", func() error {
+		if w.Before, err = readFileSnapshot(lp); err != nil {
+			return err
+		}
+		defer func() {
+			// Best effort: a read failure here loses the token, and a
+			// lost token makes a later restore stand down, which is the
+			// safe direction.
+			w.After, _ = readFileSnapshot(lp)
+		}()
 		if beforeLockRead != nil {
 			beforeLockRead()
 		}
@@ -763,6 +811,7 @@ func (ctx *cmdContext) WriteLock() error {
 		ctx.mintSkips = append(ctx.mintSkips, res.Skipped...)
 		return nil
 	})
+	return w, werr
 }
 
 // beforeLockRead runs inside WriteLock's critical section, after the
@@ -1103,4 +1152,23 @@ func (ctx *cmdContext) RebuildGenerationCanonical() error {
 // version.
 func (ctx *cmdContext) ResolveVersionedRecipe(name, version string) (*recipe.Recipe, error) {
 	return resolveVersionedRecipe(ctx, name, version)
+}
+
+// readFileSnapshot captures a file's existence and content.
+// os.Lstat decides existence, the same discipline the lockfile
+// readers use: os.ReadFile reports ErrNotExist both for a missing
+// file and for a symlink to a missing target, and only the first
+// means the file is not there.
+func readFileSnapshot(path string) (FileSnapshot, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return FileSnapshot{}, nil
+		}
+		return FileSnapshot{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return FileSnapshot{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return FileSnapshot{Exists: true, Bytes: b}, nil
 }

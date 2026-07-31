@@ -331,17 +331,19 @@ func identityStoreDirs(storeRoot string, ids []string) ([]string, error) {
 // the whole operation, which is why callers must run this BEFORE
 // swapping the generation: after a refusal nothing may have moved.
 //
-// Only the shared farm is guarded. A project-scoped galeDir owns a
-// project-local lib dir that no binary rpath resolves through
-// (rpaths are derived from store dirs, which live under the shared
-// gale home), so mutating it cannot violate any scope's claim.
+// It guards in BOTH scopes. It used to exempt a project-scoped
+// galeDir, on the reasoning that a project owns a local lib dir no
+// binary rpath resolves through. The reasoning was sound and the
+// conclusion was wrong: the rebuild it exempted was pointed at that
+// local dir, but the shared farm was still being mutated on the same
+// operation, per commit, from the installer. Now that population is
+// deferred to this boundary and targets the shared farm at either
+// scope, an exemption here would leave a project's whole-closure
+// mutation unguarded entirely (design revision 6, section 4).
 func guardedRebuildDirs(
 	pkgs map[string]string, galeDir, storeRoot string,
 ) ([]string, error) {
 	proposed := FarmStoreDirs(pkgs, storeRoot)
-	if !samePath(galeDir, filepath.Dir(storeRoot)) {
-		return proposed, nil
-	}
 	return farm.GuardRebuild(proposed, FarmClaimants(storeRoot, galeDir))
 }
 

@@ -476,13 +476,25 @@ func build(pkgs map[string]string, galeDir, storeRoot string, validate func() er
 		// closure. Older revisions may still be in the
 		// store (awaiting `gale gc`), but they aren't on
 		// PATH, aren't claimed, and must not leak into the
-		// farm. Best-effort — a farm error does not
-		// invalidate the generation swap.
+		// farm.
+		//
+		// The swap above is the activation commit point, so a
+		// failure here does not roll the generation back: undoing
+		// a completed swap would be a second fallible transaction
+		// that cannot reliably restore a partially mutated farm.
+		// It is not swallowed either. The farm is what binaries
+		// resolve their dylibs through, so an incomplete one is a
+		// real failure the caller must see, and a line on stderr
+		// inside a direnv hook is invisible (design revision 6,
+		// section 6).
 		if err := farm.Rebuild(
-			active, farm.Dir(galeDir),
+			active, farm.DirFromStoreRoot(storeRoot),
 		); err != nil {
-			fmt.Fprintf(os.Stderr,
-				"farm: rebuild after gen swap: %v\n", err)
+			return fmt.Errorf(
+				"generation %d is active, but the shared library "+
+					"farm is incomplete; run gale sync again to "+
+					"repair it: %w", next, err,
+			)
 		}
 
 		// Write README (best effort, world-readable).

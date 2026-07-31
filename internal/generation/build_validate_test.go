@@ -102,7 +102,9 @@ func TestBuildWithValidate_CallbackErrorMutatesNothing(t *testing.T) {
 
 	// No farm mutation: farm.Rebuild is only reached after the
 	// generation swap, so the farm dir must never even be created.
-	if _, err := os.Stat(farm.Dir(galeDir)); !os.IsNotExist(err) {
+	if _, err := os.Stat(
+		farm.DirFromStoreRoot(storeRoot),
+	); !os.IsNotExist(err) {
 		t.Errorf("farm dir should not exist after a callback error, err=%v", err)
 	}
 

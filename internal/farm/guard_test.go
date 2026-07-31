@@ -341,3 +341,109 @@ func TestFarmGuard_UnreadableClaimantFailsClosed(t *testing.T) {
 		}
 	}
 }
+
+// TestGuardStoreRemoval_ClaimedDirRefusedWithoutFarmLink is the
+// regression that redirecting the project farm at the shared one
+// exposed.
+//
+// dropFromStore performs TWO mutations: it depopulates the farm and
+// it deletes the directory. Only the first was guarded, and
+// GuardDepopulate derives what is being removed from the LIVE farm.
+// That was sound while a project generation rebuild wiped its own
+// local lib dir. Once the rebuild targets the shared farm, it runs
+// before dropFromStore and can remove the very link the guard then
+// looks for, so the guard reads state its own command already
+// rewrote and approves deleting a directory another scope claims.
+//
+// Deleting a claimed directory is a violation whether or not the
+// symlink happens to exist at the instant of the check.
+func TestGuardStoreRemoval_ClaimedDirRefusedWithoutFarmLink(t *testing.T) {
+	root := t.TempDir()
+	storeDir := storeLayout(t, root, "curl", "8.19.0-1",
+		[]string{versionedName("libcurl", "4")})
+	farmDir := filepath.Join(root, "lib")
+	// Farm deliberately empty: the earlier rebuild already wiped it.
+
+	claimant := Claimant{
+		Label:     "project /home/other",
+		StoreDirs: []string{storeDir},
+	}
+
+	err := GuardStoreRemoval(storeDir, farmDir, []Claimant{claimant})
+	if !errors.Is(err, ErrClaimConflict) {
+		t.Fatalf("deleting a claimed store dir must be refused even "+
+			"with no farm link present, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "project /home/other") {
+		t.Errorf("error does not name the claimant: %v", err)
+	}
+}
+
+// TestGuardStoreRemoval_OtherVersionClaimAllowed is the
+// over-refusal twin, and it is why the fix is not "every soname
+// under the directory".
+//
+// The farm resolves libcurl to a DIFFERENT version, so Depopulate
+// leaves that link alone and the claim on it survives the removal.
+// Refusing here would block a scope from collecting an old revision
+// nobody resolves through, which is a verb veto in the same family
+// design §4 forbids.
+func TestGuardStoreRemoval_OtherVersionClaimAllowed(t *testing.T) {
+	root := t.TempDir()
+	oldDir := storeLayout(t, root, "curl", "8.19.0-1",
+		[]string{versionedName("libcurl", "4")})
+	newDir := storeLayout(t, root, "curl", "8.20.0-1",
+		[]string{versionedName("libcurl", "4")})
+
+	farmDir := filepath.Join(root, "lib")
+	if err := Populate(newDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// The claimant resolves libcurl through the NEW dir, which the
+	// removal does not touch.
+	claimant := Claimant{
+		Label:     "project /home/other",
+		StoreDirs: []string{newDir},
+	}
+
+	if err := GuardStoreRemoval(
+		oldDir, farmDir, []Claimant{claimant},
+	); err != nil {
+		t.Fatalf("removing a version nothing claims must be allowed, "+
+			"got: %v", err)
+	}
+}
+
+// TestGuardStoreRemoval_KeepsTheLiveFarmCheck: the directory-claim
+// test is ADDED to the live-farm one, never substituted for it.
+//
+// Here the claimant records a different version of curl, so the
+// exact-directory test passes — but the farm currently resolves the
+// soname through the directory being deleted, so the link vanishes
+// and the claim goes unsatisfied. That is precisely the case
+// GuardDepopulate was written for, and it is the twin of
+// OtherVersionClaimAllowed above: same claimant, same two dirs, and
+// the answer turns entirely on where the farm points.
+func TestGuardStoreRemoval_KeepsTheLiveFarmCheck(t *testing.T) {
+	root := t.TempDir()
+	soname := versionedName("libcurl", "4")
+	oldDir := storeLayout(t, root, "curl", "8.19.0-1", []string{soname})
+	newDir := storeLayout(t, root, "curl", "8.20.0-1", []string{soname})
+
+	farmDir := filepath.Join(root, "lib")
+	if err := Populate(oldDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	claimant := Claimant{
+		Label:     "project /home/other",
+		StoreDirs: []string{newDir},
+	}
+
+	err := GuardStoreRemoval(oldDir, farmDir, []Claimant{claimant})
+	if !errors.Is(err, ErrClaimConflict) {
+		t.Fatalf("removal that deletes the farm entry a claimant "+
+			"resolves must still be refused, got: %v", err)
+	}
+}

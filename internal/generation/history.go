@@ -148,19 +148,29 @@ func Rollback(galeDir, storeRoot string, target int) error {
 			return err
 		}
 
-		// Rebuild the farm from the rolled-to generation's
-		// package set so binaries resolve the dylib
-		// revisions they were built against, not the ones
-		// the rolled-from generation installed (gh#44),
+		// Rebuild the SHARED farm from the rolled-to
+		// generation's package set so binaries resolve the
+		// dylib revisions they were built against, not the
+		// ones the rolled-from generation installed (gh#44),
 		// plus every other scope's claimed closure.
-		// Mirrors Build's post-swap farm rebuild.
-		// Best-effort — a farm error does not invalidate
-		// the swap.
+		//
+		// The shared farm, not this scope's gale dir: pointing
+		// it at a project's own lib dir is why gh#44's repair
+		// only ever worked at global scope. A project rollback
+		// wiped a directory nothing resolves through and left
+		// the farm its binaries actually use untouched.
+		//
+		// Mirrors Build's post-swap rebuild, including the
+		// failure semantics: the swap stands, the error is
+		// returned.
 		if err := farm.Rebuild(
-			active, farm.Dir(galeDir),
+			active, farm.DirFromStoreRoot(storeRoot),
 		); err != nil {
-			fmt.Fprintf(os.Stderr,
-				"farm: rebuild after rollback: %v\n", err)
+			return fmt.Errorf(
+				"generation %d is active, but the shared library "+
+					"farm is incomplete; run gale sync to repair "+
+					"it: %w", target, err,
+			)
 		}
 		return nil
 	})

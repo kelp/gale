@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -120,17 +121,22 @@ var removeCmd = &cobra.Command{
 		// AFTER the edit — a package this scope still declares is
 		// "referenced" and its store dir is kept — so the guard that
 		// can refuse the whole operation cannot run before the write.
-		priorConfig, err := os.ReadFile(ctx.GalePath)
+		// Witnessed, and under ONE hold of the config lock. Both
+		// states are captured beside the edit that produced them, so
+		// a refusal below can undo it without restoring over a
+		// concurrent command's manifest: a token read before the lock,
+		// or after its release, could have been that command's file
+		// rather than ours.
+		//
+		// One hold rather than one per section also closes a smaller
+		// gap: removing from two sections used to take the lock twice,
+		// so another command could observe the package gone from one
+		// section and still present in the other.
+		priorConfig, wroteConfig, err := config.RemovePackageSections(
+			ctx.GalePath, sections, name,
+		)
 		if err != nil {
-			return fmt.Errorf("reading config: %w", err)
-		}
-		for _, section := range sections {
-			if err := config.RemovePackage(
-				ctx.GalePath, section, name,
-			); err != nil {
-				return fmt.Errorf("removing from config: %w",
-					err)
-			}
+			return fmt.Errorf("removing from config: %w", err)
 		}
 
 		// Decide the store removal before the generation
@@ -152,7 +158,7 @@ var removeCmd = &cobra.Command{
 				// the store holds a package gale.toml no longer names
 				// and the obvious retry reports it absent.
 				return errors.Join(
-					err, atomicfile.Write(ctx.GalePath, priorConfig),
+					err, config.RestoreUnderLock(ctx.GalePath, priorConfig, wroteConfig),
 				)
 			}
 		}
@@ -166,10 +172,17 @@ var removeCmd = &cobra.Command{
 		for _, section := range sections {
 			ctx.noteLockTarget(section)
 		}
-		if err := ctx.WriteLock(); err != nil {
+		// Witnessed, because the refusal below may have to undo this.
+		// Both tokens are observed inside WriteLock's own critical
+		// section: one taken before the lock, or read after it was
+		// released, could have caught a concurrent writer's file
+		// instead of ours, and a restore keyed on that would discard
+		// that writer's work while believing it was undoing its own.
+		lockWitness, err := ctx.writeLockWitnessed()
+		if err != nil {
 			return errors.Join(
 				fmt.Errorf("writing lock: %w", err),
-				atomicfile.Write(ctx.GalePath, priorConfig),
+				config.RestoreUnderLock(ctx.GalePath, priorConfig, wroteConfig),
 			)
 		}
 		out.Info(fmt.Sprintf(
@@ -189,7 +202,25 @@ var removeCmd = &cobra.Command{
 		switch {
 		case dropStoreDir != "":
 			if err := dropFromStore(ctx, name, version, out); err != nil {
-				return err
+				// The authoritative guard runs beside the deletion, so
+				// a claim registered after the early check refuses
+				// here — with the manifest already rewritten and the
+				// generation already rebuilt above. Undo both.
+				//
+				// The generation rebuild is not cosmetic in that undo.
+				// It is what restores the farm: the rebuild above wiped
+				// the shared farm and repopulated it from the claimants
+				// known at the time, which did not include the late one,
+				// so the entry that scope resolves through is gone. Re-
+				// running it now unions the claim in and puts the link
+				// back. Leaving it would break another scope's binaries
+				// as the price of a removal that did not even happen.
+				return errors.Join(
+					err,
+					config.RestoreUnderLock(ctx.GalePath, priorConfig, wroteConfig),
+					restoreLock(lockWitness),
+					ctx.RebuildGeneration(),
+				)
 			}
 			out.Info(fmt.Sprintf("Removed %s@%s from store",
 				name, version))
@@ -216,7 +247,12 @@ func init() {
 }
 
 // guardDepopulate runs the cross-project farm claimant guard for a
-// store dir about to lose its farm entries.
+// store dir about to lose its farm entries AND be deleted. It goes
+// through GuardStoreRemoval rather than GuardDepopulate because
+// those are two mutations: the generation rebuild at line 185 can
+// already have wiped the farm link by the time this runs, and a
+// guard that only reads the live farm would then approve deleting a
+// directory another scope still claims.
 //
 // Claimants are the other scopes plus the initiating scope's own
 // resulting closure. Without the second, removing a package another
@@ -236,7 +272,7 @@ func guardDepopulate(ctx *cmdContext, storeDir, name string) error {
 	if err != nil {
 		return err
 	}
-	return farm.GuardDepopulate(
+	return farm.GuardStoreRemoval(
 		storeDir, farmDir,
 		append(generation.FarmClaimants(ctx.StoreRoot, ctx.GaleDir), self),
 	)
@@ -452,4 +488,54 @@ func formatSections(sections []string) string {
 		}
 	}
 	return strings.Join(parts, ", ")
+}
+
+// restoreLock puts the lockfile back to what it was before this
+// command wrote it, but only while the file is still exactly what
+// this command left there.
+//
+// Both tokens come from inside WriteLock's critical section
+// (LockWitness), so "still ours" is a real claim rather than an
+// optimistic one. When it does not hold, another command owns the
+// file now: undoing our write by discarding theirs trades one
+// inconsistency for a worse one, because theirs is the state the
+// machine is actually in. The restore then stands down and reports
+// which file it deliberately left alone.
+func restoreLock(w LockWitness) error {
+	if w.Path == "" {
+		return nil
+	}
+	return filelock.With(w.Path+".lock", func() error {
+		current, err := readFileSnapshot(w.Path)
+		if err != nil {
+			return err
+		}
+		if !current.Same(w.After) {
+			return fmt.Errorf(
+				"%s changed since this command wrote it, so it was "+
+					"left as it is", w.Path,
+			)
+		}
+		return applySnapshot(w.Path, w.Before)
+	})
+}
+
+// applySnapshot writes a snapshot back, restoring absence by
+// removing rather than by writing an empty file. The two are
+// different states: an empty gale.lock names no roots, which is the
+// stale-lock state against a manifest that still declares packages,
+// so a compensation that invented one would leave the project worse
+// than the operation it is undoing.
+func applySnapshot(path string, snap FileSnapshot) error {
+	if !snap.Exists {
+		if err := os.Remove(path); err != nil &&
+			!errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("restoring absent %s: %w", path, err)
+		}
+		return nil
+	}
+	if err := atomicfile.Write(path, snap.Bytes); err != nil {
+		return fmt.Errorf("restoring %s: %w", path, err)
+	}
+	return nil
 }

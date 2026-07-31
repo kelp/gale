@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
@@ -688,6 +689,127 @@ func AddPackage(path, host, name, version string) error {
 		}
 		content = setTOMLStringKey(content, section, name, version)
 		return atomicfile.Write(path, content)
+	})
+}
+
+// FileState is a file's content together with whether it exists.
+// The two are kept apart because bytes.Equal(nil, []byte{}) is true,
+// so content alone cannot distinguish "no file" from "an empty
+// file", and a compare-and-swap built on it would treat the two as
+// interchangeable.
+type FileState struct {
+	Exists bool
+	Bytes  []byte
+}
+
+// Same reports whether two states describe the same file.
+func (f FileState) Same(other FileState) bool {
+	return f.Exists == other.Exists && bytes.Equal(f.Bytes, other.Bytes)
+}
+
+// RemovePackageSections removes name from every listed section under
+// ONE hold of the config lock, and reports the file either side of
+// the edit.
+//
+// One hold rather than one per section: a caller removing from two
+// sections used to take and release the lock twice, so another
+// command could land a manifest edit between them and see a file
+// with the package gone from one section and present in the other.
+//
+// The two states are the point. A caller whose operation can still
+// be refused after this edit needs a token that is atomic with the
+// edit to undo it safely; one read before the lock or after its
+// release could have captured a concurrent writer's file instead,
+// and restoring against that would discard their work.
+//
+// Returns ErrPackageNotFound only when NO section contained the
+// package, matching RemovePackage's contract for the single-section
+// case while letting a multi-section removal tolerate a section that
+// never had it.
+func RemovePackageSections(
+	path string, sections []string, name string,
+) (before, after FileState, err error) {
+	err = withFileLock(path, func() error {
+		before, err = readFileState(path)
+		if err != nil {
+			return err
+		}
+		content := before.Bytes
+		found := false
+		for _, host := range sections {
+			section := packagesPath()
+			if host != "" {
+				section = hostPackagesPath(host)
+				content = normalizeLegacyHostHeader(content, host)
+			}
+			modified, ok := deleteTOMLKey(content, section, name)
+			if !ok {
+				continue
+			}
+			content = modified
+			found = true
+		}
+		if !found {
+			return ErrPackageNotFound
+		}
+		if werr := atomicfile.Write(path, content); werr != nil {
+			return werr
+		}
+		after, err = readFileState(path)
+		return err
+	})
+	return before, after, err
+}
+
+// readFileState captures a file's existence and content. os.Lstat
+// decides existence: os.ReadFile reports ErrNotExist both for a
+// missing file and for a symlink to a missing target, and only the
+// first means the file is not there.
+func readFileState(path string) (FileState, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return FileState{}, nil
+		}
+		return FileState{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return FileState{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return FileState{Exists: true, Bytes: b}, nil
+}
+
+// RestoreUnderLock puts path back to prior, but only while the file
+// is still exactly what the caller left there. It runs under the
+// same config lock the writers take, so the compare and the write
+// cannot be split by another command.
+//
+// It takes no other lock, so it introduces no ordering with the
+// lockfile lock and therefore no AB-BA edge: a caller undoing both
+// files does so one lock at a time.
+func RestoreUnderLock(path string, prior, wrote FileState) error {
+	return withFileLock(path, func() error {
+		current, err := readFileState(path)
+		if err != nil {
+			return err
+		}
+		if !current.Same(wrote) {
+			return fmt.Errorf(
+				"%s changed since this command wrote it, so it was "+
+					"left as it is", path,
+			)
+		}
+		if !prior.Exists {
+			if err := os.Remove(path); err != nil &&
+				!errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("restoring absent %s: %w", path, err)
+			}
+			return nil
+		}
+		if err := atomicfile.Write(path, prior.Bytes); err != nil {
+			return fmt.Errorf("restoring %s: %w", path, err)
+		}
+		return nil
 	})
 }
 

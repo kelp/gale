@@ -214,7 +214,7 @@ func TestExtractBuildInPlace_FarmConflictFails(t *testing.T) {
 	); err != nil {
 		t.Fatalf("write dylib: %v", err)
 	}
-	if err := farm.Populate(aDir, farm.Dir(galeDir)); err != nil {
+	if err := farm.Populate(aDir, farm.DirFromStoreRoot(storeRoot)); err != nil {
 		t.Fatalf("seed farm: %v", err)
 	}
 

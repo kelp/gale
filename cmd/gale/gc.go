@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -92,6 +93,18 @@ var gcCmd = &cobra.Command{
 		// Rebuild generations when the active gen still links a
 		// superseded orphan revision, so retention and pruning see
 		// recipe-canonical symlinks (gh#137).
+		//
+		// A failure here is warned about AND collected. It used to be
+		// warned about only, which was defensible while the rebuild
+		// was a tidy-up whose failure changed nothing a user could
+		// observe. Since design revision 6 the rebuild also
+		// reconciles the shared library farm and returns when that is
+		// left incomplete, and an incomplete farm means binaries
+		// cannot load their dylibs. Swallowing it would let gc exit 0
+		// having broken exactly what the loud-failure rule exists to
+		// surface. gc still finishes its own work first: sweeping and
+		// pruning are independent of this.
+		var rebuildErrs []error
 		if !dryRun && pinResolve != nil {
 			if globalDir != "" {
 				globalCfg := filepath.Join(globalDir, "gale.toml")
@@ -103,6 +116,9 @@ var gcCmd = &cobra.Command{
 					); err != nil {
 						out.Warn(fmt.Sprintf(
 							"rebuilding global generation: %v", err,
+						))
+						rebuildErrs = append(rebuildErrs, fmt.Errorf(
+							"rebuilding global generation: %w", err,
 						))
 					}
 				}
@@ -116,6 +132,9 @@ var gcCmd = &cobra.Command{
 					); err != nil {
 						out.Warn(fmt.Sprintf(
 							"rebuilding project generation: %v", err,
+						))
+						rebuildErrs = append(rebuildErrs, fmt.Errorf(
+							"rebuilding project generation: %w", err,
 						))
 					}
 				}
@@ -195,9 +214,11 @@ var gcCmd = &cobra.Command{
 			))
 		}
 		if failedPkgs > 0 {
-			return fmt.Errorf("%d package version(s) could not be removed", failedPkgs)
+			rebuildErrs = append(rebuildErrs, fmt.Errorf(
+				"%d package version(s) could not be removed", failedPkgs,
+			))
 		}
-		return nil
+		return errors.Join(rebuildErrs...)
 	},
 }
 
