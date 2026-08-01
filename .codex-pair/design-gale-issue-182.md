@@ -1016,13 +1016,94 @@ remove; if the gate rejects it, the marker buys nothing.
 
 Scope limits. The exception applies only to a directory with no
 provenance file at all, **and only when no other lock gale can
-read disagrees with it**. Before replacing, the operation
-consults every readable active v1 lock it knows about, the
-registered projects and the global scope alike; replacement
-proceeds only where each either names the same hash for that
-identity or does not reference it at all. A lock that names a
-different hash is a conflict, not a migration. A registered
-project that is known but unreadable fails closed.
+read disagrees with it**.
+
+Before replacing, the operation consults every active lockfile it
+knows about, the registered projects and the global scope alike, in
+either schema. Replacement proceeds only where each either names the
+same hash for that identity or does not reference it at all. A scope
+gale knows about and cannot read vetoes the replacement: the scan
+exists to find disagreement, and a lock that will not parse is the
+one case where gale cannot tell whether it disagrees. A v1 claim is
+read for the current platform; a legacy claim is platformless.
+
+A legacy lock is consulted rather than skipped or failed closed on.
+A legacy SHA is treated as a conservative, platformless byte claim:
+equality proves agreement on bytes, and disagreement vetoes
+replacement even though it may represent another platform and
+therefore over-refuse. Over-refusal is safer than destroying bytes
+another scope names. A legacy entry whose package matches and whose
+non-empty sha256 differs is a conflict. An absent entry, an entry
+for another version, and an empty sha256 contribute **no explicit
+hash claim** — which is not the same as contributing nothing: the
+same scope may still reference the directory through its active
+closure, and a reference whose required bytes are unknown vetoes on
+its own.
+
+Versions compare through VersionMatches, so a bare "1.7" matches a
+canonical "1.7-1". Skipping legacy locks would discard a genuine
+statement about bytes; failing closed on every legacy lock would
+deadlock upgrade day, since no scope can mint a v1 lock before a
+replacement has happened.
+
+A legacy lock records roots only, so a transitive dependency carries
+no hash. That reference is still visible: a scope's active closure
+is derived from its generation links and each directory's
+`.gale-deps.toml`. A directory inside another scope's active closure
+for which that scope supplies no hash is a known reference with
+unknown required bytes, and refuses.
+
+The closure scan must be authoritative about its own completeness,
+which requires a reader stricter than either existing one.
+`depsmeta.Has` is not sufficient: it uses `os.Stat`, so it follows
+symlinks and says nothing about whether the target is a regular file
+or parses. `FarmStoreDirsStrict` is not sufficient either: it
+rejects unreadable metadata while `depsmeta.Read` treats missing
+metadata as an empty closure. The scan therefore uses an
+authoritative reader built on `os.Lstat` that requires a regular
+file and strict semantic parsing. Missing, unreadable, non-regular
+or malformed metadata all mean **closure incomplete**, and a legacy
+active scope containing any such directory vetoes per-scope
+destructive replacement generally. A valid empty file is an
+explicitly recorded empty closure; an absent file is not. It is not
+a verified leaf: strict parsing verifies the metadata's
+representation, not its authenticity, and the file sits inside the
+very unprovenanced directory being replaced.
+
+**The coordinated escape.** Those rules make per-scope replacement
+refuse on upgrade day, which is correct and would be circular
+without an escape. `gale migrate` is therefore machine-wide, not
+per-scope: the store is machine-wide already, so a per-scope migrate
+was the wrong unit and is what manufactures the race. To qualify it
+must enumerate every known scope and the entire relevant store
+before any mutation; fail before replacing on unreadable state or an
+explicit hash disagreement, where disagreement covers **every
+recorded and proposed candidate hash**, so two scopes resolving
+different artifacts for one identity conflict even when neither lock
+records a hash; treat all scopes as participants against one
+proposed machine-wide state rather than exempting them one at a
+time; revalidate concurrent lock and registry changes before each
+destructive commit; and cover every unprovenanced binary-method
+directory, not merely the closure recoverable from legacy metadata.
+
+`gale lock --refresh` stays per-scope and gains no all-scopes mode.
+Refresh ratifies a recipe change, and applying that across unrelated
+manifests, targets and dependency roles is too broad; a coordinated
+refresh would deserve its own command and plan semantics. When
+`--refresh` refuses because another scope is still legacy, its error
+names the remaining sequence, which migrate does not complete on its
+own: run `gale migrate`, rebuild the source-method packages it
+lists, run plain `gale lock` in every remaining legacy scope, then
+retry `--refresh`.
+
+**What the scan does not prevent.** Replacement can break later
+accesses through already-open shells or running processes, in any
+scope, legacy scopes included. This is the same exposure §13 accepts
+for open shells in the v1 case, and the alternative does not protect
+them either: it preserves an unprovenanced canonical directory,
+indefinitely.
+What the scan prevents is a scope's recorded REQUIREMENT being
+contradicted, not a running process being interrupted.
 
 The initiating scope is exempt from its own veto, evaluated
 against the lock the operation is about to write rather than the
