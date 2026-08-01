@@ -188,6 +188,16 @@ func exitCodeStoreCases() []exitCodeCase {
 			want: exitLockIntegrity,
 		},
 		{
+			// Design §13's cross-scope veto: another project's lock
+			// requires different bytes at the same store path. Not
+			// class 4 — regenerating the initiating scope's lock cannot
+			// change what another scope requires, so a pipeline that
+			// retried on it would loop forever.
+			name: "another scope requires different bytes",
+			err:  fmt.Errorf("migrate: %w", errScopeDisagrees),
+			want: exitLockIntegrity,
+		},
+		{
 			name: "activation drift",
 			err:  fmt.Errorf("gate: %w", activation.ErrDrift),
 			want: exitActivationDrift,

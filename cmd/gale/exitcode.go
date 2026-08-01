@@ -83,6 +83,13 @@ func exitCodeFor(err error) int {
 		// replacement: nothing a pipeline can regenerate, and a human
 		// has to decide whether upstream moved or the recipe did.
 		return exitLockIntegrity
+	case errors.Is(err, errScopeDisagrees):
+		// Two scopes require two different sets of bytes at one store
+		// path (design §13's cross-scope veto). The store cannot hold
+		// both, and rewriting either lock does not change what the
+		// other one requires, so this is never something a pipeline
+		// regenerates its way out of.
+		return exitLockIntegrity
 	case errors.Is(err, errUnprovenancedStoreDir):
 		// Section 8's "store-dir provenance conflict": the canonical
 		// directory holds bytes nothing attests. Rewriting the lock

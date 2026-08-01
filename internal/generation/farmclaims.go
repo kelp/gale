@@ -51,8 +51,11 @@ import (
 // set, and the guard fails closed on it. Scopes with nothing to
 // claim are dropped.
 func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
-	galeHome := filepath.Dir(storeRoot)
-	regProjects, err := projects.List(galeHome)
+	// One definition of the scope set, shared with the migration veto
+	// (design §13), which asks a different question of exactly these
+	// scopes. Two walks would be two chances to miss one, and a missed
+	// scope does not fail here — it silently approves.
+	scopes, err := projects.Scopes(filepath.Dir(storeRoot))
 	if err != nil {
 		// The registry names scopes the walk cannot see without it,
 		// so an unreadable registry fails the guard closed rather
@@ -60,40 +63,23 @@ func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 		return []farm.Claimant{{Label: "the project registry", Err: err}}
 	}
 
-	scopes := []struct {
-		label, galeDir, lockPath string
-	}{{
-		label:    "the global scope",
-		galeDir:  galeHome,
-		lockPath: filepath.Join(galeHome, "gale.lock"),
-	}}
-	for _, proj := range regProjects {
-		scopes = append(scopes, struct {
-			label, galeDir, lockPath string
-		}{
-			label:    "project " + proj,
-			galeDir:  filepath.Join(proj, ".gale"),
-			lockPath: filepath.Join(proj, "gale.lock"),
-		})
-	}
-
 	host := config.CurrentHost()
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	var out []farm.Claimant
 	for _, s := range scopes {
-		if samePath(s.galeDir, selfGaleDir) {
+		if samePath(s.GaleDir, selfGaleDir) {
 			continue
 		}
 		dirs, err := scopeClosureDirs(
-			s.lockPath, s.galeDir, storeRoot, host, platform,
+			s.LockPath, s.GaleDir, storeRoot, host, platform,
 		)
 		if err != nil {
-			out = append(out, farm.Claimant{Label: s.label, Err: err})
+			out = append(out, farm.Claimant{Label: s.Label, Err: err})
 			continue
 		}
 		if len(dirs) > 0 {
 			out = append(out, farm.Claimant{
-				Label: s.label, StoreDirs: dirs,
+				Label: s.Label, StoreDirs: dirs,
 			})
 		}
 	}

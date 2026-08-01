@@ -268,6 +268,14 @@ func CheckIdentity(name, version string) error {
 	return nil
 }
 
+// SafeComponent reports whether s addresses exactly one directory
+// entry. Exported for readers that validate a path component without
+// a full canonical identity to hand — dependency metadata records a
+// bare version and its revision separately, and those values are
+// joined onto the store root, so a value that is not one component
+// escapes the store.
+func SafeComponent(s string) bool { return safeComponent(s) }
+
 // safeComponent reports whether s addresses exactly one directory
 // entry: non-empty, no separator, and not a traversal element.
 func safeComponent(s string) bool {

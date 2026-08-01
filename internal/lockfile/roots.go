@@ -362,3 +362,64 @@ func staleParts(unlocked, orphaned, repinned []string) []string {
 	}
 	return parts
 }
+
+// CheckReferences reports whether every identity the document names
+// resolves to a package node: every root of every target, and every
+// runtime and build edge of every artifact.
+//
+// Load validates syntax and schema, not coherence, so a lock that
+// roots jq@1.7-1 while omitting that node parses cleanly. That is
+// harmless for a consumer asking "what does this lock say about X",
+// which will fail later when it walks the closure. It is not harmless
+// for one asking "does this lock reference X at all", because an
+// incomplete document answers "no" for precisely the identity it is
+// missing — and design §13's migration veto reads that "no" as
+// permission to destroy a store directory.
+//
+// Host- and platform-independent by design. A node legitimately
+// carries artifacts for only some platforms (§11's other-platform
+// minting), and an overlay target legitimately applies to no host in
+// hand, but a referenced node must exist regardless of who is asking.
+func (lf *V1) CheckReferences() error {
+	refs := func(t *Target) []string {
+		if t == nil {
+			return nil
+		}
+		return t.Roots
+	}
+	var named []string
+	named = append(named, refs(lf.Targets.Default)...)
+	for _, k := range slices.Sorted(maps.Keys(lf.Targets.Host)) {
+		target := lf.Targets.Host[k]
+		named = append(named, refs(&target)...)
+	}
+	for _, key := range slices.Sorted(maps.Keys(lf.Packages)) {
+		pkg := lf.Packages[key]
+		for _, plat := range slices.Sorted(maps.Keys(pkg.Artifacts)) {
+			art := pkg.Artifacts[plat]
+			named = append(named, art.RuntimeDeps...)
+			named = append(named, art.BuildDeps...)
+		}
+	}
+	// Every package key is itself an identity, checked even when
+	// nothing references it: a key that cannot address a store
+	// directory makes the document's silence about a canonical
+	// identity meaningless, and callers read that silence as a
+	// complete answer.
+	for _, key := range slices.Sorted(maps.Keys(lf.Packages)) {
+		if _, _, err := ParseIdentity(key); err != nil {
+			return fmt.Errorf("package key %q: %w", key, err)
+		}
+	}
+	// Every reference is now covered by the two checks together: one
+	// that is a key was validated above, and one that is not fails
+	// here. A third check on the referenced ids themselves would be
+	// unreachable.
+	for _, id := range named {
+		if _, ok := lf.Packages[id]; !ok {
+			return fmt.Errorf("%w: %s is referenced but not defined",
+				ErrMissingNode, id)
+		}
+	}
+	return nil
+}

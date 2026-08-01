@@ -50,13 +50,36 @@ func configInGaleDir(configPath, galeDir string) bool {
 // directory, resolving symlinks first so macOS /var vs
 // /private/var spellings compare equal.
 func sameDir(a, b string) bool {
-	if ra, err := filepath.EvalSymlinks(a); err == nil {
-		a = ra
+	return resolveDeepest(a) == resolveDeepest(b)
+}
+
+// resolveDeepest resolves the longest existing prefix of path and
+// re-joins whatever remains.
+//
+// EvalSymlinks fails outright on a path that does not exist, and a
+// plain fallback to the raw string is not good enough: on macOS the
+// two spellings of a not-yet-created directory then compare unequal
+// even though they name the same place. That matters for the paths
+// this is asked about — a scope's .gale directory does not exist until
+// its first sync, and design §13's migration veto exempts the
+// initiating scope by comparing exactly that path, so a false negative
+// makes the scope veto itself.
+func resolveDeepest(path string) string {
+	var tail []string
+	cur := path
+	for {
+		if resolved, err := filepath.EvalSymlinks(cur); err == nil {
+			return filepath.Join(append([]string{resolved}, tail...)...)
+		}
+		parent := filepath.Dir(cur)
+		if parent == cur {
+			// Reached the root without finding anything that exists;
+			// the raw spelling is the best answer available.
+			return path
+		}
+		tail = append([]string{filepath.Base(cur)}, tail...)
+		cur = parent
 	}
-	if rb, err := filepath.EvalSymlinks(b); err == nil {
-		b = rb
-	}
-	return a == b
 }
 
 func defaultStoreRoot() string {

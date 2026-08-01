@@ -7,8 +7,6 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/BurntSushi/toml"
-
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/lockgraph"
@@ -192,17 +190,12 @@ func strictDeps(stagingDir string) ([]depsmeta.ResolvedDep, bool) {
 	if err != nil {
 		return nil, false
 	}
-	var md depsmeta.Metadata
-	meta, err := toml.Decode(string(data), &md)
-	if err != nil || len(meta.Undecoded()) > 0 {
-		return nil, false
-	}
-	for _, d := range md.Deps {
-		if d.Name == "" || d.Version == "" || d.Revision < 0 {
-			return nil, false
-		}
-	}
-	return md.Deps, true
+	// One parser, shared with depsmeta.ReadStrict. The absence policy
+	// differs and stays here — in staging an absent file is a complete
+	// answer, while §13's closure scan reads it as unknown — but two
+	// copies of the parse would be two chances for one to drift laxer
+	// than the other.
+	return depsmeta.ParseStrict(data)
 }
 
 // depEdges converts recorded dependencies into graph edges of one

@@ -486,3 +486,167 @@ func TestCheckDeclaredUnknownRootOriginDoesNotAssumeDefault(t *testing.T) {
 			"got %q", err)
 	}
 }
+
+// A lock can parse cleanly and still be incoherent: a root or a
+// dependency edge naming a node the document omits. Load validates
+// syntax and schema, not graph completeness, so nothing catches it
+// until something walks the closure.
+//
+// That gap is dangerous for any consumer whose question is "does this
+// lock reference X", because an incomplete document answers "no" for
+// the very identity it is missing. Design §13's migration veto asks
+// exactly that question before destroying a store directory.
+func TestCheckReferencesRejectsARootWithNoNode(t *testing.T) {
+	lf := &V1{
+		Version:  SchemaVersion,
+		Targets:  Targets{Default: &Target{Roots: []string{"jq@1.7-1"}}},
+		Packages: map[string]Package{},
+	}
+	err := lf.CheckReferences()
+	if !errors.Is(err, ErrMissingNode) {
+		t.Fatalf("want ErrMissingNode, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "jq@1.7-1") {
+		t.Errorf("error must name the missing node, got %q", err)
+	}
+}
+
+// The same for an edge, which is the likelier shape: a node exists,
+// and one of its recorded dependencies does not.
+func TestCheckReferencesRejectsAnEdgeWithNoNode(t *testing.T) {
+	lf := &V1{
+		Version: SchemaVersion,
+		Targets: Targets{Default: &Target{Roots: []string{"jq@1.7-1"}}},
+		Packages: map[string]Package{
+			"jq@1.7-1": {Artifacts: map[string]Artifact{
+				"darwin/arm64": {
+					SHA256:      "aa",
+					Method:      "binary",
+					RuntimeDeps: []string{"oniguruma@6.9-1"},
+				},
+			}},
+		},
+	}
+	err := lf.CheckReferences()
+	if !errors.Is(err, ErrMissingNode) {
+		t.Fatalf("want ErrMissingNode, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "oniguruma@6.9-1") {
+		t.Errorf("error must name the missing node, got %q", err)
+	}
+}
+
+// Build edges count too. A source node records what it was built
+// from, and a lock that names a build dependency it does not define
+// is as incomplete as one missing a runtime dependency.
+func TestCheckReferencesRejectsAMissingBuildDep(t *testing.T) {
+	lf := &V1{
+		Version: SchemaVersion,
+		Targets: Targets{Default: &Target{Roots: []string{"jq@1.7-1"}}},
+		Packages: map[string]Package{
+			"jq@1.7-1": {Artifacts: map[string]Artifact{
+				"darwin/arm64": {
+					SHA256:    "aa",
+					Method:    "source",
+					BuildDeps: []string{"autoconf@2.72-1"},
+				},
+			}},
+		},
+	}
+	if err := lf.CheckReferences(); !errors.Is(err, ErrMissingNode) {
+		t.Fatalf("want ErrMissingNode for a build dep, got %v", err)
+	}
+}
+
+// A complete document passes, including one whose nodes carry
+// artifacts for platforms this machine will never ask about: the
+// check is about references resolving, not about any one platform
+// being present.
+func TestCheckReferencesAcceptsACompleteDocument(t *testing.T) {
+	lf := &V1{
+		Version: SchemaVersion,
+		Targets: Targets{
+			Default: &Target{Roots: []string{"jq@1.7-1"}},
+			Host:    map[string]Target{"work-*": {Roots: []string{"rg@14-1"}}},
+		},
+		Packages: map[string]Package{
+			"jq@1.7-1": {Artifacts: map[string]Artifact{
+				"darwin/arm64": {
+					SHA256: "aa", Method: "binary",
+					RuntimeDeps: []string{"oniguruma@6.9-1"},
+				},
+				"linux/amd64": {SHA256: "bb", Method: "binary"},
+			}},
+			"oniguruma@6.9-1": {Artifacts: map[string]Artifact{
+				"darwin/arm64": {SHA256: "cc", Method: "source"},
+			}},
+			"rg@14-1": {Artifacts: map[string]Artifact{
+				"darwin/arm64": {SHA256: "dd", Method: "binary"},
+			}},
+		},
+	}
+	if err := lf.CheckReferences(); err != nil {
+		t.Errorf("complete document rejected: %v", err)
+	}
+}
+
+// Coherence is not only "every referenced string is a key". A lock
+// rooting and defining "jq@1.7" — no revision — is internally
+// consistent by that measure while naming no canonical identity at
+// all, so a consumer asking about "jq@1.7-1" gets "not referenced"
+// and may conclude the document is a complete statement of what the
+// scope requires. It is not: it cannot address a store directory.
+func TestCheckReferencesRejectsANoncanonicalIdentity(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		lf   *V1
+	}{
+		{
+			name: "root and node with no revision",
+			lf: &V1{
+				Version: SchemaVersion,
+				Targets: Targets{Default: &Target{Roots: []string{"jq@1.7"}}},
+				Packages: map[string]Package{
+					"jq@1.7": {Artifacts: map[string]Artifact{
+						"darwin/arm64": {SHA256: "aa", Method: "binary"},
+					}},
+				},
+			},
+		},
+		{
+			name: "package key is not an identity",
+			lf: &V1{
+				Version: SchemaVersion,
+				Targets: Targets{Default: &Target{Roots: []string{"jq@1.7-1"}}},
+				Packages: map[string]Package{
+					"jq@1.7-1": {Artifacts: map[string]Artifact{
+						"darwin/arm64": {SHA256: "aa", Method: "binary"},
+					}},
+					"bare-name": {},
+				},
+			},
+		},
+		{
+			name: "edge is not an identity",
+			lf: &V1{
+				Version: SchemaVersion,
+				Targets: Targets{Default: &Target{Roots: []string{"jq@1.7-1"}}},
+				Packages: map[string]Package{
+					"jq@1.7-1": {Artifacts: map[string]Artifact{
+						"darwin/arm64": {
+							SHA256: "aa", Method: "binary",
+							RuntimeDeps: []string{"oniguruma@6.9"},
+						},
+					}},
+					"oniguruma@6.9": {},
+				},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if err := tt.lf.CheckReferences(); err == nil {
+				t.Error("a noncanonical identity must not read as coherent")
+			}
+		})
+	}
+}
