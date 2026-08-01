@@ -56,6 +56,12 @@ type Request struct {
 	// Declared is the effective gale.toml package set for Host, which
 	// the locked roots must agree with exactly.
 	Declared map[string]string
+	// DeclaredOrigin maps each declared package to the manifest
+	// section supplying its effective pin (config.PackageOrigins).
+	// Optional: it only sharpens the stale-lock remedy, and a caller
+	// that omits it gets the general wording rather than a wrong
+	// command.
+	DeclaredOrigin map[string]string
 	// Resolve returns the recipe for one canonical identity.
 	Resolve func(name, version string) (*recipe.Recipe, error)
 }
@@ -115,11 +121,16 @@ func Build(req Request) (*Plan, error) {
 	if err := checkPlatform(req.Platform); err != nil {
 		return nil, err
 	}
-	roots, err := req.Lock.EffectiveRoots(req.Host)
+	roots, origin, err := req.Lock.EffectiveRootsWithOrigin(req.Host)
 	if err != nil {
 		return nil, err
 	}
-	if err := lockfile.CheckDeclared(roots, req.Declared); err != nil {
+	// With the origin, so a stale-lock refusal names the exact `gale
+	// lock` invocation. This error is what direnv prints on cd.
+	if err := lockfile.CheckDeclared(roots, req.Declared, lockfile.Origins{
+		Roots:    origin,
+		Declared: req.DeclaredOrigin,
+	}); err != nil {
 		return nil, err
 	}
 	nodes, err := traverse(req, roots)

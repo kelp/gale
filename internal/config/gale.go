@@ -70,6 +70,34 @@ func (c *GaleConfig) EffectivePackages(host string) map[string]string {
 	return out
 }
 
+// PackageOrigins reports, per package, the key of the manifest
+// section that supplies its effective pin: "" for the shared
+// [packages] table and the selector for a [hosts.<selector>.packages]
+// overlay.
+//
+// It exists so a stale-lock message can name the exact `gale lock`
+// invocation. `gale lock --host <selector>` regenerates one target
+// from one section, so a package whose effective pin comes from an
+// overlay is repaired only by naming that overlay; the merge in
+// EffectivePackages discards precisely that fact.
+func (c *GaleConfig) PackageOrigins(host string) map[string]string {
+	out := make(map[string]string, len(c.Packages))
+	for name := range c.Packages {
+		out[name] = ""
+	}
+	if host == "" {
+		return out
+	}
+	// Same order as EffectivePackages, so the recorded origin is the
+	// section whose pin actually won.
+	for _, k := range matchingHostKeys(c.Hosts, host) {
+		for name := range c.Hosts[k].Packages {
+			out[name] = k
+		}
+	}
+	return out
+}
+
 // ApplyHost replaces Packages and Pinned with the effective
 // merged maps for the given host. Mutates the receiver.
 // Callers that need the raw on-disk view (e.g. mutators) must

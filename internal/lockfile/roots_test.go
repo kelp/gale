@@ -223,7 +223,7 @@ func TestCheckDeclaredComparesPins(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := CheckDeclared(tt.roots, tt.declared)
+			err := CheckDeclared(tt.roots, tt.declared, Origins{})
 			if tt.wantStale {
 				if !errors.Is(err, ErrStaleLock) {
 					t.Fatalf("err = %v, want ErrStaleLock", err)
@@ -249,6 +249,7 @@ func TestCheckDeclaredNamesEveryDisagreement(t *testing.T) {
 	err := CheckDeclared(
 		map[string]string{"jq": "jq@1.8.1-1", "orphan": "orphan@1.0-1"},
 		map[string]string{"jq": "1.9.0", "missing": "2.0"},
+		Origins{},
 	)
 	if !errors.Is(err, ErrStaleLock) {
 		t.Fatalf("err = %v, want ErrStaleLock", err)
@@ -257,5 +258,231 @@ func TestCheckDeclaredNamesEveryDisagreement(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error does not mention %q: %v", want, err)
 		}
+	}
+}
+
+// Design §9: a fail-closed condition is a "hard error naming the exact
+// remedy". This one renders inside direnv output, where the user gets
+// one line and no chance to ask a follow-up question, so a message
+// that only states the disagreement leaves them stuck.
+func TestCheckDeclaredNamesTheRemedy(t *testing.T) {
+	// A root the manifest dropped. Only the lock can be brought back
+	// into line, so there is exactly one remedy.
+	err := CheckDeclared(
+		map[string]string{"jq": "jq@1.8.1-1", "orphan": "orphan@1.0-1"},
+		map[string]string{"jq": "1.8.1"},
+		Origins{},
+	)
+	if err == nil {
+		t.Fatal("orphaned root: want ErrStaleLock, got nil")
+	}
+	if !strings.Contains(err.Error(), "gale lock") {
+		t.Errorf("orphaned root: message must name 'gale lock', got %q", err)
+	}
+
+	// A newly declared root, the `gale add` case. Two remedies apply
+	// and the design names both: `gale install` to install and lock it,
+	// or `gale lock` to lock what is already on disk.
+	err = CheckDeclared(
+		map[string]string{"jq": "jq@1.8.1-1"},
+		map[string]string{"jq": "1.8.1", "ripgrep": "14.1.0"},
+		Origins{},
+	)
+	if err == nil {
+		t.Fatal("unlocked root: want ErrStaleLock, got nil")
+	}
+	for _, want := range []string{"gale install", "gale lock"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("unlocked root: message must name %q, got %q", want, err)
+		}
+	}
+}
+
+// The remedy must not claim more precision than it has. Plain `gale
+// lock` regenerates [targets.default] from the shared [packages]
+// section and carries every host target forward untouched, so a
+// package declared under [hosts.<selector>.packages] is NOT repaired
+// by it. The roots map here is already merged across selectors, so
+// this function cannot tell which case it is looking at; naming only
+// the default form would send a host-overlay user round a loop where
+// the remedy reports success and the sync keeps failing.
+func TestCheckDeclaredRemedyCoversHostOverlays(t *testing.T) {
+	err := CheckDeclared(
+		map[string]string{"jq": "jq@1.8.1-1", "orphan": "orphan@1.0-1"},
+		map[string]string{"jq": "1.8.1"},
+		Origins{},
+	)
+	if err == nil {
+		t.Fatal("want ErrStaleLock, got nil")
+	}
+	if !strings.Contains(err.Error(), "--host") {
+		t.Errorf("remedy must mention the --host form for a package "+
+			"declared in a [hosts.*] section, got %q", err)
+	}
+}
+
+// The remedy must name one command, not a form the user has to
+// complete. `gale lock` regenerates [targets.default] and carries
+// every host target forward, so a root that lives in an overlay is
+// repaired only by `gale lock --host <that selector>`. EffectiveRoots
+// merges the targets, so the selector has to be carried out with the
+// merged map or the message cannot name it.
+func TestCheckDeclaredRemedyNamesTheOwningTarget(t *testing.T) {
+	lf := rootsOf(
+		[]string{"jq@1.8.1-1"},
+		map[string][]string{"work-*": {"ripgrep@14.1.0-1"}},
+	)
+	roots, origin, err := lf.EffectiveRootsWithOrigin("work-mb")
+	if err != nil {
+		t.Fatalf("EffectiveRootsWithOrigin: %v", err)
+	}
+	if origin["ripgrep"] != "work-*" {
+		t.Fatalf("origin[ripgrep] = %q, want the selector that rooted it",
+			origin["ripgrep"])
+	}
+	if origin["jq"] != "" {
+		t.Fatalf("origin[jq] = %q, want \"\" for the default target",
+			origin["jq"])
+	}
+
+	// ripgrep is orphaned: rooted in the overlay, gone from gale.toml.
+	// Only `gale lock --host work-*` rewrites that target.
+	err = CheckDeclared(roots, map[string]string{"jq": "1.8.1"}, Origins{Roots: origin})
+	if err == nil {
+		t.Fatal("want ErrStaleLock, got nil")
+	}
+	if !strings.Contains(err.Error(), `gale lock --host "work-*"`) {
+		t.Errorf("remedy must name the owning selector, got %q", err)
+	}
+
+	// A default-target orphan needs the plain form, with no --host at
+	// all: suggesting one would send the user to a target that does not
+	// root the package.
+	err = CheckDeclared(roots, map[string]string{"ripgrep": "14.1.0"}, Origins{Roots: origin})
+	if err == nil {
+		t.Fatal("want ErrStaleLock, got nil")
+	}
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("default-target orphan must not be sent to --host, got %q", err)
+	}
+}
+
+// A repin's remedy follows the MANIFEST's origin, not the lock's.
+// The two differ exactly when a host overlay re-pins a package the
+// lock roots only in its default target:
+//
+//	[packages]              foo = "1"
+//	[hosts."work-*".packages]  foo = "2"
+//	lock default target        foo@1-1
+//
+// The effective declaration is "2" and the lock says 1-1, so this is a
+// repin. The lock root's origin is the default target, and plain
+// `gale lock` regenerates that target from [packages] — writing 1-1
+// straight back and never creating the host target the sync needs.
+// The user runs the suggested command, it reports success, and the
+// sync keeps failing.
+func TestCheckDeclaredRepinRemedyFollowsTheManifest(t *testing.T) {
+	err := CheckDeclared(
+		map[string]string{"foo": "foo@1-1"},
+		map[string]string{"foo": "2"},
+		Origins{
+			Roots:    map[string]string{"foo": ""},
+			Declared: map[string]string{"foo": "work-*"},
+		},
+	)
+	if err == nil {
+		t.Fatal("want ErrStaleLock, got nil")
+	}
+	if !strings.Contains(err.Error(), `--host "work-*"`) {
+		t.Errorf("repin remedy must name the overlay that declares it, "+
+			"and quote the selector so the command is runnable, got %q", err)
+	}
+}
+
+// Every required action, not the first one found. A manifest can be
+// stale in several directions at once, and a message naming one
+// remedy leaves the user fixing that, rerunning, and discovering the
+// next — the same failure the multi-part message above already avoids
+// for the diagnosis half.
+func TestCheckDeclaredRemedyRendersEveryAction(t *testing.T) {
+	err := CheckDeclared(
+		// ripgrep is orphaned in an overlay; newpkg is declared and
+		// unlocked; both need an action.
+		map[string]string{"ripgrep": "ripgrep@14.1.0-1"},
+		map[string]string{"newpkg": "1.0"},
+		Origins{
+			Roots:    map[string]string{"ripgrep": "work-*"},
+			Declared: map[string]string{"newpkg": ""},
+		},
+	)
+	if err == nil {
+		t.Fatal("want ErrStaleLock, got nil")
+	}
+	for _, want := range []string{"gale install", `--host "work-*"`} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("remedy must include %q, got %q", want, err)
+		}
+	}
+}
+
+// A newly declared root that is ALREADY INSTALLED is locked by `gale
+// lock`, and that alternative is target-dependent even though the
+// `gale install` one is not. Declared under an overlay, plain `gale
+// lock` rewrites the default target and leaves the sync stale, so the
+// alternative has to name the overlay too.
+func TestCheckDeclaredNewOverlayRootNamesItsTarget(t *testing.T) {
+	err := CheckDeclared(
+		map[string]string{},
+		map[string]string{"newpkg": "1.0"},
+		Origins{
+			Roots:    map[string]string{},
+			Declared: map[string]string{"newpkg": "work-*"},
+		},
+	)
+	if err == nil {
+		t.Fatal("want ErrStaleLock, got nil")
+	}
+	if !strings.Contains(err.Error(), `gale lock --host "work-*"`) {
+		t.Errorf("the lock alternative for a new overlay root must name "+
+			"the overlay, got %q", err)
+	}
+}
+
+// Origin knowledge is per side, not all-or-nothing. A caller that
+// supplies Roots but omits Declared knows where an ORPHAN lives and
+// knows nothing about where a REPIN is declared; reading the missing
+// map returns "", which is indistinguishable from "the default
+// target" and would print a command that rewrites the wrong section.
+// An unknown side must fall back to the general wording.
+func TestCheckDeclaredUnknownDeclaredOriginDoesNotAssumeDefault(t *testing.T) {
+	err := CheckDeclared(
+		map[string]string{"foo": "foo@1-1"},
+		map[string]string{"foo": "2"},
+		// Roots known, Declared absent: this is lockIsStale's shape.
+		Origins{Roots: map[string]string{"foo": ""}},
+	)
+	if err == nil {
+		t.Fatal("want ErrStaleLock, got nil")
+	}
+	if !strings.Contains(err.Error(), "<selector>") {
+		t.Errorf("an unknown declared origin must render the general "+
+			"form rather than assume the default target, got %q", err)
+	}
+}
+
+// The mirror: orphans need Roots, so omitting that map must not make
+// an orphan look default-rooted either.
+func TestCheckDeclaredUnknownRootOriginDoesNotAssumeDefault(t *testing.T) {
+	err := CheckDeclared(
+		map[string]string{"orphan": "orphan@1.0-1"},
+		map[string]string{},
+		Origins{Declared: map[string]string{}},
+	)
+	if err == nil {
+		t.Fatal("want ErrStaleLock, got nil")
+	}
+	if !strings.Contains(err.Error(), "<selector>") {
+		t.Errorf("an unknown root origin must render the general form, "+
+			"got %q", err)
 	}
 }

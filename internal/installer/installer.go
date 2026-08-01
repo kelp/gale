@@ -24,6 +24,7 @@ import (
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/parallel"
+	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/kelp/gale/internal/timing"
@@ -305,6 +306,19 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 			// nothing behind — the mismatching artifact must be
 			// absent from the store (acceptance 1).
 			os.RemoveAll(storeDir)
+			// A hash disagreement is an integrity violation, and design
+			// §8 puts it in the class that stops a pipeline for a human.
+			// Every other reason a fetch can fail — a 404, a refused
+			// connection, a corrupt archive — stays ordinary, because
+			// acceptance 11 turns on exactly that distinction: an
+			// ordinary failure under a lock must not read as tampering.
+			if errors.Is(berr, download.ErrSHA256Mismatch) {
+				return nil, fmt.Errorf(
+					"locked binary install of %s: %w: %w",
+					lockgraph.Key(name, storeVersion),
+					provenance.ErrInvalid, berr,
+				)
+			}
 			return nil, fmt.Errorf(
 				"locked binary install of %s: %w",
 				lockgraph.Key(name, storeVersion), berr,

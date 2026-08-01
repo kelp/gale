@@ -102,6 +102,28 @@ func (inst *Installer) lockedCacheHit(
 	}, true, nil
 }
 
+// VerifyPlanned reports whether the store already holds the locked
+// artifact for name, mutating nothing. It exists for dry run, which
+// must answer the same question a real locked sync asks — is this
+// directory absent, does it attest the lock, or is it a conflict —
+// without installing anything.
+//
+// It runs the identical check, deliberately: a dry run that computed
+// "up to date" a cheaper way would be free to disagree with the sync
+// it is predicting, and the disagreement would show up as a sync
+// failing with an integrity error that the dry run called clean.
+func (inst *Installer) VerifyPlanned(name string) (bool, error) {
+	if inst.Plan == nil {
+		return false, nil
+	}
+	n, ok := inst.Plan.ForName(name)
+	if !ok {
+		return false, fmt.Errorf("%w: %s", ErrUnplanned, name)
+	}
+	_, hit, err := inst.lockedCacheHit(n, name, n.Version)
+	return hit, err
+}
+
 // checkSourceArtifact compares a finished build's archive hash
 // against the locked artifact, before anything is promoted into the
 // store (design §4 invariant A, acceptance 10). The comparison is on

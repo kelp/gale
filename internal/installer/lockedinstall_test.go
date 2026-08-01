@@ -172,8 +172,21 @@ func TestInstallLocked_MismatchLeavesStoreClean(t *testing.T) {
 		BinaryFallbackLog: io.Discard,
 		Plan:              planOf(t, r, lockgraph.MethodBinary, hashFile(t, tarzst)),
 	}
-	if _, err := inst.Install(r); err == nil {
+	_, err := inst.Install(r)
+	if err == nil {
 		t.Fatal("locked install accepted an artifact the lock does not name")
+	}
+	// The refusal must be classifiable as an integrity violation, not
+	// merely non-nil. Design §8 puts an artifact SHA mismatch in the
+	// class that stops a pipeline for a human; without a sentinel it
+	// exits 1 and reads as a broken build, which is the one thing a CI
+	// script must not confuse it with.
+	if !errors.Is(err, provenance.ErrInvalid) {
+		t.Errorf("locked artifact mismatch must carry an integrity "+
+			"sentinel, got %v", err)
+	}
+	if !errors.Is(err, download.ErrSHA256Mismatch) {
+		t.Errorf("error must still name the underlying mismatch, got %v", err)
 	}
 
 	canonical := filepath.Join(storeRoot, "testpkg", "1.0-1")

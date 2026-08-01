@@ -2,10 +2,12 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -36,12 +38,121 @@ func TestUpdateBuildFlag(t *testing.T) {
 	}
 }
 
+// A worker's integrity failure must keep its exit code. reportSyncOutcomes
+// used to reduce every outcome to a count, and finishSync then built a
+// fresh error from that count, so the sentinel died at the barrier: a
+// cached provenance conflict — the single most important thing #182
+// detects — exited 1 instead of 3.
+//
+// The integration script did not catch this, and could not: its failure
+// happens during plan construction, which returns straight out of
+// runSync without passing through a worker at all.
+func TestFinishSyncPreservesAWorkerIntegrityFailure(t *testing.T) {
+	conflict := fmt.Errorf("jq@1.7-1: %w", provenance.ErrInvalid)
+
+	err := finishSync(syncFinish{
+		failures: []error{conflict}, installed: 1, locked: true,
+	}, func() error { return nil })
+
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+	if !errors.Is(err, provenance.ErrInvalid) {
+		t.Errorf("sync error must wrap the worker's sentinel, got %v", err)
+	}
+	if got := exitCodeFor(err); got != exitLockIntegrity {
+		t.Errorf("integrity failure: got exit %d, want %d",
+			got, exitLockIntegrity)
+	}
+}
+
+// The unlocked twin: an ordinary failure still classifies as one, so
+// the wrapping does not promote every sync failure to an integrity
+// violation.
+func TestFinishSyncKeepsAnOrdinaryFailureOrdinary(t *testing.T) {
+	err := finishSync(syncFinish{
+		failures: []error{errors.New("connection refused")}, installed: 1,
+	}, func() error { return nil })
+
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+	if got := exitCodeFor(err); got != exitFailure {
+		t.Errorf("ordinary failure: got exit %d, want %d", got, exitFailure)
+	}
+}
+
+// Acceptance 11 (design §8): under a lock, finishSync is skipped on
+// ANY plan failure — no generation rebuild, no swap, even when the
+// config changed. Issue #20's partial rebuild is the right trade
+// unlocked, where a broken recipe should not cost the user their whole
+// PATH. Under a lock it is the wrong one: the plan is a unit, and
+// activating the part of it that happened to verify publishes a
+// generation the lock never describes.
+//
+// "Any" is the load-bearing word. Restricting the skip to integrity
+// failures would rebuild after a network error, which leaves exactly
+// the same partial generation.
+func TestFinishSyncSkipsRebuildUnderALockWithAnyFailure(t *testing.T) {
+	called := false
+	err := finishSync(syncFinish{
+		failures: make([]error, 1), installed: 3, configChanged: true, locked: true,
+	}, func() error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+	if called {
+		t.Error("locked sync with a failure must not rebuild the generation")
+	}
+}
+
+// The unlocked twin, so the two behaviors are pinned against each
+// other rather than one being asserted alone: the same failure still
+// rebuilds per issue #20.
+func TestFinishSyncStillRebuildsUnlockedWithAFailure(t *testing.T) {
+	called := false
+	err := finishSync(syncFinish{
+		failures: make([]error, 1), installed: 3, configChanged: true, locked: false,
+	}, func() error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+	if !called {
+		t.Error("unlocked sync must still rebuild (issue #20)")
+	}
+}
+
+// A locked sync that fully succeeded rebuilds normally. The skip keys
+// on failure, not on the lock: refusing to rebuild a clean locked sync
+// would mean nothing a lock describes ever reaches PATH.
+func TestFinishSyncRebuildsUnderALockWhenNothingFailed(t *testing.T) {
+	called := false
+	err := finishSync(syncFinish{
+		installed: 2, locked: true,
+	}, func() error {
+		called = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("clean locked sync: %v", err)
+	}
+	if !called {
+		t.Error("clean locked sync must rebuild the generation")
+	}
+}
+
 func TestFinishSyncRebuildsOnFailure(t *testing.T) {
 	// Issue #20: rebuild even on partial failure so the
 	// packages that did install land on PATH. The failure
 	// error still propagates so the exit code is non-zero.
 	called := false
-	err := finishSync(false, 1, 0, false, func() error {
+	err := finishSync(syncFinish{failures: make([]error, 1)}, func() error {
 		called = true
 		return nil
 	})
@@ -59,7 +170,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 	// discarded. The install count tells the user which package
 	// broke; the rebuild error tells them the PATH may be stale.
 	rebuildErr := errors.New("rebuild boom")
-	err := finishSync(false, 2, 0, false, func() error {
+	err := finishSync(syncFinish{failures: make([]error, 2)}, func() error {
 		return rebuildErr
 	})
 	if err == nil {
@@ -72,7 +183,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 
 func TestFinishSyncReturnsRebuildError(t *testing.T) {
 	errBoom := errors.New("boom")
-	err := finishSync(false, 0, 1, false, func() error {
+	err := finishSync(syncFinish{installed: 1}, func() error {
 		return errBoom
 	})
 	if !errors.Is(err, errBoom) {
@@ -86,7 +197,7 @@ func TestFinishSyncReturnsRebuildError(t *testing.T) {
 // the rebuild error was silently discarded when failed > 0.
 func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 	rebuildErr := errors.New("generation build failed")
-	err := finishSync(false, 1, 0, false, func() error { return rebuildErr })
+	err := finishSync(syncFinish{failures: make([]error, 1)}, func() error { return rebuildErr })
 	if err == nil {
 		t.Fatal("finishSync must return error when failed > 0")
 	}
@@ -97,7 +208,7 @@ func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 
 func TestFinishSyncSkipsRebuildInDryRun(t *testing.T) {
 	called := false
-	err := finishSync(true, 0, 1, false, func() error {
+	err := finishSync(syncFinish{dryRun: true, installed: 1}, func() error {
 		called = true
 		return nil
 	})
@@ -143,7 +254,7 @@ func TestFinishSyncFailurePreservesPartialProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = finishSync(false, 1, 0, false, func() error {
+	err = finishSync(syncFinish{failures: make([]error, 1)}, func() error {
 		return rebuildGeneration(galeDir, storeRoot, configPath, nil)
 	})
 	if err == nil {
@@ -203,7 +314,7 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 // Fix: add an `installed int` parameter and skip rebuild when installed == 0.
 func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
 	rebuilt := false
-	err := finishSync(false, 0, 0, false, func() error {
+	err := finishSync(syncFinish{}, func() error {
 		rebuilt = true
 		return nil
 	})
@@ -222,7 +333,7 @@ func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
 // installed == 0 was leaving the old generation active.
 func TestFinishSyncRebuildsWhenConfigChanged(t *testing.T) {
 	rebuilt := false
-	err := finishSync(false, 0, 0, true, func() error {
+	err := finishSync(syncFinish{configChanged: true}, func() error {
 		rebuilt = true
 		return nil
 	})
@@ -283,7 +394,7 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := finishSync(false, 0, 0, true, func() error {
+	err := finishSync(syncFinish{configChanged: true}, func() error {
 		return rebuildGeneration(galeDir, storeRoot, configPath, nil)
 	})
 	if err != nil {

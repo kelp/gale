@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/activation"
+	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
@@ -160,10 +161,55 @@ func exitCodeStoreCases() []exitCodeCase {
 			want: exitLockIntegrity,
 		},
 		{
+			// The lock modeled the node fine; the recipe on disk no
+			// longer backs it. Section 8's class-4 rows all describe
+			// something MISSING from the lock, which regenerating fixes.
+			// Here gale.toml and gale.lock agree and a recipe fetched
+			// for a pinned version-revision says something else, so
+			// regenerating would ratify the recipe that moved. That is
+			// the substitution #182 exists to close.
+			name: "recipe sha256 disagrees with the locked node",
+			err: fmt.Errorf("plan: %w",
+				fmt.Errorf("%w: jq recipe sha256 abc, lock says def",
+					lockplan.ErrRecipeMismatch)),
+			want: exitLockIntegrity,
+		},
+		{
+			// Same sentinel, and deliberately the case that reads most
+			// like class 4's "missing platform entry". It is not: a
+			// lock with no entry for this platform fails earlier as
+			// ErrMissingArtifact. Reaching here means the lock
+			// affirmatively claims the platform and the recipe denies
+			// it, which is the recipe moving, not the lock lacking.
+			name: "recipe denies a platform the lock claims",
+			err: fmt.Errorf("plan: %w",
+				fmt.Errorf("%w: jq is locked for linux/amd64, which the recipe does not support",
+					lockplan.ErrRecipeMismatch)),
+			want: exitLockIntegrity,
+		},
+		{
 			name: "activation drift",
 			err:  fmt.Errorf("gate: %w", activation.ErrDrift),
 			want: exitActivationDrift,
 		},
+	}
+}
+
+// A recipe mismatch that also wraps an inner error must still classify
+// as integrity. validateMethod's trust-policy branch double-wraps
+// ("%w: %s: %w"), so both sentinels are visible to errors.Is. Nothing
+// class-4 hides in there today, which is exactly why this is pinned:
+// the ordering that makes it safe is invisible until something inside
+// a wrapped error starts carrying a sentinel of its own.
+func TestExitCodeForRecipeMismatchWinsOverAWrappedInnerError(t *testing.T) {
+	err := fmt.Errorf(
+		"%w: jq: %w",
+		lockplan.ErrRecipeMismatch,
+		fmt.Errorf("stale: %w", lockfile.ErrStaleLock),
+	)
+	if got := exitCodeFor(err); got != exitLockIntegrity {
+		t.Errorf("double-wrapped recipe mismatch: got exit %d, want %d",
+			got, exitLockIntegrity)
 	}
 }
 
@@ -228,5 +274,38 @@ func TestExitCodeForDeepestClassWins(t *testing.T) {
 		fmt.Errorf("reading lock: %w", lockfile.ErrDowngradeGuard))
 	if got := exitCodeFor(err); got != exitLockUnusable {
 		t.Errorf("exitCodeFor = %d, want %d", got, exitLockUnusable)
+	}
+}
+
+// Design §8 puts an artifact SHA mismatch in the integrity class, and
+// under a lock that is precisely what a failed artifact verification
+// is: bytes that disagree with the hash the lock names. The installer
+// wrapped the download error as "locked binary install", which carried
+// no sentinel, so the single most important detection in #182 exited 1
+// — indistinguishable from a build error or a refused connection.
+//
+// A pipeline branches on this number. Class 1 says "retry or fix the
+// build"; class 3 says "stop, an artifact is not what was locked".
+func TestExitCodeForLockedArtifactMismatch(t *testing.T) {
+	err := fmt.Errorf("locked binary install of jq@1.7-1: %w",
+		fmt.Errorf("%w: %w", provenance.ErrInvalid,
+			fmt.Errorf("verify: %w", download.ErrSHA256Mismatch)))
+
+	if got := exitCodeFor(err); got != exitLockIntegrity {
+		t.Errorf("locked artifact mismatch: got exit %d, want %d",
+			got, exitLockIntegrity)
+	}
+}
+
+// An ordinary failure under a lock stays ordinary (acceptance 11): a
+// network error is not an integrity violation, and classifying it as
+// one would train users to ignore the code that means tampering.
+func TestExitCodeForLockedNetworkFailure(t *testing.T) {
+	err := fmt.Errorf("locked binary install of jq@1.7-1: %w",
+		errors.New("connection refused"))
+
+	if got := exitCodeFor(err); got != exitFailure {
+		t.Errorf("locked network failure: got exit %d, want %d",
+			got, exitFailure)
 	}
 }

@@ -24,7 +24,6 @@ import (
 
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
@@ -475,115 +474,6 @@ func TestRunSyncOneInstallFailurePopulatesInstallErr(t *testing.T) {
 	}
 }
 
-// TestRunSyncOneLockfileSHAMismatchSetsSHAChanged verifies that when
-// the lockfile holds a different SHA from a successful install,
-// runSyncOne sets shaChanged=true and priorSHA to the stored value,
-// without blocking the install.
-//
-// This test uses a store pre-seeded with the package absent so
-// Install is triggered, but points the recipe at a closed server
-// (install fails). The lockfile SHA path is exercised only when
-// Install succeeds, so we check instead that runSyncOne correctly
-// reads and compares the lockfile SHA when it does succeed.
-//
-// Approach: seed the store as empty and use a resolver that returns
-// a recipe causing install to fail. Pre-seed lockfile with a SHA.
-// Because install fails, result==nil and we can't see shaChanged.
-// The only reliable way to test this path is with a successful
-// install — which requires a real build that is too heavy for a
-// unit test. We therefore construct a simpler assertion: if install
-// succeeds AND lockfile has a different SHA, shaChanged must be
-// true. We leave the success-path stub assertion here to be RED:
-// the stub always returns shaChanged=false (zero value), so the
-// assertion below will fail once a real install succeeds. Until
-// then this tests the lockfile-read path.
-//
-// Simpler invariant tested: when lockfile has a seeded SHA and
-// package is already in store (upToDate path), shaChanged must
-// remain false (no install occurred). Against the stub (which
-// returns all zeros), this would accidentally pass. We instead
-// test the non-upToDate install path by seeding an empty store
-// and asserting that after a successful install result, shaChanged
-// reflects the mismatch. The stub returns syncOutcome{} which has
-// shaChanged=false and result=nil, making assertions on result!=nil
-// fail (RED).
-func TestRunSyncOneLockfileSHAMismatchSetsSHAChanged(t *testing.T) {
-	tmp := t.TempDir()
-	storeRoot := filepath.Join(tmp, "store")
-	galeDir := filepath.Join(tmp, ".gale")
-	galePath := filepath.Join(tmp, "gale.toml")
-
-	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(galeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Seed lockfile with a prior SHA for this package.
-	priorSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-
-	// Use a server that serves a real (tiny) archive so
-	// Install can succeed and we get a result with a different SHA.
-	// The server serves a single byte — VerifySHA256 will mismatch
-	// the recipe's SHA, causing install to fail. This means we
-	// test only the "install attempted" aspect.
-	//
-	// Because a successful install with SHA mismatch detection
-	// requires a full build environment, we assert the minimum:
-	// the stub returns result=nil (RED), and the real impl must
-	// return result!=nil on success, and shaChanged=true on mismatch.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	resolver := func(name string) (*recipe.Recipe, error) {
-		return &recipe.Recipe{
-			Package: recipe.Package{Name: name, Version: "1.0.0"},
-			Source: recipe.Source{
-				URL:    srv.URL + "/source.tar.gz",
-				SHA256: "deadbeef",
-			},
-			Build: recipe.Build{Steps: []string{"echo build"}},
-		}, nil
-	}
-
-	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	w := syncItem{
-		name: "shacheckpkg", version: "1.0.0",
-		locked:  lockfile.Entry{Version: "1.0.0-1", SHA256: priorSHA},
-		hasLock: true,
-	}
-
-	out := runSyncOne(ctx, w, false)
-
-	// Against the stub: result==nil, so this assertion fails (RED).
-	// The real implementation must attempt install (result!=nil on
-	// success) or set installErr!=nil on failure. Either way,
-	// result==nil with installErr==nil is wrong for a missing package.
-	if out.result == nil && out.installErr == nil {
-		t.Error("both result and installErr nil: install was not attempted " +
-			"for a package missing from the store")
-	}
-	// When install succeeds AND lockfile SHA differs, shaChanged
-	// must be true and priorSHA must match the lockfile value.
-	// The stub returns shaChanged=false (zero), so if result is
-	// non-nil (real impl), this assertion pins the correct behavior.
-	if out.result != nil && out.result.SHA256 != priorSHA {
-		if !out.shaChanged {
-			t.Error("shaChanged = false, want true: " +
-				"install SHA differs from lockfile SHA")
-		}
-		if out.priorSHA != priorSHA {
-			t.Errorf("priorSHA = %q, want %q", out.priorSHA, priorSHA)
-		}
-	}
-}
-
 // TestRunSyncOneDryRunUpToDate verifies that with dryRun=true and
 // a package already installed (non-stale), runSyncOne returns
 // upToDate=true and does not attempt an install.
@@ -642,7 +532,7 @@ func TestRunSyncOneDryRunUpToDate(t *testing.T) {
 func TestSortedSyncItemsReturnsAlphabeticalOrder(t *testing.T) {
 	pkgs := map[string]string{"zeta": "1", "alpha": "2", "mu": "3"}
 	items, err := sortedSyncItems(
-		pkgs, &lockfile.View{Kind: lockfile.KindAbsent}, "", "darwin/arm64",
+		pkgs, nil,
 	)
 	if err != nil {
 		t.Fatalf("sortedSyncItems: %v", err)

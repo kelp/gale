@@ -96,6 +96,23 @@ func exitCodeFor(err error) int {
 		// class that deserves a human. ErrAbsent arrives wrapped in
 		// ErrInvalid from VerifyAgainstLock, deliberately.
 		return exitLockIntegrity
+	case errors.Is(err, lockplan.ErrRecipeMismatch):
+		// The lock modeled this node successfully and the recipe on
+		// disk no longer backs it. Every class-4 row describes
+		// something MISSING from the lock — a stale root, an absent
+		// platform or dep entry, a schema gale cannot read — and
+		// regenerating ratifies a change gale.toml already authorized.
+		// This is the reverse: gale.toml and the lock agree, and a
+		// recipe fetched for a pinned version-revision disagrees.
+		// Regenerating would adopt whatever the moved recipe now says,
+		// which is exactly the substitution #182 closes, so a human
+		// decides whether upstream moved legitimately.
+		//
+		// Before the class-4 block deliberately. validateMethod's
+		// trust-policy branch wraps two errors ("%w: %s: %w"), so an
+		// inner error is visible to errors.Is as well; the integrity
+		// verdict has to win whatever it happens to carry.
+		return exitLockIntegrity
 	case errors.Is(err, lockfile.ErrLegacySchema),
 		errors.Is(err, lockfile.ErrUnknownVersion),
 		errors.Is(err, lockfile.ErrUnknownField),

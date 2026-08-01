@@ -54,11 +54,16 @@ func lockIsStale(lockPath string, declared map[string]string, host string) (bool
 // the whole closure, so a count comparison would report stale forever
 // as soon as one root has a dependency.
 func v1Stale(lf *lockfile.V1, declared map[string]string, host string) (bool, error) {
-	roots, err := lf.EffectiveRoots(host)
+	roots, origin, err := lf.EffectiveRootsWithOrigin(host)
 	if err != nil {
 		return false, err
 	}
-	if err := lockfile.CheckDeclared(roots, declared); err != nil {
+	// Roots only: this function answers a boolean and discards the
+	// message, so the manifest half would sharpen a remedy nobody
+	// reads. runSync's plan construction is where the user sees it.
+	if err := lockfile.CheckDeclared(roots, declared, lockfile.Origins{
+		Roots: origin,
+	}); err != nil {
 		if errors.Is(err, lockfile.ErrStaleLock) {
 			return true, nil
 		}

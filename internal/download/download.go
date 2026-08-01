@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -296,6 +297,14 @@ func HashFile(path string) (string, error) {
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }
 
+// ErrSHA256Mismatch reports fetched bytes whose hash is not the one
+// that was expected. A sentinel because the exit-code taxonomy needs
+// to tell this apart from every other reason a fetch can fail: under a
+// lock, design §8 puts an artifact SHA mismatch in the integrity class
+// that stops a pipeline for a human, while a 404 or a refused
+// connection is an ordinary failure.
+var ErrSHA256Mismatch = errors.New("sha256 mismatch")
+
 // VerifySHA256 checks that the file at path has the expected
 // SHA256 hash. The expected value must be hex-encoded.
 func VerifySHA256(path, expected string) error {
@@ -305,8 +314,8 @@ func VerifySHA256(path, expected string) error {
 	}
 	if actual != expected {
 		return fmt.Errorf(
-			"sha256 mismatch: expected %s, got %s",
-			expected, actual,
+			"%w: expected %s, got %s",
+			ErrSHA256Mismatch, expected, actual,
 		)
 	}
 	return nil
@@ -844,8 +853,8 @@ func fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut s
 	computed := fmt.Sprintf("%x", hasher.Sum(nil))
 	if !strings.EqualFold(computed, expectedSHA256) {
 		_ = os.RemoveAll(destDir)
-		return "", fmt.Errorf("sha256 mismatch: expected %s, got %s",
-			expectedSHA256, computed)
+		return "", fmt.Errorf("%w: expected %s, got %s",
+			ErrSHA256Mismatch, expectedSHA256, computed)
 	}
 
 	return computed, nil
