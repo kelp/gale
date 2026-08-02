@@ -189,3 +189,62 @@ func TestFarmPredicateDoesNotFollowASymlinkedLibDir(t *testing.T) {
 		t.Errorf("Depopulate left the link behind: %v", err)
 	}
 }
+
+// An entry that RESOLVES into a store directory does not belong to
+// it. Only the directory the entry is spelled under owns it.
+//
+// The distinguishing shape: q's lib is a symlink to p's store
+// directory, so Populate farms q's entries and spells their targets
+// under q, while following them lands in p. A predicate that
+// resolved the whole path would hand q's live entries to p, and
+// Depopulate(p) would then delete them — the cross-package deletion
+// class this file exists to prevent, arriving from the opposite
+// direction to the fail-open cases above.
+func TestFarmPredicateDoesNotClaimAnEntryThatMerelyResolvesIn(t *testing.T) {
+	root := t.TempDir()
+	pStore := filepath.Join(root, "pkg", "p", "1.0-1")
+	qStore := filepath.Join(root, "pkg", "q", "2.0-1")
+	if err := os.MkdirAll(pStore, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(qStore, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	soname := "libown.4.dylib"
+	if runtime.GOOS == "linux" {
+		soname = "libown.so.4"
+	}
+	if err := os.WriteFile(
+		filepath.Join(pStore, soname), []byte("x"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	// q/lib -> p's store directory.
+	if err := os.Symlink(pStore, filepath.Join(qStore, "lib")); err != nil {
+		t.Fatal(err)
+	}
+
+	farmDir := filepath.Join(root, "lib")
+	if err := Populate(qStore, farmDir); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(farmDir, soname)
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("Populate did not farm through q's symlinked lib: %v", err)
+	}
+
+	if UnderStoreDir(target, pStore) {
+		t.Error("an entry spelled under q was claimed by p because it " +
+			"resolves into p")
+	}
+	if !UnderStoreDir(target, qStore) {
+		t.Error("q disowned an entry spelled under its own store dir")
+	}
+	if err := Depopulate(pStore, farmDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(link); err != nil {
+		t.Errorf("Depopulate(p) deleted q's live farm entry: %v", err)
+	}
+}
