@@ -192,11 +192,21 @@ git add gale.toml gale.lock
 git commit -m "Pin project tool versions"
 ```
 
-`gale.lock` records the exact version and SHA256
-hash for each package. Unlike the global lockfile,
-the project lockfile belongs in git -- it ensures
-every developer and CI runner installs identical
-artifacts.
+`gale.lock` records the version and SHA256 hash of
+each package listed in `gale.toml`. Transitive
+dependencies are not recorded. Unlike the global
+lockfile, the project lockfile belongs in git.
+
+What a teammate's install shares with yours is the
+version selection, from the exact pins in `gale.toml`,
+not the lockfile. That is not the same as identical
+bytes: the same version can resolve to changed
+artifacts. The recorded hashes are not yet enforced,
+so nothing catches that today. `gale sync`
+installs from the current recipe and rewrites the
+lockfile if the artifact changed. Enforcement is being
+added in
+[issue #182](https://github.com/kelp/gale/issues/182).
 
 A teammate clones the repo, installs gale, and runs:
 
@@ -204,8 +214,8 @@ A teammate clones the repo, installs gale, and runs:
 gale sync
 ```
 
-They get the same tool versions. No "works on my
-machine" problems.
+They get the same tool versions, which is what
+resolves most "works on my machine" problems.
 
 ## Language toolchains
 

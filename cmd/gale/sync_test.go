@@ -2,11 +2,12 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 
-	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -37,56 +38,112 @@ func TestUpdateBuildFlag(t *testing.T) {
 	}
 }
 
-// TestSyncSHA256MismatchKeepsInstallAndUpdatesLockfile
-// pins the warn-and-update behavior on lockfile SHA
-// mismatch. The install itself verified the download
-// against the recipe's expected hash, so a disagreement
-// against the local lockfile only means the recipe
-// (or build output) has shifted since the last install
-// on this machine. Evicting a freshly-verified package
-// used to leave users stuck re-downloading and
-// re-building on every sync; now we keep it and update
-// the cache.
-func TestSyncSHA256MismatchKeepsInstallAndUpdatesLockfile(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  testpkg = \"1.0.0\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
+// A worker's integrity failure must keep its exit code. reportSyncOutcomes
+// used to reduce every outcome to a count, and finishSync then built a
+// fresh error from that count, so the sentinel died at the barrier: a
+// cached provenance conflict — the single most important thing #182
+// detects — exited 1 instead of 3.
+//
+// The integration script did not catch this, and could not: its failure
+// happens during plan construction, which returns straight out of
+// runSync without passing through a worker at all.
+func TestFinishSyncPreservesAWorkerIntegrityFailure(t *testing.T) {
+	conflict := fmt.Errorf("jq@1.7-1: %w", provenance.ErrInvalid)
 
-	lockPath := filepath.Join(tmp, "gale.lock")
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"testpkg": {
-				Version: "1.0.0",
-				SHA256:  "oldhasholdhasholdhasholdhash",
-			},
-		},
-	}
-	if err := lockfile.Write(lockPath, lf); err != nil {
-		t.Fatal(err)
-	}
+	err := finishSync(syncFinish{
+		failures: []error{conflict}, installed: 1, locked: true,
+	}, func() error { return nil })
 
-	newHash := "newhashnewhashnewhashnewhashnewh"
-	if err := updateLockfile(
-		lockPath, "testpkg", "1.0.0", newHash, "",
-	); err != nil {
-		t.Fatalf("updateLockfile: %v", err)
+	if err == nil {
+		t.Fatal("expected sync error")
 	}
+	if !errors.Is(err, provenance.ErrInvalid) {
+		t.Errorf("sync error must wrap the worker's sentinel, got %v", err)
+	}
+	if got := exitCodeFor(err); got != exitLockIntegrity {
+		t.Errorf("integrity failure: got exit %d, want %d",
+			got, exitLockIntegrity)
+	}
+}
 
-	got, err := lockfile.Read(lockPath)
+// The unlocked twin: an ordinary failure still classifies as one, so
+// the wrapping does not promote every sync failure to an integrity
+// violation.
+func TestFinishSyncKeepsAnOrdinaryFailureOrdinary(t *testing.T) {
+	err := finishSync(syncFinish{
+		failures: []error{errors.New("connection refused")}, installed: 1,
+	}, func() error { return nil })
+
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+	if got := exitCodeFor(err); got != exitFailure {
+		t.Errorf("ordinary failure: got exit %d, want %d", got, exitFailure)
+	}
+}
+
+// Acceptance 11 (design §8): under a lock, finishSync is skipped on
+// ANY plan failure — no generation rebuild, no swap, even when the
+// config changed. Issue #20's partial rebuild is the right trade
+// unlocked, where a broken recipe should not cost the user their whole
+// PATH. Under a lock it is the wrong one: the plan is a unit, and
+// activating the part of it that happened to verify publishes a
+// generation the lock never describes.
+//
+// "Any" is the load-bearing word. Restricting the skip to integrity
+// failures would rebuild after a network error, which leaves exactly
+// the same partial generation.
+func TestFinishSyncSkipsRebuildUnderALockWithAnyFailure(t *testing.T) {
+	called := false
+	err := finishSync(syncFinish{
+		failures: make([]error, 1), installed: 3, configChanged: true, locked: true,
+	}, func() error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+	if called {
+		t.Error("locked sync with a failure must not rebuild the generation")
+	}
+}
+
+// The unlocked twin, so the two behaviors are pinned against each
+// other rather than one being asserted alone: the same failure still
+// rebuilds per issue #20.
+func TestFinishSyncStillRebuildsUnlockedWithAFailure(t *testing.T) {
+	called := false
+	err := finishSync(syncFinish{
+		failures: make([]error, 1), installed: 3, configChanged: true, locked: false,
+	}, func() error {
+		called = true
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected sync error")
+	}
+	if !called {
+		t.Error("unlocked sync must still rebuild (issue #20)")
+	}
+}
+
+// A locked sync that fully succeeded rebuilds normally. The skip keys
+// on failure, not on the lock: refusing to rebuild a clean locked sync
+// would mean nothing a lock describes ever reaches PATH.
+func TestFinishSyncRebuildsUnderALockWhenNothingFailed(t *testing.T) {
+	called := false
+	err := finishSync(syncFinish{
+		installed: 2, locked: true,
+	}, func() error {
+		called = true
+		return nil
+	})
 	if err != nil {
-		t.Fatalf("lockfile.Read: %v", err)
+		t.Fatalf("clean locked sync: %v", err)
 	}
-	entry, ok := got.Packages["testpkg"]
-	if !ok {
-		t.Fatal("testpkg entry missing after update")
-	}
-	if entry.SHA256 != newHash {
-		t.Errorf("lockfile SHA256 = %q, want %q",
-			entry.SHA256, newHash)
+	if !called {
+		t.Error("clean locked sync must rebuild the generation")
 	}
 }
 
@@ -95,7 +152,7 @@ func TestFinishSyncRebuildsOnFailure(t *testing.T) {
 	// packages that did install land on PATH. The failure
 	// error still propagates so the exit code is non-zero.
 	called := false
-	err := finishSync(false, 1, 0, false, func() error {
+	err := finishSync(syncFinish{failures: make([]error, 1)}, func() error {
 		called = true
 		return nil
 	})
@@ -113,7 +170,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 	// discarded. The install count tells the user which package
 	// broke; the rebuild error tells them the PATH may be stale.
 	rebuildErr := errors.New("rebuild boom")
-	err := finishSync(false, 2, 0, false, func() error {
+	err := finishSync(syncFinish{failures: make([]error, 2)}, func() error {
 		return rebuildErr
 	})
 	if err == nil {
@@ -126,7 +183,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 
 func TestFinishSyncReturnsRebuildError(t *testing.T) {
 	errBoom := errors.New("boom")
-	err := finishSync(false, 0, 1, false, func() error {
+	err := finishSync(syncFinish{installed: 1}, func() error {
 		return errBoom
 	})
 	if !errors.Is(err, errBoom) {
@@ -140,7 +197,7 @@ func TestFinishSyncReturnsRebuildError(t *testing.T) {
 // the rebuild error was silently discarded when failed > 0.
 func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 	rebuildErr := errors.New("generation build failed")
-	err := finishSync(false, 1, 0, false, func() error { return rebuildErr })
+	err := finishSync(syncFinish{failures: make([]error, 1)}, func() error { return rebuildErr })
 	if err == nil {
 		t.Fatal("finishSync must return error when failed > 0")
 	}
@@ -151,7 +208,7 @@ func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 
 func TestFinishSyncSkipsRebuildInDryRun(t *testing.T) {
 	called := false
-	err := finishSync(true, 0, 1, false, func() error {
+	err := finishSync(syncFinish{dryRun: true, installed: 1}, func() error {
 		called = true
 		return nil
 	})
@@ -197,7 +254,7 @@ func TestFinishSyncFailurePreservesPartialProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = finishSync(false, 1, 0, false, func() error {
+	err = finishSync(syncFinish{failures: make([]error, 1)}, func() error {
 		return rebuildGeneration(galeDir, storeRoot, configPath, nil)
 	})
 	if err == nil {
@@ -257,7 +314,7 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 // Fix: add an `installed int` parameter and skip rebuild when installed == 0.
 func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
 	rebuilt := false
-	err := finishSync(false, 0, 0, false, func() error {
+	err := finishSync(syncFinish{}, func() error {
 		rebuilt = true
 		return nil
 	})
@@ -276,7 +333,7 @@ func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
 // installed == 0 was leaving the old generation active.
 func TestFinishSyncRebuildsWhenConfigChanged(t *testing.T) {
 	rebuilt := false
-	err := finishSync(false, 0, 0, true, func() error {
+	err := finishSync(syncFinish{configChanged: true}, func() error {
 		rebuilt = true
 		return nil
 	})
@@ -337,7 +394,7 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := finishSync(false, 0, 0, true, func() error {
+	err := finishSync(syncFinish{configChanged: true}, func() error {
 		return rebuildGeneration(galeDir, storeRoot, configPath, nil)
 	})
 	if err != nil {
@@ -352,65 +409,13 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 	}
 }
 
-// TestSyncWritesLockfileHash documents that sync should
-// write SHA256 hashes to the lockfile after successful
-// installs. A full integration test would require mocking
-// the installer, so this test just verifies the code path
-// exists and the lockfilePath helper is called correctly.
-func TestSyncWritesLockfileHash(t *testing.T) {
-	t.Skip("integration test: requires store+registry infrastructure")
-}
-
 // NOTE (finding 0005): The bug where sync --dry-run emits "stale —
 // reinstalling" before the dry-run check cannot be unit-tested without
 // output-capture infrastructure (newOutput() writes directly to os.Stderr).
 
-// NOTE (finding 0006 — sync writes bare version to lockfile):
-//
-// Fix location: sync.go, around line 202 (inside runSync, after
-// reportResult).
-//
-// Buggy code:
-//   _ = updateLockfile(lp, name, version, result.SHA256)
-//   // `version` is the bare string from gale.toml ("1.8.1").
-//
-// Fix:
-//   _ = updateLockfile(lp, name, r.Package.Full(), result.SHA256)
-//   // r is in scope (fetched at line ~139 via ResolveVersionedRecipe).
-//   // r.Package.Full() returns "1.8.1-1" (canonical form with revision).
-//
-// Impact: install and update both use r.Package.Full() when writing to
-// the lockfile. Sync used the bare version from gale.toml. This
-// inconsistency means:
-//
-//   1. gale install jq writes "1.8.1-1" to the lockfile.
-//   2. gale sync reinstalls jq, overwrites lock entry with "1.8.1".
-//   3. lockfile.IsStale compares locked.Version ("1.8.1") against
-//      tomlPackages["jq"] ("1.8.1") — they match, no stale signal.
-//   4. But a subsequent install again writes "1.8.1-1" → mismatch
-//      with toml's "1.8.1" → IsStale returns true → perpetual resync.
-//
-// The unit-level test for the invariant is:
-// internal/lockfile/lockfile_test.go:TestIsStaleCanonicalAndBareVersionsAreEquivalent.
-
-// NOTE (finding 0008 — sync discards lockfile write errors):
-//
-// Fix location: sync.go, same line as finding 0006.
-//
-// Buggy code:
-//   _ = updateLockfile(lp, name, version, result.SHA256)
-//
-// Fix: propagate or log the error. The simplest approach:
-//   if err := updateLockfile(lp, name, r.Package.Full(), result.SHA256); err != nil {
-//       out.Warn(fmt.Sprintf("updating lockfile for %s: %v", name, err))
-//   }
-//
-// The fix for 0006 (using r.Package.Full()) and 0008 (not discarding
-// the error) are both on the same line, so they are fixed together.
-//
-// A unit test for this behavior requires mocking the lockfile write
-// path, which would require refactoring updateLockfile to accept an
-// injectable writer. The integration-level signal is that a read-only
-// lockfile causes sync to emit a warning rather than silently succeeding.
-// The fix is a one-line code movement in runSync — moving the stale info
-// message inside the !dryRun block.
+// NOTE (findings 0006 and 0008 — sync's lockfile write): both
+// described bugs in the per-package lockfile write sync used to
+// perform after each install. Sync no longer writes gale.lock at all
+// (design §11), so the line both fixes landed on is gone. The
+// canonical-version invariant they were about lives on in the lock
+// writers, which root r.Package.Full() and nothing else.

@@ -1,22 +1,30 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/lockplan"
+	"github.com/kelp/gale/internal/lockwrite"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/projects"
+	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
@@ -41,8 +49,41 @@ type cmdContext struct {
 
 	// Host force-writes the package to
 	// [hosts.<Host>.packages] when finalize runs. Empty
-	// preserves the existing location (see writeConfigAndLock).
+	// preserves the existing location (see WriteConfig).
 	Host string
+
+	// lockTargets is the lock work this command has accumulated:
+	// one entry per manifest section it wrote, mapping package
+	// name to the canonical version-revision verified for it. A
+	// section with no roots is a section the command emptied.
+	//
+	// The lock is written once, at the end of the command, because
+	// a target's roots are resolved into one closure and one
+	// document (see WriteLock). Writing per package would resolve
+	// the first root against a manifest the later ones had not
+	// landed in yet, and would leave a failed second package with
+	// the first already locked.
+	lockTargets map[string]map[string]string
+
+	// lockMints are derived artifact sets for other platforms, and
+	// mintSkips the platforms that could not be derived. Only `gale
+	// lock` fills them (design §11); every other writer mints nothing.
+	// WriteLock appends the mints the document refused to mintSkips,
+	// so one list names every platform the lock does not cover.
+	lockMints []lockwrite.Mint
+	mintSkips []lockwrite.PlatformSkip
+
+	// refresh grants `gale lock --refresh` its one added permission:
+	// replacing an occupied canonical store directory that carries no
+	// provenance at all (design §13). It changes nothing else, which
+	// is why it is a flag on the context rather than a second command
+	// path — the resolve, verify, mint and write steps are identical.
+	refresh bool
+	// refreshOnly narrows that permission to the packages the user
+	// named, nil meaning every declared root. It narrows the
+	// permission and never the lock: refreshing destroys bytes, so
+	// naming one package must not replace the others silently.
+	refreshOnly map[string]bool
 }
 
 // newCmdContext resolves the config, store, and installer.
@@ -115,6 +156,7 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		Verifier:  attestation.NewVerifier(),
 		Downloads: parallel.NewLimiter(n),
 	}
+	wireFarmGuards(inst, galeDir, storeRoot)
 
 	return &cmdContext{
 		GalePath:    galePath,
@@ -125,6 +167,78 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		Registry:    reg,
 		Parallelism: n,
 	}, nil
+}
+
+// wireFarmGuards attaches design §4's cross-project farm claimant
+// guards to an installer: every farm population and every farm
+// removal it performs is checked against the other scopes' claims
+// first. The initiating scope (galeDir) is excluded from the
+// external set — its claim is the operation itself, and its old
+// closure is superseded, not a veto.
+//
+// Separate from newCmdContext so a test can exercise the real
+// closures. A guard this intricate is exactly the thing a stub
+// cannot be trusted to stand in for: a stub cannot self-veto, which
+// is the failure mode these have.
+func wireFarmGuards(inst *installer.Installer, galeDir, storeRoot string) {
+	external := func() []farm.Claimant {
+		return generation.FarmClaimants(storeRoot, galeDir)
+	}
+	inst.FarmGuard = func(placements []farm.Placement) error {
+		// The initiating scope claims the closure this install
+		// leaves it with, so a second version of a package one
+		// of its own binaries links is refused rather than
+		// silently repointing the shared soname under it. Its
+		// OLD closure is never passed: that would be the verb
+		// veto §4 forbids, deadlocking the scope against its
+		// own update.
+		//
+		// One commit at a time, which is not the same as the
+		// whole operation. A sync installs every root before it
+		// rebuilds, so each call here sees the pre-sync
+		// generation and cannot see a conflict between two roots
+		// that only meet in the final closure. P7 replaces this
+		// with one guarded batch over the whole plan; see
+		// ProposedClaimant's own note.
+		// Staged, like the removal guard, and for one of the same two
+		// reasons: this runs BEFORE the commit, so the canonical dir
+		// still holds the artifact being replaced. Reading it makes
+		// the superseded artifact's own metadata decide whether the
+		// operation may proceed, and a refresh exists precisely
+		// because that artifact is not trustworthy.
+		self, err := generation.ProposedClaimantStaged(
+			placements, galeDir, storeRoot,
+		)
+		if err != nil {
+			return err
+		}
+		return farm.GuardPopulate(placements, append(external(), self))
+	}
+
+	// The other half of the same rule. GuardPopulate can only judge
+	// sonames the proposed closure TOUCHES, so a library the
+	// replacement stops providing is invisible to it, and deleting a
+	// farm entry violates a claim as surely as repointing one does.
+	inst.FarmRemoveGuard = func(
+		placements []farm.Placement, stale []string,
+	) error {
+		// Staged, not resolved, and this is the whole difference
+		// between a guard and a deadlock. The canonical dir still
+		// holds the artifact being replaced, so a claim resolved from
+		// directories would list the very sonames the replacement
+		// drops and refuse the scope's own repair.
+		//
+		// Self is still a claimant: another package in the INITIATING
+		// scope may link a library the refreshed artifact drops, and
+		// that is a real conflict rather than a self-veto.
+		self, err := generation.ProposedClaimantRequired(
+			placements, galeDir, storeRoot,
+		)
+		if err != nil {
+			return err
+		}
+		return farm.GuardRemoveLinks(stale, append(external(), self))
+	}
 }
 
 // registerProject records the project owning configPath in the
@@ -404,15 +518,46 @@ func rebuildGeneration(
 	galeDir, storeRoot, configPath string,
 	pinResolve versionedRecipeResolver,
 ) error {
-	pkgs, err := readConfigPackages(configPath)
-	if err != nil {
+	return rebuildGenerationWith(genRebuild{
+		galeDir:    galeDir,
+		storeRoot:  storeRoot,
+		configPath: configPath,
+		pinResolve: pinResolve,
+	})
+}
+
+// genRebuild is rebuildGenerationWith's inputs. A struct because the
+// locked path adds two more, past the parameter limit.
+type genRebuild struct {
+	galeDir, storeRoot, configPath string
+	pinResolve                     versionedRecipeResolver
+	// pkgs overrides the config-derived package set. Set only by a
+	// locked rebuild, where the lock is the version selector and
+	// resolving pins through recipes would pick a different answer.
+	pkgs map[string]string
+	// validate is design §6's revalidation callback, run inside the
+	// store-gen lock before any generation or farm mutation. nil for
+	// every unlocked caller, which is what keeps gc and doctor
+	// behaving exactly as before.
+	validate func() error
+}
+
+func rebuildGenerationWith(r genRebuild) error {
+	pkgs := r.pkgs
+	if pkgs == nil {
+		var err error
+		pkgs, err = readConfigPackages(r.configPath)
+		if err != nil {
+			return err
+		}
+		pkgs = canonicalizeForBuild(pkgs, r.pinResolve)
+	}
+	if err := generation.BuildWithValidate(
+		pkgs, r.galeDir, r.storeRoot, r.validate,
+	); err != nil {
 		return err
 	}
-	pkgs = canonicalizeForBuild(pkgs, pinResolve)
-	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
-		return err
-	}
-	autoPruneGenerations(galeDir, storeRoot)
+	autoPruneGenerations(r.galeDir, r.storeRoot)
 	return nil
 }
 
@@ -592,42 +737,268 @@ func lockfilePath(configPath string) (string, error) {
 	return configPath[:len(configPath)-len(".toml")] + ".lock", nil
 }
 
-// updateLockfile reads the lockfile, updates one package
-// entry, and writes it back. The file lock serializes
-// concurrent read-modify-write operations.
-//
-// manifestDigest is the OCI manifest digest to persist
-// alongside the hash; empty for source builds.
-func updateLockfile(lockPath, name, version, sha256, manifestDigest string) error {
-	defer timing.Phase("lockfile-write " + name)()
-	return filelock.With(lockPath+".lock", func() error {
-		lf, err := lockfile.Read(lockPath)
-		if err != nil {
-			return fmt.Errorf("reading lockfile: %w", err)
-		}
-		lf.Packages[name] = lockfile.LockedPackage{
-			Version:        version,
-			SHA256:         sha256,
-			ManifestDigest: manifestDigest,
-		}
-		return lockfile.Write(lockPath, lf)
-	})
+// noteLockTarget marks a manifest section as needing its lock
+// target regenerated without contributing a root. `remove` is the
+// caller: it verifies nothing, so every root its targets keep is
+// carried from the previous document.
+func (ctx *cmdContext) noteLockTarget(target string) {
+	if ctx.lockTargets == nil {
+		ctx.lockTargets = make(map[string]map[string]string, 1)
+	}
+	if ctx.lockTargets[target] == nil {
+		ctx.lockTargets[target] = make(map[string]string)
+	}
 }
 
-// removeLockEntry removes a package entry from the lockfile.
-func removeLockEntry(configPath, name string) error {
-	lp, err := lockfilePath(configPath)
+// noteLockRoot records a root this command verified, under the
+// manifest section the package was written to.
+func (ctx *cmdContext) noteLockRoot(target, name, version string) {
+	ctx.noteLockTarget(target)
+	ctx.lockTargets[target][name] = version
+}
+
+// WriteLock regenerates every lock target this command touched and
+// replaces gale.lock in one atomic write. It is a no-op for a
+// command that touched none.
+//
+// Resolution comes first for every target, the write last. A target
+// that fails to resolve must leave the previous gale.lock
+// byte-identical, and a run that wrote two manifest sections must
+// not land one of them and lose the other.
+//
+// gale.toml is read exactly once, inside the lock section, and every
+// target is resolved against that one parsed manifest. Once, because
+// a read per target can straddle a concurrent atomic config write and
+// assemble a document from a file that never existed in that state.
+// Inside, because a snapshot taken earlier cannot see a manifest
+// another command committed in the meantime, and a lock built from it
+// disagrees with the file on disk while passing every check this
+// writer makes.
+//
+// It does not serialize the two: gale.toml has its own lock and its
+// writers do not take this one. What it buys is that the loser of
+// such a race reads the winner's manifest and fails, rather than
+// committing a lock the manifest no longer backs. Failing is the
+// intended outcome, the same stance as everywhere else here.
+//
+// No nested file lock, deliberately. Config READ paths take no lock
+// at all — only its writers take gale.toml.lock — so reading here
+// adds no ordering between the two files. Taking the config lock
+// around this section would establish a config→lockfile order that
+// any future writer mutating gale.toml inside the section would
+// silently invert into an AB-BA deadlock.
+func (ctx *cmdContext) WriteLock() error {
+	_, err := ctx.writeLockWitnessed()
+	return err
+}
+
+// FileSnapshot is a file's content together with whether it exists,
+// kept apart because they are different facts. bytes.Equal(nil,
+// []byte{}) is true, so a bare []byte cannot tell "no file" from "an
+// empty file", and a compare-and-swap built on one would treat the
+// two as interchangeable and delete state it should have kept.
+type FileSnapshot struct {
+	Exists bool
+	Bytes  []byte
+}
+
+// Same reports whether two snapshots describe the same file state.
+func (f FileSnapshot) Same(other FileSnapshot) bool {
+	return f.Exists == other.Exists && bytes.Equal(f.Bytes, other.Bytes)
+}
+
+// LockWitness is the lockfile's state either side of one WriteLock,
+// both observed INSIDE the critical section that produced the
+// change. That is what makes them usable as compare-and-swap tokens:
+// a Before read before the lock was taken, or an After read once it
+// was released, could each have caught a concurrent writer's file
+// instead of ours, so a later restore keyed on them could discard
+// that writer's work while believing it was undoing its own.
+type LockWitness struct {
+	Path   string
+	Before FileSnapshot
+	After  FileSnapshot
+}
+
+func (ctx *cmdContext) writeLockWitnessed() (LockWitness, error) {
+	lp, err := lockfilePath(ctx.GalePath)
 	if err != nil {
-		return fmt.Errorf("resolving lockfile path: %w", err)
+		return LockWitness{}, fmt.Errorf("resolving lockfile path: %w", err)
 	}
-	return filelock.With(lp+".lock", func() error {
-		lf, err := lockfile.Read(lp)
-		if err != nil {
-			return fmt.Errorf("reading lockfile: %w", err)
+	w := LockWitness{Path: lp}
+	if len(ctx.lockTargets) == 0 {
+		return w, nil
+	}
+	defer timing.Phase("lockfile-write")()
+	// Assigned, not returned inline. In `return w, f()` the order in
+	// which w and the call are evaluated is unspecified, so the
+	// witness could be copied before the closure fills it in and the
+	// caller would get the pre-write snapshots as its token.
+	werr := filelock.With(lp+".lock", func() error {
+		if w.Before, err = readFileSnapshot(lp); err != nil {
+			return err
 		}
-		delete(lf.Packages, name)
-		return lockfile.Write(lp, lf)
+		defer func() {
+			// Best effort: a read failure here loses the token, and a
+			// lost token makes a later restore stand down, which is the
+			// safe direction.
+			w.After, _ = readFileSnapshot(lp)
+		}()
+		if beforeLockRead != nil {
+			beforeLockRead()
+		}
+		cfg, err := rawGaleConfig(ctx.GalePath)
+		if err != nil {
+			return err
+		}
+		sections := ctx.lockSections(cfg)
+		// Absence is nil, which is unlocked mode and the state the
+		// first install in a project starts from. Any other failure is
+		// a lock that is present and cannot be modeled: rewriting it
+		// would discard a document this build does not understand, so
+		// it is refused rather than replaced (design §9, §11).
+		doc, lockErr := lockfile.ReadV1(lp)
+		if lockErr != nil && !errors.Is(lockErr, fs.ErrNotExist) {
+			return fmt.Errorf("reading lockfile: %w", lockErr)
+		}
+		res, err := lockwrite.BuildAll(lockwrite.AllRequest{
+			StoreRoot: ctx.StoreRoot,
+			Platform:  currentPlatform(),
+			Sections:  sections,
+			Mints:     ctx.lockMints,
+			Existing:  doc,
+		})
+		if err != nil {
+			return err
+		}
+		if res.Doc == nil {
+			// Nothing to root and no prior document: a remove in a
+			// project that was never locked. Absent stays absent, so an
+			// unlocked project is not put into locked mode by a removal,
+			// and nothing is named as unlocked either — nothing is stale
+			// against a lock that does not exist.
+			return nil
+		}
+		if err := lockfile.WriteV1(lp, res.Doc); err != nil {
+			return err
+		}
+		// After the write lands, never before: what the warning
+		// describes is what the NEW lockfile leaves out, and a failed
+		// write leaves the previous one intact, omitting nothing.
+		warnUnlocked(res.Unlocked)
+		// The platforms the document refused join the ones that could
+		// not be derived at all, so the caller reports both from one
+		// list rather than each from where it happened to be produced.
+		ctx.mintSkips = append(ctx.mintSkips, res.Skipped...)
+		return nil
 	})
+	return w, werr
+}
+
+// beforeLockRead runs inside WriteLock's critical section, after the
+// lockfile lock is held and before the manifest is read. Test seam
+// only (nil in production, like beforeGuardedRemoval in remove.go):
+// gale.toml is not covered by the lockfile lock, so another command
+// can commit a manifest change at exactly this point, and the seam
+// makes that moment deterministic instead of a timing race.
+var beforeLockRead func()
+
+// lockSections pairs each touched target with the manifest section it
+// mirrors, in a deterministic order so a rewrite of an unchanged
+// closure produces byte-identical output.
+//
+// It takes the parsed manifest rather than a path so that resolving
+// every section against one read of one file is structural: there is
+// no path here that can read gale.toml a second time.
+func (ctx *cmdContext) lockSections(cfg *config.GaleConfig) []lockwrite.Section {
+	sections := make([]lockwrite.Section, 0, len(ctx.lockTargets))
+	for _, target := range slices.Sorted(maps.Keys(ctx.lockTargets)) {
+		sections = append(sections, lockwrite.Section{
+			Target:   target,
+			Roots:    ctx.lockTargets[target],
+			Declared: declaredForTarget(cfg, target),
+		})
+	}
+	return sections
+}
+
+// declaredForTarget returns the manifest section a lock target
+// mirrors: shared [packages] for the default target,
+// [hosts.<K>.packages] for a host target.
+//
+// Raw, never host-merged. Each target roots its own section alone,
+// so a reader's EffectiveRoots merge reproduces the manifest's own
+// overlay merge. Merging here instead would copy the shared packages
+// into every overlay target and lock them twice.
+func declaredForTarget(cfg *config.GaleConfig, target string) map[string]string {
+	if target == "" {
+		return cfg.Packages
+	}
+	return cfg.Hosts[target].Packages
+}
+
+// warnUnlocked reports declared packages the write could back
+// neither by fresh verification nor by a carried subgraph. The
+// document is complete without them; it is stale against gale.toml,
+// which is the same recoverable state `gale add` produces and has
+// the same remedy.
+//
+// One line per package, because `gale install` takes exactly one
+// package name and a line naming several is not a command anyone can
+// run.
+func warnUnlocked(roots []lockwrite.UnlockedRoot) {
+	for _, r := range roots {
+		fmt.Fprintf(
+			os.Stderr,
+			"warning: %s is declared but not locked — run: %s\n",
+			r.Name, lockRemedy(r),
+		)
+	}
+}
+
+// lockRemedy is the command that puts one unlocked root back into
+// the section it is declared in.
+//
+// A host target's selector is passed to --host verbatim, quoted:
+// AddPackage writes to [hosts.<selector>.packages] literally, so a
+// wildcard or comma-list selector addresses exactly the section that
+// declares the package, and the quoting is what keeps a `*` from
+// being expanded by the shell before gale ever sees it. Running it on
+// a machine the selector does not match is fine — `install --host`
+// for a foreign host is declaration-only and still locks that target.
+//
+// A selector containing a single quote cannot be spelled that way in
+// one line, so the section is named instead of emitting a command
+// that would not run. Such a selector is outside the documented
+// selector grammar, which gale.toml has always accepted anyway.
+func lockRemedy(r lockwrite.UnlockedRoot) string {
+	if r.Target == "" {
+		return "gale install " + r.Name
+	}
+	flag, ok := hostFlagArg(r.Target)
+	if !ok {
+		return fmt.Sprintf(
+			"gale install %s --host, with the selector spelled as in "+
+				"[hosts.%q.packages]",
+			r.Name, r.Target,
+		)
+	}
+	return fmt.Sprintf("gale install %s %s", r.Name, flag)
+}
+
+// hostFlagArg renders the --host argument addressing one host
+// target's manifest section, quoted so a wildcard or comma-list
+// selector reaches gale instead of being expanded by the shell first.
+//
+// ok is false for a selector containing a single quote, which cannot
+// be spelled this way in one line. Callers name the section instead
+// of emitting a command that would not run. Shared by every remedy
+// that offers a --host command, so the quoting rule has one home.
+func hostFlagArg(target string) (string, bool) {
+	if strings.Contains(target, "'") {
+		return "", false
+	}
+	return "--host '" + target + "'", true
 }
 
 // stripNumericRevision removes a Debian-style "-N" suffix from
@@ -657,7 +1028,9 @@ func addToConfig(name, version, host, configPath string) (string, error) {
 		}
 		return configPath, nil
 	}
-	if err := config.UpsertPackage(
+	// The written section is discarded: `gale add` is manifest-only
+	// and never touches the lock (design §11).
+	if _, err := config.UpsertPackage(
 		configPath, config.CurrentHost(), name, version,
 	); err != nil {
 		return "", fmt.Errorf("adding %s to config: %w", name, err)
@@ -696,7 +1069,7 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 // is written to gale.toml (bare by convention);
 // lockVersion is the canonical `<version>-<revision>`
 // written to gale.lock. ctx.Host controls section
-// targeting (see WriteConfigAndLock).
+// targeting (see WriteConfig).
 //
 // Uses lenient rebuild so unrelated missing store dirs in
 // gale.toml don't block this install from landing on PATH —
@@ -714,11 +1087,12 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 // post-rebuild check below enforces the contract: this
 // install must put the package on PATH, or surface a clear
 // error.
-func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256, manifestDigest string) error {
-	if err := ctx.WriteConfigAndLock(
-		name, configVersion, lockVersion, sha256, manifestDigest,
-	); err != nil {
-		return fmt.Errorf("writing config and lock: %w", err)
+func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion string) error {
+	if err := ctx.WriteConfig(name, configVersion, lockVersion); err != nil {
+		return fmt.Errorf("writing config: %w", err)
+	}
+	if err := ctx.WriteLock(); err != nil {
+		return fmt.Errorf("writing lock: %w", err)
 	}
 	if err := rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, nil); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
@@ -757,10 +1131,10 @@ func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion, sha256,
 // canonical `<v>-<N>` goes to gale.lock for exact pin.
 // See configVersionForRecipe for the revision-rollback
 // exception (gh#65).
-func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe, sha256, manifestDigest string) error {
+func (ctx *cmdContext) FinalizeRecipeInstall(r *recipe.Recipe) error {
 	return ctx.FinalizeInstall(
 		r.Package.Name, configVersionForRecipe(ctx.StoreRoot, r),
-		r.Package.Full(), sha256, manifestDigest,
+		r.Package.Full(),
 	)
 }
 
@@ -786,84 +1160,49 @@ func configVersionForRecipe(storeRoot string, r *recipe.Recipe) string {
 	return bare
 }
 
-// WriteConfigAndLock adds a package to gale.toml and
-// updates gale.lock without rebuilding the generation.
-// Callers handle generation rebuild (once per command,
-// not per package).
+// WriteConfig adds a package to gale.toml and records the root for
+// the lock write that follows. It rebuilds no generation and writes
+// no lock: callers do both once per command, not once per package.
 //
-// configVersion is the form written to gale.toml (bare
-// by convention so the entry tracks revision bumps
-// automatically); lockVersion is the canonical
-// `<version>-<revision>` form written to gale.lock for
-// exact pinning. See docs/revisions.md.
+// configVersion is the form written to gale.toml (bare by
+// convention so the entry tracks revision bumps automatically);
+// lockVersion is the canonical `<version>-<revision>` form the lock
+// roots, for exact pinning. See docs/revisions.md.
 //
-// ctx.Host selects where in gale.toml the package lands.
-// When non-empty, the package is force-written to
-// [hosts.<host>.packages]. When empty, the package is
-// upserted with location preservation: if the current
-// machine already lists it under its host overlay, that
-// entry is updated in place; otherwise it goes to shared
-// [packages].
-//
-// When sha256 is empty (cached install), the lockfile
-// entry is still updated with the new version so stale
-// hashes from a previous version are not retained.
-func (ctx *cmdContext) WriteConfigAndLock(name, configVersion, lockVersion, sha256, manifestDigest string) error {
+// ctx.Host selects where in gale.toml the package lands. When
+// non-empty, the package is force-written to
+// [hosts.<host>.packages]. When empty, the package is upserted with
+// location preservation: if the current machine already lists it
+// under its host overlay, that entry is updated in place; otherwise
+// it goes to shared [packages]. The lock target follows whichever
+// section was actually written, so a concrete-host operation never
+// rewrites the shared graph and vice versa.
+func (ctx *cmdContext) WriteConfig(name, configVersion, lockVersion string) error {
 	if ctx.Host != "" {
 		if err := config.AddPackage(
 			ctx.GalePath, ctx.Host, name, configVersion,
 		); err != nil {
 			return fmt.Errorf("adding to config: %w", err)
 		}
-	} else if err := config.UpsertPackage(
+		ctx.noteLockRoot(ctx.Host, name, lockVersion)
+		return nil
+	}
+	section, err := config.UpsertPackage(
 		ctx.GalePath, config.CurrentHost(), name, configVersion,
-	); err != nil {
+	)
+	if err != nil {
 		return fmt.Errorf("adding to config: %w", err)
 	}
-	lp, err := lockfilePath(ctx.GalePath)
-	if err != nil {
-		return fmt.Errorf("resolving lockfile path: %w", err)
-	}
-	if sha256 == "" {
-		// Cached install: no new hash to record. Preserve the
-		// existing entry only when the stored version is
-		// EXACTLY the canonical lockVersion. A loose
-		// VersionMatches early-return drops the revision
-		// (gh#30): a bare "2.53.0" in the lock satisfies
-		// VersionMatches against the resolved "2.53.0-2", so
-		// the canonical form was never written and the bare
-		// pin stuck. Rewrite to lockVersion, carrying the old
-		// hash forward since none was computed this run.
-		lf, err := lockfile.Read(lp)
-		if err != nil {
-			return fmt.Errorf("reading lockfile: %w", err)
-		}
-		if existing, ok := lf.Packages[name]; ok {
-			if existing.Version == lockVersion {
-				return nil // identical pin, keep existing hash
-			}
-			if lockfile.VersionMatches(lockVersion, existing.Version) {
-				// Same upstream version, differing revision
-				// representation (bare vs canonical). Rewrite to
-				// the canonical lockVersion but keep the hash and
-				// manifest digest.
-				return updateLockfile(
-					lp, name, lockVersion,
-					existing.SHA256, existing.ManifestDigest,
-				)
-			}
-		}
-	}
-	return updateLockfile(lp, name, lockVersion, sha256, manifestDigest)
+	ctx.noteLockRoot(section, name, lockVersion)
+	return nil
 }
 
-// WriteConfigAndLockForRecipe is WriteConfigAndLock for
-// the recipe-in-hand case. See FinalizeRecipeInstall and
-// configVersionForRecipe.
-func (ctx *cmdContext) WriteConfigAndLockForRecipe(r *recipe.Recipe, sha256, manifestDigest string) error {
-	return ctx.WriteConfigAndLock(
+// WriteConfigForRecipe is WriteConfig for the recipe-in-hand case.
+// See FinalizeRecipeInstall and configVersionForRecipe.
+func (ctx *cmdContext) WriteConfigForRecipe(r *recipe.Recipe) error {
+	return ctx.WriteConfig(
 		r.Package.Name, configVersionForRecipe(ctx.StoreRoot, r),
-		r.Package.Full(), sha256, manifestDigest,
+		r.Package.Full(),
 	)
 }
 
@@ -890,13 +1229,107 @@ func (ctx *cmdContext) RebuildGenerationCanonical() error {
 	)
 }
 
-// RemoveLockEntry removes a package entry from the lockfile.
-func (ctx *cmdContext) RemoveLockEntry(name string) error {
-	return removeLockEntry(ctx.GalePath, name)
+// RebuildGenerationLocked activates a plan rather than a manifest.
+//
+// The canonical rebuild maps gale.toml's bare pins through the recipe
+// resolver, which under a lock is a second version selector: it would
+// link whatever revision the recipe now offers, publishing a version
+// the lock does not describe immediately after verifying the one it
+// does. The plan already holds the answer, so the versions come from
+// there and no recipe is consulted.
+//
+// It also supplies design §6's revalidation callback. Sync is the only
+// command that carries a plan, so this is the only place the callback
+// can be wired, and without it every artifact is verified once and
+// then published without a recheck — the TOCTOU window §6 exists to
+// close.
+func (ctx *cmdContext) RebuildGenerationLocked() error {
+	defer timing.Phase("generation-rebuild")()
+	pkgs, err := lockedRebuildPackages(ctx.Installer.Plan)
+	if err != nil {
+		return err
+	}
+	return rebuildGenerationWith(genRebuild{
+		galeDir:   ctx.GaleDir,
+		storeRoot: ctx.StoreRoot,
+		pkgs:      pkgs,
+		validate:  ctx.revalidatePlannedClosure,
+	})
+}
+
+// lockedRebuildPackages turns the plan's roots into the name→version
+// map a generation is built from. Roots only: a generation links
+// declared packages, while the plan's other nodes are the transitive
+// closure that supports them.
+func lockedRebuildPackages(plan *lockplan.Plan) (map[string]string, error) {
+	pkgs := make(map[string]string, len(plan.Roots))
+	for _, id := range plan.Roots {
+		name, version, err := lockfile.ParseIdentity(id)
+		if err != nil {
+			return nil, fmt.Errorf("locked rebuild: %w", err)
+		}
+		pkgs[name] = version
+	}
+	return pkgs, nil
+}
+
+// revalidatePlannedClosure is design §6's validation callback: it
+// rechecks every plan entry, cache hits included, against the locked
+// graph.
+//
+// It runs inside BuildWithValidate's store-gen lock acquisition and
+// must therefore take no lock of its own — a nested acquisition on the
+// same file deadlocks the process against itself, since flock is held
+// per open file description. Everything here is a stat and a file
+// read.
+//
+// The check is the same VerifyAgainstLock the install-time cache hit
+// runs, deliberately. A second comparator written for this callback
+// would be a second serializer, and a comparator that is even slightly
+// stricter than the writer is the infinite-reinstall failure mode this
+// repo has paid for three times.
+func (ctx *cmdContext) revalidatePlannedClosure() error {
+	plan := ctx.Installer.Plan
+	if plan == nil {
+		return nil
+	}
+	for _, key := range plan.Order {
+		n := plan.Nodes[key]
+		dir, ok := ctx.Installer.Store.StorePath(n.Name, n.Version)
+		if !ok {
+			return fmt.Errorf("revalidating %s: %w: absent from the store",
+				key, provenance.ErrInvalid)
+		}
+		if _, err := provenance.VerifyAgainstLock(
+			dir, n.Graph, n.GraphDigest,
+		); err != nil {
+			return fmt.Errorf("revalidating %s: %w", key, err)
+		}
+	}
+	return nil
 }
 
 // ResolveVersionedRecipe fetches a recipe for a specific
 // version.
 func (ctx *cmdContext) ResolveVersionedRecipe(name, version string) (*recipe.Recipe, error) {
 	return resolveVersionedRecipe(ctx, name, version)
+}
+
+// readFileSnapshot captures a file's existence and content.
+// os.Lstat decides existence, the same discipline the lockfile
+// readers use: os.ReadFile reports ErrNotExist both for a missing
+// file and for a symlink to a missing target, and only the first
+// means the file is not there.
+func readFileSnapshot(path string) (FileSnapshot, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return FileSnapshot{}, nil
+		}
+		return FileSnapshot{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return FileSnapshot{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return FileSnapshot{Exists: true, Bytes: b}, nil
 }

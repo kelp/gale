@@ -1,0 +1,168 @@
+package main
+
+import (
+	"errors"
+
+	"github.com/kelp/gale/internal/activation"
+	"github.com/kelp/gale/internal/farm"
+	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/lockplan"
+	"github.com/kelp/gale/internal/provenance"
+)
+
+// Exit codes. A Go error type is invisible to the shell scripts
+// docs/ci-cd.md tells users to write, and a pipeline must be able to
+// tell "artifact tampered" from "build broke". gale used only exit 1
+// before enforcement, so the taxonomy is additive and breaks
+// nothing.
+//
+// The full taxonomy, of which this file implements what has
+// producers today:
+//
+//	1  ordinary failure: build error, network error, usage error
+//	3  lock integrity violation: artifact SHA, manifest digest,
+//	   provenance or graph_digest mismatch; provenance conflict;
+//	   cross-project farm conflict
+//	4  lock unusable: any lock that is present but cannot be parsed
+//	   or fully modeled
+//	5  activation drift: the active generation does not match the
+//	   target graph, including carry-forward
+//
+// The split that matters is 3 against 4 and 5. Code 3 means
+// something disagreed with bytes the lock names, which deserves a
+// human. Codes 4 and 5 mean the lock or the generation needs
+// regenerating, which a pipeline can often handle itself.
+//
+// All four numbers are declared here even though 3 and 5 have no
+// producers until the verified-unit commit model and the activation
+// gate land. They are a published shell API, so reserving them in
+// one place is the point of assigning them centrally; a comment
+// reserves nothing. TestExitCodeValues pins the literals.
+const (
+	exitFailure         = 1
+	exitLockIntegrity   = 3
+	exitLockUnusable    = 4
+	exitActivationDrift = 5
+)
+
+// exitCodeFor classifies a top-level error. Sentinels are matched
+// with errors.Is so the class survives however much context callers
+// wrap around it.
+func exitCodeFor(err error) int {
+	switch {
+	case err == nil:
+		return 0
+	// Order matters here, and each of the three cases below is checked
+	// ahead of something that would otherwise swallow it.
+	case errors.Is(err, activation.ErrDrift):
+		// Before the integrity class, because drift is the narrower
+		// condition and the two must never collapse: a carried-forward
+		// package reading as tampering trains users to ignore the
+		// message that means tampering.
+		return exitActivationDrift
+	case errors.Is(err, farm.ErrClaimConflict):
+		// Before the lock-unusable sentinels: the guard fails closed on
+		// an unreadable claimant by wrapping that scope's lock error,
+		// and regenerating the initiating scope's lock — the class-4
+		// remedy — cannot fix another scope's file. A farm refusal is
+		// always class 3, whatever it wraps.
+		return exitLockIntegrity
+	case errors.Is(err, lockfile.ErrDigestMismatch):
+		// The lock asserts a digest its own contents do not produce,
+		// which §8's table puts in the integrity row beside an artifact
+		// SHA mismatch. Plan construction and the activation gate both
+		// reach it, of the same file, so the class cannot depend on
+		// which one looked first.
+		return exitLockIntegrity
+	case errors.Is(err, errRecipeDisagrees):
+		// A store directory's record and the recipe name different
+		// bytes for one identity. Section 8's table puts an artifact
+		// SHA or manifest digest disagreement in this row, and the
+		// directory is validly provenanced, so §11 allows no
+		// replacement: nothing a pipeline can regenerate, and a human
+		// has to decide whether upstream moved or the recipe did.
+		return exitLockIntegrity
+	case errors.Is(err, errScopeDisagrees):
+		// Two scopes require two different sets of bytes at one store
+		// path (design §13's cross-scope veto). The store cannot hold
+		// both, and rewriting either lock does not change what the
+		// other one requires, so this is never something a pipeline
+		// regenerates its way out of.
+		return exitLockIntegrity
+	case errors.Is(err, errDependentRecord):
+		// A package the initiating scope actively loads records the
+		// artifact a refresh would replace. Section 8's "store-dir
+		// provenance conflict" again, and the same class as the
+		// cross-scope veto below it: §13 exempts the initiating scope
+		// from that veto, so this is the only refusal covering the
+		// case, and the remedy is re-pinning to a new
+		// version-revision, which no pipeline performs on its own.
+		return exitLockIntegrity
+	case errors.Is(err, errScopeClosureUnreadable):
+		// The initiating scope's form of the legacy closure veto.
+		// checkScopeClosure raises errScopeDisagrees for every OTHER
+		// scope in exactly this state, so classifying this one lower
+		// would give one condition two shell meanings depending on
+		// which scope happened to be holding the operation.
+		// Regenerating a lock does not make unreadable dependency
+		// metadata readable.
+		return exitLockIntegrity
+	case errors.Is(err, errUnprovenancedStoreDir):
+		// Section 8's "store-dir provenance conflict": the canonical
+		// directory holds bytes nothing attests. Rewriting the lock
+		// does not change what is on disk, so classifying it 4 would
+		// send a script into a regenerate-and-retry loop with no exit.
+		return exitLockIntegrity
+	case errors.Is(err, provenance.ErrInvalid):
+		// A store directory's record disagrees with the lock, or there
+		// is no record at all where the lock names bytes. Both mean
+		// something on disk is not what the lock says, which is the
+		// class that deserves a human. ErrAbsent arrives wrapped in
+		// ErrInvalid from VerifyAgainstLock, deliberately.
+		return exitLockIntegrity
+	case errors.Is(err, lockplan.ErrRecipeMismatch):
+		// The lock modeled this node successfully and the recipe on
+		// disk no longer backs it. Every class-4 row describes
+		// something MISSING from the lock — a stale root, an absent
+		// platform or dep entry, a schema gale cannot read — and
+		// regenerating ratifies a change gale.toml already authorized.
+		// This is the reverse: gale.toml and the lock agree, and a
+		// recipe fetched for a pinned version-revision disagrees.
+		// Regenerating would adopt whatever the moved recipe now says,
+		// which is exactly the substitution #182 closes, so a human
+		// decides whether upstream moved legitimately.
+		//
+		// Before the class-4 block deliberately. validateMethod's
+		// trust-policy branch wraps two errors ("%w: %s: %w"), so an
+		// inner error is visible to errors.Is as well; the integrity
+		// verdict has to win whatever it happens to carry.
+		return exitLockIntegrity
+	case errors.Is(err, lockfile.ErrLegacySchema),
+		errors.Is(err, lockfile.ErrUnknownVersion),
+		errors.Is(err, lockfile.ErrUnknownField),
+		errors.Is(err, lockfile.ErrDowngradeGuard),
+		errors.Is(err, lockfile.ErrMalformed),
+		// A lock whose contents cannot be modeled shares the class
+		// with one whose schema cannot: in every case the file is
+		// present and the remedy is to regenerate it (design §8).
+		errors.Is(err, lockfile.ErrStaleLock),
+		errors.Is(err, lockfile.ErrMalformedRoot),
+		errors.Is(err, lockfile.ErrVersionConflict),
+		errors.Is(err, lockfile.ErrMissingNode),
+		errors.Is(err, lockfile.ErrMissingArtifact),
+		// A locked closure that cannot be serialized is a lock that
+		// cannot be modeled: an edge pointing at a node the lock omits,
+		// or a cycle, for which no digest and no install order exist.
+		errors.Is(err, lockgraph.ErrMissingDep),
+		errors.Is(err, lockgraph.ErrCycle),
+		// An artifact outside the persisted format — an unknown method
+		// or a hash of the wrong shape — is read back and compared
+		// verbatim, so it describes a lock to regenerate rather than
+		// one to interpret generously.
+		errors.Is(err, lockplan.ErrMalformedArtifact):
+		return exitLockUnusable
+	default:
+		return exitFailure
+	}
+}

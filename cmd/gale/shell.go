@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/spf13/cobra"
 )
 
@@ -27,16 +26,24 @@ var shellCmd = &cobra.Command{
 
 		syncIfNeeded(os.Stderr, projectDir)
 
-		var galeDir string
+		var galeDir, configPath string
 		var err error
 		if projectDir != "" {
 			// Resolved project root — use its .gale/.
 			galeDir = filepath.Join(projectDir, ".gale")
-		} else {
-			galeDir, err = resolveGaleDir()
-			if err != nil {
-				return err
-			}
+			configPath = filepath.Join(projectDir, "gale.toml")
+		} else if galeDir, configPath, err = resolveScopedPaths(
+			false, false,
+		); err != nil {
+			return err
+		}
+		// Fatal, not a warning. `gale shell` puts the project's
+		// binaries on PATH and then hands the user an interactive
+		// shell; warning and proceeding would leave them executing
+		// artifacts that disagree with the lock for as long as the
+		// shell lives.
+		if err := gateActivation(galeDir, configPath); err != nil {
+			return err
 		}
 
 		binDir := filepath.Join(galeDir, "current", "bin")
@@ -107,7 +114,7 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 		))
 		return
 	}
-	stale, err := lockfile.IsStale(lp, cfg.Packages)
+	stale, err := lockIsStale(lp, cfg.Packages, config.CurrentHost())
 	if err != nil {
 		out.Warn(fmt.Sprintf(
 			"sync: checking lockfile: %v", err,

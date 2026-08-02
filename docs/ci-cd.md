@@ -26,9 +26,28 @@ directory.
 ## Lockfile
 
 Commit `gale.lock` alongside `gale.toml`. The lockfile
-pins exact versions and checksums. `gale sync` uses
-the lockfile when present, so every CI run installs
-identical binaries.
+records the version and checksum of each package
+listed in `gale.toml`. Transitive dependencies are not
+recorded.
+
+Today it is a record, not a control: `gale sync`
+installs from the current recipe and rewrites the
+lockfile to match, so a changed upstream artifact is
+accepted rather than rejected. Do not rely on
+`gale.lock` for supply-chain integrity yet. What does
+hold is version selection: pin exact versions in
+`gale.toml` and every runner installs those versions.
+
+`gale audit` and `gale verify` do not close this gap.
+Both read their expected value from the same lockfile,
+and neither inspects the installed store directory:
+`audit` rebuilds from source and compares against the
+lockfile's SHA256, and `verify` checks the Sigstore
+attestation for the manifest digest the lockfile
+names.
+
+Enforcement is being added in
+[issue #182](https://github.com/kelp/gale/issues/182).
 
 ## Caching
 

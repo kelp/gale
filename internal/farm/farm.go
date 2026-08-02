@@ -42,10 +42,20 @@ var linuxVersioned = regexp.MustCompile(
 	`^lib[A-Za-z0-9_+.\-]+\.so\.[0-9]+(\.[0-9]+)*$`,
 )
 
-// Dir returns the farm directory for a given gale dir.
-// Typically ~/.gale/lib/.
-func Dir(galeDir string) string {
-	return filepath.Join(galeDir, "lib")
+// DirFromStoreRoot returns the shared farm directory for a store
+// root: <parent of storeRoot>/lib, which is ~/.gale/lib.
+//
+// There is deliberately no accessor taking a gale dir. There used to
+// be, and every call site that mattered passed the INITIATING
+// scope's gale dir, so a project-scoped rebuild pointed at
+// <project>/.gale/lib — a directory nothing resolves through, since
+// store binaries carry an rpath derived from the store root
+// (DirFromStoreDir). One farm exists, it is shared, and it is
+// reached from the store root; taking the argument that cannot
+// express the mistake is what keeps it from recurring (design
+// revision 6, section 4).
+func DirFromStoreRoot(storeRoot string) string {
+	return filepath.Join(filepath.Dir(storeRoot), "lib")
 }
 
 // DirFromStoreDir derives the farm dir from a store dir
@@ -184,16 +194,16 @@ func Depopulate(storeDir, farmDir string) error {
 		return fmt.Errorf("read farm dir: %w", err)
 	}
 
-	storeDirClean := filepath.Clean(storeDir)
 	for _, entry := range entries {
 		link := filepath.Join(farmDir, entry.Name())
 		target, err := os.Readlink(link)
 		if err != nil {
 			continue // not a symlink — don't touch
 		}
-		if !strings.HasPrefix(
-			filepath.Clean(target), storeDirClean+string(filepath.Separator),
-		) {
+		// The same predicate GuardDepopulate decides on. Two
+		// spellings of one comparison would let the guard approve a
+		// removal this loop then does not perform, or the reverse.
+		if !UnderStoreDir(target, storeDir) {
 			continue
 		}
 		if err := os.Remove(link); err != nil {
@@ -215,17 +225,24 @@ func Rebuild(activeStoreDirs []string, farmDir string) error {
 		return fmt.Errorf("create farm dir: %w", err)
 	}
 
+	// Progressive, not transactional: one package's failure must
+	// not abandon the rest of the batch, so every store dir is
+	// attempted and the failures are collected.
+	//
+	// They are RETURNED, not merely logged (design revision 6,
+	// section 6). The generation rebuild calls this after the
+	// current-symlink swap, which is the activation commit point, so
+	// a failure here cannot roll the generation back — but it must
+	// still reach the caller. An unpopulated shared farm means
+	// binaries cannot load their dylibs, and a line on stderr inside
+	// a direnv hook is invisible.
+	var errs []error
 	for _, storeDir := range activeStoreDirs {
 		if err := Populate(storeDir, farmDir); err != nil {
-			// Don't fail the whole rebuild on a single
-			// package's conflict — warn and keep going.
-			// A genuine conflict will show up in
-			// `gale doctor` anyway.
-			fmt.Fprintf(os.Stderr,
-				"farm: populate %s: %v\n", storeDir, err)
+			errs = append(errs, fmt.Errorf("populate %s: %w", storeDir, err))
 		}
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // CheckDrift reports farm entries that don't match the
@@ -248,19 +265,36 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 
 	// Drift type 1: farm symlinks whose target no longer
 	// exists (or isn't a regular file).
+	//
+	// The farm is shared, and every scope now checks the same one,
+	// so a scope sees breakage it did not cause. Each item says
+	// which case it is. It does not name an owner: an entry outside
+	// this scope's closure may belong to another live scope, or be
+	// stale, or be orphaned, and CheckDrift cannot tell those apart
+	// (design revision 6, section 6).
+	//
+	// Either class is repairable from here. A rebuild repopulates
+	// the shared farm from the guarded union of every claimant, so
+	// `gale doctor --repair` run in any scope restores another
+	// scope's entry as long as its store bytes are still present.
+	claimed := claimedSonames(activeStoreDirs)
 	for _, e := range entries {
+		scope := "shared farm entry outside this scope's closure"
+		if claimed[e.Name()] {
+			scope = "required by this scope"
+		}
 		link := filepath.Join(farmDir, e.Name())
 		info, err := os.Stat(link) // follows symlink
 		if err != nil {
 			issues = append(issues, fmt.Sprintf(
-				"broken symlink: %s", e.Name(),
+				"broken symlink: %s (%s)", e.Name(), scope,
 			))
 			continue
 		}
 		if !info.Mode().IsRegular() {
 			issues = append(issues, fmt.Sprintf(
-				"symlink target is not a regular file: %s",
-				e.Name(),
+				"symlink target is not a regular file: %s (%s)",
+				e.Name(), scope,
 			))
 		}
 	}
@@ -332,4 +366,29 @@ func packageName(storeDir string) string {
 		return ""
 	}
 	return filepath.Base(parent)
+}
+
+// claimedSonames names the versioned dylibs the given store dirs
+// provide. It answers one question for CheckDrift: is a farm entry
+// part of the closure being checked, or does it belong to the wider
+// shared farm?
+//
+// It delegates to libSonames, the same enumeration Populate and
+// claimant construction use, rather than re-deriving the predicate.
+// Three copies of "which files does this package contribute to the
+// farm" is three chances for the diagnostic to disagree with the
+// thing it describes; the first copy already labelled dangling
+// aliases as required.
+func claimedSonames(storeDirs []string) map[string]bool {
+	out := make(map[string]bool)
+	for _, storeDir := range storeDirs {
+		libs, err := libSonames(storeDir)
+		if err != nil {
+			continue
+		}
+		for name := range libs {
+			out[name] = true
+		}
+	}
+	return out
 }

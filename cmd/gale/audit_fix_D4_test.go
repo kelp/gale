@@ -59,17 +59,19 @@ func projectWithFakelib(t *testing.T, home string) string {
 }
 
 // TestCheckFarmScopesGlobalFarmToGlobalPackages reproduces
-// issue #50: checkFarm validated the GLOBAL farm against the
-// merged global+project package set. A project-only package
-// shipping a versioned dylib then produced permanent
-// "missing farm entry" drift on the global farm — drift that
-// `gale doctor --repair` (which rebuilds the global farm from
-// global config only) can never fix.
+// issue #50: checkFarm validated the farm against the MERGED
+// global+project package set. A project-only package shipping a
+// versioned dylib then produced permanent "missing farm entry"
+// drift on the global scope — drift that `gale doctor --repair`
+// (which rebuilds from global config only) can never fix.
 //
-// Setup: global config declares nothing; the project declares
-// fakelib, whose dylib is correctly farmed in the PROJECT farm
-// (<proj>/.gale/lib). The global farm is rightly empty. A
-// scope-correct checkFarm must pass.
+// Design revision 6 retired the per-project farm, so there is now
+// one shared farm and both scopes read it. That makes the scoping
+// rule MORE load-bearing, not less: the two checks can no longer
+// be told apart by which directory they read, only by which
+// package set they demand. The fixture leaves the shared farm
+// empty and declares fakelib in the project alone; the global
+// check must still pass, because a merged one would not.
 func TestCheckFarmScopesGlobalFarmToGlobalPackages(t *testing.T) {
 	dylib := versionedDylibName(t)
 	home := t.TempDir()
@@ -79,18 +81,8 @@ func TestCheckFarmScopesGlobalFarmToGlobalPackages(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	target := fakelibStore(t, storeRoot, dylib)
+	fakelibStore(t, storeRoot, dylib)
 	projectDir := projectWithFakelib(t, home)
-
-	// Project farm is in sync: it has the symlink the
-	// project generation's farm rebuild would create.
-	projFarm := filepath.Join(projectDir, ".gale", "lib")
-	if err := os.MkdirAll(projFarm, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, filepath.Join(projFarm, dylib)); err != nil {
-		t.Fatal(err)
-	}
 
 	var buf bytes.Buffer
 	ctx := &doctorContext{
@@ -102,8 +94,8 @@ func TestCheckFarmScopesGlobalFarmToGlobalPackages(t *testing.T) {
 		out:        output.NewWithOptions(&buf, output.Options{}),
 	}
 
-	if !checkFarm(ctx) {
-		t.Fatalf("checkFarm must not flag the global farm for a "+
+	if !checkFarmScope(ctx, ctx.globalPkgs) {
+		t.Fatalf("the global scope must not be flagged for a "+
 			"project-only package; output: %q", buf.String())
 	}
 	if strings.Contains(buf.String(), "missing farm entry") {
@@ -176,31 +168,21 @@ func TestCheckFarmSkipsProjectScopeUnderGaleHome(t *testing.T) {
 // inspected, so real drift there was invisible. Here the
 // project farm is missing fakelib's dylib entry while the
 // global farm — wrongly consulted by the old merged check —
-// happens to contain it. checkFarm must fail.
-func TestCheckFarmDetectsProjectFarmDrift(t *testing.T) {
+// TestCheckFarmDetectsProjectDrift is the other arm of the same
+// fixture: the project scope DOES demand fakelib, so the empty
+// shared farm is real drift and must be reported.
+//
+// Before design revision 6 this read <proj>/.gale/lib, a directory
+// nothing resolves through, so a project doctor run reported a
+// clean farm however broken the real one was.
+func TestCheckFarmDetectsProjectDrift(t *testing.T) {
 	dylib := versionedDylibName(t)
 	home := t.TempDir()
 	galeDir := filepath.Join(home, ".gale")
 	storeRoot := filepath.Join(galeDir, "pkg")
 
-	target := fakelibStore(t, storeRoot, dylib)
+	fakelibStore(t, storeRoot, dylib)
 	projectDir := projectWithFakelib(t, home)
-
-	// Global farm has the entry (would satisfy the old
-	// merged check), but fakelib is NOT a global package.
-	globalFarm := filepath.Join(galeDir, "lib")
-	if err := os.MkdirAll(globalFarm, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(target, filepath.Join(globalFarm, dylib)); err != nil {
-		t.Fatal(err)
-	}
-
-	// Project farm exists but is empty — real drift.
-	projFarm := filepath.Join(projectDir, ".gale", "lib")
-	if err := os.MkdirAll(projFarm, 0o755); err != nil {
-		t.Fatal(err)
-	}
 
 	var buf bytes.Buffer
 	ctx := &doctorContext{
@@ -212,12 +194,12 @@ func TestCheckFarmDetectsProjectFarmDrift(t *testing.T) {
 		out:        output.NewWithOptions(&buf, output.Options{}),
 	}
 
-	if checkFarm(ctx) {
-		t.Fatalf("checkFarm must detect drift in the project farm; "+
-			"output: %q", buf.String())
+	if checkFarmScope(ctx, ctx.projPkgs) {
+		t.Fatalf("checkFarm must detect the project's missing entry "+
+			"in the shared farm; output: %q", buf.String())
 	}
 	if !strings.Contains(buf.String(), "missing farm entry") {
 		t.Errorf("expected missing-farm-entry drift for the project "+
-			"farm; got: %q", buf.String())
+			"scope; got: %q", buf.String())
 	}
 }

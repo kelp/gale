@@ -508,7 +508,7 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 // out of scope — they aren't on PATH and aren't in the
 // farm by design.
 func checkFarm(ctx *doctorContext) bool {
-	ok := checkFarmScope(ctx, ctx.galeDir, ctx.globalPkgs)
+	ok := checkFarmScope(ctx, ctx.globalPkgs)
 	if projPath, err := config.FindGaleConfig(ctx.cwd); err == nil &&
 		!configInGaleDir(projPath, ctx.galeDir) {
 		// configInGaleDir: when cwd is under the global gale
@@ -517,25 +517,30 @@ func checkFarm(ctx *doctorContext) bool {
 		// yield the bogus <galeDir>/.gale and report drift
 		// --repair can never fix (gh#96). The global farm
 		// was already checked above.
-		projGaleDir, dirErr := galeDirForConfig(projPath)
-		if dirErr == nil &&
-			!checkFarmScope(ctx, projGaleDir, ctx.projPkgs) {
+		if _, dirErr := galeDirForConfig(projPath); dirErr == nil &&
+			!checkFarmScope(ctx, ctx.projPkgs) {
 			ok = false
 		}
 	}
 	return ok
 }
 
-// checkFarmScope validates one farm (galeDir/lib) against
-// the same store-dir set generation.Build uses to populate
-// it: config packages plus the transitive runtime-dep
-// closure from .gale-deps.toml. Checking the config set
-// alone is blind to a farm missing dep dylibs — the exact
-// breakage FarmStoreDirs exists to prevent (gh#43).
+// checkFarmScope validates the SHARED farm against one scope's
+// store-dir set: config packages plus the transitive runtime-dep
+// closure from .gale-deps.toml. Checking the config set alone is
+// blind to a farm missing dep dylibs — the exact breakage
+// FarmStoreDirs exists to prevent (gh#43).
+//
+// One farm, checked once per scope. It used to read
+// <galeDir>/lib, so a project run inspected a directory nothing
+// resolves through and reported a clean farm however broken the
+// real one was. Both scopes now read the store-derived shared farm
+// and each asserts its own closure is present there (design
+// revision 6, section 4).
 func checkFarmScope(
-	ctx *doctorContext, galeDir string, pkgs map[string]string,
+	ctx *doctorContext, pkgs map[string]string,
 ) bool {
-	farmDir := farm.Dir(galeDir)
+	farmDir := farm.DirFromStoreRoot(ctx.storeRoot)
 	active := generation.FarmStoreDirs(pkgs, ctx.storeRoot)
 	issues, err := farm.CheckDrift(active, farmDir)
 	if err != nil {

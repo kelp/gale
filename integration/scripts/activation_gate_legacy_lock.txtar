@@ -1,0 +1,74 @@
+# Acceptance 21 and 22 (design §12): the activation gate runs on
+# every activation, not only when a file changed.
+#
+# Upgrading the gale binary modifies nothing inside a project, so
+# the direnv hook's freshness check — sync only when gale.toml is
+# newer than the generation symlink — cannot see that the lockfile
+# on disk is one this build refuses to honor. This script recreates
+# exactly that state: the generation symlink is swapped last, so it
+# is NEWER than gale.toml and no sync would run, and the legacy
+# lock is caught anyway. A gate built on an mtime comparison would
+# pass here.
+
+gale-fixture recipes $WORK/recipes
+
+mkdir $WORK/proj
+cd $WORK/proj
+exec gale init
+exec gale install hello -p --recipes=$WORK/recipes
+exists $WORK/proj/.gale/current/bin/hello
+
+# Put the project back in the state an upgrade leaves it in: the
+# lock on disk is the legacy schema — flat entries with checksums
+# nothing ever enforced, and no platform dimension — written by the
+# gale that was installed before this one. `gale install` writes the
+# enforced schema now, so the legacy file is laid down directly
+# rather than produced as a side effect.
+cp $WORK/legacy.lock $WORK/proj/gale.lock
+! grep 'version = 1' $WORK/proj/gale.lock
+
+# The gate the hook runs before PATH_add refuses activation, in one
+# actionable line, with the lock-unusable exit code.
+exec sh -c 'gale env --check; echo status=$?'
+stdout 'status=4'
+stderr 'legacy lockfile schema'
+stderr 'gale lock'
+
+# `gale env` is an activation command — it emits a PATH that CI and
+# scripts consume — so it refuses too, and prints no PATH when it
+# does. An activation command that cannot fail is a hole in the gate.
+! exec gale env
+! stdout 'export PATH'
+
+# Acceptance 22: shell and run refuse rather than warn. Both exist
+# to execute the project's binaries, so proceeding past the gate
+# would run precisely the artifacts nothing attests.
+exec sh -c 'gale run hello; echo status=$?'
+stdout 'status=4'
+! stdout 'hello from gale integration fixture'
+
+exec sh -c 'gale shell </dev/null; echo status=$?'
+stdout 'status=4'
+
+# The global scope is deliberately not gated: ~/.gale/current/bin
+# reaches PATH from the user's shell rc with no gale invocation, so
+# there is nothing to hook. Its legacy lock does not stop `gale env`.
+cd $WORK
+exec gale install hello -g --recipes=$WORK/recipes
+cp $WORK/legacy.lock $HOME/.gale/gale.lock
+exec gale env -g
+stdout '^export PATH='
+
+# The hook wires all of this up: the gate runs unconditionally,
+# before PATH_add, with its stderr intact, and gale.lock is watched
+# so a replaced lock re-triggers activation.
+exec gale hook direnv
+stdout 'gale env --check \|\| return 1'
+stdout 'watch_file "\$lockfile"'
+! stdout '2>/dev/null'
+
+-- legacy.lock --
+[packages]
+  [packages.hello]
+    version = "1.0-1"
+    sha256 = "0000000000000000000000000000000000000000000000000000000000000000"

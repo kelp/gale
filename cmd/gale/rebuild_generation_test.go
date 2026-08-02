@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/generation"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/recipe"
 )
 
@@ -209,7 +208,6 @@ func TestFinalizeInstallRotatesGenOnRevisionBump(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 	configPath := filepath.Join(galeDir, "gale.toml")
-	lockPath := filepath.Join(galeDir, "gale.lock")
 
 	mkRev := func(rev string) {
 		t.Helper()
@@ -228,13 +226,6 @@ func TestFinalizeInstallRotatesGenOnRevisionBump(t *testing.T) {
 		[]byte("[packages]\n  gh = \"2.92.0\"\n"), 0o644); err != nil {
 		t.Fatalf("write gale.toml: %v", err)
 	}
-	if err := lockfile.Write(lockPath, &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"gh": {Version: "2.92.0-2", SHA256: "old"},
-		},
-	}); err != nil {
-		t.Fatalf("write initial lockfile: %v", err)
-	}
 	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
 		t.Fatalf("initial rebuildGeneration: %v", err)
 	}
@@ -247,13 +238,14 @@ func TestFinalizeInstallRotatesGenOnRevisionBump(t *testing.T) {
 	}
 
 	mkRev("2.92.0-3")
+	writeProvenance(t, storeRoot, "gh", "2.92.0-3")
 	ctx := &cmdContext{
 		GaleDir:   galeDir,
 		StoreRoot: storeRoot,
 		GalePath:  configPath,
 	}
 	if err := ctx.FinalizeInstall(
-		"gh", "2.92.0", "2.92.0-3", "deadbeef", "",
+		"gh", "2.92.0", "2.92.0-3",
 	); err != nil {
 		t.Fatalf("FinalizeInstall on revision bump: %v", err)
 	}
@@ -287,7 +279,6 @@ func TestFinalizeInstallWithMissingOtherPkgInConfig(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 	configPath := filepath.Join(galeDir, "gale.toml")
-	lockPath := filepath.Join(galeDir, "gale.lock")
 
 	binDir := filepath.Join(storeRoot, "gh", "2.92.0-2", "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -303,14 +294,6 @@ func TestFinalizeInstallWithMissingOtherPkgInConfig(t *testing.T) {
 		0o644); err != nil {
 		t.Fatalf("write gale.toml: %v", err)
 	}
-	if err := lockfile.Write(lockPath, &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"gh": {Version: "2.92.0-2", SHA256: "old"},
-		},
-	}); err != nil {
-		t.Fatalf("write lockfile: %v", err)
-	}
-
 	newBin := filepath.Join(storeRoot, "gh", "2.92.0-3", "bin")
 	if err := os.MkdirAll(newBin, 0o755); err != nil {
 		t.Fatalf("mkdir gh-3: %v", err)
@@ -319,13 +302,14 @@ func TestFinalizeInstallWithMissingOtherPkgInConfig(t *testing.T) {
 		[]byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write gh-3: %v", err)
 	}
+	writeProvenance(t, storeRoot, "gh", "2.92.0-3")
 
 	ctx := &cmdContext{
 		GaleDir:   galeDir,
 		StoreRoot: storeRoot,
 		GalePath:  configPath,
 	}
-	err := ctx.FinalizeInstall("gh", "2.92.0", "2.92.0-3", "deadbeef", "")
+	err := ctx.FinalizeInstall("gh", "2.92.0", "2.92.0-3")
 	if err != nil {
 		t.Fatalf("FinalizeInstall should be lenient (skip uninstalled config pkgs) and succeed, got: %v", err)
 	}
@@ -361,7 +345,6 @@ func TestFinalizeInstallPreservesAllDeclaredPackages(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 	configPath := filepath.Join(galeDir, "gale.toml")
-	lockPath := filepath.Join(galeDir, "gale.lock")
 
 	// 44 packages, names spanning the alphabet — mirror the
 	// user's gale.toml shape (44 declared, single binary each).
@@ -399,13 +382,6 @@ func TestFinalizeInstallPreservesAllDeclaredPackages(t *testing.T) {
 		t.Fatalf("write gale.toml: %v", err)
 	}
 
-	// Initialise empty lockfile so updateLockfile doesn't trip.
-	if err := lockfile.Write(lockPath, &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{},
-	}); err != nil {
-		t.Fatalf("write lockfile: %v", err)
-	}
-
 	// Stage the new package being installed (e.g. gale).
 	newPkg := "gale"
 	const newVersion = "0.16.2"
@@ -417,6 +393,7 @@ func TestFinalizeInstallPreservesAllDeclaredPackages(t *testing.T) {
 	if err := os.WriteFile(exe, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatalf("write new pkg exe: %v", err)
 	}
+	writeProvenance(t, storeRoot, newPkg, newVersion+"-1")
 
 	// Run FinalizeInstall — the EXACT method `just install`
 	// calls after building gale from source.
@@ -426,7 +403,7 @@ func TestFinalizeInstallPreservesAllDeclaredPackages(t *testing.T) {
 		GalePath:  configPath,
 	}
 	if err := ctx.FinalizeInstall(
-		newPkg, newVersion, newVersion+"-1", "deadbeef", "",
+		newPkg, newVersion, newVersion+"-1",
 	); err != nil {
 		t.Fatalf("FinalizeInstall: %v", err)
 	}

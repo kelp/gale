@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -64,6 +66,34 @@ func (c *GaleConfig) EffectivePackages(host string) map[string]string {
 	}
 	for _, k := range matchingHostKeys(c.Hosts, host) {
 		maps.Copy(out, c.Hosts[k].Packages)
+	}
+	return out
+}
+
+// PackageOrigins reports, per package, the key of the manifest
+// section that supplies its effective pin: "" for the shared
+// [packages] table and the selector for a [hosts.<selector>.packages]
+// overlay.
+//
+// It exists so a stale-lock message can name the exact `gale lock`
+// invocation. `gale lock --host <selector>` regenerates one target
+// from one section, so a package whose effective pin comes from an
+// overlay is repaired only by naming that overlay; the merge in
+// EffectivePackages discards precisely that fact.
+func (c *GaleConfig) PackageOrigins(host string) map[string]string {
+	out := make(map[string]string, len(c.Packages))
+	for name := range c.Packages {
+		out[name] = ""
+	}
+	if host == "" {
+		return out
+	}
+	// Same order as EffectivePackages, so the recorded origin is the
+	// section whose pin actually won.
+	for _, k := range matchingHostKeys(c.Hosts, host) {
+		for name := range c.Hosts[k].Packages {
+			out[name] = k
+		}
 	}
 	return out
 }
@@ -133,8 +163,20 @@ func hostKeySpecificity(sectionKey string) int {
 // which in turn win over globs. Within each tier, keys are
 // sorted alphabetically for deterministic merge order.
 func matchingHostKeys(hosts map[string]HostConfig, host string) []string {
-	keys := make([]string, 0, len(hosts))
-	for k := range hosts {
+	return MatchingHostKeys(slices.Collect(maps.Keys(hosts)), host)
+}
+
+// MatchingHostKeys returns the selector keys that apply to host, in
+// application order: least specific first, so overlaying them in
+// sequence leaves exact-name sections overriding globs.
+//
+// It takes keys rather than a config map because the same precedence
+// governs gale.toml's [hosts.<key>] sections and the lockfile's
+// [targets.host.<key>] tables, and two implementations of one
+// ordering rule would eventually disagree about which selector wins.
+func MatchingHostKeys(candidates []string, host string) []string {
+	keys := make([]string, 0, len(candidates))
+	for _, k := range candidates {
 		if HostKeyMatches(k, host) {
 			keys = append(keys, k)
 		}
@@ -616,13 +658,22 @@ func hostPinned(cfg *GaleConfig, host string) map[string]bool {
 // that should not move a host-scoped package to the shared
 // section. host may be empty (no preservation; equivalent to
 // AddPackage(path, "", ...)).
-func UpsertPackage(path, host, name, version string) error {
-	return withFileLock(path, func() error {
+//
+// It returns the host key of the section it wrote: host when the
+// overlay was updated in place, empty for shared [packages]. The
+// lock target a writer regenerates has to match the manifest
+// section actually written, and only this function knows which one
+// that was; deriving it again from the file would be the same rule
+// in two places, free to disagree.
+func UpsertPackage(path, host, name, version string) (string, error) {
+	written := ""
+	err := withFileLock(path, func() error {
 		content, err := readOrEmpty(path)
 		if err != nil {
 			return err
 		}
 		section := packagesPath()
+		written = ""
 		if host != "" {
 			content = normalizeLegacyHostHeader(content, host)
 			// Check if the package is already in the host section.
@@ -633,12 +684,17 @@ func UpsertPackage(path, host, name, version string) error {
 				endIdx := nextSectionIndex(lines, secIdx+1)
 				if keyLineIndex(lines, secIdx+1, endIdx, name) >= 0 {
 					section = hostSection
+					written = host
 				}
 			}
 		}
 		content = setTOMLStringKey(content, section, name, version)
 		return atomicfile.Write(path, content)
 	})
+	if err != nil {
+		return "", err
+	}
+	return written, nil
 }
 
 // AddPackage adds or updates a package in the gale.toml at path.
@@ -661,6 +717,127 @@ func AddPackage(path, host, name, version string) error {
 		}
 		content = setTOMLStringKey(content, section, name, version)
 		return atomicfile.Write(path, content)
+	})
+}
+
+// FileState is a file's content together with whether it exists.
+// The two are kept apart because bytes.Equal(nil, []byte{}) is true,
+// so content alone cannot distinguish "no file" from "an empty
+// file", and a compare-and-swap built on it would treat the two as
+// interchangeable.
+type FileState struct {
+	Exists bool
+	Bytes  []byte
+}
+
+// Same reports whether two states describe the same file.
+func (f FileState) Same(other FileState) bool {
+	return f.Exists == other.Exists && bytes.Equal(f.Bytes, other.Bytes)
+}
+
+// RemovePackageSections removes name from every listed section under
+// ONE hold of the config lock, and reports the file either side of
+// the edit.
+//
+// One hold rather than one per section: a caller removing from two
+// sections used to take and release the lock twice, so another
+// command could land a manifest edit between them and see a file
+// with the package gone from one section and present in the other.
+//
+// The two states are the point. A caller whose operation can still
+// be refused after this edit needs a token that is atomic with the
+// edit to undo it safely; one read before the lock or after its
+// release could have captured a concurrent writer's file instead,
+// and restoring against that would discard their work.
+//
+// Returns ErrPackageNotFound only when NO section contained the
+// package, matching RemovePackage's contract for the single-section
+// case while letting a multi-section removal tolerate a section that
+// never had it.
+func RemovePackageSections(
+	path string, sections []string, name string,
+) (before, after FileState, err error) {
+	err = withFileLock(path, func() error {
+		before, err = readFileState(path)
+		if err != nil {
+			return err
+		}
+		content := before.Bytes
+		found := false
+		for _, host := range sections {
+			section := packagesPath()
+			if host != "" {
+				section = hostPackagesPath(host)
+				content = normalizeLegacyHostHeader(content, host)
+			}
+			modified, ok := deleteTOMLKey(content, section, name)
+			if !ok {
+				continue
+			}
+			content = modified
+			found = true
+		}
+		if !found {
+			return ErrPackageNotFound
+		}
+		if werr := atomicfile.Write(path, content); werr != nil {
+			return werr
+		}
+		after, err = readFileState(path)
+		return err
+	})
+	return before, after, err
+}
+
+// readFileState captures a file's existence and content. os.Lstat
+// decides existence: os.ReadFile reports ErrNotExist both for a
+// missing file and for a symlink to a missing target, and only the
+// first means the file is not there.
+func readFileState(path string) (FileState, error) {
+	if _, err := os.Lstat(path); err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return FileState{}, nil
+		}
+		return FileState{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return FileState{}, fmt.Errorf("reading %s: %w", path, err)
+	}
+	return FileState{Exists: true, Bytes: b}, nil
+}
+
+// RestoreUnderLock puts path back to prior, but only while the file
+// is still exactly what the caller left there. It runs under the
+// same config lock the writers take, so the compare and the write
+// cannot be split by another command.
+//
+// It takes no other lock, so it introduces no ordering with the
+// lockfile lock and therefore no AB-BA edge: a caller undoing both
+// files does so one lock at a time.
+func RestoreUnderLock(path string, prior, wrote FileState) error {
+	return withFileLock(path, func() error {
+		current, err := readFileState(path)
+		if err != nil {
+			return err
+		}
+		if !current.Same(wrote) {
+			return fmt.Errorf(
+				"%s changed since this command wrote it, so it was "+
+					"left as it is", path,
+			)
+		}
+		if !prior.Exists {
+			if err := os.Remove(path); err != nil &&
+				!errors.Is(err, fs.ErrNotExist) {
+				return fmt.Errorf("restoring absent %s: %w", path, err)
+			}
+			return nil
+		}
+		if err := atomicfile.Write(path, prior.Bytes); err != nil {
+			return fmt.Errorf("restoring %s: %w", path, err)
+		}
+		return nil
 	})
 }
 

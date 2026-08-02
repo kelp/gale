@@ -223,6 +223,73 @@ func HasNumericRevisionSuffix(version string) bool {
 	return true
 }
 
+// ErrNotCanonical reports an identity that is not spelled as a
+// canonical version-revision, or that does not address exactly one
+// store directory.
+var ErrNotCanonical = errors.New("identity is not canonical")
+
+// CheckIdentity rejects an identity that is not spelled
+// name@<version>-<revision>, and that does not address exactly one
+// store directory.
+//
+// It lives here because that is what the rule is about: every caller
+// validating an identity is protecting a join onto the store root,
+// and HasNumericRevisionSuffix, the revision classifier it rests on,
+// is already this package's. Three packages consume it — provenance
+// screening dependency edges read off disk, the installer screening
+// an archive's metadata, and lockplan screening a lockfile before a
+// local --recipes directory joins a name onto a path.
+//
+// The path-component rule is a boundary, not a style check. These
+// identities arrive from files gale did not write, so a dependency
+// named "../../outside" would otherwise resolve and be read from
+// anywhere the process can reach.
+func CheckIdentity(name, version string) error {
+	if strings.Contains(name, "@") {
+		return fmt.Errorf("%w: name %q contains @", ErrNotCanonical, name)
+	}
+	if !safeComponent(name) {
+		return fmt.Errorf(
+			"%w: name %q is not a single path component",
+			ErrNotCanonical, name,
+		)
+	}
+	if !safeComponent(version) {
+		return fmt.Errorf(
+			"%w: version %q is not a single path component",
+			ErrNotCanonical, version,
+		)
+	}
+	if !HasNumericRevisionSuffix(version) {
+		return fmt.Errorf(
+			"%w: %s@%s has no revision suffix", ErrNotCanonical, name, version,
+		)
+	}
+	return nil
+}
+
+// SafeComponent reports whether s addresses exactly one directory
+// entry. Exported for readers that validate a path component without
+// a full canonical identity to hand — dependency metadata records a
+// bare version and its revision separately, and those values are
+// joined onto the store root, so a value that is not one component
+// escapes the store.
+func SafeComponent(s string) bool { return safeComponent(s) }
+
+// safeComponent reports whether s addresses exactly one directory
+// entry: non-empty, no separator, and not a traversal element.
+func safeComponent(s string) bool {
+	if s == "" || s == "." || s == ".." {
+		return false
+	}
+	if strings.ContainsAny(s, `/\`) {
+		return false
+	}
+	// Belt and braces against anything Clean would rewrite, so the
+	// string that is validated is the string that is joined.
+	return filepath.Clean(s) == s
+}
+
 // SplitRevision splits a "<base>-<N>" version into (base, N).
 // A version without a numeric revision suffix is returned
 // unchanged with revision 1 — the recipe default (an absent
@@ -415,6 +482,31 @@ func lockHeld(path string) bool {
 // `gale remove jq@1.8.1` still work regardless of which
 // revision layout the store actually holds.
 func (s *Store) Remove(name, version string) error {
+	return s.RemoveWithin(name, version,
+		func(_ string, drop func() error) error { return drop() })
+}
+
+// RemoveWithin is Remove with a caller-supplied critical section: it
+// resolves name@version, holds that version's lock for the whole of
+// fn, and cleans the parent name dir after releasing. fn receives
+// the resolved dir and drop, the deletion itself, and decides where
+// in its own work the deletion happens.
+//
+// It exists so a caller that must order this lock against another
+// one can put its acquisition on the outside. The version lock is
+// the same file the installer holds for a whole install
+// (lockPackage), and an install takes the generation lock underneath
+// it. A caller that took the generation lock first and reached the
+// deletion second would close an AB-BA cycle on two blocking flock
+// calls. Calling Remove from inside such a section does not help
+// either: flock is per open-file-description, so re-acquiring in one
+// process blocks on itself.
+//
+// drop tolerates ENOENT: two concurrent removers can race past the
+// resolution above, and the loser must not fail (gh#77).
+func (s *Store) RemoveWithin(
+	name, version string, fn func(dir string, drop func() error) error,
+) error {
 	dir := filepath.Join(s.Root, name, version)
 	if _, err := os.Stat(dir); err != nil {
 		resolved, ok := s.resolveVersion(name, version)
@@ -432,15 +524,15 @@ func (s *Store) Remove(name, version string) error {
 		}
 	}
 
-	lockPath := dir + ".lock"
-	// ErrNotExist guard: two concurrent removers can race
-	// past Stat; the loser must tolerate ENOENT (gh#77).
-	if err := filelock.With(lockPath, func() error {
+	drop := func() error {
 		if err := os.RemoveAll(dir); err != nil &&
 			!errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("remove version directory: %w", err)
 		}
 		return nil
+	}
+	if err := filelock.With(dir+".lock", func() error {
+		return fn(dir, drop)
 	}); err != nil {
 		return err
 	}

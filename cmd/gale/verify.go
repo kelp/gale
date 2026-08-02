@@ -8,9 +8,11 @@ import (
 
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/spf13/cobra"
 )
 
@@ -45,15 +47,21 @@ var verifyCmd = &cobra.Command{
 		if lpErr != nil {
 			return lpErr
 		}
-		lf, err := lockfile.Read(lp)
+		lv, err := lockfile.Load(lp)
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
-		pkg, ok := lf.Packages[name]
+		pkg, ok, err := lv.Entry(name, config.CurrentHost(), currentPlatform())
+		if err != nil {
+			return fmt.Errorf("reading lockfile: %w", err)
+		}
 		if !ok {
 			return fmt.Errorf(
 				"%s not found in lockfile — install it first", name,
 			)
+		}
+		if err := checkPrebuilt(name, pkg); err != nil {
+			return err
 		}
 
 		repoPath := localGHCRBase + "/" + name
@@ -95,6 +103,29 @@ var verifyCmd = &cobra.Command{
 		))
 		return nil
 	},
+}
+
+// checkPrebuilt rejects a lock entry that names no prebuilt artifact.
+//
+// Sigstore attestation covers a binary published by gale-recipes CI. A
+// source artifact's recorded hash is the output of a local build, so no
+// GHCR blob stands behind it and no bundle exists to fetch. Left to
+// run, verification fails after a token exchange and an HTTP round trip
+// with an error about a missing blob, which describes the symptom
+// rather than the cause.
+//
+// A legacy entry records no method and cannot answer the question, so
+// it keeps today's behavior rather than being guessed at.
+func checkPrebuilt(name string, e lockfile.Entry) error {
+	if e.Method == lockgraph.MethodSource {
+		return fmt.Errorf(
+			"%s@%s is locked as a source build, which has no prebuilt "+
+				"attestation to verify — use 'gale audit %s' to rebuild "+
+				"and compare its hash instead",
+			name, e.Version, name,
+		)
+	}
+	return nil
 }
 
 // downloadArchive fetches the raw tar.zst package blob from GHCR so

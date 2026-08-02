@@ -63,8 +63,13 @@ func createStoreEntryWithLibU2(
 // in the rolled-to gen resolved dylibs from the generation the
 // user just rejected.
 func TestRollbackRebuildsFarmFromTargetGeneration(t *testing.T) {
+	// The store lives INSIDE the gale dir, as it does in
+	// production: filepath.Dir(storeRoot) is the global gale dir,
+	// an invariant storeGenLockPath and the shared farm both rest
+	// on. Two unrelated temp dirs would break it, and a farm test
+	// that breaks it cannot see a scope-confusion bug.
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 	lib := dylibNameU2("foo", "1")
 
 	oldDir := createStoreEntryWithLibU2(
@@ -120,8 +125,13 @@ func TestRollbackRebuildsFarmFromTargetGeneration(t *testing.T) {
 // deps recorded in .gale-deps.toml, which never appear in
 // gale.toml. A rebuild from the config set alone wipes them.
 func TestBuildFarmIncludesRecordedDeps(t *testing.T) {
+	// The store lives INSIDE the gale dir, as it does in
+	// production: filepath.Dir(storeRoot) is the global gale dir,
+	// an invariant storeGenLockPath and the shared farm both rest
+	// on. Two unrelated temp dirs would break it, and a farm test
+	// that breaks it cannot see a scope-confusion bug.
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 	mainLib := dylibNameU2("main", "1")
 	depLib := dylibNameU2("dep", "2")
 	subLib := dylibNameU2("sub", "3")
@@ -192,8 +202,13 @@ func TestBuildFarmIncludesRecordedDeps(t *testing.T) {
 // the lock; checking outside lets the swap land a dangling
 // current symlink while reporting success.
 func TestRollbackChecksTargetGenUnderLock(t *testing.T) {
+	// The store lives INSIDE the gale dir, as it does in
+	// production: filepath.Dir(storeRoot) is the global gale dir,
+	// an invariant storeGenLockPath and the shared farm both rest
+	// on. Two unrelated temp dirs would break it, and a farm test
+	// that breaks it cannot see a scope-confusion bug.
 	galeDir := t.TempDir()
-	storeRoot := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
 	createStoreEntry(t, storeRoot, "jq", "1.0", []string{"jq"})
 	pkgs := map[string]string{"jq": "1.0"}
 	if err := Build(pkgs, galeDir, storeRoot); err != nil {
@@ -236,5 +251,77 @@ func TestRollbackChecksTargetGenUnderLock(t *testing.T) {
 	// The failed rollback must leave current resolving.
 	if _, err := os.Stat(filepath.Join(galeDir, "current")); err != nil {
 		t.Errorf("current dangles after failed rollback: %v", err)
+	}
+}
+
+// TestRollbackRepointsTheSharedFarmAtProjectScope is gh#44 at
+// project scope, which is a bug that predates issue #182.
+//
+// Rollback rebuilt the farm at farm.Dir(galeDir). At global scope
+// that IS the shared farm, so the repair worked and the regression
+// test above passed. At project scope it was <project>/.gale/lib, a
+// directory nothing resolves through: no PATH entry adds it, no
+// rpath names it. So a project rollback wiped a directory nobody
+// reads and left the farm its binaries actually load through still
+// pointing at the revision the user had just rejected — exactly the
+// breakage gh#44 was filed for, unfixed for every project.
+//
+// The store is shared even when the generation is not, which is why
+// the farm must be derived from the store root rather than from
+// whichever scope initiated the operation.
+func TestRollbackRepointsTheSharedFarmAtProjectScope(t *testing.T) {
+	home := t.TempDir()
+	storeRoot := filepath.Join(home, ".gale", "pkg")
+	// A project generation, deliberately NOT under the gale home.
+	galeDir := filepath.Join(home, "proj", ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lib := dylibNameU2("foo", "1")
+
+	oldDir := createStoreEntryWithLibU2(
+		t, storeRoot, "pkga", "1.0-1",
+		[]string{"pkga"}, []string{lib},
+	)
+	if err := Build(
+		map[string]string{"pkga": "1.0-1"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 1: %v", err)
+	}
+	newDir := createStoreEntryWithLibU2(
+		t, storeRoot, "pkga", "1.0-2",
+		[]string{"pkga"}, []string{lib},
+	)
+	if err := Build(
+		map[string]string{"pkga": "1.0-2"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 2: %v", err)
+	}
+
+	sharedLink := filepath.Join(home, ".gale", "lib", lib)
+	target, err := os.Readlink(sharedLink)
+	if err != nil {
+		t.Fatalf("a project build must populate the SHARED farm: %v", err)
+	}
+	if want := filepath.Join(newDir, "lib", lib); target != want {
+		t.Fatalf("shared farm after gen 2 = %s, want %s", target, want)
+	}
+
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+
+	target, err = os.Readlink(sharedLink)
+	if err != nil {
+		t.Fatalf("read shared farm link after rollback: %v", err)
+	}
+	if want := filepath.Join(oldDir, "lib", lib); target != want {
+		t.Errorf("shared farm after rollback = %s, want %s: a project "+
+			"rollback must repoint the farm its binaries resolve "+
+			"through, not a directory nothing reads", target, want)
+	}
+	// And nothing was written to the retired project-local dir.
+	if _, err := os.Stat(filepath.Join(galeDir, "lib")); err == nil {
+		t.Error("rollback recreated the retired project-local farm dir")
 	}
 }

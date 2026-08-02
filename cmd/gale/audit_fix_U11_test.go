@@ -33,6 +33,10 @@ func TestFinalizeInstallForeignHostDeclarationOnly(t *testing.T) {
 	), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The lock write resolves the closure from provenance, so a
+	// package with no record cannot be locked at all and the install
+	// would fail before reaching the check this test is about.
+	writeProvenance(t, storeRoot, "hello", "1.0.0-1")
 	configPath := filepath.Join(galeDir, "gale.toml")
 	if err := os.WriteFile(configPath,
 		[]byte("[packages]\n"), 0o644); err != nil {
@@ -45,7 +49,7 @@ func TestFinalizeInstallForeignHostDeclarationOnly(t *testing.T) {
 		GalePath:  configPath,
 		Host:      "otherbox",
 	}
-	err := ctx.FinalizeInstall("hello", "1.0.0", "1.0.0-1", "abc123", "")
+	err := ctx.FinalizeInstall("hello", "1.0.0", "1.0.0-1")
 	if err != nil {
 		t.Fatalf("foreign-host install must not fail the "+
 			"active-generation check (declaration-only): %v", err)
@@ -71,8 +75,12 @@ func TestFinalizeInstallForeignHostDeclarationOnly(t *testing.T) {
 // the gh#72 fix from over-correcting: when --host targets the
 // CURRENT machine, the package belongs in the active
 // generation and the presence check must still fire when it
-// is missing (here: no store dir, so the lenient rebuild
-// skips it).
+// is missing (here: the config pin resolves to a version that is
+// not on disk, so the lenient rebuild skips it and CurrentVersions
+// never reports it). The installed revision exists and carries
+// provenance, because the lock write precedes the check and needs a
+// closure to describe; an absent store dir would fail the install
+// earlier, for another reason, and stop testing this one.
 func TestFinalizeInstallCurrentHostGenCheckStillEnforced(t *testing.T) {
 	t.Setenv("GALE_HOST", "thishost")
 	home := t.TempDir()
@@ -83,6 +91,7 @@ func TestFinalizeInstallCurrentHostGenCheckStillEnforced(t *testing.T) {
 	if err := os.MkdirAll(galeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
+	writeProvenance(t, storeRoot, "hello", "1.0.0-1")
 	configPath := filepath.Join(galeDir, "gale.toml")
 	if err := os.WriteFile(configPath,
 		[]byte("[packages]\n"), 0o644); err != nil {
@@ -95,7 +104,7 @@ func TestFinalizeInstallCurrentHostGenCheckStillEnforced(t *testing.T) {
 		GalePath:  configPath,
 		Host:      "thishost",
 	}
-	err := ctx.FinalizeInstall("hello", "1.0.0", "1.0.0-1", "abc123", "")
+	err := ctx.FinalizeInstall("hello", "9.9.9", "1.0.0-1")
 	if err == nil {
 		t.Fatal("current-host install with no store dir must " +
 			"still fail the active-generation check")

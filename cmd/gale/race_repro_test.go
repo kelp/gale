@@ -1,6 +1,6 @@
 // Race reproducers for the audit. These tests demonstrate
 // confirmed concurrency bugs surfaced by audit/races/.
-// They live in cmd/gale to access removeLockEntry directly.
+// They live in cmd/gale to access the command internals directly.
 //
 // Each test deliberately exhibits a failure pattern; the
 // scenario is documented in audit/races/findings/.
@@ -11,110 +11,13 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/store"
 )
-
-// TestAudit_RemoveLockEntryRace demonstrates the unlocked
-// read-modify-write in cmd/gale/context.go:removeLockEntry.
-//
-// G1 (install path): filelock.With { Read; mutate; Write }
-// G2 (remove path):  Read; mutate; Write   -- NO LOCK
-//
-// Across many trials, G2 can write its stale snapshot AFTER
-// G1's atomic-rename completes, silently overwriting the
-// install update.
-func TestAudit_RemoveLockEntryRace(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	const trials = 500
-	var lostUpdates atomic.Int32
-	var orphanRemoves atomic.Int32
-
-	seed := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"jq":      {Version: "1.7.1", SHA256: "deadbeef"},
-			"ripgrep": {Version: "14.0.0", SHA256: "cafef00d"},
-		},
-	}
-
-	for trial := 0; trial < trials; trial++ {
-		if err := lockfile.Write(lockPath, seed); err != nil {
-			t.Fatal(err)
-		}
-
-		newVer := "14.0.1"
-		var wg sync.WaitGroup
-		wg.Add(2)
-
-		go func() {
-			defer wg.Done()
-			err := filelock.With(lockPath+".lock", func() error {
-				lf, err := lockfile.Read(lockPath)
-				if err != nil {
-					return err
-				}
-				lf.Packages["ripgrep"] = lockfile.LockedPackage{
-					Version: newVer, SHA256: "newhash",
-				}
-				return lockfile.Write(lockPath, lf)
-			})
-			if err != nil {
-				t.Errorf("install branch: %v", err)
-			}
-		}()
-
-		go func() {
-			defer wg.Done()
-			configPath := lockPath[:len(lockPath)-len(".lock")] + ".toml"
-			if err := removeLockEntry(configPath, "jq"); err != nil {
-				t.Errorf("remove branch: %v", err)
-			}
-		}()
-
-		wg.Wait()
-
-		final, err := lockfile.Read(lockPath)
-		if err != nil {
-			t.Fatal(err)
-		}
-
-		// Any serialized order ends with: jq absent, ripgrep@new.
-		// A race shows up as ripgrep stuck at 14.0.0 (lost
-		// install update) or jq still present (lost remove).
-		if final.Packages["ripgrep"].Version != newVer {
-			lostUpdates.Add(1)
-		}
-		if _, jqStillThere := final.Packages["jq"]; jqStillThere {
-			orphanRemoves.Add(1)
-		}
-	}
-
-	t.Logf("trials=%d", trials)
-	t.Logf("lost-install-updates=%d", lostUpdates.Load())
-	t.Logf("orphan-removes-still-present=%d", orphanRemoves.Load())
-
-	if lostUpdates.Load() == 0 && orphanRemoves.Load() == 0 {
-		t.Skip("no race observed in this run; flake")
-	}
-	// Surface the race count; the test deliberately reports
-	// the failure rate rather than asserting a threshold.
-	// We do fail loudly so CI catches the audit regression.
-	if lostUpdates.Load() > 0 {
-		t.Errorf("CONFIRMED: %d/%d trials lost an install update due to unlocked removeLockEntry",
-			lostUpdates.Load(), trials)
-	}
-	// Clean up the lock file the test left behind.
-	_ = os.Remove(lockPath + ".lock")
-}
 
 // TestAudit_GcVsBuildRace demonstrates that
 // cleanOldGenerations bypasses the generation lock and

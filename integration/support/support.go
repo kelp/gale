@@ -15,6 +15,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -265,23 +266,42 @@ func hexSHA(b []byte) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// setLockManifestDigest rewrites the lockfile so pkg carries the given
-// manifest_digest, leaving its other fields untouched.
+// setLockManifestDigest rewrites the lockfile so pkg's artifact for
+// this platform carries the given manifest_digest, leaving its other
+// fields untouched.
+//
+// The node is found by name because the script names a package, not
+// an identity: the version the install resolved to is the recipe
+// fixture's business, not the attestation harness's.
 func setLockManifestDigest(lockPath, pkg, manifestDigest string) error {
-	lf, err := lockfile.Read(lockPath)
+	lf, err := lockfile.ReadV1(lockPath)
 	if err != nil {
 		return fmt.Errorf("read lockfile: %w", err)
 	}
-	entry, ok := lf.Packages[pkg]
-	if !ok {
-		return fmt.Errorf("package %q not in lockfile %s", pkg, lockPath)
+	platform := runtime.GOOS + "/" + runtime.GOARCH
+	for key, node := range lf.Packages {
+		name, _, err := lockfile.ParseIdentity(key)
+		if err != nil {
+			return fmt.Errorf("lockfile %s: %w", lockPath, err)
+		}
+		if name != pkg {
+			continue
+		}
+		artifact, ok := node.Artifacts[platform]
+		if !ok {
+			return fmt.Errorf(
+				"package %q in %s records nothing for %s",
+				pkg, lockPath, platform,
+			)
+		}
+		artifact.ManifestDigest = manifestDigest
+		node.Artifacts[platform] = artifact
+		if err := lockfile.WriteV1(lockPath, lf); err != nil {
+			return fmt.Errorf("write lockfile: %w", err)
+		}
+		return nil
 	}
-	entry.ManifestDigest = manifestDigest
-	lf.Packages[pkg] = entry
-	if err := lockfile.Write(lockPath, lf); err != nil {
-		return fmt.Errorf("write lockfile: %w", err)
-	}
-	return nil
+	return fmt.Errorf("package %q not in lockfile %s", pkg, lockPath)
 }
 
 // --- testscript commands ---

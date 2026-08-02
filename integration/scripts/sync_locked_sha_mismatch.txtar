@@ -1,0 +1,126 @@
+# The visible flip (design §9, P9). This script replaces
+# sync_stale_lock_sha_keeps_install.txtar, which pinned the
+# pre-enforcement behavior: sync warned about a lockfile SHA that
+# disagreed with what it installed, kept the install, and told the
+# user to run `gale lock`. That warning was the whole of the
+# "enforcement" issue #182 was filed against — gale.lock recorded
+# checksums and honored none of them.
+#
+# Now a locked sync fails closed. Covers acceptance 1 (the
+# mismatching artifact is absent from the store), 4 (lockfile bytes
+# never change during sync), 9 (`sync --build` rejected against a
+# locked binary method) and 11 (an ordinary failure under a lock
+# leaves the generation untouched).
+
+gale-fixture recipes $WORK/recipes
+
+exec gale install hello -g --recipes=$WORK/recipes
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HOME/.gale/current/bin/hello
+
+# `gale install` writes the enforced schema, so the lock carries the
+# downgrade guard that makes an older gale refuse the file rather
+# than silently rewrite it.
+grep '\[packages."!gale-lock-v1"\]' $HOME/.gale/gale.lock
+
+# Record the active generation and the lock bytes. Both must survive
+# the failed sync untouched.
+exec readlink $HOME/.gale/current
+cp stdout $WORK/gen-before
+cp $HOME/.gale/gale.lock $WORK/lock-good
+
+# Corrupt the recorded SHA: a CI rebuild, a maintainer bumping
+# .binaries.toml, or an artifact substituted upstream. From gale's
+# side these are indistinguishable, which is exactly why the remedy
+# is a human rather than an automatic re-lock.
+exec sed -i.bak -e 's/sha256 = ".*"/sha256 = "deadbeef0000000000000000000000000000000000000000000000000000babe"/' $HOME/.gale/gale.lock
+grep 'sha256 = "deadbeef' $HOME/.gale/gale.lock
+
+# The bytes the sync must not touch are these, corruption included:
+# a lock gale refuses is still a lock gale does not rewrite.
+cp $HOME/.gale/gale.lock $WORK/lock-corrupt
+
+# Remove the store dir so the sync has to fetch rather than resolve
+# the question from provenance already on disk.
+rm $HOME/.gale/pkg/hello/1.0-1
+
+# Exit 3, lock integrity violation. Not 4: the lock parses and models
+# fine, and regenerating it would ratify whatever the recipe now says.
+exec sh -c 'gale sync -g --recipes=$WORK/recipes; echo status=$?'
+stdout 'status=3'
+stderr 'disagrees with the lock'
+
+# Acceptance 1: nothing reached the store.
+! exists $HOME/.gale/pkg/hello/1.0-1
+
+# Acceptance 4: the lockfile is byte-identical. Sync is a pure
+# consumer of a lock (design §11); a sync that also wrote one would
+# ratify whatever it happened to install.
+cmp $HOME/.gale/gale.lock $WORK/lock-corrupt
+
+# Acceptance 11: the generation was never rebuilt or swapped. The
+# plan is one unit, so activating the part that verified would
+# publish a generation the lock does not describe.
+exec readlink $HOME/.gale/current
+cmp stdout $WORK/gen-before
+
+# Acceptance 9: --build is refused up front against a locked binary
+# method, before any dependency or store mutation. Restore the lock
+# first so the refusal is the only thing under test.
+cp $WORK/lock-good $HOME/.gale/gale.lock
+exec sh -c 'gale sync -g --build --recipes=$WORK/recipes; echo status=$?'
+stdout 'status=1'
+stderr '--build conflicts with gale.lock'
+stderr 'hello@1.0-1'
+
+# An ordinary usage refusal, so the store dir stays absent rather
+# than being half-built from source.
+! exists $HOME/.gale/pkg/hello/1.0-1
+
+# Acceptance 11 through a WORKER, not through plan construction. Every
+# failure above aborts before the first install runs, so none of them
+# exercises the path where some packages install, one fails, and the
+# generation must still be left alone. Here the lock and the recipe
+# agree, so the plan builds cleanly and the failure happens inside the
+# worker when the served bytes do not match the hash both of them name.
+exec readlink $HOME/.gale/current
+cp stdout $WORK/gen-before-worker
+rm $HOME/.gale/pkg/hello/1.0-1
+gale-fixture register-blob /blobs/hello/1.0-1/darwin-arm64 hello-dep
+gale-fixture register-blob /blobs/hello/1.0-1/linux-amd64 hello-dep
+gale-fixture register-blob /blobs/hello/1.0-1/linux-arm64 hello-dep
+
+# Exit 3, from a worker this time. A hash disagreement is an integrity
+# violation wherever it is detected; asserting only "non-zero" here
+# would let it regress to exit 1 and read as a broken build, which is
+# the one thing a CI script must not confuse it with.
+exec sh -c 'gale sync -g --recipes=$WORK/recipes; echo status=$?'
+stdout 'status=3'
+stderr 'sha256|SHA256|verify'
+
+# The generation is untouched. Unlocked this is where issue #20's
+# partial rebuild would run; under a lock the plan is one unit, so a
+# package that failed leaves the previous generation active rather than
+# publishing a partial one.
+exec readlink $HOME/.gale/current
+cmp stdout $WORK/gen-before-worker
+! exists $HOME/.gale/pkg/hello/1.0-1
+
+# Restore the honest bytes for the remaining cases.
+gale-fixture register-blob /blobs/hello/1.0-1/darwin-arm64 hello
+gale-fixture register-blob /blobs/hello/1.0-1/linux-amd64 hello
+gale-fixture register-blob /blobs/hello/1.0-1/linux-arm64 hello
+
+# --no-frozen is the documented escape hatch: it does not soften
+# enforcement, it turns enforcement off. With the corrupted lock back
+# in place the sync proceeds, installs from the recipe, and says so.
+exec sed -i.bak -e 's/sha256 = ".*"/sha256 = "deadbeef0000000000000000000000000000000000000000000000000000babe"/' $HOME/.gale/gale.lock
+exec gale sync -g --no-frozen --recipes=$WORK/recipes
+stderr '--no-frozen'
+exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'
+
+# Even unlocked, sync never writes the lock. The corrupted hash is
+# still there, so the escape hatch cannot quietly become a re-lock.
+grep 'sha256 = "deadbeef' $HOME/.gale/gale.lock

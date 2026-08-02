@@ -24,13 +24,28 @@ registry URL. If you customize it, track it too:
 chezmoi add ~/.gale/config.toml
 ```
 
-## Do not track gale.lock
+## Tracking gale.lock
 
-`~/.gale/gale.lock` records SHA256 hashes for
-installed packages. These hashes differ between
-platforms (macOS arm64 vs Linux amd64), so the
-lockfile is machine-specific. Do not add it to
-chezmoi. Gale regenerates it on `gale sync`.
+`~/.gale/gale.lock` records what gale verified for
+every installed package, and gale enforces it. Platform
+is a dimension inside the file — one artifact entry per
+GOOS/GOARCH — so the file is not machine-specific the
+way a single-platform hash list would be.
+
+`gale sync` does not write it. Only `gale lock` and the
+commands that change what is pinned do, so tracking it
+in chezmoi will not fight with gale.
+
+Whether to track it depends on your closure. An
+all-binary closure is portable with certainty: every
+machine fetches the same bytes and verifies the same
+hashes. A closure containing a source-built package is
+portable only as far as those builds reproduce, and a
+build that does not reproduce fails the integrity check
+on the second machine rather than silently diverging.
+Start by tracking it; if a source-built package's hash
+differs across machines, run `gale lock` per machine
+instead.
 
 ## New machine setup
 

@@ -133,23 +133,44 @@ func Rollback(galeDir, storeRoot string, target int) error {
 			return fmt.Errorf("generation %d does not exist: %w",
 				target, err)
 		}
+
+		// Farm guard before the swap, mirroring Build: the
+		// rolled-to closure is this scope's proposed claim, and
+		// a refusal must leave the current generation active
+		// and the farm untouched (design §4).
+		pkgs := genVersions(genDir, storeRoot)
+		active, err := guardedRebuildDirs(pkgs, galeDir, storeRoot)
+		if err != nil {
+			return err
+		}
+
 		if err := swapCurrentSymlink(galeDir, target); err != nil {
 			return err
 		}
 
-		// Rebuild the farm from the rolled-to generation's
-		// package set so binaries resolve the dylib
-		// revisions they were built against, not the ones
-		// the rolled-from generation installed (gh#44).
-		// Mirrors Build's post-swap farm rebuild.
-		// Best-effort — a farm error does not invalidate
-		// the swap.
-		pkgs := genVersions(genDir, storeRoot)
+		// Rebuild the SHARED farm from the rolled-to
+		// generation's package set so binaries resolve the
+		// dylib revisions they were built against, not the
+		// ones the rolled-from generation installed (gh#44),
+		// plus every other scope's claimed closure.
+		//
+		// The shared farm, not this scope's gale dir: pointing
+		// it at a project's own lib dir is why gh#44's repair
+		// only ever worked at global scope. A project rollback
+		// wiped a directory nothing resolves through and left
+		// the farm its binaries actually use untouched.
+		//
+		// Mirrors Build's post-swap rebuild, including the
+		// failure semantics: the swap stands, the error is
+		// returned.
 		if err := farm.Rebuild(
-			FarmStoreDirs(pkgs, storeRoot), farm.Dir(galeDir),
+			active, farm.DirFromStoreRoot(storeRoot),
 		); err != nil {
-			fmt.Fprintf(os.Stderr,
-				"farm: rebuild after rollback: %v\n", err)
+			return fmt.Errorf(
+				"generation %d is active, but the shared library "+
+					"farm is incomplete; run gale sync to repair "+
+					"it: %w", target, err,
+			)
 		}
 		return nil
 	})

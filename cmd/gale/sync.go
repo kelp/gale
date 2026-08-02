@@ -9,19 +9,23 @@ import (
 	"sort"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/lockplan"
+	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/parallel"
 	"github.com/spf13/cobra"
 )
 
 var (
-	syncRecipes string
-	syncBuild   bool
-	syncGlobal  bool
-	syncProject bool
+	syncRecipes  string
+	syncBuild    bool
+	syncGlobal   bool
+	syncProject  bool
+	syncNoFrozen bool
 )
 
 var syncCmd = &cobra.Command{
@@ -74,21 +78,66 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	}
 
 	if len(cfg.Packages) == 0 {
+		// Deliberately not an early return. An emptied manifest is
+		// exactly the state that must still be classified against the
+		// lock: with a lock naming roots, this is a stale lock and the
+		// sync must refuse rather than report success. Unlocked, the
+		// generation still has to be rebuilt, or the last package's
+		// symlinks stay active in current/bin.
 		out.Info("No packages to sync.")
-		return nil
 	}
 
-	// Read lockfile for SHA256 verification.
-	lp, err := lockfilePath(ctx.GalePath)
+	// Skipped entirely under --no-frozen. The flag means the lock has
+	// no authority over this run, so a file that cannot even be parsed
+	// must not fail the command either — loading it first and deciding
+	// afterwards would leave one class of lock unbypassable.
+	lv := &lockfile.View{Kind: lockfile.KindAbsent}
+	if !syncNoFrozen {
+		lp, lerr := lockfilePath(ctx.GalePath)
+		if lerr != nil {
+			return lerr
+		}
+		lv, err = lockfile.Load(lp)
+		if err != nil {
+			return fmt.Errorf("reading lockfile: %w", err)
+		}
+	}
+
+	// The whole plan resolves before the first install runs. That
+	// ordering is the point: a locked sync that cannot describe its
+	// complete closure must abandon the operation while abandoning it
+	// is still free, having touched neither the store nor the
+	// generation (design §4).
+	host := config.CurrentHost()
+	plan, warn, err := lockedSyncPlan(lv, lockplan.Request{
+		Host:     host,
+		Platform: currentPlatform(),
+		Declared: cfg.Packages,
+		// So a stale-lock refusal names the section that actually
+		// supplies each disagreeing pin, which for a host overlay is
+		// not the target the lock roots it in.
+		DeclaredOrigin: cfg.PackageOrigins(host),
+		Resolve:        ctx.ResolveVersionedRecipe,
+	}, syncNoFrozen)
 	if err != nil {
 		return err
 	}
-	lf, err := lockfile.Read(lp)
-	if err != nil {
-		return fmt.Errorf("reading lockfile: %w", err)
+	if warn != "" {
+		out.Warn(warn)
 	}
+	if buildOnly {
+		if err := rejectSourceOnly(plan); err != nil {
+			return err
+		}
+	}
+	// Under a plan the installer stops resolving anything: versions,
+	// artifacts, methods and dependency edges all come from the lock.
+	ctx.Installer.Plan = plan
 
-	items := sortedSyncItems(cfg.Packages)
+	items, err := sortedSyncItems(cfg.Packages, plan)
+	if err != nil {
+		return err
+	}
 	// Per-package work is HTTP-bound (recipe fetch + binary
 	// download). The same resolved parallelism bounds the
 	// Installer's Downloads limiter, so package-level fan-out and
@@ -97,10 +146,66 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	// syncOutcome fields, never returns one.
 	outcomes, _ := parallel.Map(context.Background(), items, ctx.Parallelism,
 		func(_ context.Context, w syncItem) (syncOutcome, error) {
-			return runSyncOne(ctx, lf, w, dryRun), nil
+			//nolint:contextcheck // runSyncOne takes no ctx by design; the fan-out ctx only bounds the leaf fetches
+			return runSyncOne(ctx, w, dryRun), nil
 		})
 
-	var installed, failed int
+	installed, failures := reportSyncOutcomes(out, outcomes, dryRun)
+
+	configChanged := syncDrifted(driftQuery{
+		galeDir:    ctx.GaleDir,
+		storeRoot:  ctx.StoreRoot,
+		declared:   cfg.Packages,
+		plan:       plan,
+		pinResolve: ctx.versionedRecipeResolver(),
+	})
+
+	// A locked sync activates its plan, not the manifest. The canonical
+	// rebuild resolves bare pins through recipes, which under a lock
+	// would select a version the lock never named, and it passes no
+	// revalidation callback, which leaves design §6's window open.
+	rebuild := ctx.RebuildGenerationCanonical
+	if plan != nil {
+		rebuild = ctx.RebuildGenerationLocked
+	}
+
+	if err := finishSync(syncFinish{
+		dryRun:        dryRun,
+		failures:      failures,
+		installed:     installed,
+		configChanged: configChanged,
+		locked:        plan != nil,
+	}, rebuild); err != nil {
+		if len(failures) > 0 {
+			out.Warn(fmt.Sprintf(
+				"Sync finished with %d error(s)", len(failures),
+			))
+			return err
+		}
+		return fmt.Errorf("rebuild generation: %w", err)
+	}
+
+	out.Success(fmt.Sprintf(
+		"Sync complete: %d installed, %d up to date",
+		installed,
+		len(cfg.Packages)-installed,
+	))
+	return nil
+}
+
+// reportSyncOutcomes emits every per-package line and returns the
+// install count plus the failures themselves. Split out of runSync so
+// the outcome vocabulary lives in one place; the parallel workers
+// deliberately print nothing, so this is the only thing that decides
+// what a sync looks like.
+//
+// The errors are returned rather than counted because the exit code
+// depends on them: a count reaching finishSync makes every worker
+// failure exit 1, including the integrity conflicts the whole lock
+// exists to detect.
+func reportSyncOutcomes(
+	out *output.Output, outcomes []syncOutcome, dryRun bool,
+) (installed int, failures []error) {
 	for _, o := range outcomes {
 		name := o.name
 		version := o.version
@@ -116,18 +221,13 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 					"%s@%s up to date", name, version,
 				))
 			}
-		case dryRun:
-			out.Info(fmt.Sprintf(
-				"install %s@%s (stale)", name, version,
-			))
-			installed++
 		case o.resolveErr != nil:
 			out.Warn(fmt.Sprintf(
 				"%s@%s: %v. "+
 					"Run 'gale update %s' to install latest.",
 				name, version, o.resolveErr, name,
 			))
-			failed++
+			failures = append(failures, o.resolveErr)
 		case o.installErr != nil:
 			if errors.Is(o.installErr, build.ErrUnsupportedPlatform) {
 				out.Warn(fmt.Sprintf(
@@ -139,7 +239,16 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 					"Failed to install %s: %v", name, o.installErr,
 				))
 			}
-			failed++
+			failures = append(failures, o.installErr)
+		case dryRun:
+			// After the error cases, not before them. Under a lock the
+			// dry run verifies provenance and can conflict; reporting
+			// that as a planned install would promise a clean sync
+			// minutes before the real one exits 3.
+			out.Info(fmt.Sprintf(
+				"install %s@%s (stale)", name, version,
+			))
+			installed++
 		default:
 			if o.stale {
 				out.Info(fmt.Sprintf(
@@ -149,47 +258,80 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 			}
 			out.Info(fmt.Sprintf("Installing %s@%s...",
 				name, version))
-			if o.shaChanged {
-				out.Warn(fmt.Sprintf(
-					"%s@%s SHA256 changed since last sync "+
-						"(lock: %s..., got: %s...) — "+
-						"updating lockfile",
-					name, version,
-					shortSHA(o.priorSHA),
-					shortSHA(o.result.SHA256),
-				))
-			}
 			reportResult(out, o.result, "Installed", "built from source")
-			if o.lockfileErr != nil {
-				out.Warn(fmt.Sprintf(
-					"updating lockfile for %s: %v", name, o.lockfileErr,
-				))
-			}
 			installed++
 		}
 	}
+	return installed, failures
+}
 
-	configChanged := generationDrifted(
-		ctx.GaleDir, ctx.StoreRoot, cfg.Packages,
-		ctx.versionedRecipeResolver(),
-	)
+// driftQuery is syncDrifted's inputs.
+type driftQuery struct {
+	galeDir, storeRoot string
+	declared           map[string]string
+	// plan selects which question is asked. Non-nil means the active
+	// generation is compared against the lock; nil means against the
+	// manifest resolved through recipes.
+	plan       *lockplan.Plan
+	pinResolve versionedRecipeResolver
+}
 
-	if err := finishSync(dryRun, failed, installed, configChanged, ctx.RebuildGenerationCanonical); err != nil {
-		if failed > 0 {
-			out.Warn(fmt.Sprintf(
-				"Sync finished with %d error(s)", failed,
-			))
-			return err
-		}
-		return fmt.Errorf("rebuild generation: %w", err)
+// syncDrifted answers whether the active generation needs rebuilding,
+// choosing the question by whether the sync is locked.
+//
+// The two are mutually exclusive rather than one computed and then
+// overwritten. Running the unlocked check under a plan costs a
+// registry round trip per bare pin, immediately after plan
+// construction already resolved every recipe the operation needs, and
+// it leaves the locked answer one deleted line away from being the
+// unused one.
+func syncDrifted(q driftQuery) bool {
+	if q.plan != nil {
+		return lockedGenerationDrifted(q.galeDir, q.storeRoot, q.plan)
 	}
+	return generationDrifted(
+		q.galeDir, q.storeRoot, q.declared, q.pinResolve,
+	)
+}
 
-	out.Success(fmt.Sprintf(
-		"Sync complete: %d installed, %d up to date",
-		installed,
-		len(cfg.Packages)-installed,
-	))
-	return nil
+// lockedGenerationDrifted is generationDrifted's counterpart under a
+// plan: it compares the active generation against the versions the
+// LOCK names, never against what a recipe currently offers.
+//
+// The distinction decides whether a no-op sync rebuilds, and getting
+// it wrong is silent. gale.toml pins bare versions, so CheckDeclared
+// accepts a manifest pin of "1.7" against a locked "1.7-1" and against
+// an active "1.7-2" alike. Asking the recipe resolver then reports "the
+// active generation matches the current recipe" and the rebuild is
+// skipped, leaving a version on PATH that the lock does not describe
+// and that nothing else in the command will notice, because there was
+// nothing to install and therefore no failure to report.
+func lockedGenerationDrifted(
+	galeDir, storeRoot string, plan *lockplan.Plan,
+) bool {
+	want, err := lockedRebuildPackages(plan)
+	if err != nil {
+		return true
+	}
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		// Prefer a wasted rebuild to a stale PATH; the rebuild itself
+		// surfaces a follow-on error if the state is broken.
+		return true
+	}
+	if len(active) != len(want) {
+		return true
+	}
+	// Through ActiveVersions for the same reason the unlocked path uses
+	// it: the generation records the store-dir basename it actually
+	// linked, which for a pre-revision install is the bare directory
+	// rather than the canonical name.
+	for name, version := range generation.ActiveVersions(want, storeRoot) {
+		if active[name] != version {
+			return true
+		}
+	}
+	return false
 }
 
 // generationDrifted reports whether the active generation's
@@ -242,27 +384,65 @@ func generationDrifted(
 // gale.toml). The rebuild must run even when nothing was
 // installed; otherwise the removed package's symlink stays
 // active in current/bin.
-func finishSync(dryRun bool, failed int, installed int, configChanged bool, rebuild func() error) error {
-	if dryRun {
+//
+// locked signals that the sync ran from a plan. Under a lock the plan
+// is one unit: design §8 skips the rebuild on ANY failure, not only an
+// integrity one, because activating the nodes that happened to verify
+// publishes a generation the lock never describes. Issue #20's partial
+// rebuild survives unlocked, where losing the whole PATH to one broken
+// recipe is the worse trade.
+func finishSync(f syncFinish, rebuild func() error) error {
+	if f.dryRun {
 		return nil
 	}
-	if installed == 0 && failed == 0 && !configChanged {
+	failed := len(f.failures)
+	if failed > 0 && f.locked {
+		return fmt.Errorf(
+			"%d package(s) could not be synced; the generation was left "+
+				"unchanged because gale.lock is enforced: %w",
+			failed, errors.Join(f.failures...),
+		)
+	}
+	if f.installed == 0 && failed == 0 && !f.configChanged {
 		return nil // nothing changed — skip rebuild
 	}
 	rebuildErr := rebuild()
 	if failed > 0 {
 		if rebuildErr != nil {
-			return fmt.Errorf("%d package(s) could not be synced; rebuild: %w",
-				failed, rebuildErr)
+			return fmt.Errorf("%d package(s) could not be synced: %w; rebuild: %w",
+				failed, errors.Join(f.failures...), rebuildErr)
 		}
-		return fmt.Errorf("%d package(s) could not be synced", failed)
+		return fmt.Errorf("%d package(s) could not be synced: %w",
+			failed, errors.Join(f.failures...))
 	}
 	return rebuildErr
+}
+
+// syncFinish is finishSync's inputs. A struct rather than six
+// positional parameters: the four counters and flags are all bool or
+// int, so a transposed pair at a call site would compile and silently
+// invert the rebuild decision.
+// failures carries the workers' errors rather than a count. A count
+// forced finishSync to invent a fresh error, which discarded every
+// sentinel the workers produced and sent a cached provenance conflict
+// out as exit 1 — the taxonomy's most important case, misclassified at
+// the very last step.
+type syncFinish struct {
+	dryRun        bool
+	failures      []error
+	installed     int
+	configChanged bool
+	locked        bool
 }
 
 // syncItem is the per-package unit of work passed to runSyncOne.
 type syncItem struct {
 	name, version string
+	// planned is the lock's node for this package, or nil when the
+	// sync is unlocked. Non-nil makes the lock the exclusive selector:
+	// the version, the recipe and the method all come from here, and
+	// runSyncOne resolves nothing of its own.
+	planned *lockplan.Node
 }
 
 // syncOutcome is the result of one runSyncOne call. It is
@@ -276,16 +456,21 @@ type syncOutcome struct {
 	resolveErr    error
 	installErr    error
 	result        *installer.InstallResult
-	shaChanged    bool
-	priorSHA      string
-	lockfileErr   error
 }
 
-// sortedSyncItems converts cfg.Packages to a syncItem slice
-// ordered by name. Used by runSync so per-package output is
-// emitted in a stable order across runs regardless of which
-// worker finished first.
-func sortedSyncItems(pkgs map[string]string) []syncItem {
+// sortedSyncItems converts cfg.Packages to a syncItem slice ordered by
+// name, each carrying its locked node when the sync is locked. Used by
+// runSync so per-package output is emitted in a stable order across
+// runs regardless of which worker finished first.
+//
+// It no longer reads the lockfile directly. The per-package entry
+// lookup existed to feed the SHA-changed warning, and that warning is
+// gone: under a plan the installer enforces the hash rather than
+// remarking on it, and without a plan the lock has no authority to
+// remark with.
+func sortedSyncItems(
+	pkgs map[string]string, plan *lockplan.Plan,
+) ([]syncItem, error) {
 	names := make([]string, 0, len(pkgs))
 	for name := range pkgs {
 		names = append(names, name)
@@ -294,8 +479,26 @@ func sortedSyncItems(pkgs map[string]string) []syncItem {
 	items := make([]syncItem, len(names))
 	for i, name := range names {
 		items[i] = syncItem{name: name, version: pkgs[name]}
+		if plan == nil {
+			continue
+		}
+		// Plan construction already proved the locked roots and the
+		// declared packages agree exactly (lockfile.CheckDeclared), so
+		// a declared name with no node cannot occur; treating it as
+		// unlocked would silently install one package off-lock.
+		n, found := plan.ForName(name)
+		if !found {
+			return nil, fmt.Errorf(
+				"%w: %s is declared in gale.toml but the plan has no node for it",
+				lockfile.ErrMissingNode, name,
+			)
+		}
+		items[i].planned = &n
+		// The lock is the version selector, so the reported version is
+		// the canonical one it names, not gale.toml's bare pin.
+		items[i].version = n.Version
 	}
-	return items
+	return items, nil
 }
 
 // runSyncOne is the per-package body of sync, extracted so the
@@ -339,7 +542,53 @@ func installedStale(ctx *cmdContext, w syncItem) bool {
 	return staleErr == nil && stale
 }
 
-func runSyncOne(ctx *cmdContext, lf *lockfile.LockFile, w syncItem, dryRun bool) syncOutcome {
+// runSyncOneLocked is the per-package body under a plan.
+//
+// It is a separate function rather than branches inside runSyncOne
+// because almost every step of the unlocked body is a selector the
+// lock replaces. Resolution is gone: the plan carries the validated
+// recipe. The staleness check is gone: design §4 makes the cache
+// question an attestation question, which installLocked answers by
+// verifying the store directory's provenance against the locked graph
+// — a check that also catches the tampering IsStale was never looking
+// for. Reinstall is gone: §4 permits committing only ABSENT canonical
+// directories, so an occupied one either attests the lock or is a
+// conflict, and replacing it in-plan is prohibited.
+func runSyncOneLocked(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
+	outcome := syncOutcome{name: w.name, version: w.version}
+
+	if dryRun {
+		// Read-only, and it runs the same verification the real sync
+		// would: a dry run that reports "up to date" for a directory
+		// the sync would reject with an integrity error is worse than
+		// no dry run at all.
+		hit, err := ctx.Installer.VerifyPlanned(w.name)
+		if err != nil {
+			outcome.installErr = err
+			return outcome
+		}
+		outcome.upToDate = hit
+		return outcome
+	}
+
+	result, err := ctx.Installer.Install(w.planned.Recipe)
+	if err != nil {
+		outcome.installErr = err
+		return outcome
+	}
+	outcome.result = result
+	// A verified cache hit is reported as up to date, not as an
+	// install: nothing was written. The verification it passed is
+	// stronger than the unlocked path's, so the quiet line is earned.
+	outcome.upToDate = result.Method == installer.MethodCached
+	return outcome
+}
+
+func runSyncOne(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
+	if w.planned != nil {
+		return runSyncOneLocked(ctx, w, dryRun)
+	}
+
 	outcome := syncOutcome{name: w.name, version: w.version}
 
 	// Step a/b: check if already installed and whether stale.
@@ -378,36 +627,11 @@ func runSyncOne(ctx *cmdContext, lf *lockfile.LockFile, w syncItem, dryRun bool)
 	}
 	outcome.result = result
 
-	// Step g: compare lockfile SHA.
-	if locked, ok := lf.Packages[w.name]; ok &&
-		locked.SHA256 != "" &&
-		result.SHA256 != "" &&
-		locked.SHA256 != result.SHA256 {
-		outcome.shaChanged = true
-		outcome.priorSHA = locked.SHA256
-	}
-
-	// Step h: write lockfile (non-fatal).
-	if result.SHA256 != "" {
-		lp, lpErr := lockfilePath(ctx.GalePath)
-		if lpErr != nil {
-			outcome.lockfileErr = lpErr
-		} else if wErr := updateLockfile(lp, w.name, r.Package.Full(), result.SHA256, result.ManifestDigest); wErr != nil {
-			outcome.lockfileErr = wErr
-		}
-	}
-
+	// Sync never writes gale.lock (design §11). It is a pure
+	// consumer of one: the lock says what to install, so a sync
+	// that also wrote it would ratify whatever it happened to
+	// install and there would be nothing left to enforce.
 	return outcome
-}
-
-// shortSHA returns the first 12 characters of a SHA256 hex string for
-// display. If s is shorter than 12 (e.g. due to truncation or a bug),
-// it returns s unchanged rather than panicking.
-func shortSHA(s string) string {
-	if len(s) < 12 {
-		return s
-	}
-	return s[:12]
 }
 
 func init() {
@@ -419,5 +643,7 @@ func init() {
 		"Resolve recipes from a local directory instead of the registry")
 	syncCmd.Flags().BoolVar(&syncBuild, "build", false,
 		"Build all packages from source (skip prebuilt binaries)")
+	syncCmd.Flags().BoolVar(&syncNoFrozen, "no-frozen", false,
+		"Ignore gale.lock and install from recipes without integrity enforcement")
 	rootCmd.AddCommand(syncCmd)
 }

@@ -221,6 +221,73 @@ func ActiveVersions(pkgs map[string]string, storeRoot string) map[string]string 
 // store are skipped — the farm can only link what's on disk.
 // Visited dirs are not re-expanded, so dep cycles terminate.
 func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
+	dirs, _ := farmStoreDirs(pkgs, storeRoot, func(dir string, err error) error {
+		// Best-effort: an unreadable metadata file must
+		// not fail the whole farm rebuild.
+		fmt.Fprintf(os.Stderr,
+			"farm: read deps metadata in %s: %v\n", dir, err)
+		return nil
+	})
+	return dirs
+}
+
+// FarmStoreDirsStrict is FarmStoreDirs for callers that must not
+// act on a partial answer: an unreadable .gale-deps.toml stops the
+// walk and returns the error instead of warning past it.
+//
+// The farm claimant walk needs this. FarmStoreDirs' leniency is
+// correct for a rebuild, which should still repair every link it
+// can read, and wrong for a claim: a claim that quietly omits a
+// dep permits exactly the mutation it existed to refuse. It is the
+// same split the provenance reader draws against depsmeta's
+// leniency — tolerate a partial answer where a partial answer is
+// still useful, never where a decision rests on it.
+func FarmStoreDirsStrict(
+	pkgs map[string]string, storeRoot string,
+) ([]string, error) {
+	return farmStoreDirs(pkgs, storeRoot, func(dir string, err error) error {
+		// The remedy is part of the error because this one blocks
+		// every scope's installs and removals until it clears, and
+		// the obvious repairs do not work. Deleting just the
+		// metadata file is worse than the error: depsmeta.Read
+		// returns an empty closure for a missing file, so the walk
+		// then succeeds with a silently smaller claim, which is the
+		// fail-open this check exists to prevent. Reinstalling does
+		// not rewrite it either — an install over an existing store
+		// dir returns cached before it writes anything
+		// (installer.go:153), and IsStale compares recorded deps
+		// against resolved recipes without ever looking at whether a
+		// dep's directory is there.
+		//
+		// Deleting the whole directory is what works: the walk skips
+		// a dir that is not in the store, so the claim shrinks
+		// honestly rather than silently.
+		//
+		// Sync only reinstalls it if the deletion reaches a declared
+		// package. Sync evaluates declared roots alone, and an
+		// install over an existing dir returns cached before it
+		// installs any dep, so a cached ancestor anywhere on the
+		// chain stops the repair from descending: for A -> B -> C,
+		// deleting C and B leaves A cached and neither restored.
+		// Every directory on the path has to go, the declared
+		// package at the top of it included, which is what makes the
+		// reinstall walk all the way down.
+		return fmt.Errorf(
+			"read deps metadata in %s: %w (repair: delete that whole "+
+				"directory and every package directory on a dependency "+
+				"path up to and including a declared package, then run "+
+				"gale sync)",
+			dir, err,
+		)
+	})
+}
+
+// farmStoreDirs is the shared walk. onMetaErr decides whether an
+// unreadable dep file stops it.
+func farmStoreDirs(
+	pkgs map[string]string, storeRoot string,
+	onMetaErr func(dir string, err error) error,
+) ([]string, error) {
 	queue := ActiveStoreDirs(pkgs, storeRoot)
 	seen := make(map[string]bool, len(queue))
 	for _, d := range queue {
@@ -238,10 +305,9 @@ func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
 
 		md, err := depsmeta.Read(dir)
 		if err != nil {
-			// Best-effort: an unreadable metadata file must
-			// not fail the whole farm rebuild.
-			fmt.Fprintf(os.Stderr,
-				"farm: read deps metadata in %s: %v\n", dir, err)
+			if stop := onMetaErr(dir, err); stop != nil {
+				return nil, stop
+			}
 			continue
 		}
 		for _, dep := range md.Deps {
@@ -262,7 +328,7 @@ func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
 			}
 		}
 	}
-	return out
+	return out, nil
 }
 
 //go:embed gale-readme.md
@@ -279,10 +345,30 @@ var galeReadme []byte
 // user learns which package fell off PATH. Previous
 // generations are retained for history and rollback.
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
-	return build(pkgs, galeDir, storeRoot)
+	return BuildWithValidate(pkgs, galeDir, storeRoot, nil)
 }
 
-func build(pkgs map[string]string, galeDir, storeRoot string) error {
+// BuildWithValidate is Build plus an optional revalidation callback
+// run immediately after the store-generation lock is acquired and
+// before anything about the new generation is created or mutated.
+// A locked sync (design section 6) uses this to re-check every plan
+// entry — canonical version-revision, artifact SHA, method, manifest
+// digest, graph_digest — right before activation, closing the gap
+// between an earlier per-artifact verification and the swap that
+// makes it live. The callback runs under the SAME lock acquisition
+// that guards generation construction, the current-symlink swap, and
+// the farm rebuild; a second acquisition would reopen exactly the
+// window this exists to close. On a callback error, build aborts
+// before creating the generation directory, so nothing is mutated:
+// no gen dir, no current-symlink change, no farm rebuild. A nil
+// validate makes this identical to plain Build.
+func BuildWithValidate(
+	pkgs map[string]string, galeDir, storeRoot string, validate func() error,
+) error {
+	return build(pkgs, galeDir, storeRoot, validate)
+}
+
+func build(pkgs map[string]string, galeDir, storeRoot string, validate func() error) error {
 	// Use the store-rooted lock path so project-scoped and global
 	// Build calls contend on the same lock file as the installer.
 	// filepath.Dir(storeRoot) is always the global galeDir
@@ -291,6 +377,16 @@ func build(pkgs map[string]string, galeDir, storeRoot string) error {
 	// sync race described in installer.go:storeGenLockPath.
 	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
 	return filelock.With(lockPath, func() error {
+		// Revalidate first, before touching Current or anything
+		// else — a caller's callback error must abort with zero
+		// mutation, and it must do so without ever releasing this
+		// lock in between (see BuildWithValidate doc).
+		if validate != nil {
+			if err := validate(); err != nil {
+				return err
+			}
+		}
+
 		prev, err := Current(galeDir)
 		if err != nil {
 			return fmt.Errorf("read current generation: %w", err)
@@ -356,6 +452,18 @@ func build(pkgs map[string]string, galeDir, storeRoot string) error {
 			return err
 		}
 
+		// Run the cross-project farm guard BEFORE the swap: a
+		// refusal must leave the previous generation active and
+		// the farm untouched (design §4). The returned set is
+		// the proposed closure plus every other scope's claim,
+		// so the wipe-and-recreate rebuild below cannot delete
+		// a soname only another scope's binaries resolve.
+		active, err := guardedRebuildDirs(pkgs, galeDir, storeRoot)
+		if err != nil {
+			cleanup()
+			return err
+		}
+
 		// Atomic swap: create a temporary symlink then rename.
 		if err := swapCurrentSymlink(galeDir, next); err != nil {
 			cleanup()
@@ -364,17 +472,29 @@ func build(pkgs map[string]string, galeDir, storeRoot string) error {
 
 		// Rebuild the shared-lib farm from this
 		// generation's packages plus their recorded dep
-		// closure (gh#43). Older revisions may still be
-		// in the store (awaiting `gale gc`), but they
-		// aren't on PATH and must not leak into the farm.
-		// Best-effort — a farm error does not invalidate
-		// the generation swap.
-		active := FarmStoreDirs(pkgs, storeRoot)
+		// closure (gh#43) and every other scope's claimed
+		// closure. Older revisions may still be in the
+		// store (awaiting `gale gc`), but they aren't on
+		// PATH, aren't claimed, and must not leak into the
+		// farm.
+		//
+		// The swap above is the activation commit point, so a
+		// failure here does not roll the generation back: undoing
+		// a completed swap would be a second fallible transaction
+		// that cannot reliably restore a partially mutated farm.
+		// It is not swallowed either. The farm is what binaries
+		// resolve their dylibs through, so an incomplete one is a
+		// real failure the caller must see, and a line on stderr
+		// inside a direnv hook is invisible (design revision 6,
+		// section 6).
 		if err := farm.Rebuild(
-			active, farm.Dir(galeDir),
+			active, farm.DirFromStoreRoot(storeRoot),
 		); err != nil {
-			fmt.Fprintf(os.Stderr,
-				"farm: rebuild after gen swap: %v\n", err)
+			return fmt.Errorf(
+				"generation %d is active, but the shared library "+
+					"farm is incomplete; run gale sync again to "+
+					"repair it: %w", next, err,
+			)
 		}
 
 		// Write README (best effort, world-readable).

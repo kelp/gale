@@ -27,16 +27,22 @@ type LockFile struct {
 // Read reads a gale.lock file. Returns empty LockFile
 // if the file doesn't exist.
 func Read(path string) (*LockFile, error) {
-	data, err := os.ReadFile(path)
+	data, absent, err := readLockFile(path)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return &LockFile{
-				Packages: make(map[string]LockedPackage),
-			}, nil
-		}
-		return nil, fmt.Errorf("reading lock file: %w", err)
+		return nil, err
 	}
+	if absent {
+		return &LockFile{
+			Packages: make(map[string]LockedPackage),
+		}, nil
+	}
+	return decodeLegacy(data)
+}
 
+// decodeLegacy decodes the flat pre-enforcement schema. A file with
+// no [packages] table yields an empty map rather than a nil one, so
+// callers may write into the result without checking.
+func decodeLegacy(data []byte) (*LockFile, error) {
 	var lf LockFile
 	if _, err := toml.Decode(string(data), &lf); err != nil {
 		return nil, fmt.Errorf("parsing lock file: %w", err)
@@ -78,17 +84,27 @@ func IsStale(
 		return false, fmt.Errorf("reading lock file: %w", err)
 	}
 
+	return lf.Stale(tomlPackages), nil
+}
+
+// Stale reports whether the flat schema's entries disagree with the
+// gale.toml packages.
+//
+// Counting entries is sound only for this schema, where nothing ever
+// wrote an entry for a transitive dependency. The enforced schema
+// records the whole closure, so it compares its declared roots
+// instead; see CheckDeclared.
+func (lf *LockFile) Stale(tomlPackages map[string]string) bool {
 	if len(tomlPackages) != len(lf.Packages) {
-		return true, nil
+		return true
 	}
 	for name, version := range tomlPackages {
 		locked, ok := lf.Packages[name]
 		if !ok || !VersionMatches(locked.Version, version) {
-			return true, nil
+			return true
 		}
 	}
-
-	return false, nil
+	return false
 }
 
 // VersionMatches reports whether the locked version

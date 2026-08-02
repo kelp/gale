@@ -54,6 +54,11 @@ func TestInstallFromRecipeFile_HoldsLockAcrossFinalize(t *testing.T) {
 	); err != nil {
 		t.Fatalf("write fake binary: %v", err)
 	}
+	// Finalize writes the lock before it parks on the generation
+	// lock, and the lock write resolves the closure from provenance.
+	// Without a record it fails there and never reaches the window
+	// this test measures.
+	writeProvenance(t, storeRoot, "u3lockpkg", "1.0-1")
 
 	recipePath := filepath.Join(t.TempDir(), "u3lockpkg.toml")
 	recipeTOML := `[package]

@@ -6,11 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 	"testing"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
@@ -48,11 +46,11 @@ func TestLockfilePathReturnsCorrectPath(t *testing.T) {
 	}
 }
 
-// TestWriteConfigAndLockWritesToHostSection verifies that
-// passing a non-empty host writes the package to
-// [hosts.<host>.packages] rather than shared [packages]. This
-// is the foundation that backs `gale install --host`.
-func TestWriteConfigAndLockWritesToHostSection(t *testing.T) {
+// TestWriteConfigWritesToHostSection verifies that passing a
+// non-empty host writes the package to [hosts.<host>.packages]
+// rather than shared [packages]. This is the foundation that backs
+// `gale install --host`.
+func TestWriteConfigWritesToHostSection(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "gale.toml")
 	if err := os.WriteFile(configPath,
@@ -61,10 +59,12 @@ func TestWriteConfigAndLockWritesToHostSection(t *testing.T) {
 	}
 
 	ctx := &cmdContext{GalePath: configPath, Host: "myhost"}
-	if err := ctx.WriteConfigAndLock(
-		"mypkg", "1.0.0", "1.0.0", "abc", "",
-	); err != nil {
-		t.Fatalf("WriteConfigAndLock: %v", err)
+	if err := ctx.WriteConfig("mypkg", "1.0.0", "1.0.0-1"); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
+	}
+	if got := ctx.lockTargets["myhost"]["mypkg"]; got != "1.0.0-1" {
+		t.Errorf("recorded lock root = %q, want the host target to root "+
+			"mypkg at 1.0.0-1; targets = %v", got, ctx.lockTargets)
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -89,10 +89,10 @@ func TestWriteConfigAndLockWritesToHostSection(t *testing.T) {
 	}
 }
 
-// TestWriteConfigAndLockHostUpdatesExisting verifies that
-// reinstalling a host-scoped package with --host updates the
-// version in place rather than duplicating into [packages].
-func TestWriteConfigAndLockHostUpdatesExisting(t *testing.T) {
+// TestWriteConfigHostUpdatesExisting verifies that reinstalling a
+// host-scoped package with --host updates the version in place
+// rather than duplicating into [packages].
+func TestWriteConfigHostUpdatesExisting(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "gale.toml")
 	initial := "[hosts.myhost.packages]\n  mypkg = \"1.0.0\"\n"
@@ -102,10 +102,8 @@ func TestWriteConfigAndLockHostUpdatesExisting(t *testing.T) {
 	}
 
 	ctx := &cmdContext{GalePath: configPath, Host: "myhost"}
-	if err := ctx.WriteConfigAndLock(
-		"mypkg", "2.0.0", "2.0.0", "abc", "",
-	); err != nil {
-		t.Fatalf("WriteConfigAndLock: %v", err)
+	if err := ctx.WriteConfig("mypkg", "2.0.0", "2.0.0-1"); err != nil {
+		t.Fatalf("WriteConfig: %v", err)
 	}
 
 	data, err := os.ReadFile(configPath)
@@ -126,202 +124,6 @@ func TestWriteConfigAndLockHostUpdatesExisting(t *testing.T) {
 	}
 }
 
-func TestWriteConfigAndLockUpdatesLockfileOnCachedInstall(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  mypkg = \"1.0.0\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Write an initial lockfile with v1.0.0 and a hash.
-	lockPath := filepath.Join(tmp, "gale.lock")
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"mypkg": {Version: "1.0.0", SHA256: "oldhash123"},
-		},
-	}
-	if err := lockfile.Write(lockPath, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	// Simulate a cached install to v2.0.0 (sha256 is empty).
-	ctx := &cmdContext{GalePath: configPath}
-	if err := ctx.WriteConfigAndLock(
-		"mypkg", "2.0.0", "2.0.0", "", "",
-	); err != nil {
-		t.Fatalf("WriteConfigAndLock: %v", err)
-	}
-
-	// Read the lockfile back. The version should be updated
-	// even though sha256 was empty. The old hash must not
-	// remain associated with the new version.
-	got, err := lockfile.Read(lockPath)
-	if err != nil {
-		t.Fatalf("reading lockfile: %v", err)
-	}
-
-	pkg, ok := got.Packages["mypkg"]
-	if !ok {
-		t.Fatal("mypkg not found in lockfile")
-	}
-	if pkg.Version != "2.0.0" {
-		t.Errorf("lockfile version = %q, want %q",
-			pkg.Version, "2.0.0")
-	}
-	if pkg.SHA256 == "oldhash123" {
-		t.Error("lockfile still has old hash from v1.0.0")
-	}
-}
-
-// TestWriteConfigAndLockRewritesBareLockToCanonical reproduces
-// gh#30: when an update resolves a target carrying a revision
-// (e.g. "2.53.0-2") but the INPUT lock had a bare "2.53.0",
-// the rewritten lock must contain the canonical "2.53.0-2"
-// — never the bare form. The cached-install path (sha256
-// empty) used to early-return on VersionMatches and leave
-// the bare entry in place, silently dropping the -N.
-func TestWriteConfigAndLockRewritesBareLockToCanonical(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  git = \"2.53.0\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Input lock has a BARE version (pre-revision pin).
-	lockPath := filepath.Join(tmp, "gale.lock")
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"git": {Version: "2.53.0", SHA256: "githash"},
-		},
-	}
-	if err := lockfile.Write(lockPath, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	// Update resolves git to canonical 2.53.0-2. Cached
-	// install: sha256 is empty.
-	ctx := &cmdContext{GalePath: configPath}
-	if err := ctx.WriteConfigAndLock(
-		"git", "2.53.0", "2.53.0-2", "", "",
-	); err != nil {
-		t.Fatalf("WriteConfigAndLock: %v", err)
-	}
-
-	got, err := lockfile.Read(lockPath)
-	if err != nil {
-		t.Fatalf("reading lockfile: %v", err)
-	}
-	if v := got.Packages["git"].Version; v != "2.53.0-2" {
-		t.Errorf("lockfile git = %q, want %q (canonical, not bare)",
-			v, "2.53.0-2")
-	}
-}
-
-// TestWriteConfigAndLockRewritesBareLockToCanonicalKeepsHash
-// guards the python row of the gh#30 table. The issue reports
-// python "downgraded" 3.14.4-3 -> 3.14.4, but every real caller
-// derives lockVersion from recipe.Package.Full(), which always
-// emits the canonical "<version>-<revision>" (revision defaults
-// to 1) — so writeConfigAndLock never receives a bare
-// lockVersion and cannot write a bare pin on its own. The
-// reachable root cause for python is therefore the SAME as
-// git/git-delta/httpie: a bare entry already in the input lock
-// (here 3.14.4) that the loose VersionMatches early-return left
-// untouched, so the canonical 3.14.4-3 the resolver computed was
-// never written. This case differs from the bare-git test by
-// carrying a sha256 on the input entry (the issue notes the
-// broken entries kept their sha256): the rewrite to canonical
-// must preserve that hash since no new hash is computed on a
-// cached install.
-func TestWriteConfigAndLockRewritesBareLockToCanonicalKeepsHash(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  python = \"3.14.4\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Input lock has a BARE version WITH a sha256 (mirrors the
-	// issue's note that the broken entries carried a hash).
-	lockPath := filepath.Join(tmp, "gale.lock")
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"python": {Version: "3.14.4", SHA256: "pyhash"},
-		},
-	}
-	if err := lockfile.Write(lockPath, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	// Update resolves python to canonical 3.14.4-3. Cached
-	// install: sha256 is empty (no new hash this run).
-	ctx := &cmdContext{GalePath: configPath}
-	if err := ctx.WriteConfigAndLock(
-		"python", "3.14.4", "3.14.4-3", "", "",
-	); err != nil {
-		t.Fatalf("WriteConfigAndLock: %v", err)
-	}
-
-	got, err := lockfile.Read(lockPath)
-	if err != nil {
-		t.Fatalf("reading lockfile: %v", err)
-	}
-	pkg := got.Packages["python"]
-	if pkg.Version != "3.14.4-3" {
-		t.Errorf("lockfile python = %q, want %q (canonical, not bare)",
-			pkg.Version, "3.14.4-3")
-	}
-	if pkg.SHA256 != "pyhash" {
-		t.Errorf("lockfile python sha256 = %q, want %q (preserved)",
-			pkg.SHA256, "pyhash")
-	}
-}
-
-func TestWriteConfigAndLockPreservesHashOnSameVersionCache(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  mypkg = \"1.0.0\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Write a lockfile with v1.0.0 and a valid hash.
-	lockPath := filepath.Join(tmp, "gale.lock")
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"mypkg": {Version: "1.0.0", SHA256: "validhash"},
-		},
-	}
-	if err := lockfile.Write(lockPath, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	// Cached install of the same version (sha256 empty).
-	ctx := &cmdContext{GalePath: configPath}
-	if err := ctx.WriteConfigAndLock(
-		"mypkg", "1.0.0", "1.0.0", "", "",
-	); err != nil {
-		t.Fatalf("WriteConfigAndLock: %v", err)
-	}
-
-	// The existing hash should be preserved.
-	got, err := lockfile.Read(lockPath)
-	if err != nil {
-		t.Fatalf("reading lockfile: %v", err)
-	}
-	pkg := got.Packages["mypkg"]
-	if pkg.SHA256 != "validhash" {
-		t.Errorf("lockfile hash = %q, want %q",
-			pkg.SHA256, "validhash")
-	}
-}
-
 // finalizeInstall (post-gh#23) is lenient about unrelated
 // missing packages in gale.toml — the install for the
 // target package must land on PATH even if other entries
@@ -339,23 +141,15 @@ func TestFinalizeInstallTolerantOfUnrelatedMissingPackage(t *testing.T) {
 	galeDir := filepath.Join(tmp, ".gale")
 	storeRoot := filepath.Join(tmp, "pkg")
 	configPath := filepath.Join(tmp, "gale.toml")
-	lockPath := filepath.Join(tmp, "gale.lock")
 
 	if err := os.WriteFile(configPath,
 		[]byte("[packages]\n  awscli = \"2.34.19\"\n"),
 		0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := lockfile.Write(lockPath, &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"awscli": {Version: "2.34.19", SHA256: "oldhash"},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
 
 	s := store.NewStore(storeRoot)
-	pkgDir, err := s.Create("gale", "0.11.1")
+	pkgDir, err := s.Create("gale", "0.11.1-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +167,8 @@ func TestFinalizeInstallTolerantOfUnrelatedMissingPackage(t *testing.T) {
 		StoreRoot: storeRoot,
 		GalePath:  configPath,
 	}
-	err = ctx.FinalizeInstall("gale", "0.11.1", "0.11.1", "newhash", "")
+	writeProvenance(t, storeRoot, "gale", "0.11.1-1")
+	err = ctx.FinalizeInstall("gale", "0.11.1", "0.11.1-1")
 	if err != nil {
 		t.Fatalf("FinalizeInstall should tolerate unrelated "+
 			"missing awscli store dir; got error: %v", err)
@@ -409,21 +204,25 @@ func TestFinalizeInstallErrorsWhenTargetMissing(t *testing.T) {
 	storeRoot := filepath.Join(tmp, "pkg")
 	configPath := filepath.Join(tmp, "gale.toml")
 
-	// gale.toml carries the target but the store does NOT
-	// have the corresponding dir — simulates the
-	// race-or-deletion scenario the contract check
-	// guards against.
+	// The installed revision is in the store with provenance, so the
+	// lock write can describe what was verified, but the config pin
+	// below resolves to a version that is not on disk, so the
+	// generation skips it — the same observable as the
+	// race-or-deletion scenario the contract check guards against.
+	// An absent store dir would fail the lock write first, for
+	// another reason, and stop testing this one.
 	if err := os.WriteFile(configPath,
 		[]byte("[packages]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeProvenance(t, storeRoot, "gale", "0.11.1-1")
 
 	ctx := &cmdContext{
 		GaleDir:   galeDir,
 		StoreRoot: storeRoot,
 		GalePath:  configPath,
 	}
-	err := ctx.FinalizeInstall("gale", "0.11.1", "0.11.1-1", "newhash", "")
+	err := ctx.FinalizeInstall("gale", "9.9.9", "0.11.1-1")
 	if err == nil {
 		t.Fatal("expected FinalizeInstall error for missing target store dir")
 	}
@@ -446,8 +245,8 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 		name    string
 		version string
 	}{
-		{name: "oldpkg", version: "1.0.0"},
-		{name: "newpkg", version: "2.0.0"},
+		{name: "oldpkg", version: "1.0.0-1"},
+		{name: "newpkg", version: "2.0.0-1"},
 	} {
 		pkgDir, err := s.Create(pkg.name, pkg.version)
 		if err != nil {
@@ -495,7 +294,8 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 		StoreRoot: storeRoot,
 		GalePath:  configPath,
 	}
-	err = ctx.FinalizeInstall("newpkg", "2.0.0", "2.0.0", "newhash", "")
+	writeProvenance(t, storeRoot, "newpkg", "2.0.0-1")
+	err = ctx.FinalizeInstall("newpkg", "2.0.0", "2.0.0-1")
 	if err == nil {
 		t.Fatal("expected FinalizeInstall error")
 	}
@@ -615,48 +415,6 @@ func TestResolveVersionedRecipeWrapsRegistryError(t *testing.T) {
 	}
 }
 
-// TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion tests
-// Fix 2: when a pre-fix sync wrote bare "1.8.1" to the lockfile and
-// a cached install arrives with lockVersion="1.8.1-1" (canonical)
-// and sha256="" (cached), the guard must recognise "1.8.1" ≈
-// "1.8.1-1" and preserve the existing hash rather than clearing it.
-func TestWriteConfigAndLockPreservesHashWhenLockHasBareVersion(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  mypkg = \"1.8.1\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	lockPath := filepath.Join(tmp, "gale.lock")
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"mypkg": {Version: "1.8.1", SHA256: "existinghash"},
-		},
-	}
-	if err := lockfile.Write(lockPath, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	// Cached install with canonical lockVersion and empty sha256.
-	ctx := &cmdContext{GalePath: configPath}
-	if err := ctx.WriteConfigAndLock(
-		"mypkg", "1.8.1", "1.8.1-1", "", "",
-	); err != nil {
-		t.Fatalf("WriteConfigAndLock: %v", err)
-	}
-
-	got, err := lockfile.Read(lockPath)
-	if err != nil {
-		t.Fatalf("reading lockfile: %v", err)
-	}
-	pkg := got.Packages["mypkg"]
-	if pkg.SHA256 != "existinghash" {
-		t.Errorf("hash = %q, want %q (cached install with bare lockfile version "+
-			"should preserve existing hash)", pkg.SHA256, "existinghash")
-	}
-}
-
 // TestFinalizeInstallWrapsRebuildError guards against bug 0015:
 // finalizeInstall returns the raw error from rebuildGeneration without
 // wrapping it with "rebuild generation" context. Install and switch
@@ -672,7 +430,7 @@ func TestFinalizeInstallWrapsRebuildError(t *testing.T) {
 
 	// Create a valid package in the store so config+lockfile writes succeed.
 	s := store.NewStore(storeRoot)
-	pkgDir, err := s.Create("jq", "1.8.1")
+	pkgDir, err := s.Create("jq", "1.8.1-1")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -698,88 +456,12 @@ func TestFinalizeInstallWrapsRebuildError(t *testing.T) {
 		StoreRoot: storeRoot,
 		GalePath:  configPath,
 	}
-	err = ctx.FinalizeInstall("jq", "1.8.1", "1.8.1-1", "sha256abc", "")
+	writeProvenance(t, storeRoot, "jq", "1.8.1-1")
+	err = ctx.FinalizeInstall("jq", "1.8.1", "1.8.1-1")
 	if err == nil {
 		t.Fatal("expected FinalizeInstall to return error on rebuild failure")
 	}
 	if !strings.Contains(err.Error(), "rebuild generation") {
 		t.Errorf("FinalizeInstall error %q does not contain 'rebuild generation' context", err.Error())
-	}
-}
-
-// TestRemoveLockEntryHoldsFileLock tests bug 0007: removeLockEntry
-// performs a plain read-modify-write with no filelock.With(), unlike
-// updateLockfile which serializes via filelock.With(). Concurrent
-// calls to removeLockEntry race on the same file: both goroutines
-// can read the full lockfile, delete their respective entry, and
-// write back — leaving the other entry intact in one of the writes.
-// The race detector catches this unsynchronized access.
-//
-// The fix: wrap the read-modify-write in removeLockEntry with
-// filelock.With(lp+".lock", ...) matching updateLockfile's pattern.
-func TestRemoveLockEntryHoldsFileLock(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "gale.toml")
-	lockPath := filepath.Join(tmp, "gale.lock")
-
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	initial := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"jq":      {Version: "1.8.1-1", SHA256: "aaa"},
-			"ripgrep": {Version: "14.1.0-1", SHA256: "bbb"},
-		},
-	}
-	if err := lockfile.Write(lockPath, initial); err != nil {
-		t.Fatal(err)
-	}
-
-	// Run concurrent removeLockEntry calls. Without the file lock,
-	// both goroutines can read the same initial state, delete their
-	// own entry, and write back — one write will resurrect the entry
-	// the other deleted. With the file lock, the operations serialize
-	// and both entries are absent from the final lockfile.
-	const iterations = 50
-	for i := 0; i < iterations; i++ {
-		// Reset lockfile to both entries before each iteration.
-		if err := lockfile.Write(lockPath, &lockfile.LockFile{
-			Packages: map[string]lockfile.LockedPackage{
-				"jq":      {Version: "1.8.1-1", SHA256: "aaa"},
-				"ripgrep": {Version: "14.1.0-1", SHA256: "bbb"},
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-
-		var wg sync.WaitGroup
-		for _, name := range []string{"jq", "ripgrep"} {
-			name := name
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				if err := removeLockEntry(configPath, name); err != nil {
-					t.Errorf("removeLockEntry(%q): %v", name, err)
-				}
-			}()
-		}
-		wg.Wait()
-
-		lf, err := lockfile.Read(lockPath)
-		if err != nil {
-			t.Fatalf("iteration %d: reading lockfile: %v", i, err)
-		}
-		if len(lf.Packages) != 0 {
-			t.Errorf("iteration %d: got %d packages after removing both, want 0: %v",
-				i, len(lf.Packages), lf.Packages)
-			// Report specific survivors for diagnosis.
-			for name := range lf.Packages {
-				t.Errorf("  surviving entry: %q (resurrected by racy write)", name)
-			}
-			break
-		}
 	}
 }

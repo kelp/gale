@@ -11,6 +11,12 @@ exec gale init
 exec gale install hello -p --recipes=$WORK/recipes
 exists $WORK/proj/.gale/current/bin/hello
 
-# `gale run hello` finds hello via the project env.
+# Unlocked mode keeps working. With no lockfile there is nothing to
+# enforce, and run resolves hello through the project env, which is
+# what this script exists to pin. GALE_OFFLINE keeps the sync that
+# an absent lock triggers from reaching the network; it fails fast
+# and warns, and run proceeds on the generation already built.
+rm $WORK/proj/gale.lock
+env GALE_OFFLINE=1
 exec gale run hello
 stdout 'hello from gale integration fixture'

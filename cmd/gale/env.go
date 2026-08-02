@@ -16,6 +16,7 @@ var (
 	envVarsOnly bool
 	envGlobal   bool
 	envProject  bool
+	envCheck    bool
 )
 
 var envCmd = &cobra.Command{
@@ -38,6 +39,18 @@ var envCmd = &cobra.Command{
 		// the gc retention registry (gh#115). No-op for the
 		// global scope.
 		registerProject(configPath)
+
+		// The activation gate. `gale env` emits a PATH that CI and
+		// scripts consume, which makes it an activation command, and
+		// an activation command that cannot fail is a hole in the
+		// gate. --check is the mode the direnv hook calls: gate only,
+		// print nothing, exit non-zero on refusal.
+		if err := gateActivation(galeDir, configPath); err != nil {
+			return err
+		}
+		if envCheck {
+			return nil
+		}
 
 		if !envVarsOnly {
 			binDir := filepath.Join(galeDir, "current", "bin")
@@ -97,6 +110,8 @@ func init() {
 		"Print env for the global gale.toml")
 	envCmd.Flags().BoolVarP(&envProject, "project", "p", false,
 		"Print env for the project gale.toml")
+	envCmd.Flags().BoolVar(&envCheck, "check", false,
+		"Only run the activation gate, printing nothing")
 	rootCmd.AddCommand(envCmd)
 }
 

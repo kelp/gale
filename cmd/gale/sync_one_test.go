@@ -10,16 +10,9 @@ package main
 // TestSortedSyncItemsReturnsAlphabeticalOrder FAILS against the
 // sortedSyncItems stub (returns nil).
 //
-// Lockfile-write-failure contract (behaviour 7) is NOT tested
-// here: it is covered by the combination of:
-//   (a) TestUpdateLockfileSurfacesWriteFailure in
-//       lockfile_helper_test.go, which pins that updateLockfile
-//       surfaces write errors; and
-//   (b) the fact that runSyncOne stores that error in
-//       outcome.lockfileErr rather than returning it — which is
-//       asserted indirectly by the install-failure path
-//       (behaviour 5), where runSyncOne never returns an error
-//       from itself.
+// There is no lockfile-write behaviour here any more: sync never
+// writes gale.lock (design §11). TestSyncWritesNoLockfile in
+// lockwriter_test.go pins that.
 
 import (
 	"errors"
@@ -31,7 +24,6 @@ import (
 
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
@@ -101,13 +93,6 @@ func buildFakeCtx(
 	return ctx
 }
 
-// emptyLockFile returns a fresh, empty LockFile.
-func emptyLockFile() *lockfile.LockFile {
-	return &lockfile.LockFile{
-		Packages: make(map[string]lockfile.LockedPackage),
-	}
-}
-
 // TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate verifies that
 // when a package is already in the store with valid deps metadata
 // (IsStale false), runSyncOne returns upToDate=true and attempts
@@ -142,10 +127,9 @@ func TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "mypkg", version: "2.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if !out.upToDate {
 		t.Errorf("upToDate = false, want true for installed non-stale package")
@@ -231,10 +215,9 @@ func TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "mypkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if out.stale {
 		t.Error("stale = true, want false: the recipe's canonical " +
@@ -309,10 +292,9 @@ func TestRunSyncOneMissingFromStoreTriggersInstallAttempt(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "newpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	// The install was attempted (result may be nil because it
 	// failed, but installErr must be set OR result is non-nil).
@@ -381,10 +363,9 @@ func TestRunSyncOneInstalledButStaleTriggersReinstall(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "stalep", version: "3.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if !out.stale {
 		t.Error("stale = false, want true: package missing .gale-deps.toml")
@@ -422,10 +403,9 @@ func TestRunSyncOneResolverFailurePopulatesResolveErr(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "ghostpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if out.resolveErr == nil {
 		t.Error("resolveErr = nil, want non-nil resolver error")
@@ -482,129 +462,15 @@ func TestRunSyncOneInstallFailurePopulatesInstallErr(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "failpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, lf, w, false)
+	out := runSyncOne(ctx, w, false)
 
 	if out.installErr == nil {
 		t.Error("installErr = nil, want non-nil: install used a closed server")
 	}
 	if out.result != nil {
 		t.Errorf("result = %v, want nil when install fails", out.result)
-	}
-}
-
-// TestRunSyncOneLockfileSHAMismatchSetsSHAChanged verifies that when
-// the lockfile holds a different SHA from a successful install,
-// runSyncOne sets shaChanged=true and priorSHA to the stored value,
-// without blocking the install.
-//
-// This test uses a store pre-seeded with the package absent so
-// Install is triggered, but points the recipe at a closed server
-// (install fails). The lockfile SHA path is exercised only when
-// Install succeeds, so we check instead that runSyncOne correctly
-// reads and compares the lockfile SHA when it does succeed.
-//
-// Approach: seed the store as empty and use a resolver that returns
-// a recipe causing install to fail. Pre-seed lockfile with a SHA.
-// Because install fails, result==nil and we can't see shaChanged.
-// The only reliable way to test this path is with a successful
-// install — which requires a real build that is too heavy for a
-// unit test. We therefore construct a simpler assertion: if install
-// succeeds AND lockfile has a different SHA, shaChanged must be
-// true. We leave the success-path stub assertion here to be RED:
-// the stub always returns shaChanged=false (zero value), so the
-// assertion below will fail once a real install succeeds. Until
-// then this tests the lockfile-read path.
-//
-// Simpler invariant tested: when lockfile has a seeded SHA and
-// package is already in store (upToDate path), shaChanged must
-// remain false (no install occurred). Against the stub (which
-// returns all zeros), this would accidentally pass. We instead
-// test the non-upToDate install path by seeding an empty store
-// and asserting that after a successful install result, shaChanged
-// reflects the mismatch. The stub returns syncOutcome{} which has
-// shaChanged=false and result=nil, making assertions on result!=nil
-// fail (RED).
-func TestRunSyncOneLockfileSHAMismatchSetsSHAChanged(t *testing.T) {
-	tmp := t.TempDir()
-	storeRoot := filepath.Join(tmp, "store")
-	galeDir := filepath.Join(tmp, ".gale")
-	galePath := filepath.Join(tmp, "gale.toml")
-
-	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(galeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	// Seed lockfile with a prior SHA for this package.
-	priorSHA := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	lf := &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"shacheckpkg": {
-				Version: "1.0.0-1",
-				SHA256:  priorSHA,
-			},
-		},
-	}
-
-	// Use a server that serves a real (tiny) archive so
-	// Install can succeed and we get a result with a different SHA.
-	// The server serves a single byte — VerifySHA256 will mismatch
-	// the recipe's SHA, causing install to fail. This means we
-	// test only the "install attempted" aspect.
-	//
-	// Because a successful install with SHA mismatch detection
-	// requires a full build environment, we assert the minimum:
-	// the stub returns result=nil (RED), and the real impl must
-	// return result!=nil on success, and shaChanged=true on mismatch.
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.NotFound(w, r)
-	}))
-	defer srv.Close()
-
-	resolver := func(name string) (*recipe.Recipe, error) {
-		return &recipe.Recipe{
-			Package: recipe.Package{Name: name, Version: "1.0.0"},
-			Source: recipe.Source{
-				URL:    srv.URL + "/source.tar.gz",
-				SHA256: "deadbeef",
-			},
-			Build: recipe.Build{Steps: []string{"echo build"}},
-		}, nil
-	}
-
-	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	w := syncItem{name: "shacheckpkg", version: "1.0.0"}
-
-	out := runSyncOne(ctx, lf, w, false)
-
-	// Against the stub: result==nil, so this assertion fails (RED).
-	// The real implementation must attempt install (result!=nil on
-	// success) or set installErr!=nil on failure. Either way,
-	// result==nil with installErr==nil is wrong for a missing package.
-	if out.result == nil && out.installErr == nil {
-		t.Error("both result and installErr nil: install was not attempted " +
-			"for a package missing from the store")
-	}
-	// When install succeeds AND lockfile SHA differs, shaChanged
-	// must be true and priorSHA must match the lockfile value.
-	// The stub returns shaChanged=false (zero), so if result is
-	// non-nil (real impl), this assertion pins the correct behavior.
-	if out.result != nil && out.result.SHA256 != priorSHA {
-		if !out.shaChanged {
-			t.Error("shaChanged = false, want true: " +
-				"install SHA differs from lockfile SHA")
-		}
-		if out.priorSHA != priorSHA {
-			t.Errorf("priorSHA = %q, want %q", out.priorSHA, priorSHA)
-		}
 	}
 }
 
@@ -633,13 +499,12 @@ func TestRunSyncOneDryRunUpToDate(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	lf := emptyLockFile()
 	w := syncItem{name: "drypkg", version: "4.0.0"}
 
 	storePathBefore, _ := store.NewStore(storeRoot).StorePath("drypkg", "4.0.0")
 	entriesBefore, _ := os.ReadDir(storePathBefore)
 
-	out := runSyncOne(ctx, lf, w, true /* dryRun */)
+	out := runSyncOne(ctx, w, true /* dryRun */)
 
 	if !out.upToDate {
 		t.Error("upToDate = false, want true: package is installed and non-stale")
@@ -666,7 +531,12 @@ func TestRunSyncOneDryRunUpToDate(t *testing.T) {
 // which worker finished first.
 func TestSortedSyncItemsReturnsAlphabeticalOrder(t *testing.T) {
 	pkgs := map[string]string{"zeta": "1", "alpha": "2", "mu": "3"}
-	items := sortedSyncItems(pkgs)
+	items, err := sortedSyncItems(
+		pkgs, nil,
+	)
+	if err != nil {
+		t.Fatalf("sortedSyncItems: %v", err)
+	}
 	if len(items) != 3 {
 		t.Fatalf("len(items) = %d, want 3", len(items))
 	}
