@@ -129,3 +129,63 @@ func TestFarmPredicateDoesNotFollowTheFarmedAlias(t *testing.T) {
 		t.Errorf("StaleLinks = %v, want [%s]", stale, soname)
 	}
 }
+
+// A symlinked lib DIRECTORY is the same problem one level up.
+// Populate follows it and farms what it finds, and the farm entry
+// still names <store>/lib/<soname>, so the entry breaks when this
+// store directory is replaced. Resolving that component walks out of
+// the store and disowns it.
+func TestFarmPredicateDoesNotFollowASymlinkedLibDir(t *testing.T) {
+	root := t.TempDir()
+	storeDir := filepath.Join(root, "pkg", "p", "1.0-1")
+	if err := os.MkdirAll(storeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(root, "elsewhere")
+	if err := os.MkdirAll(outside, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	soname := "libdir.4.dylib"
+	if runtime.GOOS == "linux" {
+		soname = "libdir.so.4"
+	}
+	if err := os.WriteFile(
+		filepath.Join(outside, soname), []byte("x"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	// <store>/lib -> /outside
+	if err := os.Symlink(outside, filepath.Join(storeDir, "lib")); err != nil {
+		t.Fatal(err)
+	}
+
+	farmDir := filepath.Join(root, "lib")
+	if err := Populate(storeDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Readlink(filepath.Join(farmDir, soname)); err != nil {
+		t.Fatalf("Populate did not farm through the symlinked lib: %v", err)
+	}
+
+	entry := filepath.Join(storeDir, "lib", soname)
+	if !UnderStoreDir(entry, storeDir) {
+		t.Error("an entry named under the store was read as outside it")
+	}
+	staging := filepath.Join(t.TempDir(), "staged")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := StaleLinks(storeDir, staging, farmDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(stale) != 1 || stale[0] != soname {
+		t.Errorf("StaleLinks = %v, want [%s]", stale, soname)
+	}
+	if err := Depopulate(storeDir, farmDir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Lstat(filepath.Join(farmDir, soname)); !os.IsNotExist(err) {
+		t.Errorf("Depopulate left the link behind: %v", err)
+	}
+}

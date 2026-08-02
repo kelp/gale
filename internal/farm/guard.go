@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"strings"
 )
 
 // This file is the cross-project farm claimant guard (design §4).
@@ -418,32 +417,47 @@ func depopulatedSonames(storeDir, farmDir string) (map[string]bool, error) {
 // predicate both the guard and Depopulate rest on, so it has to
 // agree with them.
 func UnderStoreDir(target, storeDir string) bool {
-	prefix := resolveSpelling(storeDir) + string(filepath.Separator)
-	return strings.HasPrefix(resolveSpelling(target), prefix)
+	// Only the ancestry ABOVE the store directory is resolved, and
+	// every component from the store directory down is compared as
+	// written. Resolving further walks out of the store through the
+	// package's own links: Populate follows a symlinked lib dir and
+	// farms what it finds, and it farms versioned symlink aliases on
+	// purpose, so both the directory and the leaf can point outside
+	// while the entry still belongs to this store directory. Whose
+	// bytes they ultimately are is not the question — the entry
+	// breaks when this directory is replaced.
+	want := anchored(storeDir)
+	for cur := filepath.Dir(filepath.Clean(target)); ; cur = filepath.Dir(cur) {
+		if anchored(cur) == want {
+			return true
+		}
+		if parent := filepath.Dir(cur); parent == cur {
+			return false
+		}
+	}
 }
 
-// resolveSpelling returns one spelling for a path by resolving the
-// directories that lead to it, never the leaf itself.
+// anchored spells one path with its ancestry resolved and its own
+// final component left exactly as written.
 //
-// Resolving the leaf is wrong here, and wrong in the direction that
-// hides work. Populate deliberately farms versioned symlink ALIASES,
-// which is how libtool ships a soname, so a farm entry's target is
-// routinely a link inside the store pointing at the real file. Whose
-// real file is not this predicate's question: the entry belongs to
-// the store directory the target NAMES, and following it can lead
-// out of the store and report false for a link that plainly lives
-// inside it.
+// Anchoring is what makes the comparison symmetric: either side may
+// arrive already resolved or not, and a one-way prefix rewrite only
+// normalises whichever side it was handed.
 //
-// The leaf is also allowed to be gone. A farm link's target is
-// exactly the file a replacement removes, so a resolution that
-// required it to exist would answer only for the state before the
-// operation. A path whose directories resolve nowhere is cleaned and
-// compared as written, which is the best available answer.
-func resolveSpelling(p string) string {
-	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
-		return filepath.Join(r, filepath.Base(p))
+// What protects the symlinked components INSIDE the store is the
+// ancestor walk above, not this function: the walk reaches the store
+// directory itself by climbing the target's literal path, so a
+// symlinked lib dir or a farmed alias never has to be interpreted.
+// Leaving the final component unresolved is a deliberately
+// conservative choice on top of that — it means a path that merely
+// RESOLVES into a store directory is not claimed as belonging to it
+// — and not the mechanism.
+func anchored(p string) string {
+	dir := filepath.Dir(p)
+	if r, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = r
 	}
-	return filepath.Clean(p)
+	return filepath.Join(dir, filepath.Base(p))
 }
 
 // dedupPlacements drops duplicates (path-clean comparison on both
