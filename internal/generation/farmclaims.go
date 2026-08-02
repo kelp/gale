@@ -81,7 +81,7 @@ func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 		}
 		if len(dirs) > 0 {
 			out = append(out, farm.Claimant{
-				Label: s.Label, StoreDirs: dirs,
+				Label: s.Label, Claims: farm.At(dirs...),
 			})
 		}
 	}
@@ -144,7 +144,7 @@ func ProposedClaimant(
 	if err != nil {
 		return c, fmt.Errorf("reading the proposed closure: %w", err)
 	}
-	c.StoreDirs = dirs
+	c.Claims = farm.At(dirs...)
 	return c, nil
 }
 
@@ -199,7 +199,7 @@ func ProposedClaimantRequired(
 func proposedClaimant(
 	placements []farm.Placement, galeDir, storeRoot string, require bool,
 ) (farm.Claimant, error) {
-	c := farm.Claimant{Label: "this scope", Placements: placements}
+	c := farm.Claimant{Label: "this scope"}
 	pkgs, err := CurrentVersions(galeDir, storeRoot)
 	if err != nil {
 		return c, fmt.Errorf("reading active generation: %w", err)
@@ -237,14 +237,16 @@ func proposedClaimant(
 		c.Err = errStagedClosure
 		return c, nil
 	}
+	// One list, built once. The committed part of the closure claims
+	// from where it sits; the staged part claims through the caller's
+	// own placements, which read from staging and report the
+	// canonical destination.
 	for _, d := range slices.Sorted(maps.Keys(closure)) {
-		// The staged dirs are carried by Placements, which reports
-		// their sonames from staging and their targets at the
-		// canonical path.
 		if _, isStaged := staged[canonicalDir(d)]; !isStaged {
-			c.StoreDirs = append(c.StoreDirs, d)
+			c.Claims = append(c.Claims, farm.At(d)...)
 		}
 	}
+	c.Claims = append(c.Claims, placements...)
 	return c, nil
 }
 

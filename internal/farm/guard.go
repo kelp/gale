@@ -50,21 +50,27 @@ type Claimant struct {
 	// Label names the scope in refusal messages ("global",
 	// "project /path/to/a").
 	Label string
-	// StoreDirs is the resolved store dir of every package in the
-	// scope's closure. Dirs absent from the store contribute no
-	// claims: the farm can only map bytes that exist, and a scope
-	// cannot be loading a version that has none.
-	StoreDirs []string
-	// Placements are the parts of the closure whose bytes are not at
-	// their canonical paths yet, read from where they are staged and
-	// reported at where they will land.
+	// Claims is the scope's whole closure, one placement per package:
+	// where its libs can be read now, and the canonical store dir the
+	// farm links will carry. For a package already committed the two
+	// are the same directory, which is what At builds.
 	//
-	// A scope replacing a package it is itself using needs this. Its
-	// proposed closure contains the NEW artifact, but before the
-	// rename the canonical path still holds the old one, so a claim
-	// built from dirs alone would describe the version being
-	// replaced and veto the replacement on its own behalf.
-	Placements []Placement
+	// One list rather than a dir list beside a placement list. The
+	// closure has one post-commit shape, and encoding it twice made
+	// every consumer responsible for recombining the halves the same
+	// way: a rule three call sites re-derived and one of them got
+	// wrong, since guardClaimedDir read only the dirs and so never
+	// protected a directory a claimant was about to move bytes into
+	// (gh#194).
+	//
+	// A package absent from the store contributes no claims: the farm
+	// can only map bytes that exist, and a scope cannot be loading a
+	// version that has none. A package whose bytes are still staged
+	// contributes them from where they are, which is what lets a
+	// scope replacing a package it is itself using avoid vetoing its
+	// own replacement — before the rename the canonical path still
+	// holds the artifact being superseded.
+	Claims []Placement
 	// Err marks a scope that is known to exist but whose closure
 	// could not be read. The guard fails closed on it: an unreadable
 	// claim could be hiding exactly the conflict the guard exists to
@@ -266,11 +272,8 @@ func GuardRebuild(proposedDirs []string, claimants []Claimant) ([]string, error)
 		// A placement's FINAL dir, since the union feeds a rebuild
 		// that runs after the commit and must name where the bytes
 		// will be, not where they are staged.
-		dirs := c.StoreDirs
-		for _, p := range c.Placements {
-			dirs = append(dirs, p.FinalDir)
-		}
-		for _, d := range dirs {
+		for _, p := range c.Claims {
+			d := p.FinalDir
 			if clean := filepath.Clean(d); !seen[clean] {
 				seen[clean] = true
 				union = append(union, d)
@@ -293,9 +296,7 @@ func eachClaim(
 		if c.Err != nil {
 			return unreadableClaim(c)
 		}
-		claims, err := placedSonameTargets(
-			c.Label, append(At(c.StoreDirs...), c.Placements...),
-		)
+		claims, err := placedSonameTargets(c.Label, c.Claims)
 		if err != nil {
 			return err
 		}
@@ -555,8 +556,11 @@ func guardClaimedDir(storeDir string, claimants []Claimant) error {
 		if c.Err != nil {
 			return unreadableClaim(c)
 		}
-		for _, d := range c.StoreDirs {
-			if filepath.Clean(d) != want {
+		for _, p := range c.Claims {
+			// The FINAL dir: a claimant whose bytes are still staged
+			// needs the directory they are about to land in, and that
+			// is the directory this deletion would take away.
+			if filepath.Clean(p.FinalDir) != want {
 				continue
 			}
 			return fmt.Errorf(

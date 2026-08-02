@@ -133,10 +133,10 @@ func TestFarmClaimants_LockedScopeClaimsLockClosure(t *testing.T) {
 		t.Fatalf("claimant error: %v", c.Err)
 	}
 	want := map[string]bool{curl: true, zstd: true}
-	if len(c.StoreDirs) != len(want) {
-		t.Fatalf("StoreDirs = %v, want curl and zstd only", c.StoreDirs)
+	if len(claimDirs(c)) != len(want) {
+		t.Fatalf("claims = %v, want curl and zstd only", claimDirs(c))
 	}
-	for _, d := range c.StoreDirs {
+	for _, d := range claimDirs(c) {
 		if !want[d] {
 			t.Errorf("unexpected claimed dir %s (build deps must "+
 				"not be claimed)", d)
@@ -201,20 +201,20 @@ func TestFarmClaimants_LockedScopeAlsoClaimsActiveGeneration(t *testing.T) {
 		t.Fatalf("claimant error: %v", c.Err)
 	}
 	got := map[string]bool{}
-	for _, d := range c.StoreDirs {
+	for _, d := range claimDirs(c) {
 		got[d] = true
 	}
 	for _, want := range []string{running, runningDep, lockOnlyDep} {
 		if !got[want] {
-			t.Errorf("StoreDirs = %v, missing %s", c.StoreDirs, want)
+			t.Errorf("claims = %v, missing %s", claimDirs(c), want)
 		}
 	}
 	for _, unwanted := range []string{superseded, supersededDep} {
 		if got[unwanted] {
-			t.Errorf("StoreDirs = %v claims two versions of one "+
+			t.Errorf("claims = %v names two versions of one "+
 				"package (%s); the live generation must win, or the "+
 				"guard refuses every operation while this scope has "+
-				"an unsynced repin", c.StoreDirs, unwanted)
+				"an unsynced repin", claimDirs(c), unwanted)
 		}
 	}
 	// The consequence, stated as the guard sees it: a scope with an
@@ -409,8 +409,8 @@ func TestFarmClaimants_UnlockedScopeClaimsActiveGeneration(t *testing.T) {
 			if c.Err != nil {
 				t.Fatalf("claimant error: %v", c.Err)
 			}
-			if len(c.StoreDirs) != 1 || c.StoreDirs[0] != curl {
-				t.Errorf("StoreDirs = %v, want [%s]", c.StoreDirs, curl)
+			if len(claimDirs(c)) != 1 || claimDirs(c)[0] != curl {
+				t.Errorf("claims = %v, want [%s]", claimDirs(c), curl)
 			}
 		})
 	}
@@ -455,8 +455,8 @@ func TestFarmClaimants_ExcludesInitiatorIncludesGlobal(t *testing.T) {
 	if c.Err != nil {
 		t.Fatalf("claimant error: %v", c.Err)
 	}
-	if len(c.StoreDirs) != 1 || c.StoreDirs[0] != curl {
-		t.Errorf("StoreDirs = %v, want [%s]", c.StoreDirs, curl)
+	if len(claimDirs(c)) != 1 || claimDirs(c)[0] != curl {
+		t.Errorf("claims = %v, want [%s]", claimDirs(c), curl)
 	}
 }
 
@@ -668,8 +668,8 @@ func TestProposedClaimantStagedWalksStagedDeps(t *testing.T) {
 		t.Fatalf("claim reported unreadable: %v", c.Err)
 	}
 	for _, want := range []string{added, deep} {
-		if !slices.Contains(c.StoreDirs, want) {
-			t.Errorf("claim omits %s; StoreDirs = %v", want, c.StoreDirs)
+		if !slices.Contains(claimDirs(c), want) {
+			t.Errorf("claim omits %s; claims = %v", want, claimDirs(c))
 		}
 	}
 }
@@ -813,4 +813,15 @@ func TestProposedClaimantStagedIgnoresTheSupersededMetadata(t *testing.T) {
 		t.Errorf("the superseded artifact's metadata refused the "+
 			"operation that replaces it: %v", c.Err)
 	}
+}
+
+// claimDirs is the final store dir of every claim, which is what the
+// old StoreDirs field held. A claim whose bytes are staged reports
+// where they will land, so the two agree for every assertion here.
+func claimDirs(c farm.Claimant) []string {
+	out := make([]string, 0, len(c.Claims))
+	for _, p := range c.Claims {
+		out = append(out, p.FinalDir)
+	}
+	return out
 }
