@@ -303,3 +303,58 @@ func TestAuthoritativeGenerationDirsCanonicalizesPaths(t *testing.T) {
 			"  %q\n  %q", raw[0], viaResolved[0])
 	}
 }
+
+// ReferenceClosure stops AT the directory being replaced, and the
+// stopping is what must be pinned rather than inferred.
+//
+// Excluding only that directory's own metadata would look identical
+// in the command tests and be wrong: a candidate whose metadata is
+// perfectly readable would still be descended through, its
+// dependency judged, and a malformed one below it would refuse the
+// replacement — which is the deadlock the exclusion exists to
+// remove, arriving one level down.
+//
+// The second half is the other side of the same rule. Excluding the
+// candidate is not permission to ignore that directory everywhere:
+// reached from a root that is not being replaced, it is judged like
+// any other.
+func TestReferenceClosureStopsAtTheReplacedDir(t *testing.T) {
+	storeRoot := t.TempDir()
+	// A malformed child, reachable only through the candidate.
+	child := seedPkg(t, storeRoot, "child", "1.0-1")
+	if err := os.WriteFile(
+		filepath.Join(child, depsmeta.File), []byte("not toml\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	// The candidate's own metadata is READABLE and names the child.
+	candidate := seedPkg(t, storeRoot, "candidate", "1.0-1",
+		depsmeta.ResolvedDep{Name: "child", Version: "1.0", Revision: 1})
+
+	dirs, complete := ReferenceClosure(
+		[]string{candidate}, storeRoot, candidate,
+	)
+	if !complete {
+		t.Error("the walk descended through the directory being replaced")
+	}
+	if dirs[child] {
+		t.Errorf("the child below the candidate entered the closure: %v", dirs)
+	}
+	if !dirs[candidate] {
+		t.Errorf("the candidate itself is missing from the closure: %v", dirs)
+	}
+
+	// The same child, reached from a root that is not being replaced.
+	other := seedPkg(t, storeRoot, "other", "1.0-1",
+		depsmeta.ResolvedDep{Name: "child", Version: "1.0", Revision: 1})
+	dirs, complete = ReferenceClosure(
+		[]string{candidate, other}, storeRoot, candidate,
+	)
+	if complete {
+		t.Error("a malformed directory reached from another root was " +
+			"excused by the candidate's exemption")
+	}
+	if !dirs[child] {
+		t.Errorf("the child is not reported as reachable: %v", dirs)
+	}
+}

@@ -8,11 +8,13 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
+	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
@@ -663,6 +665,358 @@ func TestRefreshHonoursTheCrossScopeVeto(t *testing.T) {
 	kept, rerr := os.ReadFile(marker)
 	if rerr != nil {
 		t.Fatalf("the vetoed directory is gone: %v", rerr)
+	}
+	if string(kept) != "old" {
+		t.Errorf("marker holds %q, want %q", kept, "old")
+	}
+}
+
+// A refresh converges the closure bottom-up within one run: a
+// declared root that is also another declared root's dependency is
+// replaced BEFORE the root above it.
+//
+// Design §5 and §7 between them force this. Provenance is
+// all-or-nothing, so an artifact whose dependency carries no record
+// commits with no record of its own, and §13's candidate check then
+// refuses the replacement. Alphabetical order therefore decides
+// whether a scope can refresh at all: "app" sorts before the "zdep"
+// it links, so the run rebuilds app against an unprovenanced zdep,
+// destroys nothing, and fails — while the same two packages named
+// the other way round succeed.
+//
+// Ordering by dependency is also what makes §5's reverse-dependent
+// rule reachable: a dependent processed after its dependency sees
+// the new bytes rather than a digest that went stale behind it.
+func TestRefreshLocksDependenciesBeforeDependents(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	ctx := twoLevelCtx(t, tmp, "app", "zdep")
+	for _, name := range []string{"app", "zdep"} {
+		seedStore(t, ctx.StoreRoot, name, "1.0-1")
+	}
+
+	if err := runLockRefresh(ctx, "", nil, discardOutput()); err != nil {
+		t.Fatalf("refresh over a two-level closure: %v", err)
+	}
+	for _, name := range []string{"app", "zdep"} {
+		if _, err := os.Lstat(filepath.Join(
+			ctx.StoreRoot, name, "1.0-1", provenance.File,
+		)); err != nil {
+			t.Errorf("%s was not refreshed: %v", name, err)
+		}
+	}
+}
+
+// twoLevelCtx declares two buildable roots where top depends on
+// bottom at runtime, which is the shape every ordering and
+// reverse-dependent fixture needs.
+func twoLevelCtx(t *testing.T, tmp, top, bottom string) *cmdContext {
+	t.Helper()
+	tarball, sum := sourceTarball(t, top)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, tarball)
+		},
+	))
+	t.Cleanup(srv.Close)
+
+	return lockCtxResolver(t, tmp,
+		fmt.Sprintf("[packages]\n  %s = \"1.0\"\n  %s = \"1.0\"\n", top, bottom),
+		func(pkg string) (*recipe.Recipe, error) {
+			r := &recipe.Recipe{
+				Package: recipe.Package{Name: pkg, Version: "1.0"},
+				Source: recipe.Source{
+					URL: srv.URL + "/source.tar.gz", SHA256: sum,
+				},
+				Build: recipe.Build{Steps: []string{
+					"mkdir -p $PREFIX/bin",
+					"echo '#!/bin/sh' > $PREFIX/bin/" + pkg,
+					"chmod +x $PREFIX/bin/" + pkg,
+				}},
+			}
+			if pkg == top {
+				r.Dependencies = recipe.Dependencies{Runtime: []string{bottom}}
+			}
+			return r, nil
+		})
+}
+
+// A refresh stops BEFORE destroying anything when a package the
+// scope actively loads records the artifact being replaced.
+//
+// Design §5: replacing an artifact changes the graph_digest of every
+// node above it, so refresh must regenerate the reverse-dependent
+// closure; §11 and §13 bound that regeneration to a directory that
+// is absent, unreferenced, or unprovenanced, and a referenced one
+// that records the target stops the operation with the conflict
+// error. Acceptance 13.
+//
+// Stopping is not enough on its own. A run that discovers the
+// conflict on its way out has already destroyed the candidate to
+// learn something it could have read first, and the stale record it
+// stopped for is no better off.
+//
+// The fixture writes the dependent's record by hand because §7's
+// all-or-nothing rule means no consistent history produces this
+// state: a parent above an unprovenanced dependency holds no record
+// at all. That is precisely why the guard is cheap to state and
+// worth having — the store can still be put into this shape by a
+// partial restore or a deleted record, and the operation that meets
+// it must refuse rather than widen the damage.
+//
+// The record the fixture writes PARSES and would not verify: its
+// graph digest is a well-formed value the closure would never
+// recompute. That is what the guard tests, deliberately, and it is
+// the safe direction — a record gale cannot vouch for still refuses.
+func TestRefreshStopsBeforeReplacingUnderAProvenancedDependent(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	ctx := twoLevelCtx(t, tmp, "app", "zdep")
+	// The candidate: occupied, unprovenanced, and about to be replaced.
+	marker := filepath.Join(
+		seedStore(t, ctx.StoreRoot, "zdep", "1.0-1"), "legacy-marker",
+	)
+	if err := os.WriteFile(marker, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The dependent above it: a record naming that exact identity,
+	// active in this scope.
+	seedStore(t, ctx.StoreRoot, "app", "1.0-1")
+	writeDependentProvenance(t, ctx.StoreRoot, "app", "1.0-1", "zdep@1.0-1")
+	if err := ctx.RebuildGeneration(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runLockRefresh(ctx, "", []string{"zdep"}, discardOutput())
+	if !errors.Is(err, errDependentRecord) {
+		t.Fatalf("err = %v, want errDependentRecord", err)
+	}
+	if !strings.Contains(err.Error(), "app@1.0-1") {
+		t.Errorf("the refusal must name the dependent: %q", err)
+	}
+	kept, rerr := os.ReadFile(marker)
+	if rerr != nil {
+		t.Fatalf("the candidate was replaced before the conflict "+
+			"was found: %v", rerr)
+	}
+	if string(kept) != "old" {
+		t.Errorf("marker holds %q, want %q", kept, "old")
+	}
+}
+
+// writeDependentProvenance writes a structurally readable record for
+// a package that records dep as a runtime edge, beside the dependency
+// metadata a real install always writes. The digest is well formed
+// and is not the value the closure would recompute, which is the
+// whole point: the record is the one the replacement would
+// invalidate, and the guard does not need it to verify.
+func writeDependentProvenance(
+	t *testing.T, storeRoot, name, version, dep string,
+) {
+	t.Helper()
+	dir := filepath.Join(storeRoot, name, version)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	depName, depVer, ok := strings.Cut(dep, "@")
+	if !ok {
+		t.Fatalf("dep %q is not name@version", dep)
+	}
+	// Metadata spells the version bare with the revision beside it;
+	// the strict reader refuses a version that carries the suffix,
+	// because "1.0-1" with revision 1 would read two ways.
+	bare, rev, ok := strings.Cut(depVer, "-")
+	if !ok {
+		t.Fatalf("dep version %q carries no revision", depVer)
+	}
+	n, err := strconv.Atoi(rev)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := depsmeta.Write(dir, depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
+			{Name: depName, Version: bare, Revision: n},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provenance.Write(dir, provenance.Record{
+		Name:        name,
+		Version:     version,
+		Platform:    runtime.GOOS + "/" + runtime.GOARCH,
+		SHA256:      testSHA,
+		Method:      lockgraph.MethodSource,
+		RuntimeDeps: []string{dep},
+		GraphDigest: "sha256:" + strings.Repeat("5c", 32),
+	}); err != nil {
+		t.Fatalf("provenance.Write(%s): %v", name, err)
+	}
+}
+
+// A recipe cycle cannot be ordered, and orderRoots says so by
+// leaving the order it was given.
+//
+// Depth-first traversal does not do that on its own: it treats a
+// node it is still visiting exactly like a finished one, so a -> b
+// -> a emits b before a. Ordering is load-bearing here, so a silent
+// reordering on the one input where no order is correct is worse
+// than not reordering at all.
+func TestOrderRootsKeepsTheGivenOrderOnACycle(t *testing.T) {
+	dep := func(name, on string) *recipe.Recipe {
+		return &recipe.Recipe{
+			Package:      recipe.Package{Name: name, Version: "1.0"},
+			Dependencies: recipe.Dependencies{Runtime: []string{on}},
+		}
+	}
+	in := []*recipe.Recipe{dep("a", "b"), dep("b", "a")}
+	got := orderRoots(in)
+	if len(got) != 2 || got[0].Package.Name != "a" ||
+		got[1].Package.Name != "b" {
+		names := make([]string, len(got))
+		for i, r := range got {
+			names[i] = r.Package.Name
+		}
+		t.Errorf("orderRoots = %v, want the given order [a b]", names)
+	}
+}
+
+// The dependent scan is re-established inside the commit lock, not
+// carried from the answer formed before the fetch.
+//
+// The initiating scope is exempt from checkReplaceable's cross-scope
+// veto, so nothing else watches it: a generation rebuild or a
+// concurrent install in this same scope can make a dependent active,
+// or provenance one that was already active, while the candidate is
+// being rebuilt. Acting on the earlier answer replaces bytes a
+// record now names.
+//
+// The build step writes the dependent's record, which is what a
+// concurrent run in this scope would do, and does it
+// deterministically.
+func TestRefreshRechecksDependentsInsideTheCommitLock(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	tarball, sum := sourceTarball(t, "adep")
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, tarball)
+		},
+	))
+	defer srv.Close()
+
+	// zapp is active and unprovenanced, so the early scan clears it,
+	// and it sorts after the candidate so the run reaches the
+	// replacement first.
+	scratch := filepath.Join(tmp, "scratch")
+	zappDir := filepath.Join(tmp, ".gale", "pkg", "zapp", "1.0-1")
+	ctx := lockCtxResolver(t, tmp,
+		"[packages]\n  adep = \"1.0\"\n  zapp = \"1.0\"\n",
+		func(pkg string) (*recipe.Recipe, error) {
+			r := &recipe.Recipe{
+				Package: recipe.Package{Name: pkg, Version: "1.0"},
+				Source: recipe.Source{
+					URL: srv.URL + "/source.tar.gz", SHA256: sum,
+				},
+				Build: recipe.Build{Steps: []string{
+					"mkdir -p $PREFIX/bin",
+					"echo '#!/bin/sh' > $PREFIX/bin/" + pkg,
+				}},
+			}
+			if pkg == "adep" {
+				// Written while adep is being rebuilt, which is what a
+				// concurrent run in this scope would do.
+				r.Build.Steps = append(r.Build.Steps, fmt.Sprintf("cp %s %s",
+					filepath.Join(scratch, "zapp", "1.0-1", provenance.File),
+					filepath.Join(zappDir, provenance.File)))
+			}
+			return r, nil
+		})
+	writeDependentProvenance(t, scratch, "zapp", "1.0-1", "adep@1.0-1")
+
+	marker := filepath.Join(
+		seedStore(t, ctx.StoreRoot, "adep", "1.0-1"), "legacy-marker",
+	)
+	if err := os.WriteFile(marker, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seedStore(t, ctx.StoreRoot, "zapp", "1.0-1")
+	// The metadata a real install always writes, so the closure walk
+	// is complete; only the provenance record arrives mid-build.
+	if err := depsmeta.Write(zappDir, depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
+			{Name: "adep", Version: "1.0", Revision: 1},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.RebuildGeneration(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runLockRefresh(ctx, "", []string{"adep"}, discardOutput())
+	if !errors.Is(err, errDependentRecord) {
+		t.Fatalf("err = %v, want errDependentRecord", err)
+	}
+	kept, rerr := os.ReadFile(marker)
+	if rerr != nil {
+		t.Fatalf("the candidate was replaced under a record that "+
+			"appeared mid-build: %v", rerr)
+	}
+	if string(kept) != "old" {
+		t.Errorf("marker holds %q, want %q", kept, "old")
+	}
+}
+
+// A closure the scan could not read in full cannot authorize a
+// replacement.
+//
+// Unreadable dependency metadata blocks the descent, so a dependent
+// below the unreadable directory is invisible: the scan reports no
+// conflict because it saw nothing, which is absence of evidence
+// standing in for evidence of absence on a decision that destroys
+// bytes. The remedy is the post-migrate sequence, exactly as it is
+// for another scope in the same state.
+//
+// The candidate's OWN metadata is excluded from that judgement,
+// pinned by TestRefreshIgnoresMalformedMetadataInTheOldDir: it is
+// the artifact being replaced, so letting it refuse its own
+// replacement is the deadlock cycle 22 already removed once.
+func TestRefreshRefusesWhenTheScopeClosureIsUnreadable(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("HOME", tmp)
+
+	ctx := twoLevelCtx(t, tmp, "app", "zdep")
+	marker := filepath.Join(
+		seedStore(t, ctx.StoreRoot, "zdep", "1.0-1"), "legacy-marker",
+	)
+	if err := os.WriteFile(marker, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A second active package whose metadata does not decode, so the
+	// walk cannot see what it depends on.
+	appDir := seedStore(t, ctx.StoreRoot, "app", "1.0-1")
+	if err := os.WriteFile(
+		filepath.Join(appDir, depsmeta.File), []byte("not toml\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.RebuildGeneration(); err != nil {
+		t.Fatal(err)
+	}
+
+	err := runLockRefresh(ctx, "", []string{"zdep"}, discardOutput())
+	if !errors.Is(err, errScopeClosureUnreadable) {
+		t.Fatalf("err = %v, want errScopeClosureUnreadable", err)
+	}
+	if !strings.Contains(err.Error(), "gale migrate") {
+		t.Errorf("the refusal must name the remedy: %q", err)
+	}
+	kept, rerr := os.ReadFile(marker)
+	if rerr != nil {
+		t.Fatalf("bytes destroyed on a closure gale could not read: %v", rerr)
 	}
 	if string(kept) != "old" {
 		t.Errorf("marker holds %q, want %q", kept, "old")

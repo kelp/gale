@@ -198,6 +198,29 @@ func exitCodeStoreCases() []exitCodeCase {
 			want: exitLockIntegrity,
 		},
 		{
+			// The same conflict as the row above, seen from inside the
+			// scope holding the operation: a package it actively loads
+			// records the artifact a refresh would replace. §13 exempts
+			// the initiating scope from the cross-scope veto, so this is
+			// the only refusal that covers it, and it must not land in a
+			// different class than its twin. Re-pinning is the remedy,
+			// which no pipeline can do on its own.
+			name: "a dependent in this scope records the target",
+			err:  fmt.Errorf("refresh: %w", errDependentRecord),
+			want: exitLockIntegrity,
+		},
+		{
+			// The initiating scope's form of the legacy closure veto.
+			// checkScopeClosure raises errScopeDisagrees for any other
+			// scope in exactly this state, so classifying this one lower
+			// would give one condition two shell meanings depending on
+			// which scope happened to hold it. Regenerating a lock does
+			// not make unreadable dependency metadata readable.
+			name: "this scope's closure could not be read",
+			err:  fmt.Errorf("refresh: %w", errScopeClosureUnreadable),
+			want: exitLockIntegrity,
+		},
+		{
 			name: "activation drift",
 			err:  fmt.Errorf("gate: %w", activation.ErrDrift),
 			want: exitActivationDrift,

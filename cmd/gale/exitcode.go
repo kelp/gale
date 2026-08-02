@@ -90,6 +90,24 @@ func exitCodeFor(err error) int {
 		// other one requires, so this is never something a pipeline
 		// regenerates its way out of.
 		return exitLockIntegrity
+	case errors.Is(err, errDependentRecord):
+		// A package the initiating scope actively loads records the
+		// artifact a refresh would replace. Section 8's "store-dir
+		// provenance conflict" again, and the same class as the
+		// cross-scope veto below it: §13 exempts the initiating scope
+		// from that veto, so this is the only refusal covering the
+		// case, and the remedy is re-pinning to a new
+		// version-revision, which no pipeline performs on its own.
+		return exitLockIntegrity
+	case errors.Is(err, errScopeClosureUnreadable):
+		// The initiating scope's form of the legacy closure veto.
+		// checkScopeClosure raises errScopeDisagrees for every OTHER
+		// scope in exactly this state, so classifying this one lower
+		// would give one condition two shell meanings depending on
+		// which scope happened to be holding the operation.
+		// Regenerating a lock does not make unreadable dependency
+		// metadata readable.
+		return exitLockIntegrity
 	case errors.Is(err, errUnprovenancedStoreDir):
 		// Section 8's "store-dir provenance conflict": the canonical
 		// directory holds bytes nothing attests. Rewriting the lock

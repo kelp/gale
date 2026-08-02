@@ -9,7 +9,9 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
+	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
@@ -143,6 +145,106 @@ func checkRefreshNames(ctx *cmdContext, declared map[string]string) error {
 	)
 }
 
+// errScopeClosureUnreadable reports an initiating scope whose own
+// active closure the walk could not enumerate, so it cannot say
+// which of its packages record the artifact being replaced.
+var errScopeClosureUnreadable = errors.New(
+	"this scope's active closure could not be read in full",
+)
+
+// errDependentRecord reports a package the initiating scope actively
+// loads whose provenance record names the identity a refresh is
+// about to replace.
+//
+// Design §5: replacing an artifact changes the graph_digest of every
+// node above it, and §11 and §13 permit regenerating a reverse
+// dependent only where its directory is absent, unreferenced, or
+// unprovenanced. A referenced one that records the target is a
+// conflict.
+//
+// A record here is one that PARSES, which is weaker than §5's
+// "validly provenanced" and weaker in the safe direction: the digest
+// is not recomputed, so a record whose closure would not verify still
+// refuses. Recomputing it would mean verifying every active directory
+// before every replacement, and the answer would not change the
+// outcome — a record that names the target is one the replacement
+// invalidates either way.
+var errDependentRecord = errors.New(
+	"a package this scope loads records the artifact being replaced",
+)
+
+// checkDependents refuses a replacement that would invalidate a
+// record the initiating scope actively loads, BEFORE any bytes are
+// destroyed.
+//
+// Discovering the conflict on the way out would be no cheaper for
+// the user and a great deal more expensive for the store: the run
+// would have destroyed the candidate to learn something it could
+// have read first, and the reverse dependent it stopped for would
+// still be stale.
+//
+// Only the initiating scope is walked. Every other scope's reference
+// is checkReplaceable's business, and it refuses there for the wider
+// reason: it cannot tell which bytes that scope needs at all.
+//
+// A closure the walk could not read in full refuses the
+// replacement. Unreadable dependency metadata blocks the descent, so
+// a dependent below it is invisible and the scan would report "no
+// conflict" having seen nothing — absence of evidence standing in
+// for evidence of absence, on a decision that destroys bytes. That
+// is the same refusal checkScopeClosure already makes about every
+// OTHER scope, and being stricter about strangers than about the
+// scope actually holding the operation would be incoherent.
+//
+// The candidate's own directory is excluded from that judgement by
+// ReferenceClosure. Its metadata belongs to the artifact being
+// superseded, so letting it decide would let an unprovenanced legacy
+// directory refuse its own replacement, which is the deadlock cycle
+// 22 removed once already.
+func checkDependents(ctx *cmdContext, name, full string) error {
+	id := lockgraph.Key(name, full)
+	roots, err := generation.AuthoritativeGenerationDirs(
+		ctx.GaleDir, ctx.StoreRoot,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"reading the active generation before replacing %s: %w", id, err,
+		)
+	}
+	target := canonicalStoreDir(filepath.Join(ctx.StoreRoot, name, full))
+	dirs, complete := generation.ReferenceClosure(roots, ctx.StoreRoot, target)
+	if !complete {
+		return fmt.Errorf(
+			"%w, so gale cannot tell which packages here record %s; %s",
+			errScopeClosureUnreadable, id, postMigrate,
+		)
+	}
+	for _, dir := range slices.Sorted(maps.Keys(dirs)) {
+		if dir == target {
+			continue
+		}
+		// An absent or unreadable record has nothing to invalidate:
+		// §7's all-or-nothing rule means such a directory attests no
+		// closure, so replacing what it links changes no claim it made.
+		rec, err := provenance.ReadUnverified(dir)
+		if err != nil {
+			continue
+		}
+		if !slices.Contains(rec.RuntimeDeps, id) &&
+			!slices.Contains(rec.BuildDeps, id) {
+			continue
+		}
+		return fmt.Errorf(
+			"%w: %s is active in this scope and its provenance records "+
+				"%s, so replacing it would leave that record describing a "+
+				"closure the store no longer holds; re-pin %s to a new "+
+				"version-revision instead",
+			errDependentRecord, rec.Key(), id, rec.Key(),
+		)
+	}
+	return nil
+}
+
 // replaceUnprovenanced fetches the locked identity again and puts the
 // newly verified result where the unprovenanced directory was.
 //
@@ -171,6 +273,13 @@ func replaceUnprovenanced(
 	ctx *cmdContext, r *recipe.Recipe, out *output.Output,
 ) error {
 	name, full := r.Package.Name, r.Package.Full()
+	// Before the fetch as well as inside the commit lock. The answer
+	// CAN change in between, which is exactly why the locked recheck
+	// exists; this call is the cheap one, so a conflict already
+	// visible costs the user no build.
+	if err := checkDependents(ctx, name, full); err != nil {
+		return err
+	}
 	out.Info(fmt.Sprintf("Refreshing unprovenanced %s@%s...", name, full))
 
 	prev := ctx.Installer.ReplaceGuard
@@ -181,6 +290,15 @@ func replaceUnprovenanced(
 		// between; acting on the stale answer would destroy the very
 		// record §13 says must survive.
 		if err := stillUnprovenanced(rep.CanonicalDir, name, full); err != nil {
+			return err
+		}
+		// And so is the dependent scan, for the same reason and one
+		// more. The initiating scope is exempt from checkReplaceable's
+		// cross-scope veto, so nothing else watches it: a generation
+		// rebuild or a concurrent install in this very scope can make a
+		// dependent active, or provenance one that already was, while
+		// the candidate is being rebuilt.
+		if err := checkDependents(ctx, name, full); err != nil {
 			return err
 		}
 		// The candidate must itself be attested. recordProvenance
@@ -233,7 +351,7 @@ func replaceUnprovenanced(
 // enumerated before anything moves.
 //
 // Every other state is left to lockRoot's ordinary classification: an
-// absent directory installs, a validly provenanced one is compared
+// absent directory installs, a provenanced one is compared
 // against the recipe, and a record that exists and does not validate
 // is an integrity failure whose evidence replacement would destroy.
 //

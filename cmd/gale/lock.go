@@ -133,18 +133,23 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	if err := checkRefreshNames(ctx, declared); err != nil {
 		return err
 	}
-	roots := make([]*recipe.Recipe, 0, len(declared))
-	for _, name := range slices.Sorted(maps.Keys(declared)) {
-		r, err := ctx.ResolveVersionedRecipe(name, declared[name])
-		if err != nil {
-			return fmt.Errorf(
-				"resolving a recipe for %s@%s: %w", name, declared[name], err,
-			)
+	roots, err := resolveRoots(ctx, declared)
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		for _, r := range roots {
+			out.Info(fmt.Sprintf(
+				"lock %s@%s", r.Package.Name, r.Package.Full(),
+			))
 		}
-		if dryRun {
-			out.Info(fmt.Sprintf("lock %s@%s", name, r.Package.Full()))
-			continue
-		}
+		// Returned explicitly rather than left to WriteLock's
+		// empty-target no-op: a dry run must not depend on a later
+		// function happening to have nothing to do.
+		return nil
+	}
+	for _, r := range roots {
+		name := r.Package.Name
 		out.Info(fmt.Sprintf("Locking %s@%s...", name, r.Package.Full()))
 		// --refresh's one added permission (design §13): an occupied
 		// canonical directory with no provenance at all is replaced
@@ -158,13 +163,6 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 			return err
 		}
 		ctx.noteLockRoot(target, name, r.Package.Full())
-		roots = append(roots, r)
-	}
-	// Returned explicitly rather than left to WriteLock's empty-target
-	// no-op: a dry run must not depend on a later function happening to
-	// have nothing to do.
-	if dryRun {
-		return nil
 	}
 	// `gale lock` is the only writer that mints (§11), so the mints are
 	// attached here rather than inside WriteLock, which every writer
@@ -178,6 +176,113 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	// leaves the previous one intact, omitting nothing.
 	warnSkippedPlatforms(out, ctx.mintSkips)
 	return nil
+}
+
+// resolveRoots resolves every declared package and returns the
+// recipes in the order they must be processed: a root that another
+// declared root depends on comes first.
+//
+// Every root is resolved before any is processed, which is what makes
+// the order knowable at all, and it also means a misspelled pin costs
+// nothing: resolution fails before the first store directory is
+// touched.
+func resolveRoots(
+	ctx *cmdContext, declared map[string]string,
+) ([]*recipe.Recipe, error) {
+	resolved := make([]*recipe.Recipe, 0, len(declared))
+	for _, name := range slices.Sorted(maps.Keys(declared)) {
+		r, err := ctx.ResolveVersionedRecipe(name, declared[name])
+		if err != nil {
+			return nil, fmt.Errorf(
+				"resolving a recipe for %s@%s: %w", name, declared[name], err,
+			)
+		}
+		resolved = append(resolved, r)
+	}
+	return orderRoots(resolved), nil
+}
+
+// orderRoots puts a declared root that another declared root depends
+// on ahead of the root above it.
+//
+// Design §5 and §7 between them make the order load-bearing rather
+// than cosmetic. Provenance is all-or-nothing, so an artifact whose
+// dependency carries no record commits with no record of its own; a
+// dependent processed first is therefore rebuilt against an
+// unattested dependency and cannot be locked. Alphabetical order
+// would decide whether a scope can converge at all. Processing
+// bottom-up is also what §5's reverse-dependent rule rests on: a
+// dependent must see the dependency's new bytes rather than a digest
+// that went stale behind it.
+//
+// Only declared roots are ordered. A dependency that is not itself
+// declared is installed by the root above it, in the installer's own
+// topological order, and never appears here.
+//
+// A cycle among recipes cannot be ordered, so the order it was given
+// is returned unchanged and the run proceeds to whichever check
+// names the cycle properly. Reordering part of it would be worse
+// than not reordering: depth-first traversal emits a cycle's members
+// in an order that satisfies nothing, and the whole reason this
+// function exists is that the order carries meaning.
+func orderRoots(resolved []*recipe.Recipe) []*recipe.Recipe {
+	byName := make(map[string]*recipe.Recipe, len(resolved))
+	for _, r := range resolved {
+		byName[r.Package.Name] = r
+	}
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := make(map[string]int, len(resolved))
+	ordered := make([]*recipe.Recipe, 0, len(resolved))
+	cycled := false
+	var visit func(r *recipe.Recipe)
+	visit = func(r *recipe.Recipe) {
+		name := r.Package.Name
+		if state[name] == visiting {
+			// Reached from inside its own subtree. Distinguished from
+			// done because the two mean opposite things: a finished
+			// node is already placed, while this one cannot be.
+			cycled = true
+			return
+		}
+		if state[name] == done {
+			return
+		}
+		state[name] = visiting
+		for _, dep := range declaredDeps(r) {
+			if d, ok := byName[dep]; ok {
+				visit(d)
+			}
+		}
+		state[name] = done
+		ordered = append(ordered, r)
+	}
+	// resolved arrives alphabetical, so ties break alphabetically and
+	// two runs over one manifest process the same order.
+	for _, r := range resolved {
+		visit(r)
+	}
+	if cycled {
+		return resolved
+	}
+	return ordered
+}
+
+// declaredDeps names every dependency of one recipe that provenance
+// can require a record for, in a stable order.
+//
+// Build dependencies count alongside runtime ones because a source
+// artifact's record serializes both (design §5), so a build tool
+// without provenance leaves its dependent unattestable exactly as a
+// runtime library does. Including them for a binary package orders a
+// pair that did not need ordering, which costs nothing.
+func declaredDeps(r *recipe.Recipe) []string {
+	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
+	all := slices.Concat(deps.Runtime, deps.Build)
+	slices.Sort(all)
+	return slices.Compact(all)
 }
 
 // lockRoot makes one declared package lockable: it decides whether

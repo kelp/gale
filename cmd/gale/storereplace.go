@@ -120,6 +120,20 @@ func checkReplaceable(q replaceQuery) error {
 	return nil
 }
 
+// postMigrate is the sequence that clears a legacy scope's veto,
+// stated in full because migrate does not finish the job (design
+// §13).
+//
+// `gale migrate` replaces unprovenanced BINARY directories only, so a
+// scope holding source-built packages is still legacy when it
+// returns, still vetoing, and the user has been sent to a command
+// that appeared to work. The order is the instruction: locking a
+// scope before its source packages are rebuilt locks nothing.
+const postMigrate = "run 'gale migrate' to converge the whole machine " +
+	"at once, rebuild the source-method packages it lists, run plain " +
+	"'gale lock' in every scope that is still legacy, then retry " +
+	"--refresh"
+
 // checkScopeClosure covers what a lock cannot state, and completeness
 // of the reading itself.
 //
@@ -144,9 +158,8 @@ func checkScopeClosure(
 	if !complete {
 		return fmt.Errorf(
 			"%w: %s has a store directory whose dependency metadata gale "+
-				"cannot read, so it cannot tell what that scope loads; run "+
-				"'gale migrate' to converge the whole machine at once",
-			errScopeDisagrees, s.Label,
+				"cannot read, so it cannot tell what that scope loads; %s",
+			errScopeDisagrees, s.Label, postMigrate,
 		)
 	}
 	// Canonicalized before comparing. The readers return one spelling,
@@ -156,9 +169,8 @@ func checkScopeClosure(
 	if !claimed && dirs[canonicalStoreDir(q.targetDir)] {
 		return fmt.Errorf(
 			"%w: %s loads %s but records no hash for it, so gale cannot "+
-				"tell which bytes it needs; run 'gale migrate' to converge "+
-				"the whole machine at once",
-			errScopeDisagrees, s.Label, id,
+				"tell which bytes it needs; %s",
+			errScopeDisagrees, s.Label, id, postMigrate,
 		)
 	}
 	return nil

@@ -645,3 +645,67 @@ func TestCheckReplaceableV1ScopeDoesNotVetoOnMissingMetadata(t *testing.T) {
 			"dependency metadata must not veto: %v", err)
 	}
 }
+
+// A legacy scope's veto must name the whole sequence that clears it,
+// not just the first step.
+//
+// Design §13 is explicit that `gale migrate` does not finish the job
+// on its own: it replaces unprovenanced BINARY directories, so a
+// scope with source-built packages is still legacy afterwards, still
+// vetoing, and the user has been sent to a command that appears to
+// have worked. The remaining steps are rebuilding the source-method
+// packages migrate lists, running plain `gale lock` in every scope
+// that is still legacy, and only then retrying `--refresh`.
+//
+// Both closure vetoes carry it, because both are the same condition:
+// a scope gale cannot prove is uninvolved because it predates
+// provenance.
+func TestLegacyScopeRefusalNamesTheWholePostMigrateSequence(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		withMeta bool
+	}{
+		{"known reference with unknown bytes", true},
+		{"closure unreadable", false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			storeRoot := filepath.Join(home, "pkg")
+			proj := t.TempDir()
+			if err := projects.Register(home, proj); err != nil {
+				t.Fatal(err)
+			}
+			seedScopeClosure(t, scopePkg{
+				galeDir: filepath.Join(proj, ".gale"), storeRoot: storeRoot,
+				name: "jq", version: "1.7-1", withMeta: tt.withMeta,
+			})
+
+			err := checkReplaceable(replaceQuery{
+				galeHome:    home,
+				storeRoot:   storeRoot,
+				selfGaleDir: filepath.Join(t.TempDir(), ".gale"),
+				name:        "jq",
+				version:     "1.7-1",
+				targetDir:   filepath.Join(storeRoot, "jq", "1.7-1"),
+				wantSHA:     shaX,
+				platform:    testPlatform,
+			})
+			if !errors.Is(err, errScopeDisagrees) {
+				t.Fatalf("err = %v, want errScopeDisagrees", err)
+			}
+			// In order, because the order is the instruction: locking a
+			// scope before its source packages are rebuilt locks nothing.
+			at := 0
+			for _, step := range []string{
+				"gale migrate", "rebuild", "gale lock", "--refresh",
+			} {
+				i := strings.Index(err.Error()[at:], step)
+				if i < 0 {
+					t.Fatalf("the refusal omits %q or states it out of "+
+						"order: %q", step, err)
+				}
+				at += i + len(step)
+			}
+		})
+	}
+}

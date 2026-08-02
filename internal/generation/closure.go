@@ -44,6 +44,32 @@ func AuthoritativeClosure(
 	return walkClosure(roots, closureWalk{storeRoot: storeRoot})
 }
 
+// ReferenceClosure is AuthoritativeClosure for a caller about to
+// REPLACE one of the directories it would otherwise judge.
+//
+// replacing is reported as reachable and then descended no further,
+// and its own dependency metadata is neither read nor held against
+// the closure's completeness. Both halves are needed and for
+// different reasons. Its metadata belongs to the artifact being
+// superseded, so letting it mark the closure unknown would let an
+// unprovenanced legacy directory refuse its own replacement. And
+// nothing below it can be a reverse dependent of it, so the
+// directories the descent would add answer no question the caller
+// asked.
+//
+// Every other directory keeps AuthoritativeClosure's strict reading,
+// which is the point: a caller deciding whether a replacement
+// invalidates somebody's record must not read a blocked descent as
+// nobody's.
+func ReferenceClosure(
+	roots []string, storeRoot, replacing string,
+) (map[string]bool, bool) {
+	return walkClosure(roots, closureWalk{
+		storeRoot: storeRoot,
+		leaf:      canonicalDir(replacing),
+	})
+}
+
 // ProposedClosure is the walk for a closure that must be SATISFIED
 // rather than merely enumerated: the one a scope will have once a
 // set of staged artifacts commit.
@@ -100,6 +126,11 @@ type closureWalk struct {
 	// requirePresent makes an absent referenced directory an
 	// incomplete closure rather than a satisfied absence.
 	requirePresent bool
+	// leaf is one directory the walk reports and then stops at,
+	// without reading or judging its dependency metadata: the
+	// directory a caller is about to replace, whose current contents
+	// describe the artifact being superseded.
+	leaf string
 	// absentIsLeaf keeps the farm walk's long-standing reading of a
 	// committed directory with no dependency metadata: no recorded
 	// dependencies, not an unknown closure. The migration veto reads
@@ -156,6 +187,9 @@ func walkClosure(
 			}
 		}
 		out[dir] = true
+		if w.leaf != "" && dir == w.leaf {
+			continue
+		}
 
 		deps, state := depsmeta.ReadStrict(readFrom)
 		switch {
