@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"net/http"
@@ -112,6 +113,112 @@ func TestReinstallFarmGuardRefusalKeepsFarmAndStore(t *testing.T) {
 		t.Errorf("canonical dir holds %q, want the pre-install "+
 			"bytes %q: a refusal must replace nothing",
 			kept, "old")
+	}
+}
+
+// TestReplaceRemovesStaleFarmLinks: a staged replacement must drop
+// farm entries the new artifact does not provide.
+//
+// GuardPopulate cannot see them — it only checks sonames the
+// proposed closure touches — and Populate only creates or repoints
+// the ones the new dir exports. So a soname the OLD artifact
+// exported and the new one does not keeps its link, now pointing
+// into the replaced directory at a file that no longer exists.
+//
+// gale sync survives this only by accident: it rebuilds the
+// generation after any install, and that rebuild wipes and
+// repopulates the whole farm. A command that replaces without
+// rebuilding would leave the dangling entry permanently.
+func TestReplaceRemovesStaleFarmLinks(t *testing.T) {
+	storeRoot := guardStoreRoot(t)
+	canonical := filepath.Join(storeRoot, "stalepkg", "1.0-1")
+	libDir := filepath.Join(canonical, "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// The old artifact exports a soname the rebuilt one will not:
+	// fallbackRecipe's build writes a bin and no lib at all.
+	if err := os.WriteFile(
+		filepath.Join(libDir, guardSoname()), []byte("old"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	farmDir := farm.DirFromStoreDir(canonical)
+	if err := farm.Populate(canonical, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	r, closeSrv := fallbackRecipe(t, "stalepkg")
+	defer closeSrv()
+
+	inst := &Installer{
+		Store:             store.NewStore(storeRoot),
+		BinaryFallbackLog: &bytes.Buffer{},
+	}
+	if _, err := inst.Reinstall(r); err != nil {
+		t.Fatalf("Reinstall: %v", err)
+	}
+
+	link := filepath.Join(farmDir, guardSoname())
+	target, err := os.Readlink(link)
+	if err == nil {
+		t.Errorf("the farm still links %s -> %s, which the replacement "+
+			"no longer provides", link, target)
+	} else if !os.IsNotExist(err) {
+		t.Errorf("reading the farm entry: %v", err)
+	}
+}
+
+// A soname the replacement drops is a soname some other scope may
+// still require, so dropping it is guarded exactly as removal is:
+// deletion violates a claim as surely as retargeting does.
+func TestReplaceRefusesToDropAClaimedSoname(t *testing.T) {
+	storeRoot := guardStoreRoot(t)
+	canonical := filepath.Join(storeRoot, "claimedpkg", "1.0-1")
+	libDir := filepath.Join(canonical, "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(libDir, guardSoname()), []byte("old"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	farmDir := farm.DirFromStoreDir(canonical)
+	if err := farm.Populate(canonical, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	r, closeSrv := fallbackRecipe(t, "claimedpkg")
+	defer closeSrv()
+
+	var sawStale []string
+	inst := &Installer{
+		Store:             store.NewStore(storeRoot),
+		BinaryFallbackLog: &bytes.Buffer{},
+		FarmRemoveGuard: func(_ []farm.Placement, stale []string) error {
+			sawStale = stale
+			return fmt.Errorf("claimed: %w", farm.ErrClaimConflict)
+		},
+	}
+
+	if _, err := inst.Reinstall(r); !errors.Is(err, farm.ErrClaimConflict) {
+		t.Fatalf("err = %v, want the removal guard's refusal", err)
+	}
+	if len(sawStale) != 1 || sawStale[0] != guardSoname() {
+		t.Errorf("guard saw stale = %v, want [%s]", sawStale, guardSoname())
+	}
+	// Refused before anything moved: the old bytes and the old farm
+	// entry are both still there.
+	if _, err := os.Readlink(filepath.Join(farmDir, guardSoname())); err != nil {
+		t.Errorf("farm mutated despite refusal: %v", err)
+	}
+	kept, err := os.ReadFile(filepath.Join(libDir, guardSoname()))
+	if err != nil {
+		t.Fatalf("store dir replaced despite refusal: %v", err)
+	}
+	if string(kept) != "old" {
+		t.Errorf("lib holds %q, want %q", kept, "old")
 	}
 }
 

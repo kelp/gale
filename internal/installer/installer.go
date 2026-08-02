@@ -104,6 +104,44 @@ type Installer struct {
 	// claimant would be enumerated from.
 	FarmGuard func(placements []farm.Placement) error
 
+	// FarmRemoveGuard, when set, is the other half of that guard:
+	// it is called with the farm entries a staged replacement would
+	// make stale, before the replacement happens, and a non-nil
+	// error aborts with the store and the farm untouched.
+	//
+	// A separate hook because it answers a separate question.
+	// FarmGuard asks whether repointing the sonames this artifact
+	// PROVIDES violates a claim; this asks whether dropping the ones
+	// it no longer provides does. GuardPopulate cannot answer the
+	// second, since it skips any soname the proposed closure does
+	// not touch.
+	//
+	// The placements are passed too so the caller can build the
+	// initiating scope's own proposed claim the same way it does for
+	// FarmGuard: a package in the initiating scope may link a
+	// library the refreshed artifact just stopped providing.
+	FarmRemoveGuard func(placements []farm.Placement, stale []string) error
+
+	// ReplaceGuard, when set, is design §13's cross-scope veto: it
+	// is called inside the store-gen lock immediately before a
+	// staged artifact supersedes an existing directory, with the
+	// artifact actually about to be committed. A non-nil error
+	// aborts with everything as it was. nil skips the guard, and
+	// also skips superseding, which is every caller that is not
+	// replacing bytes on purpose.
+	//
+	// It takes the committed result rather than a caller's
+	// prediction because the two differ. An unlocked install falls
+	// back from a failed binary fetch to a source build, so a veto
+	// decided on the recipe's declared binary SHA would clear a
+	// hash no scope agreed to and then commit a different one.
+	//
+	// Same placement as FarmGuard, for the same reason: once the
+	// directory is replaced, the operation has changed bytes an
+	// existing generation reaches and has overwritten the state a
+	// claimant would be read from.
+	ReplaceGuard func(rep Replacement) error
+
 	// BinaryFallbackLog receives a one-line warning when a
 	// binary install fails and the installer falls back to a
 	// source build. nil means write to os.Stderr — the failure
@@ -139,6 +177,27 @@ type InstallResult struct {
 	// ManifestDigest is the OCI manifest digest from
 	// .binaries.toml; empty for source builds.
 	ManifestDigest string
+}
+
+// Replacement is what a ReplaceGuard decides about: one staged
+// artifact and the occupied canonical directory it is about to
+// overwrite.
+//
+// StagingDir is carried because the guard's question is not only
+// "may these bytes replace those" but also "are these bytes worth
+// replacing them with". recordProvenance deliberately commits an
+// artifact with no record when its closure cannot be attested, so
+// the result alone cannot tell a guard whether the candidate is
+// provenanced; the staged record can.
+//
+// Only an occupied CANONICAL directory is described here. A
+// pre-revision install resolves to a bare "<v>" directory that this
+// install does not touch, and relocating it is machine-wide
+// migrate's business rather than one scope's.
+type Replacement struct {
+	CanonicalDir string
+	StagingDir   string
+	Result       InstallResult
 }
 
 // Install installs a recipe into the store and links binaries.
@@ -379,7 +438,23 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	}
 
 	if staged {
-		if err := inst.commitStaged(inst.Store.Root, canonicalDir, storeDir); err != nil {
+		// The result is built before the commit rather than after,
+		// because the guard inside commitStaged decides on these
+		// exact values and a refusal must be able to name them.
+		rep := Replacement{
+			CanonicalDir: canonicalDir,
+			StagingDir:   storeDir,
+			Result: InstallResult{
+				Name:           name,
+				Version:        version,
+				Method:         method,
+				SHA256:         sha256,
+				ManifestDigest: manifestDigest,
+			},
+		}
+		if err := inst.commitStaged(
+			inst.Store.Root, storeDir, rep,
+		); err != nil {
 			return nil, fmt.Errorf("install staged output: %w", err)
 		}
 	}
@@ -607,11 +682,32 @@ func (inst *Installer) InstallGitWithFinalize(r *recipe.Recipe, finalize func(*I
 // reaches, and would also let this operation destroy the evidence
 // it is being checked against: an external claimant on the same
 // canonical path would be enumerated from the new contents.
-func (inst *Installer) commitStaged(storeRoot, canonicalDir, stagingDir string) error {
+//
+// The replace guard runs there too, and for the same reason, but it
+// answers a different question: the farm guard asks who else needs
+// these sonames, and the replace guard asks who else needs these
+// exact bytes at this path (design §13).
+func (inst *Installer) commitStaged(
+	storeRoot, stagingDir string, rep Replacement,
+) error {
+	canonicalDir := rep.CanonicalDir
 	return withStoreGenLock(storeRoot, func() error {
+		if err := inst.guardReplace(rep); err != nil {
+			return err
+		}
 		farmDir := farm.DirFromStoreDir(canonicalDir)
+		var stale []string
 		if farmDir != "" {
 			if err := inst.guardFarm(stagingDir, canonicalDir); err != nil {
+				return err
+			}
+			// Read before the rename, like every other question asked
+			// here: afterwards the old directory is gone and the
+			// sonames it provided can no longer be enumerated.
+			var err error
+			if stale, err = inst.guardFarmRemoval(
+				canonicalDir, stagingDir, farmDir,
+			); err != nil {
 				return err
 			}
 		}
@@ -622,9 +718,41 @@ func (inst *Installer) commitStaged(storeRoot, canonicalDir, stagingDir string) 
 			if err := farm.Populate(canonicalDir, farmDir); err != nil {
 				return fmt.Errorf("populate farm: %w", err)
 			}
+			// After Populate, so a soname the new artifact still
+			// provides has already been repointed and is not in the
+			// stale set to begin with. Pruning first would delete a
+			// link Populate would immediately recreate, leaving a
+			// window where the farm is missing an entry it backs.
+			if err := farm.PruneLinks(farmDir, stale); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
+}
+
+// guardReplace runs design §13's cross-scope veto for one staged
+// artifact about to overwrite an occupied canonical directory. Nil
+// ReplaceGuard means unwired: no guard.
+//
+// An ABSENT canonical dir is skipped, because nothing is being
+// replaced and no prior claim can be contradicted by an install into
+// free space. os.Lstat, not os.Stat: a link at the canonical path
+// would otherwise have the guard asked about one path while the
+// rename lands at another.
+func (inst *Installer) guardReplace(rep Replacement) error {
+	if inst.ReplaceGuard == nil {
+		return nil
+	}
+	if _, err := os.Lstat(rep.CanonicalDir); err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf(
+			"stat %s before replacing it: %w", rep.CanonicalDir, err,
+		)
+	}
+	return inst.ReplaceGuard(rep)
 }
 
 // guardFarm runs the cross-project farm claimant guard for one
@@ -638,6 +766,32 @@ func (inst *Installer) guardFarm(scanDir, canonicalDir string) error {
 	return inst.FarmGuard([]farm.Placement{
 		{ScanDir: scanDir, FinalDir: canonicalDir},
 	})
+}
+
+// guardFarmRemoval checks the sonames a replacement stops
+// providing, and returns them so the caller can prune their links
+// after the rename.
+//
+// The stale set is computed whether or not a guard is wired,
+// because the pruning is not optional: a link the new artifact does
+// not back is dangling the moment the rename lands, and leaving it
+// is a broken farm rather than an unguarded one.
+func (inst *Installer) guardFarmRemoval(
+	canonicalDir, stagingDir, farmDir string,
+) ([]string, error) {
+	stale, err := farm.StaleLinks(canonicalDir, stagingDir, farmDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(stale) == 0 || inst.FarmRemoveGuard == nil {
+		return stale, nil
+	}
+	if err := inst.FarmRemoveGuard([]farm.Placement{
+		{ScanDir: stagingDir, FinalDir: canonicalDir},
+	}, stale); err != nil {
+		return nil, err
+	}
+	return stale, nil
 }
 
 func replaceStoreDir(storeDir, buildDir string) error {

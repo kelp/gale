@@ -56,6 +56,16 @@ type Claimant struct {
 	// claims: the farm can only map bytes that exist, and a scope
 	// cannot be loading a version that has none.
 	StoreDirs []string
+	// Placements are the parts of the closure whose bytes are not at
+	// their canonical paths yet, read from where they are staged and
+	// reported at where they will land.
+	//
+	// A scope replacing a package it is itself using needs this. Its
+	// proposed closure contains the NEW artifact, but before the
+	// rename the canonical path still holds the old one, so a claim
+	// built from dirs alone would describe the version being
+	// replaced and veto the replacement on its own behalf.
+	Placements []Placement
 	// Err marks a scope that is known to exist but whose closure
 	// could not be read. The guard fails closed on it: an unreadable
 	// claim could be hiding exactly the conflict the guard exists to
@@ -146,6 +156,81 @@ func GuardDepopulate(storeDir, farmDir string, claimants []Claimant) error {
 	})
 }
 
+// StaleLinks returns the farm entries a replacement of canonicalDir
+// by stagingDir would leave pointing at bytes that no longer exist:
+// entries whose target lies under canonicalDir and whose soname the
+// staging dir does not export.
+//
+// Neither existing step sees them. GuardPopulate checks only the
+// sonames the proposed closure TOUCHES, so one the new artifact
+// dropped is skipped as untouched no matter who claims it, and
+// Populate only creates or repoints what the new directory exports.
+// The link therefore survives the rename with its target gone.
+//
+// Sorted, so a refusal names the same sonames in the same order
+// whatever the directory listing happens to return.
+func StaleLinks(canonicalDir, stagingDir, farmDir string) ([]string, error) {
+	held, err := depopulatedSonames(canonicalDir, farmDir)
+	if err != nil {
+		return nil, err
+	}
+	if len(held) == 0 {
+		return nil, nil
+	}
+	provided, err := libSonames(stagingDir)
+	if err != nil {
+		return nil, err
+	}
+	var stale []string
+	for soname := range held {
+		if _, kept := provided[soname]; !kept {
+			stale = append(stale, soname)
+		}
+	}
+	slices.Sort(stale)
+	return stale, nil
+}
+
+// GuardRemoveLinks checks that dropping the named farm entries
+// leaves every claim satisfied.
+//
+// A removed soname satisfies no claim at all, which is the same
+// rule GuardDepopulate applies: deletion violates a claim as surely
+// as retargeting does, so a replacement that drops a library
+// another scope links must refuse rather than proceed.
+func GuardRemoveLinks(sonames []string, claimants []Claimant) error {
+	if len(sonames) == 0 {
+		return nil
+	}
+	removed := make(map[string]bool, len(sonames))
+	for _, s := range sonames {
+		removed[s] = true
+	}
+	return eachClaim(claimants, func(label, soname, target string) error {
+		if !removed[soname] {
+			return nil
+		}
+		return fmt.Errorf(
+			"%w: %s requires %s from %s, the replacement no longer "+
+				"provides it", ErrClaimConflict, label, soname,
+			identityOf(target),
+		)
+	})
+}
+
+// PruneLinks removes the named farm entries. An entry already gone
+// is not an error: the state this establishes is that the farm does
+// not link these sonames.
+func PruneLinks(farmDir string, sonames []string) error {
+	for _, s := range sonames {
+		if err := os.Remove(filepath.Join(farmDir, s)); err != nil &&
+			!errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove stale farm link %s: %w", s, err)
+		}
+	}
+	return nil
+}
+
 // GuardRebuild checks a farm rebuild against every claim and
 // returns the store dir set the rebuild must use: the proposed dirs
 // plus every claimant's dirs. Rebuild wipes the farm before
@@ -179,7 +264,14 @@ func GuardRebuild(proposedDirs []string, claimants []Claimant) ([]string, error)
 		return nil, err
 	}
 	for _, c := range claimants {
-		for _, d := range c.StoreDirs {
+		// A placement's FINAL dir, since the union feeds a rebuild
+		// that runs after the commit and must name where the bytes
+		// will be, not where they are staged.
+		dirs := c.StoreDirs
+		for _, p := range c.Placements {
+			dirs = append(dirs, p.FinalDir)
+		}
+		for _, d := range dirs {
 			if clean := filepath.Clean(d); !seen[clean] {
 				seen[clean] = true
 				union = append(union, d)
@@ -202,7 +294,9 @@ func eachClaim(
 		if c.Err != nil {
 			return unreadableClaim(c)
 		}
-		claims, err := sonameTargets(c.Label, c.StoreDirs)
+		claims, err := placedSonameTargets(
+			c.Label, append(At(c.StoreDirs...), c.Placements...),
+		)
 		if err != nil {
 			return err
 		}
@@ -299,17 +393,57 @@ func depopulatedSonames(storeDir, farmDir string) (map[string]bool, error) {
 		}
 		return nil, fmt.Errorf("read farm dir: %w", err)
 	}
-	prefix := filepath.Clean(storeDir) + string(filepath.Separator)
 	for _, entry := range entries {
 		target, err := os.Readlink(filepath.Join(farmDir, entry.Name()))
 		if err != nil {
 			continue // not a symlink — Depopulate won't touch it
 		}
-		if strings.HasPrefix(filepath.Clean(target), prefix) {
+		if UnderStoreDir(target, storeDir) {
 			out[entry.Name()] = true
 		}
 	}
 	return out, nil
+}
+
+// UnderStoreDir reports whether a farm link's target lies inside a
+// store directory, comparing what the paths REFER to rather than how
+// they are spelled.
+//
+// A Clean-only prefix test is silently wrong, and wrong in the
+// fail-open direction: on macOS the same directory reached through
+// /var and /private/var produces no match, so a caller holding a
+// canonicalized store dir sees an empty result and concludes there
+// is nothing to guard and nothing to remove. Every other comparison
+// on this path graduated to resolved spellings; this one is the
+// predicate both the guard and Depopulate rest on, so it has to
+// agree with them.
+func UnderStoreDir(target, storeDir string) bool {
+	prefix := resolveSpelling(storeDir) + string(filepath.Separator)
+	return strings.HasPrefix(resolveSpelling(target), prefix)
+}
+
+// resolveSpelling returns one spelling for a path by resolving the
+// directories that lead to it, never the leaf itself.
+//
+// Resolving the leaf is wrong here, and wrong in the direction that
+// hides work. Populate deliberately farms versioned symlink ALIASES,
+// which is how libtool ships a soname, so a farm entry's target is
+// routinely a link inside the store pointing at the real file. Whose
+// real file is not this predicate's question: the entry belongs to
+// the store directory the target NAMES, and following it can lead
+// out of the store and report false for a link that plainly lives
+// inside it.
+//
+// The leaf is also allowed to be gone. A farm link's target is
+// exactly the file a replacement removes, so a resolution that
+// required it to exist would answer only for the state before the
+// operation. A path whose directories resolve nowhere is cleaned and
+// compared as written, which is the best available answer.
+func resolveSpelling(p string) string {
+	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(r, filepath.Base(p))
+	}
+	return filepath.Clean(p)
 }
 
 // dedupPlacements drops duplicates (path-clean comparison on both

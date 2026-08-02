@@ -194,16 +194,16 @@ func Depopulate(storeDir, farmDir string) error {
 		return fmt.Errorf("read farm dir: %w", err)
 	}
 
-	storeDirClean := filepath.Clean(storeDir)
 	for _, entry := range entries {
 		link := filepath.Join(farmDir, entry.Name())
 		target, err := os.Readlink(link)
 		if err != nil {
 			continue // not a symlink — don't touch
 		}
-		if !strings.HasPrefix(
-			filepath.Clean(target), storeDirClean+string(filepath.Separator),
-		) {
+		// The same predicate GuardDepopulate decides on. Two
+		// spellings of one comparison would let the guard approve a
+		// removal this loop then does not perform, or the reverse.
+		if !UnderStoreDir(target, storeDir) {
 			continue
 		}
 		if err := os.Remove(link); err != nil {

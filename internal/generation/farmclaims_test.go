@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 
@@ -613,5 +614,203 @@ func TestFarmClaimants_UnreadableScopeFailsClosed(t *testing.T) {
 				t.Fatal("unreadable scope must carry Err (fail closed)")
 			}
 		})
+	}
+}
+
+// A staged artifact that ADDS a runtime dependency must have that
+// dependency in the scope's proposed claim.
+//
+// This is the fail-open direction, and the only one. Reading the
+// canonical directory's metadata describes the artifact being
+// REPLACED, so a dependency the candidate adds is missing from the
+// claim. If that dependency provides a library the root itself
+// stopped providing, the removal guard sees no claim on the soname
+// and approves deleting a farm entry the proposed closure needs.
+func TestProposedClaimantStagedWalksStagedDeps(t *testing.T) {
+	storeRoot := filepath.Join(t.TempDir(), "pkg")
+	galeDir := filepath.Join(filepath.Dir(storeRoot), "gale")
+
+	// The dependency the candidate adds, and the transitive one
+	// behind it: the walk must not stop at the direct edge.
+	deep := seedPkg(t, storeRoot, "deeplib", "3.0-1")
+	// An explicitly recorded EMPTY closure, which is what a real leaf
+	// carries. Absent metadata would mean an unknown closure and the
+	// walk would rightly refuse, testing the wrong thing.
+	if err := depsmeta.Write(deep, depsmeta.Metadata{}); err != nil {
+		t.Fatal(err)
+	}
+	added := seedPkg(t, storeRoot, "newdep", "2.0-1",
+		depsmeta.ResolvedDep{Name: "deeplib", Version: "3.0", Revision: 1})
+	// The root as installed today: no dependencies at all.
+	seedPkg(t, storeRoot, "root", "1.0-1")
+
+	// The rebuilt root, staged, declaring the new dependency.
+	staging := filepath.Join(t.TempDir(), ".build-x")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := depsmeta.Write(staging, depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
+			{Name: "newdep", Version: "2.0", Revision: 1},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := ProposedClaimantStaged([]farm.Placement{{
+		ScanDir:  staging,
+		FinalDir: filepath.Join(storeRoot, "root", "1.0-1"),
+	}}, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("ProposedClaimantStaged: %v", err)
+	}
+	if c.Err != nil {
+		t.Fatalf("claim reported unreadable: %v", c.Err)
+	}
+	for _, want := range []string{added, deep} {
+		if !slices.Contains(c.StoreDirs, want) {
+			t.Errorf("claim omits %s; StoreDirs = %v", want, c.StoreDirs)
+		}
+	}
+}
+
+// Staged metadata that cannot be read leaves the closure unknown,
+// and a claim built on an unknown closure approves deletions nobody
+// checked. Absent is not empty for the STRICT builder, exactly as it
+// is not in the migration veto.
+//
+// The lenient builder tolerates it, and must: the installer commits
+// an artifact whose closure cannot be attested (design §7), so a
+// guard on the non-destructive side that refused it would reject
+// installs the provenance policy allows. Strictness belongs where
+// bytes go away.
+func TestProposedClaimantStagedFailsClosedOnUnreadableStagedDeps(t *testing.T) {
+	storeRoot := filepath.Join(t.TempDir(), "pkg")
+	galeDir := filepath.Join(filepath.Dir(storeRoot), "gale")
+	seedPkg(t, storeRoot, "root", "1.0-1")
+
+	// Staged with no metadata at all.
+	staging := filepath.Join(t.TempDir(), ".build-y")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	p := []farm.Placement{{
+		ScanDir:  staging,
+		FinalDir: filepath.Join(storeRoot, "root", "1.0-1"),
+	}}
+	strict, err := ProposedClaimantRequired(p, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("ProposedClaimantRequired: %v", err)
+	}
+	if strict.Err == nil {
+		t.Error("an unreadable staged closure produced a claim a " +
+			"deletion could be checked against")
+	}
+	lenient, err := ProposedClaimantStaged(p, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("ProposedClaimantStaged: %v", err)
+	}
+	if lenient.Err != nil {
+		t.Errorf("the lenient claim refused an artifact the installer "+
+			"commits without provenance: %v", lenient.Err)
+	}
+}
+
+// A dependency the proposed closure names but that is no longer on
+// disk leaves the closure UNSATISFIED, not satisfied-by-absence.
+//
+// The migration veto treats an absent dir as nothing to protect,
+// which is right for it and wrong here: dependency locks are
+// released before the root commits, so a dependency can be
+// collected between the mint and this walk. Claiming a partial
+// closure then approves pruning links the proposed closure needs.
+func TestProposedClaimantStagedFailsClosedOnAMissingDep(t *testing.T) {
+	for _, tc := range []struct{ name, remove string }{
+		{"direct", "newdep"},
+		{"transitive", "deeplib"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			storeRoot := filepath.Join(t.TempDir(), "pkg")
+			galeDir := filepath.Join(filepath.Dir(storeRoot), "gale")
+
+			deep := seedPkg(t, storeRoot, "deeplib", "3.0-1")
+			if err := depsmeta.Write(deep, depsmeta.Metadata{}); err != nil {
+				t.Fatal(err)
+			}
+			seedPkg(t, storeRoot, "newdep", "2.0-1",
+				depsmeta.ResolvedDep{
+					Name: "deeplib", Version: "3.0", Revision: 1,
+				})
+			seedPkg(t, storeRoot, "root", "1.0-1")
+
+			staging := filepath.Join(t.TempDir(), ".build-z")
+			if err := os.MkdirAll(staging, 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if err := depsmeta.Write(staging, depsmeta.Metadata{
+				Deps: []depsmeta.ResolvedDep{
+					{Name: "newdep", Version: "2.0", Revision: 1},
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+
+			// Collected after the record was minted, before the walk.
+			if err := os.RemoveAll(
+				filepath.Join(storeRoot, tc.remove),
+			); err != nil {
+				t.Fatal(err)
+			}
+
+			c, err := ProposedClaimantRequired([]farm.Placement{{
+				ScanDir:  staging,
+				FinalDir: filepath.Join(storeRoot, "root", "1.0-1"),
+			}}, galeDir, storeRoot)
+			if err != nil {
+				t.Fatalf("ProposedClaimantStaged: %v", err)
+			}
+			if c.Err == nil {
+				t.Error("a closure missing a dependency it names was " +
+					"reported as usable")
+			}
+		})
+	}
+}
+
+// The artifact being REPLACED must not decide the claim. Its
+// metadata is precisely what the operation supersedes, so malformed
+// metadata there would refuse the refresh that fixes it — and an
+// unprovenanced legacy artifact is exactly where malformed metadata
+// lives.
+func TestProposedClaimantStagedIgnoresTheSupersededMetadata(t *testing.T) {
+	storeRoot := filepath.Join(t.TempDir(), "pkg")
+	galeDir := filepath.Join(filepath.Dir(storeRoot), "gale")
+
+	old := seedPkg(t, storeRoot, "root", "1.0-1")
+	if err := os.WriteFile(
+		filepath.Join(old, depsmeta.File), []byte("not toml at all\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// The rebuilt artifact records a valid empty closure.
+	staging := filepath.Join(t.TempDir(), ".build-w")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := depsmeta.Write(staging, depsmeta.Metadata{}); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := ProposedClaimantStaged([]farm.Placement{{
+		ScanDir: staging, FinalDir: old,
+	}}, galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("ProposedClaimantStaged: %v", err)
+	}
+	if c.Err != nil {
+		t.Errorf("the superseded artifact's metadata refused the "+
+			"operation that replaces it: %v", c.Err)
 	}
 }

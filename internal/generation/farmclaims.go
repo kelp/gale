@@ -1,7 +1,9 @@
 package generation
 
 import (
+	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -145,6 +147,113 @@ func ProposedClaimant(
 	c.StoreDirs = dirs
 	return c, nil
 }
+
+// ProposedClaimantStaged is ProposedClaimant for a caller whose new
+// bytes are still STAGED, which is every guard that runs before the
+// commit it is guarding.
+//
+// ProposedClaimant alone is wrong there, and wrong in the one
+// direction that matters. It resolves each changed package to its
+// canonical store dir, and before the rename that dir still holds
+// the artifact being replaced, so the "proposed" closure describes
+// the OLD libraries. A guard asking whether the scope still needs a
+// library the replacement drops would find it in the scope's own
+// claim and refuse the replacement on the scope's behalf: the verb
+// veto design §4 forbids, deadlocking a scope against its own
+// repair.
+//
+// So each changed package's own dir is dropped from the claim and
+// its placement carries it instead: sonames read from staging,
+// targets reported at the canonical path.
+//
+// Its DEPENDENCIES come from the STAGED metadata too, not from what
+// the canonical directory currently records. Reading the old
+// metadata is not merely imprecise, it is fail-open in one
+// direction: a candidate that ADDS a runtime dependency leaves that
+// dependency out of the claim, and if the dependency provides a
+// library the root itself stopped providing, the guard sees no claim
+// on it and approves deleting a farm entry the proposed closure
+// needs.
+func ProposedClaimantStaged(
+	placements []farm.Placement, galeDir, storeRoot string,
+) (farm.Claimant, error) {
+	return proposedClaimant(placements, galeDir, storeRoot, false)
+}
+
+// ProposedClaimantRequired is ProposedClaimantStaged for a guard
+// about to DELETE something: a dependency the closure names and the
+// store no longer has makes the claim unusable rather than smaller.
+//
+// The asymmetry is deliberate. Populating retargets a soname, and a
+// dependency that is gone provides none, so a shrinking claim is
+// honest there and has been since FarmStoreDirsStrict. Deleting a
+// farm entry on the strength of a closure that could not be
+// enumerated is the fail-open case, so the strict walk is used
+// exactly where bytes go away.
+func ProposedClaimantRequired(
+	placements []farm.Placement, galeDir, storeRoot string,
+) (farm.Claimant, error) {
+	return proposedClaimant(placements, galeDir, storeRoot, true)
+}
+
+func proposedClaimant(
+	placements []farm.Placement, galeDir, storeRoot string, require bool,
+) (farm.Claimant, error) {
+	c := farm.Claimant{Label: "this scope", Placements: placements}
+	pkgs, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		return c, fmt.Errorf("reading active generation: %w", err)
+	}
+	// Canonicalized, because the walk returns canonicalized paths and
+	// this map is compared against them. filepath.Clean alone leaves
+	// macOS /var and /private/var as different strings, and the
+	// mismatch is silent: the staged dir survives the filter below,
+	// its OLD sonames enter the claim, and the scope vetoes its own
+	// refresh.
+	staged := make(map[string]string, len(placements))
+	for _, p := range placements {
+		staged[canonicalDir(p.FinalDir)] = p.ScanDir
+	}
+	for name, version := range ChangedBy(placements) {
+		pkgs[name] = version
+	}
+
+	roots := make([]string, 0, len(pkgs))
+	for name, version := range pkgs {
+		roots = append(roots, resolveStoreDir(storeRoot, name, version))
+	}
+	// The whole closure in one walk, with staging substituted at the
+	// dirs being replaced. Walking the canonical dirs first and
+	// patching afterwards reads the artifact being superseded: its
+	// metadata decides the claim, so malformed metadata in an
+	// unprovenanced legacy artifact would refuse the operation that
+	// replaces it, and a dependency only the OLD closure records
+	// would be claimed as though the replacement kept it.
+	closure, complete := ProposedClosure(roots, storeRoot, staged, require)
+	if !complete {
+		// An unreadable claim, handled as every other one is: the
+		// guard fails closed rather than proceeding on a closure it
+		// could not enumerate.
+		c.Err = errStagedClosure
+		return c, nil
+	}
+	for _, d := range slices.Sorted(maps.Keys(closure)) {
+		// The staged dirs are carried by Placements, which reports
+		// their sonames from staging and their targets at the
+		// canonical path.
+		if _, isStaged := staged[canonicalDir(d)]; !isStaged {
+			c.StoreDirs = append(c.StoreDirs, d)
+		}
+	}
+	return c, nil
+}
+
+// errStagedClosure marks a proposed claim that could not be
+// enumerated in full: unreadable metadata anywhere in it, or a
+// dependency it names that is no longer on disk.
+var errStagedClosure = errors.New(
+	"the proposed closure could not be read in full",
+)
 
 // ChangedBy reads the package set a batch of placements leaves
 // behind, keyed the way ProposedClaimant expects. A placement's
