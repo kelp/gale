@@ -35,10 +35,22 @@ func writeScopeLock(t *testing.T, path, id, sha string) {
 	}
 }
 
+// testPlatform is the platform the veto actually queries, never a
+// literal.
+//
+// One platform throughout: the veto is per-platform, and varying it
+// here would test lockfile's lookup rather than the veto. But the
+// tests that reach the veto through production code — migrate's
+// preflight and `lock --refresh` — take their platform from
+// currentPlatform(), so a literal makes the fixture agree with the
+// query on one host and disagree everywhere else. The lock then names
+// no artifact for the platform being asked about, the disagreement
+// cannot fire, and the test passes by proving nothing. That is the
+// coin-flip class the style guide names: nothing about the host may
+// decide an expected outcome.
+var testPlatform = currentPlatform()
+
 const (
-	// One platform throughout: the veto is per-platform, and varying
-	// it here would test lockfile's lookup rather than the veto.
-	testPlatform = "darwin/arm64"
 	// One package throughout; the veto keys on identity, and varying
 	// the name would test the map rather than the rule.
 	testPkg = "jq"
