@@ -262,8 +262,12 @@ func TestInstallPreservesHostLocationInLock(t *testing.T) {
 // sourceTarball writes a minimal source archive and returns its path
 // and SHA256, so an install can run end to end against a local
 // server instead of being short-circuited by a pre-seeded store.
-func sourceTarball(t *testing.T, name, version string) (string, string) {
+// The archive's root directory carries a version only because tar
+// convention wants one; no caller has ever needed a second value, so
+// it is fixed here rather than threaded through every fixture.
+func sourceTarball(t *testing.T, name string) (string, string) {
 	t.Helper()
+	const version = "1.0"
 	path := filepath.Join(t.TempDir(), "source.tar.gz")
 	f, err := os.Create(path)
 	if err != nil {
@@ -320,7 +324,7 @@ func TestSyncWritesNoLockfile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	tarball, sum := sourceTarball(t, "syncpkg", "1.0")
+	tarball, sum := sourceTarball(t, "syncpkg")
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, tarball)

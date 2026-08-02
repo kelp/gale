@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"path/filepath"
 	"runtime"
 	"slices"
 	"strings"
@@ -23,6 +24,7 @@ var (
 	lockProject bool
 	lockRecipes string
 	lockHost    string
+	lockRefresh bool
 )
 
 var lockCmd = &cobra.Command{
@@ -34,9 +36,18 @@ var lockCmd = &cobra.Command{
 		"shared [packages] section; --host <selector> regenerates that " +
 		"host's target from [hosts.<selector>.packages]. Every other " +
 		"target is carried forward, and gale.toml is never written.",
-	Args: cobra.NoArgs,
+	// Arguments name packages to refresh, which is why they are
+	// accepted at all: `unprovenanced` prints
+	// `gale lock --refresh <pkg>` as the remedy, and a command that
+	// refuses its own documented remedy sends the user nowhere.
+	// Without --refresh they mean nothing, and silently locking
+	// everything would be a different operation than the one typed.
+	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(lockGlobal, lockProject); err != nil {
+			return err
+		}
+		if err := checkLockArgs(args, lockRefresh); err != nil {
 			return err
 		}
 		ctx, err := newCmdContext(lockRecipes, lockGlobal, lockProject)
@@ -47,6 +58,11 @@ var lockCmd = &cobra.Command{
 		// chosen, so the lock is keyed on the concrete hostname the
 		// manifest overlay uses. A target keyed "current" would match
 		// no machine and every reader would plan without it.
+		if lockRefresh {
+			return runLockRefresh(
+				ctx, resolveHostFlag(lockHost), args, newCmdOutput(cmd),
+			)
+		}
 		return runLock(ctx, resolveHostFlag(lockHost), newCmdOutput(cmd))
 	},
 }
@@ -61,6 +77,9 @@ func init() {
 	lockCmd.Flags().StringVar(&lockHost, "host", "",
 		"Lock [hosts.<host>.packages] instead of the shared section "+
 			"(use 'current' for this machine)")
+	lockCmd.Flags().BoolVar(&lockRefresh, "refresh", false,
+		"Replace store directories that carry no provenance, refetching "+
+			"and verifying each before it is replaced")
 	rootCmd.AddCommand(lockCmd)
 }
 
@@ -109,6 +128,11 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	if len(declared) == 0 {
 		return noDeclarations(cfg, target, ctx.GalePath)
 	}
+	// Before the first resolve, so a misspelled name costs nothing
+	// and replaces nothing.
+	if err := checkRefreshNames(ctx, declared); err != nil {
+		return err
+	}
 	roots := make([]*recipe.Recipe, 0, len(declared))
 	for _, name := range slices.Sorted(maps.Keys(declared)) {
 		r, err := ctx.ResolveVersionedRecipe(name, declared[name])
@@ -122,7 +146,15 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 			continue
 		}
 		out.Info(fmt.Sprintf("Locking %s@%s...", name, r.Package.Full()))
-		if err := lockRoot(ctx, r); err != nil {
+		// --refresh's one added permission (design §13): an occupied
+		// canonical directory with no provenance at all is replaced
+		// with a newly verified one. Every other state falls through to
+		// lockRoot, which refuses the ones replacement would corrupt.
+		if ctx.refresh && refreshable(ctx, r) {
+			if err := replaceUnprovenanced(ctx, r, out); err != nil {
+				return err
+			}
+		} else if err := lockRoot(ctx, r); err != nil {
 			return err
 		}
 		ctx.noteLockRoot(target, name, r.Package.Full())
@@ -177,8 +209,17 @@ func lockRoot(ctx *cmdContext, r *recipe.Recipe) error {
 	switch {
 	case errors.Is(err, provenance.ErrAbsent):
 		// The only state §13's exception covers, and so the only one
-		// entitled to be offered a replacement.
-		return unprovenanced(dir, name, full, err)
+		// entitled to be offered a replacement. Which replacement,
+		// though, depends on WHERE the bytes are: a pre-revision
+		// install resolves to a bare dir that no per-scope command
+		// may relocate.
+		return unprovenanced(unprovenancedDir{
+			dir:       dir,
+			canonical: filepath.Join(ctx.StoreRoot, name, full),
+			name:      name,
+			version:   full,
+			cause:     err,
+		})
 	case errors.Is(err, provenance.ErrInvalid):
 		// A record that exists and does not validate is an integrity
 		// failure rather than a migration candidate: something wrote
@@ -248,8 +289,18 @@ func recipeDisagrees(name, version, field, installed, declared string) error {
 	)
 }
 
-// unprovenanced reports an occupied canonical directory with NO
-// provenance record, and names the two commands that may replace it.
+// unprovenancedDir is one occupied directory with no provenance,
+// and where it sits. dir is what the identity resolves to today;
+// canonical is where a reinstall would write. They differ exactly
+// when the install predates revisions.
+type unprovenancedDir struct {
+	dir, canonical string
+	name, version  string
+	cause          error
+}
+
+// unprovenanced reports an occupied directory with NO provenance
+// record, and names the commands that may replace it.
 //
 // Absent only. A record that exists and does not validate is an
 // integrity failure and never reaches here: §13's exception covers
@@ -261,12 +312,27 @@ func recipeDisagrees(name, version, field, installed, declared string) error {
 // strength of it being in the right place, which is exactly the
 // unverified marker §13 rejected; replacement under §11 and §13 is an
 // explicit user action.
-func unprovenanced(dir, name, version string, cause error) error {
+//
+// `--refresh` is offered only when it can actually help, per §13's
+// rule that a conflict names a remedy only where the directory is
+// replaceable. A pre-revision bare directory is not: other scopes'
+// generations link it by that path, so relocating the identity is
+// machine-wide migrate's job and refresh would refuse.
+func unprovenanced(u unprovenancedDir) error {
+	remedy := fmt.Sprintf(
+		"`gale lock --refresh %s` or `gale migrate`", u.name,
+	)
+	if u.dir != u.canonical {
+		remedy = fmt.Sprintf(
+			"`gale migrate`, since %s predates revisions and moving it "+
+				"to %s is machine-wide work that one scope cannot do "+
+				"safely", u.dir, u.canonical,
+		)
+	}
 	return fmt.Errorf(
 		"%s@%s: %s is occupied but has %w (%w); gale lock records only "+
-			"what it verified, so replacing those bytes takes "+
-			"`gale lock --refresh %s` or `gale migrate`",
-		name, version, dir, errUnprovenancedStoreDir, cause, name,
+			"what it verified, so replacing those bytes takes %s",
+		u.name, u.version, u.dir, errUnprovenancedStoreDir, u.cause, remedy,
 	)
 }
 

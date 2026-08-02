@@ -365,7 +365,7 @@ func TestLockFetchesWhenNothingIsInstalled(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
 
-	tarball, sum := sourceTarball(t, "freshpkg", "1.0")
+	tarball, sum := sourceTarball(t, "freshpkg")
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			http.ServeFile(w, r, tarball)
