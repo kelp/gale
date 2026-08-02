@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/BurntSushi/toml"
@@ -133,6 +134,74 @@ func TestReadAbsentIsDistinct(t *testing.T) {
 	}
 	if errors.Is(err, ErrInvalid) {
 		t.Error("absent must not also report ErrInvalid")
+	}
+}
+
+// TestReadSymlinkIsNotAbsence: a symlink is not the file gale
+// writes, and a DANGLING one reads through os.ReadFile as ENOENT —
+// which would report absence for a path that plainly exists.
+//
+// The distinction decides whether bytes are destroyed. `gale lock
+// --refresh` replaces an absent-provenance directory and refuses an
+// invalid-provenance one, so a planted dangling link would aim the
+// destructive path at a directory somebody had already touched.
+// This repo has paid for the os.Stat form of this trap twice, in the
+// staging-dir provenance write and again in the farm claim walk.
+func TestReadSymlinkIsNotAbsence(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target string
+	}{
+		{"dangling", "nowhere.toml"},
+		{"resolvable", "elsewhere.toml"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if tc.target == "elsewhere.toml" {
+				if err := Write(dir, recordFor(t, onigNode(), nil)); err != nil {
+					t.Fatalf("Write: %v", err)
+				}
+				if err := os.Rename(
+					filepath.Join(dir, File), filepath.Join(dir, tc.target),
+				); err != nil {
+					t.Fatalf("rename: %v", err)
+				}
+			}
+			if err := os.Symlink(
+				tc.target, filepath.Join(dir, File),
+			); err != nil {
+				t.Fatalf("symlink: %v", err)
+			}
+			_, err := ReadUnverified(dir)
+			if errors.Is(err, ErrAbsent) {
+				t.Errorf("a symlink at %s reported as absent: %v", File, err)
+			}
+			if !errors.Is(err, ErrInvalid) {
+				t.Errorf("err = %v, want ErrInvalid", err)
+			}
+		})
+	}
+}
+
+// TestReadFifoIsRejectedNotAwaited: the type check happens after the
+// open, so the open itself must not be able to block. An O_RDONLY
+// open of a FIFO waits for a writer, and a planted pipe at the
+// record's path would hang every reader of that store directory
+// rather than being rejected as the non-regular file it is.
+//
+// The test would fail by timing out if the open blocked, so it is
+// its own assertion; the explicit check is on the classification.
+func TestReadFifoIsRejectedNotAwaited(t *testing.T) {
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, File), 0o600); err != nil {
+		t.Skipf("mkfifo unavailable: %v", err)
+	}
+	_, err := ReadUnverified(dir)
+	if !errors.Is(err, ErrInvalid) {
+		t.Errorf("err = %v, want ErrInvalid", err)
+	}
+	if errors.Is(err, ErrAbsent) {
+		t.Errorf("a FIFO reported as absent: %v", err)
 	}
 }
 

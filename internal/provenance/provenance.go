@@ -20,11 +20,13 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 
 	"github.com/BurntSushi/toml"
 
@@ -137,13 +139,54 @@ func Write(dir string, r Record) error {
 // would let a lock writer adopt bytes it never verified. Any other
 // read failure, permission included, is returned as itself and
 // never reported as absence.
+//
+// Absence is established by an O_NOFOLLOW open, and anything that is
+// not a regular file is ErrInvalid. Neither os.ReadFile nor a
+// preceding Lstat is enough: ReadFile follows a symlink, and a
+// DANGLING one fails with ENOENT, so a path that plainly exists
+// would be reported as no provenance at all — and §13's replacement
+// path acts on exactly that answer. Checking with Lstat and then
+// reading by path leaves the same hole one scheduling window wide,
+// since the file can become a link in between. One descriptor
+// answers both questions about the same object.
+//
+// A resolvable link is refused too, for the reason one is never
+// written: the record must describe the directory it sits in, and a
+// link's target is chosen by whoever planted it.
 func ReadUnverified(dir string) (Record, error) {
 	path := filepath.Join(dir, File)
-	data, err := os.ReadFile(path)
+	// O_NONBLOCK because the type check comes AFTER the open, and an
+	// O_RDONLY open of a FIFO waits for a writer: a planted pipe
+	// would hang the caller forever instead of being rejected as a
+	// non-regular file. It is ignored for regular files.
+	f, err := os.OpenFile(
+		path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0,
+	)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return Record{}, fmt.Errorf("%s: %w", dir, ErrAbsent)
 		}
+		// ELOOP is O_NOFOLLOW refusing a symlink, which is a planted
+		// record rather than an unreadable one.
+		if errors.Is(err, syscall.ELOOP) {
+			return Record{}, fmt.Errorf(
+				"%s: %w: a symlink, not a record", path, ErrInvalid,
+			)
+		}
+		return Record{}, fmt.Errorf("open provenance: %w", err)
+	}
+	defer f.Close()
+	fi, err := f.Stat()
+	if err != nil {
+		return Record{}, fmt.Errorf("stat provenance: %w", err)
+	}
+	if !fi.Mode().IsRegular() {
+		return Record{}, fmt.Errorf(
+			"%s: %w: not a regular file (%s)", path, ErrInvalid, fi.Mode().Type(),
+		)
+	}
+	data, err := io.ReadAll(f)
+	if err != nil {
 		return Record{}, fmt.Errorf("read provenance: %w", err)
 	}
 
