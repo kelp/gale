@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockgraph"
@@ -142,6 +143,12 @@ func classifyForMigrate(
 	return nil
 }
 
+// errMigrateCycle reports candidates whose runtime dependencies form
+// a loop, so no order among them satisfies design §7.
+var errMigrateCycle = errors.New(
+	"candidates depend on each other in a cycle",
+)
+
 // orderCandidates puts a candidate that another candidate depends on
 // ahead of the candidate above it.
 //
@@ -159,27 +166,38 @@ func classifyForMigrate(
 // the scan reads the whole store, so two versions of one package are
 // two candidates and one would silently displace the other.
 //
-// Nodes are therefore the candidates themselves, addressed by index,
-// while EDGES are still drawn by name. That over-orders on purpose.
-// Which version of a dependency a refetch will actually link is the
-// resolver's business and is not knowable from the store, so every
-// candidate sharing the name is ordered first. An extra edge fixes an
-// order that did not need fixing; a missing one destroys bytes.
+// Nodes are the candidates themselves and edges are drawn to the
+// RESOLVED identity, never by name. Drawing them by name looks
+// conservative and is not: a stale version of a dependency, still in
+// the store and still a candidate, can name something above it, and
+// the extra edge closes a loop that does not exist. A traversal that
+// answers any cycle by returning its input then hands back
+// alphabetical order — a dependent replaced before the dependency it
+// actually links, which is the outcome this function exists to
+// prevent. Resolving removes the edge instead of adding a lie.
 //
 // Runtime dependencies only. Migrate replaces binary-method
 // directories, whose records serialize runtime edges alone, so a
 // build tool cannot leave its dependent unattestable the way it does
-// for a source artifact — and an unrelated build cycle would
-// otherwise abandon the runtime ordering that does matter.
+// for a source artifact.
 //
-// A cycle returns the input order unchanged, exactly as orderRoots
-// does: a depth-first walk emits a cycle's members in an order that
-// satisfies nothing, and the run proceeds to whichever check names
-// the cycle properly.
-func orderCandidates(candidates []migrateTarget) []migrateTarget {
-	byName := make(map[string][]int, len(candidates))
+// A cycle that survives resolution is genuine, and it is refused
+// rather than ordered arbitrarily. Replacement destroys bytes, so
+// emitting a cycle's members in whatever order a depth-first walk
+// reaches them would pay the whole cost for a sequence that
+// satisfies nothing.
+func orderCandidates(
+	candidates []migrateTarget, resolve installer.RecipeResolver,
+) ([]migrateTarget, error) {
+	byID := make(map[string]int, len(candidates))
+	names := make(map[string]bool, len(candidates))
 	for i, t := range candidates {
-		byName[t.name] = append(byName[t.name], i)
+		byID[lockgraph.Key(t.name, t.version)] = i
+		names[t.name] = true
+	}
+	edges, err := candidateEdges(candidates, byID, names, resolve)
+	if err != nil {
+		return nil, err
 	}
 	const (
 		visiting = 1
@@ -187,27 +205,23 @@ func orderCandidates(candidates []migrateTarget) []migrateTarget {
 	)
 	state := make([]int, len(candidates))
 	ordered := make([]migrateTarget, 0, len(candidates))
-	cycled := false
+	var cycle []string
 	var visit func(i int)
 	visit = func(i int) {
 		switch state[i] {
 		case visiting:
 			// Reached from inside its own subtree, which is not the
 			// same as already placed.
-			cycled = true
+			cycle = append(cycle, lockgraph.Key(
+				candidates[i].name, candidates[i].version,
+			))
 			return
 		case done:
 			return
 		}
 		state[i] = visiting
-		for _, dep := range runtimeDepNames(candidates[i].recipe) {
-			for _, j := range byName[dep] {
-				// A recipe naming itself is not a cycle to report; it
-				// is an edge with nothing on the other end.
-				if j != i {
-					visit(j)
-				}
-			}
+		for _, j := range edges[i] {
+			visit(j)
 		}
 		state[i] = done
 		ordered = append(ordered, candidates[i])
@@ -217,10 +231,55 @@ func orderCandidates(candidates []migrateTarget) []migrateTarget {
 	for i := range candidates {
 		visit(i)
 	}
-	if cycled {
-		return candidates
+	if len(cycle) > 0 {
+		slices.Sort(cycle)
+		return nil, fmt.Errorf(
+			"%w: %s; re-pin one of them to a version that breaks the loop",
+			errMigrateCycle, strings.Join(slices.Compact(cycle), ", "),
+		)
 	}
-	return ordered
+	return ordered, nil
+}
+
+// candidateEdges resolves each candidate's runtime dependencies to
+// the exact identity a refetch would link, and keeps the edge only
+// where that identity is itself a candidate.
+//
+// Resolution is attempted only for a dependency NAME some candidate
+// carries, so an ordinary dependency that is already provenanced
+// costs no registry lookup. A name that is a candidate and will not
+// resolve is unreadable state under §13: gale cannot say which
+// directory the refetch would bind to, and guessing would decide a
+// destructive order.
+func candidateEdges(
+	candidates []migrateTarget, byID map[string]int, names map[string]bool,
+	resolve installer.RecipeResolver,
+) ([][]int, error) {
+	resolved := make(map[string]string, len(names))
+	edges := make([][]int, len(candidates))
+	for i, t := range candidates {
+		for _, dep := range runtimeDepNames(t.recipe) {
+			if !names[dep] {
+				continue
+			}
+			id, ok := resolved[dep]
+			if !ok {
+				r, err := resolve(dep)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"%w: ordering %s@%s: resolving its dependency %s: %w",
+						errMigrateUnreadable, t.name, t.version, dep, err,
+					)
+				}
+				id = lockgraph.Key(dep, r.Package.Full())
+				resolved[dep] = id
+			}
+			if j, ok := byID[id]; ok && j != i {
+				edges[i] = append(edges[i], j)
+			}
+		}
+	}
+	return edges, nil
 }
 
 // runtimeDepNames names one recipe's runtime dependencies for this

@@ -73,6 +73,25 @@ type Installer struct {
 	Verifier   attestation.Verifier
 	SourceOnly bool // skip binary, build from source
 
+	// BinaryOnly refuses to demote a failed binary fetch to a
+	// source build, exactly as a locked binary node does.
+	//
+	// `gale migrate` sets it. Migration is a constrained
+	// replacement of BINARY-method directories (design §13), and
+	// every scope was cleared against the hash the recipe
+	// declares for that binary, so a silent source build would
+	// commit bytes nobody was asked about. For a pre-revision
+	// candidate the canonical destination is absent, so no
+	// ReplaceGuard fires to catch it before the commit; the
+	// refusal has to happen here or nowhere.
+	//
+	// SourceOnly is its opposite and the two are mutually
+	// exclusive by construction: a caller that sets both has
+	// asked for a package that cannot be installed, and
+	// binaryViable is false, so BinaryOnly reports it rather
+	// than building.
+	BinaryOnly bool
+
 	// Plan, when set, makes the lockfile the exclusive selector of
 	// versions, artifacts, methods and dependency edges (design §3).
 	// Every package this installer touches must name a node in it;
@@ -200,6 +219,23 @@ type Replacement struct {
 	Result       InstallResult
 }
 
+// errNoBinaryDeclared reports a BinaryOnly install of a recipe that
+// declares no prebuilt binary for this platform.
+var errNoBinaryDeclared = errors.New(
+	"the recipe declares no binary for this platform",
+)
+
+// refusalLabel names which rule refused a demotion to source, since
+// the two carry different remedies: a locked node is repaired by
+// fixing the lock or the artifact, and a BinaryOnly caller is a
+// command that has already ruled source builds out.
+func refusalLabel(locked bool) string {
+	if locked {
+		return "locked binary install"
+	}
+	return "binary install"
+}
+
 // Install installs a recipe into the store and links binaries.
 func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	return inst.install(r, false)
@@ -312,6 +348,16 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	if locked {
 		binaryViable = planned.Method == lockgraph.MethodBinary
 	}
+	if inst.BinaryOnly && !binaryViable {
+		// Stated rather than silently source-built. BinaryOnly is a
+		// promise that nothing but the declared binary may land, so a
+		// recipe that cannot serve one for this platform is a refusal,
+		// not an invitation to build.
+		return nil, fmt.Errorf(
+			"binary install of %s: %w",
+			lockgraph.Key(name, storeVersion), errNoBinaryDeclared,
+		)
+	}
 
 	// Install runtime deps up front. The binary path needs
 	// them on disk (the prebuilt links against them); the
@@ -357,7 +403,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 			method = MethodBinary
 			sha256 = bin.SHA256
 			manifestDigest = bin.ManifestDigest
-		case locked:
+		case locked || inst.BinaryOnly:
 			// A locked binary node never demotes to a source build
 			// (acceptance 8): the method is a locked field, so a
 			// source build would install bytes the lock never named
@@ -373,13 +419,13 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 			// ordinary failure under a lock must not read as tampering.
 			if errors.Is(berr, download.ErrSHA256Mismatch) {
 				return nil, fmt.Errorf(
-					"locked binary install of %s: %w: %w",
+					"%s of %s: %w: %w", refusalLabel(locked),
 					lockgraph.Key(name, storeVersion),
 					provenance.ErrInvalid, berr,
 				)
 			}
 			return nil, fmt.Errorf(
-				"locked binary install of %s: %w",
+				"%s of %s: %w", refusalLabel(locked),
 				lockgraph.Key(name, storeVersion), berr,
 			)
 		case errors.Is(berr, farm.ErrClaimConflict):

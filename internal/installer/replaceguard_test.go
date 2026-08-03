@@ -228,3 +228,39 @@ func TestReplaceGuardSeesTheCommittedArtifact(t *testing.T) {
 			got.Result.Name, got.Result.Version)
 	}
 }
+
+// BinaryOnly refuses to demote a failed binary fetch to a source
+// build, and leaves nothing behind.
+//
+// `gale migrate` needs this. It is a constrained replacement of
+// BINARY-method directories (design §13), and every scope on the
+// machine was cleared against the hash the recipe declares for that
+// binary. A silent source build would commit bytes nobody was asked
+// about — and for a pre-revision candidate, whose canonical
+// destination is absent, no ReplaceGuard fires to catch it before
+// the commit.
+//
+// The locked path already refuses the same demotion for the same
+// reason, so this selects that behaviour rather than adding a
+// second one.
+func TestBinaryOnlyDoesNotFallBackToSource(t *testing.T) {
+	storeRoot := t.TempDir()
+	r, closeSrv := fallbackRecipe(t, "onlybin")
+	defer closeSrv()
+
+	inst := &Installer{
+		Store:             store.NewStore(storeRoot),
+		BinaryFallbackLog: &bytes.Buffer{},
+		BinaryOnly:        true,
+	}
+	if _, err := inst.Install(r); err == nil {
+		t.Fatal("a failed binary fetch fell back to a source build")
+	}
+	// Nothing half-installed: the directory a source build would have
+	// filled must not survive the refusal.
+	if _, err := os.Lstat(
+		filepath.Join(storeRoot, "onlybin", "1.0-1"),
+	); err == nil {
+		t.Error("the refused install left a store directory behind")
+	}
+}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,7 +93,11 @@ func TestRemoveRelocatedDirKeepsAReferencedDir(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			home := t.TempDir()
 			storeRoot := filepath.Join(home, "pkg")
-			galeDir := filepath.Join(home, ".gale")
+			// The global scope's gale dir IS galeHome, which in
+			// production is filepath.Dir(storeRoot). Nesting a ".gale"
+			// under it would build a generation projects.Scopes never
+			// looks at, and the veto would pass by seeing nothing.
+			galeDir := home
 			bare := seedStore(t, storeRoot, "old", "1.0")
 			writeDepsMeta(t, storeRoot, "old", "1.0")
 			if tt.referenced {
@@ -103,17 +108,26 @@ func TestRemoveRelocatedDirKeepsAReferencedDir(t *testing.T) {
 				}
 			}
 
-			scopes := []projects.Scope{{
-				Label: "the global scope", GaleDir: galeDir,
-			}}
-			target := migrateTarget{name: "old", version: "1.0-1", dir: bare}
-			if err := removeRelocatedDir(
-				scopes, storeRoot, target, discardOutput(),
-			); err != nil {
-				t.Fatal(err)
+			// The canonical artifact migrate would have installed,
+			// attested, which the removal re-proves before it acts.
+			seedProvenanced(t, storeRoot, "old", "1.0-1")
+			r, rerr := migrateResolver("old")("old", "1.0-1")
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			target := migrateTarget{
+				name: "old", version: "1.0-1", dir: bare, recipe: r,
 			}
 
-			_, err := os.Lstat(bare)
+			err := removeRelocatedDir(storeRoot, home, target, discardOutput())
+			if tt.wantGone && err != nil {
+				t.Fatalf("an unreferenced dir was not removed: %v", err)
+			}
+			if !tt.wantGone && !errors.Is(err, errBareDirStillReferenced) {
+				t.Fatalf("err = %v, want errBareDirStillReferenced", err)
+			}
+
+			_, err = os.Lstat(bare)
 			if tt.wantGone && err == nil {
 				t.Error("an unreferenced pre-revision dir was left behind")
 			}

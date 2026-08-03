@@ -382,7 +382,10 @@ func TestMigrateOrdersDependenciesFirst(t *testing.T) {
 		},
 	}
 
-	got := orderCandidates(candidates)
+	got, err := orderCandidates(candidates, byNameResolver("zdep", "1.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 2 {
 		t.Fatalf("ordering dropped candidates: %v", got)
 	}
@@ -392,8 +395,8 @@ func TestMigrateOrdersDependenciesFirst(t *testing.T) {
 	}
 }
 
-// Two versions of one package are two candidates, and both survive
-// the ordering.
+// Two versions of one package are two candidates, and the edge goes
+// to the one a refetch would actually link.
 //
 // The scan reads the whole store, so it routinely holds several
 // versions of one name — which is why migrate cannot reuse
@@ -410,21 +413,103 @@ func TestMigrateOrdersEveryVersionOfOneName(t *testing.T) {
 		{name: "jq", version: "1.7-1", recipe: runtimeDepRecipe("jq", "1.7")},
 	}
 
-	got := orderCandidates(candidates)
+	got, err := orderCandidates(candidates, byNameResolver("jq", "1.7"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(got) != 3 {
 		t.Fatalf("ordering dropped a candidate: %v", got)
 	}
-	// Both jq directories precede the dependent. Which jq the refetch
-	// of app will actually link is the resolver's business, and
-	// ordering by name rather than by resolved identity deliberately
-	// over-orders: an extra edge only fixes an order that did not
-	// need fixing, while a missing one destroys bytes.
-	for i, want := range []string{"jq", "jq", "app"} {
-		if got[i].name != want {
-			t.Fatalf("order = %v, want both jq versions before app",
-				[]string{got[0].name, got[1].name, got[2].name})
-		}
+	if !precedes(got, "jq@1.7-1", "app@1.0-1") {
+		t.Errorf("order = %v, want jq@1.7-1 before app", ids(got))
 	}
+}
+
+// An unrelated cycle does not discard a real dependency order.
+//
+// Edges drawn by NAME rather than by resolved identity look
+// conservative and are not. Here app needs lib, the resolver picks
+// lib@2.0, and a stale lib@1.0 in the store names app. A name-drawn
+// app→lib@1.0 edge closes a loop that does not exist, and a
+// traversal that answers any cycle by returning its input would then
+// hand back alphabetical order — app replaced before the lib@2.0 it
+// links, which is the one outcome the ordering exists to prevent.
+//
+// Resolving the identity removes the edge, so nothing is unorderable
+// and the real order survives.
+func TestMigrateOrderingSurvivesAnUnrelatedCycle(t *testing.T) {
+	candidates := []migrateTarget{
+		{
+			name: "app", version: "1.0-1",
+			recipe: runtimeDepRecipe("app", "1.0", "lib"),
+		},
+		{
+			name: "lib", version: "1.0-1",
+			recipe: runtimeDepRecipe("lib", "1.0", "app"),
+		},
+		{name: "lib", version: "2.0-1", recipe: runtimeDepRecipe("lib", "2.0")},
+	}
+
+	got, err := orderCandidates(candidates, byNameResolver("lib", "2.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !precedes(got, "lib@2.0-1", "app@1.0-1") {
+		t.Errorf("order = %v, want lib@2.0-1 before app@1.0-1", ids(got))
+	}
+}
+
+// A genuine cycle is refused rather than ordered arbitrarily.
+//
+// Replacement is destructive and the order carries meaning, so
+// emitting a cycle's members in whatever order a depth-first walk
+// reaches them would destroy bytes on a sequence that satisfies
+// nothing.
+func TestMigrateOrderingRefusesARealCycle(t *testing.T) {
+	candidates := []migrateTarget{
+		{
+			name: "a", version: "1.0-1",
+			recipe: runtimeDepRecipe("a", "1.0", "b"),
+		},
+		{
+			name: "b", version: "1.0-1",
+			recipe: runtimeDepRecipe("b", "1.0", "a"),
+		},
+	}
+
+	_, err := orderCandidates(candidates, func(name string) (*recipe.Recipe, error) {
+		return runtimeDepRecipe(name, "1.0"), nil
+	})
+	if !errors.Is(err, errMigrateCycle) {
+		t.Fatalf("err = %v, want errMigrateCycle", err)
+	}
+}
+
+// byNameResolver answers every name with version "1.0" except one,
+// which is how a fixture says "this is the version a refetch would
+// actually link".
+func byNameResolver(name, version string) func(string) (*recipe.Recipe, error) {
+	return func(want string) (*recipe.Recipe, error) {
+		if want == name {
+			return runtimeDepRecipe(want, version), nil
+		}
+		return runtimeDepRecipe(want, "1.0"), nil
+	}
+}
+
+func ids(targets []migrateTarget) []string {
+	out := make([]string, 0, len(targets))
+	for _, t := range targets {
+		out = append(out, t.name+"@"+t.version)
+	}
+	return out
+}
+
+// precedes reports whether first appears before second.
+func precedes(targets []migrateTarget, first, second string) bool {
+	all := ids(targets)
+	return slices.Index(all, first) >= 0 &&
+		slices.Index(all, first) < slices.Index(all, second)
 }
 
 // A store directory gale cannot classify stops the scan, before
