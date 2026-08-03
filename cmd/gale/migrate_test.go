@@ -6,9 +6,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"slices"
+	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/depsmeta"
+	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/projects"
+	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 )
 
@@ -151,6 +156,111 @@ func TestMigratePreflightPolicySeparatesReferenceFromUnreadable(t *testing.T) {
 					"the candidate: %v", err)
 			}
 		})
+	}
+}
+
+// A record naming the candidate refuses the replacement, in ANY
+// scope, before anything is replaced.
+//
+// The tempting argument for omitting this check is that §7 makes
+// provenance all-or-nothing, so nothing provenanced can record an
+// unprovenanced dependency and there is no record to invalidate.
+// That holds only for an undamaged history. A partial restore, or a
+// deleted record, leaves exactly this state, and migrateScan reads
+// records with ReadUnverified, which establishes that a record
+// parses and not that its graph digest still describes the store.
+//
+// Migrate walks every scope rather than an initiating one. `lock
+// --refresh` walks only its own because checkReplaceable refuses for
+// every other scope on the wider ground that it cannot tell which
+// bytes that scope needs; migrate deliberately dropped that veto, so
+// this scan is the only thing left watching the other scopes.
+func TestMigratePreflightRefusesADependentRecordInAnyScope(t *testing.T) {
+	home := t.TempDir()
+	storeRoot := filepath.Join(home, "pkg")
+	proj := t.TempDir()
+	if err := projects.Register(home, proj); err != nil {
+		t.Fatal(err)
+	}
+
+	// dep is provenanced first so app's record can be built over it,
+	// then its record is removed: the partial restore, reproduced.
+	seedProvenanced(t, storeRoot, "dep", "1.0-1")
+	writeDepsMeta(t, storeRoot, "dep", "1.0-1")
+	seedStore(t, storeRoot, "app", "1.0-1")
+	writeDepsMeta(t, storeRoot, "app", "1.0-1",
+		depsmeta.ResolvedDep{Name: "dep", Version: "1.0", Revision: 1})
+	writeProvenanceOver(t, storeRoot,
+		pkgRef{"app", "1.0-1"}, pkgRef{"dep", "1.0-1"})
+	if err := os.Remove(filepath.Join(
+		storeRoot, "dep", "1.0-1", provenance.File,
+	)); err != nil {
+		t.Fatal(err)
+	}
+	// Only the OTHER scope loads app. The global scope links nothing.
+	if err := generation.Build(map[string]string{"app": "1.0-1"},
+		filepath.Join(proj, ".gale"), storeRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	scan, err := migrateScan(storeRoot, migrateResolver("dep"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(scan.candidates, named("dep")) {
+		t.Fatalf("dep is not a candidate: %v", scan.candidates)
+	}
+
+	err = migratePreflight(home, storeRoot, scan)
+	if !errors.Is(err, errDependentRecord) {
+		t.Fatalf("err = %v, want errDependentRecord", err)
+	}
+	if !strings.Contains(err.Error(), proj) {
+		t.Errorf("the refusal must name the scope holding the record: %q", err)
+	}
+}
+
+// writeDepsMeta records one directory's built-against closure, which
+// is what the reference walk descends through.
+func writeDepsMeta(
+	t *testing.T, storeRoot, name, version string, deps ...depsmeta.ResolvedDep,
+) {
+	t.Helper()
+	if err := depsmeta.Write(
+		filepath.Join(storeRoot, name, version),
+		depsmeta.Metadata{Deps: deps},
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pkgRef names one installed package.
+type pkgRef struct{ name, version string }
+
+// writeProvenanceOver writes a record whose runtime closure names
+// another installed package, so the dependent scan has an edge to
+// find. The dependency must already be provenanced: the digest is
+// computed from its record.
+func writeProvenanceOver(
+	t *testing.T, storeRoot string, node, dep pkgRef,
+) {
+	t.Helper()
+	name, version := node.name, node.version
+	rec, err := provenance.New(storeRoot, lockgraph.Node{
+		Name: name, Version: version,
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+		Method: lockgraph.MethodBinary, SHA256: testSHA,
+		Edges: []lockgraph.Edge{{
+			Kind: lockgraph.KindRuntime, Name: dep.name, Version: dep.version,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("provenance.New(%s): %v", name, err)
+	}
+	if err := provenance.Write(
+		filepath.Join(storeRoot, name, version), rec,
+	); err != nil {
+		t.Fatal(err)
 	}
 }
 

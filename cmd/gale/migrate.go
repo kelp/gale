@@ -8,6 +8,8 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
@@ -258,6 +260,10 @@ func runtimeDepNames(r *recipe.Recipe) []string {
 func migratePreflight(
 	galeHome, storeRoot string, scan migrateScanResult,
 ) error {
+	scopes, err := projects.Scopes(galeHome)
+	if err != nil {
+		return err
+	}
 	platform := currentPlatform()
 	for _, t := range scan.candidates {
 		b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
@@ -285,6 +291,52 @@ func migratePreflight(
 			// per-scope rule refuses every upgrade-day store, which is
 			// the state migrate exists to end.
 			machineWide: true,
+		}); err != nil {
+			return err
+		}
+		if err := checkMigrateDependents(scopes, storeRoot, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// checkMigrateDependents refuses a candidate whose replacement would
+// invalidate a provenance record some scope actively loads.
+//
+// Every scope, where `--refresh` walks only its own. Refresh can
+// afford that because checkReplaceable refuses for every OTHER scope
+// on the wider ground that it cannot tell which bytes that scope
+// needs; migrate drops exactly that veto, so without this walk no
+// other scope is watched at all.
+//
+// The argument for skipping the check entirely is that §7 makes
+// provenance all-or-nothing, so nothing provenanced can record an
+// unprovenanced dependency. That holds only for an undamaged
+// history: a deleted record or a partial restore produces the state,
+// and migrateScan establishes that a record PARSES, not that its
+// digest still describes the store.
+//
+// The target is the physical directory, never the canonical
+// spelling. A pre-revision candidate lives in a bare directory, and
+// asking about the canonical one would exclude the wrong directory
+// from the scan's own judgement while missing the one at risk.
+func checkMigrateDependents(
+	scopes []projects.Scope, storeRoot string, t migrateTarget,
+) error {
+	id := lockgraph.Key(t.name, t.version)
+	for _, s := range scopes {
+		if err := checkDependentsIn(dependentQuery{
+			galeDir:   s.GaleDir,
+			label:     s.Label,
+			storeRoot: storeRoot,
+			id:        id,
+			targetDir: t.dir,
+			// Not postMigrate: migrate is what is running. Unreadable
+			// dependency metadata is §13's fail-before-replacing state,
+			// and the exit is repairing the directory that holds it.
+			remedy: "reinstall the package whose dependency metadata " +
+				"cannot be read, then run gale migrate again",
 		}); err != nil {
 			return err
 		}
