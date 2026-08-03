@@ -81,6 +81,79 @@ func named(name string) func(migrateTarget) bool {
 	return func(t migrateTarget) bool { return t.name == name }
 }
 
+// Migrate does not inherit the per-scope veto that refuses a
+// directory another scope loads without naming a hash for it.
+//
+// Design §13 is explicit that this is what separates the two
+// commands. The per-scope rule is correct for `lock --refresh`: one
+// scope cannot know which bytes a legacy neighbour needs, so it
+// refuses. On upgrade day EVERY scope is legacy and every transitive
+// dependency is a reference with no hash, so applying that rule to
+// migrate makes it refuse exactly the state it exists to escape.
+// §13 names migrate's failure set instead: unreadable state, or an
+// explicit hash disagreement covering every recorded and proposed
+// candidate hash.
+//
+// The unreadable case stays a refusal under both commands, and is
+// asserted here rather than left to the refresh tests, because the
+// two rules live one branch apart and relaxing the wrong one would
+// let migrate replace bytes it could not prove nobody needs.
+func TestMigratePreflightPolicySeparatesReferenceFromUnreadable(t *testing.T) {
+	tests := []struct {
+		name string
+		// withMeta writes an explicitly empty .gale-deps.toml, so the
+		// closure walk is complete. Omitting it leaves the closure
+		// unknown, which is the unreadable state.
+		withMeta bool
+		wantErr  bool
+	}{
+		{
+			name:     "a reference with no hash is a participant",
+			withMeta: true,
+			wantErr:  false,
+		},
+		{
+			name:     "an unreadable closure still refuses",
+			withMeta: false,
+			wantErr:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			storeRoot := filepath.Join(home, "pkg")
+			proj := t.TempDir()
+			if err := projects.Register(home, proj); err != nil {
+				t.Fatal(err)
+			}
+			// The scope loads the very directory migrate would replace
+			// and holds no lock at all, so it names no hash for it.
+			seedScopeClosure(t, scopePkg{
+				galeDir: filepath.Join(proj, ".gale"), storeRoot: storeRoot,
+				name: "legacydep", version: "1.0-1", withMeta: tt.withMeta,
+			})
+
+			scan, err := migrateScan(storeRoot, migrateResolver("legacydep"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(scan.candidates) != 1 {
+				t.Fatalf("candidates = %v, want the seeded dir", scan.candidates)
+			}
+
+			err = migratePreflight(home, storeRoot, scan)
+			if tt.wantErr && !errors.Is(err, errScopeDisagrees) {
+				t.Fatalf("err = %v, want errScopeDisagrees", err)
+			}
+			if !tt.wantErr && err != nil {
+				t.Fatalf("migrate refused a scope that only references "+
+					"the candidate: %v", err)
+			}
+		})
+	}
+}
+
 // A store directory gale cannot classify stops the scan, before
 // anything is replaced.
 //

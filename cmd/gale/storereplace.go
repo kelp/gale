@@ -41,6 +41,24 @@ type replaceQuery struct {
 	// wantSHA is the hash of the artifact the replacement installs.
 	wantSHA  string
 	platform string
+	// machineWide marks a replacement that is part of ONE proposed
+	// state for the whole machine, which today means `gale migrate`.
+	//
+	// It relaxes exactly one refusal, and design §13 turns on that
+	// distinction. A scope that loads the directory and names no hash
+	// for it vetoes a PER-SCOPE replacement, because one scope cannot
+	// know which bytes its neighbour needs. On upgrade day every scope
+	// is legacy and every transitive dependency is such a reference,
+	// so the same rule applied machine-wide refuses the one operation
+	// that can end the state: "those rules make per-scope replacement
+	// refuse on upgrade day, which is correct and would be circular
+	// without an escape".
+	//
+	// Nothing else is relaxed. An unreadable closure still refuses
+	// under both, because §13 names unreadable state as a migrate
+	// failure in the same sentence, and an explicit hash disagreement
+	// refuses under both because that is the other one.
+	machineWide bool
 }
 
 // checkReplaceable enforces design §13's scope limits before a store
@@ -144,6 +162,10 @@ const postMigrate = "run 'gale migrate' to converge the whole machine " +
 // refuses only when the scope named no hash for it — an agreeing hash
 // has already settled that question, and claimed is passed in so the
 // two are not conflated.
+//
+// Only the second is relaxed for a machine-wide replacement, and the
+// order of the two checks is what makes that possible: the
+// completeness refusal is reached first, so migrate keeps it.
 func checkScopeClosure(
 	s projects.Scope, q replaceQuery, id string, claimed bool,
 ) error {
@@ -161,6 +183,12 @@ func checkScopeClosure(
 				"cannot read, so it cannot tell what that scope loads; %s",
 			errScopeDisagrees, s.Label, postMigrate,
 		)
+	}
+	if q.machineWide {
+		// Every scope is a participant in one proposed state rather
+		// than a party with a veto, so a reference carrying no hash is
+		// not an objection. See replaceQuery.machineWide.
+		return nil
 	}
 	// Canonicalized before comparing. The readers return one spelling,
 	// and targetDir arrives however the caller spelled it; on macOS a

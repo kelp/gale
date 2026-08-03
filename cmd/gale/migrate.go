@@ -187,6 +187,12 @@ func migratePreflight(
 			targetDir:   t.dir,
 			wantSHA:     b.SHA256,
 			platform:    platform,
+			// One proposed state for the whole machine, so a scope
+			// that merely references a candidate is a participant
+			// rather than a vetoer. See replaceQuery.machineWide: the
+			// per-scope rule refuses every upgrade-day store, which is
+			// the state migrate exists to end.
+			machineWide: true,
 		}); err != nil {
 			return err
 		}
