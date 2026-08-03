@@ -154,6 +154,85 @@ func TestMigratePreflightPolicySeparatesReferenceFromUnreadable(t *testing.T) {
 	}
 }
 
+// runtimeDepRecipe declares runtime dependencies and nothing else,
+// which is the only edge kind migrate's ordering may use: a binary
+// record serializes runtime deps only, so a build tool cannot leave
+// its dependent unattestable here the way it does for a source
+// artifact.
+func runtimeDepRecipe(name, version string, deps ...string) *recipe.Recipe {
+	return &recipe.Recipe{
+		Package:      recipe.Package{Name: name, Version: version},
+		Dependencies: recipe.Dependencies{Runtime: deps},
+	}
+}
+
+// A candidate another candidate depends on is replaced first.
+//
+// Design §5 and §7 make the order load-bearing rather than cosmetic,
+// exactly as they do for `gale lock`. Provenance is all-or-nothing,
+// so refetching a dependent while its dependency is still
+// unprovenanced commits an artifact with no record: bytes destroyed,
+// nothing repaired, and the candidate check then refuses the
+// replacement. Alphabetical order would decide whether the machine
+// can converge at all, and "app" sorts before the "zdep" it links.
+func TestMigrateOrdersDependenciesFirst(t *testing.T) {
+	// The order the scan produces, which is sorted by name.
+	candidates := []migrateTarget{
+		{
+			name: "app", version: "1.0-1",
+			recipe: runtimeDepRecipe("app", "1.0", "zdep"),
+		},
+		{
+			name: "zdep", version: "1.0-1",
+			recipe: runtimeDepRecipe("zdep", "1.0"),
+		},
+	}
+
+	got := orderCandidates(candidates)
+	if len(got) != 2 {
+		t.Fatalf("ordering dropped candidates: %v", got)
+	}
+	if got[0].name != "zdep" {
+		t.Errorf("order = %s, %s; want the dependency first",
+			got[0].name, got[1].name)
+	}
+}
+
+// Two versions of one package are two candidates, and both survive
+// the ordering.
+//
+// The scan reads the whole store, so it routinely holds several
+// versions of one name — which is why migrate cannot reuse
+// `orderRoots`: that function keys its node map and its traversal
+// state on the package name alone, so one version would silently
+// replace the other and the store would converge halfway.
+func TestMigrateOrdersEveryVersionOfOneName(t *testing.T) {
+	candidates := []migrateTarget{
+		{
+			name: "app", version: "1.0-1",
+			recipe: runtimeDepRecipe("app", "1.0", "jq"),
+		},
+		{name: "jq", version: "1.6-1", recipe: runtimeDepRecipe("jq", "1.6")},
+		{name: "jq", version: "1.7-1", recipe: runtimeDepRecipe("jq", "1.7")},
+	}
+
+	got := orderCandidates(candidates)
+	if len(got) != 3 {
+		t.Fatalf("ordering dropped a candidate: %v", got)
+	}
+	// Both jq directories precede the dependent. Which jq the refetch
+	// of app will actually link is the resolver's business, and
+	// ordering by name rather than by resolved identity deliberately
+	// over-orders: an extra edge only fixes an order that did not
+	// need fixing, while a missing one destroys bytes.
+	for i, want := range []string{"jq", "jq", "app"} {
+		if got[i].name != want {
+			t.Fatalf("order = %v, want both jq versions before app",
+				[]string{got[0].name, got[1].name, got[2].name})
+		}
+	}
+}
+
 // A store directory gale cannot classify stops the scan, before
 // anything is replaced.
 //

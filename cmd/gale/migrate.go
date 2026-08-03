@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
 
 	"github.com/kelp/gale/internal/provenance"
@@ -136,6 +137,97 @@ func classifyForMigrate(
 	}
 	out.candidates = append(out.candidates, t)
 	return nil
+}
+
+// orderCandidates puts a candidate that another candidate depends on
+// ahead of the candidate above it.
+//
+// Design §5 and §7 make this load-bearing rather than cosmetic, for
+// the same reason `gale lock` orders its roots. Provenance is
+// all-or-nothing, so refetching a dependent while its dependency is
+// still unprovenanced commits an artifact with no record at all:
+// bytes destroyed, nothing repaired, and the candidate check then
+// refuses the replacement. Alphabetical order would decide whether
+// the machine can converge.
+//
+// `orderRoots` cannot be reused, close as the shape is. It keys both
+// its node map and its traversal state on the package name, which
+// holds for a manifest section — one pin per name — and fails here:
+// the scan reads the whole store, so two versions of one package are
+// two candidates and one would silently displace the other.
+//
+// Nodes are therefore the candidates themselves, addressed by index,
+// while EDGES are still drawn by name. That over-orders on purpose.
+// Which version of a dependency a refetch will actually link is the
+// resolver's business and is not knowable from the store, so every
+// candidate sharing the name is ordered first. An extra edge fixes an
+// order that did not need fixing; a missing one destroys bytes.
+//
+// Runtime dependencies only. Migrate replaces binary-method
+// directories, whose records serialize runtime edges alone, so a
+// build tool cannot leave its dependent unattestable the way it does
+// for a source artifact — and an unrelated build cycle would
+// otherwise abandon the runtime ordering that does matter.
+//
+// A cycle returns the input order unchanged, exactly as orderRoots
+// does: a depth-first walk emits a cycle's members in an order that
+// satisfies nothing, and the run proceeds to whichever check names
+// the cycle properly.
+func orderCandidates(candidates []migrateTarget) []migrateTarget {
+	byName := make(map[string][]int, len(candidates))
+	for i, t := range candidates {
+		byName[t.name] = append(byName[t.name], i)
+	}
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := make([]int, len(candidates))
+	ordered := make([]migrateTarget, 0, len(candidates))
+	cycled := false
+	var visit func(i int)
+	visit = func(i int) {
+		switch state[i] {
+		case visiting:
+			// Reached from inside its own subtree, which is not the
+			// same as already placed.
+			cycled = true
+			return
+		case done:
+			return
+		}
+		state[i] = visiting
+		for _, dep := range runtimeDepNames(candidates[i].recipe) {
+			for _, j := range byName[dep] {
+				// A recipe naming itself is not a cycle to report; it
+				// is an edge with nothing on the other end.
+				if j != i {
+					visit(j)
+				}
+			}
+		}
+		state[i] = done
+		ordered = append(ordered, candidates[i])
+	}
+	// The scan sorts its output, so ties break the same way on every
+	// run over one store.
+	for i := range candidates {
+		visit(i)
+	}
+	if cycled {
+		return candidates
+	}
+	return ordered
+}
+
+// runtimeDepNames names one recipe's runtime dependencies for this
+// platform, deduplicated and in a stable order so the traversal that
+// consumes them is deterministic.
+func runtimeDepNames(r *recipe.Recipe) []string {
+	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH).Runtime
+	out := slices.Clone(deps)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // migratePreflight checks every candidate against every scope before
