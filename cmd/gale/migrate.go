@@ -8,6 +8,7 @@ import (
 	"slices"
 	"sort"
 
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
@@ -299,6 +300,101 @@ func migratePreflight(
 		}
 	}
 	return nil
+}
+
+// errMigrateNotBinary reports a candidate whose refetch produced a
+// source build instead of the prebuilt binary migrate approved.
+//
+// An unlocked install falls back from a failed binary fetch to a
+// source build, which is right for `gale install` and wrong here:
+// migrate is a constrained replacement of BINARY-method directories
+// (§13), and the whole machine was cleared against the hash the
+// recipe declares for that binary. Committing a source artifact
+// would replace bytes with something no scope was asked about.
+var errMigrateNotBinary = errors.New(
+	"the refetch did not produce the prebuilt binary",
+)
+
+// errMigrateHashMoved reports a refetch whose artifact is not the one
+// preflight cleared with every scope.
+var errMigrateHashMoved = errors.New(
+	"the artifact changed between the preflight and the commit",
+)
+
+// checkMigrateCommit is everything that must still hold at the moment
+// one candidate's replacement commits.
+//
+// Design §13's fourth qualifying property: revalidate concurrent lock
+// and registry changes before EACH destructive commit, not once at
+// the preflight. Every check here is re-established rather than
+// carried, and projects.Scopes re-reads the registry and every lock,
+// so a project registered since the preflight is seen.
+//
+// The artifact is pinned to the hash preflight cleared. Handing
+// rep.Result.SHA256 straight to the veto would ask the machine about
+// whatever just landed, so a run could clear artifact X with every
+// scope and then commit artifact Y with nobody's agreement.
+func checkMigrateCommit(
+	galeHome, storeRoot string, t migrateTarget, rep installer.Replacement,
+) error {
+	name, full := t.name, t.version
+	// The classification, re-established inside the commit locks. It
+	// was formed before the per-package lock existed, and a concurrent
+	// gale can provenance the directory in between.
+	if err := stillUnprovenanced(rep.CanonicalDir, name, full); err != nil {
+		return err
+	}
+	// The candidate must itself be attested. recordProvenance commits
+	// an artifact with NO record when its closure cannot be attested,
+	// which is right for an ordinary install and useless here:
+	// trading one unprovenanced directory for another destroys bytes
+	// and repairs nothing, while the run reports success.
+	if _, err := provenance.ReadUnverified(rep.StagingDir); err != nil {
+		return fmt.Errorf(
+			"the refetched %s@%s is itself unprovenanced, so replacing "+
+				"would destroy bytes without repairing anything (%v): %w",
+			name, full, err, errCandidateUnprovenanced,
+		)
+	}
+	b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
+	if b == nil {
+		return fmt.Errorf(
+			"%w: %s@%s: the recipe stopped declaring one for %s",
+			errMigrateNotBinary, name, full, currentPlatform(),
+		)
+	}
+	if rep.Result.Method != installer.MethodBinary {
+		return fmt.Errorf(
+			"%w: %s@%s built from source instead; migrate replaces only "+
+				"binary-method directories, and the machine was cleared "+
+				"against the declared binary", errMigrateNotBinary, name, full,
+		)
+	}
+	if rep.Result.SHA256 != b.SHA256 {
+		return fmt.Errorf(
+			"%w: %s@%s was cleared at %s and the refetch produced %s",
+			errMigrateHashMoved, name, full, b.SHA256, rep.Result.SHA256,
+		)
+	}
+	scopes, err := projects.Scopes(galeHome)
+	if err != nil {
+		return err
+	}
+	if err := checkMigrateDependents(scopes, storeRoot, t); err != nil {
+		return err
+	}
+	return checkReplaceable(replaceQuery{
+		galeHome: galeHome, storeRoot: storeRoot,
+		// No scope is exempt: migrate writes no lock for anyone.
+		selfGaleDir: "",
+		name:        name, version: full,
+		targetDir: rep.CanonicalDir,
+		// The cleared hash, which the check above has just proved the
+		// committed artifact carries.
+		wantSHA:     b.SHA256,
+		platform:    currentPlatform(),
+		machineWide: true,
+	})
 }
 
 // checkMigrateDependents refuses a candidate whose replacement would

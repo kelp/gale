@@ -11,6 +11,7 @@ import (
 
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
@@ -232,6 +233,89 @@ func writeDepsMeta(
 	); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// The commit is pinned to the artifact preflight cleared with every
+// scope, by hash AND by method.
+//
+// Design §13's fourth qualifying property is revalidation before each
+// destructive commit, and the two ways an unlocked install can arrive
+// somewhere else are both live here. It falls back from a failed
+// binary fetch to a source build, so a run cleared against a declared
+// binary can commit a source artifact nobody was asked about; and the
+// artifact behind a URL can change, so passing whatever landed
+// straight to the veto would clear X and commit Y.
+func TestMigrateCommitRefusesWhatPreflightDidNotClear(t *testing.T) {
+	const otherSHA = "9999999999999999999999999999999999999999999999" +
+		"999999999999999999"
+	tests := []struct {
+		name   string
+		method installer.InstallMethod
+		sha    string
+		want   error
+	}{
+		{"a source fallback", installer.MethodSource, testSHA, errMigrateNotBinary},
+		{"another artifact", installer.MethodBinary, otherSHA, errMigrateHashMoved},
+		{"the cleared artifact", installer.MethodBinary, testSHA, nil},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			storeRoot := filepath.Join(home, "pkg")
+			canonical := seedStore(t, storeRoot, "jq", "1.0-1")
+			staging := stagedProvenanced(t, storeRoot, "jq", "1.0-1")
+
+			r, err := migrateResolver("jq")("jq", "1.0-1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := migrateTarget{
+				name: "jq", version: "1.0-1", dir: canonical, recipe: r,
+			}
+
+			err = checkMigrateCommit(home, storeRoot, target,
+				installer.Replacement{
+					CanonicalDir: canonical, StagingDir: staging,
+					Result: installer.InstallResult{
+						Name: "jq", Version: "1.0-1",
+						Method: tt.method, SHA256: tt.sha,
+					},
+				})
+			if tt.want == nil {
+				if err != nil {
+					t.Fatalf("the cleared artifact was refused: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, tt.want) {
+				t.Fatalf("err = %v, want %v", err, tt.want)
+			}
+		})
+	}
+}
+
+// stagedProvenanced builds a staging directory carrying a valid
+// record, which is what the commit check requires of a candidate:
+// trading one unprovenanced directory for another repairs nothing.
+func stagedProvenanced(t *testing.T, storeRoot, name, version string) string {
+	t.Helper()
+	dir := filepath.Join(t.TempDir(), "staged")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rec, err := provenance.New(storeRoot, lockgraph.Node{
+		Name: name, Version: version,
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+		Method: lockgraph.MethodBinary, SHA256: testSHA,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provenance.Write(dir, rec); err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }
 
 // pkgRef names one installed package.
