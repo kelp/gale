@@ -83,54 +83,91 @@ func linkTarget(t *testing.T, galeDir, name string) string {
 // it, and deleting the directory anyway would break a dependent that
 // resolves it at runtime. Leaving one directory behind is the honest
 // outcome; destroying referenced bytes is not.
+// seedRelocation builds a finished relocation: the pre-revision
+// directory, the attested canonical one beside it, and optionally a
+// scope that reaches the first or disagrees about the second.
+//
+// The global scope's gale dir IS galeHome, which in production is
+// filepath.Dir(storeRoot). Nesting a ".gale" under it would build a
+// generation projects.Scopes never looks at, and every veto would
+// pass by seeing nothing.
+func seedRelocation(
+	t *testing.T, home, storeRoot string, referenced bool, lockSHA string,
+) (string, migrateTarget) {
+	t.Helper()
+	bare := seedStore(t, storeRoot, "old", "1.0")
+	writeDepsMeta(t, storeRoot, "old", "1.0")
+	if referenced {
+		if err := generation.Build(
+			map[string]string{"old": "1.0"}, home, storeRoot,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if lockSHA != "" {
+		proj := t.TempDir()
+		if err := projects.Register(home, proj); err != nil {
+			t.Fatal(err)
+		}
+		writeScopeLock(t, filepath.Join(proj, "gale.lock"),
+			"old@1.0-1", lockSHA)
+	}
+	// The canonical artifact migrate would have installed, attested,
+	// which the removal re-proves before it acts.
+	seedProvenanced(t, storeRoot, "old", "1.0-1")
+	r, err := migrateResolver("old")("old", "1.0-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return bare, migrateTarget{
+		name: "old", version: "1.0-1", dir: bare, bare: true, recipe: r,
+	}
+}
+
 func TestRemoveRelocatedDirKeepsAReferencedDir(t *testing.T) {
 	tests := []struct {
 		name string
 		// referenced puts the bare directory inside a scope's active
 		// closure, which is the state that must stop the removal.
 		referenced bool
-		wantGone   bool
+		// lockSHA registers a project whose lock names these bytes for
+		// the identity. Set to something other than the recipe's
+		// declared hash, it is a scope disagreeing about what the
+		// store should hold.
+		lockSHA  string
+		wantGone bool
+		wantErr  error
 	}{
-		{name: "a referenced dir survives", referenced: true, wantGone: false},
-		{name: "an unreferenced dir is removed", referenced: false, wantGone: true},
+		{
+			name: "a referenced dir survives", referenced: true,
+			wantErr: errBareDirStillReferenced,
+		},
+		{name: "an unreferenced dir is removed", wantGone: true},
+		{
+			// The removal is its own destructive commit, so it
+			// re-establishes the whole relocation rather than trusting
+			// what was checked before the generations were rebuilt. A
+			// scope that re-locked in that window is exactly what the
+			// recheck exists to catch.
+			name: "a disagreeing scope survives", lockSHA: shaY,
+			wantErr: errScopeDisagrees,
+		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			home := t.TempDir()
 			storeRoot := filepath.Join(home, "pkg")
-			// The global scope's gale dir IS galeHome, which in
-			// production is filepath.Dir(storeRoot). Nesting a ".gale"
-			// under it would build a generation projects.Scopes never
-			// looks at, and the veto would pass by seeing nothing.
-			galeDir := home
-			bare := seedStore(t, storeRoot, "old", "1.0")
-			writeDepsMeta(t, storeRoot, "old", "1.0")
-			if tt.referenced {
-				if err := generation.Build(
-					map[string]string{"old": "1.0"}, galeDir, storeRoot,
-				); err != nil {
-					t.Fatal(err)
-				}
-			}
-
-			// The canonical artifact migrate would have installed,
-			// attested, which the removal re-proves before it acts.
-			seedProvenanced(t, storeRoot, "old", "1.0-1")
-			r, rerr := migrateResolver("old")("old", "1.0-1")
-			if rerr != nil {
-				t.Fatal(rerr)
-			}
-			target := migrateTarget{
-				name: "old", version: "1.0-1", dir: bare, bare: true, recipe: r,
-			}
+			bare, target := seedRelocation(
+				t, home, storeRoot, tt.referenced, tt.lockSHA,
+			)
 
 			err := removeRelocatedDir(storeRoot, home, target, discardOutput())
-			if tt.wantGone && err != nil {
+			if tt.wantErr == nil && err != nil {
 				t.Fatalf("an unreferenced dir was not removed: %v", err)
 			}
-			if !tt.wantGone && !errors.Is(err, errBareDirStillReferenced) {
-				t.Fatalf("err = %v, want errBareDirStillReferenced", err)
+			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
 			}
 
 			_, err = os.Lstat(bare)
@@ -388,49 +425,104 @@ func moveProvenance(t *testing.T, storeRoot, from, to, version string) {
 // safe while having already repointed a soname the disagreeing scope
 // resolves through. The farm assertion is what separates the two.
 func TestFinishRelocationsRefusesBeforeTheFarmMoves(t *testing.T) {
-	home := t.TempDir()
-	storeRoot := filepath.Join(home, "pkg")
-	proj := t.TempDir()
-	if err := projects.Register(home, proj); err != nil {
-		t.Fatal(err)
+	tests := []struct {
+		name string
+		// lockSHA gives a registered scope a lock naming these bytes.
+		// Other than the recipe's declared hash, it is a scope that
+		// disagrees about what the store should hold.
+		lockSHA string
+		// raced attests the pre-revision directory, as a concurrent
+		// run that got there first would.
+		raced   bool
+		wantErr error
+	}{
+		{
+			name: "a scope disagrees", lockSHA: shaY,
+			wantErr: errScopeDisagrees,
+		},
+		{
+			// The pre-revision directory stopped being the
+			// unprovenanced thing this pass decided about. Deleting it
+			// would destroy the record another run just wrote, which is
+			// the one thing the design says replacement must never do.
+			name: "the bare dir gained a record", raced: true,
+			wantErr: errRaceLostToProvenance,
+		},
 	}
-	// The scope requires OTHER bytes at the identity being relocated.
-	writeScopeLock(t, filepath.Join(proj, "gale.lock"),
-		"libfoo@1.0-1", shaY)
 
-	bare := seedStore(t, storeRoot, "libfoo", "1.0")
-	seedDylib(t, bare)
-	writeDepsMeta(t, storeRoot, "libfoo", "1.0")
-	farmDir := farm.DirFromStoreRoot(storeRoot)
-	if err := farm.Populate(bare, farmDir); err != nil {
-		t.Fatal(err)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			home := t.TempDir()
+			storeRoot := filepath.Join(home, "pkg")
+			if tt.lockSHA != "" {
+				proj := t.TempDir()
+				if err := projects.Register(home, proj); err != nil {
+					t.Fatal(err)
+				}
+				writeScopeLock(t, filepath.Join(proj, "gale.lock"),
+					"libfoo@1.0-1", tt.lockSHA)
+			}
+
+			bare := seedStore(t, storeRoot, "libfoo", "1.0")
+			seedDylib(t, bare)
+			writeDepsMeta(t, storeRoot, "libfoo", "1.0")
+			farmDir := farm.DirFromStoreRoot(storeRoot)
+			if err := farm.Populate(bare, farmDir); err != nil {
+				t.Fatal(err)
+			}
+
+			seedProvenanced(t, storeRoot, "libfoo", "1.0-1")
+			seedDylib(t, filepath.Join(storeRoot, "libfoo", "1.0-1"))
+			writeDepsMeta(t, storeRoot, "libfoo", "1.0-1")
+			if tt.raced {
+				copyProvenance(t, storeRoot, "libfoo", "1.0-1", bare)
+			}
+
+			r, rerr := migrateResolver("libfoo")("libfoo", "1.0-1")
+			if rerr != nil {
+				t.Fatal(rerr)
+			}
+			err := finishRelocations(
+				&cmdContext{StoreRoot: storeRoot}, home,
+				[]migrateTarget{{
+					name: "libfoo", version: "1.0-1", dir: bare,
+					bare: true, recipe: r,
+				}},
+				discardOutput(),
+			)
+			if !errors.Is(err, tt.wantErr) {
+				t.Fatalf("err = %v, want %v", err, tt.wantErr)
+			}
+
+			target, rlerr := os.Readlink(
+				filepath.Join(farmDir, sonameFor("libfoo")),
+			)
+			if rlerr != nil {
+				t.Fatalf("the refused pass destroyed the farm entry: %v", rlerr)
+			}
+			if !strings.HasPrefix(target, bare+string(filepath.Separator)) {
+				t.Errorf("the farm moved to %s despite the refusal; the "+
+					"scope that objected resolves that soname", target)
+			}
+		})
 	}
+}
 
-	seedProvenanced(t, storeRoot, "libfoo", "1.0-1")
-	seedDylib(t, filepath.Join(storeRoot, "libfoo", "1.0-1"))
-	writeDepsMeta(t, storeRoot, "libfoo", "1.0-1")
-
-	r, rerr := migrateResolver("libfoo")("libfoo", "1.0-1")
-	if rerr != nil {
-		t.Fatal(rerr)
-	}
-	err := finishRelocations(
-		&cmdContext{StoreRoot: storeRoot}, home,
-		[]migrateTarget{{
-			name: "libfoo", version: "1.0-1", dir: bare, bare: true, recipe: r,
-		}},
-		discardOutput(),
+// copyProvenance puts one directory's record into another, which is
+// what the store's bare fallback produces: an install of the
+// canonical identity resolves to a pre-revision directory and commits
+// its record there.
+func copyProvenance(t *testing.T, storeRoot, name, version, dst string) {
+	t.Helper()
+	body, err := os.ReadFile(
+		filepath.Join(storeRoot, name, version, provenance.File),
 	)
-	if !errors.Is(err, errScopeDisagrees) {
-		t.Fatalf("err = %v, want errScopeDisagrees", err)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	target, rlerr := os.Readlink(filepath.Join(farmDir, sonameFor("libfoo")))
-	if rlerr != nil {
-		t.Fatalf("the refused pass destroyed the farm entry: %v", rlerr)
-	}
-	if !strings.HasPrefix(target, bare+string(filepath.Separator)) {
-		t.Errorf("the farm moved to %s despite the refusal; the "+
-			"disagreeing scope resolves that soname", target)
+	if err := os.WriteFile(
+		filepath.Join(dst, provenance.File), body, 0o644,
+	); err != nil {
+		t.Fatal(err)
 	}
 }
