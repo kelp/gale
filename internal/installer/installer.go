@@ -241,6 +241,29 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	return inst.install(r, false)
 }
 
+// forDeps returns a copy of the installer that installs dependencies
+// without the caller's binary-only constraint.
+//
+// BinaryOnly is a statement about the package the caller asked for —
+// migrate cleared one declared binary with every scope — and says
+// nothing about what sits underneath it. A dependency built from
+// source is installed nondestructively, and building it is often
+// what produces the provenance the binary target needs.
+//
+// A copy rather than clearing the field in place: dependency
+// installs run concurrently against this instance, so mutating
+// shared state for the duration would be a data race. Every field is
+// a pointer or a value shared on purpose, so the copy behaves
+// identically in every other respect.
+func (inst *Installer) forDeps() *Installer {
+	if !inst.BinaryOnly {
+		return inst
+	}
+	dup := *inst
+	dup.BinaryOnly = false
+	return &dup
+}
+
 // Reinstall is Install but skips the IsInstalled cache check so
 // callers can force a fresh install even when the store already
 // satisfies the request. Used by sync's stale-reinstall path to
@@ -1329,7 +1352,7 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, err
 	)
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
 }
 
 // InstallRuntimeDeps installs only the runtime-tagged
@@ -1345,7 +1368,7 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 	deps.Build = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, nil, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, nil, seen, &sync.Mutex{})
 }
 
 // InstallBuildOnlyDeps installs only the build-tagged
@@ -1362,7 +1385,7 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 	deps.Runtime = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
 }
 
 // ResolveDirectDeps returns the (name, version, revision)

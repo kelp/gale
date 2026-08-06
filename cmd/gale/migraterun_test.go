@@ -9,6 +9,7 @@ import (
 
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/projects"
+	"github.com/kelp/gale/internal/provenance"
 )
 
 // Regenerating a scope moves its symlinks from a pre-revision bare
@@ -135,5 +136,56 @@ func TestRemoveRelocatedDirKeepsAReferencedDir(t *testing.T) {
 				t.Errorf("a referenced pre-revision dir was destroyed: %v", err)
 			}
 		})
+	}
+}
+
+// A record that parses is not a record that attests the directory it
+// sits in.
+//
+// This predicate authorizes deleting the pre-revision bytes, so it
+// has to prove the canonical directory really holds the migrated
+// artifact. Method and SHA alone do not: a record copied from
+// another package carries the same declared hash whenever the
+// fixture's recipes share one, and would authorize the deletion on
+// the strength of a file somebody moved.
+func TestCanonicalAttestsRejectsARecordForAnotherIdentity(t *testing.T) {
+	home := t.TempDir()
+	storeRoot := filepath.Join(home, "pkg")
+	seedStore(t, storeRoot, "old", "1.0-1")
+	// The record belongs to a different package and is written into
+	// old's directory, which is what a copy or a partial restore
+	// leaves behind.
+	seedStore(t, storeRoot, "other", "1.0-1")
+	writeProvenance(t, storeRoot, "other", "1.0-1")
+	moveProvenance(t, storeRoot, "other", "old", "1.0-1")
+
+	r, err := migrateResolver("old")("old", "1.0-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	target := migrateTarget{
+		name: "old", version: "1.0-1",
+		dir:    filepath.Join(storeRoot, "old", "1.0"),
+		recipe: r,
+	}
+
+	if err := canonicalAttests(storeRoot, target); err == nil {
+		t.Fatal("a record for another identity authorized the removal")
+	}
+}
+
+// moveProvenance relocates a written record into another package's
+// store directory, which no gale code path produces and a restore
+// from a mixed-up backup does.
+func moveProvenance(t *testing.T, storeRoot, from, to, version string) {
+	t.Helper()
+	src := filepath.Join(storeRoot, from, version, provenance.File)
+	body, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(storeRoot, to, version, provenance.File)
+	if err := os.WriteFile(dst, body, 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

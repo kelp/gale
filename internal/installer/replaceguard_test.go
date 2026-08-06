@@ -264,3 +264,61 @@ func TestBinaryOnlyDoesNotFallBackToSource(t *testing.T) {
 		t.Error("the refused install left a store directory behind")
 	}
 }
+
+// BinaryOnly constrains the package asked for, not the dependencies
+// installed underneath it.
+//
+// `gale migrate` sets the flag because the machine was cleared
+// against one declared binary, and that argument covers the
+// migration target alone. A runtime dependency that is absent and
+// source-built is installed nondestructively, and building it is
+// what produces the provenance the binary target needs — refusing it
+// would make a candidate unmigratable for a reason no scope objected
+// to.
+func TestBinaryOnlyDoesNotConstrainDependencies(t *testing.T) {
+	storeRoot := t.TempDir()
+	top, closeSrv := fallbackRecipe(t, "topbin")
+	defer closeSrv()
+	top.Dependencies = recipe.Dependencies{Runtime: []string{"srcdep"}}
+
+	srcTar := createTestSourceTarGz(t)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, srcTar)
+		},
+	))
+	defer srv.Close()
+
+	inst := &Installer{
+		Store:             store.NewStore(storeRoot),
+		BinaryFallbackLog: &bytes.Buffer{},
+		BinaryOnly:        true,
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			// Source-only: no binary is declared for any platform.
+			return &recipe.Recipe{
+				Package: recipe.Package{Name: name, Version: "1.0"},
+				Source: recipe.Source{
+					URL: srv.URL + "/source.tar.gz", SHA256: hashFile(t, srcTar),
+				},
+				Build: recipe.Build{Steps: []string{
+					"mkdir -p $PREFIX/bin",
+					"echo '#!/bin/sh' > $PREFIX/bin/" + name,
+					"chmod +x $PREFIX/bin/" + name,
+				}},
+			}, nil
+		},
+	}
+
+	// The top package's own binary 404s, so the install fails either
+	// way. What matters is WHICH refusal: inheriting the flag rejects
+	// the dependency before the top package is ever attempted.
+	_, err := inst.Install(top)
+	if errors.Is(err, errNoBinaryDeclared) {
+		t.Fatalf("BinaryOnly rejected a source-only dependency: %v", err)
+	}
+	if _, serr := os.Lstat(
+		filepath.Join(storeRoot, "srcdep", "1.0-1", "bin", "srcdep"),
+	); serr != nil {
+		t.Errorf("the source-only dependency was not built: %v", serr)
+	}
+}

@@ -51,7 +51,7 @@ func runMigrate(ctx *cmdContext, out *output.Output) error {
 		for _, t := range ordered {
 			out.Info(fmt.Sprintf("migrate %s@%s (%s)", t.name, t.version, t.dir))
 		}
-		reportSourceOnly(out, scan.sourceOnly)
+		reportSourceOnly(out, ctx.StoreRoot, scan.sourceOnly)
 		return nil
 	}
 	var relocated []migrateTarget
@@ -67,7 +67,7 @@ func runMigrate(ctx *cmdContext, out *output.Output) error {
 	if err := finishRelocations(ctx, galeHome, relocated, out); err != nil {
 		return err
 	}
-	reportSourceOnly(out, scan.sourceOnly)
+	reportSourceOnly(out, ctx.StoreRoot, scan.sourceOnly)
 	return nil
 }
 
@@ -112,19 +112,41 @@ func finishRelocations(
 // a migration cannot end by claiming a directory it never verified,
 // which makes saying what is left the command's whole obligation
 // toward these.
-func reportSourceOnly(out *output.Output, sourceOnly []migrateTarget) {
-	if len(sourceOnly) == 0 {
+//
+// Split by WHERE the directory sits, because only one half has a
+// remedy. A canonical source directory is what `lock --refresh` was
+// built to replace. A pre-revision one is not: refresh checks the
+// canonical path alone and declines a bare directory by design, and
+// migrate cannot refetch a source build, so nothing on the machine
+// converges it today. Saying so is the honest report; offering a
+// command that must refuse would not be.
+func reportSourceOnly(
+	out *output.Output, storeRoot string, sourceOnly []migrateTarget,
+) {
+	var canonical, bare []migrateTarget
+	for _, t := range sourceOnly {
+		if sameDir(t.dir, filepath.Join(storeRoot, t.name, t.version)) {
+			canonical = append(canonical, t)
+			continue
+		}
+		bare = append(bare, t)
+	}
+	reportRebuildable(out, canonical)
+	reportUnresolved(out, bare)
+}
+
+// reportRebuildable names the source directories a refresh can clear.
+func reportRebuildable(out *output.Output, targets []migrateTarget) {
+	if len(targets) == 0 {
 		return
 	}
 	out.Warn(fmt.Sprintf(
 		"%d source-built %s cannot be migrated by refetching, because "+
 			"the bytes came from a build on this machine and no download "+
-			"reproduces them:", len(sourceOnly),
-		plural(len(sourceOnly), "package", "packages"),
+			"reproduces them:", len(targets),
+		plural(len(targets), "package", "packages"),
 	))
-	for _, t := range sourceOnly {
-		out.Info(fmt.Sprintf("  %s@%s (%s)", t.name, t.version, t.dir))
-	}
+	listTargets(out, targets)
 	// NOT `gale install --build`. That path calls the installer with
 	// force=false, so an occupied store directory satisfies the cache
 	// check and returns MethodCached before anything is built or any
@@ -135,6 +157,35 @@ func reportSourceOnly(out *output.Output, sourceOnly []migrateTarget) {
 		"`gale lock --refresh <pkg>`, which costs a full source build " +
 		"per package. A directory no scope declares cannot be " +
 		"rebuilt; `gale gc` clears it once nothing links it.")
+}
+
+// reportUnresolved names the source directories nothing can clear.
+//
+// A pre-revision source build sits in the gap between the two
+// commands: migrate relocates only what it can refetch, and refresh
+// replaces only the canonical path. The user is told plainly rather
+// than sent to either.
+func reportUnresolved(out *output.Output, targets []migrateTarget) {
+	if len(targets) == 0 {
+		return
+	}
+	out.Warn(fmt.Sprintf(
+		"%d source-built %s predate revisions, and gale has no command "+
+			"that converges them: migrate relocates only what it can "+
+			"refetch, and `lock --refresh` replaces only the canonical "+
+			"directory:", len(targets),
+		plural(len(targets), "package", "packages"),
+	))
+	listTargets(out, targets)
+	out.Info("Each stays unattested, so a locked environment will keep " +
+		"refusing to activate it. Removing the directory and " +
+		"reinstalling the package is the only route today.")
+}
+
+func listTargets(out *output.Output, targets []migrateTarget) {
+	for _, t := range targets {
+		out.Info(fmt.Sprintf("  %s@%s (%s)", t.name, t.version, t.dir))
+	}
 }
 
 func plural(n int, one, many string) string {
@@ -230,13 +281,26 @@ func migrateOne(
 // It is also the resume predicate. An interrupted relocation leaves
 // exactly this state, and a run that could not recognise it would
 // reinstall over its own record and fail.
+//
+// VerifyAgainstStore, not ReadUnverified. This predicate authorizes
+// destroying the pre-revision bytes, so a record that merely parses
+// is not enough: identity, platform, dependency edges and the
+// graph_digest all have to describe the directory the record sits
+// in, or a file somebody copied could authorize the deletion.
+//
+// Recomputing the digest from the installed closure is safe here in a
+// way §12's activation gate is not. That gate must tolerate a
+// collected build dependency; this runs against a binary-method
+// artifact, whose record serializes runtime edges only, and the
+// dependency-first ordering has already migrated everything below it.
 func canonicalAttests(storeRoot string, t migrateTarget) error {
 	name, full := t.name, t.version
-	canonical := filepath.Join(storeRoot, name, full)
-	rec, err := provenance.ReadUnverified(canonical)
+	rec, err := provenance.VerifyAgainstStore(
+		storeRoot, name, full, currentPlatform(),
+	)
 	if err != nil {
 		return fmt.Errorf(
-			"the migrated %s@%s is itself unprovenanced, so removing %s "+
+			"the migrated %s@%s does not attest itself, so removing %s "+
 				"would destroy bytes without repairing anything (%v): %w",
 			name, full, t.dir, err, errCandidateUnprovenanced,
 		)
