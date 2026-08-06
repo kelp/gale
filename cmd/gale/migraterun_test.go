@@ -1,20 +1,14 @@
 package main
 
 import (
-	"archive/tar"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
-
-	"github.com/klauspost/compress/zstd"
 
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
@@ -340,55 +334,12 @@ func seedDylib(t *testing.T, dir string) {
 // reach the code under test.
 func dylibBinaryRecipe(t *testing.T, name string) *recipe.Recipe {
 	t.Helper()
-	archive, sum := dylibArchive(t)
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, archive)
-		},
-	))
-	t.Cleanup(srv.Close)
 	return &recipe.Recipe{
 		Package: recipe.Package{Name: name, Version: "1.0"},
-		Binary: map[string]recipe.Binary{
-			runtime.GOOS + "-" + runtime.GOARCH: {
-				URL:    srv.URL + "/" + name + ".tar.zst",
-				SHA256: sum,
-				Trust:  recipe.TrustSHA256Only,
-			},
-		},
+		Binary: servedBinary(t, archiveEntry{
+			name: "lib/" + sonameFor("libfoo"), body: "bytes", mode: 0o644,
+		}),
 	}
-}
-
-// dylibArchive writes a tar.zst holding lib/<soname> and returns its
-// path and hex SHA256, which is the hash the recipe must declare.
-func dylibArchive(t *testing.T) (string, string) {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "libfoo.tar.zst")
-	f, err := os.Create(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	zw, err := zstd.NewWriter(f)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tw := tar.NewWriter(zw)
-	const body = "bytes"
-	if err := tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeReg, Name: "lib/" + sonameFor("libfoo"),
-		Mode: 0o644, Size: int64(len(body)),
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := tw.Write([]byte(body)); err != nil {
-		t.Fatal(err)
-	}
-	for _, c := range []io.Closer{tw, zw, f} {
-		if err := c.Close(); err != nil {
-			t.Fatal(err)
-		}
-	}
-	return path, hashOf(t, path)
 }
 
 // hashOf is the hex SHA256 of a file, which is what a recipe's
