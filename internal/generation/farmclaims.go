@@ -469,11 +469,26 @@ func guardedRebuildDirs(
 // so a claimant set that cannot be satisfied would leave one scope's
 // binaries resolving another scope's library; a refusal has to cost
 // nothing, which is only true while nothing has moved.
-func RebuildFarm(storeRoot string) error {
+//
+// validate runs first, INSIDE the lock, and a non-nil error aborts
+// with the farm untouched. This rebuild is a destructive commit like
+// any other — it repoints sonames the whole machine resolves through
+// — so design §13's rule that a caller revalidates before each
+// destructive commit applies to it. Inside the lock rather than
+// before the call, because a caller that checked first would have
+// released the lock in between, which is the window the rule exists
+// to close. nil is a test-only seam; production callers always
+// supply one.
+func RebuildFarm(storeRoot string, validate func() error) error {
 	// The lock Build takes (see build), so no scope can swap a
 	// generation between the claim walk and the rebuild resting on it.
 	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
 	return filelock.With(lockPath, func() error {
+		if validate != nil {
+			if err := validate(); err != nil {
+				return err
+			}
+		}
 		dirs, err := farm.GuardRebuild(nil, FarmClaimants(storeRoot, ""))
 		if err != nil {
 			return err

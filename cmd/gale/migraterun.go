@@ -97,9 +97,19 @@ func finishRelocations(
 	//
 	// Before the regenerations rather than after, because it is also
 	// the guarded step: a claim this machine cannot satisfy refuses
-	// here, while nothing has moved and no scope's symlinks have been
-	// touched.
-	if err := generation.RebuildFarm(ctx.StoreRoot); err != nil {
+	// here, while no scope's symlinks have been touched.
+	//
+	// The rebuild is a destructive commit of its own, though — it
+	// repoints sonames the whole machine resolves through — so §13's
+	// revalidation runs first, inside the lock the rebuild holds. A
+	// scope whose lock moved to another hash after the install would
+	// otherwise be discovered only by the later removal check: that
+	// check preserves the pre-revision bytes and the run looks safe,
+	// while the farm has already moved underneath the scope that
+	// disagreed.
+	if err := generation.RebuildFarm(ctx.StoreRoot, func() error {
+		return revalidateRelocations(galeHome, ctx.StoreRoot, relocated)
+	}); err != nil {
 		return err
 	}
 	scopes, err := projects.Scopes(galeHome)
@@ -363,6 +373,34 @@ func canonicalAttests(storeRoot string, t migrateTarget) error {
 			"%w: %s@%s was cleared at %s and the store now records %s",
 			errMigrateHashMoved, name, full, b.SHA256, rec.SHA256,
 		)
+	}
+	return nil
+}
+
+// revalidateRelocations re-establishes every relocation's predicate
+// against the machine as it is right now.
+//
+// Read fresh, never carried: projects.Scopes re-reads the registry
+// and every lock, so a scope registered or re-locked since the
+// install is seen. The same predicate runs again before each
+// individual removal, which is not redundant — these are two
+// destructive commits, and §13 asks for revalidation before each.
+func revalidateRelocations(
+	galeHome, storeRoot string, relocated []migrateTarget,
+) error {
+	scopes, err := projects.Scopes(galeHome)
+	if err != nil {
+		return err
+	}
+	for _, t := range relocated {
+		if err := stillUnprovenanced(t.dir, t.name, t.version); err != nil {
+			return err
+		}
+		if err := checkRelocateCommit(
+			galeHome, storeRoot, t, scopes,
+		); err != nil {
+			return err
+		}
 	}
 	return nil
 }
