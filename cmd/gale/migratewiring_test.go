@@ -20,6 +20,7 @@ import (
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/projects"
+	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 )
 
@@ -577,5 +578,137 @@ func TestRunMigrateRemovesABareDirOnlyAfterThePassIsDone(t *testing.T) {
 	if removed < replaced {
 		t.Errorf("the bare dir was removed before the dependent was "+
 			"replaced:\n%s", buf)
+	}
+}
+
+// unattestableDep seeds a dependency no record describes and migrate
+// will never converge: a source-built package, which design §13 lists
+// rather than replaces.
+//
+// An artifact installed above it commits with NO record of its own —
+// §7's all-or-nothing rule, and recordProvenance's deliberate nil
+// return when an edge names a directory that attests nothing. That is
+// the state the two rows below are about, and it is an ordinary
+// machine state rather than a contrived one: the source-built half of
+// upgrade day is exactly this.
+func (m *migrateMachine) unattestableDep(name string) {
+	m.t.Helper()
+	seedStore(m.t, m.storeRoot, name, "1.0-1")
+	writeDepsMeta(m.t, m.storeRoot, name, "1.0-1")
+	m.recipes[name] = &recipe.Recipe{
+		Package: recipe.Package{Name: name, Version: "1.0"},
+	}
+}
+
+// A replacement whose own artifact attests nothing is refused, in both
+// shapes migrate installs.
+//
+// Trading one unattested directory for another destroys bytes, repairs
+// nothing, and reports success — the one outcome design §13 rules out
+// for every shape. Two different lines enforce it, because the two
+// shapes commit through different paths, and neither line is reachable
+// from the other's fixture:
+//
+//   - the canonical shape is caught inside the ReplaceGuard, by
+//     checkMigrateCommit reading the STAGING directory before the
+//     rename;
+//   - the relocating shape is caught after the install returns, by
+//     canonicalAttests reading the committed record. Nothing else can
+//     be: the canonical destination was absent, so guardReplace
+//     returned early and no guard ever fired.
+//
+// The observable differs with the shape, so each row asserts what its
+// own mechanism protects. A canonical replacement destroys the old
+// directory, so the marker is the evidence. A relocation writes into
+// free space and destroys nothing yet, so the evidence is moved: a run
+// that reports the move hands finishRelocations permission to delete
+// the pre-revision bytes on behalf of an artifact that attests
+// nothing.
+func TestMigrateOneRefusesAnArtifactThatAttestsNothing(t *testing.T) {
+	tests := []struct {
+		name string
+		// dirVersion is where the candidate's bytes sit: the canonical
+		// directory, or the bare one a pre-revision install left.
+		dirVersion string
+		bare       bool
+	}{
+		{name: "a canonical replacement", dirVersion: "1.0-1"},
+		{name: "a pre-revision relocation", dirVersion: "1.0", bare: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newMigrateMachine(t)
+			m.unattestableDep("srcdep")
+			dir := seedStore(t, m.storeRoot, "candidate", tt.dirVersion)
+			marker := legacyMarker(t, dir)
+			r := m.binaryPkg("candidate", "srcdep")
+
+			moved, err := migrateOne(m.ctx, m.galeHome, migrateTarget{
+				name: "candidate", version: "1.0-1", dir: dir,
+				bare: tt.bare, recipe: r,
+			}, discardOutput())
+			if !errors.Is(err, errCandidateUnprovenanced) {
+				t.Fatalf("err = %v, want errCandidateUnprovenanced", err)
+			}
+			if moved {
+				t.Error("a replacement that attests nothing reported the " +
+					"move, so the pre-revision bytes would be deleted for it")
+			}
+			assertMarkerKept(t, marker,
+				"one unattested directory was traded for another")
+		})
+	}
+}
+
+// The pre-revision directory is not deleted once something else has
+// provenanced it.
+//
+// The classification happened before this pass took the generation
+// lock, and design §13 asks for revalidation before each destructive
+// commit for exactly this reason: a concurrent gale can install and
+// attest that identity in the window. A directory that gained a record
+// is no longer the unprovenanced one this pass decided about, and
+// deleting it would destroy the very record the check exists to
+// protect — the removal is the last step, so nothing downstream would
+// ever report it.
+func TestRemoveRelocatedDirRefusesADirThatGainedProvenance(t *testing.T) {
+	home := t.TempDir()
+	storeRoot := filepath.Join(home, "pkg")
+	bare := seedStore(t, storeRoot, "raced", "1.0")
+	writeDepsMeta(t, storeRoot, "raced", "1.0")
+	// Everything else about the relocation is in order, so the record
+	// is the only thing standing between this run and the deletion.
+	seedProvenanced(t, storeRoot, "raced", "1.0-1")
+	// Another run got there first and attested the bare directory. The
+	// record names the CANONICAL identity while sitting in the bare
+	// path, which is what the store's bare fallback produces: an
+	// install of raced@1.0-1 resolves to the pre-revision directory and
+	// commits its record there.
+	body, rerr := os.ReadFile(
+		filepath.Join(storeRoot, "raced", "1.0-1", provenance.File),
+	)
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if err := os.WriteFile(
+		filepath.Join(bare, provenance.File), body, 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	r, err := migrateResolver("raced")("raced", "1.0-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = removeRelocatedDir(storeRoot, home, migrateTarget{
+		name: "raced", version: "1.0-1", dir: bare, bare: true, recipe: r,
+	}, discardOutput())
+	if !errors.Is(err, errRaceLostToProvenance) {
+		t.Fatalf("err = %v, want errRaceLostToProvenance", err)
+	}
+	if _, statErr := os.Lstat(bare); statErr != nil {
+		t.Errorf("a directory another run had attested was destroyed: %v",
+			statErr)
 	}
 }
