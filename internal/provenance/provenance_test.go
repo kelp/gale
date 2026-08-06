@@ -1031,3 +1031,92 @@ func TestClosureCollectsEveryReachableRecord(t *testing.T) {
 		t.Errorf("closure = %#v, want %#v", got, want)
 	}
 }
+
+// newRecord builds a record the way an install does, resolving each
+// edge's digest from the dependency already in the store.
+func newRecord(t *testing.T, storeRoot string, n lockgraph.Node) Record {
+	t.Helper()
+	r, err := New(storeRoot, n)
+	if err != nil {
+		t.Fatalf("New(%s): %v", n.Name, err)
+	}
+	return r
+}
+
+// A collected build dependency two levels down must not invalidate
+// the artifact above it.
+//
+// Design §12 permits a build dependency to disappear: it produced
+// bytes that are already committed, and nothing links it afterwards.
+// VerifyAgainstStore recurses into every dependency's own closure, so
+// it refuses the whole graph once one is collected — which is exactly
+// why the activation gate cannot use it.
+//
+// The same trap reaches one level deeper than it looks. A BINARY
+// artifact records runtime edges only, so its own record survives;
+// but a runtime dependency may itself be source-method and carry
+// build edges, and the recursive walk finds those. VerifyShallow
+// answers the question a caller actually has about one artifact:
+// does this record describe this directory, and does its digest
+// follow from what its direct dependencies recorded.
+func TestVerifyShallowToleratesACollectedBuildDep(t *testing.T) {
+	storeRoot := t.TempDir()
+
+	// tool is a build-only dependency of a source library, and is
+	// collected once the library is built.
+	tool := onigNode()
+	tool.Name, tool.Version = "autoconf", "2.72-1"
+	installAt(t, storeRoot, "autoconf", "2.72-1", recordFor(t, tool, nil))
+
+	lib := onigNode()
+	lib.Name, lib.Version = "oniguruma", "6.9.9-1"
+	lib.Method = lockgraph.MethodSource
+	lib.Edges = []lockgraph.Edge{
+		{Kind: lockgraph.KindBuild, Name: "autoconf", Version: "2.72-1"},
+	}
+	installAt(t, storeRoot, "oniguruma", "6.9.9-1", newRecord(t, storeRoot, lib))
+
+	// app is the migrated artifact: a binary, so it records the
+	// runtime edge and no build edge of its own.
+	app := onigNode()
+	app.Name, app.Version = "jq", "1.8.1-2"
+	app.Method = lockgraph.MethodBinary
+	app.Edges = []lockgraph.Edge{
+		{Kind: lockgraph.KindRuntime, Name: "oniguruma", Version: "6.9.9-1"},
+	}
+	installAt(t, storeRoot, "jq", "1.8.1-2", newRecord(t, storeRoot, app))
+
+	platform := onigNode().GOOS + "/" + onigNode().GOARCH
+	if err := os.RemoveAll(
+		filepath.Join(storeRoot, "autoconf", "2.72-1"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	// The deep walk refuses, which is the behaviour being avoided.
+	if _, err := VerifyAgainstStore(
+		storeRoot, "jq", "1.8.1-2", platform,
+	); err == nil {
+		t.Fatal("VerifyAgainstStore accepted a collected build dep; " +
+			"the fixture no longer reproduces the trap")
+	}
+	if _, err := VerifyShallow(
+		storeRoot, "jq", "1.8.1-2", platform,
+	); err != nil {
+		t.Fatalf("a collected build dependency invalidated jq: %v", err)
+	}
+}
+
+// VerifyShallow is shallow, not blind: the record still has to
+// describe the directory it sits in.
+func TestVerifyShallowRejectsARecordForAnotherIdentity(t *testing.T) {
+	storeRoot := t.TempDir()
+	r := recordFor(t, onigNode(), nil)
+	installAt(t, storeRoot, "impostor", "1.0-1", r)
+
+	if _, err := VerifyShallow(
+		storeRoot, "impostor", "1.0-1", r.Platform,
+	); err == nil {
+		t.Fatal("a record naming another package was accepted")
+	}
+}

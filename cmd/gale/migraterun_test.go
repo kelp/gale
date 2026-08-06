@@ -128,7 +128,7 @@ func TestRemoveRelocatedDirKeepsAReferencedDir(t *testing.T) {
 				t.Fatal(rerr)
 			}
 			target := migrateTarget{
-				name: "old", version: "1.0-1", dir: bare, recipe: r,
+				name: "old", version: "1.0-1", dir: bare, bare: true, recipe: r,
 			}
 
 			err := removeRelocatedDir(storeRoot, home, target, discardOutput())
@@ -177,6 +177,7 @@ func TestCanonicalAttestsRejectsARecordForAnotherIdentity(t *testing.T) {
 	target := migrateTarget{
 		name: "old", version: "1.0-1",
 		dir:    filepath.Join(storeRoot, "old", "1.0"),
+		bare:   true,
 		recipe: r,
 	}
 
@@ -230,7 +231,7 @@ func TestMigrateOneRelocatingDefersTheFarm(t *testing.T) {
 	wireFarmGuards(ctx.Installer, ctx.GaleDir, ctx.StoreRoot)
 
 	moved, err := migrateOne(ctx, galeDir, migrateTarget{
-		name: "libfoo", version: "1.0-1", dir: bare, recipe: r,
+		name: "libfoo", version: "1.0-1", dir: bare, bare: true, recipe: r,
 	}, discardOutput())
 	if err != nil {
 		t.Fatalf("a relocating migration was refused: %v", err)
@@ -301,7 +302,7 @@ func TestFinishRelocationsRepointsTheFarm(t *testing.T) {
 	if err := finishRelocations(
 		&cmdContext{StoreRoot: storeRoot}, home,
 		[]migrateTarget{{
-			name: "libfoo", version: "1.0-1", dir: bare, recipe: r,
+			name: "libfoo", version: "1.0-1", dir: bare, bare: true, recipe: r,
 		}},
 		discardOutput(),
 	); err != nil {

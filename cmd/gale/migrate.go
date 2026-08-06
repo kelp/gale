@@ -40,7 +40,13 @@ type migrateTarget struct {
 	name    string
 	version string
 	dir     string
-	recipe  *recipe.Recipe
+	// bare marks a directory that is NOT the canonical one for this
+	// identity, which is what a pre-revision install leaves behind.
+	// Decided at classification time, where the store layout is in
+	// hand, so no later step has to re-derive it and risk deriving it
+	// differently.
+	bare   bool
+	recipe *recipe.Recipe
 }
 
 // migrateScan classifies every directory in the store, reading the
@@ -133,7 +139,8 @@ func classifyForMigrate(
 		)
 	}
 	t := migrateTarget{
-		name: p.Name, version: r.Package.Full(), dir: dir, recipe: r,
+		name: p.Name, version: r.Package.Full(), dir: dir,
+		bare: p.Version != r.Package.Full(), recipe: r,
 	}
 	if r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH) == nil {
 		out.sourceOnly = append(out.sourceOnly, t)
@@ -189,10 +196,14 @@ var errMigrateCycle = errors.New(
 func orderCandidates(
 	candidates []migrateTarget, resolve installer.RecipeResolver,
 ) ([]migrateTarget, error) {
-	byID := make(map[string]int, len(candidates))
+	// A slice per identity, not one index: a store can hold both a
+	// bare and a canonical directory for one name@version, and a
+	// plain map would silently drop whichever was seen first.
+	byID := make(map[string][]int, len(candidates))
 	names := make(map[string]bool, len(candidates))
 	for i, t := range candidates {
-		byID[lockgraph.Key(t.name, t.version)] = i
+		id := lockgraph.Key(t.name, t.version)
+		byID[id] = append(byID[id], i)
 		names[t.name] = true
 	}
 	edges, err := candidateEdges(candidates, byID, names, resolve)
@@ -252,12 +263,25 @@ func orderCandidates(
 // directory the refetch would bind to, and guessing would decide a
 // destructive order.
 func candidateEdges(
-	candidates []migrateTarget, byID map[string]int, names map[string]bool,
+	candidates []migrateTarget, byID map[string][]int, names map[string]bool,
 	resolve installer.RecipeResolver,
 ) ([][]int, error) {
 	resolved := make(map[string]string, len(names))
 	edges := make([][]int, len(candidates))
 	for i, t := range candidates {
+		if t.bare {
+			// Its own canonical twin comes first. A relocation reaches
+			// its target through the resume branch, which needs the
+			// canonical directory already attesting itself; the other
+			// order has the bare candidate replace the occupied
+			// canonical directory and the canonical candidate then fail
+			// against the record that replacement just wrote.
+			for _, j := range byID[lockgraph.Key(t.name, t.version)] {
+				if j != i && !candidates[j].bare {
+					edges[i] = append(edges[i], j)
+				}
+			}
+		}
 		for _, dep := range runtimeDepNames(t.recipe) {
 			if !names[dep] {
 				continue
@@ -274,8 +298,10 @@ func candidateEdges(
 				id = lockgraph.Key(dep, r.Package.Full())
 				resolved[dep] = id
 			}
-			if j, ok := byID[id]; ok && j != i {
-				edges[i] = append(edges[i], j)
+			for _, j := range byID[id] {
+				if j != i {
+					edges[i] = append(edges[i], j)
+				}
 			}
 		}
 	}

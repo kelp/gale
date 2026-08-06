@@ -192,9 +192,15 @@ func reportUnresolved(out *output.Output, targets []migrateTarget) {
 		plural(len(targets), "package", "packages"),
 	))
 	listTargets(out, targets)
+	// No manual sequence is offered, and that is deliberate. Removing
+	// the directory leaves every other scope's generation linking a
+	// missing path, reinstalling in one scope regenerates only that
+	// scope, and the reinstall meets the same bare-versus-canonical
+	// farm conflict migrate handles for itself. Naming a sequence
+	// that converges nothing would be worse than naming none.
 	out.Info("Each stays unattested, so a locked environment will keep " +
-		"refusing to activate it. Removing the directory and " +
-		"reinstalling the package is the only route today.")
+		"refusing to activate it. No gale command converges them " +
+		"today; the gap is tracked in gh#200.")
 }
 
 func listTargets(out *output.Output, targets []migrateTarget) {
@@ -250,8 +256,10 @@ func migrateOne(
 	ctx *cmdContext, galeHome string, t migrateTarget, out *output.Output,
 ) (bool, error) {
 	name, full := t.name, t.version
-	canonical := filepath.Join(ctx.StoreRoot, name, full)
-	relocating := !sameDir(t.dir, canonical)
+	// Decided by the scan, which had the store layout in hand. Asking
+	// again here would be a second derivation of one fact, and the
+	// two could disagree.
+	relocating := t.bare
 
 	if relocating && canonicalAttests(ctx.StoreRoot, t) == nil {
 		// Resume. An earlier pass installed and verified the canonical
@@ -317,20 +325,22 @@ func migrateOne(
 // exactly this state, and a run that could not recognise it would
 // reinstall over its own record and fail.
 //
-// VerifyAgainstStore, not ReadUnverified. This predicate authorizes
-// destroying the pre-revision bytes, so a record that merely parses
-// is not enough: identity, platform, dependency edges and the
-// graph_digest all have to describe the directory the record sits
-// in, or a file somebody copied could authorize the deletion.
-//
-// Recomputing the digest from the installed closure is safe here in a
-// way §12's activation gate is not. That gate must tolerate a
-// collected build dependency; this runs against a binary-method
-// artifact, whose record serializes runtime edges only, and the
-// dependency-first ordering has already migrated everything below it.
+// VerifyShallow, which is neither of the obvious two readers.
+// ReadUnverified is too weak: this predicate authorizes destroying
+// the pre-revision bytes, so a record somebody copied into the
+// directory must not satisfy it. VerifyAgainstStore is too strong,
+// and the reason reaches one level deeper than it appears. A binary
+// artifact records runtime edges only, so its own record survives a
+// collected build dependency — but a runtime dependency may itself
+// be source-method and carry build edges, and the deep reader
+// recurses into those. Design §12 permits a build dependency to
+// disappear once the bytes it produced are committed, so the deep
+// reader would refuse a graph that is perfectly sound, and
+// dependency-first ordering does not help: the source dependency is
+// already provenanced and the collected tool is not a candidate.
 func canonicalAttests(storeRoot string, t migrateTarget) error {
 	name, full := t.name, t.version
-	rec, err := provenance.VerifyAgainstStore(
+	rec, err := provenance.VerifyShallow(
 		storeRoot, name, full, currentPlatform(),
 	)
 	if err != nil {

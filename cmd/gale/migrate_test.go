@@ -589,3 +589,34 @@ func TestMigratePreflightRefusesBeforeReplacingAnything(t *testing.T) {
 		t.Errorf("marker holds %q, want %q", kept, "old")
 	}
 }
+
+// One identity in two directories is ordered canonical-first.
+//
+// A store can hold an unprovenanced bare "1.0" AND an unprovenanced
+// canonical "1.0-1" for one package, and the scan emits both. The
+// bare one is a relocation, which reaches its target through the
+// resume branch only once the canonical directory attests itself, so
+// the canonical candidate has to be migrated first. Taken the other
+// way round the bare candidate replaces the occupied canonical
+// directory, and the canonical candidate then meets the record that
+// replacement just wrote and fails stillUnprovenanced, ending the
+// pass before anything is relocated.
+func TestMigrateOrdersTheCanonicalDirBeforeItsBareTwin(t *testing.T) {
+	r := runtimeDepRecipe("jq", "1.0")
+	candidates := []migrateTarget{
+		{name: "jq", version: "1.0-1", dir: "/s/jq/1.0", bare: true, recipe: r},
+		{name: "jq", version: "1.0-1", dir: "/s/jq/1.0-1", recipe: r},
+	}
+
+	got, err := orderCandidates(candidates, byNameResolver("jq", "1.0"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("ordering dropped a candidate: %v", ids(got))
+	}
+	if got[0].bare {
+		t.Error("the pre-revision directory was ordered before its " +
+			"canonical twin")
+	}
+}
