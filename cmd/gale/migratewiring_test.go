@@ -712,3 +712,58 @@ func TestRemoveRelocatedDirRefusesADirThatGainedProvenance(t *testing.T) {
 			statErr)
 	}
 }
+
+// sourceOnlyPkg declares a package with no prebuilt binary for this
+// platform, which is what puts a directory on the half of upgrade day
+// migrate reports rather than replaces.
+func (m *migrateMachine) sourceOnlyPkg(name string) {
+	m.t.Helper()
+	m.recipes[name] = &recipe.Recipe{
+		Package: recipe.Package{Name: name, Version: "1.0"},
+	}
+}
+
+// What migrate cannot converge, it says, and says differently
+// depending on where the bytes sit.
+//
+// Reporting is migrate's whole obligation toward a source-built
+// directory: design §13 rejected stamping one with an "unverified"
+// marker, so the command may not replace it and may not claim it.
+// Dropping the report would leave a run that exits zero having
+// silently abandoned half of upgrade day.
+//
+// Both halves are asserted because their remedies differ and only one
+// exists. A canonical source directory is what `lock --refresh` was
+// built to replace. A pre-revision one is not, since refresh checks
+// the canonical path alone, so it is reported as gh#200 rather than
+// handed a command that must refuse.
+//
+// Nothing is destroyed either. A source directory is not migrate's to
+// touch under any classification, and the surviving bytes are what
+// separates "reported it" from "reported it and replaced it anyway".
+func TestRunMigrateReportsWhatItCannotConverge(t *testing.T) {
+	m := newMigrateMachine(t)
+	m.sourceOnlyPkg("canon")
+	m.sourceOnlyPkg("legacy")
+	canonical := seedStore(t, m.storeRoot, "canon", "1.0-1")
+	bare := seedStore(t, m.storeRoot, "legacy", "1.0")
+
+	out, buf := recordedOutput()
+	if err := runMigrate(m.ctx, out); err != nil {
+		t.Fatalf("runMigrate: %v", err)
+	}
+
+	for _, want := range []string{
+		"canon@1.0-1", "gale lock --refresh",
+		"legacy@1.0-1", "gh#200",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the report never mentions %q:\n%s", want, buf)
+		}
+	}
+	for _, dir := range []string{canonical, bare} {
+		if _, err := os.Lstat(dir); err != nil {
+			t.Errorf("a source-built directory was destroyed: %v", err)
+		}
+	}
+}
