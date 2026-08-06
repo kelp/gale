@@ -16,6 +16,8 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
+	"github.com/kelp/gale/internal/depsmeta"
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/recipe"
@@ -138,6 +140,37 @@ func (m *migrateMachine) fallbackPkg(name string) *recipe.Recipe {
 	return r
 }
 
+// untouchableBinaryPkg declares a package whose prebuilt binary is
+// served by an endpoint that fails the test if it is ever contacted,
+// carrying the hash a seeded provenance record already names.
+//
+// The hash matters as much as the endpoint: a fixture whose recipe
+// disagreed with the record on disk would take the resume branch away
+// for a reason of its own making.
+func (m *migrateMachine) untouchableBinaryPkg(name string) *recipe.Recipe {
+	t := m.t
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			t.Errorf("%s was refetched; the canonical artifact already "+
+				"attests itself, so there is nothing to install", name)
+			w.WriteHeader(http.StatusNotFound)
+		},
+	))
+	t.Cleanup(srv.Close)
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: name, Version: "1.0"},
+		Binary: map[string]recipe.Binary{
+			runtime.GOOS + "-" + runtime.GOARCH: {
+				URL: srv.URL + "/artifact.tar.zst", SHA256: testSHA,
+				Trust: recipe.TrustSHA256Only,
+			},
+		},
+	}
+	m.recipes[name] = r
+	return r
+}
+
 // servedBinary serves a prebuilt archive from a local server and
 // returns the platform binary map a recipe declares for it.
 //
@@ -248,9 +281,10 @@ func recordedOutput() (*output.Output, *bytes.Buffer) {
 //
 // Driven through migrateOne rather than through checkMigrateCommit,
 // because the unit test on that function passes with the assignment
-// deleted. Without the wiring the installer has no guard at all, the
-// replacement commits, and the disputed bytes are gone — so the marker
-// is the assertion that discriminates, not the error.
+// deleted. Without the wiring the installer has no guard at all, so
+// migrateOne returns success and the error assertion is what fires
+// first; the marker records what that success cost, which is the part
+// worth reading in the failure output.
 func TestMigrateOneRefusesACommitAnotherScopeDisputes(t *testing.T) {
 	m := newMigrateMachine(t)
 	proj := t.TempDir()
@@ -382,5 +416,166 @@ func TestRunMigrateReplacesADependencyBeforeItsDependent(t *testing.T) {
 	}
 	if dep > dependent {
 		t.Errorf("app was migrated before the zdep it links:\n%s", buf)
+	}
+}
+
+// A scope running a pre-revision generation is moved off the bare
+// directory before that directory is deleted.
+//
+// This is the half of a relocation no per-scope command may perform,
+// and the reason design §13 hands pre-revision directories to
+// machine-wide migrate: another project's generation LINKS the bare
+// path, and its owner ran nothing.
+//
+// The fixture builds the generation while only the bare directory
+// exists, which is the whole point. A generation built after the
+// canonical directory is in place already names the canonical path, so
+// reinstalling repairs the link on its own and the regeneration this
+// test exists for is never exercised.
+//
+// Without it the pass does not merely leave a stale link: the scope
+// still reaches the bare directory, so removeRelocatedDir refuses, and
+// the relocation cannot finish at all.
+func TestFinishRelocationsMovesAScopeOffTheBareDir(t *testing.T) {
+	home := t.TempDir()
+	storeRoot := filepath.Join(home, "pkg")
+	proj := t.TempDir()
+	if err := projects.Register(home, proj); err != nil {
+		t.Fatal(err)
+	}
+	galeDir := filepath.Join(proj, ".gale")
+
+	bare := seedStore(t, storeRoot, "legacy", "1.0")
+	writeDepsMeta(t, storeRoot, "legacy", "1.0")
+	if err := generation.Build(
+		map[string]string{"legacy": "1.0"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if got := linkTarget(t, galeDir, "legacy"); !strings.Contains(
+		got, filepath.Join("legacy", "1.0"),
+	) {
+		t.Fatalf("the fixture does not link the pre-revision dir: %s", got)
+	}
+
+	// The canonical artifact the pass has already installed and
+	// verified, sitting beside it.
+	seedProvenanced(t, storeRoot, "legacy", "1.0-1")
+	writeDepsMeta(t, storeRoot, "legacy", "1.0-1")
+	r, rerr := migrateResolver("legacy")("legacy", "1.0-1")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+
+	if err := finishRelocations(
+		&cmdContext{StoreRoot: storeRoot}, home,
+		[]migrateTarget{{
+			name: "legacy", version: "1.0-1", dir: bare, bare: true, recipe: r,
+		}},
+		discardOutput(),
+	); err != nil {
+		t.Fatalf("finishRelocations: %v", err)
+	}
+
+	if got := linkTarget(t, galeDir, "legacy"); !strings.Contains(
+		got, filepath.Join("legacy", "1.0-1"),
+	) {
+		t.Errorf("the scope still links %s, want the canonical dir", got)
+	}
+	if _, err := os.Lstat(bare); !os.IsNotExist(err) {
+		t.Errorf("the pre-revision dir survived the pass (%v)", err)
+	}
+}
+
+// An interrupted relocation is resumed rather than reinstalled.
+//
+// The state is the one an earlier pass leaves behind when it installs
+// and verifies the canonical artifact and stops before the bare
+// directory goes away: an attested canonical directory beside an
+// unprovenanced bare one. Reinstalling over it meets its own record
+// and fails stillUnprovenanced, so without the resume branch one
+// interrupted relocation is unrecoverable by the command that created
+// it — the definition of a dead end.
+//
+// The recipe's endpoint fails the test if it is contacted at all,
+// because "did not refetch" is the property; an assertion on the
+// result alone would pass for a run that downloaded and reinstalled
+// the same bytes.
+func TestMigrateOneResumesAnInterruptedRelocation(t *testing.T) {
+	m := newMigrateMachine(t)
+	bare := seedStore(t, m.storeRoot, "resumed", "1.0")
+	seedProvenanced(t, m.storeRoot, "resumed", "1.0-1")
+	r := m.untouchableBinaryPkg("resumed")
+
+	moved, err := migrateOne(m.ctx, m.galeHome, migrateTarget{
+		name: "resumed", version: "1.0-1", dir: bare, bare: true, recipe: r,
+	}, discardOutput())
+	if err != nil {
+		t.Fatalf("an interrupted relocation could not be resumed: %v", err)
+	}
+	if !moved {
+		t.Error("a resumed relocation must still report the move, or the " +
+			"pre-revision directory is never removed")
+	}
+	// Still there: the removal belongs to the end of the pass, and a
+	// resume that destroyed it here would skip every check that runs
+	// against the machine first.
+	if _, statErr := os.Lstat(bare); statErr != nil {
+		t.Errorf("the resume destroyed the pre-revision dir: %v", statErr)
+	}
+}
+
+// The pre-revision directory is removed after the WHOLE pass, not
+// during it.
+//
+// Ordering and finishing each have their own tests; their composition
+// has none, and it is the composition design §13 argues for. A bare
+// directory is reached by whatever was built against it, those
+// dependents are candidates too, and one processed later in the pass
+// drops its reference when it is refetched. Finishing inside the loop
+// would decide a directory's fate while a candidate that speaks about
+// it has not had its turn.
+//
+// So the fixture is a bare DEPENDENCY plus a later dependent whose old
+// dependency metadata still names it, and the assertion is the
+// sequence: the removal is printed after the dependent's replacement,
+// never before it.
+//
+// Stated exactly, because it is easy to claim more: finishing inside
+// the loop does not fail this fixture outright. Store resolution
+// floats a bare dependency reference onto the canonical sibling as
+// soon as that sibling exists, so the mid-loop removal check finds
+// nothing reaching the old directory and proceeds. What is lost is the
+// ordering itself — the destructive step stops being the last thing
+// the pass does — and that is what this test refuses to let go.
+func TestRunMigrateRemovesABareDirOnlyAfterThePassIsDone(t *testing.T) {
+	m := newMigrateMachine(t)
+	bare := seedStore(t, m.storeRoot, "adep", "1.0")
+	writeDepsMeta(t, m.storeRoot, "adep", "1.0")
+	seedStore(t, m.storeRoot, "zapp", "1.0-1")
+	writeDepsMeta(t, m.storeRoot, "zapp", "1.0-1",
+		depsmeta.ResolvedDep{Name: "adep", Version: "1.0", Revision: 1})
+	if err := generation.Build(map[string]string{"zapp": "1.0-1"},
+		m.galeHome, m.storeRoot); err != nil {
+		t.Fatal(err)
+	}
+	m.binaryPkg("adep")
+	m.binaryPkg("zapp")
+
+	out, buf := recordedOutput()
+	if err := runMigrate(m.ctx, out); err != nil {
+		t.Fatalf("runMigrate: %v\n%s", err, buf)
+	}
+	if _, err := os.Lstat(bare); !os.IsNotExist(err) {
+		t.Errorf("the pre-revision dir survived the pass (%v)\n%s", err, buf)
+	}
+	replaced := strings.Index(buf.String(), "Migrating unprovenanced zapp")
+	removed := strings.Index(buf.String(), "removed "+bare)
+	if replaced < 0 || removed < 0 {
+		t.Fatalf("the pass did not both replace and remove:\n%s", buf)
+	}
+	if removed < replaced {
+		t.Errorf("the bare dir was removed before the dependent was "+
+			"replaced:\n%s", buf)
 	}
 }
