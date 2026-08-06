@@ -116,6 +116,78 @@ func TestReinstallFarmGuardRefusalKeepsFarmAndStore(t *testing.T) {
 	}
 }
 
+// DeferFarm commits the store and leaves the shared farm alone,
+// guard included.
+//
+// `gale migrate` relocating a pre-revision install needs exactly
+// this. The scopes loading those bytes claim the soname at the BARE
+// directory, so the canonical copy this install commits proposes the
+// same soname at a different path and the per-commit guard must
+// refuse it — the guard would veto the one operation that ends the
+// disagreement (design §4, §13). The same reasoning already defers
+// the farm under a locked plan, where one claim per commit cannot see
+// a conflict two roots only reach in the plan's final closure.
+//
+// What the deferral does NOT do is skip a check: the farm is
+// unmutated, so nothing has been decided about it yet, and the caller
+// owes it one guarded machine-wide rebuild before anything relies on
+// the result.
+func TestDeferFarmCommitsWithoutTouchingTheFarm(t *testing.T) {
+	storeRoot := guardStoreRoot(t)
+	tarzst := createTarZstdWithFiles(t, map[string]string{
+		"lib/":                 "",
+		"lib/" + guardSoname(): "bytes",
+	})
+	blobData, err := os.ReadFile(tarzst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Write(blobData)
+		},
+	))
+	defer srv.Close()
+	restore := download.SetHTTPClient(srv.Client())
+	defer restore()
+
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+		// A guard standing in for the scope that claims this soname
+		// from the pre-revision directory: it refuses everything.
+		FarmGuard: refuse,
+		DeferFarm: true,
+	}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "deferpkg", Version: "1.0"},
+		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+		Binary: map[string]recipe.Binary{
+			runtime.GOOS + "-" + runtime.GOARCH: {
+				URL:    srv.URL + "/deferpkg-1.0.tar.zst",
+				SHA256: hashFile(t, tarzst),
+				Trust:  recipe.TrustSHA256Only,
+			},
+		},
+	}
+
+	// Reinstall, because that is the path migrate takes: it forces a
+	// refetch of a directory the store already counts as installed.
+	if _, err := inst.Reinstall(r); err != nil {
+		t.Fatalf("a deferred install must not consult the guard: %v", err)
+	}
+	canonical := filepath.Join(storeRoot, "deferpkg", "1.0-1")
+	if _, err := os.Stat(
+		filepath.Join(canonical, "lib", guardSoname()),
+	); err != nil {
+		t.Fatalf("the artifact was not committed: %v", err)
+	}
+	farmDir := farm.DirFromStoreDir(canonical)
+	if entries, _ := os.ReadDir(farmDir); len(entries) != 0 {
+		t.Errorf("the farm holds %v, want nothing: population is the "+
+			"caller's to run once the whole pass is committed", entries)
+	}
+}
+
 // TestReplaceRemovesStaleFarmLinks: a staged replacement must drop
 // farm entries the new artifact does not provide.
 //

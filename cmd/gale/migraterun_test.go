@@ -1,15 +1,26 @@
 package main
 
 import (
+	"archive/tar"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
+
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
+	"github.com/kelp/gale/internal/recipe"
 )
 
 // Regenerating a scope moves its symlinks from a pre-revision bare
@@ -172,6 +183,227 @@ func TestCanonicalAttestsRejectsARecordForAnotherIdentity(t *testing.T) {
 	if err := canonicalAttests(storeRoot, target); err == nil {
 		t.Fatal("a record for another identity authorized the removal")
 	}
+}
+
+// A relocating migration commits its canonical artifact without
+// asking the per-commit farm guard.
+//
+// The guard cannot be asked, because it must refuse. Migrate runs
+// with a GLOBAL context, so every registered project is an external
+// claimant, and a project loading a versioned library out of a
+// pre-revision BARE directory claims that soname at the bare path.
+// The canonical copy proposes the same soname at a different
+// directory, which is the one thing design §4 tells GuardPopulate to
+// refuse — so the command that exists to end the pre-revision layout
+// would deadlock against it.
+//
+// Deferring is safe in the direction that matters: the install adds a
+// directory and touches neither the bare bytes nor a single farm
+// link, so a failure leaves the machine exactly as it was. The farm
+// is put right once, machine-wide, after every canonical artifact is
+// in place (finishRelocations).
+func TestMigrateOneRelocatingDefersTheFarm(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	// The machine before revisions: the library sits in a bare
+	// directory and another project's generation loads it from there.
+	bare := seedStore(t, storeRoot, "libfoo", "1.0")
+	seedDylib(t, bare)
+	writeDepsMeta(t, storeRoot, "libfoo", "1.0")
+	proj := t.TempDir()
+	if err := projects.Register(galeDir, proj); err != nil {
+		t.Fatal(err)
+	}
+	if err := generation.Build(map[string]string{"libfoo": "1.0"},
+		filepath.Join(proj, ".gale"), storeRoot); err != nil {
+		t.Fatal(err)
+	}
+
+	r := dylibBinaryRecipe(t, "libfoo")
+	ctx := buildFakeCtx(t, filepath.Join(galeDir, "gale.toml"),
+		galeDir, storeRoot, func(string) (*recipe.Recipe, error) {
+			return r, nil
+		})
+	wireFarmGuards(ctx.Installer, ctx.GaleDir, ctx.StoreRoot)
+
+	moved, err := migrateOne(ctx, galeDir, migrateTarget{
+		name: "libfoo", version: "1.0-1", dir: bare, recipe: r,
+	}, discardOutput())
+	if err != nil {
+		t.Fatalf("a relocating migration was refused: %v", err)
+	}
+	if !moved {
+		t.Fatal("a relocating migration must report the move")
+	}
+	canonical := filepath.Join(storeRoot, "libfoo", "1.0-1")
+	if _, err := os.Stat(
+		filepath.Join(canonical, "lib", sonameFor("libfoo")),
+	); err != nil {
+		t.Fatalf("the canonical artifact is not installed: %v", err)
+	}
+	// Untouched, not repointed: nothing has moved the project's
+	// symlinks yet, so its binaries still resolve through the bare
+	// directory and the farm must still describe that.
+	target, err := os.Readlink(filepath.Join(
+		farm.DirFromStoreRoot(storeRoot), sonameFor("libfoo"),
+	))
+	if err != nil {
+		t.Fatalf("reading the farm entry: %v", err)
+	}
+	if !strings.HasPrefix(target, bare+string(filepath.Separator)) {
+		t.Errorf("the farm links %s, want the pre-revision %s: the "+
+			"population belongs to the machine-wide rebuild", target, bare)
+	}
+}
+
+// The farm follows a relocation even where no scope's generation
+// does.
+//
+// Something has to put the shared farm right, because the install
+// deferred it. A scope regeneration is not that something: a scope
+// that claims the soname through its LOCK alone has no generation to
+// rebuild, regenerateScope skips it, and the farm is left pointing
+// into the very directory this pass then deletes. Nothing reports the
+// dangling link — the next binary to load that library simply fails.
+func TestFinishRelocationsRepointsTheFarm(t *testing.T) {
+	home := t.TempDir()
+	storeRoot := filepath.Join(home, "pkg")
+	proj := t.TempDir()
+	if err := projects.Register(home, proj); err != nil {
+		t.Fatal(err)
+	}
+	// The scope requires the identity and links nothing, which is
+	// what a lock without a sync looks like.
+	writeScopeLock(t, filepath.Join(proj, "gale.lock"),
+		"libfoo@1.0-1", testSHA)
+
+	bare := seedStore(t, storeRoot, "libfoo", "1.0")
+	seedDylib(t, bare)
+	writeDepsMeta(t, storeRoot, "libfoo", "1.0")
+	farmDir := farm.DirFromStoreRoot(storeRoot)
+	if err := farm.Populate(bare, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	// The canonical artifact migrate has just installed and attested.
+	seedProvenanced(t, storeRoot, "libfoo", "1.0-1")
+	canonical := filepath.Join(storeRoot, "libfoo", "1.0-1")
+	seedDylib(t, canonical)
+	writeDepsMeta(t, storeRoot, "libfoo", "1.0-1")
+
+	r, rerr := migrateResolver("libfoo")("libfoo", "1.0-1")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	if err := finishRelocations(
+		&cmdContext{StoreRoot: storeRoot}, home,
+		[]migrateTarget{{
+			name: "libfoo", version: "1.0-1", dir: bare, recipe: r,
+		}},
+		discardOutput(),
+	); err != nil {
+		t.Fatalf("finishRelocations: %v", err)
+	}
+
+	target, err := os.Readlink(filepath.Join(farmDir, sonameFor("libfoo")))
+	if err != nil {
+		t.Fatalf("reading the farm entry: %v", err)
+	}
+	if !strings.HasPrefix(target, canonical+string(filepath.Separator)) {
+		t.Errorf("the farm links %s, want the canonical %s: the "+
+			"pre-revision directory it names is gone", target, canonical)
+	}
+}
+
+// seedDylib gives a store directory one versioned library, which is
+// what puts it in the shared farm at all.
+func seedDylib(t *testing.T, dir string) {
+	t.Helper()
+	lib := filepath.Join(dir, "lib")
+	if err := os.MkdirAll(lib, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(lib, sonameFor("libfoo")), []byte("bytes"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// dylibBinaryRecipe serves a prebuilt archive holding one versioned
+// library and returns the recipe that declares it. Migrate installs
+// binary-method artifacts only, so a source-building fixture cannot
+// reach the code under test.
+func dylibBinaryRecipe(t *testing.T, name string) *recipe.Recipe {
+	t.Helper()
+	archive, sum := dylibArchive(t)
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.ServeFile(w, r, archive)
+		},
+	))
+	t.Cleanup(srv.Close)
+	return &recipe.Recipe{
+		Package: recipe.Package{Name: name, Version: "1.0"},
+		Binary: map[string]recipe.Binary{
+			runtime.GOOS + "-" + runtime.GOARCH: {
+				URL:    srv.URL + "/" + name + ".tar.zst",
+				SHA256: sum,
+				Trust:  recipe.TrustSHA256Only,
+			},
+		},
+	}
+}
+
+// dylibArchive writes a tar.zst holding lib/<soname> and returns its
+// path and hex SHA256, which is the hash the recipe must declare.
+func dylibArchive(t *testing.T) (string, string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "libfoo.tar.zst")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw, err := zstd.NewWriter(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(zw)
+	const body = "bytes"
+	if err := tw.WriteHeader(&tar.Header{
+		Typeflag: tar.TypeReg, Name: "lib/" + sonameFor("libfoo"),
+		Mode: 0o644, Size: int64(len(body)),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tw.Write([]byte(body)); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []io.Closer{tw, zw, f} {
+		if err := c.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return path, hashOf(t, path)
+}
+
+// hashOf is the hex SHA256 of a file, which is what a recipe's
+// binary declares and the installer verifies the download against.
+func hashOf(t *testing.T, path string) string {
+	t.Helper()
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		t.Fatal(err)
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // moveProvenance relocates a written record into another package's

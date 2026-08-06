@@ -10,6 +10,7 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
+	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/store"
@@ -442,6 +443,48 @@ func guardedRebuildDirs(
 ) ([]string, error) {
 	proposed := FarmStoreDirs(pkgs, storeRoot)
 	return farm.GuardRebuild(proposed, FarmClaimants(storeRoot, galeDir))
+}
+
+// RebuildFarm establishes the shared farm the whole machine claims,
+// once, under the generation lock.
+//
+// The machine-wide sibling of guardedRebuildDirs, for the one
+// operation no scope's own Build can finish: `gale migrate`
+// relocating a pre-revision install (design §13). Those commits defer
+// their farm work, because the per-commit guard has to refuse them —
+// a scope loading the library out of the BARE directory claims that
+// soname there, and the canonical copy proposes it somewhere else —
+// so when the pass is done the farm still describes directories that
+// are about to be deleted. Rebuilding each scope's generation does
+// not cover it either: a scope that requires the identity through its
+// LOCK alone has no generation to rebuild.
+//
+// No proposed closure and no scope exempt, which is one statement
+// rather than two. Nothing is being installed here and no scope is
+// initiating, so the claimant set IS the proposed state: every
+// scope's current closure, resolved through the store, where a bare
+// "1.0" now reaches the canonical "1.0-1" beside it.
+//
+// The guard still runs. Rebuild wipes the farm before it repopulates,
+// so a claimant set that cannot be satisfied would leave one scope's
+// binaries resolving another scope's library; a refusal has to cost
+// nothing, which is only true while nothing has moved.
+func RebuildFarm(storeRoot string) error {
+	// The lock Build takes (see build), so no scope can swap a
+	// generation between the claim walk and the rebuild resting on it.
+	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
+	return filelock.With(lockPath, func() error {
+		dirs, err := farm.GuardRebuild(nil, FarmClaimants(storeRoot, ""))
+		if err != nil {
+			return err
+		}
+		if err := farm.Rebuild(
+			dirs, farm.DirFromStoreRoot(storeRoot),
+		); err != nil {
+			return fmt.Errorf("rebuilding the shared library farm: %w", err)
+		}
+		return nil
+	})
 }
 
 // samePath reports whether two paths name the same location,

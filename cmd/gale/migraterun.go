@@ -87,6 +87,21 @@ func finishRelocations(
 	if len(relocated) == 0 {
 		return nil
 	}
+	// The farm first, once, for the whole machine. Every relocation
+	// deferred its farm work (see migrateOne), so right now the shared
+	// farm still points into the pre-revision directories this
+	// function is about to delete. Rebuilding the scopes does not
+	// repair that on its own: a scope that requires a relocated
+	// identity through its LOCK alone has no generation to rebuild,
+	// and its binaries would be left resolving a deleted path.
+	//
+	// Before the regenerations rather than after, because it is also
+	// the guarded step: a claim this machine cannot satisfy refuses
+	// here, while nothing has moved and no scope's symlinks have been
+	// touched.
+	if err := generation.RebuildFarm(ctx.StoreRoot); err != nil {
+		return err
+	}
 	scopes, err := projects.Scopes(galeHome)
 	if err != nil {
 		return err
@@ -214,6 +229,23 @@ func plural(n int, one, many string) string {
 // bytes nobody was asked about. For the canonical shape the guard
 // would catch it; for the relocating shape nothing would, because
 // the commit into an absent directory is never guarded.
+//
+// DeferFarm is set for the RELOCATING shape alone, and it is what
+// makes that shape possible at all. Migrate runs machine-wide, so
+// every registered scope is an external farm claimant, and a scope
+// loading a versioned library out of the bare directory claims that
+// soname AT the bare path. The canonical copy proposes the same
+// soname somewhere else, which design §4 tells GuardPopulate to
+// refuse — the guard would veto the one operation that ends the
+// disagreement it is reporting. Deferring costs nothing in the
+// direction that matters: the commit adds a directory and touches
+// neither the pre-revision bytes nor a single farm link, so a
+// failure here leaves the machine exactly as it was, and
+// finishRelocations puts the farm right for every scope at once.
+//
+// The canonical shape keeps the per-commit guard. It replaces bytes
+// in the directory the farm already points at, so its claim and the
+// claimants' agree about the path, and the ordinary rule applies.
 func migrateOne(
 	ctx *cmdContext, galeHome string, t migrateTarget, out *output.Output,
 ) (bool, error) {
@@ -243,14 +275,17 @@ func migrateOne(
 		out.Info(fmt.Sprintf("Migrating unprovenanced %s@%s...", name, full))
 	}
 
-	prevGuard, prevBinary := ctx.Installer.ReplaceGuard, ctx.Installer.BinaryOnly
+	prevGuard, prevBinary, prevFarm := ctx.Installer.ReplaceGuard,
+		ctx.Installer.BinaryOnly, ctx.Installer.DeferFarm
 	ctx.Installer.ReplaceGuard = func(rep installer.Replacement) error {
 		return checkMigrateCommit(galeHome, ctx.StoreRoot, t, rep)
 	}
 	ctx.Installer.BinaryOnly = true
+	ctx.Installer.DeferFarm = relocating
 	defer func() {
 		ctx.Installer.ReplaceGuard = prevGuard
 		ctx.Installer.BinaryOnly = prevBinary
+		ctx.Installer.DeferFarm = prevFarm
 	}()
 
 	if _, err := ctx.Installer.Reinstall(t.recipe); err != nil {

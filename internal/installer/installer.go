@@ -104,6 +104,29 @@ type Installer struct {
 	// staged stale-reinstall path.
 	Plan *lockplan.Plan
 
+	// DeferFarm drops both the farm guard and the farm population
+	// from every commit this installer makes, leaving the store
+	// commit alone. The farm is then the caller's to establish, once,
+	// over the state the whole operation leaves behind.
+	//
+	// `gale migrate` sets it while it relocates a pre-revision
+	// install (design §13). Migrate runs machine-wide, so every
+	// registered scope is an external claimant, and a scope loading a
+	// versioned library out of the BARE directory claims that soname
+	// at the bare path. The canonical copy proposes the same soname
+	// at a different directory, which is precisely what design §4
+	// tells GuardPopulate to refuse — so asking the per-commit guard
+	// would deadlock the command against the state it exists to end.
+	//
+	// It is the same deferral a locked plan already selects
+	// internally (see commitExtracted), for a related reason: one
+	// claim per commit cannot answer a question about the closure the
+	// whole operation produces. Nothing is skipped by deferring,
+	// because nothing is mutated: the commit adds a directory and
+	// touches no farm link, so a failure anywhere in the pass leaves
+	// the farm exactly as it was.
+	DeferFarm bool
+
 	// FarmGuard, when set, is the cross-project farm claimant
 	// guard (design §4): it is called with the packages whose
 	// sonames an install is about to write into the shared farm,
@@ -765,6 +788,15 @@ func (inst *Installer) commitStaged(
 			return err
 		}
 		farmDir := farm.DirFromStoreDir(canonicalDir)
+		if inst.deferFarm() {
+			// The store commit alone: no guard, no population, and no
+			// stale-link pruning either. A deferred caller rebuilds the
+			// whole farm afterwards, and that rebuild wipes before it
+			// repopulates, so a link this artifact stops backing cannot
+			// survive it. An empty farmDir is how the rest of this
+			// function already says "not here" (see DirFromStoreDir).
+			farmDir = ""
+		}
 		var stale []string
 		if farmDir != "" {
 			if err := inst.guardFarm(stagingDir, canonicalDir); err != nil {
@@ -822,6 +854,15 @@ func (inst *Installer) guardReplace(rep Replacement) error {
 		)
 	}
 	return inst.ReplaceGuard(rep)
+}
+
+// deferFarm reports whether the farm belongs to the caller rather
+// than to this commit: a locked plan defers it to the plan's own
+// batch, and a caller may ask for the same by setting DeferFarm (see
+// Installer.DeferFarm). One predicate, because the commit paths must
+// not disagree about which of them is wiring the farm.
+func (inst *Installer) deferFarm() bool {
+	return inst.Plan != nil || inst.DeferFarm
 }
 
 // guardFarm runs the cross-project farm claimant guard for one
@@ -1082,7 +1123,7 @@ func (inst *Installer) installBinaryTo(
 		StoreRoot:     storeRoot,
 		InPlace:       inPlace,
 		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.Plan != nil,
+		DeferFarm:     inst.deferFarm(),
 	})
 }
 
@@ -1187,6 +1228,10 @@ func fixupExtracted(dir, finalStoreDir, storeRoot string) error {
 // ever having happened. The per-commit guard goes with it, because
 // one claim per commit cannot see a conflict between two roots that
 // first meet in the plan's final closure.
+//
+// A caller may also ask for the deferral outright, which is how
+// `gale migrate` relocates a pre-revision install past a guard that
+// would otherwise refuse it. See Installer.DeferFarm.
 func commitExtracted(req commitRequest) error {
 	swap := func() error {
 		// The cross-project claimant guard runs before the rename,
@@ -1248,8 +1293,8 @@ type commitRequest struct {
 	// means unwired (tests). See Installer.FarmGuard.
 	FarmGuard func([]farm.Placement) error
 	// DeferFarm drops the per-commit guard and population, leaving
-	// the store commit alone. Set under a locked plan; see
-	// commitExtracted.
+	// the store commit alone. Set under a locked plan, or by a
+	// caller taking the farm on itself; see commitExtracted.
 	DeferFarm bool
 }
 
@@ -1700,7 +1745,7 @@ func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalSt
 		Artifact:      sourceArtifact(r, r.Package.Full(), deps),
 		InPlace:       inPlace,
 		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.Plan != nil,
+		DeferFarm:     inst.deferFarm(),
 	})
 }
 
@@ -1726,7 +1771,7 @@ func (inst *Installer) extractBuild(result *build.BuildResult, storeDir string, 
 		Artifact:      a,
 		InPlace:       true,
 		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.Plan != nil,
+		DeferFarm:     inst.deferFarm(),
 	})
 }
 
