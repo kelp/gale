@@ -422,3 +422,64 @@ func moveProvenance(t *testing.T, storeRoot, from, to, version string) {
 		t.Fatal(err)
 	}
 }
+
+// A scope that disagrees stops the pass BEFORE the farm moves.
+//
+// The unit test on RebuildFarm proves only that it runs whatever
+// callback it is given. This one goes through the production caller,
+// so it also pins that finishRelocations supplies the right predicate
+// and applies it to every relocated target — the pipeline regression
+// the callback exists to prevent.
+//
+// The error alone does not discriminate. A scope's disagreement is
+// caught by the per-removal check either way, and the pre-revision
+// bytes survive either way, so a run without the callback looks
+// safe while having already repointed a soname the disagreeing scope
+// resolves through. The farm assertion is what separates the two.
+func TestFinishRelocationsRefusesBeforeTheFarmMoves(t *testing.T) {
+	home := t.TempDir()
+	storeRoot := filepath.Join(home, "pkg")
+	proj := t.TempDir()
+	if err := projects.Register(home, proj); err != nil {
+		t.Fatal(err)
+	}
+	// The scope requires OTHER bytes at the identity being relocated.
+	writeScopeLock(t, filepath.Join(proj, "gale.lock"),
+		"libfoo@1.0-1", shaY)
+
+	bare := seedStore(t, storeRoot, "libfoo", "1.0")
+	seedDylib(t, bare)
+	writeDepsMeta(t, storeRoot, "libfoo", "1.0")
+	farmDir := farm.DirFromStoreRoot(storeRoot)
+	if err := farm.Populate(bare, farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	seedProvenanced(t, storeRoot, "libfoo", "1.0-1")
+	seedDylib(t, filepath.Join(storeRoot, "libfoo", "1.0-1"))
+	writeDepsMeta(t, storeRoot, "libfoo", "1.0-1")
+
+	r, rerr := migrateResolver("libfoo")("libfoo", "1.0-1")
+	if rerr != nil {
+		t.Fatal(rerr)
+	}
+	err := finishRelocations(
+		&cmdContext{StoreRoot: storeRoot}, home,
+		[]migrateTarget{{
+			name: "libfoo", version: "1.0-1", dir: bare, bare: true, recipe: r,
+		}},
+		discardOutput(),
+	)
+	if !errors.Is(err, errScopeDisagrees) {
+		t.Fatalf("err = %v, want errScopeDisagrees", err)
+	}
+
+	target, rlerr := os.Readlink(filepath.Join(farmDir, sonameFor("libfoo")))
+	if rlerr != nil {
+		t.Fatalf("the refused pass destroyed the farm entry: %v", rlerr)
+	}
+	if !strings.HasPrefix(target, bare+string(filepath.Separator)) {
+		t.Errorf("the farm moved to %s despite the refusal; the "+
+			"disagreeing scope resolves that soname", target)
+	}
+}
