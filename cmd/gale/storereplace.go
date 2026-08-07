@@ -3,12 +3,15 @@ package main
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/projects"
+	"github.com/kelp/gale/internal/provenance"
 )
 
 // errScopeDisagrees reports another scope's lock naming a different
@@ -41,6 +44,24 @@ type replaceQuery struct {
 	// wantSHA is the hash of the artifact the replacement installs.
 	wantSHA  string
 	platform string
+	// machineWide marks a replacement that is part of ONE proposed
+	// state for the whole machine, which today means `gale migrate`.
+	//
+	// It relaxes exactly one refusal, and design §13 turns on that
+	// distinction. A scope that loads the directory and names no hash
+	// for it vetoes a PER-SCOPE replacement, because one scope cannot
+	// know which bytes its neighbour needs. On upgrade day every scope
+	// is legacy and every transitive dependency is such a reference,
+	// so the same rule applied machine-wide refuses the one operation
+	// that can end the state: "those rules make per-scope replacement
+	// refuse on upgrade day, which is correct and would be circular
+	// without an escape".
+	//
+	// Nothing else is relaxed. An unreadable closure still refuses
+	// under both, because §13 names unreadable state as a migrate
+	// failure in the same sentence, and an explicit hash disagreement
+	// refuses under both because that is the other one.
+	machineWide bool
 }
 
 // checkReplaceable enforces design §13's scope limits before a store
@@ -144,6 +165,10 @@ const postMigrate = "run 'gale migrate' to converge the whole machine " +
 // refuses only when the scope named no hash for it — an agreeing hash
 // has already settled that question, and claimed is passed in so the
 // two are not conflated.
+//
+// Only the second is relaxed for a machine-wide replacement, and the
+// order of the two checks is what makes that possible: the
+// completeness refusal is reached first, so migrate keeps it.
 func checkScopeClosure(
 	s projects.Scope, q replaceQuery, id string, claimed bool,
 ) error {
@@ -162,6 +187,12 @@ func checkScopeClosure(
 			errScopeDisagrees, s.Label, postMigrate,
 		)
 	}
+	if q.machineWide {
+		// Every scope is a participant in one proposed state rather
+		// than a party with a veto, so a reference carrying no hash is
+		// not an objection. See replaceQuery.machineWide.
+		return nil
+	}
 	// Canonicalized before comparing. The readers return one spelling,
 	// and targetDir arrives however the caller spelled it; on macOS a
 	// /var versus /private/var mismatch would silently miss the very
@@ -171,6 +202,120 @@ func checkScopeClosure(
 			"%w: %s loads %s but records no hash for it, so gale cannot "+
 				"tell which bytes it needs; %s",
 			errScopeDisagrees, s.Label, id, postMigrate,
+		)
+	}
+	return nil
+}
+
+// errScopeClosureUnreadable reports a scope whose active closure the
+// walk could not enumerate, so it cannot say which of its packages
+// record the artifact being replaced.
+var errScopeClosureUnreadable = errors.New(
+	"an active closure could not be read in full",
+)
+
+// errDependentRecord reports a package a scope actively loads whose
+// provenance record names the identity a replacement is about to
+// overwrite.
+//
+// Design §5: replacing an artifact changes the graph_digest of every
+// node above it, and §11 and §13 permit regenerating a reverse
+// dependent only where its directory is absent, unreferenced, or
+// unprovenanced. A referenced one that records the target is a
+// conflict.
+//
+// A record here is one that PARSES, which is weaker than §5's
+// "validly provenanced" and weaker in the safe direction: the digest
+// is not recomputed, so a record whose closure would not verify still
+// refuses. Recomputing it would mean verifying every active directory
+// before every replacement, and the answer would not change the
+// outcome — a record that names the target is one the replacement
+// invalidates either way.
+var errDependentRecord = errors.New(
+	"a package a scope loads records the artifact being replaced",
+)
+
+// dependentQuery is one proposed replacement, as the reverse-dependent
+// scan sees it.
+type dependentQuery struct {
+	// galeDir is the scope whose active generation is walked, and
+	// label how a refusal names it.
+	galeDir, label string
+	storeRoot      string
+	// id is the identity being replaced, in name@version form.
+	id string
+	// targetDir is the physical directory the replacement destroys.
+	// Not derived from id: a pre-revision install lives in a bare
+	// directory that the canonical spelling would miss entirely, and
+	// the scan would then exclude the wrong directory from its own
+	// judgement while missing the one actually at risk.
+	targetDir string
+	// remedy is appended to the unreadable-closure refusal. It is a
+	// parameter because the two commands have different exits: a
+	// per-scope refresh is told to run migrate, and telling migrate
+	// to run migrate would be the circularity §13 exists to break.
+	remedy string
+}
+
+// checkDependentsIn refuses a replacement that would invalidate a
+// record one scope actively loads, BEFORE any bytes are destroyed.
+//
+// Discovering the conflict on the way out would be no cheaper for
+// the user and a great deal more expensive for the store: the run
+// would have destroyed the candidate to learn something it could
+// have read first, and the reverse dependent it stopped for would
+// still be stale.
+//
+// A closure the walk could not read in full refuses the replacement.
+// Unreadable dependency metadata blocks the descent, so a dependent
+// below it is invisible and the scan would report "no conflict"
+// having seen nothing — absence of evidence standing in for evidence
+// of absence, on a decision that destroys bytes.
+//
+// The candidate's own directory is excluded from that judgement by
+// ReferenceClosure. Its metadata belongs to the artifact being
+// superseded, so letting it decide would let an unprovenanced legacy
+// directory refuse its own replacement, which is the deadlock cycle
+// 22 removed once already.
+func checkDependentsIn(q dependentQuery) error {
+	roots, err := generation.AuthoritativeGenerationDirs(
+		q.galeDir, q.storeRoot,
+	)
+	if err != nil {
+		return fmt.Errorf(
+			"reading the active generation of %s before replacing %s: %w",
+			q.label, q.id, err,
+		)
+	}
+	target := canonicalStoreDir(q.targetDir)
+	dirs, complete := generation.ReferenceClosure(roots, q.storeRoot, target)
+	if !complete {
+		return fmt.Errorf(
+			"%w in %s, so gale cannot tell which packages there record "+
+				"%s; %s", errScopeClosureUnreadable, q.label, q.id, q.remedy,
+		)
+	}
+	for _, dir := range slices.Sorted(maps.Keys(dirs)) {
+		if dir == target {
+			continue
+		}
+		// An absent or unreadable record has nothing to invalidate:
+		// §7's all-or-nothing rule means such a directory attests no
+		// closure, so replacing what it links changes no claim it made.
+		rec, err := provenance.ReadUnverified(dir)
+		if err != nil {
+			continue
+		}
+		if !slices.Contains(rec.RuntimeDeps, q.id) &&
+			!slices.Contains(rec.BuildDeps, q.id) {
+			continue
+		}
+		return fmt.Errorf(
+			"%w: %s is active in %s and its provenance records %s, so "+
+				"replacing it would leave that record describing a closure "+
+				"the store no longer holds; re-pin %s to a new "+
+				"version-revision instead",
+			errDependentRecord, rec.Key(), q.label, q.id, rec.Key(),
 		)
 	}
 	return nil

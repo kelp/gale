@@ -73,6 +73,25 @@ type Installer struct {
 	Verifier   attestation.Verifier
 	SourceOnly bool // skip binary, build from source
 
+	// BinaryOnly refuses to demote a failed binary fetch to a
+	// source build, exactly as a locked binary node does.
+	//
+	// `gale migrate` sets it. Migration is a constrained
+	// replacement of BINARY-method directories (design §13), and
+	// every scope was cleared against the hash the recipe
+	// declares for that binary, so a silent source build would
+	// commit bytes nobody was asked about. For a pre-revision
+	// candidate the canonical destination is absent, so no
+	// ReplaceGuard fires to catch it before the commit; the
+	// refusal has to happen here or nowhere.
+	//
+	// SourceOnly is its opposite and the two are mutually
+	// exclusive by construction: a caller that sets both has
+	// asked for a package that cannot be installed, and
+	// binaryViable is false, so BinaryOnly reports it rather
+	// than building.
+	BinaryOnly bool
+
 	// Plan, when set, makes the lockfile the exclusive selector of
 	// versions, artifacts, methods and dependency edges (design §3).
 	// Every package this installer touches must name a node in it;
@@ -84,6 +103,29 @@ type Installer struct {
 	// behaviour: streaming installs, source fallback, and the
 	// staged stale-reinstall path.
 	Plan *lockplan.Plan
+
+	// DeferFarm drops both the farm guard and the farm population
+	// from every commit this installer makes, leaving the store
+	// commit alone. The farm is then the caller's to establish, once,
+	// over the state the whole operation leaves behind.
+	//
+	// `gale migrate` sets it while it relocates a pre-revision
+	// install (design §13). Migrate runs machine-wide, so every
+	// registered scope is an external claimant, and a scope loading a
+	// versioned library out of the BARE directory claims that soname
+	// at the bare path. The canonical copy proposes the same soname
+	// at a different directory, which is precisely what design §4
+	// tells GuardPopulate to refuse — so asking the per-commit guard
+	// would deadlock the command against the state it exists to end.
+	//
+	// It is the same deferral a locked plan already selects
+	// internally (see commitExtracted), for a related reason: one
+	// claim per commit cannot answer a question about the closure the
+	// whole operation produces. Nothing is skipped by deferring,
+	// because nothing is mutated: the commit adds a directory and
+	// touches no farm link, so a failure anywhere in the pass leaves
+	// the farm exactly as it was.
+	DeferFarm bool
 
 	// FarmGuard, when set, is the cross-project farm claimant
 	// guard (design §4): it is called with the packages whose
@@ -200,9 +242,49 @@ type Replacement struct {
 	Result       InstallResult
 }
 
+// errNoBinaryDeclared reports a BinaryOnly install of a recipe that
+// declares no prebuilt binary for this platform.
+var errNoBinaryDeclared = errors.New(
+	"the recipe declares no binary for this platform",
+)
+
+// refusalLabel names which rule refused a demotion to source, since
+// the two carry different remedies: a locked node is repaired by
+// fixing the lock or the artifact, and a BinaryOnly caller is a
+// command that has already ruled source builds out.
+func refusalLabel(locked bool) string {
+	if locked {
+		return "locked binary install"
+	}
+	return "binary install"
+}
+
 // Install installs a recipe into the store and links binaries.
 func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 	return inst.install(r, false)
+}
+
+// forDeps returns a copy of the installer that installs dependencies
+// without the caller's binary-only constraint.
+//
+// BinaryOnly is a statement about the package the caller asked for —
+// migrate cleared one declared binary with every scope — and says
+// nothing about what sits underneath it. A dependency built from
+// source is installed nondestructively, and building it is often
+// what produces the provenance the binary target needs.
+//
+// A copy rather than clearing the field in place: dependency
+// installs run concurrently against this instance, so mutating
+// shared state for the duration would be a data race. Every field is
+// a pointer or a value shared on purpose, so the copy behaves
+// identically in every other respect.
+func (inst *Installer) forDeps() *Installer {
+	if !inst.BinaryOnly {
+		return inst
+	}
+	dup := *inst
+	dup.BinaryOnly = false
+	return &dup
 }
 
 // Reinstall is Install but skips the IsInstalled cache check so
@@ -312,6 +394,16 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	if locked {
 		binaryViable = planned.Method == lockgraph.MethodBinary
 	}
+	if inst.BinaryOnly && !binaryViable {
+		// Stated rather than silently source-built. BinaryOnly is a
+		// promise that nothing but the declared binary may land, so a
+		// recipe that cannot serve one for this platform is a refusal,
+		// not an invitation to build.
+		return nil, fmt.Errorf(
+			"binary install of %s: %w",
+			lockgraph.Key(name, storeVersion), errNoBinaryDeclared,
+		)
+	}
 
 	// Install runtime deps up front. The binary path needs
 	// them on disk (the prebuilt links against them); the
@@ -357,7 +449,7 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 			method = MethodBinary
 			sha256 = bin.SHA256
 			manifestDigest = bin.ManifestDigest
-		case locked:
+		case locked || inst.BinaryOnly:
 			// A locked binary node never demotes to a source build
 			// (acceptance 8): the method is a locked field, so a
 			// source build would install bytes the lock never named
@@ -373,13 +465,13 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 			// ordinary failure under a lock must not read as tampering.
 			if errors.Is(berr, download.ErrSHA256Mismatch) {
 				return nil, fmt.Errorf(
-					"locked binary install of %s: %w: %w",
+					"%s of %s: %w: %w", refusalLabel(locked),
 					lockgraph.Key(name, storeVersion),
 					provenance.ErrInvalid, berr,
 				)
 			}
 			return nil, fmt.Errorf(
-				"locked binary install of %s: %w",
+				"%s of %s: %w", refusalLabel(locked),
 				lockgraph.Key(name, storeVersion), berr,
 			)
 		case errors.Is(berr, farm.ErrClaimConflict):
@@ -696,6 +788,15 @@ func (inst *Installer) commitStaged(
 			return err
 		}
 		farmDir := farm.DirFromStoreDir(canonicalDir)
+		if inst.deferFarm() {
+			// The store commit alone: no guard, no population, and no
+			// stale-link pruning either. A deferred caller rebuilds the
+			// whole farm afterwards, and that rebuild wipes before it
+			// repopulates, so a link this artifact stops backing cannot
+			// survive it. An empty farmDir is how the rest of this
+			// function already says "not here" (see DirFromStoreDir).
+			farmDir = ""
+		}
 		var stale []string
 		if farmDir != "" {
 			if err := inst.guardFarm(stagingDir, canonicalDir); err != nil {
@@ -753,6 +854,15 @@ func (inst *Installer) guardReplace(rep Replacement) error {
 		)
 	}
 	return inst.ReplaceGuard(rep)
+}
+
+// deferFarm reports whether the farm belongs to the caller rather
+// than to this commit: a locked plan defers it to the plan's own
+// batch, and a caller may ask for the same by setting DeferFarm (see
+// Installer.DeferFarm). One predicate, because the commit paths must
+// not disagree about which of them is wiring the farm.
+func (inst *Installer) deferFarm() bool {
+	return inst.Plan != nil || inst.DeferFarm
 }
 
 // guardFarm runs the cross-project farm claimant guard for one
@@ -1013,7 +1123,7 @@ func (inst *Installer) installBinaryTo(
 		StoreRoot:     storeRoot,
 		InPlace:       inPlace,
 		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.Plan != nil,
+		DeferFarm:     inst.deferFarm(),
 	})
 }
 
@@ -1118,6 +1228,10 @@ func fixupExtracted(dir, finalStoreDir, storeRoot string) error {
 // ever having happened. The per-commit guard goes with it, because
 // one claim per commit cannot see a conflict between two roots that
 // first meet in the plan's final closure.
+//
+// A caller may also ask for the deferral outright, which is how
+// `gale migrate` relocates a pre-revision install past a guard that
+// would otherwise refuse it. See Installer.DeferFarm.
 func commitExtracted(req commitRequest) error {
 	swap := func() error {
 		// The cross-project claimant guard runs before the rename,
@@ -1179,8 +1293,8 @@ type commitRequest struct {
 	// means unwired (tests). See Installer.FarmGuard.
 	FarmGuard func([]farm.Placement) error
 	// DeferFarm drops the per-commit guard and population, leaving
-	// the store commit alone. Set under a locked plan; see
-	// commitExtracted.
+	// the store commit alone. Set under a locked plan, or by a
+	// caller taking the farm on itself; see commitExtracted.
 	DeferFarm bool
 }
 
@@ -1283,7 +1397,7 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, err
 	)
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
 }
 
 // InstallRuntimeDeps installs only the runtime-tagged
@@ -1299,7 +1413,7 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 	deps.Build = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, nil, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, nil, seen, &sync.Mutex{})
 }
 
 // InstallBuildOnlyDeps installs only the build-tagged
@@ -1316,7 +1430,7 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 	deps.Runtime = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
 }
 
 // ResolveDirectDeps returns the (name, version, revision)
@@ -1631,7 +1745,7 @@ func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalSt
 		Artifact:      sourceArtifact(r, r.Package.Full(), deps),
 		InPlace:       inPlace,
 		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.Plan != nil,
+		DeferFarm:     inst.deferFarm(),
 	})
 }
 
@@ -1657,7 +1771,7 @@ func (inst *Installer) extractBuild(result *build.BuildResult, storeDir string, 
 		Artifact:      a,
 		InPlace:       true,
 		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.Plan != nil,
+		DeferFarm:     inst.deferFarm(),
 	})
 }
 

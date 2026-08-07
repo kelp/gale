@@ -48,16 +48,12 @@ func newClaimsFixture(t *testing.T) *claimsFixture {
 func (f *claimsFixture) install(name, version, stem string) string {
 	f.t.Helper()
 	dir := filepath.Join(f.storeRoot, name, version)
-	soname := stem + ".4.dylib"
-	if runtime.GOOS == "linux" {
-		soname = stem + ".so.4"
-	}
 	lib := filepath.Join(dir, "lib")
 	if err := os.MkdirAll(lib, 0o755); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := os.WriteFile(
-		filepath.Join(lib, soname), []byte("x"), 0o644,
+		filepath.Join(lib, soname(stem)), []byte("x"), 0o644,
 	); err != nil {
 		f.t.Fatal(err)
 	}

@@ -5,8 +5,13 @@ import (
 	"fmt"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"sort"
+	"strings"
 
+	"github.com/kelp/gale/internal/installer"
+	"github.com/kelp/gale/internal/lockgraph"
+	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
@@ -35,7 +40,13 @@ type migrateTarget struct {
 	name    string
 	version string
 	dir     string
-	recipe  *recipe.Recipe
+	// bare marks a directory that is NOT the canonical one for this
+	// identity, which is what a pre-revision install leaves behind.
+	// Decided at classification time, where the store layout is in
+	// hand, so no later step has to re-derive it and risk deriving it
+	// differently.
+	bare   bool
+	recipe *recipe.Recipe
 }
 
 // migrateScan classifies every directory in the store, reading the
@@ -128,7 +139,8 @@ func classifyForMigrate(
 		)
 	}
 	t := migrateTarget{
-		name: p.Name, version: r.Package.Full(), dir: dir, recipe: r,
+		name: p.Name, version: r.Package.Full(), dir: dir,
+		bare: p.Version != r.Package.Full(), recipe: r,
 	}
 	if r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH) == nil {
 		out.sourceOnly = append(out.sourceOnly, t)
@@ -136,6 +148,174 @@ func classifyForMigrate(
 	}
 	out.candidates = append(out.candidates, t)
 	return nil
+}
+
+// errMigrateCycle reports candidates whose runtime dependencies form
+// a loop, so no order among them satisfies design §7.
+var errMigrateCycle = errors.New(
+	"candidates depend on each other in a cycle",
+)
+
+// orderCandidates puts a candidate that another candidate depends on
+// ahead of the candidate above it.
+//
+// Design §5 and §7 make this load-bearing rather than cosmetic, for
+// the same reason `gale lock` orders its roots. Provenance is
+// all-or-nothing, so refetching a dependent while its dependency is
+// still unprovenanced commits an artifact with no record at all:
+// bytes destroyed, nothing repaired, and the candidate check then
+// refuses the replacement. Alphabetical order would decide whether
+// the machine can converge.
+//
+// `orderRoots` cannot be reused, close as the shape is. It keys both
+// its node map and its traversal state on the package name, which
+// holds for a manifest section — one pin per name — and fails here:
+// the scan reads the whole store, so two versions of one package are
+// two candidates and one would silently displace the other.
+//
+// Nodes are the candidates themselves and edges are drawn to the
+// RESOLVED identity, never by name. Drawing them by name looks
+// conservative and is not: a stale version of a dependency, still in
+// the store and still a candidate, can name something above it, and
+// the extra edge closes a loop that does not exist. A traversal that
+// answers any cycle by returning its input then hands back
+// alphabetical order — a dependent replaced before the dependency it
+// actually links, which is the outcome this function exists to
+// prevent. Resolving removes the edge instead of adding a lie.
+//
+// Runtime dependencies only. Migrate replaces binary-method
+// directories, whose records serialize runtime edges alone, so a
+// build tool cannot leave its dependent unattestable the way it does
+// for a source artifact.
+//
+// A cycle that survives resolution is genuine, and it is refused
+// rather than ordered arbitrarily. Replacement destroys bytes, so
+// emitting a cycle's members in whatever order a depth-first walk
+// reaches them would pay the whole cost for a sequence that
+// satisfies nothing.
+func orderCandidates(
+	candidates []migrateTarget, resolve installer.RecipeResolver,
+) ([]migrateTarget, error) {
+	// A slice per identity, not one index: a store can hold both a
+	// bare and a canonical directory for one name@version, and a
+	// plain map would silently drop whichever was seen first.
+	byID := make(map[string][]int, len(candidates))
+	names := make(map[string]bool, len(candidates))
+	for i, t := range candidates {
+		id := lockgraph.Key(t.name, t.version)
+		byID[id] = append(byID[id], i)
+		names[t.name] = true
+	}
+	edges, err := candidateEdges(candidates, byID, names, resolve)
+	if err != nil {
+		return nil, err
+	}
+	const (
+		visiting = 1
+		done     = 2
+	)
+	state := make([]int, len(candidates))
+	ordered := make([]migrateTarget, 0, len(candidates))
+	var cycle []string
+	var visit func(i int)
+	visit = func(i int) {
+		switch state[i] {
+		case visiting:
+			// Reached from inside its own subtree, which is not the
+			// same as already placed.
+			cycle = append(cycle, lockgraph.Key(
+				candidates[i].name, candidates[i].version,
+			))
+			return
+		case done:
+			return
+		}
+		state[i] = visiting
+		for _, j := range edges[i] {
+			visit(j)
+		}
+		state[i] = done
+		ordered = append(ordered, candidates[i])
+	}
+	// The scan sorts its output, so ties break the same way on every
+	// run over one store.
+	for i := range candidates {
+		visit(i)
+	}
+	if len(cycle) > 0 {
+		slices.Sort(cycle)
+		return nil, fmt.Errorf(
+			"%w: %s; re-pin one of them to a version that breaks the loop",
+			errMigrateCycle, strings.Join(slices.Compact(cycle), ", "),
+		)
+	}
+	return ordered, nil
+}
+
+// candidateEdges resolves each candidate's runtime dependencies to
+// the exact identity a refetch would link, and keeps the edge only
+// where that identity is itself a candidate.
+//
+// Resolution is attempted only for a dependency NAME some candidate
+// carries, so an ordinary dependency that is already provenanced
+// costs no registry lookup. A name that is a candidate and will not
+// resolve is unreadable state under §13: gale cannot say which
+// directory the refetch would bind to, and guessing would decide a
+// destructive order.
+func candidateEdges(
+	candidates []migrateTarget, byID map[string][]int, names map[string]bool,
+	resolve installer.RecipeResolver,
+) ([][]int, error) {
+	resolved := make(map[string]string, len(names))
+	edges := make([][]int, len(candidates))
+	for i, t := range candidates {
+		if t.bare {
+			// Its own canonical twin comes first. A relocation reaches
+			// its target through the resume branch, which needs the
+			// canonical directory already attesting itself; the other
+			// order has the bare candidate replace the occupied
+			// canonical directory and the canonical candidate then fail
+			// against the record that replacement just wrote.
+			for _, j := range byID[lockgraph.Key(t.name, t.version)] {
+				if j != i && !candidates[j].bare {
+					edges[i] = append(edges[i], j)
+				}
+			}
+		}
+		for _, dep := range runtimeDepNames(t.recipe) {
+			if !names[dep] {
+				continue
+			}
+			id, ok := resolved[dep]
+			if !ok {
+				r, err := resolve(dep)
+				if err != nil {
+					return nil, fmt.Errorf(
+						"%w: ordering %s@%s: resolving its dependency %s: %w",
+						errMigrateUnreadable, t.name, t.version, dep, err,
+					)
+				}
+				id = lockgraph.Key(dep, r.Package.Full())
+				resolved[dep] = id
+			}
+			for _, j := range byID[id] {
+				if j != i {
+					edges[i] = append(edges[i], j)
+				}
+			}
+		}
+	}
+	return edges, nil
+}
+
+// runtimeDepNames names one recipe's runtime dependencies for this
+// platform, deduplicated and in a stable order so the traversal that
+// consumes them is deterministic.
+func runtimeDepNames(r *recipe.Recipe) []string {
+	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH).Runtime
+	out := slices.Clone(deps)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // migratePreflight checks every candidate against every scope before
@@ -166,6 +346,10 @@ func classifyForMigrate(
 func migratePreflight(
 	galeHome, storeRoot string, scan migrateScanResult,
 ) error {
+	scopes, err := projects.Scopes(galeHome)
+	if err != nil {
+		return err
+	}
 	platform := currentPlatform()
 	for _, t := range scan.candidates {
 		b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
@@ -187,6 +371,153 @@ func migratePreflight(
 			targetDir:   t.dir,
 			wantSHA:     b.SHA256,
 			platform:    platform,
+			// One proposed state for the whole machine, so a scope
+			// that merely references a candidate is a participant
+			// rather than a vetoer. See replaceQuery.machineWide: the
+			// per-scope rule refuses every upgrade-day store, which is
+			// the state migrate exists to end.
+			machineWide: true,
+		}); err != nil {
+			return err
+		}
+		if err := checkMigrateDependents(scopes, storeRoot, t); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// errMigrateNotBinary reports a candidate whose refetch produced a
+// source build instead of the prebuilt binary migrate approved.
+//
+// An unlocked install falls back from a failed binary fetch to a
+// source build, which is right for `gale install` and wrong here:
+// migrate is a constrained replacement of BINARY-method directories
+// (§13), and the whole machine was cleared against the hash the
+// recipe declares for that binary. Committing a source artifact
+// would replace bytes with something no scope was asked about.
+var errMigrateNotBinary = errors.New(
+	"the refetch did not produce the prebuilt binary",
+)
+
+// errMigrateHashMoved reports a refetch whose artifact is not the one
+// preflight cleared with every scope.
+var errMigrateHashMoved = errors.New(
+	"the artifact changed between the preflight and the commit",
+)
+
+// checkMigrateCommit is everything that must still hold at the moment
+// one candidate's replacement commits.
+//
+// Design §13's fourth qualifying property: revalidate concurrent lock
+// and registry changes before EACH destructive commit, not once at
+// the preflight. Every check here is re-established rather than
+// carried, and projects.Scopes re-reads the registry and every lock,
+// so a project registered since the preflight is seen.
+//
+// The artifact is pinned to the hash preflight cleared. Handing
+// rep.Result.SHA256 straight to the veto would ask the machine about
+// whatever just landed, so a run could clear artifact X with every
+// scope and then commit artifact Y with nobody's agreement.
+func checkMigrateCommit(
+	galeHome, storeRoot string, t migrateTarget, rep installer.Replacement,
+) error {
+	name, full := t.name, t.version
+	// The classification, re-established inside the commit locks. It
+	// was formed before the per-package lock existed, and a concurrent
+	// gale can provenance the directory in between.
+	if err := stillUnprovenanced(rep.CanonicalDir, name, full); err != nil {
+		return err
+	}
+	// The candidate must itself be attested. recordProvenance commits
+	// an artifact with NO record when its closure cannot be attested,
+	// which is right for an ordinary install and useless here:
+	// trading one unprovenanced directory for another destroys bytes
+	// and repairs nothing, while the run reports success.
+	if _, err := provenance.ReadUnverified(rep.StagingDir); err != nil {
+		return fmt.Errorf(
+			"the refetched %s@%s is itself unprovenanced, so replacing "+
+				"would destroy bytes without repairing anything (%v): %w",
+			name, full, err, errCandidateUnprovenanced,
+		)
+	}
+	b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
+	if b == nil {
+		return fmt.Errorf(
+			"%w: %s@%s: the recipe stopped declaring one for %s",
+			errMigrateNotBinary, name, full, currentPlatform(),
+		)
+	}
+	if rep.Result.Method != installer.MethodBinary {
+		return fmt.Errorf(
+			"%w: %s@%s built from source instead; migrate replaces only "+
+				"binary-method directories, and the machine was cleared "+
+				"against the declared binary", errMigrateNotBinary, name, full,
+		)
+	}
+	if rep.Result.SHA256 != b.SHA256 {
+		return fmt.Errorf(
+			"%w: %s@%s was cleared at %s and the refetch produced %s",
+			errMigrateHashMoved, name, full, b.SHA256, rep.Result.SHA256,
+		)
+	}
+	scopes, err := projects.Scopes(galeHome)
+	if err != nil {
+		return err
+	}
+	if err := checkMigrateDependents(scopes, storeRoot, t); err != nil {
+		return err
+	}
+	return checkReplaceable(replaceQuery{
+		galeHome: galeHome, storeRoot: storeRoot,
+		// No scope is exempt: migrate writes no lock for anyone.
+		selfGaleDir: "",
+		name:        name, version: full,
+		targetDir: rep.CanonicalDir,
+		// The cleared hash, which the check above has just proved the
+		// committed artifact carries.
+		wantSHA:     b.SHA256,
+		platform:    currentPlatform(),
+		machineWide: true,
+	})
+}
+
+// checkMigrateDependents refuses a candidate whose replacement would
+// invalidate a provenance record some scope actively loads.
+//
+// Every scope, where `--refresh` walks only its own. Refresh can
+// afford that because checkReplaceable refuses for every OTHER scope
+// on the wider ground that it cannot tell which bytes that scope
+// needs; migrate drops exactly that veto, so without this walk no
+// other scope is watched at all.
+//
+// The argument for skipping the check entirely is that §7 makes
+// provenance all-or-nothing, so nothing provenanced can record an
+// unprovenanced dependency. That holds only for an undamaged
+// history: a deleted record or a partial restore produces the state,
+// and migrateScan establishes that a record PARSES, not that its
+// digest still describes the store.
+//
+// The target is the physical directory, never the canonical
+// spelling. A pre-revision candidate lives in a bare directory, and
+// asking about the canonical one would exclude the wrong directory
+// from the scan's own judgement while missing the one at risk.
+func checkMigrateDependents(
+	scopes []projects.Scope, storeRoot string, t migrateTarget,
+) error {
+	id := lockgraph.Key(t.name, t.version)
+	for _, s := range scopes {
+		if err := checkDependentsIn(dependentQuery{
+			galeDir:   s.GaleDir,
+			label:     s.Label,
+			storeRoot: storeRoot,
+			id:        id,
+			targetDir: t.dir,
+			// Not postMigrate: migrate is what is running. Unreadable
+			// dependency metadata is §13's fail-before-replacing state,
+			// and the exit is repairing the directory that holds it.
+			remedy: "reinstall the package whose dependency metadata " +
+				"cannot be read, then run gale migrate again",
 		}); err != nil {
 			return err
 		}

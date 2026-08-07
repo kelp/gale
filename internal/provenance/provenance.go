@@ -395,6 +395,31 @@ func VerifyAgainstStore(storeRoot, name, version, platform string) (Record, erro
 	return newResolver(storeRoot, platform).verify(name, version)
 }
 
+// VerifyShallow checks one record against the directory it occupies
+// and against its DIRECT dependencies' recorded digests, without
+// requiring their closures to still be installed.
+//
+// The reader for a caller asking about one artifact rather than about
+// a whole graph. VerifyAgainstStore recurses, so a build dependency
+// collected two levels down invalidates an artifact that is perfectly
+// sound — design §12 permits exactly that disappearance, and the
+// activation gate avoids the deep reader for the same reason. A
+// binary artifact does not escape it either: a binary records runtime
+// edges only, but a runtime dependency may itself be source-method
+// and carry build edges the recursion then follows.
+//
+// Still not the structural reader. Identity, platform and the
+// artifact fields are checked, and the digest is recomputed, so a
+// record somebody copied into the directory is refused. What is not
+// asserted is anything about the dependencies' own closures.
+func VerifyShallow(storeRoot, name, version, platform string) (Record, error) {
+	if err := store.CheckIdentity(name, version); err != nil {
+		return Record{}, err
+	}
+	rs := newResolver(storeRoot, platform)
+	return rs.verifyWith(name, version, rs.recordedEdgeDigests)
+}
+
 // Closure verifies every record reachable from roots and returns them
 // keyed by canonical identity. Roots map a package name to its
 // canonical version-revision, which is the shape a caller already
@@ -533,6 +558,18 @@ func (rs *resolver) record(name, version string) (Record, error) {
 // deterministic because the identity is already canonical, so the
 // resolver's bare-version rules cannot fire.
 func (rs *resolver) verify(name, version string) (Record, error) {
+	return rs.verifyWith(name, version, rs.edgeDigests)
+}
+
+// verifyWith is verify's body, with the source of the edge digests
+// left to the caller. One body, so the deep and shallow readers can
+// never drift in what they check about the record ITSELF: they
+// differ in where a dependency's digest comes from and in nothing
+// else.
+func (rs *resolver) verifyWith(
+	name, version string,
+	edgeDigests func([]lockgraph.Edge) map[string]string,
+) (Record, error) {
 	key := lockgraph.Key(name, version)
 	if rs.open[key] {
 		return Record{}, fmt.Errorf(
@@ -563,7 +600,7 @@ func (rs *resolver) verify(name, version string) (Record, error) {
 		)
 	}
 	n := r.node()
-	recomputed, err := lockgraph.Digest(n, rs.edgeDigests(n.Edges))
+	recomputed, err := lockgraph.Digest(n, edgeDigests(n.Edges))
 	if err != nil {
 		return Record{}, fmt.Errorf("%s: %w: %w", dir, ErrInvalid, err)
 	}
@@ -574,6 +611,38 @@ func (rs *resolver) verify(name, version string) (Record, error) {
 		)
 	}
 	return r, nil
+}
+
+// recordedEdgeDigests reads each dependency's OWN recorded digest
+// without verifying that dependency's closure.
+//
+// The difference from edgeDigests is the whole point of the shallow
+// reader. edgeDigests calls verify recursively, so a dependency whose
+// own dependency is gone invalidates everything above it; design §12
+// permits a build dependency to disappear once the bytes it produced
+// are committed, so that recursion refuses graphs that are perfectly
+// sound. Reading the recorded digest still binds this artifact to the
+// exact dependency bytes it was built against — a dependency that was
+// replaced records a different digest and the recomputation fails —
+// while asking nothing about what that dependency was in turn built
+// from.
+//
+// A dependency whose record cannot be read contributes no digest, and
+// lockgraph.Digest then refuses the node for an edge it cannot
+// serialize. That is the correct outcome: a DIRECT dependency of a
+// serialized edge is not something §12 permits to vanish.
+func (rs *resolver) recordedEdgeDigests(
+	edges []lockgraph.Edge,
+) map[string]string {
+	digests := make(map[string]string, len(edges))
+	for _, e := range edges {
+		r, err := ReadUnverified(rs.store.ResolveDir(e.Name, e.Version))
+		if err != nil || r.Key() != lockgraph.Key(e.Name, e.Version) {
+			continue
+		}
+		digests[r.Key()] = r.GraphDigest
+	}
+	return digests
 }
 
 // edgeKeys lists the node's edges of one kind as canonical
