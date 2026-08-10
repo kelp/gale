@@ -190,18 +190,16 @@ func TestPartitionAliasesFarmsASoleProvider(t *testing.T) {
 	}
 }
 
-// TestAliasTargetRequiresASymlinkResolvingInsideTheLibDir pins the
-// predicate that decides whether an unversioned name inherits a
-// soname's compatibility promise. The unversioned name carries no
-// promise of its own, so it is farmed only when it points at one
-// that does.
-func TestAliasTargetRequiresASymlinkResolvingInsideTheLibDir(t *testing.T) {
+// TestAliasTargetAcceptsAnInheritedPromise: an unversioned name
+// carries no ABI promise of its own, so it is farmable exactly when
+// it points at a versioned soname that has one.
+func TestAliasTargetAcceptsAnInheritedPromise(t *testing.T) {
 	if runtime.GOOS != "darwin" {
 		t.Skip("alias farming is darwin-only")
 	}
 	root := t.TempDir()
 
-	t.Run("symlink to a versioned sibling is farmable", func(t *testing.T) {
+	t.Run("symlink to a versioned sibling", func(t *testing.T) {
 		storeDir := storeLayout(t, root, "openssl", "3.6.1-4",
 			[]string{"libssl.3.dylib"})
 		libDir := filepath.Join(storeDir, "lib")
@@ -220,7 +218,43 @@ func TestAliasTargetRequiresASymlinkResolvingInsideTheLibDir(t *testing.T) {
 		}
 	})
 
-	t.Run("regular file is not farmable", func(t *testing.T) {
+	// The layout spelling_test.go pins: the versioned soname inside
+	// the store is itself a symlink to a real file OUTSIDE the
+	// store, and is still farmed. Resolving the whole chain and
+	// demanding the real file sit in this lib dir would make
+	// openssl's alias unfarmable in exactly that layout — which is
+	// why the predicate is one hop, then Stat.
+	t.Run("versioned hop may itself leave the store", func(t *testing.T) {
+		storeDir := storeLayout(t, root, "indirect", "1.0-1", nil)
+		libDir := filepath.Join(storeDir, "lib")
+		realFile := filepath.Join(root, "libindirect.real.dylib")
+		if err := os.WriteFile(realFile, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mustSymlink(t, realFile,
+			filepath.Join(libDir, "libindirect.3.dylib"))
+		mustSymlink(t, "libindirect.3.dylib",
+			filepath.Join(libDir, "libindirect.dylib"))
+
+		if _, ok := aliasTarget(libDir, "libindirect.dylib"); !ok {
+			t.Error("one hop inside the lib dir is the rule; the " +
+				"versioned soname may resolve anywhere")
+		}
+	})
+}
+
+// TestAliasTargetRejectsWhatInheritsNothing: every way an
+// unversioned name can fail to inherit a promise. Farming one of
+// these would give dyld a stable path to something with no
+// compatibility guarantee behind it — worse than today's clean
+// failure to resolve.
+func TestAliasTargetRejectsWhatInheritsNothing(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("alias farming is darwin-only")
+	}
+	root := t.TempDir()
+
+	t.Run("regular file", func(t *testing.T) {
 		storeDir := storeLayout(t, root, "solo", "1.0-1",
 			[]string{"libsolo.dylib"})
 		if _, ok := aliasTarget(filepath.Join(storeDir, "lib"),
@@ -230,7 +264,7 @@ func TestAliasTargetRequiresASymlinkResolvingInsideTheLibDir(t *testing.T) {
 		}
 	})
 
-	t.Run("symlink to an unversioned name is not farmable", func(t *testing.T) {
+	t.Run("symlink to an unversioned name", func(t *testing.T) {
 		storeDir := storeLayout(t, root, "chain", "1.0-1",
 			[]string{"libother.dylib"})
 		libDir := filepath.Join(storeDir, "lib")
@@ -242,7 +276,7 @@ func TestAliasTargetRequiresASymlinkResolvingInsideTheLibDir(t *testing.T) {
 		}
 	})
 
-	t.Run("symlink escaping the lib dir is not farmable", func(t *testing.T) {
+	t.Run("symlink escaping the lib dir", func(t *testing.T) {
 		storeDir := storeLayout(t, root, "escape", "1.0-1", nil)
 		libDir := filepath.Join(storeDir, "lib")
 		outside := filepath.Join(root, "libescape.3.dylib")
@@ -256,7 +290,7 @@ func TestAliasTargetRequiresASymlinkResolvingInsideTheLibDir(t *testing.T) {
 		}
 	})
 
-	t.Run("dangling symlink is not farmable", func(t *testing.T) {
+	t.Run("dangling symlink", func(t *testing.T) {
 		storeDir := storeLayout(t, root, "dangle", "1.0-1", nil)
 		libDir := filepath.Join(storeDir, "lib")
 		mustSymlink(t, "libdangle.3.dylib",
@@ -264,29 +298,6 @@ func TestAliasTargetRequiresASymlinkResolvingInsideTheLibDir(t *testing.T) {
 
 		if _, ok := aliasTarget(libDir, "libdangle.dylib"); ok {
 			t.Error("a farm entry chain ending nowhere is a broken lib")
-		}
-	})
-
-	// The layout spelling_test.go pins: the versioned soname inside
-	// the store is itself a symlink to a real file OUTSIDE the
-	// store, and is still farmed. Resolving the whole chain and
-	// demanding the real file sit in this lib dir would make
-	// openssl's alias unfarmable in exactly that layout — which is
-	// why the predicate is one hop, then Stat.
-	t.Run("versioned hop may itself leave the store", func(t *testing.T) {
-		storeDir := storeLayout(t, root, "indirect", "1.0-1", nil)
-		libDir := filepath.Join(storeDir, "lib")
-		real := filepath.Join(root, "libindirect.real.dylib")
-		if err := os.WriteFile(real, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		mustSymlink(t, real, filepath.Join(libDir, "libindirect.3.dylib"))
-		mustSymlink(t, "libindirect.3.dylib",
-			filepath.Join(libDir, "libindirect.dylib"))
-
-		if _, ok := aliasTarget(libDir, "libindirect.dylib"); !ok {
-			t.Error("one hop inside the lib dir is the rule; the " +
-				"versioned soname may resolve anywhere")
 		}
 	})
 }
