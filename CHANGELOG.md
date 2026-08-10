@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- farm: unversioned soname aliases (for example
+  `libssl.dylib -> libssl.3.dylib`) are now linked into
+  `~/.gale/lib/`. Mach-O binaries record unversioned install
+  names — `git-remote-http` references `@rpath/libssl.dylib` —
+  but the farm held only the versioned soname, so once `gale gc`
+  removed the openssl revision a binary's per-dep rpath named,
+  dyld aborted and every `git push` through gale's git failed.
+  Absorbing that upgrade is the farm's whole purpose. An alias
+  carries no ABI promise of its own, so it is farmed only when
+  it resolves one hop, inside its own package's lib dir, to a
+  versioned soname the farm already carries. Darwin only: ELF
+  `DT_NEEDED` records the soname, so Linux never had the gap.
+  Existing installs heal on the next generation rebuild — no
+  package needs rebuilding or republishing.
+
+  **Partial by design:** when two packages provide one alias
+  (`openssl` and `openssl4` both ship `libssl.dylib`) it is
+  dropped and farmed for neither, because erroring would turn a
+  deliberate coexistence into a machine-wide install failure.
+  A binary recording that name stays unresolvable while both are
+  installed, exactly as before. `gale doctor` warns about the
+  drop without failing, since no repair can clear it.
+
 ## v0.21.3 — 2026-07-22
 
 ### Added
