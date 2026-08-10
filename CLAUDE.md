@@ -1,433 +1,177 @@
 # CLAUDE.md
 
-Guidance for Claude Code when working in this repository.
-For design rationale, see `docs/dev/design.md`.
-
-## Overview
-
 Gale is a macOS-first package manager for developer CLI
 tools. Written in Go. Goal: replace Homebrew, Nix, and
 home-manager with one tool that handles global packages
-and per-project environments.
+and per-project environments. Design rationale:
+[`docs/dev/design.md`](docs/dev/design.md).
 
-## Build & Test
+Two repos: **gale** (this one — the CLI) and
+**gale-recipes** (`../gale-recipes` — recipe TOML files,
+plus CI that builds them and pushes binaries to GHCR).
+`gale install jq` fetches the recipe from the registry,
+pulls a prebuilt binary from GHCR if one exists, and
+falls back to building from source.
 
-```
-just              # test + lint + fmt-check (default)
-just build        # build binary (ldflags version)
-just test         # all tests
-just test-pkg foo # single package tests
-just check        # test + lint + format check
-just cover        # test coverage per package
-just fmt          # fix formatting (gofumpt: cmd internal integration)
-just lint         # golangci-lint + go vet
-just hooks        # install pre-commit gofumpt hook (once per clone)
-just bootstrap    # first-time: go build + self-install + hooks
-just install      # rebuild gale from current source
-just tag 0.2.0    # run checks, update CHANGELOG, tag
-just release 0.2.0 # push tag — CI builds and publishes
-                   # (releases are immutable once published;
-                   # see docs/dev/releasing.md)
-```
+`just` runs test + lint + fmt-check; `just --list` has
+the rest.
 
-## Agent Sandbox Environment
+## Vocabulary
+
+**Store** (`~/.gale/pkg/`): immutable package storage.
+One directory per package per version. Append-only.
+
+**Generation** (`~/.gale/gen/<N>/`): a snapshot of
+symlinks into the store. Rebuilt declaratively from
+gale.toml on every install/remove/sync, swapped
+atomically with `os.Rename`. "gen" is short for
+generation.
+
+**current** (`~/.gale/current`): symlink to the active
+gen. Users put `~/.gale/current/bin` on PATH, so one
+symlink swap updates bin, lib, and man together.
+
+**Registry**: recipes fetched on demand from GitHub raw
+URLs, letter-bucketed (`recipes/j/jq.toml`). No clone.
+
+**Revision**: Debian-style `[package] revision = N`,
+default 1. Store identity is
+`<name>/<version>-<revision>/`; the user-facing form is
+bare when revision = 1, and a bare `@version` resolves
+to the highest revision known. A shared dylib farm at
+`~/.gale/lib/` lets binaries absorb SONAME-compatible
+dep upgrades without rebuilding.
+[`docs/revisions.md`](docs/revisions.md).
+
+## Agent Sandbox
 
 Agent containers (Claude Code on the web and similar)
-ship none of the tools above. A `SessionStart` hook runs
-`scripts/agent-bootstrap.sh` in the background to install
-them. Full reference:
+ship no toolchain. A `SessionStart` hook runs
+`scripts/agent-bootstrap.sh` in the background to
+install one. Full reference:
 [`docs/dev/agent-environment.md`](docs/dev/agent-environment.md).
-
-Three things to know before the first command:
 
 - **The bootstrap is async.** To wait for it, run it
   again — `just agent-bootstrap` takes an flock and
   blocks until the in-flight run finishes.
   `just agent-status` shows what landed.
 - **`gale install`, `gale build` and `gale sync` cannot
-  work in the sandbox.** The egress proxy blocks GHCR's
-  blob host, so the binary path fails, and the
-  source-build fallback's upstream hosts are blocked
-  too — it burns minutes, then fails. A PreToolUse hook
-  blocks these commands. `gale lint` is offline-clean
-  and unaffected.
+  work here.** The egress proxy blocks GHCR's blob host,
+  and the source-build fallback's upstream hosts are
+  blocked too — they burn minutes, then fail. A
+  PreToolUse hook blocks them. `gale lint` is
+  offline-clean and unaffected.
 - **The container runs as root**, so tests asserting a
   permission error skip themselves
   (`os.Geteuid() == 0`). They still run on CI.
+- `gh` and `api.github.com` are unavailable; GitHub work
+  goes through the GitHub MCP tools.
 
-`gh` and `api.github.com` are unavailable; GitHub work
-goes through the GitHub MCP tools.
+`tmp/` at the repo root is scratch space (tracked via
+`tmp/.gitignore`, contents ignored). Prefer it over
+`/tmp` so artifacts survive a reboot mid-task; clean up
+what you create.
 
-## Scratch Space
+## Where to Look
 
-`tmp/` at the repo root is scratch space for tests and
-experiments — isolated gale setups (`HOME=tmp/...`),
-throwaway recipes, captured output, etc. The directory is
-tracked (via `tmp/.gitignore`) so it always exists after a
-clone, but everything you put in it is ignored. Prefer it
-over the system `/tmp` so artifacts stay with the repo and
-survive a reboot mid-task. Clean up what you create when
-done — treat it as ephemeral, not a persistent store.
-
-## Project Layout
-
-```
-cmd/gale/              CLI (cobra commands)
-internal/generation/   gen dirs with symlinks, atomic swap
-internal/installer/    install to store (binary or source)
-internal/store/        package store (~/.gale/pkg/)
-internal/build/        build-from-source orchestration
-internal/download/     HTTP fetch, SHA256, tar extraction
-internal/ghcr/         GHCR anonymous token exchange
-internal/registry/     on-demand recipe fetch from GitHub
-internal/recipe/       TOML recipe parsing
-internal/config/       gale.toml and config.toml parsing
-internal/env/          direnv hook, PATH building
-internal/output/       colored terminal output
-internal/lockfile/     gale.lock read/write
-internal/repo/         recipe repository management
-internal/ai/           Anthropic SDK integration
-internal/lint/         recipe TOML validation
-internal/attestation/  native Sigstore verification (sigstore-go)
-internal/gitutil/      git clone, ls-remote, URL expansion
-internal/atomicfile/   atomic file writes (write-then-rename)
-internal/depsmeta/     .gale-deps.toml format (build↔installer)
-internal/farm/         shared dylib farm at ~/.gale/lib/
-internal/filelock/     POSIX file locking for store writes
-internal/httpclient/   shared *http.Client for all fetches
-internal/inspect/      binary linkage auditing (@rpath checks)
-internal/parallel/     bounded worker pool for fan-out work
-internal/projects/     machine-local project registry for gc
-internal/timing/       verbose phase-elapsed-time logging
-internal/version/      version comparison rules (update/outdated)
-```
-
-## Key Concepts
-
-**Store** (`~/.gale/pkg/`): immutable package storage.
-One directory per package per version. Append-only.
-
-**Generation** (`~/.gale/gen/<N>/`): a snapshot of
-symlinks into the store. `current` symlink points to
-the active gen. Rebuilt declaratively from gale.toml
-on every install/remove/sync. Atomic swap via
-`os.Rename`. "gen" is short for generation.
-
-**current** (`~/.gale/current`): symlink to the active
-gen directory. User adds `~/.gale/current/bin` to PATH.
-One symlink swap updates bin, lib, man — everything.
-
-**Registry**: fetches recipes on demand from GitHub raw
-URLs. Letter-bucketed: `recipes/j/jq.toml`. No git
-clone needed.
-
-**Revision**: Debian-style `[package] revision = N` on
-recipes, defaulting to 1. Store identity is
-`<name>/<version>-<revision>/`; user-facing form is
-`name@<version>-<revision>` (bare when revision = 1). A
-shared dylib farm at `~/.gale/lib/` lets binaries absorb
-SONAME-compatible dep upgrades without rebuilding.
-Full reference: [`docs/revisions.md`](docs/revisions.md).
-
-## CLI Commands
-
-`@version` and `@version-revision` both work for
-version-aware commands (install, update, etc.). A bare
-`@version` resolves to the highest revision known.
-
-```
-gale install <pkg>[@ver[-rev]]  Install package (binary or source)
-gale remove <pkg>         Remove package from store + config
-gale add <pkg> [pkg...]   Add to gale.toml without installing
-gale sync                 Install all packages in gale.toml
-gale update [pkg...]      Update packages to latest version
-gale switch <pkg> <ver>   Switch a managed package to a specific version
-gale pin <pkg>            Pin package to its current version
-gale unpin <pkg>          Remove pin, allow updates again
-gale list                 List packages in gale.toml
-gale info <pkg>           Show package information
-gale outdated             Show packages with newer versions available
-gale which <binary>       Show which package provides a binary
-gale inspect [pkg]        Audit installed package linkage
-gale gc                   Remove unused versions + generations
-gale doctor               Diagnose setup issues
-gale env                  Print export PATH for current scope
-gale init                 Bootstrap project (gale.toml, .envrc)
-gale hook direnv          Print use_gale function for direnvrc
-gale build <recipe.toml>  Build recipe from source
-gale lint <recipe.toml>   Validate recipe files
-gale create-recipe <repo> Generate a recipe from a GitHub repo (AI)
-gale search <query>       Search for packages
-gale shell                Open shell with project environment
-gale run <cmd>            Run command in project environment
-gale audit <pkg>         Rebuild and compare SHA256
-gale verify <pkg>        Check Sigstore attestation
-gale sbom [pkg]          Software bill of materials
-gale generations          List and manage generations
-gale repo add <name> <url>    Add a recipe repository
-gale repo remove <name>       Remove a recipe repository
-gale repo list                List configured recipe repositories
-gale repo init <name>         Create a new recipe repository
-gale repo update [name]       Update a recipe repository
-gale completion <shell>       Generate shell completion script
-```
-
-### Key Flags
-
-- `--recipes <dir>` (install, add, update, sync,
-  outdated, gc, inspect, switch, build): resolve
-  recipes from a local directory instead of the
-  registry. A value is required; `--recipes <dir>`
-  and `--recipes=<dir>` both work. `gale build`
-  auto-detects when the recipe is inside a recipes
-  repo and resolves deps locally without the flag.
-- `--path <dir>` (install, update): build from a
-  local source directory, version from git hash
-- `--build` (install, update, sync): build from
-  source, skip prebuilt binaries
-- `--git` (install, update, sync, build): clone repo
-  and build from HEAD instead of downloading tarball
-- `--no-install` (update): rewrite gale.toml pins
-  without building; run `gale sync` after to install
-- `--recipe <file>` (install, update): use a local
-  recipe file
-- `-g/--global`, `-p/--project` (install, add,
-  remove, sync, update): scope override. Defaults
-  to project if gale.toml exists, else global.
-- `-v/--verbose` (global): verbose output
-- `-n/--dry-run` (global): show what would happen
-- `--no-color` (global): disable colored output
-- `--json` (sbom): machine-readable JSON output
-- `--vars-only` (env): print only [vars] exports
-
-## Two-Repo Architecture
-
-- **gale** (this repo) — the CLI tool.
-- **gale-recipes** (`../gale-recipes`) — recipe TOML
-  files. CI builds recipes, pushes binaries to GHCR.
-
-Install flow: `gale install jq` fetches the recipe
-from the registry, pulls a prebuilt binary from GHCR
-if available, falls back to building from source.
-
-## Environment Activation
-
-**Global**: `~/.gale/current/bin` on PATH.
-
-**Project**: direnv integration. `gale init` creates
-`.envrc` with `use gale`. direnv calls `gale sync`
-and adds `.gale/current/bin` to PATH. Project and
-global share the same generation model.
-
-`gale env` prints `export PATH=...` for CI/scripts.
-Also exports `[vars]` from gale.toml. `gale run` and
-`gale shell` auto-sync when gale.toml changes.
-
-## Documentation
-
-- `docs/` — user-facing guides (getting started,
-  direnv, chezmoi, CI, troubleshooting, recipes)
-- `docs/revisions.md` — revision system, shared dylib
-  farm, `.gale-deps.toml` staleness model
-- `docs/dev/` — development reference (design,
-  style guide, build improvements, change discipline)
-- `docs/dev/releasing.md` — release flow (immutable
-  releases; `just tag` + `just release` drive CI)
-
-## Releasing
-
-`just tag <ver>` then `just release <ver>` drives CI.
-Full details in `docs/dev/releasing.md`.
-
-After the release is live, bump TWO `gale.toml` files.
-Treat the two bumps as one atomic step — never stop after
-the first:
-
-- `../gale-recipes/recipes/g/gale.toml` — so users on
-  any machine pick up the new version.
-- `./gale.toml` (this repo's project gale.toml) — so
-  the dev env inside this repo activates the new
-  version. If you forget, `just install` runs a stale
-  binary from `.gale/current/bin/gale` and behaves like
-  the pre-release. The gen/308 regression on
-  2026-05-28 was exactly this — a v0.12.3-era binary
-  resolved bare versions to `<v>-1` only and silently
-  skipped packages without a `-1` revision on disk,
-  producing a partial generation. The `tag`/`release`
-  justfile targets print both reminders.
-
-## Principles
-
-- Everything from source. GHCR binaries are a cache,
-  not a substitute. See `docs/dev/design.md`.
-- Prebuilt binaries only for compiler bootstraps.
-- Declarative over imperative (gale.toml → generation).
-
-## Change Discipline
-
-Before tier 2–3 edits (version identity, finalize path,
-generation/farm, gc/sync staleness), trace the affected
-pipeline and grep callers — do not patch from memory.
-Full tiers, invariants, pipelines, and grep cheatsheet:
-[`docs/dev/change-discipline.md`](docs/dev/change-discipline.md).
+- Editing version identity, the finalize path,
+  generation/farm, or gc/sync staleness →
+  [`docs/dev/change-discipline.md`](docs/dev/change-discipline.md)
+  first. These are tier 2–3: trace the pipeline and grep
+  callers before editing, don't patch from memory.
+- Code standards and the LLM guardrails →
+  [`docs/dev/style-guide.md`](docs/dev/style-guide.md).
+  `.golangci.yml` enforces the mechanical half on new
+  and changed code (`new-from-merge-base`; existing
+  violations are fixed when a file is next touched).
+- Cutting a release → [`docs/dev/releasing.md`](docs/dev/releasing.md).
+  Releases are immutable once published, and the
+  post-release step bumps **two** `gale.toml` files —
+  skipping the second one is what caused the gen/308
+  regression.
+- Testing the Homebrew formula →
+  [`docs/dev/homebrew-tap.md`](docs/dev/homebrew-tap.md).
 
 ## Code Reuse
 
-New commands MUST reuse existing helpers. Do not
-duplicate logic — call through to shared functions.
+New commands reuse existing helpers rather than
+re-implementing them. Read
+[`cmd/gale/context.go`](cmd/gale/context.go) before
+adding a command — it holds every shared CLI helper
+(config resolution, registry, resolver, generation
+rebuild, result reporting, install finalization).
 
-**`cmd/gale/context.go`** — all shared CLI helpers:
-config resolution, registry, resolver, generation
-rebuild, result reporting, install finalization.
-Read this file before adding a new command.
+The usual shape is `newCmdContext` → `ctx.Resolver` →
+`ctx.Installer.Install`, with `resolveVersionedRecipe`
+for `@version` support and `finalizeInstall` for the
+config + generation write. A new build mode delegates to
+`build.BuildLocal` once it has a source directory.
 
-**`cmd/gale/paths.go`** — `galeConfigDir()` and
-`defaultStoreRoot()`.
-
-**`internal/installer/`** — Installer struct:
-- `Install(r)` — binary-first, source fallback
-- `InstallLocal(r, sourceDir)` — build from local dir
-- `InstallGit(r)` — clone and build from git
-- `InstallBuildDeps(r)` — install build deps, return
-  bin dirs. Exported for `gale build` to reuse.
-
-**`internal/build/`** — three build paths:
-- `Build(r, outputDir)` — download tarball + build
-- `BuildLocal(r, sourceDir, outputDir)` — local dir
-- `BuildGit(r, outputDir)` — clone + BuildLocal
-- `buildFromDir()` — shared tail (steps, fixup, archive)
-- `TmpDir()` — returns ~/.gale/tmp/ (exported, used
-  by installer). Do not duplicate — import from build.
-
-**`internal/download/`** — `HashFile(path)` returns
-hex SHA256. Used by build and download.VerifySHA256.
-
-When adding a new command that installs packages, use
-`newCmdContext` + `ctx.Resolver` + `ctx.Installer.Install`.
-For versioned installs, use `resolveVersionedRecipe`.
-When adding a new build mode, delegate to `BuildLocal`
-after obtaining the source directory.
-
-**`internal/projects/`** — machine-local project
-registry (`~/.gale/projects`) that lets gc retain
-every project's active generation (gh#115).
-`newCmdContext` registers the resolved project
-automatically via `registerProject` (context.go), so
-commands built on it need no explicit call. Call
-`registerProject(configPath)` directly only when a
-command re-points its config path after context
-resolution (see sync's projectDir override) or
-resolves scope without a context (see `gale env`).
-Registration is best-effort and skipped for the
-global config and dry runs.
-
-## Adding a New Command
-
-1. Create `cmd/gale/<name>.go` with cobra command
-2. Use `newCmdContext(local)` for config/store/resolver
-3. Use `ctx.Installer.Install(r)` to install packages
-4. Use `resolveVersionedRecipe()` for @version support
-5. Use `reportResult()` for consistent output
-6. Use `finalizeInstall()` for config + generation
-7. Register in `init()` with `rootCmd.AddCommand`
+`newCmdContext` also registers the resolved project in
+`internal/projects/` so gc retains every project's
+active generation (gh#115). Call `registerProject`
+directly only when a command re-points its config path
+after context resolution (sync's `projectDir` override)
+or resolves scope without a context (`gale env`).
 
 ## Conventions
 
-See `docs/dev/style-guide.md` for the full style guide
-covering writing, documentation, code, naming, the
-strict linter rules, and LLM guardrails.
-
-Code standards (strict). `.golangci.yml` enforces
-these on new and changed code; existing violations are
-grandfathered (`new-from-merge-base`) and fixed when a
-file is next touched:
-
-- Errors: wrap with `%w` and a noun phrase; match with
-  `errors.Is`/`errors.As`; lowercase, unpunctuated
-  strings; comma-ok on every type assertion; no
-  `(nil, nil)`; no panics in `internal/`.
-- Shape: short functions (`funlen` ≤ 80, `gocognit` <
-  30); ≤ 5 params, ≤ 3 results — else a config struct.
-- Abstraction: accept interfaces, return concrete
-  types; no interface until 2 impls or a test needs a
-  mock; composition over embedding.
-- No duplication (`dupl`, tests included — use helpers
-  and table tests), no dead code, no shadowed builtins.
-
-LLM guardrails: trace before edit (tier ≥2); reuse
-before writing; no stubs or fakes; stay in scope; no
-hallucinated APIs; verify by running tests before
-claiming done. Full text in the style guide's "LLM
-Guardrails" section and
-[`docs/dev/change-discipline.md`](docs/dev/change-discipline.md).
-
-Key rules:
-
-- TDD: write the failing test first
-- Error wrapping: `fmt.Errorf("context: %w", err)`
-- Format with gofumpt, lint with golangci-lint.
-  Run `just hooks` once per clone to enable the
-  pre-commit gofumpt gate (mirrors CI's format check
-  so unformatted code never reaches main).
-- Check `context.go` for shared helpers before
-  writing new CLI code
-- Commits MUST be signed. Never use `--no-gpg-sign`
-  or `commit.gpgsign=false`.
-- When `git commit -S` fails (`agent refused operation`,
-  `Couldn't get agent socket`, signing timeout), it is
-  ALWAYS the same cause: the user is away from their
-  computer, so Secretive can't authorize the key. Do NOT
-  diagnose it, retry it, probe `/tmp` ssh-agent sockets,
-  test-sign, or hunt for a working `SSH_AUTH_SOCK` — none
-  of that ever helps and it burns tokens every time. The
-  instant a signed commit fails: STOP. Leave the change
-  staged (don't pile on more edits), tell the user signing
-  needs them back at their machine, and move on / wait.
-  Resume only when they say signing is back.
+- TDD: write the failing test first.
+- Errors: `fmt.Errorf("context: %w", err)`.
+- Format with gofumpt. Run `just hooks` once per clone
+  for the pre-commit gate that mirrors CI's format
+  check.
+- Commits MUST be signed. Never use `--no-gpg-sign` or
+  `commit.gpgsign=false`.
+- **When `git commit -S` fails** (`agent refused
+  operation`, `Couldn't get agent socket`, signing
+  timeout) it is always the same cause: the user is away
+  from their machine, so Secretive can't authorize the
+  key. Don't diagnose it, retry it, probe ssh-agent
+  sockets, or hunt for a working `SSH_AUTH_SOCK` — none
+  of that has ever helped. Stop, leave the change staged
+  without piling on more edits, and tell the user
+  signing needs them back at their machine.
 
 ## Gotchas
 
-- Build PATH isolates individual tools via symlinks
-  into a temp dir, preventing nix vibeutils (ls, mv)
-  from leaking in and breaking autotools. See
-  `buildPath()` in `internal/build/build.go`.
+- Build PATH isolates individual tools via symlinks into
+  a temp dir, keeping nix vibeutils (ls, mv) from
+  leaking in and breaking autotools. See `buildPath()`
+  in `internal/build/build.go`.
 - Tar extraction handles PAX headers, hard links,
   symlinks, and validates paths against traversal.
-  Shared `extractTar()` helper in `internal/download/`.
-- Autotools builds need timestamp reset (`touchAll`)
+  Shared `extractTar()` in `internal/download/`.
+- Autotools builds need a timestamp reset (`touchAll`)
   after extraction to avoid clock-skew errors.
-- Recipe repo uses letter-bucketed layout
-  (`recipes/j/jq.toml`).
+- `--recipes <dir>` requires a value (both spellings
+  work). `gale build` auto-detects a recipe sitting
+  inside a recipes repo and resolves deps locally
+  without the flag.
 - macOS `/var` is a symlink to `/private/var`. Tests
-  that compare paths must `filepath.EvalSymlinks` both
+  comparing paths must `filepath.EvalSymlinks` both
   sides.
 - Prefer static linking for CLI tools to avoid dylib
-  path issues. Use `--disable-shared --enable-all-static`
+  path issues — `--disable-shared --enable-all-static`
   for autotools projects like jq.
-- gale-recipes CI pushes binary sections to main
-  after builds. Expect push rejections — use
-  `git pull --rebase` before pushing.
+- gale-recipes CI pushes binary sections after builds.
+  Expect push rejections; `git pull --rebase` first.
 - gosec G306 flags `os.WriteFile` with 0644. Use
   `//nolint:gosec` for world-readable files.
-- Use `go:embed` to bake files into the binary
-  (see `internal/generation/gale-readme.md`).
-- `internal/attestation/` defines a `Verifier` interface:
-  `VerifyFile(filePath, repo)` and
-  `VerifyOCI(manifestDigest, repo, bundles)`. Verification
-  runs in-process via sigstore-go — no external tool. A
-  non-nil verifier always verifies and fails closed; nil is
-  a test-only seam (production wiring never passes it).
-  `GALE_SIGSTORE_TRUSTED_ROOT` overrides the trusted root
-  with a local file (test/air-gap seam);
-  `GALE_SIGSTORE_TEST_NO_SCT` drops the SCT requirement,
-  but only takes effect together with the root override.
+- `internal/attestation/` verifies in-process via
+  sigstore-go — no external tool. A non-nil `Verifier`
+  always verifies and fails closed; nil is a test-only
+  seam that production wiring never passes.
+  `GALE_SIGSTORE_TRUSTED_ROOT` overrides the trusted
+  root with a local file, and `GALE_SIGSTORE_TEST_NO_SCT`
+  drops the SCT requirement but only takes effect
+  together with the root override.
   `internal/attestation/sigstoretest/` mints synthetic
-  trust material and signed bundles for offline tests.
+  trust material for offline tests.
 
 ## Regression-Prone Areas
 
-Lessons paid for in past regressions. Read before
-touching these subsystems.
+Lessons paid for in past regressions.
 
 - Staleness checks must compare against the canonical
   version-revision a reinstall would write. On-disk
@@ -440,32 +184,18 @@ touching these subsystems.
   are the most regression-prone code in the repo. Gate
   patchelf on `DT_NEEDED` — running `--set-rpath` on a
   static Go ELF corrupts it (75440bb). Skip `.dSYM` and
-  `.o` files. Always re-sign after any Mach-O mutation
-  and preserve entitlements.
+  `.o` files. Always re-sign after any Mach-O mutation,
+  preserving entitlements.
 - Any change to sync, gc, or remove must be exercised
   across all three scopes (global, project, `--host`).
   Cross-scope deletion bugs recur (ad4e685, 289d13b).
 - In tests, never let a random port, map order, or
-  temp-dir name feed a cache key or expected output;
-  it produces coin-flip flakes (940a67a).
+  temp-dir name feed a cache key or expected output; it
+  produces coin-flip flakes (940a67a).
 
-## Testing Homebrew Formula
+## Principles
 
-Test the `kelp/tap/gale` formula in an OrbStack VM
-(avoids installing Homebrew on the dev machine):
-
-```sh
-# Install brew in the VM (one-time)
-orbctl run -m ubuntu-24.04 bash -c \
-  'NONINTERACTIVE=1 /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'
-
-# Install gale from tap
-orbctl run -m ubuntu-24.04 bash -c \
-  'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" && brew install kelp/tap/gale'
-
-# Run brew test
-orbctl run -m ubuntu-24.04 bash -c \
-  'eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)" && brew test kelp/tap/gale'
-```
-
-Formula source: `~/code/homebrew-tap/Formula/gale.rb`
+- Everything from source. GHCR binaries are a cache, not
+  a substitute.
+- Prebuilt binaries only for compiler bootstraps.
+- Declarative over imperative (gale.toml → generation).
