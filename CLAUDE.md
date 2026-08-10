@@ -64,6 +64,10 @@ install one. Full reference:
 - **The container runs as root**, so tests asserting a
   permission error skip themselves
   (`os.Geteuid() == 0`). They still run on CI.
+- **Signed commits work here.** The container provisions
+  its own ssh signing key, so `git commit -S` succeeds
+  unattended. The Secretive caveat under Conventions is
+  Mac-only; a signing failure here is a real failure.
 - `gh` and `api.github.com` are unavailable; GitHub work
   goes through the GitHub MCP tools.
 
@@ -123,15 +127,18 @@ or resolves scope without a context (`gale env`).
   check.
 - Commits MUST be signed. Never use `--no-gpg-sign` or
   `commit.gpgsign=false`.
-- **When `git commit -S` fails** (`agent refused
-  operation`, `Couldn't get agent socket`, signing
-  timeout) it is always the same cause: the user is away
-  from their machine, so Secretive can't authorize the
-  key. Don't diagnose it, retry it, probe ssh-agent
-  sockets, or hunt for a working `SSH_AUTH_SOCK` — none
-  of that has ever helped. Stop, leave the change staged
-  without piling on more edits, and tell the user
-  signing needs them back at their machine.
+- **When `git commit -S` fails on the Mac** (`agent
+  refused operation`, `Couldn't get agent socket`,
+  signing timeout) it is always the same cause: the user
+  is away from their machine, so Secretive can't
+  authorize the key. Don't diagnose it, retry it, probe
+  ssh-agent sockets, or hunt for a working
+  `SSH_AUTH_SOCK` — none of that has ever helped. Stop,
+  leave the change staged without piling on more edits,
+  and tell the user signing needs them back at their
+  machine. **This does not apply in an agent container**,
+  which signs with its own provisioned key —
+  [`docs/dev/agent-environment.md`](docs/dev/agent-environment.md).
 
 ## Gotchas
 
