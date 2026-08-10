@@ -182,7 +182,10 @@ func StaleLinks(canonicalDir, stagingDir, farmDir string) ([]string, error) {
 	if len(held) == 0 {
 		return nil, nil
 	}
-	provided, err := libSonames(stagingDir)
+	// libProvides, not libSonames: an alias the replacement still
+	// ships is not stale, and calling it stale would prune a live
+	// farm entry nothing claims back (gh#199).
+	provided, err := libProvides(stagingDir)
 	if err != nil {
 		return nil, err
 	}
@@ -369,6 +372,33 @@ func libSonames(storeDir string) (map[string]string, error) {
 		return nil, fmt.Errorf("read lib dir: %w", err)
 	}
 	return e.sonames, nil
+}
+
+// libProvides returns every basename a store dir can BACK in the
+// farm: versioned sonames and unversioned aliases together.
+//
+// A different question from libSonames, and the two must not be
+// conflated. This one answers "would replacing this directory leave
+// that farm link dangling", which is true of an alias exactly as
+// much as of a soname. libSonames answers "what does this scope
+// require", which an alias never does — it is farmed opportunistically
+// and dropped without complaint when contested.
+//
+// Reading the claim set here instead would report a farmed alias as
+// stale on every same-package upgrade, and since nothing claims it
+// the removal guard would wave the pruning through (gh#199).
+func libProvides(storeDir string) (map[string]string, error) {
+	e, err := libExports(storeDir)
+	out := make(map[string]string, len(e.sonames)+len(e.aliases))
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, nil
+		}
+		return nil, fmt.Errorf("read lib dir: %w", err)
+	}
+	maps.Copy(out, e.sonames)
+	maps.Copy(out, e.aliases)
+	return out, nil
 }
 
 // depopulatedSonames returns the set of farm entries Depopulate

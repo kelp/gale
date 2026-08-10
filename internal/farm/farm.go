@@ -5,10 +5,22 @@
 // upgrades with SONAME-compatible changes (symlink flips
 // to new version, binaries keep loading).
 //
-// Only versioned basenames are farmed — libcurl.4.dylib,
-// libssl.so.3, etc. Unversioned basenames like libcurl.dylib
-// aren't farmed because they'd collide across major
-// versions.
+// Two classes of basename are farmed.
+//
+// Versioned sonames — libcurl.4.dylib, libssl.so.3 — carry
+// their own ABI promise. One package claims each; a second
+// claimant is a recipe bug and a hard error.
+//
+// Unversioned aliases — libssl.dylib — carry no promise of
+// their own, so one is farmed only while exactly one package
+// in the closure provides it AND it resolves, one hop inside
+// that package's lib dir, to a soname the farm already
+// carries, inheriting that soname's promise. Two providers
+// (openssl and openssl4 both ship libssl.dylib) means the
+// alias is farmed for neither, never that the install fails.
+// Mach-O records unversioned names, so darwin only; ELF
+// DT_NEEDED records the soname and needs none of this
+// (gh#199).
 package farm
 
 import (
@@ -72,11 +84,28 @@ func DirFromStoreDir(storeDir string) string {
 	return filepath.Join(filepath.Dir(pkgRoot), "lib")
 }
 
+// darwinLibName matches any darwin shared-library basename,
+// versioned or not. It exists so the unversioned class can be
+// defined as the complement of the versioned one within this
+// shape rather than as a third independent regex: two patterns
+// that must agree about where the version tail starts is the
+// gh#165/gh#168 mistake waiting to be made again, and the two
+// classes have to stay disjoint.
+var darwinLibName = regexp.MustCompile(
+	`^lib[A-Za-z0-9_+.\-]+\.dylib$`,
+)
+
 // IsVersionedDylib reports whether a basename matches the
 // versioned dylib pattern for the current OS. Unversioned
 // basenames (libfoo.dylib, libfoo.so) return false.
 func IsVersionedDylib(name string) bool {
-	switch runtime.GOOS {
+	return isVersionedFor(runtime.GOOS, name)
+}
+
+// isVersionedFor is IsVersionedDylib with the OS as an
+// argument, so both platforms' rules are testable from either.
+func isVersionedFor(goos, name string) bool {
+	switch goos {
 	case "darwin":
 		return darwinVersioned.MatchString(name)
 	case "linux":
@@ -84,6 +113,74 @@ func IsVersionedDylib(name string) bool {
 	default:
 		return false
 	}
+}
+
+// IsUnversionedAlias reports whether a basename has the
+// unversioned shared-library shape — libssl.dylib, not
+// libssl.3.dylib. Shape only: whether such a name is farmable
+// also depends on what it points at (see aliasTarget).
+func IsUnversionedAlias(name string) bool {
+	return isUnversionedAlias(runtime.GOOS, name)
+}
+
+// isUnversionedAlias is IsUnversionedAlias with the OS as an
+// argument.
+//
+// Darwin only. Mach-O binaries record unversioned install names
+// (git-remote-http references @rpath/libssl.dylib), so the farm
+// must be able to answer them. ELF DT_NEEDED records the
+// versioned soname instead, leaving libfoo.so a build-time
+// devel symlink nothing resolves at runtime — farming it on
+// Linux would be dead weight plus collision surface.
+func isUnversionedAlias(goos, name string) bool {
+	if goos != "darwin" {
+		return false
+	}
+	return darwinLibName.MatchString(name) &&
+		!darwinVersioned.MatchString(name)
+}
+
+// aliasTarget reports whether name in libDir is a farmable
+// unversioned alias, and returns the in-package path a farm
+// entry for it must target.
+//
+// Farmable means all of: unversioned-shaped basename; the entry
+// is a SYMLINK (a real unversioned file inherits no soname's
+// promise and is not farmed); the link's first hop stays inside
+// this lib directory; that hop's basename is itself versioned;
+// and the chain ends at a regular file.
+//
+// ONE hop, then Stat. Resolving the whole chain and demanding
+// the real file sit in this lib dir would reject the layout
+// spelling_test.go pins, where a farmed versioned soname is
+// itself a symlink to a real file outside the store entirely.
+//
+// The returned path is the ALIAS inside the package, never what
+// it resolves to — the rule Populate already applies to
+// versioned aliases, and the one UnderStoreDir rests on.
+func aliasTarget(libDir, name string) (string, bool) {
+	if !IsUnversionedAlias(name) {
+		return "", false
+	}
+	path := filepath.Join(libDir, name)
+	hop, err := os.Readlink(path)
+	if err != nil {
+		return "", false
+	}
+	if !filepath.IsAbs(hop) {
+		hop = filepath.Join(libDir, hop)
+	}
+	if filepath.Dir(filepath.Clean(hop)) != filepath.Clean(libDir) {
+		return "", false
+	}
+	if !IsVersionedDylib(filepath.Base(hop)) {
+		return "", false
+	}
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	return path, true
 }
 
 // exports is one store dir's contribution to the farm, split
@@ -94,6 +191,11 @@ type exports struct {
 	// sonames holds versioned basenames. This is the CLAIM
 	// set: what a scope requires the farm to hand it.
 	sonames map[string]string
+	// aliases holds unversioned basenames that inherit a
+	// soname's promise. Farmed, but never claimed — a claimed
+	// alias would make the guard refuse every rebuild on a
+	// machine holding two packages that ship one.
+	aliases map[string]string
 }
 
 // libExports enumerates one store dir's farmable lib entries.
@@ -109,7 +211,10 @@ type exports struct {
 // provided), so that decision stays with them.
 func libExports(storeDir string) (exports, error) {
 	libDir := filepath.Join(storeDir, "lib")
-	out := exports{sonames: map[string]string{}}
+	out := exports{
+		sonames: map[string]string{},
+		aliases: map[string]string{},
+	}
 	entries, err := os.ReadDir(libDir)
 	if err != nil {
 		return out, err
@@ -117,6 +222,11 @@ func libExports(storeDir string) (exports, error) {
 	for _, entry := range entries {
 		name := entry.Name()
 		if !IsVersionedDylib(name) {
+			// The classes are disjoint, so this is the only
+			// place an unversioned name can be considered.
+			if target, ok := aliasTarget(libDir, name); ok {
+				out.aliases[name] = target
+			}
 			continue
 		}
 		// Farm real files AND versioned symlink aliases.
@@ -217,6 +327,140 @@ func Populate(storeDir, farmDir string) error {
 	return nil
 }
 
+// AliasEntry is one farmable unversioned alias: the basename,
+// the single store dir providing it, and the in-package path a
+// farm entry carries.
+type AliasEntry struct {
+	Name     string
+	StoreDir string
+	Target   string
+}
+
+// AliasConflict is an unversioned alias more than one store dir
+// in the closure provides. Owners holds sorted store
+// identities.
+type AliasConflict struct {
+	Name   string
+	Owners []string
+}
+
+// aliasProvider is one store dir's unversioned aliases, the
+// input partitionAliases reasons over.
+type aliasProvider struct {
+	storeDir string
+	aliases  map[string]string
+}
+
+// partitionAliases splits a closure's unversioned aliases into
+// the ones the farm can carry and the ones it must drop.
+//
+// Order-independent by construction: a pure function of the
+// whole set, so the same closure yields the same partition
+// whatever order the dirs arrive in and whatever order they
+// were installed in (940a67a).
+//
+// Drop, not error. Two packages shipping libssl.dylib is not
+// the recipe bug two packages shipping libssl.3.dylib is:
+// gale-recipes stages major ABI breaks as separate recipes
+// (openssl, openssl4), both configure --libdir=lib, and both
+// therefore ship the alias. Erroring would make that deliberate
+// coexistence a hard install failure, gh#42's failure mode.
+// Dropping leaves the unversioned name unresolvable — which is
+// what it already is today — and costs nothing that worked.
+//
+// The collision key is the STORE DIR, not the package name: two
+// revisions of one package resolving the same alias to
+// different sonames are as incompatible as two packages, and no
+// versioned conflict fires to catch that.
+func partitionAliases(
+	providers []aliasProvider,
+) ([]AliasEntry, []AliasConflict) {
+	byName := map[string]map[string]string{}
+	for _, p := range providers {
+		for name, target := range p.aliases {
+			if byName[name] == nil {
+				byName[name] = map[string]string{}
+			}
+			byName[name][p.storeDir] = target
+		}
+	}
+
+	var entries []AliasEntry
+	var conflicts []AliasConflict
+	for _, name := range slices.Sorted(maps.Keys(byName)) {
+		dirs := byName[name]
+		if len(dirs) == 1 {
+			for dir, target := range dirs {
+				entries = append(entries, AliasEntry{
+					Name: name, StoreDir: dir, Target: target,
+				})
+			}
+			continue
+		}
+		owners := make([]string, 0, len(dirs))
+		for dir := range dirs {
+			owners = append(owners, identityOfDir(dir))
+		}
+		slices.Sort(owners)
+		conflicts = append(conflicts, AliasConflict{
+			Name: name, Owners: owners,
+		})
+	}
+	return entries, conflicts
+}
+
+// FarmableAliases partitions the unversioned aliases a closure
+// provides into the ones the farm carries and the ones it drops
+// because more than one store dir supplies them. Both results
+// are sorted by Name.
+func FarmableAliases(
+	storeDirs []string,
+) ([]AliasEntry, []AliasConflict, error) {
+	var providers []aliasProvider
+	for _, dir := range storeDirs {
+		e, err := libExports(dir)
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			return nil, nil, fmt.Errorf(
+				"enumerating aliases of %s: %w", dir, err,
+			)
+		}
+		if len(e.aliases) == 0 {
+			continue
+		}
+		providers = append(providers, aliasProvider{
+			storeDir: dir, aliases: e.aliases,
+		})
+	}
+	entries, conflicts := partitionAliases(providers)
+	return entries, conflicts, nil
+}
+
+// linkAliases lays a closure's farmable unversioned aliases.
+// Runs after every Populate so the versioned entries they
+// inherit from are already settled, and never overwrites an
+// existing farm entry.
+func linkAliases(storeDirs []string, farmDir string) error {
+	entries, _, err := FarmableAliases(storeDirs)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		link := filepath.Join(farmDir, e.Name)
+		if _, err := os.Lstat(link); err == nil {
+			continue
+		}
+		if err := os.Symlink(e.Target, link); err != nil {
+			return fmt.Errorf(
+				"create alias symlink %s: %w", e.Name, err,
+			)
+		}
+	}
+	return nil
+}
+
 // Depopulate removes farm symlinks whose target starts with
 // storeDir. Called on package remove.
 func Depopulate(storeDir, farmDir string) error {
@@ -275,6 +519,14 @@ func Rebuild(activeStoreDirs []string, farmDir string) error {
 		if err := Populate(storeDir, farmDir); err != nil {
 			errs = append(errs, fmt.Errorf("populate %s: %w", storeDir, err))
 		}
+	}
+	// Aliases are a property of the closure, not of a package:
+	// whether libssl.dylib is farmable depends on whether a
+	// second provider exists, which Populate cannot see. Doing
+	// it here, once, over the whole set is what makes the drop
+	// stable rather than provisional (gh#199).
+	if err := linkAliases(activeStoreDirs, farmDir); err != nil {
+		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
 }
@@ -343,6 +595,16 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 		pkgName := packageName(storeDir)
 		pkgVer := filepath.Base(storeDir)
 		pkgRoot := filepath.Dir(filepath.Dir(storeDir))
+		// Versioned sonames only. A MISSING alias is never drift:
+		// activeStoreDirs is one scope's closure, while Rebuild
+		// partitions the machine-wide guarded union, so a scope
+		// holding only openssl computes "libssl.dylib should be
+		// here" for a union that legitimately dropped it. Drift
+		// renders as an Error telling the user to run
+		// `gale doctor --repair`, and no repair can clear that —
+		// gh#50 again. Contested aliases are reported separately,
+		// as a warning, by the doctor.
+		//
 		// Sorted so a multi-issue report reads the same way
 		// twice (940a67a).
 		for _, name := range slices.Sorted(maps.Keys(e.sonames)) {
@@ -406,7 +668,11 @@ func packageName(storeDir string) string {
 func claimedSonames(storeDirs []string) map[string]bool {
 	out := make(map[string]bool)
 	for _, storeDir := range storeDirs {
-		libs, err := libSonames(storeDir)
+		// libProvides: a farmed alias pointing into this scope's
+		// own closure labelled "outside this scope's closure"
+		// would be exactly the diagnostic-disagrees-with-reality
+		// bug this function's own comment warns about.
+		libs, err := libProvides(storeDir)
 		if err != nil {
 			continue
 		}
