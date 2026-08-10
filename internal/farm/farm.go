@@ -14,10 +14,12 @@ package farm
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"slices"
 	"strings"
 )
 
@@ -84,6 +86,56 @@ func IsVersionedDylib(name string) bool {
 	}
 }
 
+// exports is one store dir's contribution to the farm, split
+// by entry class. The map values are the path INSIDE the
+// package a farm entry targets — never the file that path
+// resolves to.
+type exports struct {
+	// sonames holds versioned basenames. This is the CLAIM
+	// set: what a scope requires the farm to hand it.
+	sonames map[string]string
+}
+
+// libExports enumerates one store dir's farmable lib entries.
+// It is the single place the farming predicate is spelled;
+// Populate, CheckDrift and the guard all read it, so they
+// cannot disagree about what a package contributes. Three
+// independent copies of that rule was three chances for the
+// diagnostic to disagree with the thing it describes.
+//
+// The os.ReadDir error is returned unwrapped: callers differ
+// on what a missing lib/ means (Populate returns nil,
+// CheckDrift skips the dir, the guard reports nothing
+// provided), so that decision stays with them.
+func libExports(storeDir string) (exports, error) {
+	libDir := filepath.Join(storeDir, "lib")
+	out := exports{sonames: map[string]string{}}
+	entries, err := os.ReadDir(libDir)
+	if err != nil {
+		return out, err
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		if !IsVersionedDylib(name) {
+			continue
+		}
+		// Farm real files AND versioned symlink aliases.
+		// libtool installs the real file as libfoo.so.N.M.P
+		// with the soname libfoo.so.N as a symlink to it, and
+		// ELF DT_NEEDED / Mach-O install names reference the
+		// soname — so the alias must resolve through the farm
+		// too. Stat follows the chain, so dangling aliases
+		// drop out here.
+		path := filepath.Join(libDir, name)
+		info, err := os.Stat(path)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		out.sonames[name] = path
+	}
+	return out, nil
+}
+
 // Populate adds farm symlinks for every versioned dylib in
 // <storeDir>/lib/. Creates farmDir if it doesn't exist.
 //
@@ -93,8 +145,7 @@ func IsVersionedDylib(name string) bool {
 // the entry is overwritten (newer wins) and a message is
 // written to stderr.
 func Populate(storeDir, farmDir string) error {
-	libDir := filepath.Join(storeDir, "lib")
-	entries, err := os.ReadDir(libDir)
+	e, err := libExports(storeDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
@@ -110,27 +161,10 @@ func Populate(storeDir, farmDir string) error {
 	pkgVer := filepath.Base(storeDir)
 	var replaced int
 
-	for _, entry := range entries {
-		name := entry.Name()
-		if !IsVersionedDylib(name) {
-			continue
-		}
-		// Farm real files AND versioned symlink aliases.
-		// libtool installs the real file as libfoo.so.N.M.P
-		// with the soname libfoo.so.N as a symlink to it, and
-		// ELF DT_NEEDED / Mach-O install names reference the
-		// soname — so the alias must resolve through the farm
-		// too. Stat follows the chain, so dangling aliases
-		// drop out here.
-		info, err := os.Stat(filepath.Join(libDir, name))
-		if err != nil {
-			continue
-		}
-		if !info.Mode().IsRegular() {
-			continue
-		}
-
-		target := filepath.Join(libDir, name)
+	// Sorted, not map order: which conflict surfaces first
+	// must not depend on iteration order (940a67a).
+	for _, name := range slices.Sorted(maps.Keys(e.sonames)) {
+		target := e.sonames[name]
 		link := filepath.Join(farmDir, name)
 
 		if existing, err := os.Readlink(link); err == nil {
@@ -302,33 +336,23 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 	// Drift type 2: packages in the active generation whose
 	// versioned dylibs aren't represented in the farm.
 	for _, storeDir := range activeStoreDirs {
-		libDir := filepath.Join(storeDir, "lib")
-		libs, err := os.ReadDir(libDir)
+		e, err := libExports(storeDir)
 		if err != nil {
 			continue
 		}
 		pkgName := packageName(storeDir)
 		pkgVer := filepath.Base(storeDir)
 		pkgRoot := filepath.Dir(filepath.Dir(storeDir))
-		for _, l := range libs {
-			if !IsVersionedDylib(l.Name()) {
-				continue
-			}
-			// Same predicate as Populate: real files and
-			// symlink aliases that resolve to a regular file
-			// are farmed, so both must be present. Dangling
-			// aliases are skipped by both.
-			lp := filepath.Join(libDir, l.Name())
-			lInfo, err := os.Stat(lp)
-			if err != nil || !lInfo.Mode().IsRegular() {
-				continue
-			}
-			link := filepath.Join(farmDir, l.Name())
+		// Sorted so a multi-issue report reads the same way
+		// twice (940a67a).
+		for _, name := range slices.Sorted(maps.Keys(e.sonames)) {
+			lp := e.sonames[name]
+			link := filepath.Join(farmDir, name)
 			target, err := os.Readlink(link)
 			if err != nil {
 				issues = append(issues, fmt.Sprintf(
 					"missing farm entry for %s@%s: %s",
-					pkgName, pkgVer, l.Name(),
+					pkgName, pkgVer, name,
 				))
 				continue
 			}
@@ -344,7 +368,7 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 				) {
 					issues = append(issues, fmt.Sprintf(
 						"%s claimed by another package (farm -> %s)",
-						l.Name(), target,
+						name, target,
 					))
 				}
 			}
@@ -373,12 +397,12 @@ func packageName(storeDir string) string {
 // part of the closure being checked, or does it belong to the wider
 // shared farm?
 //
-// It delegates to libSonames, the same enumeration Populate and
-// claimant construction use, rather than re-deriving the predicate.
-// Three copies of "which files does this package contribute to the
-// farm" is three chances for the diagnostic to disagree with the
-// thing it describes; the first copy already labelled dangling
-// aliases as required.
+// It delegates to libSonames, itself a view over libExports, rather
+// than re-deriving the predicate. That enumeration is now spelled
+// once: three copies of "which files does this package contribute
+// to the farm" was three chances for the diagnostic to disagree
+// with the thing it describes, and the first copy already labelled
+// dangling aliases as required.
 func claimedSonames(storeDirs []string) map[string]bool {
 	out := make(map[string]bool)
 	for _, storeDir := range storeDirs {

@@ -350,34 +350,25 @@ func placedSonameTargets(
 	return out, nil
 }
 
-// libSonames returns soname -> lib path for one store dir. Same
-// farming predicate as Populate and CheckDrift: versioned basenames
-// only, real files and symlink aliases that resolve to a regular
-// file, dangling aliases dropped. A dir with no lib/ — including a
-// dir not installed at all — provides nothing.
+// libSonames returns soname -> lib path for one store dir: a view
+// over libExports, the single spelling of the farming predicate.
+// A dir with no lib/ — including a dir not installed at all —
+// provides nothing.
+//
+// This is the CLAIM set, and it is versioned basenames only. What a
+// scope requires the farm to hand it is a narrower question than
+// what a store dir can back, and conflating the two is a refusal
+// bug: a name that appears here makes GuardPopulate and
+// GuardRebuild refuse when a second provider shows up.
 func libSonames(storeDir string) (map[string]string, error) {
-	libDir := filepath.Join(storeDir, "lib")
-	out := map[string]string{}
-	entries, err := os.ReadDir(libDir)
+	e, err := libExports(storeDir)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return out, nil
+			return e.sonames, nil
 		}
 		return nil, fmt.Errorf("read lib dir: %w", err)
 	}
-	for _, entry := range entries {
-		name := entry.Name()
-		if !IsVersionedDylib(name) {
-			continue
-		}
-		path := filepath.Join(libDir, name)
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		out[name] = path
-	}
-	return out, nil
+	return e.sonames, nil
 }
 
 // depopulatedSonames returns the set of farm entries Depopulate
