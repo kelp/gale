@@ -207,8 +207,27 @@ Two rules that bite agents specifically:
 
 - **TDD is mandatory.** Write the failing test first, at the right layer.
   A passing `internal/foo` test alone does not prove a tier-3 fix.
-- **Commits must be signed.** If `git commit -S` fails, stop immediately and
-  say so. Do not diagnose it, retry it, or hunt for an ssh-agent socket —
-  CLAUDE.md explains why that never helps.
+- **Commits must be signed, and signing works in this container.** The
+  environment provisions its own ssh signing key and signing helper, so
+  `git commit -S` succeeds unattended:
+
+  ```
+  gpg.format=ssh
+  gpg.ssh.program=/tmp/code-sign        -> /opt/env-runner/environment-manager
+  user.signingkey=/home/claude/.ssh/commit_signing_key.pub
+  commit.gpgsign=true
+  ```
+
+  There is no Secretive here and `SSH_AUTH_SOCK` is empty — neither is
+  needed. Confirm a signature landed by looking for a `gpgsig
+  -----BEGIN SSH SIGNATURE-----` block in `git cat-file -p HEAD`, not with
+  `git log --show-signature`: verification reports `N` / "needs to be
+  configured" because `gpg.ssh.allowedSignersFile` is unset, which is a
+  verification-side gap and not a signing failure. Don't try to "fix" it.
+
+  CLAUDE.md's "stop, the user is away from their machine" rule is about
+  Secretive on the Mac and does **not** apply here. A `git commit -S`
+  failure in this container is a genuine problem — report it rather than
+  attributing it to an absent user, and still never pass `--no-gpg-sign`.
 
 Use `tmp/` at the repo root for scratch files, not `/tmp`.
