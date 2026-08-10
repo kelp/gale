@@ -110,15 +110,19 @@ func TestPartitionAliasesDropsAContestedName(t *testing.T) {
 // function of the whole set, so install order and map order cannot
 // decide which package wins a farm entry (940a67a).
 func TestPartitionAliasesIsOrderIndependent(t *testing.T) {
-	a := aliasProvider{storeDir: "/g/pkg/openssl/3.6.1-4",
+	a := aliasProvider{
+		storeDir: "/g/pkg/openssl/3.6.1-4",
 		aliases: map[string]string{
 			"libssl.dylib": "/g/pkg/openssl/3.6.1-4/lib/libssl.dylib",
 			"libz.dylib":   "/g/pkg/openssl/3.6.1-4/lib/libz.dylib",
-		}}
-	b := aliasProvider{storeDir: "/g/pkg/openssl4/4.0.0-2",
+		},
+	}
+	b := aliasProvider{
+		storeDir: "/g/pkg/openssl4/4.0.0-2",
 		aliases: map[string]string{
 			"libssl.dylib": "/g/pkg/openssl4/4.0.0-2/lib/libssl.dylib",
-		}}
+		},
+	}
 
 	fwdEntries, fwdConflicts := partitionAliases([]aliasProvider{a, b})
 	revEntries, revConflicts := partitionAliases([]aliasProvider{b, a})
