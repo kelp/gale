@@ -26,28 +26,57 @@ directory.
 ## Lockfile
 
 Commit `gale.lock` alongside `gale.toml`. The lockfile
-records the version and checksum of each package
-listed in `gale.toml`. Transitive dependencies are not
-recorded.
+records the whole closure — declared packages and their
+transitive dependencies — with the checksum of every
+artifact, per platform.
 
-Today it is a record, not a control: `gale sync`
-installs from the current recipe and rewrites the
-lockfile to match, so a changed upstream artifact is
-accepted rather than rejected. Do not rely on
-`gale.lock` for supply-chain integrity yet. What does
-hold is version selection: pin exact versions in
-`gale.toml` and every runner installs those versions.
+It is enforced. `gale sync` installs what the lock names
+and refuses anything else; it never rewrites the lock to
+match what it found. A runner that resolves a different
+artifact fails instead of proceeding. `gale sync
+--no-frozen` opts out, installing from recipes without
+integrity enforcement.
 
-`gale audit` and `gale verify` do not close this gap.
-Both read their expected value from the same lockfile,
-and neither inspects the installed store directory:
-`audit` rebuilds from source and compares against the
-lockfile's SHA256, and `verify` checks the Sigstore
-attestation for the manifest digest the lockfile
-names.
+Full schema, enforcement model and remedies:
+[lockfile.md](lockfile.md).
 
-Enforcement is being added in
-[issue #182](https://github.com/kelp/gale/issues/182).
+## Exit codes
+
+Gale used only exit 1 before enforcement, so the
+taxonomy below is additive. A pipeline can tell
+"artifact tampered" from "build broke" without parsing
+messages.
+
+| Code | Class | Meaning |
+| --- | --- | --- |
+| 1 | ordinary failure | build error, network error, usage error |
+| 3 | lock integrity violation | artifact SHA, manifest digest, provenance or `graph_digest` mismatch; store-dir provenance conflict; cross-project farm conflict |
+| 4 | lock unusable | a lock that is present but cannot be parsed or fully modeled: stale lock; missing package, dependency or platform entry; legacy schema; unknown schema version; malformed downgrade guard; malformed TOML; unknown field |
+| 5 | activation drift | the active generation does not match the lock, including carry-forward |
+
+The split that matters is 3 against 4 and 5. **Code 3
+means something disagreed with bytes the lock names, and
+deserves a human** — never retry it automatically. Codes
+4 and 5 mean the lock or the generation needs
+regenerating, which a pipeline can handle itself:
+
+```sh
+gale sync
+case $? in
+  0) ;;
+  3) echo "gale: lock integrity violation" >&2; exit 3 ;;
+  4) gale lock --refresh && gale sync || exit $? ;;
+  *) exit 1 ;;
+esac
+```
+
+Code 5 comes from the activation commands — `gale env`,
+`gale shell`, `gale run` — when the active generation no
+longer matches the lock. Its remedy is `gale sync`.
+
+The same codes come from every command that can reach
+these states: `sync`, `install`, `update`, `lock`,
+`migrate`, `shell`, `run`, `remove` and `env`.
 
 ## Caching
 

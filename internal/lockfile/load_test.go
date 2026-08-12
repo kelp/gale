@@ -178,3 +178,34 @@ func TestReadV1DanglingSymlinkIsNotMissing(t *testing.T) {
 		t.Errorf("err = %v, want ErrMalformed", err)
 	}
 }
+
+// TestLoadUnreadableFileIsNotAbsent covers readLockFile's third
+// case, beside the missing file and the dangling symlink: a lock that
+// exists and cannot be read at all. Load must fail rather than report
+// absence, for the same reason — an unanswered question must never
+// read as "nothing locked".
+//
+// Formerly asserted through the legacy Read, which was culled with
+// gh#197; readLockFile is shared by both surviving entry points, so
+// the path is unchanged.
+func TestLoadUnreadableFileIsNotAbsent(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("mode-0 files are readable as root")
+	}
+	path := filepath.Join(t.TempDir(), "gale.lock")
+	if err := os.WriteFile(path,
+		[]byte("[packages.jq]\nversion = \"1.7.1\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+
+	v, err := Load(path)
+	if err == nil {
+		t.Fatalf("Load succeeded with Kind = %v, want an error", v.Kind)
+	}
+	if v != nil {
+		t.Errorf("Load returned a view alongside an error: %+v", v)
+	}
+}

@@ -15,6 +15,14 @@ import (
 	"github.com/kelp/gale/internal/projects"
 )
 
+// legacyLockBody is a lock in the flat pre-enforcement schema, spelled
+// out because nothing writes it any more: lockfile.Write was culled
+// with gh#197, since a flat-schema writer is the downgrade the v1
+// guard entry exists to stop. The claim walk still has to read one,
+// because every gale shipped before enforcement wrote this.
+const legacyLockBody = "[packages.curl]\nversion = \"8.19.0-1\"\n" +
+	"sha256 = \"deadbeef\"\n"
+
 // claimsFixture is one machine: a gale home with a shared store, a
 // registered project, and helpers to give either scope a lock or an
 // installed dylib-providing package.
@@ -385,13 +393,9 @@ func TestFarmClaimants_UnlockedScopeClaimsActiveGeneration(t *testing.T) {
 				t.Fatal(err)
 			}
 			if tc.legacy {
-				legacy := &lockfile.LockFile{
-					Packages: map[string]lockfile.LockedPackage{
-						"curl": {Version: "8.19.0-1", SHA256: "deadbeef"},
-					},
-				}
-				if err := lockfile.Write(
-					filepath.Join(f.proj, "gale.lock"), legacy,
+				if err := os.WriteFile(
+					filepath.Join(f.proj, "gale.lock"),
+					[]byte(legacyLockBody), 0o644,
 				); err != nil {
 					t.Fatal(err)
 				}

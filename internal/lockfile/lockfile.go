@@ -1,47 +1,36 @@
 package lockfile
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/BurntSushi/toml"
-
-	"github.com/kelp/gale/internal/atomicfile"
 )
 
-// LockedPackage represents a pinned package in the lockfile.
+// LockedPackage represents a pinned package in the flat
+// pre-enforcement lockfile. Nothing writes this schema any more; it
+// survives because every gale shipped before enforcement did, so a
+// lock on disk today may still be in it.
 type LockedPackage struct {
 	Version        string `toml:"version"`
 	SHA256         string `toml:"sha256,omitempty"`
 	ManifestDigest string `toml:"manifest_digest,omitempty"`
 }
 
-// LockFile represents a gale.lock file.
+// LockFile represents a gale.lock file in the flat pre-enforcement
+// schema. Load returns it as View.Legacy for KindLegacy.
 type LockFile struct {
 	Packages map[string]LockedPackage `toml:"packages"`
-}
-
-// Read reads a gale.lock file. Returns empty LockFile
-// if the file doesn't exist.
-func Read(path string) (*LockFile, error) {
-	data, absent, err := readLockFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if absent {
-		return &LockFile{
-			Packages: make(map[string]LockedPackage),
-		}, nil
-	}
-	return decodeLegacy(data)
 }
 
 // decodeLegacy decodes the flat pre-enforcement schema. A file with
 // no [packages] table yields an empty map rather than a nil one, so
 // callers may write into the result without checking.
+//
+// Read-only by design. This package writes the enforced schema and
+// nothing else: a flat-schema writer would convert an enforced lock
+// back into one an already-shipped gale rewrites at will, which is
+// the downgrade guardKey exists to stop.
 func decodeLegacy(data []byte) (*LockFile, error) {
 	var lf LockFile
 	if _, err := toml.Decode(string(data), &lf); err != nil {
@@ -51,40 +40,6 @@ func decodeLegacy(data []byte) (*LockFile, error) {
 		lf.Packages = make(map[string]LockedPackage)
 	}
 	return &lf, nil
-}
-
-// Write writes a LockFile to the given path atomically.
-func Write(path string, lf *LockFile) error {
-	var buf bytes.Buffer
-	enc := toml.NewEncoder(&buf)
-	if err := enc.Encode(lf); err != nil {
-		return fmt.Errorf("encoding lock file: %w", err)
-	}
-	return atomicfile.Write(path, buf.Bytes())
-}
-
-// IsStale checks if the lock file is stale relative to
-// the gale.toml packages. Returns true if packages differ.
-func IsStale(
-	lockPath string,
-	tomlPackages map[string]string,
-) (bool, error) {
-	_, err := os.Stat(lockPath)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return true, nil
-		}
-		return false, fmt.Errorf("stat lock file: %w", err)
-	}
-
-	// Compare package content rather than relying on mtime,
-	// which can be misleading under clock skew.
-	lf, err := Read(lockPath)
-	if err != nil {
-		return false, fmt.Errorf("reading lock file: %w", err)
-	}
-
-	return lf.Stale(tomlPackages), nil
 }
 
 // Stale reports whether the flat schema's entries disagree with the

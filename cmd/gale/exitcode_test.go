@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/spf13/cobra"
 
 	"github.com/kelp/gale/internal/activation"
 	"github.com/kelp/gale/internal/download"
@@ -340,5 +343,65 @@ func TestExitCodeForLockedNetworkFailure(t *testing.T) {
 	if got := exitCodeFor(err); got != exitFailure {
 		t.Errorf("locked network failure: got exit %d, want %d",
 			got, exitFailure)
+	}
+}
+
+// TestExitCodeSurvivesTheTopLevel closes acceptance 32's remaining
+// gap without one near-identical test per command.
+//
+// Every command's error reaches the shell through one path —
+// executeRoot returns it and Execute hands it to exitCodeFor — so the
+// class a command exits with is decided by the classifier plus that
+// path preserving the sentinel. The classifier is pinned
+// exhaustively above. This pins the path, which is where the class
+// would be lost for EVERY command at once: `fmt.Errorf("gale: %s",
+// err)` in place of %w, or a formatter that returns its own error
+// after rendering, collapses the whole taxonomy to 1 silently and no
+// per-command test of the classifier would notice.
+//
+// The JSON error format is exercised alongside the default, because
+// it is the branch that already reads the error to render it and is
+// therefore the one that could plausibly replace it.
+func TestExitCodeSurvivesTheTopLevel(t *testing.T) {
+	classes := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{"ordinary", errors.New("connection refused"), exitFailure},
+		{"integrity", provenance.ErrInvalid, exitLockIntegrity},
+		{"unusable", lockfile.ErrLegacySchema, exitLockUnusable},
+		{"drift", activation.ErrDrift, exitActivationDrift},
+	}
+	for _, format := range []string{"text", "json"} {
+		for _, class := range classes {
+			t.Run(format+"/"+class.name, func(t *testing.T) {
+				cmd := &cobra.Command{
+					Use:   "boom",
+					Short: "test command",
+					Args:  cobra.NoArgs,
+					RunE: func(_ *cobra.Command, _ []string) error {
+						// Wrapped, because a real command adds context
+						// with %w before returning.
+						return fmt.Errorf("running boom: %w", class.err)
+					},
+				}
+				var stderr bytes.Buffer
+				reset := addTempRootCommand(t, cmd)
+				defer reset()
+				rootCmd.SetErr(&stderr)
+				rootCmd.SetOut(&stderr)
+				rootCmd.SetArgs([]string{"--error-format=" + format, "boom"})
+
+				err := executeRoot()
+				if err == nil {
+					t.Fatal("expected an error from the command")
+				}
+				if got := exitCodeFor(err); got != class.want {
+					t.Errorf("exit code = %d, want %d (%v)",
+						got, class.want, err)
+				}
+			})
+		}
 	}
 }

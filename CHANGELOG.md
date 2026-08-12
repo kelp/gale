@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Changed (breaking)
+
+- **`gale.lock` is now enforced, and a lockfile written by an
+  earlier gale is refused (#182).** Every project and global
+  scope carrying a pre-enforcement `gale.lock` fails on the
+  first run after upgrading — including inside direnv. The
+  error names the remedy: `gale lock --refresh` in that scope,
+  or `gale migrate` to refetch and replace every unprovenanced
+  binary-method store directory in one pass. `gale doctor`
+  reports the state in either scope. Treating a legacy lock as
+  absent was considered and rejected: it is a silent downgrade
+  of a security control.
+
+  What the new schema changes for anyone who has been reading
+  `gale.lock`: it is versioned (`version = 1`), records the
+  whole closure rather than declared packages alone, keys
+  package nodes `name@version-revision`, carries platform as an
+  artifact dimension, and carries a mandatory
+  `[packages."!gale-lock-v1"]` guard entry. The guard is what
+  stops an already-shipped gale from rewriting a v1 file in its
+  own flat schema; it turns silent data loss into a loud
+  failure rather than removing it, so **upgrade gale everywhere
+  before committing a v1 lock.**
+
+  `gale sync` no longer writes `gale.lock`. It installs the
+  closure the lock names and fails if it cannot, which is what
+  makes the lock a control instead of a record — previously
+  sync rewrote the lock to match whatever it had installed, so
+  a changed upstream artifact was recorded rather than refused.
+  The writers are `install`, `update`, `remove` and `lock`.
+  `gale sync --no-frozen` ignores the lock and installs
+  unenforced, with a warning.
+
+  Failures now carry an exit code by class: 3 for a lock
+  integrity violation, 4 for a lock that is present and cannot
+  be modeled, 5 for activation drift. gale used only exit 1
+  before, so the taxonomy is additive. Full schema, enforcement
+  model and remedies: [`docs/lockfile.md`](docs/lockfile.md);
+  the exit-code table for pipelines is in
+  [`docs/ci-cd.md`](docs/ci-cd.md).
+
+- `gale gc` and `gale doctor --repair` take their versions from
+  the scope's lockfile, and refuse the rebuild outright when
+  that lockfile is present and cannot be read (gh#197). Both
+  previously selected versions from the recipe and the store
+  alone. `--force` rebuilds without the lock. Unlocked scopes
+  are unchanged. The defect this closes is under **Fixed**
+  below.
+
 ### Added
 
 - `gale sync --if-needed`: sync only when the last sync did not

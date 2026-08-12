@@ -472,13 +472,7 @@ func TestInstallRefusesALegacyLock(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lockfile.Write(lp, &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			"testpkg": {Version: "1.0.0", SHA256: "old"},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	writeLegacyLock(t, lp, "testpkg", "1.0.0", "old")
 	before, err := os.ReadFile(lp)
 	if err != nil {
 		t.Fatal(err)
