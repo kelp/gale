@@ -95,25 +95,51 @@ bare dirs are `gale gc` candidates.
 ## The shared dylib farm
 
 `~/.gale/lib/` is a flat directory of symlinks into the store,
-keyed by versioned library basename (`libcurl.4.dylib`,
-`libpcre2-8.so.0`). Binaries built under v0.12.0+ carry an
-extra rpath to the farm alongside their per-version rpaths.
+keyed by library basename. Binaries built under v0.12.0+ carry
+an extra rpath to the farm alongside their per-version rpaths.
 When a dep is upgraded to a SONAME-compatible revision, the
 farm symlink flips to point at the new store dir and every
 dependent binary keeps resolving through `@rpath` without a
-rebuild. Implementation at `internal/farm/farm.go:74-327`,
-invoked from the installer at
-`internal/installer/installer.go:377-381`.
+rebuild. Implementation in `internal/farm/`, invoked from the
+installer and from every generation rebuild.
+
+Two classes of basename are farmed, under different rules.
+
+**Versioned sonames** (`libcurl.4.dylib`, `libpcre2-8.so.0`)
+carry their own ABI promise.
+
+**Unversioned aliases** (`libssl.dylib`) carry none, so one is
+farmed only when it inherits a promise: it must be a symlink
+resolving one hop, inside its own package's lib dir, to a
+versioned soname the farm already carries. Mach-O records
+unversioned install names — `git-remote-http` references
+`@rpath/libssl.dylib` — so this is darwin-only; ELF `DT_NEEDED`
+records the soname and needs none of it (gh#199).
 
 Farm invariants:
 
 - One package claims each versioned basename. If two different
   packages both install `libonig.5.dylib` into the farm, the
-  second install fails with a conflict error
-  (`internal/farm/farm.go:110-127`). This is a recipe-level
-  bug and must be fixed — usually by dropping the duplicate
-  from the package that ships it incidentally (see the jq
-  recipe's libonig cleanup).
+  second install fails with a conflict error. This is a
+  recipe-level bug and must be fixed — usually by dropping the
+  duplicate from the package that ships it incidentally (see
+  the jq recipe's libonig cleanup).
+- An unversioned alias two packages provide is **dropped, not
+  an error**: farmed for neither, with no install failure.
+  `openssl` and `openssl4` both configure `--libdir=lib` and
+  both ship `libssl.dylib`, and that coexistence is
+  deliberate, so the versioned rule would turn it into a
+  machine-wide outage. Dropping leaves the unversioned name
+  exactly as unresolvable as it was before the farm carried
+  aliases at all. `gale doctor` warns about the drop but does
+  not fail — no repair can clear it. The collision is keyed on
+  the store dir, so two revisions of one package behind one
+  alias are dropped too.
+- **A binary recording an unversioned name is therefore not
+  covered while two providers are installed.** The durable
+  fixes are the build-time `@rpath` rewrite
+  (`canonicalDepName`) and scoping the farm to a closure
+  (gh#198).
 - The farm is reconciled every time the generation is rebuilt
   (`internal/generation/generation.go:91-95` →
   `farm.Repopulate`). `gale doctor` detects drift (broken

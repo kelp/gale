@@ -542,6 +542,7 @@ func checkFarmScope(
 ) bool {
 	farmDir := farm.DirFromStoreRoot(ctx.storeRoot)
 	active := generation.FarmStoreDirs(pkgs, ctx.storeRoot)
+	reportContestedAliases(ctx, active)
 	issues, err := farm.CheckDrift(active, farmDir)
 	if err != nil {
 		ctx.out.Error(fmt.Sprintf("Farm check failed: %v", err))
@@ -559,6 +560,42 @@ func checkFarmScope(
 		"Run: gale doctor --repair",
 	))
 	return false
+}
+
+// reportContestedAliases warns about unversioned aliases the
+// shared farm had to drop because more than one package in the
+// closure provides them (openssl and openssl4 both ship
+// libssl.dylib). A binary that recorded the unversioned name
+// cannot resolve it through the farm while both are installed.
+//
+// Reported, never failed, and deliberately outside CheckDrift's
+// issue list: those render as an Error telling the user to run
+// `gale doctor --repair`, and no repair can clear a collision —
+// the farm is already doing the only safe thing, and holding
+// both packages is supported. Failing here would be gh#50's
+// unfixable-drift shape all over again.
+func reportContestedAliases(ctx *doctorContext, active []string) {
+	_, conflicts, err := farm.FarmableAliases(active)
+	if err != nil || len(conflicts) == 0 {
+		// An enumeration error is CheckDrift's to report; it
+		// reads the same directories a moment later.
+		return
+	}
+	items := make([]string, 0, len(conflicts))
+	for _, c := range conflicts {
+		items = append(items, fmt.Sprintf(
+			"%s — provided by %s",
+			c.Name, strings.Join(c.Owners, " and "),
+		))
+	}
+	ctx.out.Warn(cappedList(
+		fmt.Sprintf(
+			"Unversioned aliases not farmed (%d)", len(conflicts),
+		),
+		items,
+		"Binaries recording these names resolve them only via "+
+			"per-dep rpaths; rebuild them against one provider.",
+	))
 }
 
 // checkStaleInstalls reports installed packages whose
