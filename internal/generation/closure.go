@@ -83,36 +83,20 @@ func ReferenceClosure(
 // released before the root commits, so one can be collected between
 // the mint and this walk.
 //
-// And staged substitutes for canonical. staged maps a canonical
-// store dir to the directory holding its bytes right now, so the
-// walk reads the artifact about to land rather than the one being
-// replaced. Without it a refresh reads the metadata it is
-// superseding: malformed metadata in an unprovenanced legacy
-// artifact would refuse the very operation that replaces it, and a
-// package still on disk under the old closure would be claimed as
-// though the replacement kept it.
+// And the proposed store view substitutes for canonical. It says,
+// for each directory, where that directory's bytes can be read from
+// right now, so the walk reads the artifact about to land rather
+// than the one being replaced. Without it a refresh reads the
+// metadata it is superseding: malformed metadata in an
+// unprovenanced legacy artifact would refuse the very operation that
+// replaces it, and a package still on disk under the old closure
+// would be claimed as though the replacement kept it.
+//
+// A nil view substitutes nothing.
 func ProposedClosure(
-	roots []string, storeRoot string, staged map[string]string,
+	roots []string, storeRoot string, view *farm.ProposedStore,
 	requirePresent bool,
 ) (map[string]bool, bool) {
-	placements := make([]farm.Placement, 0, len(staged))
-	for canonical, scan := range staged {
-		placements = append(placements, farm.Placement{
-			ScanDir: scan, FinalDir: canonical,
-		})
-	}
-	// The view canonicalizes each key once and decides staged-ness
-	// once, which is what keeps a placement whose bytes are already
-	// canonical (what farm.At builds) from reading as staged and
-	// dragging the staged-artifact tolerance onto an ordinary
-	// committed directory.
-	view, err := farm.NewProposedStore(placements, nil)
-	if err != nil {
-		// Unreachable from a map, whose keys are unique by
-		// construction, and fail-closed anyway: a proposed state that
-		// cannot be represented is one this walk cannot enumerate.
-		return nil, false
-	}
 	return walkClosure(roots, storeRoot, view, "").proposed(requirePresent)
 }
 

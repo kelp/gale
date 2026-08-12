@@ -169,14 +169,19 @@ func (f matrixFixture) placement() farm.Placement {
 	return farm.Placement{ScanDir: scan, FinalDir: f.root}
 }
 
-// stagedMap is the substitution map ProposedClosure takes today.
-// dirCommitted and dirAbsent pass none; dirAtStyle passes an
-// identity entry, which the walk must treat as no substitution.
-func (f matrixFixture) stagedMap(dk dirKind) map[string]string {
+// stagedView is the proposed-store view ProposedClosure takes.
+// dirCommitted and dirAbsent pass none; dirAtStyle passes a
+// placement whose bytes are already canonical, which the walk must
+// treat as no substitution at all.
+func (f matrixFixture) stagedView(t *testing.T, dk dirKind) *farm.ProposedStore {
+	t.Helper()
 	switch dk {
 	case dirStaged, dirAtStyle:
-		p := f.placement()
-		return map[string]string{p.FinalDir: p.ScanDir}
+		v, err := farm.NewProposedStore([]farm.Placement{f.placement()}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
 	default:
 		return nil
 	}
@@ -365,7 +370,7 @@ func TestClosureInterpretationMatrix(t *testing.T) {
 		t.Run(tc.dk.String()+"/"+tc.mk.String(), func(t *testing.T) {
 			f := newMatrixFixture(t, tc.dk, tc.mk)
 			roots := []string{f.root}
-			staged := f.stagedMap(tc.dk)
+			staged := f.stagedView(t, tc.dk)
 
 			for _, in := range []struct {
 				name string

@@ -205,15 +205,13 @@ func proposedClaimant(
 	if err != nil {
 		return c, fmt.Errorf("reading active generation: %w", err)
 	}
-	// Canonicalized, because the walk returns canonicalized paths and
-	// this map is compared against them. filepath.Clean alone leaves
-	// macOS /var and /private/var as different strings, and the
-	// mismatch is silent: the staged dir survives the filter below,
-	// its OLD sonames enter the claim, and the scope vetoes its own
-	// refresh.
-	staged := make(map[string]string, len(placements))
-	for _, p := range placements {
-		staged[canonicalDir(p.FinalDir)] = p.ScanDir
+	// The proposed state, built once and then read rather than
+	// re-derived. Canonicalization, staged-ness and the one-read-path
+	// rule are all settled here, so the walk below and the claim
+	// built from it cannot disagree about which directory is which.
+	staged, err := farm.NewProposedStore(placements, nil)
+	if err != nil {
+		return c, fmt.Errorf("reading the proposed closure: %w", err)
 	}
 	// The package a placement replaces leaves the generation's set:
 	// the placement itself carries it from here on.
@@ -254,16 +252,19 @@ func proposedClaimant(
 		c.Err = errStagedClosure
 		return c, nil
 	}
-	// One list, built once. The committed part of the closure claims
-	// from where it sits; the staged part claims through the caller's
-	// own placements, which read from staging and report the
-	// canonical destination.
-	for _, d := range slices.Sorted(maps.Keys(closure)) {
-		if _, isStaged := staged[canonicalDir(d)]; !isStaged {
-			c.Claims = append(c.Claims, farm.At(d)...)
-		}
+	// One list, built once, by laying the caller's own placements
+	// over the closure the walk found. The committed part claims from
+	// where it sits; the staged part claims through the placements,
+	// which read from staging and report the canonical destination.
+	// There is no filter here any more: a directory a placement
+	// carries simply has one read path, and the view is what says so.
+	claim, err := farm.NewProposedStore(
+		placements, slices.Sorted(maps.Keys(closure)),
+	)
+	if err != nil {
+		return c, fmt.Errorf("reading the proposed closure: %w", err)
 	}
-	c.Claims = append(c.Claims, placements...)
+	c.Claims = claim.Placements()
 	return c, nil
 }
 

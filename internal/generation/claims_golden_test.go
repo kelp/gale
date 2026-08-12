@@ -149,8 +149,13 @@ func TestProposedClaimantGolden_Committed(t *testing.T) {
 // differ only in how they treat an unenumerable closure, and this
 // fixture's closure enumerates, so the golden is one list.
 //
-// Order IS pinned here: the committed part of the closure is emitted
-// sorted, and the caller's own placements are appended after it.
+// Order IS pinned here, and gh#194 changed it: the claim used to be
+// the sorted committed dirs with the caller's placements appended,
+// and is now the whole claim sorted by canonical directory. The SET
+// is identical. The order is observable in exactly one place — which
+// of two directories a self-conflict message names first — and it is
+// deterministic both ways, so this is a presentation change and the
+// only reason to record it is that a golden must not be vague.
 func TestProposedClaimantGolden_Staged(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -173,11 +178,13 @@ func TestProposedClaimantGolden_Staged(t *testing.T) {
 			}
 			// zlib 2.0 because the STAGED metadata names it; zlib 1.3
 			// is gone because the artifact that recorded it is the
-			// artifact being replaced. The app placement carries the
-			// staging dir and reports the canonical destination.
+			// artifact being replaced. The app placement reports the
+			// destination the CALLER supplied; zlib comes from the
+			// closure walk, which canonicalizes as it goes. Both are
+			// as-supplied — neither is rewritten on the way out.
 			want := []farm.Placement{
-				{ScanDir: g.zlibNew, FinalDir: g.zlibNew},
 				{ScanDir: g.staging, FinalDir: g.app},
+				{ScanDir: g.zlibNew, FinalDir: g.zlibNew},
 			}
 			if !slices.Equal(c.Claims, want) {
 				t.Errorf("Claims = %+v, want %+v", c.Claims, want)
