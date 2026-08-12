@@ -317,9 +317,9 @@ func eachClaim(
 }
 
 // sonameTargets maps every soname a set of store dirs provides to
-// the lib path a farm link for it would carry. Claims are always
-// read from bytes already at their canonical paths, so a claimant
-// never needs a placement.
+// the lib path a farm link for it would carry, for a caller holding
+// bare directories rather than a proposed-store view: the dirs a
+// rebuild proposes, whose bytes are all already committed.
 func sonameTargets(owner string, storeDirs []string) (map[string]string, error) {
 	return placedSonameTargets(owner, At(storeDirs...))
 }

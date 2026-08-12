@@ -27,6 +27,13 @@ import (
 // and a registry-only scan would therefore miss entirely.
 // Unregistered projects and already-open shells remain the
 // acknowledged limitation until the scoped-farm follow-up.
+//
+// Every claim is a farm.ProposedStore: the store state that scope
+// requires once the operation commits. A scope with nothing staged
+// gets the committed view of its closure; the initiating scope gets
+// its closure with its own placements laid over it. One
+// representation for both is what keeps the guard from having to
+// know which kind of claimant it is holding.
 
 // FarmClaimants collects every scope that claims sonames in the
 // shared farm, excluding the scope at selfGaleDir: the initiating
@@ -163,9 +170,11 @@ func ProposedClaimant(
 // veto design §4 forbids, deadlocking a scope against its own
 // repair.
 //
-// So each changed package's own dir is dropped from the claim and
-// its placement carries it instead: sonames read from staging,
-// targets reported at the canonical path.
+// So the placement carries the package instead: in the proposed
+// store view its canonical directory has exactly one read path, the
+// staging dir, so sonames are read from staging while targets are
+// still reported at the canonical path. There is no dropping and no
+// filtering — a directory cannot be in the view twice.
 //
 // Its DEPENDENCIES come from the STAGED metadata too, not from what
 // the canonical directory currently records. Reading the old
