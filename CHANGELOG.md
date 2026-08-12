@@ -2,7 +2,28 @@
 
 ## Unreleased
 
+### Added
+
+- `gale gc --force`: sweep even when a project's config or
+  generation cannot be read. The escape hatch for the refusal
+  below, for a mount that is gone for good.
+
 ### Fixed
+
+- gc no longer deletes store versions belonging to a live but
+  unreadable project (gh#188). Project liveness counts any
+  non-ENOENT stat failure as live — a down network mount, a
+  stale automount — but every reference collector was
+  best-effort: an unreadable config, an unparsable one, and an
+  unresolvable active generation each contributed nothing and
+  let the sweep proceed, taking versions only that project
+  referenced. gc now refuses the sweep, naming the project, and
+  exits non-zero; `--force` restores the old behavior
+  explicitly. A project that is genuinely gone still reads as
+  absent and sweeps normally, so a fresh install is unaffected.
+  `gale remove`'s cross-scope guard fails closed on the same
+  error, and `gale doctor` reports its orphan count as
+  unavailable rather than counting live packages as orphans.
 
 - farm: unversioned soname aliases (for example
   `libssl.dylib -> libssl.3.dylib`) are now linked into

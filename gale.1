@@ -116,7 +116,7 @@ to list both with section headers.
 .Dl $ gale list
 .Dl $ gale list --scope host
 .Dl $ gale list -a
-.It Cm gc
+.It Cm gc Op Fl -force
 Remove unused package versions from the store and
 old generations.
 Keeps versions referenced by any
@@ -133,8 +133,20 @@ With
 also lists the registered projects that contributed
 retention.
 .Pp
+Refuses to sweep, naming the project, when a registered
+project still exists but its config or its active
+generation cannot be read.
+An unreadable project is not proof that its packages are
+unreferenced; a down network mount is the usual cause.
+A project that is genuinely gone reads as absent and
+sweeps normally.
+Use
+.Fl -force
+to sweep anyway.
+.Pp
 .Dl $ gale gc --dry-run
 .Dl $ gale gc
+.Dl $ gale gc --force
 .It Cm pin Ar pkg
 Pin a package to its current version.
 Pinned packages are skipped by
