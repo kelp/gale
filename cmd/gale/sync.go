@@ -21,11 +21,12 @@ import (
 )
 
 var (
-	syncRecipes  string
-	syncBuild    bool
-	syncGlobal   bool
-	syncProject  bool
-	syncNoFrozen bool
+	syncRecipes      string
+	syncBuild        bool
+	syncGlobal       bool
+	syncProject      bool
+	syncNoFrozen     bool
+	syncOnlyIfNeeded bool
 )
 
 var syncCmd = &cobra.Command{
@@ -45,7 +46,11 @@ var syncCmd = &cobra.Command{
 // installs missing packages, and rebuilds the generation.
 // When projectDir is non-empty, sync targets that specific
 // project directory regardless of cwd or scope flags.
-func runSync(recipesPath string, buildOnly, global, project bool, projectDir string) error {
+//
+// Every exit records a completion stamp (gh#186). The result is a
+// named one so the deferred writer records the command's own verdict
+// rather than a separately maintained belief about it.
+func runSync(recipesPath string, buildOnly, global, project bool, projectDir string) (err error) {
 	out := newOutput()
 
 	ctx, err := newCmdContext(recipesPath, global, project)
@@ -53,20 +58,18 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		return err
 	}
 
-	// Explicit project directory takes precedence over scope
-	// flags. Used by syncIfNeeded when shell/run are invoked
-	// with --project.
-	if projectDir != "" {
-		ctx.GalePath = filepath.Join(projectDir, "gale.toml")
-		ctx.GaleDir = filepath.Join(projectDir, ".gale")
-	}
+	retargetSync(ctx, projectDir)
 
-	// newCmdContext registered the auto-detected scope; the
-	// overrides above may have re-pointed the context at a
-	// different project (shell/run's projectDir path), so
-	// register the effective one too (gh#115). Dedup makes
-	// the repeat a no-op.
-	registerProject(ctx.GalePath)
+	host := config.CurrentHost()
+
+	record, withheld := beginSyncStamp(out, ctx.GaleDir, ctx.GalePath, host)
+	if withheld {
+		return nil
+	}
+	// Declared here, before the recorder, so the stamp names whatever
+	// the workers ended up failing on however this function returns.
+	var outcomes []syncOutcome
+	defer func() { record(err == nil, failedPackageNames(outcomes)) }()
 
 	if buildOnly {
 		ctx.Installer.SourceOnly = true
@@ -87,38 +90,12 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		out.Info("No packages to sync.")
 	}
 
-	// Skipped entirely under --no-frozen. The flag means the lock has
-	// no authority over this run, so a file that cannot even be parsed
-	// must not fail the command either — loading it first and deciding
-	// afterwards would leave one class of lock unbypassable.
-	lv := &lockfile.View{Kind: lockfile.KindAbsent}
-	if !syncNoFrozen {
-		lp, lerr := lockfilePath(ctx.GalePath)
-		if lerr != nil {
-			return lerr
-		}
-		lv, err = lockfile.Load(lp)
-		if err != nil {
-			return fmt.Errorf("reading lockfile: %w", err)
-		}
+	lv, err := syncLockView(ctx.GalePath)
+	if err != nil {
+		return err
 	}
 
-	// The whole plan resolves before the first install runs. That
-	// ordering is the point: a locked sync that cannot describe its
-	// complete closure must abandon the operation while abandoning it
-	// is still free, having touched neither the store nor the
-	// generation (design §4).
-	host := config.CurrentHost()
-	plan, warn, err := lockedSyncPlan(lv, lockplan.Request{
-		Host:     host,
-		Platform: currentPlatform(),
-		Declared: cfg.Packages,
-		// So a stale-lock refusal names the section that actually
-		// supplies each disagreeing pin, which for a host overlay is
-		// not the target the lock roots it in.
-		DeclaredOrigin: cfg.PackageOrigins(host),
-		Resolve:        ctx.ResolveVersionedRecipe,
-	}, syncNoFrozen)
+	plan, warn, err := syncPlan(ctx, cfg, lv, host)
 	if err != nil {
 		return err
 	}
@@ -144,7 +121,7 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	// per-package dep downloads share one configured ceiling.
 	// Errors slice is always nil — runSyncOne captures all errors in
 	// syncOutcome fields, never returns one.
-	outcomes, _ := parallel.Map(context.Background(), items, ctx.Parallelism,
+	outcomes, _ = parallel.Map(context.Background(), items, ctx.Parallelism,
 		func(_ context.Context, w syncItem) (syncOutcome, error) {
 			//nolint:contextcheck // runSyncOne takes no ctx by design; the fan-out ctx only bounds the leaf fetches
 			return runSyncOne(ctx, w, dryRun), nil
@@ -160,25 +137,42 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		pinResolve: ctx.versionedRecipeResolver(),
 	})
 
-	// A locked sync activates its plan, not the manifest. The canonical
-	// rebuild resolves bare pins through recipes, which under a lock
-	// would select a version the lock never named, and it passes no
-	// revalidation callback, which leaves design §6's window open.
-	rebuild := ctx.RebuildGenerationCanonical
-	if plan != nil {
-		rebuild = ctx.RebuildGenerationLocked
-	}
-
-	if err := finishSync(syncFinish{
+	return finishAndReport(out, syncFinish{
 		dryRun:        dryRun,
 		failures:      failures,
 		installed:     installed,
 		configChanged: configChanged,
 		locked:        plan != nil,
-	}, rebuild); err != nil {
-		if len(failures) > 0 {
+	}, rebuildForSync(ctx, plan), len(cfg.Packages)-installed)
+}
+
+// rebuildForSync picks the generation rebuild this sync must use.
+//
+// A locked sync activates its plan, not the manifest. The canonical
+// rebuild resolves bare pins through recipes, which under a lock would
+// select a version the lock never named, and it passes no revalidation
+// callback, which leaves design §6's window open.
+func rebuildForSync(ctx *cmdContext, plan *lockplan.Plan) func() error {
+	if plan != nil {
+		return ctx.RebuildGenerationLocked
+	}
+	return ctx.RebuildGenerationCanonical
+}
+
+// finishAndReport rebuilds the generation and turns the run's failures
+// into the command's exit status and its closing line.
+//
+// A rebuild failure with no install failures is the generation's own
+// error and says so; with install failures the workers' errors are
+// what the user must act on, so they propagate unwrapped and the
+// warning only counts them.
+func finishAndReport(
+	out *output.Output, f syncFinish, rebuild func() error, upToDate int,
+) error {
+	if err := finishSync(f, rebuild); err != nil {
+		if len(f.failures) > 0 {
 			out.Warn(fmt.Sprintf(
-				"Sync finished with %d error(s)", len(failures),
+				"Sync finished with %d error(s)", len(f.failures),
 			))
 			return err
 		}
@@ -187,10 +181,69 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 
 	out.Success(fmt.Sprintf(
 		"Sync complete: %d installed, %d up to date",
-		installed,
-		len(cfg.Packages)-installed,
+		f.installed, upToDate,
 	))
 	return nil
+}
+
+// retargetSync points ctx at an explicit project directory, then
+// registers the project gc must retain.
+//
+// The explicit directory takes precedence over scope flags; syncIfNeeded
+// supplies it when shell/run are invoked with --project. newCmdContext
+// already registered the auto-detected scope, but that override may
+// have re-pointed the context at a different project, so the effective
+// one is registered too (gh#115). Dedup makes the repeat a no-op.
+func retargetSync(ctx *cmdContext, projectDir string) {
+	if projectDir != "" {
+		ctx.GalePath = filepath.Join(projectDir, "gale.toml")
+		ctx.GaleDir = filepath.Join(projectDir, ".gale")
+	}
+	registerProject(ctx.GalePath)
+}
+
+// syncPlan builds the locked plan for this run, returning the plan
+// (nil when the sync is unlocked) and any advisory warning.
+//
+// The whole plan resolves before the first install runs. That ordering
+// is the point: a locked sync that cannot describe its complete
+// closure must abandon the operation while abandoning it is still
+// free, having touched neither the store nor the generation
+// (design §4).
+func syncPlan(
+	ctx *cmdContext, cfg *config.GaleConfig, lv *lockfile.View, host string,
+) (*lockplan.Plan, string, error) {
+	return lockedSyncPlan(lv, lockplan.Request{
+		Host:     host,
+		Platform: currentPlatform(),
+		Declared: cfg.Packages,
+		// So a stale-lock refusal names the section that actually
+		// supplies each disagreeing pin, which for a host overlay is
+		// not the target the lock roots it in.
+		DeclaredOrigin: cfg.PackageOrigins(host),
+		Resolve:        ctx.ResolveVersionedRecipe,
+	}, syncNoFrozen)
+}
+
+// syncLockView loads the lock this sync will enforce.
+//
+// Skipped entirely under --no-frozen. The flag means the lock has no
+// authority over this run, so a file that cannot even be parsed must
+// not fail the command either — loading it first and deciding
+// afterwards would leave one class of lock unbypassable.
+func syncLockView(galePath string) (*lockfile.View, error) {
+	if syncNoFrozen {
+		return &lockfile.View{Kind: lockfile.KindAbsent}, nil
+	}
+	lp, err := lockfilePath(galePath)
+	if err != nil {
+		return nil, err
+	}
+	lv, err := lockfile.Load(lp)
+	if err != nil {
+		return nil, fmt.Errorf("reading lockfile: %w", err)
+	}
+	return lv, nil
 }
 
 // reportSyncOutcomes emits every per-package line and returns the
@@ -645,5 +698,7 @@ func init() {
 		"Build all packages from source (skip prebuilt binaries)")
 	syncCmd.Flags().BoolVar(&syncNoFrozen, "no-frozen", false,
 		"Ignore gale.lock and install from recipes without integrity enforcement")
+	syncCmd.Flags().BoolVar(&syncOnlyIfNeeded, "if-needed", false,
+		"Sync only when the last sync did not complete on these inputs")
 	rootCmd.AddCommand(syncCmd)
 }

@@ -114,19 +114,26 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 		))
 		return
 	}
-	stale, err := lockIsStale(lp, cfg.Packages, config.CurrentHost())
+	host := config.CurrentHost()
+	stale, err := lockIsStale(lp, cfg.Packages, host)
 	if err != nil {
 		out.Warn(fmt.Sprintf(
 			"sync: checking lockfile: %v", err,
 		))
 		return
 	}
-	if !stale {
-		return
-	}
 	// Pass the discovered project root (not the raw
 	// input) so runSync targets the correct directory.
 	projectRoot := filepath.Dir(configPath)
+	// A fresh lock is not a synced project (gh#186). A partial install
+	// failure leaves the lock describing the manifest exactly, so
+	// lockIsStale reports fresh while a package is missing from PATH.
+	// The completion stamp is what knows the difference.
+	if !stale && !syncStateWantsWork(
+		out.Warn, filepath.Join(projectRoot, ".gale"), configPath, host,
+	) {
+		return
+	}
 	if err := runSync("", false, false, false, projectRoot); err != nil {
 		out.Warn(fmt.Sprintf("sync failed: %v", err))
 	}

@@ -1,0 +1,60 @@
+# gh#186: a partial sync must not present as a completed one.
+#
+# Sync deliberately rebuilds the generation after a partial failure so
+# the packages that did install stay usable (issue #20). The swap gives
+# `.gale/current` a now-mtime, which used to defeat the direnv hook's
+# `[ gale.toml -nt .gale/current ]` gate: from the second activation on
+# the hook skipped sync entirely and the missing package never came
+# back, with nothing printed.
+#
+# Everything here is offline. `nosuch` has no recipe in the local
+# directory, so it fails to resolve without touching the network.
+
+gale-fixture recipes $WORK/recipes
+
+# hello resolves from the fixture dir; nosuch does not resolve at all.
+exec sh -c 'printf "%s\n" "[packages]" "hello = \"1.0-1\"" "nosuch = \"1.0\"" > $HOME/.gale/gale.toml'
+
+exec sh -c 'gale sync -g --recipes=$WORK/recipes; echo status=$?'
+stdout 'status=1'
+stderr 'nosuch'
+
+# Issue #20 still holds: the package that did install is on PATH.
+exists $HOME/.gale/current/bin/hello
+
+# And this is the state the shell gate read as "nothing to do" — the
+# manifest is older than the generation symlink the failed sync swapped.
+! exec sh -c 'test $HOME/.gale/gale.toml -nt $HOME/.gale/current'
+
+# The stamp records what the mtimes cannot: the sync gave up, and on
+# what.
+grep 'status = "incomplete"' $HOME/.gale/sync-state.toml
+grep 'nosuch@1.0' $HOME/.gale/sync-state.toml
+
+# The loop check. Inside the retry interval the next activation does no
+# work at all — no resolve, no install — and exits 0 so direnv proceeds.
+# It still names the missing package, which is the visible warning the
+# old `2>/dev/null` hook never produced.
+exec sh -c 'gale sync -g --recipes=$WORK/recipes --if-needed; echo status=$?'
+stdout 'status=0'
+stderr 'nosuch@1.0'
+stderr 'gale sync'
+! stderr 'Installing hello'
+
+# Age the stamp past the retry interval. AC 1: the next activation
+# retries the failed package with no gale.toml edit and no manual sync.
+exec sed -i.bak -e 's/^recorded_at = .*/recorded_at = 2020-01-01T00:00:00Z/' $HOME/.gale/sync-state.toml
+exec sh -c 'gale sync -g --recipes=$WORK/recipes --if-needed; echo status=$?'
+stdout 'status=1'
+stderr 'nosuch'
+
+# AC 3: once the manifest is satisfiable the sync completes, stamps
+# complete, and the following activation is a silent no-op.
+exec sh -c 'printf "%s\n" "[packages]" "hello = \"1.0-1\"" > $HOME/.gale/gale.toml'
+exec gale sync -g --recipes=$WORK/recipes
+grep 'status = "complete"' $HOME/.gale/sync-state.toml
+! grep 'nosuch' $HOME/.gale/sync-state.toml
+
+exec gale sync -g --recipes=$WORK/recipes --if-needed
+! stderr 'Installing'
+! stderr 'not installed'

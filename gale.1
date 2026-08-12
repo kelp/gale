@@ -60,7 +60,30 @@ Install all packages declared in
 at their pinned versions.
 Typically invoked automatically by direnv.
 .Pp
+Use
+.Fl -if-needed
+to sync only when the last sync did not complete on the
+current
+.Pa gale.toml
+and
+.Pa gale.lock .
+A sync that completed is a silent no-op.
+A sync that failed is retried at most once every ten
+minutes, and each activation in between prints one line
+naming the packages still missing.
+The direnv hook uses this flag; a sync run by hand ignores
+it and always does the work.
+.Pp
+Use
+.Fl -no-frozen
+to install from recipes without enforcing
+.Pa gale.lock .
+Use
+.Fl -build
+to build every package from source.
+.Pp
 .Dl $ gale sync
+.Dl $ gale sync --if-needed
 .It Cm update Op Ar pkg Ns Op @ Ns Ar ver ...
 Update packages to the latest version, or to a specific
 version with
