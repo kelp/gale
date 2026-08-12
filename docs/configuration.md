@@ -60,11 +60,19 @@ only that one basename is left out of the generation,
 and `gale which <name>` reports it as another
 provider.
 
-The winning package must appear in `[packages]` (or in
-a `[hosts.<key>.packages]` overlay that applies to
-this machine). A winner that is declared nowhere is an
-error — honoring it would keep the binary off PATH for
-every provider.
+The winning package must be declared somewhere in the
+same file — `[packages]` or any `[hosts.<key>.packages]`
+overlay, whether or not that overlay applies to this
+machine. A winner declared nowhere is an error;
+honoring it would keep the binary off PATH for every
+provider.
+
+`gale remove` deletes a `[bin]` entry whose winner it
+removes, in the same write, so the manifest still
+loads. Removing the losing package leaves the entry
+alone: it still names a declared package, and it
+records the choice for the next time that package is
+installed.
 
 ### `[hosts.<key>.packages]` and `[hosts.<key>.pinned]`
 

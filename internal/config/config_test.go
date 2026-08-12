@@ -1589,3 +1589,65 @@ npx = ""
 		t.Fatal("ValidateBin accepted an empty winner")
 	}
 }
+
+// TestValidateBinAcceptsHostDeclaredWinner keeps a host-scoped winner
+// from breaking the machines its selector misses. The override is
+// inert there — no provider, nothing suppressed — and erroring would
+// take out every command on those machines over an entry that is
+// correct where it applies.
+func TestValidateBinAcceptsHostDeclaredWinner(t *testing.T) {
+	cfg, err := ParseGaleConfig(`
+[packages]
+node = "24.4.0"
+
+[bin]
+npx = "corepack"
+
+[hosts.laptop.packages]
+corepack = "0.34.0"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := cfg.ValidateBin(); err != nil {
+		t.Errorf("ValidateBin: %v", err)
+	}
+}
+
+// TestRemovePackageSectionsPrunesBinOverride pins the invariant this
+// mechanism owes the manifest: a config that loaded before a removal
+// still loads after it. A [bin] entry whose winner is gone fails
+// ValidateBin, so it goes in the same write.
+func TestRemovePackageSectionsPrunesBinOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gale.toml")
+	if err := os.WriteFile(path, []byte(`[packages]
+node = "24.4.0"
+corepack = "0.34.0"
+
+[bin]
+npx = "corepack"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := RemovePackageSections(
+		path, []string{""}, "corepack",
+	); err != nil {
+		t.Fatalf("RemovePackageSections: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, has := cfg.Bin["npx"]; has {
+		t.Errorf("[bin] npx survived its winner's removal:\n%s", data)
+	}
+	if err := cfg.ValidateBin(); err != nil {
+		t.Errorf("config no longer validates: %v", err)
+	}
+}

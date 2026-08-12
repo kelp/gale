@@ -658,7 +658,10 @@ The losing package stays installed; only that basename is
 left out, and
 .Cm which
 reports it as another provider.
-The winner must be a declared package.
+The winner must be a package the same file declares.
+.Cm remove
+deletes an entry whose winner it removes, so the
+manifest still loads.
 The active host is
 .Ev GALE_HOST
 if set, otherwise the value returned by

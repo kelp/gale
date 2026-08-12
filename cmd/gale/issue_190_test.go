@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/projects"
 )
@@ -243,5 +244,154 @@ func TestRegenerateScopeHonorsBinOverride(t *testing.T) {
 		got, filepath.Join("beta", "1.0"),
 	) {
 		t.Errorf("bin/foo -> %s, want beta's copy", got)
+	}
+}
+
+// TestRemovePrunesBinOverrideNamingRemovedPackage closes the trap
+// this PR would otherwise ship: `gale remove beta` while [bin] names
+// beta as a winner left a manifest that no longer loads, so every
+// command in the scope failed until the user hand-edited the file.
+// The user did nothing wrong — they added the entry gale told them to
+// add — and the state is worse than the collision it prevents, which
+// at least left a working PATH.
+func TestRemovePrunesBinOverrideNamingRemovedPackage(t *testing.T) {
+	galeDir, storeRoot := setupGCHome(t)
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	alphaDir := mkStorePkg(t, storeRoot, "alpha", "1.0")
+	betaDir := mkStorePkg(t, storeRoot, "beta", "1.0")
+	addStoreBin(t, alphaDir, "foo")
+	addStoreBin(t, betaDir, "foo")
+
+	writeGlobalConfig(t, galeDir,
+		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
+			"[bin]\nfoo = \"beta\"\n")
+	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
+		t.Fatalf("seed rebuild: %v", err)
+	}
+
+	removeGlobal = true
+	t.Cleanup(func() { removeGlobal = false })
+	if err := removeCmd.RunE(removeCmd, []string{"beta"}); err != nil {
+		t.Fatalf("remove beta: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if winner, has := cfg.Bin["foo"]; has {
+		t.Errorf("[bin] foo = %q survived the removal of its winner:\n%s",
+			winner, data)
+	}
+
+	// The manifest must load — that is the whole point.
+	if _, err := loadEffectiveConfig(configPath); err != nil {
+		t.Errorf("config no longer loads after remove: %v", err)
+	}
+	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
+		t.Errorf("rebuild after remove: %v", err)
+	}
+}
+
+// TestRemoveKeepsBinOverrideStillDeclaredElsewhere scopes the prune.
+// A host-targeted removal that leaves the winner declared in another
+// section must not delete the entry: the override still names a
+// package this manifest declares.
+func TestRemoveKeepsBinOverrideStillDeclaredElsewhere(t *testing.T) {
+	galeDir, storeRoot := setupGCHome(t)
+	t.Setenv("GALE_HOST", "testhost")
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	mkStorePkg(t, storeRoot, "alpha", "1.0")
+	mkStorePkg(t, storeRoot, "beta", "1.0")
+
+	writeGlobalConfig(t, galeDir,
+		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
+			"[bin]\nfoo = \"beta\"\n\n"+
+			"[hosts.testhost.packages]\nbeta = \"1.0\"\n")
+
+	removeGlobal = true
+	removeHost = "testhost"
+	t.Cleanup(func() { removeGlobal = false; removeHost = "" })
+	if err := removeCmd.RunE(removeCmd, []string{"beta"}); err != nil {
+		t.Fatalf("remove beta from the host section: %v", err)
+	}
+
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("parse config: %v", err)
+	}
+	if cfg.Bin["foo"] != "beta" {
+		t.Errorf("[bin] foo = %q, want beta — shared [packages] still "+
+			"declares it:\n%s", cfg.Bin["foo"], data)
+	}
+}
+
+// TestRemoveKeepsBinOverrideWhenLoserGoes records the decision on the
+// other half of the question: removing the package that LOST a
+// basename leaves the entry alone. It still names a declared package,
+// so the manifest stays valid, and deleting it would quietly re-open
+// the collision for anyone who reinstalls the loser later — the entry
+// says which package the user chose, and that answer outlives the
+// other package's presence.
+func TestRemoveKeepsBinOverrideWhenLoserGoes(t *testing.T) {
+	galeDir, storeRoot := setupGCHome(t)
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	mkStorePkg(t, storeRoot, "alpha", "1.0")
+	mkStorePkg(t, storeRoot, "beta", "1.0")
+	writeGlobalConfig(t, galeDir,
+		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
+			"[bin]\nfoo = \"beta\"\n")
+
+	removeGlobal = true
+	t.Cleanup(func() { removeGlobal = false })
+	if err := removeCmd.RunE(removeCmd, []string{"alpha"}); err != nil {
+		t.Fatalf("remove alpha: %v", err)
+	}
+
+	cfg, err := loadEffectiveConfig(configPath)
+	if err != nil {
+		t.Fatalf("config no longer loads: %v", err)
+	}
+	if cfg.Bin["foo"] != "beta" {
+		t.Errorf("[bin] foo = %q, want beta — the winner is still declared",
+			cfg.Bin["foo"])
+	}
+}
+
+// TestPinPreservesBinOverrides guards the other way a [bin] entry can
+// vanish: PinPackage rewrites gale.toml through a struct round-trip,
+// which drops any section the struct does not carry. [bin] is a field
+// now, so it survives — this test is what keeps it one.
+func TestPinPreservesBinOverrides(t *testing.T) {
+	galeDir, storeRoot := setupGCHome(t)
+	configPath := filepath.Join(galeDir, "gale.toml")
+
+	mkStorePkg(t, storeRoot, "alpha", "1.0")
+	mkStorePkg(t, storeRoot, "beta", "1.0")
+	writeGlobalConfig(t, galeDir,
+		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
+			"[bin]\nfoo = \"beta\"\n")
+
+	if err := config.PinPackage(configPath, "", "beta"); err != nil {
+		t.Fatalf("PinPackage: %v", err)
+	}
+
+	cfg, err := loadEffectiveConfig(configPath)
+	if err != nil {
+		t.Fatalf("config no longer loads: %v", err)
+	}
+	if cfg.Bin["foo"] != "beta" {
+		t.Errorf("[bin] foo = %q after pin, want beta", cfg.Bin["foo"])
 	}
 }

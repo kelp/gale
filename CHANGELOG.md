@@ -8,7 +8,9 @@
   executable-name collision, for example `npx = "corepack"`.
   Every other provider's copy of that basename is left out of
   the generation. A winner that is not in `[packages]` is an
-  error, not a silent no-op.
+  error, not a silent no-op. `gale remove` prunes an entry
+  whose winner it removes, in the same write, so the manifest
+  still loads.
 
 - `gale which` reports `also provided by: <package>` when
   another installed package ships the same binary. A shadowed

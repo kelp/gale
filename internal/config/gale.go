@@ -50,11 +50,16 @@ type GaleConfig struct {
 }
 
 // ValidateBin reports an error when a [bin] override names a package
-// that is not declared. An override suppresses the basename in every
-// package it does not name, so a winner that provides nothing keeps
-// the binary off PATH entirely — the silent shadowing gh#190 removed,
-// in a new shape. Call it after host overlays are merged, so a winner
-// declared only under [hosts.<selector>.packages] still counts.
+// this manifest declares nowhere. An override suppresses the basename
+// in every package it does not name, so a winner that provides
+// nothing keeps the binary off PATH entirely — the silent shadowing
+// gh#190 removed, in a new shape.
+//
+// Declared ANYWHERE, not merely on this host: a winner that lives in
+// [hosts.<selector>.packages] is inert on the machines that selector
+// misses, and erroring there would break every command on those
+// machines over an entry that is correct where it applies. A typo
+// still fails, everywhere, which is the case worth catching.
 func (c *GaleConfig) ValidateBin() error {
 	names := slices.Sorted(maps.Keys(c.Bin))
 	for _, bin := range names {
@@ -65,14 +70,29 @@ func (c *GaleConfig) ValidateBin() error {
 					"%s belongs on PATH, or delete the entry", bin, bin,
 			)
 		}
-		if _, ok := c.Packages[pkg]; !ok {
+		if !c.declares(pkg) {
 			return fmt.Errorf(
-				"[bin] %s = %q names a package that is not in [packages]; "+
-					"declare %s or delete the entry", bin, pkg, pkg,
+				"[bin] %s = %q names a package this manifest does not "+
+					"declare; declare %s or delete the entry", bin, pkg, pkg,
 			)
 		}
 	}
 	return nil
+}
+
+// declares reports whether name appears in [packages] or in any
+// [hosts.<selector>.packages] overlay, whether or not that selector
+// matches this machine.
+func (c *GaleConfig) declares(name string) bool {
+	if _, ok := c.Packages[name]; ok {
+		return true
+	}
+	for _, h := range c.Hosts {
+		if _, ok := h.Packages[name]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseGaleConfig parses a gale.toml string.
@@ -812,6 +832,11 @@ func RemovePackageSections(
 		if !found {
 			return ErrPackageNotFound
 		}
+		// Same content, same write, same lock hold: a [bin] entry
+		// naming a package this manifest no longer declares makes the
+		// file fail validation, so leaving one behind would end the
+		// removal with a config no command can load.
+		content = pruneBinOverrides(content, name)
 		if werr := atomicfile.Write(path, content); werr != nil {
 			return werr
 		}
@@ -819,6 +844,40 @@ func RemovePackageSections(
 		return err
 	})
 	return before, after, err
+}
+
+// pruneBinOverrides deletes every [bin] entry naming pkg as the
+// winner, but only once pkg is declared in no section of content.
+//
+// A host-targeted removal that leaves the package in shared
+// [packages] (or in another host's overlay) keeps the entry: the
+// override still names a package this manifest declares, which is
+// exactly what ValidateBin asks of it. Removing it there would also
+// surprise the user who re-adds the package on that host.
+//
+// Content that will not parse is returned untouched. The removal
+// itself is a line edit that does not need the parse, and refusing a
+// remove over a manifest the user has hand-broken elsewhere would be
+// a worse trade than leaving one stale override behind.
+func pruneBinOverrides(content []byte, pkg string) []byte {
+	cfg, err := ParseGaleConfig(string(content))
+	if err != nil || len(cfg.Bin) == 0 || cfg.declares(pkg) {
+		return content
+	}
+	for _, bin := range slices.Sorted(maps.Keys(cfg.Bin)) {
+		if cfg.Bin[bin] != pkg {
+			continue
+		}
+		if modified, ok := deleteTOMLKey(content, binPath(), bin); ok {
+			content = modified
+		}
+	}
+	return content
+}
+
+// binPath returns the section path of the [bin] table.
+func binPath() []string {
+	return []string{"bin"}
 }
 
 // readFileState captures a file's existence and content. os.Lstat
