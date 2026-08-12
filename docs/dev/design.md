@@ -81,6 +81,17 @@ is removed. Inspired by the Nix store, but simpler:
 no content-addressing, just `name/version-revision/`
 (e.g. `jq/1.8.1-2/`).
 
+A committed store directory is byte-stable for as long
+as any generation links it, and `gale install --path`
+enforces that rather than assuming it: a local build's
+version carries a digest of the uncommitted working
+tree, so a changed tree asks for a different directory,
+and a replace that would land on a referenced one is
+refused. The identity is content-**keyed**, not
+content-**addressed** — the digest distinguishes one
+tree from another on one machine; it does not address
+the artifact globally the way a Nix hash does.
+
 **Generation** (`gen/`): a numbered snapshot of symlinks
 pointing into the store. "Gen" is short for generation.
 Each gen directory contains `bin/`, and eventually

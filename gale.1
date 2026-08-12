@@ -128,6 +128,13 @@ so a gc run from one directory cannot sweep versions
 another project still links.
 Registry entries whose project directory has vanished
 are pruned on each real run.
+Each build of a dirty tree installed with
+.Ic install Fl -path
+keeps its own store directory, so a development loop
+accumulates them.
+.Nm Cm gc
+is how they are reclaimed, once no generation links
+them.
 With
 .Fl -dry-run ,
 also lists the registered projects that contributed
