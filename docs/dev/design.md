@@ -63,6 +63,7 @@ not need multiple package managers.
 ~/.gale/
   gale.toml       Package manifest (source of truth)
   config.toml     Settings (registry URL, API keys)
+  sync-state.toml Last sync's verdict (see Environment Activation)
   current → gen/2 Symlink to active generation
   gen/            Generation snapshots
     2/bin/        Symlinks into pkg/
@@ -71,6 +72,10 @@ not need multiple package managers.
     fd/10.4.2-1/
   README.md       Auto-generated, explains this layout
 ```
+
+A project's `.gale/` has the same shape, so `sync-state.toml` is
+per-scope by construction. It is derived state: deleting it costs
+one extra sync, never correctness.
 
 ## Terminology
 
@@ -154,6 +159,46 @@ to PATH. When you leave, direnv restores PATH.
 
 **CI / scripts**: `eval "$(gale env)"` prints the
 right `export PATH=...` for the current directory.
+
+### Deciding whether to sync
+
+The hook runs `gale sync --if-needed`, and gale decides.
+It used to be a shell mtime comparison against
+`.gale/current`, which could not work: a partial sync
+rebuilds the generation on purpose so the packages that
+did install stay usable (issue #20), and the swap gives
+`current` a fresh mtime. From the next activation on the
+comparison was false forever, so the failed packages were
+never retried and nothing was printed (gh#186).
+
+Sync therefore records its own verdict in
+`sync-state.toml`: `complete` or `incomplete`, the
+packages that failed, and a fingerprint of the inputs —
+the manifest's bytes, the lock's bytes or its absence,
+the host, and the platform. Content, not mtimes, so a
+`git checkout` does not force a resync.
+
+`--if-needed` reads it back:
+
+| State | Result |
+|---|---|
+| No active generation | sync |
+| No stamp, or an unreadable one | sync |
+| Fingerprint differs | sync |
+| `complete`, fingerprint matches | silent no-op |
+| `incomplete`, within the retry interval | one warning naming the failed packages, exit 0 |
+| `incomplete`, interval elapsed | sync |
+
+The interval bounds the work a permanently broken package
+can cause: one attempt per interval per fingerprint, and
+one file read plus one warning in between. Editing
+gale.toml or gale.lock moves the fingerprint and reaches
+the packages immediately. A user-typed `gale sync`
+ignores the stamp entirely.
+
+`gale shell` and `gale run` consult the same stamp. Their
+own gate asks whether the lock still describes the
+manifest, which a partial install failure leaves true.
 
 We chose direnv over custom shell hooks because:
 - direnv is battle-tested and handles PATH restoration

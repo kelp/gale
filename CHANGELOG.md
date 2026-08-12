@@ -4,11 +4,34 @@
 
 ### Added
 
+- `gale sync --if-needed`: sync only when the last sync did not
+  complete on the current `gale.toml` and `gale.lock`. The
+  direnv hook uses it; a sync run by hand ignores it.
+
 - `gale gc --force`: sweep even when a project's config or
   generation cannot be read. The escape hatch for the refusal
   below, for a mount that is gone for good.
 
 ### Fixed
+
+- direnv no longer activates a partially synced environment
+  forever without saying so (gh#186). A sync that could not
+  install every package still rebuilds the generation so the
+  rest stays usable (issue #20), and that rebuild's fresh
+  `current` symlink defeated the hook's
+  `[ gale.toml -nt .gale/current ]` gate: every later activation
+  skipped sync entirely, and the missing package never came back
+  short of editing `gale.toml`. Sync now records its verdict in
+  `<galeDir>/sync-state.toml` — complete or incomplete, the
+  packages that failed, and a content fingerprint of the
+  manifest, the lock, the host and the platform — and the hook
+  calls `gale sync --if-needed`, which reads it. A completed
+  sync stays a silent no-op. An incomplete one is retried at
+  most once every ten minutes, printing one line naming what is
+  still missing in between, so a permanently broken package
+  costs a file read per `cd` rather than a build. `gale shell`
+  and `gale run` consult the same stamp: their lock-staleness
+  gate cannot see a partial install failure either.
 
 - gc no longer deletes store versions belonging to a live but
   unreadable project (gh#188). Project liveness counts any

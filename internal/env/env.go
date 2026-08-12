@@ -27,10 +27,14 @@ use_gale() {
   watch_file "$manifest"
   watch_file "$lockfile"
 
-  # Sync only when the manifest is newer than the current
-  # generation symlink (or no generation exists yet). The
-  # symlink is swapped atomically at the end of every
-  # successful gale sync, so its mtime is the source of truth.
+  # Freshness is gale's decision, not the shell's. This used to
+  # compare the manifest's mtime against the current generation
+  # symlink, but a partial sync rebuilds that generation on purpose
+  # (issue #20) and the swap gives it a now-mtime, so from the next
+  # activation on the comparison was false forever and the failed
+  # packages were never retried (gh#186). Only gale can tell a sync
+  # that finished from one that gave up, so --if-needed reads the
+  # completion stamp it wrote and rate-limits the retry itself.
   #
   # stderr is not discarded. A sync that fails an integrity check
   # has to say which artifact disagreed with the lock, and that
@@ -38,11 +42,9 @@ use_gale() {
   # keeps an ordinary failure (offline, a broken build) from
   # aborting the shell; the gate below still decides whether
   # anything reaches PATH.
-  if [ ! -L "$gale_dir/current" ] || [ "$manifest" -nt "$gale_dir/current" ]; then
-    gale sync || true
-  fi
+  gale sync --if-needed || true
 
-  # Activation gate, run on every activation. The mtime guard
+  # Activation gate, run on every activation. The freshness check
   # above cannot see a gale upgrade: upgrading the binary modifies
   # no file in the project, so a lock this build refuses to honor
   # would reach PATH unexamined. The gate reads the lock and store
