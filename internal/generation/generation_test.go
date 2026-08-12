@@ -1306,20 +1306,26 @@ func TestBuildResolvesBareDevVersionToHighestRevision(t *testing.T) {
 	}
 }
 
-// TestBuildClearsStaleGenDirBeforePopulating is a regression
-// test for the secondary corruption observed during the
-// gen/308 incident: when Build's target gen number already
-// exists (a prior Build's cleanup didn't fire, or a rollback
-// put current behind the highest-built gen), populateGeneration
-// merges into the leftover dir because symlinkDir skips
+// TestBuildNeverMergesIntoAStaleGenDir is a regression test for
+// the secondary corruption observed during the gen/308 incident:
+// when Build's target gen number already existed, populateGeneration
+// merged into the leftover dir because symlinkDir skips
 // destinations that already have a symlink. Result: the new
 // gen ships stale symlinks from the old attempt and
 // validateGenerationSymlinks doesn't catch them because the
 // stale targets still resolve.
 //
-// Build must tear down the gen dir before populating so the
-// new gen reflects the declared pkgs map exactly.
-func TestBuildClearsStaleGenDirBeforePopulating(t *testing.T) {
+// The invariant: a new generation reflects the declared pkgs map
+// exactly, never a merge with a leftover.
+//
+// gh#189 moved the number this lands on. Build now allocates above
+// the highest generation directory, so a leftover gen/1 is stepped
+// over rather than reused — and the stale dir it names survives,
+// because a generation number identifies one snapshot for good.
+// The merge this test guards is unreachable from that direction;
+// TestBuildClearsNonDirectoryLeftoverAtTargetNumber covers the one
+// that remains.
+func TestBuildNeverMergesIntoAStaleGenDir(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 
@@ -1334,31 +1340,41 @@ func TestBuildClearsStaleGenDirBeforePopulating(t *testing.T) {
 	// Both targets are real store dirs so validateGenerationSymlinks
 	// wouldn't catch the staleness on its own — the swap would
 	// otherwise succeed and the user gets a corrupt gen.
-	genBin := filepath.Join(galeDir, "gen", "1", "bin")
-	if err := os.MkdirAll(genBin, 0o755); err != nil {
+	staleBin := filepath.Join(galeDir, "gen", "1", "bin")
+	if err := os.MkdirAll(staleBin, 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(
 		filepath.Join(storeRoot, "jq", "1.0", "bin", "jq"),
-		filepath.Join(genBin, "jq"),
+		filepath.Join(staleBin, "jq"),
 	); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(
 		filepath.Join(storeRoot, "obsolete", "1.0", "bin", "obsolete"),
-		filepath.Join(genBin, "obsolete"),
+		filepath.Join(staleBin, "obsolete"),
 	); err != nil {
 		t.Fatal(err)
 	}
 
-	// No prior current symlink, so next == 1 and Build lands
-	// on the pre-existing gen/1.
+	// There is no current symlink, but gen/1 exists, so Build
+	// allocates gen/2 and leaves the stale snapshot alone.
 	pkgs := map[string]string{"jq": "2.0"}
 	if err := Build(pkgs, galeDir, storeRoot); err != nil {
 		t.Fatalf("Build: %v", err)
 	}
 
-	target, err := os.Readlink(filepath.Join(genBin, "jq"))
+	cur, err := Current(galeDir)
+	if err != nil {
+		t.Fatalf("read current: %v", err)
+	}
+	if cur != 2 {
+		t.Fatalf("current = %d, want 2 — Build must allocate above "+
+			"the highest generation dir, not reuse gen/1", cur)
+	}
+
+	newBin := filepath.Join(galeDir, "gen", "2", "bin")
+	target, err := os.Readlink(filepath.Join(newBin, "jq"))
 	if err != nil {
 		t.Fatalf("readlink jq: %v", err)
 	}
@@ -1368,8 +1384,67 @@ func TestBuildClearsStaleGenDirBeforePopulating(t *testing.T) {
 			target, wantFragment)
 	}
 
-	if _, err := os.Lstat(filepath.Join(genBin, "obsolete")); !os.IsNotExist(err) {
+	if _, err := os.Lstat(filepath.Join(newBin, "obsolete")); !os.IsNotExist(err) {
 		t.Errorf("obsolete symlink should not survive rebuild, err=%v", err)
+	}
+
+	// The stale gen/1 is history now, not scratch space: its
+	// symlinks stay exactly as planted.
+	staleTarget, err := os.Readlink(filepath.Join(staleBin, "jq"))
+	if err != nil {
+		t.Fatalf("readlink stale jq: %v", err)
+	}
+	if !strings.Contains(staleTarget, filepath.Join("jq", "1.0")) {
+		t.Errorf("gen/1/bin/jq = %q, want the planted 1.0 target — "+
+			"Build must not touch a generation it did not allocate",
+			staleTarget)
+	}
+	if _, err := os.Lstat(filepath.Join(staleBin, "obsolete")); err != nil {
+		t.Errorf("gen/1/bin/obsolete must survive: %v", err)
+	}
+}
+
+// TestBuildClearsNonDirectoryLeftoverAtTargetNumber guards the
+// teardown that survives gh#189. Allocating above the highest
+// generation directory rules out landing on a leftover *directory*,
+// but the scan skips entries that are not directories, so a regular
+// file (or any other non-directory entry) can still sit at
+// gen/<next>. os.MkdirAll would fail with ENOTDIR on it.
+//
+// Build must clear whatever is at the target number before
+// populating.
+func TestBuildClearsNonDirectoryLeftoverAtTargetNumber(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+
+	createStoreEntry(t, storeRoot, "jq", "2.0", []string{"jq"})
+
+	pkgs := map[string]string{"jq": "2.0"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build gen 1: %v", err)
+	}
+
+	// A regular file where the next generation dir belongs.
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "gen", "2"), []byte("leftover"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build gen 2 over a non-directory leftover: %v", err)
+	}
+
+	target, err := os.Readlink(
+		filepath.Join(galeDir, "gen", "2", "bin", "jq"),
+	)
+	if err != nil {
+		t.Fatalf("readlink gen/2/bin/jq: %v", err)
+	}
+	wantFragment := filepath.Join("jq", "2.0")
+	if !strings.Contains(target, wantFragment) {
+		t.Errorf("gen/2/bin/jq = %q, want target containing %q",
+			target, wantFragment)
 	}
 }
 

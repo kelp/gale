@@ -402,22 +402,38 @@ func build(pkgs map[string]string, galeDir, storeRoot string, validate func() er
 			)
 		}
 
-		next := prev + 1
+		// Allocate above the highest generation ever built, not
+		// above current. Rollback moves current backwards, and
+		// current+1 would then name a snapshot that already
+		// exists and overwrite it (gh#189). A generation number,
+		// once allocated, permanently identifies one snapshot:
+		// current is a pointer into history, the counter only
+		// moves forward, and a gap above current is normal.
+		nums, err := genNumbers(galeDir)
+		if err != nil {
+			return err
+		}
+		highest := 0
+		if len(nums) > 0 {
+			highest = nums[len(nums)-1]
+		}
+		next := max(prev, highest) + 1
 
 		genDir := filepath.Join(
 			galeDir, "gen", strconv.Itoa(next),
 		)
 
-		// Tear down any pre-existing gen dir at this number
-		// before populating. Without this, symlinkDir's
-		// skip-if-dst-exists logic merges new content into the
-		// stale layout, shipping a gen with the wrong store
-		// revisions or with leftover symlinks for packages no
-		// longer in pkgs. validateGenerationSymlinks doesn't
-		// catch this — stale links still resolve, just to the
-		// wrong place. Reached when a prior Build's cleanup
-		// didn't fire (process killed) or when current was
-		// rolled back behind the highest-built gen.
+		// Tear down whatever sits at this number before
+		// populating. The scan above rules out a leftover
+		// directory, but it skips entries that are not
+		// directories, so a regular file or other stray entry can
+		// still occupy gen/<next> — os.MkdirAll would fail with
+		// ENOTDIR, and symlinkDir's skip-if-dst-exists logic
+		// would merge into anything it could traverse, shipping a
+		// gen with the wrong store revisions or with leftover
+		// symlinks for packages no longer in pkgs.
+		// validateGenerationSymlinks doesn't catch that — stale
+		// links still resolve, just to the wrong place.
 		if err := os.RemoveAll(genDir); err != nil {
 			return fmt.Errorf("clean stale generation dir: %w", err)
 		}
@@ -532,6 +548,11 @@ var skipTopLevelDirs = map[string]bool{
 // have created — is preserved. Holds the store-rooted gen lock
 // for its critical section so it serializes with Build.
 //
+// The cutoff is numeric, so after a rollback (current below the
+// highest gen) the gens above current are all preserved, and the
+// numbering may have gaps. Both are expected: current is a pointer
+// into history, not a high-water mark (gh#189).
+//
 // Returns the removed gen numbers in ascending order so the
 // caller can report them. keep<=0 or no current symlink is a
 // no-op (returns nil).
@@ -558,29 +579,15 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 		if cutoff <= 1 {
 			return nil
 		}
-		genRoot := filepath.Join(galeDir, "gen")
-		entries, err := os.ReadDir(genRoot)
+		nums, err := genNumbers(galeDir)
 		if err != nil {
-			if errors.Is(err, os.ErrNotExist) {
-				return nil
-			}
-			return fmt.Errorf("read gen dir: %w", err)
+			return err
 		}
-		var doomed []int
-		for _, e := range entries {
-			if !e.IsDir() {
+		genRoot := filepath.Join(galeDir, "gen")
+		for _, n := range nums {
+			if n >= cutoff {
 				continue
 			}
-			n, err := strconv.Atoi(e.Name())
-			if err != nil {
-				continue
-			}
-			if n < cutoff {
-				doomed = append(doomed, n)
-			}
-		}
-		sort.Ints(doomed)
-		for _, n := range doomed {
 			if err := os.RemoveAll(
 				filepath.Join(genRoot, strconv.Itoa(n)),
 			); err != nil {
