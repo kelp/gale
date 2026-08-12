@@ -41,7 +41,10 @@ func TestCollectReferencedPackages(t *testing.T) {
 	// references still register.
 	s := store.NewStore(t.TempDir())
 	out := output.New(os.Stderr, false)
-	ref := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil, nil, out)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 
 	want := map[string]bool{
 		"jq@1.7":       true,
@@ -73,7 +76,10 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 
 	s := store.NewStore(t.TempDir())
 	out := output.New(os.Stderr, false)
-	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 
 	if len(ref) != 1 {
 		t.Fatalf("got %d entries, want 1: %v",
@@ -109,7 +115,10 @@ func TestCollectReferencedPackagesResolvesBareToCanonical(t *testing.T) {
 
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
-	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 
 	if !ref["jq@1.8.1-3"] {
 		t.Errorf("expected referenced[jq@1.8.1-3] = true "+
@@ -226,7 +235,10 @@ func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 	n, _ := removeUnreferencedVersions(s, ref, false, out)
 
 	if n != 1 {
@@ -271,7 +283,10 @@ func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 	n, _ := removeUnreferencedVersions(s, ref, false, out)
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
@@ -323,7 +338,10 @@ func TestGCRemovesOrphanRevisionAboveRecipe(t *testing.T) {
 		}, nil
 	})
 
-	ref := collectReferencedPackagesAllHosts(globalDir, "", s, pinResolve, out)
+	ref, err := collectReferencedPackagesAllHosts(globalDir, "", s, pinResolve, out)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 	n, _ := removeUnreferencedVersions(s, ref, false, out)
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
@@ -369,7 +387,10 @@ func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 	n, _ := removeUnreferencedVersions(s, ref, false, out)
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
@@ -611,9 +632,12 @@ func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
 		"bison":    makeTestRecipe("bison", "3.8.2", 2, nil, nil),
 	})
 
-	ref := collectReferencedPackagesWithResolver(
+	ref, err := collectReferencedPackagesWithResolver(
 		globalDir, "", s, resolver, nil, out,
 	)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 
 	if !ref["postgresql@17.2-1"] {
 		t.Errorf("missing postgresql@17.2-1: %v", ref)
@@ -666,9 +690,12 @@ func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
 		"zlib": makeTestRecipe("zlib", "1.3.2", 2, nil, nil),
 	})
 
-	ref := collectReferencedPackagesWithResolver(
+	ref, err := collectReferencedPackagesWithResolver(
 		globalDir, "", s, resolver, nil, out,
 	)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 
 	for _, k := range []string{
 		"curl@8.19.0-1", "openssl@3.6.1-2", "zlib@1.3.2-2",
@@ -710,9 +737,12 @@ func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref := collectReferencedPackagesWithResolver(
+	ref, err := collectReferencedPackagesWithResolver(
 		globalDir, "", s, nil, nil, out,
 	)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 
 	if !ref["curl@8.19.0-1"] {
 		t.Errorf("curl missing: %v", ref)
@@ -883,9 +913,12 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
-	ref, retained := collectGCRetention(
+	ref, retained, err := collectGCRetention(
 		globalDir, "", "", s, nil, nil, out,
 	)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 
 	if !ref["jq@1.6"] {
 		t.Error("jq@1.6 (linked by registered project's active " +
@@ -921,9 +954,12 @@ func TestGCRetentionSkipsVanishedRegisteredProjects(t *testing.T) {
 
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
-	ref, retained := collectGCRetention(
+	ref, retained, err := collectGCRetention(
 		globalDir, "", "", s, nil, nil, out,
 	)
+	if err != nil {
+		t.Fatalf("collecting references: %v", err)
+	}
 	if len(ref) != 0 {
 		t.Errorf("vanished project must add no refs: %v", ref)
 	}
@@ -1265,5 +1301,170 @@ func TestGenerationLinksSupersededOrphanExplicitPin(t *testing.T) {
 	) {
 		t.Error("want false when config explicitly pins the " +
 			"superseded revision")
+	}
+}
+
+// gcUnreadableProjectFixture builds the shared fixture for the
+// gh#188 refusal tests: a temp HOME whose store holds jq@1.6,
+// jq@1.7 and fd@9.0, plus one registered project pinning jq 1.7
+// while its active generation links jq 1.6. Returns the store
+// root and the project path. The caller breaks one reference
+// source (config or generation) and runs gc from a neutral cwd.
+func gcUnreadableProjectFixture(t *testing.T) (string, string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GALE_OFFLINE", "1")
+	t.Chdir(t.TempDir()) // neutral cwd: no project here
+
+	storeRoot := filepath.Join(home, ".gale", "pkg")
+	for _, d := range []struct{ n, v string }{
+		{"jq", "1.6"}, {"jq", "1.7"}, {"fd", "9.0"},
+	} {
+		if err := os.MkdirAll(
+			filepath.Join(storeRoot, d.n, d.v, "bin"), 0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	proj := makeRegisteredProject(
+		t, storeRoot, "[packages]\njq = \"1.7\"\n",
+		"jq", "1.6", "jq",
+	)
+	if err := os.WriteFile(
+		filepath.Join(home, ".gale", "projects"),
+		[]byte(proj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	dryRun = false
+	t.Cleanup(func() { dryRun = false })
+	return storeRoot, proj
+}
+
+// assertGCRefused checks that gc aborted naming proj and that
+// the whole store survived: neither the pinned version nor the
+// unreferenced control was swept. fd@9.0 is the control — it is
+// referenced by nothing, so its survival proves the sweep never
+// ran rather than that retention happened to cover it.
+func assertGCRefused(t *testing.T, err error, proj, storeRoot string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("gc must refuse to sweep when a live project's " +
+			"references cannot be read")
+	}
+	if !strings.Contains(err.Error(), proj) {
+		t.Errorf("error must name the project %s, got: %v", proj, err)
+	}
+	for _, pkg := range []struct{ name, ver string }{
+		{"jq", "1.7"}, {"fd", "9.0"},
+	} {
+		if _, sErr := os.Stat(
+			filepath.Join(storeRoot, pkg.name, pkg.ver),
+		); sErr != nil {
+			t.Errorf("%s@%s must survive a refused gc: %v",
+				pkg.name, pkg.ver, sErr)
+		}
+	}
+}
+
+// TestGCRefusesSweepWhenRegisteredProjectConfigUnreadable pins
+// gh#188: a registered project whose gale.toml cannot be read is
+// live, not gone, so gc has not proved its pins are unreferenced
+// and must not sweep the store.
+//
+// The unreadable config is a directory at the gale.toml path, so
+// os.ReadFile returns EISDIR — a non-ENOENT error, which is what
+// a down network mount also produces. Permission bits would not
+// work: CI and the agent container run tests as root and bypass
+// them, so a chmod-based fixture passes for the wrong reason.
+func TestGCRefusesSweepWhenRegisteredProjectConfigUnreadable(t *testing.T) {
+	storeRoot, proj := gcUnreadableProjectFixture(t)
+
+	cfgPath := filepath.Join(proj, "gale.toml")
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cfgPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+}
+
+// TestGCRefusesSweepWhenProjectGenerationUnreadable pins the
+// other half of gh#188: the project's config reads fine, but its
+// active generation cannot be resolved, so everything the
+// generation links is invisible to retention. An unresolvable
+// current pointer is not proof of non-reference either.
+func TestGCRefusesSweepWhenProjectGenerationUnreadable(t *testing.T) {
+	storeRoot, proj := gcUnreadableProjectFixture(t)
+
+	current := filepath.Join(proj, ".gale", "current")
+	if err := os.Remove(current); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "bogus"), current,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+}
+
+// TestGCForceSweepsDespiteUnreadableProject verifies the escape
+// hatch gh#188 asks for: --force restores the old behavior
+// explicitly, so a user who knows the mount is gone for good can
+// still reclaim space. fd@9.0 is unreferenced everywhere, so its
+// removal proves the sweep ran rather than being skipped.
+func TestGCForceSweepsDespiteUnreadableProject(t *testing.T) {
+	storeRoot, proj := gcUnreadableProjectFixture(t)
+
+	cfgPath := filepath.Join(proj, "gale.toml")
+	if err := os.Remove(cfgPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(cfgPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	gcForce = true
+	t.Cleanup(func() { gcForce = false })
+
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("gc --force must sweep anyway: %v", err)
+	}
+	if _, err := os.Stat(
+		filepath.Join(storeRoot, "fd", "9.0"),
+	); !os.IsNotExist(err) {
+		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
+			"gc --force (proves the sweep ran), err=%v", err)
+	}
+}
+
+// TestGCRetentionToleratesMissingConfigs guards the other half
+// of the gh#188 split: a config that is absent references
+// nothing, so retention must return a nil error for it. Making
+// every read error fatal would turn gc into a no-op on a fresh
+// install, where no gale.toml exists yet.
+func TestGCRetentionToleratesMissingConfigs(t *testing.T) {
+	globalDir := t.TempDir() // no gale.toml, no projects registry
+	s := store.NewStore(t.TempDir())
+	out := output.New(os.Stderr, false)
+
+	ref, retained, err := collectGCRetention(
+		globalDir, "", "", s, nil, nil, out,
+	)
+	if err != nil {
+		t.Fatalf("a missing config must not block the sweep: %v", err)
+	}
+	if len(ref) != 0 {
+		t.Errorf("nothing is installed or pinned: %v", ref)
+	}
+	if len(retained) != 0 {
+		t.Errorf("no project contributed retention: %v", retained)
 	}
 }

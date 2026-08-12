@@ -228,6 +228,13 @@ func Prune(galeHome string) error {
 // (project path replaced by a regular file), which is not
 // fs.ErrNotExist: treating it as live merely delays pruning of
 // a rare stale entry, so simplicity wins over a special case.
+//
+// gc's reference collectors point the same way — an unknown
+// state never authorizes deletion — but resolve it differently
+// (gh#188). Here a conservative fallback is cheap: keep the
+// entry. A collector has none, because it cannot enumerate the
+// keys an unreadable project would contribute, so it errors and
+// gc refuses to sweep at all.
 func Lives(path string) bool {
 	for _, name := range []string{"gale.toml", ".tool-versions"} {
 		if _, err := os.Stat(filepath.Join(path, name)); !errors.Is(err, fs.ErrNotExist) {

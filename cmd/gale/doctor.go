@@ -775,10 +775,19 @@ func checkOrphans(ctx *doctorContext) bool {
 		resolver = ctx.cmdCtx.Resolver
 		pinResolve = ctx.cmdCtx.versionedRecipeResolver()
 	}
-	referenced := collectReferencedPackagesWithResolver(
+	referenced, err := collectReferencedPackagesWithResolver(
 		filepath.Dir(globalConfig), projPath,
 		ctx.store, resolver, pinResolve, ctx.out,
 	)
+	if err != nil {
+		// A count computed from a partial reference set would
+		// name live packages as orphans (gh#188). Report the
+		// gap instead of the number.
+		ctx.out.Warn(fmt.Sprintf(
+			"orphan count unavailable: %v", err,
+		))
+		return true
+	}
 
 	var orphaned int
 	for _, pkg := range ctx.installed {

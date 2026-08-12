@@ -467,9 +467,18 @@ func otherScopeReferences(
 	if cwd, err := os.Getwd(); err == nil {
 		projPath, _ = config.FindGaleConfig(cwd)
 	}
-	referenced := collectReferencedPackagesAllHosts(
+	referenced, err := collectReferencedPackagesAllHosts(
 		globalDir, projPath, st, pinResolve, out,
 	)
+	if err != nil {
+		// Fail closed. An unreadable config hides pins; it does
+		// not prove there are none, and the deletion this guards
+		// is irreversible (gh#188).
+		out.Warn(fmt.Sprintf(
+			"keeping %s: %v", storeDir, err,
+		))
+		return true
+	}
 	return referenced[name+"@"+filepath.Base(storeDir)]
 }
 
