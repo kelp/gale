@@ -61,9 +61,16 @@ install one. Full reference:
   blocked too — they burn minutes, then fail. A
   PreToolUse hook blocks them. `gale lint` is
   offline-clean and unaffected.
+- **`just preflight` is the pre-push gate.** It runs
+  every reproducible CI step, fails fast, and names the
+  gate. Local green without it is not CI green: darwin
+  files never compile on Linux (`just check-darwin`),
+  and the change-discipline guard runs on
+  `pull_request` only (`just pipeline-check`).
 - **The container runs as root**, so tests asserting a
   permission error skip themselves
-  (`os.Geteuid() == 0`). They still run on CI.
+  (`os.Geteuid() == 0`). They still run on CI, and
+  `just test-unprivileged` runs them here.
 - **Signed commits work here.** The container provisions
   its own ssh signing key, so `git commit -S` succeeds
   unattended. The Secretive caveat under Conventions is

@@ -3,6 +3,7 @@ package main
 import (
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -22,7 +23,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var gcRecipes string
+var (
+	gcRecipes string
+	gcForce   bool
+)
 
 var gcCmd = &cobra.Command{
 	Use:   "gc",
@@ -150,10 +154,27 @@ var gcCmd = &cobra.Command{
 		// after gc — which also means a `gale generations
 		// rollback` survives gc instead of being silently
 		// re-advanced to config state (gh#46, gh#47).
-		referenced, retainedProjects := collectGCRetention(
-			globalDir, projPath, projGaleDir, s, resolver,
-			pinResolve, out,
+		referenced, retainedProjects, retErr := collectGCRetention(
+			globalDir, projPath, projGaleDir, s, resolver, pinResolve,
 		)
+		// An unreadable reference source is not proof of
+		// non-reference, so retention is incomplete and every
+		// sweep below would delete on a guess (gh#188). Abort in
+		// dry-run too: "Would remove jq@1.7" computed from an
+		// incomplete set is actively misleading.
+		if retErr != nil {
+			if !gcForce {
+				rebuildErrs = append(rebuildErrs, fmt.Errorf(
+					"refusing to sweep the store: %w "+
+						"(rerun with --force to sweep anyway)", retErr,
+				))
+				return errors.Join(rebuildErrs...)
+			}
+			out.Warn(fmt.Sprintf(
+				"sweeping with incomplete retention: %v", retErr,
+			))
+		}
+
 		removedPkgs, failedPkgs := removeUnreferencedVersions(
 			s, referenced, dryRun, out,
 		)
@@ -244,26 +265,36 @@ var gcCmd = &cobra.Command{
 //
 // The second return value lists the registered projects that
 // contributed retention, for the `gc -n` report.
+//
+// Every LOCAL reference source is strict: an unreadable config
+// or generation yields an error naming the project, and gc's
+// caller refuses to sweep on it (gh#188). Errors from all
+// projects are joined so one run names every bad one. The
+// registry top-up stays best-effort by contrast — see
+// expandRuntimeDeps.
 func collectGCRetention(
 	globalDir, projPath, projGaleDir string,
 	s *store.Store,
 	resolver installer.RecipeResolver,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
-) (map[string]bool, []string) {
-	referenced := collectReferencedPackagesAllHosts(
-		globalDir, projPath, s, pinResolve, out,
+) (map[string]bool, []string, error) {
+	referenced, err := collectReferencedPackagesAllHosts(
+		globalDir, projPath, s, pinResolve,
 	)
-	addActiveGenerationRefs(globalDir, s, referenced)
-	addActiveGenerationRefs(projGaleDir, s, referenced)
-	retainedProjects := addRegisteredProjectRefs(
-		globalDir, projGaleDir, s, referenced, pinResolve, out,
+	errs := []error{
+		err,
+		addActiveGenerationRefs(globalDir, s, referenced),
+		addActiveGenerationRefs(projGaleDir, s, referenced),
+	}
+	retainedProjects, projErr := addRegisteredProjectRefs(
+		globalDir, projGaleDir, s, referenced, pinResolve,
 	)
+	errs = append(errs, projErr)
 	if resolver != nil {
 		expandRuntimeDeps(s, resolver, referenced)
 	}
 	expandInstalledDeps(s, referenced)
-	return referenced, retainedProjects
+	return referenced, retainedProjects, errors.Join(errs...)
 }
 
 // addRegisteredProjectRefs unions in the retention of every
@@ -274,30 +305,32 @@ func collectGCRetention(
 // generation links. Returns the project paths that
 // contributed. Vanished projects (gale.toml and .tool-versions
 // provably absent — see projects.Lives) contribute nothing —
-// Prune removes them on non-dry runs. A project whose liveness
-// stat fails any other way counts as live and is attempted;
-// the merge helpers are best-effort, so an unreadable project
-// simply contributes nothing extra. Projects already covered
+// Prune removes them on non-dry runs. Projects already covered
 // by the direct global/cwd-project passes are skipped.
-// Best-effort: an unreadable registry retains nothing extra.
+//
+// A project whose liveness stat fails any other way counts as
+// live, and reading its references is then strict: an
+// unreadable registry, config or generation returns an error
+// naming the project instead of quietly contributing nothing
+// (gh#188). There is no conservative middle ground — gc cannot
+// enumerate the keys an unreadable project would keep, so
+// "retain what it might reference" means "retain everything",
+// which is what refusing to sweep already achieves, loudly.
 func addRegisteredProjectRefs(
 	globalDir, projGaleDir string,
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
-) []string {
+) ([]string, error) {
 	if globalDir == "" {
-		return nil
+		return nil, nil
 	}
 	regProjects, err := projects.List(globalDir)
 	if err != nil {
-		out.Warn(fmt.Sprintf(
-			"reading project registry: %v", err,
-		))
-		return nil
+		return nil, fmt.Errorf("reading project registry: %w", err)
 	}
 	var retained []string
+	var errs []error
 	for _, proj := range regProjects {
 		cfgPath := filepath.Join(proj, "gale.toml")
 		galeDir, err := galeDirForConfig(cfgPath)
@@ -309,27 +342,64 @@ func addRegisteredProjectRefs(
 		if !projects.Lives(proj) {
 			continue // provably absent; Prune cleans it up
 		}
-		if _, err := os.Stat(cfgPath); err == nil {
-			mergeConfigAllHosts(cfgPath, s, referenced, pinResolve, out)
-		} else {
-			// gale.toml missing or unreadable (Lives passed,
-			// so the project is not provably absent). If it is
-			// merely missing, the pins come from .tool-versions;
-			// if it is unreadable (EACCES/EIO), mergeToolVersions
-			// likely no-ops, which is safe — best-effort. Without
-			// this, a pinned version the active generation
-			// doesn't link (pin edited, sync not yet run) would
-			// be swept — pin retention must not depend on the
-			// config flavor.
-			mergeToolVersions(
-				filepath.Join(proj, ".tool-versions"),
-				s, referenced, pinResolve, out,
-			)
+		if err := addProjectPinRefs(
+			cfgPath, s, referenced, pinResolve,
+		); err != nil {
+			errs = append(errs, projectRefError(proj, err))
+			continue
 		}
-		addActiveGenerationRefs(galeDir, s, referenced)
+		if err := addActiveGenerationRefs(
+			galeDir, s, referenced,
+		); err != nil {
+			errs = append(errs, projectRefError(proj, err))
+			continue
+		}
 		retained = append(retained, proj)
 	}
-	return retained
+	return retained, errors.Join(errs...)
+}
+
+// projectRefError names the project a retention failure came
+// from, so a refused sweep tells the user which mount to fix.
+func projectRefError(proj string, err error) error {
+	return fmt.Errorf(
+		"reading references for project %s: %w", proj, err,
+	)
+}
+
+// addProjectPinRefs adds the config pins of the project owning
+// cfgPath: from gale.toml when it is there, and from the
+// sibling .tool-versions when it is not. Pin retention must not
+// depend on the config flavor — a version the active generation
+// doesn't link (pin edited, sync not yet run) survives only
+// through its pin.
+//
+// The stat splits missing from unreadable. Missing means the
+// project lives via .tool-versions, which Lives already
+// confirmed. Any other stat error is an unreadable gale.toml —
+// reading .tool-versions instead would silently substitute a
+// smaller pin set for the real one.
+func addProjectPinRefs(
+	cfgPath string,
+	s *store.Store,
+	referenced map[string]bool,
+	pinResolve versionedRecipeResolver,
+) error {
+	_, err := os.Stat(cfgPath)
+	switch {
+	case err == nil:
+		return mergeConfigAllHosts(
+			cfgPath, s, referenced, pinResolve,
+		)
+	case errors.Is(err, fs.ErrNotExist):
+		return mergeToolVersions(
+			filepath.Join(filepath.Dir(cfgPath), ".tool-versions"),
+			s, referenced, pinResolve,
+		)
+	default:
+		// *fs.PathError: already names the op and the path.
+		return err
+	}
 }
 
 // addActiveGenerationRefs adds every name@version the active
@@ -338,20 +408,27 @@ func addRegisteredProjectRefs(
 // the keys match store.List output exactly. This protects
 // store dirs the live generation still serves — including
 // versions a rollback re-activated that no config mentions
-// (gh#46). Best-effort: an unreadable generation adds nothing.
+// (gh#46). An unresolvable current pointer is an error, not an
+// empty contribution: everything the generation links would
+// otherwise become invisible to retention and be swept
+// (gh#188). A gale dir with no current symlink is not an error
+// — generation.Current reports gen 0 for it.
 func addActiveGenerationRefs(
 	galeDir string, s *store.Store, referenced map[string]bool,
-) {
+) error {
 	if galeDir == "" {
-		return
+		return nil
 	}
 	pkgs, err := generation.CurrentVersions(galeDir, s.Root)
 	if err != nil {
-		return
+		return fmt.Errorf(
+			"reading active generation under %s: %w", galeDir, err,
+		)
 	}
 	for name, version := range pkgs {
 		referenced[name+"@"+version] = true
 	}
+	return nil
 }
 
 // expandInstalledDeps adds the transitive dep closure recorded
@@ -458,23 +535,29 @@ func removeUnreferencedVersions(
 // is shared across hosts (synced configs), so a pin under
 // another host's overlay must keep the store entry alive
 // even though ApplyHost would hide it on this machine.
+//
+// Returns the partial set alongside any read error so callers
+// can decide: gc refuses to sweep, `gale remove` refuses to
+// delete (gh#188).
 func collectReferencedPackagesAllHosts(
 	globalDir, projPath string,
 	s *store.Store,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
-) map[string]bool {
+) (map[string]bool, error) {
 	referenced := map[string]bool{}
+	var errs []error
 	if globalDir != "" {
-		mergeConfigAllHosts(
+		errs = append(errs, mergeConfigAllHosts(
 			filepath.Join(globalDir, "gale.toml"),
-			s, referenced, pinResolve, out,
-		)
+			s, referenced, pinResolve,
+		))
 	}
 	if projPath != "" {
-		mergeConfigAllHosts(projPath, s, referenced, pinResolve, out)
+		errs = append(errs, mergeConfigAllHosts(
+			projPath, s, referenced, pinResolve,
+		))
 	}
-	return referenced
+	return referenced, errors.Join(errs...)
 }
 
 // collectReferencedPackagesWithResolver merges all
@@ -495,47 +578,71 @@ func collectReferencedPackagesWithResolver(
 	s *store.Store,
 	resolver installer.RecipeResolver,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
-) map[string]bool {
+) (map[string]bool, error) {
 	referenced := map[string]bool{}
+	var errs []error
 	if globalDir != "" {
-		mergeConfig(
+		errs = append(errs, mergeConfig(
 			filepath.Join(globalDir, "gale.toml"),
-			s, referenced, pinResolve, out,
-		)
+			s, referenced, pinResolve,
+		))
 	}
 	if projPath != "" {
-		mergeConfig(projPath, s, referenced, pinResolve, out)
+		errs = append(errs, mergeConfig(
+			projPath, s, referenced, pinResolve,
+		))
 	}
 	if resolver != nil {
 		expandRuntimeDeps(s, resolver, referenced)
 	}
-	return referenced
+	return referenced, errors.Join(errs...)
 }
 
 // mergeConfig reads a gale.toml and adds its packages
-// to the referenced set. Silently skips missing files
-// but warns on parse errors. Each entry is resolved via
-// store.StorePath so the referenced key always matches
-// the on-disk version name produced by store.List.
+// to the referenced set. A missing config is fine and returns
+// nil; every other failure is returned, because a config that
+// exists but cannot be read or parsed hides pins rather than
+// proving there are none (gh#188). Each entry is resolved via
+// store.StorePath so the referenced key always matches the
+// on-disk version name produced by store.List.
 func mergeConfig(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
-) {
-	data, err := os.ReadFile(path)
+) error {
+	data, err := readReferenceSource(path)
 	if err != nil {
-		return // missing config is fine
+		return err
+	}
+	if data == nil {
+		return nil // missing config is fine
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
-		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
-		return
+		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 	cfg.ApplyHost(config.CurrentHost())
 	addPackageRefs(s, cfg.Packages, referenced, pinResolve)
+	return nil
+}
+
+// readReferenceSource reads a file gc derives retention from.
+// It returns (nil, nil) when the file is absent — a pin source
+// that was never there references nothing — and an error for
+// every other failure, which hides pins instead of disproving
+// them (gh#188). The error is returned unwrapped: os.ReadFile
+// yields a *fs.PathError that already names the operation and
+// the path, and callers add the project.
+func readReferenceSource(path string) ([]byte, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return data, nil
 }
 
 // mergeConfigAllHosts is the host-union counterpart of
@@ -543,50 +650,55 @@ func mergeConfig(
 // view, it adds the shared [packages] section plus every
 // [hosts.*.packages] overlay. When shared and overlay pin
 // different versions of the same package, both versions
-// are recorded — the union, not the override.
+// are recorded — the union, not the override. Missing,
+// unreadable and unparsable split as in mergeConfig.
 func mergeConfigAllHosts(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
-) {
-	data, err := os.ReadFile(path)
+) error {
+	data, err := readReferenceSource(path)
 	if err != nil {
-		return // missing config is fine
+		return err
+	}
+	if data == nil {
+		return nil // missing config is fine
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
-		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
-		return
+		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 	addPackageRefs(s, cfg.Packages, referenced, pinResolve)
 	addAllHostPackageRefs(string(data), s, referenced, pinResolve)
+	return nil
 }
 
 // mergeToolVersions reads a .tool-versions file and adds its
 // pins to the referenced set, resolving through addPackageRefs
 // so versions canonicalize via store.StorePath like every other
 // pin source. ParseToolVersions maps tool names to gale recipe
-// names (golang → go). Silently skips a missing file but warns
-// on parse errors, mirroring mergeConfig.
+// names (golang → go). Skips a missing file and returns every
+// other read or parse failure, mirroring mergeConfig.
 func mergeToolVersions(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
-) {
-	data, err := os.ReadFile(path)
+) error {
+	data, err := readReferenceSource(path)
 	if err != nil {
-		return // missing file is fine
+		return err
+	}
+	if data == nil {
+		return nil // missing file is fine
 	}
 	pkgs, err := config.ParseToolVersions(string(data))
 	if err != nil {
-		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
-		return
+		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 	addPackageRefs(s, pkgs, referenced, pinResolve)
+	return nil
 }
 
 // addAllHostPackageRefs adds every `packages` table found at
@@ -608,7 +720,7 @@ func addAllHostPackageRefs(
 ) {
 	var raw map[string]any
 	if _, err := toml.Decode(data, &raw); err != nil {
-		return // mergeConfigAllHosts already warned
+		return // mergeConfigAllHosts already rejected it
 	}
 	hosts, ok := raw["hosts"].(map[string]any)
 	if !ok {
@@ -735,6 +847,14 @@ func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 // in the runtime-dep graph terminate. Resolver failures are
 // tolerated: if a recipe can't be found, the walk just
 // stops at that node rather than aborting gc entirely.
+//
+// Deliberately best-effort where the local reference sources
+// are strict (gh#188). This is a TOP-UP over expandInstalledDeps,
+// which reads each retained package's on-disk .gale-deps.toml —
+// the deps installed binaries actually link. Aborting whenever
+// the registry is unreachable would make gc fail under
+// GALE_OFFLINE=1, a supported mode, in exchange for retention
+// the installed metadata already covers.
 func expandRuntimeDeps(
 	s *store.Store,
 	resolver installer.RecipeResolver,
@@ -920,5 +1040,7 @@ func init() {
 	gcCmd.Flags().StringVar(&gcRecipes, "recipes", "",
 		"Resolve recipes from a local directory instead of the registry "+
 			"for runtime-dep retention")
+	gcCmd.Flags().BoolVar(&gcForce, "force", false,
+		"Sweep even when a project's config or generation cannot be read")
 	rootCmd.AddCommand(gcCmd)
 }
