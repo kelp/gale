@@ -29,6 +29,24 @@
   otherwise, and a machine with an unrepairable lock is exactly
   where repair gets run.
 
+- `gale doctor` reports three states that block a rebuild and
+  had no diagnosis. A lockfile in a schema this build cannot
+  use, in either scope, with `gale lock --refresh` as the
+  remedy. A store directory whose `.gale-deps.toml` cannot be
+  read strictly, which fails the farm claim walk machine-wide.
+  And two declared packages shipping the same executable name
+  with no `[bin]` winner, reported through the same arbiter the
+  generation build decides by, so doctor and the rebuild cannot
+  disagree about which names collide.
+
+- `gale doctor --repair` clears an unreadable `.gale-deps.toml`
+  by deleting that store directory and every package directory
+  on a dependency path to it, then rebuilding the generations.
+  Nothing less works: deleting the metadata file alone shrinks
+  the closure silently, and an install over a surviving
+  directory returns cached without descending. Run `gale sync`
+  afterwards to reinstall what was removed.
+
 ### Fixed
 
 - direnv no longer activates a partially synced environment
