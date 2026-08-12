@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -42,7 +43,7 @@ import (
 func AuthoritativeClosure(
 	roots []string, storeRoot string,
 ) (map[string]bool, bool) {
-	return walkClosure(roots, closureWalk{storeRoot: storeRoot})
+	return walkClosure(roots, storeRoot, nil, "").authoritative()
 }
 
 // ReferenceClosure is AuthoritativeClosure for a caller about to
@@ -65,10 +66,9 @@ func AuthoritativeClosure(
 func ReferenceClosure(
 	roots []string, storeRoot, replacing string,
 ) (map[string]bool, bool) {
-	return walkClosure(roots, closureWalk{
-		storeRoot: storeRoot,
-		leaf:      canonicalDir(replacing),
-	})
+	return walkClosure(
+		roots, storeRoot, nil, canonicalDir(replacing),
+	).authoritative()
 }
 
 // ProposedClosure is the walk for a closure that must be SATISFIED
@@ -95,62 +95,171 @@ func ProposedClosure(
 	roots []string, storeRoot string, staged map[string]string,
 	requirePresent bool,
 ) (map[string]bool, bool) {
-	// Canonicalized again here rather than trusted from the caller:
-	// every path the walk compares goes through canonicalDir, and a
-	// key that skipped it would silently never match.
-	sub := make(map[string]string, len(staged))
+	placements := make([]farm.Placement, 0, len(staged))
 	for canonical, scan := range staged {
-		final := canonicalDir(canonical)
-		// A placement whose bytes are already at their canonical path
-		// substitutes nothing (farm.At builds those). Recording it
-		// would make an ordinary committed directory look staged, and
-		// the stricter reading for staged dirs would then reject
-		// every package that predates dependency metadata.
-		if canonicalDir(scan) == final {
-			continue
-		}
-		sub[final] = scan
+		placements = append(placements, farm.Placement{
+			ScanDir: scan, FinalDir: canonical,
+		})
 	}
-	return walkClosure(roots, closureWalk{
-		storeRoot:      storeRoot,
-		staged:         sub,
-		requirePresent: requirePresent,
-		absentIsLeaf:   true,
-	})
+	// The view canonicalizes each key once and decides staged-ness
+	// once, which is what keeps a placement whose bytes are already
+	// canonical (what farm.At builds) from reading as staged and
+	// dragging the staged-artifact tolerance onto an ordinary
+	// committed directory.
+	view, err := farm.NewProposedStore(placements, nil)
+	if err != nil {
+		// Unreachable from a map, whose keys are unique by
+		// construction, and fail-closed anyway: a proposed state that
+		// cannot be represented is one this walk cannot enumerate.
+		return nil, false
+	}
+	return walkClosure(roots, storeRoot, view, "").proposed(requirePresent)
 }
 
-// closureWalk is the policy the shared walk applies.
-type closureWalk struct {
-	storeRoot string
-	// staged maps a canonical dir to where its bytes are now.
-	staged map[string]string
-	// requirePresent makes an absent referenced directory an
-	// incomplete closure rather than a satisfied absence.
-	requirePresent bool
-	// leaf is one directory the walk reports and then stops at,
-	// without reading or judging its dependency metadata: the
-	// directory a caller is about to replace, whose current contents
-	// describe the artifact being superseded.
-	leaf string
-	// absentIsLeaf keeps the farm walk's long-standing reading of a
-	// committed directory with no dependency metadata: no recorded
-	// dependencies, not an unknown closure. The migration veto reads
-	// it the other way, which is why this is a policy and not a
-	// constant.
-	absentIsLeaf bool
+// closureNode is one directory the walk reached, recorded rather
+// than judged. Every tolerance difference between the walk's
+// interpretations is a difference in how these fields are read, so
+// the observation is taken once and the policies are pure functions
+// over it.
+type closureNode struct {
+	// Dir is the canonical store directory, the identity spelling.
+	Dir string
+	// ReadFrom is where its bytes were read: Dir itself, or a
+	// staging directory standing in for it.
+	ReadFrom string
+	// Staged is whether ReadFrom is somewhere else. Decided by the
+	// proposed-store view, never by comparing path strings here.
+	Staged bool
+	// Present is whether there are bytes to read at all. A staged
+	// directory is present by definition — that is what staging it
+	// means — even before its canonical path exists.
+	Present bool
+	// Leaf marks the one directory a caller is about to replace. Its
+	// metadata is neither read nor judged, because it describes the
+	// artifact being superseded.
+	Leaf bool
+	// Meta is what its dependency metadata said. Meaningful only for
+	// a node that is Present and not Leaf; the walk does not read it
+	// otherwise.
+	Meta depsmeta.State
+	// StatErr is a stat failure that is not simple absence. Absence
+	// is an answer; anything else is a question the walk could not
+	// ask.
+	StatErr error
 }
 
+// closure is the walk's whole observation, sorted by Dir so every
+// interpretation of it iterates deterministically.
+type closure struct {
+	nodes []closureNode
+}
+
+// dirs is the set of directories the closure reaches: the present
+// ones. An absent directory is reported by no interpretation —
+// what differs is whether its absence is tolerated.
+func (c closure) dirs() map[string]bool {
+	out := make(map[string]bool, len(c.nodes))
+	for _, n := range c.nodes {
+		if n.Present {
+			out[n.Dir] = true
+		}
+	}
+	return out
+}
+
+// authoritative is design §13's reading, for a decision that
+// destroys bytes: any node whose dependency record is not readable
+// leaves the closure unknown, and a caller deciding whether to
+// delete something treats unknown as a refusal.
+//
+// An absent directory is not incomplete. There is nothing there to
+// protect, which is a complete answer to the question this walk
+// asks.
+func (c closure) authoritative() (map[string]bool, bool) {
+	complete := true
+	for _, n := range c.nodes {
+		switch {
+		case !n.Present:
+			// Absence is an answer; a stat that failed for any other
+			// reason is not.
+			if n.StatErr != nil {
+				complete = false
+			}
+		case n.Leaf:
+			// Deliberately unread: its contents describe the artifact
+			// being superseded.
+		case n.Meta != depsmeta.StateRecorded:
+			complete = false
+		}
+	}
+	return c.dirs(), complete
+}
+
+// proposed is the reading for a closure that must be SATISFIED
+// rather than merely enumerated, with the two tolerances the farm
+// claim has always had and the removal claim has never had.
+//
+// require is the caller's direction of travel. Populating retargets
+// a soname and a dependency that is gone provides none, so a
+// shrinking claim is honest there. Deleting a farm entry on the
+// strength of a closure that could not be enumerated is the
+// fail-open case, so absence and unreadable staged metadata both
+// refuse once bytes go away.
+func (c closure) proposed(require bool) (map[string]bool, bool) {
+	complete := true
+	for _, n := range c.nodes {
+		switch {
+		case !n.Present:
+			// A dependency that is gone is one the proposed closure
+			// cannot satisfy, but only where the answer decides a
+			// deletion.
+			if n.StatErr != nil || require {
+				complete = false
+			}
+		case n.Leaf:
+		case n.Meta == depsmeta.StateRecorded:
+		case n.Staged && !require:
+			// A STAGED artifact whose metadata does not decode is one
+			// the installer commits anyway, with no provenance record
+			// (design §7's all-or-nothing rule, recordProvenance's
+			// deliberate nil return). A guard on the non-destructive
+			// side must not be stricter than the commit it guards, or
+			// it refuses installs that are policy-allowed today.
+		case n.Meta == depsmeta.StateAbsent && !n.Staged:
+			// A COMMITTED directory with no metadata is a leaf, which
+			// is what the farm walk has always taken it for. Calling
+			// it unknown would make the claim unusable for every
+			// package installed before metadata existed, and an
+			// unusable claim refuses every operation on the machine.
+			//
+			// A directory read from ELSEWHERE is different: gale
+			// staged it moments ago, so a missing record means one was
+			// not produced and the closure really is unknown.
+		default:
+			complete = false
+		}
+	}
+	return c.dirs(), complete
+}
+
+// walkClosure observes the closure reachable from roots, reading
+// each directory through view and stopping at leaf.
+//
+// It decides nothing. Descent is the one policy it must apply,
+// because it cannot record a node it never reached, and descent is
+// the same for every interpretation: a directory with a readable
+// dependency record is descended into, and one without records no
+// dependencies to descend into anyway.
+//
+// A nil view substitutes nothing, which is what the interpretations
+// with no staged bytes want.
 func walkClosure(
-	roots []string, w closureWalk,
-) (map[string]bool, bool) {
-	storeRoot := w.storeRoot
+	roots []string, storeRoot string, view *farm.ProposedStore, leaf string,
+) closure {
 	// One spelling throughout, matching AuthoritativeGenerationDirs.
 	// A caller comparing a directory it resolved itself against these
 	// must not miss a match because of macOS /var versus /private/var.
-	absStore := storeRoot
-	if resolved, err := filepath.EvalSymlinks(storeRoot); err == nil {
-		absStore = resolved
-	}
+	absStore := canonicalDir(storeRoot)
 	queue := make([]string, 0, len(roots))
 	for _, r := range roots {
 		queue = append(queue, canonicalDir(r))
@@ -160,68 +269,19 @@ func walkClosure(
 		seen[d] = true
 	}
 
-	out := make(map[string]bool, len(queue))
-	complete := true
+	var out closure
 	for len(queue) > 0 {
 		dir := queue[0]
 		queue = queue[1:]
-		// The staged bytes stand in for the canonical dir entirely:
-		// present even when the canonical path does not exist yet,
-		// and read from where they are.
-		readFrom, isStaged := w.staged[dir]
-		if !isStaged {
-			readFrom = dir
-			if _, err := os.Stat(dir); err != nil {
-				if os.IsNotExist(err) {
-					if w.requirePresent {
-						// A dependency that is gone is one the proposed
-						// closure cannot satisfy.
-						complete = false
-					}
-					// Otherwise nothing there to protect. Distinct from
-					// the case below: absence is an answer, while a stat
-					// that fails for any other reason is not.
-					continue
-				}
-				complete = false
-				continue
-			}
-		}
-		out[dir] = true
-		if w.leaf != "" && dir == w.leaf {
-			continue
-		}
-
-		deps, state := depsmeta.ReadStrict(readFrom)
-		switch {
-		case state == depsmeta.StateRecorded:
-		case readFrom != dir && !w.requirePresent:
-			// A STAGED artifact whose metadata does not decode is one
-			// the installer commits anyway, with no provenance record
-			// (design §7's all-or-nothing rule, recordProvenance's
-			// deliberate nil return). A guard on the non-destructive
-			// side must not be stricter than the commit it guards, or
-			// it refuses installs that are policy-allowed today.
-			//
-			// The strict side keeps refusing, because there the
-			// unenumerable closure decides a deletion.
-			continue
-		case state == depsmeta.StateAbsent && w.absentIsLeaf && readFrom == dir:
-			// A COMMITTED directory with no metadata is a leaf, which
-			// is what the farm walk has always taken it for. Calling
-			// it unknown here would make the claim unusable for every
-			// package installed before metadata existed, and an
-			// unusable claim refuses every operation on the machine.
-			//
-			// A directory read from ELSEWHERE is different: gale
-			// staged it moments ago, so a missing record means one was
-			// not produced and the closure really is unknown. The test
-			// is readFrom != dir rather than "has a placement",
-			// because farm.At names placements whose bytes are already
-			// committed and those are ordinary committed dirs.
-			continue
-		default:
-			complete = false
+		n, deps := observe(dir, view, leaf)
+		out.nodes = append(out.nodes, n)
+		// The one policy the walk must apply, because it cannot
+		// record a node it never reached. It is the same for every
+		// interpretation: a directory whose record did not decode
+		// declares no dependencies to descend into. Meta is the zero
+		// state for a node observe did not read, so this covers the
+		// absent and leaf cases too.
+		if n.Meta != depsmeta.StateRecorded {
 			continue
 		}
 		for _, dep := range deps {
@@ -237,7 +297,39 @@ func walkClosure(
 			}
 		}
 	}
-	return out, complete
+	slices.SortFunc(out.nodes, func(a, b closureNode) int {
+		return strings.Compare(a.Dir, b.Dir)
+	})
+	return out
+}
+
+// observe records one directory without judging it, returning the
+// dependencies it declares so the walk reads each record once.
+func observe(
+	dir string, view *farm.ProposedStore, leaf string,
+) (closureNode, []depsmeta.ResolvedDep) {
+	n := closureNode{Dir: dir, ReadFrom: dir, Leaf: leaf != "" && dir == leaf}
+	if view != nil {
+		if path, staged, known := view.ReadPath(dir); known {
+			n.ReadFrom, n.Staged = path, staged
+		}
+	}
+	if n.Staged {
+		// The staged bytes stand in for the canonical dir entirely:
+		// present even when the canonical path does not exist yet,
+		// and read from where they are.
+		n.Present = true
+	} else if _, err := os.Stat(dir); err == nil {
+		n.Present = true
+	} else if !os.IsNotExist(err) {
+		n.StatErr = err
+	}
+	if !n.Present || n.Leaf {
+		return n, nil
+	}
+	deps, state := depsmeta.ReadStrict(n.ReadFrom)
+	n.Meta = state
+	return n, deps
 }
 
 // AuthoritativeGenerationDirs returns the store directories a scope's
