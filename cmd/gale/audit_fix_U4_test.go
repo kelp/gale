@@ -11,6 +11,7 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/store"
 )
@@ -287,6 +288,19 @@ func TestGCSweepsCrashLeftovers(t *testing.T) {
 	if err := os.Symlink("/nonexistent", staleLink); err != nil {
 		t.Fatal(err)
 	}
+	// The farm rebuild's equivalent (gh#184): an image staged beside
+	// ~/.gale/lib by a process killed before it could publish. Same
+	// class, same grace period, and a directory rather than a link.
+	staleFarm := filepath.Join(galeDir, farm.StagingPrefix+"99999")
+	if err := os.MkdirAll(staleFarm, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		"/nonexistent", filepath.Join(staleFarm, "libstale.1.dylib"),
+	); err != nil {
+		t.Fatal(err)
+	}
+	ageEntry(t, staleFarm)
 	old := unix.NsecToTimeval(
 		time.Now().Add(-2 * time.Hour).UnixNano(),
 	)
@@ -306,6 +320,10 @@ func TestGCSweepsCrashLeftovers(t *testing.T) {
 	if _, err := os.Lstat(staleLink); !os.IsNotExist(err) {
 		t.Error("stale current-new.99999 swap symlink must be " +
 			"swept by gc")
+	}
+	if _, err := os.Lstat(staleFarm); !os.IsNotExist(err) {
+		t.Errorf("stale farm staging dir %s must be swept by gc",
+			staleFarm)
 	}
 	if _, err := os.Stat(jqDir); err != nil {
 		t.Errorf("referenced jq/1.8.1-1 must survive the "+

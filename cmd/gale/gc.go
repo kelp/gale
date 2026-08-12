@@ -14,6 +14,7 @@ import (
 
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
@@ -925,10 +926,21 @@ var gcScratchPrefixes = []string{
 	"gale-home-", "gale-tmp-", "gale-git-",
 }
 
+// gcSwapDebrisPrefixes are the ~/.gale entry name prefixes a
+// PID-scoped, rename-published mutation leaves behind when the
+// process dies mid-operation: the generation swap's staging symlink
+// (gh#78) and the farm image staged beside ~/.gale/lib (gh#184).
+// Both are inert — nothing resolves through either — so they are
+// swept on age alone, like every other crash leftover.
+var gcSwapDebrisPrefixes = []string{
+	"current-new.", farm.StagingPrefix,
+}
+
 // sweepCrashLeftovers reclaims artifacts a crashed or killed
 // process stranded: transient store entries (.build-*, *.bak,
-// *.stream — gh#78), stale current-new.<pid> swap symlinks,
-// and ~/.gale/tmp build scratch (gh#79). Everything is guarded
+// *.stream — gh#78), the PID-scoped staging leftovers of a
+// generation swap or a farm rebuild, and ~/.gale/tmp build
+// scratch (gh#79). Everything is guarded
 // by gcSweepGrace; the store sweep additionally skips package
 // dirs whose lock is concurrently held, and the tmp sweep is
 // vetoed entirely while any install is in flight, since
@@ -943,18 +955,22 @@ func sweepCrashLeftovers(
 	s *store.Store, globalDir, projGaleDir string, dry bool,
 ) int {
 	swept := len(s.SweepTransient(gcSweepGrace, dry))
-	swept += sweepStaleSwapLinks(globalDir, dry)
-	swept += sweepStaleSwapLinks(projGaleDir, dry)
+	swept += sweepStaleSwapDebris(globalDir, dry)
+	swept += sweepStaleSwapDebris(projGaleDir, dry)
 	swept += sweepBuildScratch(s, dry)
 	return swept
 }
 
-// sweepStaleSwapLinks removes current-new.<pid> symlinks under
-// galeDir left behind when a generation swap crashed between
-// creating the staging link and renaming it over current
-// (gh#78). A live swap completes in milliseconds, so anything
+// sweepStaleSwapDebris removes the PID-scoped leftovers under
+// galeDir of a mutation that died between staging its new state and
+// renaming it into place: a generation swap's current-new.<pid>
+// symlink (gh#78), a farm rebuild's lib.staging.<pid> image
+// (gh#184). A live swap completes in milliseconds, so anything
 // older than gcSweepGrace is debris.
-func sweepStaleSwapLinks(galeDir string, dry bool) int {
+//
+// RemoveAll, because the farm image is a directory of symlinks
+// while the swap leftover is a single link.
+func sweepStaleSwapDebris(galeDir string, dry bool) int {
 	if galeDir == "" {
 		return 0
 	}
@@ -965,15 +981,15 @@ func sweepStaleSwapLinks(galeDir string, dry bool) int {
 	cutoff := time.Now().Add(-gcSweepGrace)
 	var swept int
 	for _, e := range entries {
-		if !strings.HasPrefix(e.Name(), "current-new.") {
+		if !hasSwapDebrisPrefix(e.Name()) {
 			continue
 		}
-		info, err := e.Info() // Lstat: the link's own mtime
+		info, err := e.Info() // Lstat: the entry's own mtime
 		if err != nil || info.ModTime().After(cutoff) {
 			continue
 		}
 		if !dry {
-			if err := os.Remove(
+			if err := os.RemoveAll(
 				filepath.Join(galeDir, e.Name()),
 			); err != nil {
 				continue
@@ -982,6 +998,17 @@ func sweepStaleSwapLinks(galeDir string, dry bool) int {
 		swept++
 	}
 	return swept
+}
+
+// hasSwapDebrisPrefix reports whether name matches one of the
+// PID-scoped staging prefixes gale publishes state through.
+func hasSwapDebrisPrefix(name string) bool {
+	for _, prefix := range gcSwapDebrisPrefixes {
+		if strings.HasPrefix(name, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // sweepBuildScratch removes gale-owned scratch dirs under

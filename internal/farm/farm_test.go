@@ -653,31 +653,25 @@ func TestPackageName(t *testing.T) {
 // weakened-but-not-silent rule for section 6.
 //
 // Rebuild used to log each Populate failure and return success. The
-// generation rebuild calls it after the current-symlink swap, which
-// is the activation commit point, so a failure there cannot roll the
-// generation back — but it must still reach the caller. An
-// unpopulated shared farm means binaries cannot load their dylibs,
-// and a line on stderr inside a direnv hook is invisible. Rebuild
-// therefore populates everything it can and returns what failed.
+// generation rebuild is the caller, and an unpopulated shared farm
+// means binaries cannot load their dylibs, while a line on stderr
+// inside a direnv hook is invisible. So every store dir is still
+// attempted and every failure is still collected and returned —
+// which is what makes one run name every unreadable package rather
+// than one per re-run.
+//
+// What that batch leaves BEHIND changed with gh#184. It used to
+// publish the half that succeeded, and this test pinned that; the
+// image is now staged and published only in full, so a failure
+// leaves the farm as it was. TestRebuildPublishesNothingOnA
+// PopulationFailure carries the inverted assertion.
 func TestRebuildReportsPopulationFailures(t *testing.T) {
 	root := t.TempDir()
 	farmDir := filepath.Join(root, "lib")
 
-	soname := versionedName("libgood", "1")
-	good := storeLayout(t, root, "good", "1.0", []string{soname})
-
-	// A store dir whose lib is a FILE, not a directory: Populate
-	// cannot read it, which is a per-package failure rather than a
-	// reason to abandon the rest of the batch.
-	bad := filepath.Join(root, "pkg", "bad", "2.0-1")
-	if err := os.MkdirAll(bad, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(bad, "lib"), []byte("not a dir"), 0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
+	good := storeLayout(t, root, "good", "1.0",
+		[]string{versionedName("libgood", "1")})
+	bad := unreadableLibStoreDir(t, root)
 
 	err := Rebuild([]string{good, bad}, farmDir)
 	if err == nil {
@@ -685,12 +679,5 @@ func TestRebuildReportsPopulationFailures(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "bad") {
 		t.Errorf("error does not name the failing package: %v", err)
-	}
-	// Progressive, not transactional: what could be populated is.
-	if _, lerr := os.Readlink(
-		filepath.Join(farmDir, soname),
-	); lerr != nil {
-		t.Errorf("a failure elsewhere abandoned the rest of the "+
-			"batch: %v", lerr)
 	}
 }

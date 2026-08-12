@@ -331,6 +331,55 @@ func farmStoreDirs(
 	return out, nil
 }
 
+// beforeFarmPublish runs between the current-symlink swap and the
+// publication of the staged farm image. nil in production; a test
+// sets it to observe the one interval the split opens, which no
+// caller can otherwise reach.
+var beforeFarmPublish func()
+
+// stageFarm builds the farm image a rebuild boundary will publish,
+// which is every part of the farm work that can fail. Its error says
+// the generation was not activated, because at every call site
+// nothing has moved yet.
+func stageFarm(dirs []string, storeRoot string, genNum int) (*farm.Staged, error) {
+	staged, err := farm.Stage(dirs, farm.DirFromStoreRoot(storeRoot))
+	if err != nil {
+		return nil, fmt.Errorf(
+			"the shared library farm for generation %d could not be "+
+				"built, so it was not activated: %w", genNum, err,
+		)
+	}
+	return staged, nil
+}
+
+// publishFarm makes the staged image live, after the swap that
+// activated genNum.
+//
+// The swap is the activation commit point, so a failure here does
+// not roll the generation back: undoing a completed swap would be a
+// second fallible transaction. It is not swallowed either. The farm
+// is what binaries resolve their dylibs through, so an incomplete
+// one is a real failure the caller must see, and a line on stderr
+// inside a direnv hook is invisible (design revision 6, section 6).
+//
+// What makes that acceptable is that publication is N renames
+// within one directory — the same class as the swap it follows —
+// while everything that realistically fails already ran in
+// stageFarm.
+func publishFarm(staged *farm.Staged, genNum int) error {
+	if beforeFarmPublish != nil {
+		beforeFarmPublish()
+	}
+	if err := staged.Publish(); err != nil {
+		return fmt.Errorf(
+			"generation %d is active, but the shared library farm is "+
+				"incomplete; run gale sync again to repair it: %w",
+			genNum, err,
+		)
+	}
+	return nil
+}
+
 //go:embed gale-readme.md
 var galeReadme []byte
 
@@ -515,37 +564,35 @@ func build(pkgs map[string]string, galeDir, storeRoot string, opts Options) erro
 			return err
 		}
 
+		// Build the shared-lib farm image from this generation's
+		// packages plus their recorded dep closure (gh#43) and
+		// every other scope's claimed closure. Older revisions may
+		// still be in the store (awaiting `gale gc`), but they
+		// aren't on PATH, aren't claimed, and must not leak into
+		// the farm.
+		//
+		// BEFORE the swap, because this is the fallible half and
+		// the swap is the activation commit point: a failure here
+		// leaves the previous generation active and the farm
+		// exactly as it was (gh#184). Building the whole farm
+		// before the swap instead would commit a farm ahead of its
+		// generation, which is the rollback this code has always
+		// refused to attempt.
+		staged, err := stageFarm(active, storeRoot, next)
+		if err != nil {
+			cleanup()
+			return err
+		}
+		defer staged.Discard()
+
 		// Atomic swap: create a temporary symlink then rename.
 		if err := swapCurrentSymlink(galeDir, next); err != nil {
 			cleanup()
 			return err
 		}
 
-		// Rebuild the shared-lib farm from this
-		// generation's packages plus their recorded dep
-		// closure (gh#43) and every other scope's claimed
-		// closure. Older revisions may still be in the
-		// store (awaiting `gale gc`), but they aren't on
-		// PATH, aren't claimed, and must not leak into the
-		// farm.
-		//
-		// The swap above is the activation commit point, so a
-		// failure here does not roll the generation back: undoing
-		// a completed swap would be a second fallible transaction
-		// that cannot reliably restore a partially mutated farm.
-		// It is not swallowed either. The farm is what binaries
-		// resolve their dylibs through, so an incomplete one is a
-		// real failure the caller must see, and a line on stderr
-		// inside a direnv hook is invisible (design revision 6,
-		// section 6).
-		if err := farm.Rebuild(
-			active, farm.DirFromStoreRoot(storeRoot),
-		); err != nil {
-			return fmt.Errorf(
-				"generation %d is active, but the shared library "+
-					"farm is incomplete; run gale sync again to "+
-					"repair it: %w", next, err,
-			)
+		if err := publishFarm(staged, next); err != nil {
+			return err
 		}
 
 		// Write README (best effort, world-readable).
