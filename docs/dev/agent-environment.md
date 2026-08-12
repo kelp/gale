@@ -15,13 +15,15 @@ apply to both repos.
 ```sh
 just agent-bootstrap   # install the toolchain; blocks if it is already running
 just agent-status      # what landed, and what failed
+just preflight         # every CI gate, in CI's order — run before you push
 just test              # 21s, hermetic
 just lint              # golangci-lint + go vet, 15s
-just fmt-check         # gofumpt
+just fmt-check         # gofumpt, whole tree
+just check-darwin      # the darwin-only files Linux never compiles
 just integration       # hermetic Tier A, fake GHCR
 ```
 
-Three things to internalize before your first command:
+Four things to internalize before your first command:
 
 1. **The bootstrap is asynchronous.** A `SessionStart` hook starts it in the
    background, so a fresh session may reach you before `golangci-lint` is
@@ -31,6 +33,10 @@ Three things to internalize before your first command:
    fail slowly. See [Blocked egress](#blocked-egress).
 3. **You are root.** Tests that assert a permission error skip themselves
    rather than fail. See [Running as root](#running-as-root).
+4. **Green locally is not green on CI.** Half of `internal/build` and all of
+   the Mach-O code is `//go:build darwin` and is never compiled here. See
+   [Darwin code is invisible on Linux](#darwin-code-is-invisible-on-linux).
+   `just preflight` closes that gap and the other CI-only gates.
 
 ## Bootstrap
 
@@ -57,20 +63,45 @@ What it installs, and where the pin comes from:
 | `govulncheck` | `go install golang.org/x/vuln/...@latest` | latest, as CI does |
 | `actionlint` | `go install github.com/rhysd/actionlint/...@latest` | latest |
 | `just` | GitHub release tarball | `gale.toml` |
+| `patchelf` | GitHub release tarball, Linux only | literal in the script |
+
+`patchelf` is a test dependency, not a dev tool: six rpath tests in
+`internal/build/fixup_linux_test.go` call `exec.LookPath("patchelf")` and skip
+without it, which quietly strips Linux coverage from the most
+regression-prone file in the repo. Its pin lives in the script rather than
+`gale.toml` because `gale.toml` drives a real dev machine's direnv toolchain,
+and gale is macOS-first, where patchelf means nothing.
 
 It also warms the Go module cache, unshallows the clone (see
 [new-from-merge-base](#golangci-lint)), and points `core.hooksPath` at
 `.githooks`.
 
+### The `gale` on PATH is shared, and may not be yours
+
+The bootstrap builds `~/.local/bin/gale` from whatever repo root invoked it.
+`~/.local/bin` is one directory for the whole container, so with several
+worktrees checked out, the `gale` on `PATH` is whichever worktree bootstrapped
+last — not necessarily the one you are editing. Nothing warns you; the binary
+just behaves like someone else's branch.
+
+Do not try to make it per-worktree. To exercise *your* build, build it
+somewhere private and call it by path:
+
+```sh
+go build -o /tmp/gale-$$ ./cmd/gale/ && /tmp/gale-$$ lint recipes/j/jq.toml
+```
+
+`just agent-status` prints the repo root the shared binary came from
+(`gale  ok (built from /path)`), which is the fastest way to tell whose it is.
+
 ## What is already in the container
 
 `go`, `git`, `python3` (3.11+), `jq`, `curl`, `flock`, `gcc`/`g++`, `make`,
-`cmake`, `cargo`, `node`, `ruby`.
+`cmake`, `cargo`, `node`, `ruby`, `readelf`/`objdump` (binutils), `setpriv`.
 
 Not present, and not installed by the bootstrap: `gh`, `direnv`, `zstd`,
-`patchelf`, `shellcheck`. `direnv` in particular means `.envrc`'s `use gale`
-never fires — the bootstrap is what puts the pinned toolchain on `PATH`
-instead.
+`shellcheck`. `direnv` in particular means `.envrc`'s `use gale` never fires —
+the bootstrap is what puts the pinned toolchain on `PATH` instead.
 
 ### Go toolchain
 
@@ -104,7 +135,19 @@ A `PreToolUse` hook (`.claude/hooks/block-gale-install.sh`) blocks
 `gale install|build|sync` and `just install|bootstrap` for exactly this
 reason. Prefix a command with `GALE_ALLOW_NETWORK_INSTALL=1` to override.
 
-What to use instead:
+`just install` and `just bootstrap` are blocked for the same reason: both end
+in `./gale install --path . -g gale`. There is no sandbox equivalent and you
+do not need one — nothing here requires gale to be *installed into a
+generation*. What `just bootstrap` would have given you, the bootstrap script
+already did:
+
+| `just bootstrap` step | Sandbox equivalent |
+| --- | --- |
+| `just build` | `go build -o ~/.local/bin/gale ./cmd/gale/`, or `just agent-bootstrap` |
+| `just hooks` | `just agent-bootstrap` (sets `core.hooksPath`) |
+| `./gale install -g gale` | nothing — no generation is needed to run gale here |
+
+What to use instead, generally:
 
 - `gale lint <recipe.toml>` — fully offline, and the real gate for recipe edits.
 - `go build -o ~/.local/bin/gale ./cmd/gale/` — rebuild gale from source.
@@ -117,6 +160,37 @@ What to use instead:
 `api.github.com` is blocked and `gh` is not installed. All GitHub work — PRs,
 issues, CI status, comments — goes through the session's GitHub MCP tools,
 scoped to `kelp/gale` and `kelp/gale-recipes`.
+
+## Darwin code is invisible on Linux
+
+gale is macOS-first, but this container is Linux. Every `//go:build darwin`
+file is therefore excluded from the build: it is not compiled, not
+typechecked, not vetted, and not linted. Six files, found with
+`grep -rl '^//go:build darwin' --include='*.go' .` — `fixup_darwin.go`,
+`fixup_uuid.go` and `binary_darwin.go` plus their tests, the Mach-O rpath,
+codesign and UUID paths that CLAUDE.md names as the most regression-prone
+code in the repo — get **zero** local signal.
+
+The failure mode is silent. Append `func x() { doesNotExist() }` to
+`fixup_darwin.go` and `go build ./...`, `go vet ./...`, `golangci-lint run`,
+`go test ./...` and the pre-commit hook all stay green; CI's `macos-26` job is
+the first thing that notices.
+
+The remedy:
+
+```sh
+just check-darwin   # GOOS=darwin GOARCH=arm64 go build ./... && go vet ./...
+```
+
+`go build` covers the non-test files; `go vet` also typechecks `_test.go`,
+which `go build` never sees. It cannot *run* darwin tests — no execution, no
+cgo, no `install_name_tool` — but it catches every undefined symbol, wrong
+signature and hallucinated API, which is the class of error an agent
+introduces. Cold it takes about 75s (a separate build cache per GOOS); warm,
+a few seconds. `just preflight` includes it.
+
+The same blind spot runs the other way on CI's macos runner for
+`//go:build linux` files, but nothing here is Linux-only in the same way.
 
 ## Running as root
 
@@ -132,26 +206,83 @@ if os.Geteuid() == 0 {
 }
 ```
 
-They still run, and still pass, as an unprivileged user on CI. If you add a
-negative test that depends on file modes, add the same guard — and check it by
-running the compiled test binary under `setpriv --reuid=65534`, not by
-reasoning about it.
+22 tests skip this way, across `cmd/gale`, `internal/build`,
+`internal/generation`, `internal/installer`, `internal/lockfile`,
+`internal/projects`, `internal/provenance` and `internal/atomicfile`. They
+still run, and still pass, as an unprivileged user on CI. `go test ./... -v`
+plus `grep SKIP` prints the current list.
+
+To actually run them here:
+
+```sh
+just test-unprivileged
+```
+
+It compiles as root and runs each test binary under
+`setpriv --reuid=65534 --regid=65534 --clear-groups` via `go test -exec`, so
+the Go build and module caches under root's 0700 `$HOME` stay reachable — the
+reason a plain `setpriv go test` does not work. It also points `HOME` at a
+world-writable temp dir, since `setpriv` keeps the caller's environment.
+
+**It complements `just test`; it does not replace it.** The two runs cover
+different tests, so run both:
+
+| Run | Gains | Loses |
+| --- | --- | --- |
+| `just test` (root) | the 10 tests that shell out to `patchelf`, `cc` or `go build` | 22 permission tests |
+| `just test-unprivileged` | those 22 | the 10 — `~/.local/bin` and the Go toolchain live under root's 0700 `$HOME`, so `exec.LookPath("patchelf")` and a nested `go build` fail for uid 65534 and those tests skip themselves |
+
+Known failure: `TestBuildEnvHomeIsBuildScoped` fails under it once any root
+`go test` has run in the container. That test sets `HOME=/host/home/value`,
+and `build.TmpDir()` does `MkdirAll($HOME/.gale/tmp)` — which root happily
+creates at the filesystem root, leaving a root-owned `/host/home/value/.gale/`
+behind. Unprivileged runs then find that directory present but unwritable
+instead of absent, so `TmpDir()` returns it rather than falling back to
+`/tmp`. Removing `/host/home` clears it. The real fix belongs in the test: a
+`t.TempDir()`, not a literal path outside the test's own tree.
+
+### chmod 000 does not work as root
+
+Do not write a new negative test around file modes and expect it to run here;
+it will skip and you will have proved nothing. Where the failure you need is
+structural rather than permission-based, provoke it with the filesystem
+instead, and it works for every uid:
+
+| Want | Arrange | errno |
+| --- | --- | --- |
+| open/read fails | a directory where a file is expected | `EISDIR` |
+| any path resolution fails | a symlink pointing at itself | `ELOOP` |
+| traversal fails | a regular file used as a path component | `ENOTDIR` |
+| rename/create fails | a target path on a different filesystem, or a name over `NAME_MAX` | `EXDEV`, `ENAMETOOLONG` |
+
+Prefer those. Keep the `Geteuid` guard only when the behavior under test
+genuinely is permission bits.
 
 ## CI parity
 
 `.github/workflows/ci.yml` runs on `macos-26` and `ubuntu-latest`.
 
-Reproducible locally, and worth running before you push:
+**`just preflight` is the pre-push gate.** It runs every reproducible CI step
+in CI's order, stops at the first failure, and names the gate that failed. Run
+it before every push; a red CI on a branch several agents are about to build
+on costs more than the two minutes it takes.
 
-| CI step | Local |
-| --- | --- |
-| `go test ./...` | `just test` |
-| `go test -race ./...` | `just test-race` |
-| `go vet ./...` | part of `just lint` |
-| golangci-lint | `just lint` |
-| `gofumpt -l .` | `just fmt-check` — **note CI checks `.`, the justfile only checks `cmd internal integration`**; run `gofumpt -l .` directly before pushing |
-| `scripts/check-pipeline-tests.sh origin/main` | same command |
-| integration Tier A | `just integration` |
+| CI step | Local | In `preflight` |
+| --- | --- | --- |
+| `go test ./...` | `just test` | yes |
+| `go test -race ./...` | `just test-race` | yes |
+| `go vet ./...` | part of `just lint` | yes |
+| golangci-lint | `just lint` | yes |
+| `gofumpt -l .` | `just fmt-check` | yes |
+| `scripts/check-pipeline-tests.sh origin/main` | `just pipeline-check` | yes |
+| the `macos-26` matrix leg | `just check-darwin` (typecheck only) | yes |
+| integration Tier A | `just integration` | no — run it separately |
+| govulncheck | not reproducible, see below | no |
+
+Two of those exist only because the sandbox needs them.
+`just pipeline-check` wraps a script CI runs on `pull_request` only, so
+without it the change-discipline guard stays invisible until the PR is already
+open. `just check-darwin` substitutes for a macOS runner nobody has locally.
 
 CI-only, do not attempt locally:
 
