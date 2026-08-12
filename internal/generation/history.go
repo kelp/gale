@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 )
 
@@ -162,11 +161,7 @@ func Rollback(galeDir, storeRoot string, target int) error {
 			return err
 		}
 
-		if err := swapCurrentSymlink(galeDir, target); err != nil {
-			return err
-		}
-
-		// Rebuild the SHARED farm from the rolled-to
+		// Build the SHARED farm's image from the rolled-to
 		// generation's package set so binaries resolve the
 		// dylib revisions they were built against, not the
 		// ones the rolled-from generation installed (gh#44),
@@ -178,18 +173,19 @@ func Rollback(galeDir, storeRoot string, target int) error {
 		// wiped a directory nothing resolves through and left
 		// the farm its binaries actually use untouched.
 		//
-		// Mirrors Build's post-swap rebuild, including the
-		// failure semantics: the swap stands, the error is
-		// returned.
-		if err := farm.Rebuild(
-			active, farm.DirFromStoreRoot(storeRoot),
-		); err != nil {
-			return fmt.Errorf(
-				"generation %d is active, but the shared library "+
-					"farm is incomplete; run gale sync to repair "+
-					"it: %w", target, err,
-			)
+		// Mirrors Build exactly, through the same pair: the
+		// fallible half before the swap, the publication after it
+		// (gh#184).
+		staged, err := stageFarm(active, storeRoot, target)
+		if err != nil {
+			return err
 		}
-		return nil
+		defer staged.Discard()
+
+		if err := swapCurrentSymlink(galeDir, target); err != nil {
+			return err
+		}
+
+		return publishFarm(staged, target)
 	})
 }
