@@ -179,15 +179,19 @@ the first thing that notices.
 The remedy:
 
 ```sh
-just check-darwin   # GOOS=darwin GOARCH=arm64 go build ./... && go vet ./...
+just check-darwin   # GOOS=darwin go build ./... && go vet ./... && golangci-lint run ./...
 ```
 
 `go build` covers the non-test files; `go vet` also typechecks `_test.go`,
-which `go build` never sees. It cannot *run* darwin tests — no execution, no
-cgo, no `install_name_tool` — but it catches every undefined symbol, wrong
-signature and hallucinated API, which is the class of error an agent
-introduces. Cold it takes about 75s (a separate build cache per GOOS); warm,
-a few seconds. `just preflight` includes it.
+which `go build` never sees. The `GOOS=darwin` golangci-lint pass adds the
+linters: darwin `_test.go` files are linted on the macos leg like any other
+source, so a `dupl` or `funlen` hit in darwin-only test code is otherwise
+invisible until the PR is open. It cannot *run* darwin tests — no execution,
+no cgo, no `install_name_tool` — but it catches every undefined symbol, wrong
+signature, hallucinated API and lint regression, which is the class of error
+an agent introduces. Cold it takes about 75s for build+vet (a separate build
+cache per GOOS) plus ~30s for the lint pass; warm, a few seconds each.
+`just preflight` includes it.
 
 The same blind spot runs the other way on CI's macos runner for
 `//go:build linux` files, but nothing here is Linux-only in the same way.
@@ -275,7 +279,7 @@ on costs more than the two minutes it takes.
 | golangci-lint | `just lint` | yes |
 | `gofumpt -l .` | `just fmt-check` | yes |
 | `scripts/check-pipeline-tests.sh origin/main` | `just pipeline-check` | yes |
-| the `macos-26` matrix leg | `just check-darwin` (typecheck only) | yes |
+| the `macos-26` matrix leg | `just check-darwin` (typecheck + lint, no execution) | yes |
 | integration Tier A | `just integration` | no — run it separately |
 | govulncheck | not reproducible, see below | no |
 
