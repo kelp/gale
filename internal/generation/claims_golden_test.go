@@ -142,7 +142,7 @@ func TestProposedClaimantGolden_Committed(t *testing.T) {
 		{ScanDir: g.raw("zlib", "1.3-1"), FinalDir: g.raw("zlib", "1.3-1")},
 		{ScanDir: g.raw("zlib", "2.0-1"), FinalDir: g.raw("zlib", "2.0-1")},
 	}
-	assertPlacementSet(t, c.Claims, want)
+	assertPlacementSet(t, c.View.Placements(), want)
 }
 
 // TestProposedClaimantGolden_Staged pins both staged builders. They
@@ -186,8 +186,8 @@ func TestProposedClaimantGolden_Staged(t *testing.T) {
 				{ScanDir: g.staging, FinalDir: g.app},
 				{ScanDir: g.zlibNew, FinalDir: g.zlibNew},
 			}
-			if !slices.Equal(c.Claims, want) {
-				t.Errorf("Claims = %+v, want %+v", c.Claims, want)
+			if got := c.View.Placements(); !slices.Equal(got, want) {
+				t.Errorf("claims = %+v, want %+v", got, want)
 			}
 		})
 	}

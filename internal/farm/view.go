@@ -30,6 +30,11 @@ import (
 // Values are immutable once built. With returns a new view rather
 // than mutating, so a claim handed to the guard cannot shift under
 // it between the soname enumeration and the closure walk.
+//
+// The nil view is valid and empty: it names no directory, so it
+// substitutes nothing and claims nothing. That is what a claimant
+// with an unreadable closure carries, and what a walk with nothing
+// staged wants.
 type ProposedStore struct {
 	entries map[string]entry // key: canonicalized final dir
 }
@@ -124,6 +129,9 @@ func (v *ProposedStore) With(more ...Placement) (*ProposedStore, error) {
 // they are staged, and whether the view knows dir at all. dir may be
 // spelled any way that names the same directory.
 func (v *ProposedStore) ReadPath(dir string) (path string, staged, known bool) {
+	if v == nil {
+		return "", false, false
+	}
 	e, ok := v.entries[CanonicalDir(dir)]
 	if !ok {
 		return "", false, false
@@ -135,6 +143,9 @@ func (v *ProposedStore) ReadPath(dir string) (path string, staged, known bool) {
 // is the identity spelling: use it to compare directories, never to
 // report one.
 func (v *ProposedStore) Dirs() []string {
+	if v == nil {
+		return nil
+	}
 	return slices.Sorted(maps.Keys(v.entries))
 }
 
@@ -147,6 +158,9 @@ func (v *ProposedStore) Dirs() []string {
 // both change under a caller whose store root is reached through a
 // symlink.
 func (v *ProposedStore) Placements() []Placement {
+	if v == nil {
+		return nil
+	}
 	out := make([]Placement, 0, len(v.entries))
 	for _, key := range v.Dirs() {
 		e := v.entries[key]
@@ -158,11 +172,14 @@ func (v *ProposedStore) Placements() []Placement {
 // Len reports how many directories the view holds. A view with none
 // claims nothing.
 func (v *ProposedStore) Len() int {
+	if v == nil {
+		return 0
+	}
 	return len(v.entries)
 }
 
 // Has reports whether the view names dir, under any spelling of it.
 func (v *ProposedStore) Has(dir string) bool {
-	_, ok := v.entries[CanonicalDir(dir)]
-	return ok
+	_, _, known := v.ReadPath(dir)
+	return known
 }

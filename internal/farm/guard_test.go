@@ -24,8 +24,8 @@ func TestFarmGuard_AgreeingClaimantAllowsMutation(t *testing.T) {
 	// dir, so its claim (libcurl.4 -> curl@8.19.0-1) is exactly
 	// what populating storeDir would write.
 	agreeing := Claimant{
-		Label:  "project /home/other",
-		Claims: At(storeDir),
+		Label: "project /home/other",
+		View:  Committed(storeDir),
 	}
 
 	err := GuardPopulate(At(storeDir), []Claimant{agreeing})
@@ -59,8 +59,8 @@ func TestFarmGuard_SelfUpdateAllowed(t *testing.T) {
 	}
 
 	unrelated := Claimant{
-		Label:  "project /home/other",
-		Claims: At(otherDir),
+		Label: "project /home/other",
+		View:  Committed(otherDir),
 	}
 	if err := GuardPopulate(
 		At(newDir), []Claimant{unrelated},
@@ -89,8 +89,8 @@ func TestFarmGuard_RemoveUnclaimedAllowed(t *testing.T) {
 	}
 
 	external := Claimant{
-		Label:  "project /home/other",
-		Claims: At(otherDir),
+		Label: "project /home/other",
+		View:  Committed(otherDir),
 	}
 	if err := GuardDepopulate(
 		goneDir, farmDir, []Claimant{external},
@@ -114,8 +114,8 @@ func TestFarmGuard_RebuildKeepsExternalClaim(t *testing.T) {
 		[]string{versionedName("libzstd", "1")})
 
 	external := Claimant{
-		Label:  "project /home/other",
-		Claims: At(theirDir),
+		Label: "project /home/other",
+		View:  Committed(theirDir),
 	}
 	union, err := GuardRebuild(
 		[]string{mineDir}, []Claimant{external},
@@ -141,8 +141,8 @@ func TestFarmGuard_RebuildAgreeingClaimantNoDuplicates(t *testing.T) {
 		[]string{versionedName("libcurl", "4")})
 
 	agreeing := Claimant{
-		Label:  "project /home/other",
-		Claims: At(shared),
+		Label: "project /home/other",
+		View:  Committed(shared),
 	}
 	union, err := GuardRebuild(
 		[]string{shared}, []Claimant{agreeing},
@@ -178,8 +178,8 @@ func newConflictFixture(t *testing.T) conflictFixture {
 		t.Fatal(err)
 	}
 	f.claimant = Claimant{
-		Label:  "project /home/other",
-		Claims: At(f.oldDir),
+		Label: "project /home/other",
+		View:  Committed(f.oldDir),
 	}
 	return f
 }
@@ -216,8 +216,8 @@ func wantConflict(t *testing.T, err error, names ...string) {
 func TestFarmGuard_SelfContradictingClaimIsRefused(t *testing.T) {
 	f := newConflictFixture(t)
 	contradictory := Claimant{
-		Label:  "project /home/other",
-		Claims: At(f.oldDir, f.newDir),
+		Label: "project /home/other",
+		View:  Committed(f.oldDir, f.newDir),
 	}
 	wantConflict(
 		t, GuardPopulate(At(f.oldDir), []Claimant{contradictory}),
@@ -365,8 +365,8 @@ func TestGuardStoreRemoval_ClaimedDirRefusedWithoutFarmLink(t *testing.T) {
 	// Farm deliberately empty: the earlier rebuild already wiped it.
 
 	claimant := Claimant{
-		Label:  "project /home/other",
-		Claims: At(storeDir),
+		Label: "project /home/other",
+		View:  Committed(storeDir),
 	}
 
 	err := GuardStoreRemoval(storeDir, farmDir, []Claimant{claimant})
@@ -403,8 +403,8 @@ func TestGuardStoreRemoval_OtherVersionClaimAllowed(t *testing.T) {
 	// The claimant resolves libcurl through the NEW dir, which the
 	// removal does not touch.
 	claimant := Claimant{
-		Label:  "project /home/other",
-		Claims: At(newDir),
+		Label: "project /home/other",
+		View:  Committed(newDir),
 	}
 
 	if err := GuardStoreRemoval(
@@ -437,8 +437,8 @@ func TestGuardStoreRemoval_KeepsTheLiveFarmCheck(t *testing.T) {
 	}
 
 	claimant := Claimant{
-		Label:  "project /home/other",
-		Claims: At(newDir),
+		Label: "project /home/other",
+		View:  Committed(newDir),
 	}
 
 	err := GuardStoreRemoval(oldDir, farmDir, []Claimant{claimant})
@@ -464,15 +464,54 @@ func TestFarmGuard_StagedClaimProtectsItsDestination(t *testing.T) {
 	staging := storeLayout(t, root, "curl", ".build-tmp", []string{soname})
 	final := filepath.Join(root, "pkg", "curl", "8.19.0-1")
 
-	claimant := Claimant{
-		Label:  "project /home/other",
-		Claims: []Placement{{ScanDir: staging, FinalDir: final}},
+	view, err := NewProposedStore(
+		[]Placement{{ScanDir: staging, FinalDir: final}}, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
 	}
+	claimant := Claimant{Label: "project /home/other", View: view}
 
-	err := GuardStoreRemoval(final, filepath.Join(root, "lib"),
-		[]Claimant{claimant})
-	if !errors.Is(err, ErrClaimConflict) {
+	if err := GuardStoreRemoval(final, filepath.Join(root, "lib"),
+		[]Claimant{claimant}); !errors.Is(err, ErrClaimConflict) {
 		t.Errorf("deleting a directory a staged claim lands in was "+
 			"allowed: %v", err)
+	}
+}
+
+// A claimed directory is protected under any spelling of it.
+//
+// guardClaimedDir used to compare filepath.Clean strings, so a
+// claimant holding /private/var/... and a removal naming /var/...
+// missed each other and the deletion was waved through. Every other
+// comparison on this path graduated to resolved spellings; asking
+// the proposed-store view is what makes this one graduate too, since
+// the view canonicalizes both sides by construction.
+//
+// Darwin in practice: it needs a temp prefix that is itself a
+// symlink, which macOS /var provides and Linux CI does not.
+func TestFarmGuard_ClaimedDirIsProtectedUnderEitherSpelling(t *testing.T) {
+	raw := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resolved == raw {
+		t.Skip("no symlinked temp prefix on this machine")
+	}
+
+	storeLayout(t, raw, "curl", "8.19.0-1",
+		[]string{versionedName("libcurl", "4")})
+	rawDir := filepath.Join(raw, "pkg", "curl", "8.19.0-1")
+	resolvedDir := filepath.Join(resolved, "pkg", "curl", "8.19.0-1")
+
+	claimant := Claimant{
+		Label: "project /home/other",
+		View:  Committed(resolvedDir),
+	}
+	if err := GuardStoreRemoval(rawDir, filepath.Join(raw, "lib"),
+		[]Claimant{claimant}); !errors.Is(err, ErrClaimConflict) {
+		t.Errorf("removing a claimed directory spelled the other way "+
+			"was allowed: %v", err)
 	}
 }

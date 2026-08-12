@@ -50,18 +50,19 @@ type Claimant struct {
 	// Label names the scope in refusal messages ("global",
 	// "project /path/to/a").
 	Label string
-	// Claims is the scope's whole closure, one placement per package:
-	// where its libs can be read now, and the canonical store dir the
-	// farm links will carry. For a package already committed the two
-	// are the same directory, which is what At builds.
+	// View is the scope's whole closure as the store state it
+	// proposes: one entry per package, each knowing where its libs
+	// can be read now and which canonical store dir the farm links
+	// will carry. For a package already committed the two are the
+	// same directory.
 	//
-	// One list rather than a dir list beside a placement list. The
-	// closure has one post-commit shape, and encoding it twice made
-	// every consumer responsible for recombining the halves the same
-	// way: a rule three call sites re-derived and one of them got
-	// wrong, since guardClaimedDir read only the dirs and so never
-	// protected a directory a claimant was about to move bytes into
-	// (gh#194).
+	// One VALUE rather than a dir list beside a placement list, and
+	// not merely one list. The closure has one post-commit shape, and
+	// encoding it twice made every consumer responsible for
+	// recombining the halves the same way — a rule four call sites
+	// re-derived, and they did not all agree (gh#194). A view answers
+	// "which directory is this" and "where are its bytes" itself, so
+	// there is nothing left to recombine.
 	//
 	// A package absent from the store contributes no claims: the farm
 	// can only map bytes that exist, and a scope cannot be loading a
@@ -70,7 +71,10 @@ type Claimant struct {
 	// scope replacing a package it is itself using avoid vetoing its
 	// own replacement — before the rename the canonical path still
 	// holds the artifact being superseded.
-	Claims []Placement
+	//
+	// A nil view claims nothing, which is what a claimant carrying
+	// Err has.
+	View *ProposedStore
 	// Err marks a scope that is known to exist but whose closure
 	// could not be read. The guard fails closed on it: an unreadable
 	// claim could be hiding exactly the conflict the guard exists to
@@ -275,7 +279,7 @@ func GuardRebuild(proposedDirs []string, claimants []Claimant) ([]string, error)
 		// A placement's FINAL dir, since the union feeds a rebuild
 		// that runs after the commit and must name where the bytes
 		// will be, not where they are staged.
-		for _, p := range c.Claims {
+		for _, p := range c.View.Placements() {
 			d := p.FinalDir
 			if clean := filepath.Clean(d); !seen[clean] {
 				seen[clean] = true
@@ -299,7 +303,7 @@ func eachClaim(
 		if c.Err != nil {
 			return unreadableClaim(c)
 		}
-		claims, err := placedSonameTargets(c.Label, c.Claims)
+		claims, err := placedSonameTargets(c.Label, c.View.Placements())
 		if err != nil {
 			return err
 		}
@@ -572,23 +576,23 @@ func GuardStoreRemoval(storeDir, farmDir string, claimants []Claimant) error {
 // symlink happens to point at it right now, and whether or not it
 // ships any dylibs at all.
 func guardClaimedDir(storeDir string, claimants []Claimant) error {
-	want := filepath.Clean(storeDir)
 	for _, c := range claimants {
 		if c.Err != nil {
 			return unreadableClaim(c)
 		}
-		for _, p := range c.Claims {
-			// The FINAL dir: a claimant whose bytes are still staged
-			// needs the directory they are about to land in, and that
-			// is the directory this deletion would take away.
-			if filepath.Clean(p.FinalDir) != want {
-				continue
-			}
-			return fmt.Errorf(
-				"%w: %s requires %s, removal would delete it",
-				ErrClaimConflict, c.Label, identityOfDir(want),
-			)
+		// Asked of the view rather than by comparing path strings: a
+		// claimant whose bytes are still staged needs the directory
+		// they are about to land in, and the view decides identity
+		// under one canonicalized spelling for every claimant. The
+		// Clean-only compare this replaces was the site that got the
+		// old two-halves convention wrong.
+		if !c.View.Has(storeDir) {
+			continue
 		}
+		return fmt.Errorf(
+			"%w: %s requires %s, removal would delete it",
+			ErrClaimConflict, c.Label, identityOfDir(filepath.Clean(storeDir)),
+		)
 	}
 	return nil
 }

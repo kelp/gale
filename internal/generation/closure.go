@@ -235,8 +235,8 @@ func (c closure) proposed(require bool) (map[string]bool, bool) {
 // dependency record is descended into, and one without records no
 // dependencies to descend into anyway.
 //
-// A nil view substitutes nothing, which is what the interpretations
-// with no staged bytes want.
+// A nil view is the empty view and substitutes nothing, which is
+// what the interpretations with no staged bytes want.
 func walkClosure(
 	roots []string, storeRoot string, view *farm.ProposedStore, leaf string,
 ) closure {
@@ -293,10 +293,8 @@ func observe(
 	dir string, view *farm.ProposedStore, leaf string,
 ) (closureNode, []depsmeta.ResolvedDep) {
 	n := closureNode{Dir: dir, ReadFrom: dir, Leaf: leaf != "" && dir == leaf}
-	if view != nil {
-		if path, staged, known := view.ReadPath(dir); known {
-			n.ReadFrom, n.Staged = path, staged
-		}
+	if path, staged, known := view.ReadPath(dir); known {
+		n.ReadFrom, n.Staged = path, staged
 	}
 	if n.Staged {
 		// The staged bytes stand in for the canonical dir entirely:

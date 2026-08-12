@@ -82,7 +82,7 @@ func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 		}
 		if len(dirs) > 0 {
 			out = append(out, farm.Claimant{
-				Label: s.Label, Claims: farm.At(dirs...),
+				Label: s.Label, View: farm.Committed(dirs...),
 			})
 		}
 	}
@@ -145,7 +145,7 @@ func ProposedClaimant(
 	if err != nil {
 		return c, fmt.Errorf("reading the proposed closure: %w", err)
 	}
-	c.Claims = farm.At(dirs...)
+	c.View = farm.Committed(dirs...)
 	return c, nil
 }
 
@@ -264,7 +264,7 @@ func proposedClaimant(
 	if err != nil {
 		return c, fmt.Errorf("reading the proposed closure: %w", err)
 	}
-	c.Claims = claim.Placements()
+	c.View = claim
 	return c, nil
 }
 
