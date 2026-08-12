@@ -27,10 +27,16 @@ type GenDiff struct {
 	Removed []string // "name@version"
 }
 
-// List returns all generations sorted by number ascending.
-func List(galeDir, storeRoot string) ([]GenInfo, error) {
-	genBase := filepath.Join(galeDir, "gen")
-	entries, err := os.ReadDir(genBase)
+// genNumbers returns the numbers of the generation directories
+// under galeDir/gen, sorted ascending. A missing gen dir yields no
+// numbers and no error. Entries that are not directories, and
+// directories whose name is not a number, are skipped: only a
+// numeric directory is a generation.
+//
+// The single scan every caller shares — List, PruneOldGenerations,
+// and Build's allocation of the next number.
+func genNumbers(galeDir string) ([]int, error) {
+	entries, err := os.ReadDir(filepath.Join(galeDir, "gen"))
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil, nil
@@ -38,12 +44,7 @@ func List(galeDir, storeRoot string) ([]GenInfo, error) {
 		return nil, fmt.Errorf("read gen dir: %w", err)
 	}
 
-	cur, err := Current(galeDir)
-	if err != nil {
-		return nil, fmt.Errorf("read current: %w", err)
-	}
-
-	var gens []GenInfo
+	var nums []int
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -52,17 +53,34 @@ func List(galeDir, storeRoot string) ([]GenInfo, error) {
 		if err != nil {
 			continue // skip non-numeric
 		}
-		genDir := filepath.Join(genBase, e.Name())
+		nums = append(nums, n)
+	}
+	sort.Ints(nums)
+	return nums, nil
+}
+
+// List returns all generations sorted by number ascending.
+func List(galeDir, storeRoot string) ([]GenInfo, error) {
+	nums, err := genNumbers(galeDir)
+	if err != nil {
+		return nil, err
+	}
+
+	cur, err := Current(galeDir)
+	if err != nil {
+		return nil, fmt.Errorf("read current: %w", err)
+	}
+
+	genBase := filepath.Join(galeDir, "gen")
+	var gens []GenInfo
+	for _, n := range nums {
+		genDir := filepath.Join(genBase, strconv.Itoa(n))
 		gens = append(gens, GenInfo{
 			Number:   n,
 			Current:  n == cur,
 			Packages: genVersions(genDir, storeRoot),
 		})
 	}
-
-	sort.Slice(gens, func(i, j int) bool {
-		return gens[i].Number < gens[j].Number
-	})
 
 	return gens, nil
 }
