@@ -43,6 +43,29 @@ activates. Direnv exports these via `use_gale`.
 `gale env` prints them. `gale env --vars-only`
 prints only variables, not PATH.
 
+### `[bin]`
+
+Resolves executable-name collisions. Maps a binary's
+basename to the package whose copy belongs on PATH:
+
+```toml
+[bin]
+  npx = "corepack"
+```
+
+Two packages shipping the same basename refuse the
+generation rebuild, naming both providers, until one
+of them wins here. The other package stays installed;
+only that one basename is left out of the generation,
+and `gale which <name>` reports it as another
+provider.
+
+The winning package must appear in `[packages]` (or in
+a `[hosts.<key>.packages]` overlay that applies to
+this machine). A winner that is declared nowhere is an
+error — honoring it would keep the binary off PATH for
+every provider.
+
 ### `[hosts.<key>.packages]` and `[hosts.<key>.pinned]`
 
 Per-machine overlays. Top-level `[packages]` and

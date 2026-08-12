@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 )
 
@@ -206,4 +207,41 @@ func TestResolveWhich(t *testing.T) {
 				version, "d871cf2")
 		}
 	})
+}
+
+// TestOtherProvidersReportsShadowedPackage covers gh#190's reporting
+// half: a [bin] override leaves the losing package installed with its
+// binary unreachable, and `which` is where a user asks why.
+func TestOtherProvidersReportsShadowedPackage(t *testing.T) {
+	galeDir, storeRoot := setupGCHome(t)
+
+	alphaDir := mkStorePkg(t, storeRoot, "alpha", "1.0")
+	betaDir := mkStorePkg(t, storeRoot, "beta", "1.0")
+	addStoreBin(t, alphaDir, "foo")
+	addStoreBin(t, betaDir, "foo")
+	mkStorePkg(t, storeRoot, "gamma", "1.0")
+
+	writeGlobalConfig(t, galeDir,
+		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\ngamma = \"1.0\"\n\n"+
+			"[bin]\nfoo = \"beta\"\n")
+	if err := rebuildGeneration(
+		galeDir, storeRoot, filepath.Join(galeDir, "gale.toml"), nil,
+	); err != nil {
+		t.Fatalf("rebuildGeneration: %v", err)
+	}
+
+	name, _, _, err := resolveWhich("foo", galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("resolveWhich: %v", err)
+	}
+	if name != "beta" {
+		t.Fatalf("winner = %q, want beta", name)
+	}
+
+	got := otherProviders("foo", name, galeDir, storeRoot)
+	want := []string{"alpha"}
+	if !slices.Equal(got, want) {
+		t.Errorf("otherProviders = %v, want %v — gamma ships no foo, "+
+			"beta is the winner", got, want)
+	}
 }

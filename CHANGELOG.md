@@ -4,11 +4,31 @@
 
 ### Added
 
+- `[bin]` in gale.toml: name the package that wins an
+  executable-name collision, for example `npx = "corepack"`.
+  Every other provider's copy of that basename is left out of
+  the generation. A winner that is not in `[packages]` is an
+  error, not a silent no-op.
+
+- `gale which` reports `also provided by: <package>` when
+  another installed package ships the same binary. A shadowed
+  provider was previously invisible.
+
 - `gale gc --force`: sweep even when a project's config or
   generation cannot be read. The escape hatch for the refusal
   below, for a mount that is gone for good.
 
 ### Fixed
+
+- Executable name collisions no longer resolve silently by sort
+  order (gh#190). Two packages shipping the same `bin/` basename
+  put whichever sorted first on PATH, with no warning and no way
+  to see the shadowed provider. The generation rebuild now
+  refuses, names every colliding basename and both its providers,
+  and prints the `[bin]` stanza that resolves them — before
+  `current` moves, so the previous generation stays active and
+  PATH is unchanged. Only `bin/` is arbitrated; `lib/`, `man/`
+  and `share/` merge across packages as they always have.
 
 - gc no longer deletes store versions belonging to a live but
   unreadable project (gh#188). Project liveness counts any
