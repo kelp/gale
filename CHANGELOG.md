@@ -25,6 +25,25 @@
   error, and `gale doctor` reports its orphan count as
   unavailable rather than counting live packages as orphans.
 
+- install: `gale install --path` no longer rewrites a store
+  directory an existing generation links (gh#183). The version it
+  built under came from `git describe` alone, which says nothing
+  about the working tree, so every dirty build of one checkout
+  claimed one store identity and the newest build renamed itself
+  over the rest. Generations kept their symlinks and silently
+  started resolving to bytes they were never built with — `gale
+  rollback` could select an old generation and execute the newest
+  build. A dirty tree now carries a digest of its uncommitted
+  content in the version's build-metadata segment
+  (`0.2.0+dirty.<12 hex>`), so different content asks for a
+  different directory, and rebuilding an unchanged tree is a cache
+  hit rather than a replace. Clean checkouts are spelled exactly as
+  before, so tagged builds do not churn. `.gitignore`d build output
+  is excluded from the digest, so a build that writes into its own
+  tree does not mint a directory per run. Development loops now
+  accumulate store directories; `gale gc` reclaims them once no
+  generation links them.
+
 - farm: unversioned soname aliases (for example
   `libssl.dylib -> libssl.3.dylib`) are now linked into
   `~/.gale/lib/`. Mach-O binaries record unversioned install

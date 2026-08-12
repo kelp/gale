@@ -322,3 +322,125 @@ func TestBinaryOnlyDoesNotConstrainDependencies(t *testing.T) {
 		t.Errorf("the source-only dependency was not built: %v", serr)
 	}
 }
+
+// --- gh#183: the local-source path replaces bytes too ---
+
+// localSourceRecipe copies the source tree's "marker" file into
+// $PREFIX/bin, so the committed artifact IS the source content and a
+// test can tell one build from another by reading the store.
+func localSourceRecipe(name string) *recipe.Recipe {
+	return &recipe.Recipe{
+		Package: recipe.Package{Name: name, Version: "1.0"},
+		Build: recipe.Build{Steps: []string{
+			"mkdir -p $PREFIX/bin",
+			"cp marker $PREFIX/bin/" + name,
+			"chmod +x $PREFIX/bin/" + name,
+		}},
+	}
+}
+
+// localSourceDir returns a source tree whose marker file holds
+// content.
+func localSourceDir(t *testing.T, content string) string {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(dir, "marker"), []byte(content), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	return dir
+}
+
+// TestLocalInstallGuardRefusesReferencedDir: the local-source path
+// consults the ReplaceGuard before it renames anything over an
+// occupied canonical directory, exactly as the staged reinstall path
+// does.
+//
+// Before gh#183 it did not. installLocalLocked called
+// replaceStoreDir directly, so the one hook a caller has for saying
+// "a generation still reaches those bytes" was never asked, and the
+// build landed on top of them.
+//
+// The directory here is occupied but EMPTY — an install interrupted
+// between creating the store dir and filling it. A NON-empty
+// canonical dir is the identity's own content and is skipped before
+// any build (see TestInstallLocalLeavesAnOccupiedCanonicalDirAlone),
+// so this is the state where the guard is the only thing standing
+// between a build and an occupied path.
+func TestLocalInstallGuardRefusesReferencedDir(t *testing.T) {
+	storeRoot := t.TempDir()
+	canonical := filepath.Join(storeRoot, "guardpkg", "1.0-1")
+	if err := os.MkdirAll(canonical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	calls := 0
+	inst := &Installer{
+		Store: store.NewStore(storeRoot),
+		ReplaceGuard: func(rep Replacement) error {
+			calls++
+			if rep.CanonicalDir != canonical {
+				t.Errorf("guard saw dir %q, want %q",
+					rep.CanonicalDir, canonical)
+			}
+			return fmt.Errorf("a generation still links it: %w", errTestVeto)
+		},
+	}
+
+	_, err := inst.InstallLocalWithFinalize(
+		localSourceRecipe("guardpkg"), localSourceDir(t, "new"), nil,
+	)
+	if !errors.Is(err, errTestVeto) {
+		t.Fatalf("err = %v, want the guard's refusal", err)
+	}
+	if calls != 1 {
+		t.Errorf("guard called %d times, want exactly 1", calls)
+	}
+	if _, err := os.Stat(canonical); err != nil {
+		t.Fatalf("canonical dir gone despite the refusal: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(canonical, "bin")); err == nil {
+		t.Error("the refused build landed in the canonical dir anyway")
+	}
+}
+
+// TestInstallLocalLeavesAnOccupiedCanonicalDirAlone: a committed
+// store directory is byte-stable, and the local-source path is no
+// exception (gh#183).
+//
+// The identity a `--path` install computes is derived from the
+// source content, so an occupied canonical directory already holds
+// this build's own output. There is nothing to rebuild and nothing
+// to replace: the install reports a cache hit and the bytes on disk
+// are the bytes every existing generation was built against.
+//
+// This replaces an earlier test that asserted the weaker property —
+// that a FAILED replace restored the previous directory. That
+// premise is unreachable from here now, and the restore itself is
+// still covered directly by
+// TestReplaceStoreDirPreservesExistingOnRenameFailure.
+func TestInstallLocalLeavesAnOccupiedCanonicalDirAlone(t *testing.T) {
+	storeRoot := t.TempDir()
+	_, marker := seedOccupied(t, storeRoot, "localpkg", "1.0-1")
+
+	inst := &Installer{Store: store.NewStore(storeRoot)}
+	result, err := inst.InstallLocalWithFinalize(
+		localSourceRecipe("localpkg"), localSourceDir(t, "new"), nil,
+	)
+	if err != nil {
+		t.Fatalf("InstallLocalWithFinalize: %v", err)
+	}
+	if result.Method != MethodCached {
+		t.Errorf("method = %q, want %q: the canonical dir already "+
+			"holds this identity's bytes", result.Method, MethodCached)
+	}
+	data, err := os.ReadFile(marker)
+	if err != nil {
+		t.Fatalf("read the committed artifact: %v", err)
+	}
+	if string(data) != "old" {
+		t.Errorf("committed artifact = %q, want %q: a local install "+
+			"rewrote a store directory in place", data, "old")
+	}
+}

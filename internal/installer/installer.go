@@ -583,6 +583,32 @@ func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*
 		return nil, fmt.Errorf("create package dir: %w", err)
 	}
 
+	// An occupied canonical dir already holds this identity's output,
+	// so there is nothing to build and nothing to replace (gh#183).
+	// A local build's identity is derived from the source content
+	// (cmd/gale's dirtDigest), which is why this can be a cache hit
+	// rather than the unconditional rebuild it used to be: a changed
+	// tree asks for a different directory.
+	//
+	// Known gap: the identity covers the SOURCE only. Rebuild an
+	// unchanged tree after upgrading a build dependency and this
+	// returns the bytes the old dependency produced. Folding the
+	// resolved build closure into the identity is gh#191's business.
+	//
+	// The canonical path is tested directly rather than through
+	// Store.IsInstalled, whose back-compat fallback answers for a
+	// bare "<v>" dir. A recipe at revision 2 would then skip on the
+	// strength of a revision-1 directory it is not about to write.
+	if occupied, err := dirOccupied(storeDir); err != nil {
+		return nil, err
+	} else if occupied {
+		return &InstallResult{
+			Name:    name,
+			Version: version,
+			Method:  MethodCached,
+		}, nil
+	}
+
 	buildDir, err := os.MkdirTemp(pkgDir, ".build-")
 	if err != nil {
 		return nil, fmt.Errorf("create build dir: %w", err)
@@ -605,7 +631,28 @@ func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*
 	// of this package races; the store-gen lock here serializes
 	// with generation.Build so a concurrent gen rebuild sees
 	// either the pre-rename or post-rename tree, not a mix.
+	//
+	// The guard runs inside that lock and before the rename, like
+	// every other question this package asks about a replacement: a
+	// refusal decided afterwards would already have overwritten the
+	// bytes it was meant to protect. Reaching it means the canonical
+	// dir appeared, or was empty, after the cache check above — the
+	// backstop for an identity that failed to distinguish two builds
+	// (gh#183).
+	rep := Replacement{
+		CanonicalDir: storeDir,
+		StagingDir:   buildDir,
+		Result: InstallResult{
+			Name:    name,
+			Version: version,
+			Method:  MethodSource,
+			SHA256:  hash,
+		},
+	}
 	if err := withStoreGenLock(inst.Store.Root, func() error {
+		if err := inst.guardReplace(rep); err != nil {
+			return err
+		}
 		return replaceStoreDir(storeDir, buildDir)
 	}); err != nil {
 		return nil, fmt.Errorf("install build output: %w", err)
@@ -617,6 +664,21 @@ func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*
 		Method:  MethodSource,
 		SHA256:  hash,
 	}, nil
+}
+
+// dirOccupied reports whether path is a directory holding at least
+// one entry. An absent path is free; an empty one is not occupied,
+// since a caller that skipped it would report an install that put
+// nothing on PATH.
+func dirOccupied(path string) (bool, error) {
+	entries, err := os.ReadDir(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("read %s: %w", path, err)
+	}
+	return len(entries) > 0, nil
 }
 
 // InstallLocalWithFinalize acquires the per-package lock, runs the
