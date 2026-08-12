@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +10,8 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/attestation"
+	"github.com/kelp/gale/internal/depsmeta"
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 )
@@ -713,5 +716,305 @@ func TestCheckSigstoreRoot(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			runSigstoreRootCase(t, tt)
 		})
+	}
+}
+
+// gh#197, PR 2 of 3: three states doctor could not report. Each one
+// blocks a rebuild, and the rule each check applies is the rule the
+// blocked command applies — asked of the same function, never
+// restated. A doctor that re-derives a rule drifts from it.
+
+// corruptDepsBody is a .gale-deps.toml that a strict read refuses:
+// "../escape" is not a single path component, so store.SafeComponent
+// rejects it and ParseStrict returns unusable. Structural corruption,
+// never a permission bit — the agent container runs as root, where an
+// unreadable mode is not unreadable at all.
+const corruptDepsBody = "deps = [{name = \"../escape\", version = \"1\"}]\n"
+
+// writeRawDepsMeta writes body as dir's .gale-deps.toml. Raw bytes,
+// because depsmeta.Write cannot produce a record its own reader
+// refuses and corruption is the whole subject here.
+func writeRawDepsMeta(t *testing.T, dir, body string) {
+	t.Helper()
+	if err := os.WriteFile(
+		filepath.Join(dir, depsmeta.File), []byte(body), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// contestedBin is the basename two packages are made to ship. One
+// name throughout: the rule keys on the basename, and varying it
+// would test os.ReadDir rather than the arbiter.
+const contestedBin = "npx"
+
+// mkStoreProvider is mkStorePkg plus contestedBin, so two packages
+// ship the same bin/ basename.
+func mkStoreProvider(t *testing.T, storeRoot, name, version string) {
+	t.Helper()
+	dir := mkStorePkg(t, storeRoot, name, version)
+	if err := os.WriteFile(
+		filepath.Join(dir, "bin", contestedBin), []byte("#!/bin/sh\n"), 0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// doctorCtx is a doctor context over one gale home, writing its
+// per-check lines into buf.
+func doctorCtx(galeDir, storeRoot, cwd string, buf *bytes.Buffer) *doctorContext {
+	return &doctorContext{
+		galeDir:   galeDir,
+		storeRoot: storeRoot,
+		cwd:       cwd,
+		store:     store.NewStore(storeRoot),
+		out:       output.NewWithOptions(buf, output.Options{}),
+	}
+}
+
+// TestCheckLegacyLockfileReportsBothScopes pins the first check. A
+// lockfile in the pre-enforcement schema names versions this build
+// cannot model, so gc and `doctor --repair` refuse that scope's
+// rebuild (#226) and a project's activation gate refuses its PATH.
+// Nothing reported it, and both scopes can be in that state at once.
+func TestCheckLegacyLockfileReportsBothScopes(t *testing.T) {
+	proj := writeGateFixture(t, legacyLockBody)
+	home := filepath.Dir(proj)
+	galeDir := filepath.Join(home, ".gale")
+	writeFile(t, filepath.Join(galeDir, "gale.toml"), "[packages]\n")
+	writeFile(t, filepath.Join(galeDir, "gale.lock"), legacyLockBody)
+	chdirTo(t, proj)
+
+	var buf bytes.Buffer
+	if checkLegacyLockfile(
+		doctorCtx(galeDir, filepath.Join(galeDir, "pkg"), proj, &buf),
+	) {
+		t.Fatal("a legacy lock must fail the check")
+	}
+	msg := buf.String()
+	for _, want := range []string{
+		filepath.Join(galeDir, "gale.lock"),
+		filepath.Join(proj, "gale.lock"),
+		"gale lock --refresh",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("the report must name %q, got: %q", want, msg)
+		}
+	}
+}
+
+// TestCheckLegacyLockfilePassesOnAHostRootedLock is the third scope.
+// A v1 lock rooting its packages under [targets.host.<host>] is
+// usable, and a check that asked the lock about the default target
+// alone would find no roots and could not tell that apart from a lock
+// it cannot read.
+func TestCheckLegacyLockfilePassesOnAHostRootedLock(t *testing.T) {
+	const host = "doctor-197-host"
+	t.Setenv("GALE_HOST", host)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	mkStorePkg(t, storeRoot, "jq", "1.8.1-1")
+	writeFile(t, filepath.Join(galeDir, "gale.toml"),
+		"[hosts."+host+".packages]\njq = \"1.8.1\"\n")
+	writeHostScopeLock(t, filepath.Join(galeDir, "gale.lock"),
+		host, "jq@1.8.1-1", shaX)
+	cwd := t.TempDir()
+	chdirTo(t, cwd)
+
+	var buf bytes.Buffer
+	if !checkLegacyLockfile(doctorCtx(galeDir, storeRoot, cwd, &buf)) {
+		t.Fatalf("a usable v1 lock must pass, got: %q", buf.String())
+	}
+}
+
+// TestCheckDepsMetadataReportsCorruptRecord pins the second check and
+// its repair.
+//
+// A store directory whose .gale-deps.toml cannot be read strictly
+// fails the farm claim walk machine-wide, and the escape is a
+// deletion no command performed: the directory itself plus every
+// directory on a dependency path to it, since an install over an
+// existing dir returns cached and staleness never asks whether a
+// dep's directory is there. fzf records jq and is not declared, so
+// leaving it behind would leave the machine in the same state after
+// a sync.
+func TestCheckDepsMetadataReportsCorruptRecord(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	jqDir := mkStorePkg(t, storeRoot, "jq", "1.8.1-1")
+	fzfDir := mkStorePkg(t, storeRoot, "fzf", "0.60.0-1")
+	writeRawDepsMeta(t, jqDir, corruptDepsBody)
+	writeDepsMeta(t, storeRoot, "fzf", "0.60.0-1",
+		depsmeta.ResolvedDep{Name: "jq", Version: "1.8.1", Revision: 1})
+	writeFile(t, filepath.Join(galeDir, "gale.toml"),
+		"[packages]\njq = \"1.8.1\"\n")
+	cwd := t.TempDir()
+	chdirTo(t, cwd)
+
+	var buf bytes.Buffer
+	ctx := doctorCtx(galeDir, storeRoot, cwd, &buf)
+	if checkDepsMetadata(ctx) {
+		t.Fatal("an unreadable .gale-deps.toml must fail the check")
+	}
+	if msg := buf.String(); !strings.Contains(msg, jqDir) {
+		t.Errorf("the report must name %q, got: %q", jqDir, msg)
+	}
+
+	if err := repairDoctor(ctx); err != nil {
+		t.Fatalf("doctor --repair: %v", err)
+	}
+	for _, dir := range []string{jqDir, fzfDir} {
+		if _, err := os.Stat(dir); !os.IsNotExist(err) {
+			t.Errorf("%s survived the repair (stat err %v)", dir, err)
+		}
+	}
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("reading the active generation: %v", err)
+	}
+	if len(active) != 0 {
+		t.Errorf("active generation = %v, want nothing linked", active)
+	}
+	buf.Reset()
+	if !checkDepsMetadata(ctx) {
+		t.Errorf("the repair must clear the check, got: %q", buf.String())
+	}
+}
+
+// TestCheckDepsMetadataAcceptsAbsentRecords pins the distinction the
+// strict reader draws and the repair rests on: a missing file is a
+// pre-metadata install, not corruption. Reporting it would offer to
+// delete every package installed before the revision system.
+func TestCheckDepsMetadataAcceptsAbsentRecords(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	mkStorePkg(t, storeRoot, "jq", "1.8.1-1")
+	cwd := t.TempDir()
+	chdirTo(t, cwd)
+
+	var buf bytes.Buffer
+	if !checkDepsMetadata(doctorCtx(galeDir, storeRoot, cwd, &buf)) {
+		t.Fatalf("an absent record must pass, got: %q", buf.String())
+	}
+}
+
+// TestCheckShadowedProvidersMatchesTheArbiter pins the third check to
+// the rule the rebuild applies rather than to a copy of it.
+//
+// gh#190 exported BinArbiter for this: the check offers the same
+// claims the rebuild would and reports what the arbiter says about
+// them, so the two cannot disagree about which names collide or about
+// what the user is told to do.
+func TestCheckShadowedProvidersMatchesTheArbiter(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	mkStoreProvider(t, storeRoot, "node", "22.0.0-1")
+	mkStoreProvider(t, storeRoot, "npm", "10.0.0-1")
+	writeFile(t, filepath.Join(galeDir, "gale.toml"),
+		"[packages]\nnode = \"22.0.0\"\nnpm = \"10.0.0\"\n")
+	cwd := t.TempDir()
+	chdirTo(t, cwd)
+
+	var buf bytes.Buffer
+	if checkShadowedProviders(doctorCtx(galeDir, storeRoot, cwd, &buf)) {
+		t.Fatal("two packages shipping bin/npx must fail the check")
+	}
+
+	arbiter := generation.NewBinArbiter(nil)
+	arbiter.Claim("node", contestedBin)
+	arbiter.Claim("npm", contestedBin)
+	want := arbiter.Err()
+	var collision *generation.BinCollisionError
+	if !errors.As(want, &collision) {
+		t.Fatalf("the arbiter must report a collision, got %v", want)
+	}
+	if !strings.Contains(buf.String(), want.Error()) {
+		t.Errorf("doctor must report the arbiter's own text\n"+
+			" got: %q\nwant: %q", buf.String(), want.Error())
+	}
+}
+
+// TestCheckShadowedProvidersHonorsABinOverride pins the other half of
+// the same rule. A [bin] winner settles the name for the rebuild, so
+// a check that reported it anyway would send the user to a fix they
+// had already applied.
+func TestCheckShadowedProvidersHonorsABinOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	mkStoreProvider(t, storeRoot, "node", "22.0.0-1")
+	mkStoreProvider(t, storeRoot, "npm", "10.0.0-1")
+	writeFile(t, filepath.Join(galeDir, "gale.toml"),
+		"[packages]\nnode = \"22.0.0\"\nnpm = \"10.0.0\"\n\n"+
+			"[bin]\nnpx = \"node\"\n")
+	cwd := t.TempDir()
+	chdirTo(t, cwd)
+
+	var buf bytes.Buffer
+	if !checkShadowedProviders(doctorCtx(galeDir, storeRoot, cwd, &buf)) {
+		t.Fatalf("a [bin] winner must clear the check, got: %q", buf.String())
+	}
+}
+
+// TestCheckShadowedProvidersReadsAHostOverlay is the host scope. The
+// second provider is declared only under [hosts.<host>.packages], so
+// a check reading the shared table alone would see one provider and
+// report nothing on the machine the overlay applies to.
+func TestCheckShadowedProvidersReadsAHostOverlay(t *testing.T) {
+	const host = "doctor-197-host"
+	t.Setenv("GALE_HOST", host)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	mkStoreProvider(t, storeRoot, "node", "22.0.0-1")
+	mkStoreProvider(t, storeRoot, "npm", "10.0.0-1")
+	writeFile(t, filepath.Join(galeDir, "gale.toml"),
+		"[packages]\nnode = \"22.0.0\"\n\n"+
+			"[hosts."+host+".packages]\nnpm = \"10.0.0\"\n")
+	cwd := t.TempDir()
+	chdirTo(t, cwd)
+
+	var buf bytes.Buffer
+	if checkShadowedProviders(doctorCtx(galeDir, storeRoot, cwd, &buf)) {
+		t.Fatal("a host overlay's package must enter the check")
+	}
+	if msg := buf.String(); !strings.Contains(msg, contestedBin) {
+		t.Errorf("the report must name the contested binary, got: %q", msg)
+	}
+}
+
+// TestCheckShadowedProvidersReadsTheProjectScope is the project
+// scope. Each scope builds its own generation from its own manifest,
+// so a collision declared in a project is invisible to a check that
+// only ever reads the global one.
+func TestCheckShadowedProvidersReadsTheProjectScope(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	mkStoreProvider(t, storeRoot, "node", "22.0.0-1")
+	mkStoreProvider(t, storeRoot, "npm", "10.0.0-1")
+	writeFile(t, filepath.Join(galeDir, "gale.toml"), "[packages]\n")
+	proj := filepath.Join(home, "proj")
+	writeFile(t, filepath.Join(proj, "gale.toml"),
+		"[packages]\nnode = \"22.0.0\"\nnpm = \"10.0.0\"\n")
+	chdirTo(t, proj)
+
+	var buf bytes.Buffer
+	if checkShadowedProviders(doctorCtx(galeDir, storeRoot, proj, &buf)) {
+		t.Fatal("a project-scope collision must fail the check")
+	}
+	if msg := buf.String(); !strings.Contains(msg, contestedBin) {
+		t.Errorf("the report must name the contested binary, got: %q", msg)
 	}
 }

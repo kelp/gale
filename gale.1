@@ -255,9 +255,21 @@ for machine-readable output.
 Check the gale installation for common problems:
 PATH configuration, store integrity, stale generations,
 host-overlay shadows, and lib farm drift.
+It also reports the states that block a rebuild: a lockfile
+in a schema this build cannot use, a store directory whose
+.Pa .gale-deps.toml
+cannot be read, and two declared packages shipping the same
+executable name with no
+.Sy [bin]
+winner.
 Use
 .Fl -repair
 to rebuild active generations and re-sign Mach-O binaries.
+Repair also deletes the store directories whose dependency
+metadata is unreadable, together with every package directory
+on a dependency path to one; run
+.Cm gale sync
+afterwards to reinstall them.
 A rebuilt generation takes its versions from the scope's
 lockfile, so repair cannot put a version the lock does not
 name on PATH.
