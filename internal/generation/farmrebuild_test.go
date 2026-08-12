@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
 )
@@ -143,5 +144,164 @@ func TestRebuildFarmValidatesBeforeItMutates(t *testing.T) {
 	if after != before {
 		t.Errorf("the farm moved to %s despite the refusal; was %s",
 			after, before)
+	}
+}
+
+// gh#184: the farm rebuild used to run entirely AFTER the
+// current-symlink swap, so the fallible half of the operation sat
+// past its own commit point. A generation could go live with a farm
+// the rebuild then failed to build, and the farm was wiped before it
+// was repopulated, so the failure left it destroyed rather than
+// unchanged.
+//
+// The image is now staged before the swap and published after it,
+// which splits the operation at the one place it can be split: every
+// error a rebuild realistically hits (an unreadable store dir, a
+// claim conflict, no space) happens while nothing has moved.
+
+// A generation is not activated when its farm image cannot be built.
+func TestBuildDoesNotActivateWhenTheFarmCannotBeBuilt(t *testing.T) {
+	f := newClaimsFixture(t)
+	curl := f.install("curl", "8.19.0-1", "libcurl")
+	if err := Build(
+		map[string]string{"curl": "8.19.0-1"}, f.galeHome, f.storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	before, err := Current(f.galeHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The unreadable dylib provider is reached through recorded deps,
+	// never as a generation entry: a broken lib dir on an entry is
+	// caught by validateGenerationSymlinks, which would leave this
+	// passing for a reason that has nothing to do with the farm.
+	bad := filepath.Join(f.storeRoot, "zstd", "1.5.6-1")
+	if err := os.MkdirAll(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(bad, "lib"), []byte("not a dir"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := depsmeta.Write(curl, depsmeta.Metadata{
+		Deps: []depsmeta.ResolvedDep{
+			{Name: "zstd", Version: "1.5.6", Revision: 1},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := Build(
+		map[string]string{"curl": "8.19.0-1"}, f.galeHome, f.storeRoot,
+	); err == nil {
+		t.Fatal("Build activated a generation whose farm it could " +
+			"not build")
+	}
+	after, err := Current(f.galeHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Errorf("current is generation %d, want the pre-build %d",
+			after, before)
+	}
+}
+
+// The farm resolves every entry the previous generation resolved for
+// the whole interval the swap opens.
+//
+// A pin rather than a repro: it drives the seam the split
+// establishes, so it cannot be run against the ordering it rules
+// out. Its value is that a future rebuild which publishes before the
+// swap, or which wipes the farm on its way through, is caught here.
+func TestBuildKeepsTheFarmResolvableAcrossTheSwap(t *testing.T) {
+	f := newClaimsFixture(t)
+	curl := f.install("curl", "8.19.0-1", "libcurl")
+	if err := Build(
+		map[string]string{"curl": "8.19.0-1"}, f.galeHome, f.storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	entry := filepath.Join(
+		farm.DirFromStoreRoot(f.storeRoot), soname("libcurl"),
+	)
+
+	var midSwap string
+	var midErr error
+	beforeFarmPublish = func() { midSwap, midErr = os.Readlink(entry) }
+	t.Cleanup(func() { beforeFarmPublish = nil })
+
+	f.install("zstd", "1.5.6-1", "libzstd")
+	if err := Build(
+		map[string]string{"curl": "8.19.0-1", "zstd": "1.5.6-1"},
+		f.galeHome, f.storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if midErr != nil {
+		t.Fatalf("the farm lost libcurl between the swap and the "+
+			"publish: %v", midErr)
+	}
+	if want := filepath.Join(curl, "lib", soname("libcurl")); midSwap != want {
+		t.Errorf("mid-swap farm entry = %q, want %q", midSwap, want)
+	}
+}
+
+// A farm path that is not a directory refuses the build, before the
+// swap, without destroying what sits there.
+//
+// The wipe used to hide this: RemoveAll deleted whatever occupied
+// ~/.gale/lib — a file, a symlink pointing somewhere else — and
+// MkdirAll then created the directory it wanted, so a broken layout
+// was silently overwritten and the build reported success. Staging
+// cannot overwrite it, so the farm directory is proved usable while
+// the operation can still be refused for free.
+func TestBuildRefusesAFarmPathThatIsNotADirectory(t *testing.T) {
+	f := newClaimsFixture(t)
+	f.install("curl", "8.19.0-1", "libcurl")
+	if err := Build(
+		map[string]string{"curl": "8.19.0-1"}, f.galeHome, f.storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+	before, err := Current(f.galeHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	farmDir := farm.DirFromStoreRoot(f.storeRoot)
+	if err := os.RemoveAll(farmDir); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(farmDir, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	f.install("zstd", "1.5.6-1", "libzstd")
+	if err := Build(
+		map[string]string{"curl": "8.19.0-1", "zstd": "1.5.6-1"},
+		f.galeHome, f.storeRoot,
+	); err == nil {
+		t.Fatal("Build activated a generation whose farm directory " +
+			"could not be used")
+	}
+	after, err := Current(f.galeHome)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != before {
+		t.Errorf("current is generation %d, want the pre-build %d",
+			after, before)
+	}
+	info, err := os.Lstat(farmDir)
+	if err != nil {
+		t.Fatalf("the refused build destroyed %s: %v", farmDir, err)
+	}
+	if info.IsDir() {
+		t.Errorf("%s was replaced with a directory", farmDir)
 	}
 }
