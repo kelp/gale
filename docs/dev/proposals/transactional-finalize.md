@@ -1,0 +1,625 @@
+# Transactional Install Finalization
+
+Proposal for [#187](https://github.com/kelp/gale/issues/187).
+Design only — no production code changes in this PR.
+Line references are against `origin/main` at `6d81908`.
+
+## 1. Problem
+
+`FinalizeInstall` (`cmd/gale/context.go:1090-1097`) is the
+one place an install becomes visible. It commits three
+independent steps:
+
+```go
+ctx.WriteConfig(name, configVersion, lockVersion)  // gale.toml
+ctx.WriteLock()                                    // gale.lock
+rebuildGeneration(ctx.GaleDir, ...)                // current → gen/N
+```
+
+Each step is individually safe and individually locked:
+
+- `WriteConfig` writes gale.toml atomically under
+  `gale.toml.lock`.
+- `WriteLock` writes gale.lock atomically under
+  `gale.lock.lock` (`context.go:837`), reading the manifest
+  *inside* that critical section (`context.go:850`).
+- `rebuildGeneration` swaps `current` with one `os.Rename`
+  under `<galeDir>/generation.lock`.
+
+Three files, three locks, no lock spanning them. The
+enclosing lock a caller does hold is the per-package store
+lock from `InstallWithFinalize`
+(`internal/installer/installer.go:1994`), keyed
+`name/version-revision` by `lockPackage`
+(`installer.go:1955-1958`). Two installs of *different
+versions of one package* take different lock files and do
+not exclude each other, and two installs of *different
+packages* never did.
+
+The issue conflates two failures under one heading. They
+have different triggers, different blast radii, and
+different costs to fix.
+
+### (a) Divergence — config and lock disagree, permanently
+
+The issue's stated mechanism no longer exists on main. It
+describes a slow sync writing lock A over a manual install's
+lock B. Sync is no longer a lock writer: `runSyncOne` ends at
+`cmd/gale/sync.go:630-634` with "Sync never writes gale.lock
+(design §11). It is a pure consumer of one." The lock-writing
+call sites are now `cmd/gale/lock.go:171`,
+`cmd/gale/update.go:275`, `cmd/gale/remove.go:181`, and
+`context.go:1094` — no sync path among them.
+
+What survives is narrower and still reachable:
+
+1. `WriteConfig` commits the new pin to gale.toml.
+2. `WriteLock` refuses. The refusal is *by design*:
+   `lockwrite.checkRootsDeclared`
+   (`internal/lockwrite/lockwrite.go:321-338`) rejects a
+   write whose verified roots disagree with the manifest
+   read under the lockfile lock, so a concurrent command
+   that repinned the same package between steps 1 and 2
+   makes this writer fail rather than commit a lock the
+   manifest does not back. It can also fail for ordinary
+   reasons: a provenance closure that cannot be resolved
+   (`lockwrite.go:358`), a one-version-per-name conflict
+   (`lockwrite.go:406`), an unreadable prior document
+   (`context.go:860-863`).
+3. `FinalizeInstall` returns the error. **Nothing is undone.**
+
+The result: gale.toml declares the new version, gale.lock
+does not name it, the store holds it, and `current` was never
+rebuilt. Config, lock, and generation disagree three ways.
+
+This is a gap in an otherwise-complete pattern, not a missing
+idea. `gale remove` already compensates exactly this class of
+failure: it captures a config witness
+(`config.RemovePackageSections` → `priorConfig, wroteConfig`,
+`remove.go:135`) and a lock witness (`writeLockWitnessed`,
+`remove.go:181`), and every later refusal unwinds with
+`config.RestoreUnderLock` + `restoreLock`
+(`remove.go:159-162, 183-186, 216-222`). `restoreLock`
+(`remove.go:513`) is a compare-and-swap on the `LockWitness`
+tokens, so it stands down rather than clobbering a concurrent
+writer. The install path calls none of it.
+
+### (b) Non-atomicity — interruption leaves a partial commit
+
+Independently of any race, the three steps have two crash
+windows:
+
+| Killed after | gale.toml | gale.lock | `current` |
+|---|---|---|---|
+| step 1 | new pin | old | old |
+| step 2 | new pin | new pin | old |
+| step 3 | new pin | new pin | new |
+
+Only the third row is consistent. Row 1 is the same end state
+as (a). Row 2 leaves both files agreeing on a version that is
+not on PATH; the next `gale sync` repairs it, because
+`syncDrifted`/`lockedGenerationDrifted` (`sync.go:288-335`)
+compares the active generation against the plan and rebuilds.
+Row 1 is the one that persists.
+
+The window is small — three file writes plus a symlink swap,
+after the download and build have already finished — but it
+is not zero, and `^C` during a multi-package `gale update`
+(`update.go:255-275`, one lock write for the whole run, after
+N config writes) widens row 1 to the whole loop.
+
+## 2. Why it does not self-repair
+
+Trace the divergent state (row 1) forward:
+
+1. `gale shell` / `gale run` call `syncIfNeeded`, which loads
+   the manifest and calls `lockIsStale`
+   (`cmd/gale/shell.go:117`, implemented at
+   `cmd/gale/lockstale.go:33`). The lock's declared roots no
+   longer match gale.toml, so `v1Stale` →
+   `lockfile.CheckDeclared` → `ErrStaleLock` → **stale = true**,
+   on every invocation, forever.
+2. Stale means sync, so `runSync` runs (`shell.go:130`).
+3. `runSync` loads the lock (`sync.go:100`) and builds the
+   plan *before the first install* (`sync.go:112-124`).
+   `lockedSyncPlan` (`cmd/gale/synclock.go:60-66`) hands a v1
+   lock to `lockplan.Build`, which runs the same
+   `CheckDeclared` and returns `ErrStaleLock`.
+4. `runSync` returns that error at `sync.go:124` — before any
+   install, before `finishSync`, before any store or
+   generation mutation.
+5. Sync cannot write the lock (`sync.go:630-634`). There is no
+   step in the entire sync path that could make step 3's check
+   pass.
+
+So the state is a fixed point of the only command that runs
+automatically. Every `cd` into the project runs a sync that
+fails identically. This is what makes it a bug and not a
+transient: convergence is structurally impossible, not merely
+delayed.
+
+Two things soften it relative to the issue's description, and
+one thing sharpens it:
+
+- **Softer:** sync now *fails loudly* rather than silently
+  reporting `upToDate`. The error names the remedy —
+  `staleRemedy` (`internal/lockfile/roots.go:249-254,
+  265-...`) renders `gale install <pkg>` and/or `gale lock`
+  for each disagreeing root, per-target.
+- **Softer:** nothing is mutated on the failing path, so the
+  state does not degrade with repetition.
+- **Sharper:** under direnv the hook is
+  `gale sync 2>/dev/null || true`, so the user sees none of
+  it — that is #186, and it is why this state reads as silent
+  in the field even though the code is loud.
+
+**Acceptance criterion 2 of #187 is already met on main**, on
+every path except the direnv one that #186 owns: a
+pre-existing divergence fails `gale sync` non-zero, changes
+neither gale.lock nor the store nor `current`, and names the
+command that updates the lock. That should be pinned by a
+test, not re-implemented.
+
+## 3. Options
+
+### Option A — one spanning lock per environment
+
+Take a new exclusive lock at `<galeDir>/finalize.lock` around
+all three steps of `FinalizeInstall`, released after the
+generation rebuild.
+
+**What changes.** `FinalizeInstall` wraps its body in
+`filelock.With`. `update.go`'s loop takes it once around the
+whole run (its N config writes plus one lock write plus one
+rebuild are one logical transaction). `remove.go` takes it
+around its existing sequence. Roughly 40 lines plus comments.
+
+**Contention.** The lock is per environment (global
+`~/.gale`, or one per project `.gale/`), and it is held only
+across finalization — never across a download, build, or
+extraction, all of which happen before `finalize()` is
+invoked. Expected hold time is milliseconds. The realistic
+contender is direnv-triggered sync racing a manual install in
+the same project, which is exactly the case worth
+serializing.
+
+**Deadlock.** Current acquisition order inside finalization is
+`gale.toml.lock` → `gale.lock.lock` → `generation.lock`, each
+taken and released as a leaf; nothing nests them in the other
+direction. `WriteLock`'s comment (`context.go:783-789`)
+explicitly refuses to take the config lock inside the lockfile
+lock precisely to avoid establishing an invertible order. A
+finalize lock strictly outside all three adds no cycle **as
+long as nothing acquires it while already holding any of the
+three, or while holding a store package lock in a different
+order than finalize does.** Today finalize is entered from
+inside `lockPackage(name, version-full)`
+(`installer.go:1994-1999`), so the order is
+`package → finalize → {config, lock, generation}`. That is
+consistent across all five call sites (`install.go:146, 241,
+295, 625`, `switch.go:95`). `update.go:275` and
+`remove.go:181` write the lock *outside* any package lock, so
+they would take finalize as the outermost lock — still no
+inversion. The invariant is documentable in one sentence and
+checkable by grep; it is not free, and it must be written
+down.
+
+`internal/filelock.Acquire` blocks unconditionally
+(`filelock.go:38`). Behind a slow holder, `gale shell` in a
+direnv-hooked directory stalls the shell — the failure shape
+the staleness regressions already cost us (013b4a4, 688ce7d,
+af4c3f6). A bounded `LOCK_NB` retry with a "waiting for
+another gale command" line is part of the option, not a
+refinement of it.
+
+**Crash safety.** None. Row 1 of the crash table is untouched.
+
+**Complexity.** Low. One new lock file, one new documented
+ordering invariant.
+
+### Option B — write-ahead journal with replay
+
+Before step 1, write a durable intent record
+(`<galeDir>/finalize.journal`, or one file per entry) naming
+the section, package, config version and lock version; fsync;
+run the three steps; remove the record. Every command replays
+a surviving record at startup.
+
+**What changes.** A new package (`internal/finalizejournal`),
+a replay call in `newCmdContext` (`context.go`), gc
+integration so abandoned records are swept alongside the other
+crash debris (`sweepCrashLeftovers`, `cmd/gale/gc.go:942-950`),
+and a documented on-disk format. Several hundred lines.
+
+**Direction: roll forward, not back.** All three steps are
+idempotent given the intent, and the store is append-only, so
+the artifact the intent names is still there. Rolling *back*
+is the harder half and is often wrong: by replay time another
+command may have legitimately repinned the package, and
+undoing to a pre-crash manifest would discard that work.
+Replay must therefore re-run the steps and let
+`checkRootsDeclared` refuse if the manifest has moved on —
+which is a correct refusal but leaves the operator with the
+same divergence the journal was bought to prevent.
+
+**Failure modes.**
+
+- Replay must be mutually exclusive with live finalization, so
+  B strictly contains A. It is not an alternative to the
+  spanning lock; it is A plus durable state.
+- A poisoned record — store directory swept by `gale gc
+  --force`, recipe withdrawn, a lock that now conflicts —
+  blocks or noisily fails *every subsequent command*, which is
+  worse than the state it prevents. It needs a bounded retry
+  count, an escape hatch, and an age-based sweep.
+- Replay at `newCmdContext` runs before scope resolution
+  settles for commands that re-point their config path
+  (`sync`'s `projectDir` override, `sync.go:59-62`), so
+  "which environment's journal" has a genuinely fiddly answer.
+- Interactions with `--host` declaration-only installs, where
+  finalization deliberately skips the PATH-presence check
+  (`context.go:1103-1108`), must be encoded in the record.
+
+**Crash safety.** This is the only option that meets
+acceptance criterion 3 as literally written.
+
+**Complexity.** High, and most of it is in the recovery paths
+that are hardest to test (see §7).
+
+### Option C — make detection authoritative
+
+Leave the write path alone. Instead:
+
+1. Run the divergence check at command entry for every
+   mutating command, not just sync, and refuse before store or
+   generation mutation.
+2. Name one command that reconciles. `gale lock`
+   (`cmd/gale/lock.go`) already is that command; `staleRemedy`
+   already prints it.
+3. Make `FinalizeInstall`'s own failure path print the same
+   remedy, so the user who created the divergence is told how
+   to end it in the same breath.
+
+**What changes.** Little. `lockIsStale` is already cheap by
+construction (`lockstale.go:28-31`: no recipe resolution, no
+hashing) and already schema-tolerant. This is mostly wiring
+plus error text.
+
+**Crash safety.** None, and no concurrency guarantee. It does
+not prevent divergence; it guarantees divergence is loud and
+one-command repairable.
+
+**Failure modes.** A check on every mutating command adds a
+manifest+lock read to the hot path (cheap, but real), and it
+converts some currently-succeeding commands into refusals —
+a behavior change users will notice.
+
+**Complexity.** Very low. Mostly already built.
+
+### Option D — compensate in `FinalizeInstall` (the small one)
+
+Mirror `remove.go` exactly: make `WriteConfig` return a
+`(prior, wrote)` `config.FileState` pair, use
+`writeLockWitnessed` instead of `WriteLock`, and unwind on
+every failure after a committed step with
+`config.RestoreUnderLock` + `restoreLock`.
+
+**What changes.** `FinalizeInstall` grows from 8 lines to
+~35, plus a `WriteConfig` signature change with five call
+sites. No new files, no new on-disk state, no new lock. The
+machinery, its correctness argument, and its tests
+(`remove_farmguard_test.go:425` `TestRemoveLateRefusalRestoresTheLock`,
+`:474` `TestRemoveLateRefusalRestoresAbsentLock`) already
+exist and are already reviewed.
+
+**Crash safety.** None — compensation is in-process.
+
+**Failure modes.** The compare-and-swap can legitimately stand
+down (another command owns the file now), which leaves the
+divergence in place; that is the correct trade and is already
+the documented behavior on the remove path
+(`remove.go:502-512`). The user then needs §C's message.
+
+**Complexity.** Lowest of the four that change anything.
+
+## 4. Recommendation
+
+**Ship D + A + C as one bounded change. Defer B.**
+
+Concretely, phase 1:
+
+1. **D.** Witness-and-compensate in `FinalizeInstall`, reusing
+   `config.RestoreUnderLock` and `restoreLock` verbatim. This
+   closes every non-crash path to a persistent divergence.
+2. **A.** A per-environment `<galeDir>/finalize.lock` spanning
+   the three steps, acquired outermost, with the ordering
+   invariant written into `context.go` beside
+   `WriteLock`'s existing ordering comment, and with a bounded
+   non-blocking acquire so direnv cannot stall.
+3. **C.** `FinalizeInstall`'s failure path names the remedy,
+   reusing `lockfile.staleRemedy`'s rendering rather than
+   inventing a second wording.
+4. **Keep the store's per-version lock as it is.** Rekeying
+   `lockPackage` to the bare package name would serialize
+   unrelated multi-version store work and change store
+   semantics to fix a problem that lives one layer up. The
+   environment lock is the right granularity for
+   config+lock+generation; the package lock is the right
+   granularity for the store.
+
+Why this and not B:
+
+- The crash window B addresses is three file writes wide, and
+  its worst outcome (row 1) is precisely the divergence phase
+  1 makes both impossible-to-create-concurrently and
+  loud-when-created. B buys automatic repair of a state that
+  becomes rare and self-announcing.
+- B's own failure modes — poisoned replay blocking every
+  command, replay racing a legitimate repin — are worse than
+  the state it prevents, and they are the modes hardest to
+  test (§7).
+- Phase 1 reuses machinery that is already written, already
+  reviewed, and already exercised on the remove path. It is
+  the same design, applied to the path that was skipped.
+
+**What phase 1 actually meets:**
+
+| AC | Met by phase 1 | Notes |
+|---|---|---|
+| 1. Concurrent install of pkg@A and pkg@B end only in agreeing states | **Yes** | The environment lock serializes finalization; the compensation handles the refusal case |
+| 2. Pre-existing divergence fails sync non-zero, mutates nothing, names the remedy | **Already met on main** | Phase 1 adds the test and the same message on the finalize path |
+| 3. Interruption is rolled back or completed from durable transaction state | **No** | Phase 1 has no durable transaction state. It narrows the window and makes the residue loud; it does not recover from it |
+
+Do not claim AC3 in the phase 1 PR. If the maintainer wants
+AC3 as written, that is option B and it is a separate,
+larger piece of work with its own testability problem.
+
+## 5. Interaction with #186's `sync-state.toml`
+
+#186 is not on main yet (no `sync-state`, `syncNeeded`, or
+`--if-needed` in the tree). Composing against its stated
+design: a completion stamp in `<galeDir>`, written from a
+`defer` in `runSync`, consumed by `syncNeeded()` and by the
+direnv hook's freshness gate.
+
+**One file, not two.** Phase 1 introduces no durable state at
+all — only a lock file, which is not state (it carries no
+content, it is `flock` on an inode, and `filelock` already
+keeps such files on disk by design, `filelock.go:12-14`). So
+there is nothing to unify *yet*. If phase 2 ever ships a
+journal, it should be a table inside `sync-state.toml` rather
+than a second file: both are per-environment durable records
+of "is this environment's committed state trustworthy", both
+live in `<galeDir>`, and both need the same single-writer
+discipline. Two files would mean two writers, two sweep rules
+in gc, and two chances to disagree about the same
+environment.
+
+**The integration phase 1 does require** is the reverse
+direction, and it matters:
+
+- A successful `FinalizeInstall` changes exactly what #186's
+  stamp asserts — that config, lock, and generation are
+  mutually consistent for this environment. So finalization
+  must **refresh or clear the stamp inside the finalize
+  lock**. If it does not, a subsequent `gale sync --if-needed`
+  consults a stamp written by an older sync and takes the
+  fast path, and a divergence created after that sync is never
+  looked at again. That is the same sticky-skip failure #186
+  exists to remove, re-entering by the install door.
+- `syncNeeded()` must remain a **disjunction**, not a
+  replacement: sync is needed if the stamp is missing or stale
+  **or** `lockIsStale` reports the lock no longer describes
+  the manifest. A stamp-only predicate would drop the only
+  check that currently notices a config/lock divergence on the
+  `gale shell` path (`shell.go:117`), converting #187's loud
+  failure back into a silent skip. This is the single most
+  important line of coordination between the two issues.
+- The stamp and the finalize lock want the same granularity
+  (per environment, rooted at `galeDir`). That is convenient:
+  one lock protects both, and the stamp write needs no lock of
+  its own.
+
+Recommended sequencing: land #186 first, then phase 1 on top,
+so the stamp refresh is written once against the real API
+rather than predicted here.
+
+## 6. What this needs from `IsStale`, and #197
+
+`lockfile.IsStale` (`internal/lockfile/lockfile.go:68-88`) is
+already dead in production. The only non-test references are
+its own definition and comments; `shell.go:117` calls
+`cmd/gale/lockstale.go`'s `lockIsStale`, the schema-tolerant
+replacement that separates "stale" (sync resolves it) from
+"unusable" (an error, because sending sync to fix it would
+hide a lock-unusable condition). `doctor.go:647` and
+`sync.go:541` call `installer.IsStale`, a different function
+about dependency staleness in the store.
+
+So the issue's diagnosis cites `lockfile.go:81-89`, but the
+live predicate on the path it describes is `lockstale.go:33`.
+
+**What this design needs**, in order:
+
+1. `lockfile.CheckDeclared` (`internal/lockfile/roots.go:210`)
+   — the authoritative "do config and lock agree" answer, and
+   the producer of the remedy text phase 1 reuses.
+2. `lockfile.VersionMatches` (`lockfile.go:117`) — the
+   bare-vs-canonical reconciliation everything above rests on.
+   #197 already commits to keeping it.
+3. `cmd/gale/lockIsStale` — the cheap boolean on the `gale
+   shell` hot path, and (per §5) one half of `syncNeeded()`.
+
+None of these is `lockfile.IsStale`. **#197's cull is safe for
+this work and needs no coordination beyond ordering** — it can
+land before, after, or alongside phase 1. Phase 1 adds one
+requirement to whatever survives: the divergence predicate
+must be callable from the finalize failure path to render the
+message, which `CheckDeclared` already satisfies.
+
+## 7. Testability
+
+Precedent in the tree: `cmd/gale/race_repro_test.go` and
+`internal/generation/race_repro_test.go`. Read both before
+writing new concurrency tests — they are not equally good
+models.
+
+- `internal/generation/race_repro_test.go:118`
+  (`TestAudit_RollbackVsBuildRace_Deterministic`) orders two
+  goroutines with an 80ms lock hold and a 10ms sleep. It is
+  called deterministic; it is really *probably* deterministic.
+  Do not extend this pattern.
+- `cmd/gale/lockwriter_test.go:625`
+  (`TestWriteLockReadsTheManifestUnderTheLock`) is the model.
+  It drives the interleave through the `beforeLockRead`
+  function-pointer seam (`context.go:898-904`), which runs
+  inside `WriteLock`'s critical section after the lockfile
+  lock is held and before the manifest is read. No sleeps, no
+  goroutines, no flakes.
+
+### AC1 — concurrency property
+
+**Red-green testable, with one new seam.** The property is
+"config and lock agree after any interleaving of a finalize
+with a competing repin". The existing `beforeLockRead` seam
+covers the window *inside* `WriteLock`. It does not cover the
+window *between* `WriteConfig` and `WriteLock`, which is
+where row 1 is born.
+
+Named seam: a package-level `var beforeLockWrite func()` in
+`cmd/gale/context.go`, nil in production, invoked by
+`FinalizeInstall` after `WriteConfig` returns and before
+`WriteLock` is called — the same shape and the same nil-in-
+production discipline as `beforeLockRead` and
+`beforeGuardedRemoval`. With it:
+
+- Red today: seam commits a competing manifest repin →
+  `WriteLock` fails `checkRootsDeclared` → assert gale.toml
+  still carries this command's pin while gale.lock does not.
+- Green after D: same interleave → assert gale.toml is
+  byte-identical to its pre-command content and gale.lock is
+  unchanged.
+
+The environment-lock half of AC1 (option A) is testable
+without any seam by taking `<galeDir>/finalize.lock` in the
+test body and asserting a second finalize blocks — but only
+if acquisition is non-blocking-with-timeout as recommended,
+so the assertion is "returns a contention error" rather than
+"blocks for a while". If acquisition stays blocking, this
+degrades to a sleep test and should not be written.
+
+### AC2 — divergence refusal
+
+**Testable today, no seam needed, no concurrency.** Construct
+a gale.toml/gale.lock disagreement on disk, run `runSync`,
+assert: non-zero, `errors.Is(err, lockfile.ErrStaleLock)`,
+gale.lock byte-identical, `current` unchanged, store
+unchanged, and the message contains the remedy. This is a
+pure filesystem-state test at the `cmd/gale` layer, which is
+also the layer `scripts/check-pipeline-tests.sh` requires for
+this path.
+
+### AC3 — crash recovery
+
+**Not testable today, and not testable under phase 1.** There
+is no seam that can terminate the process between finalize
+steps, and — more fundamentally — there is no durable state to
+recover *from*, so there is nothing to assert about. Naming
+the two ways it could become testable, with their costs:
+
+- **In-process replay test.** Phase 2 writes a journal record,
+  the test hand-crafts a record plus a matching half-applied
+  filesystem state, and calls the replay entry point directly.
+  This is a real, deterministic test of the replay *logic*. It
+  does not test that a crash produces the state the test
+  hand-crafted — that remains an assumption.
+- **Integration crash test.** Requires a production crash seam
+  (`GALE_TEST_CRASH_AFTER=config`, honored in
+  `FinalizeInstall`) so the real binary can be killed at a
+  known point, then a second invocation asserts convergence.
+  This *does* test the whole property, and it costs a
+  panic-on-env-var branch in the most regression-prone command
+  path in the repo. That is a guardrail cost the maintainer
+  should price explicitly, not a detail.
+
+Until one of those exists, no PR should claim AC3.
+
+## 8. Blast radius and migration
+
+**Tier 2–3** under `docs/dev/change-discipline.md`: it is the
+finalize path and it is `cmd/gale/context.go`. A pre-change
+trace and a `cmd/gale`-layer repro test are required, not
+optional.
+
+Code touched by phase 1:
+
+- `cmd/gale/context.go` — `FinalizeInstall`, `WriteConfig`
+  (returns witnesses), `WriteConfigForRecipe`, new seam.
+- Five finalize call sites: `install.go:146, 241, 295, 625`,
+  `switch.go:95`.
+- `update.go:255-275` — the loop's N config writes plus one
+  lock write become one transaction under one lock hold.
+- `remove.go:135-222` — joins the same lock, or a comment
+  explains why it does not. It must not end up with two
+  overlapping exclusion schemes.
+- `internal/config/gale.go:810-818` — `RestoreUnderLock`
+  reused as-is; no change expected.
+
+Behavioral changes users can see:
+
+- Some installs that previously returned an error *and left a
+  new pin in gale.toml* now return the same error with
+  gale.toml untouched. This is strictly better but it is a
+  visible change; the audit-fix tests around
+  `FinalizeInstall` (`cmd/gale/audit_fix_U11_test.go:52, 107`,
+  `context_test.go:171, 225, 298, 460`,
+  `rebuild_generation_test.go:247, 312, 405`) all assert
+  against the current signature and will need updating.
+- A second concurrent gale command in the same environment may
+  report contention instead of proceeding.
+
+**Migration: none.** Phase 1 adds no on-disk format, no schema
+version, and no file with content. `<galeDir>/finalize.lock`
+is an empty flock target that older binaries simply never
+acquire — a mixed-version machine loses the mutual exclusion
+for the duration but nothing breaks and nothing needs
+converting. Placement matters for one small reason: putting it
+in `<galeDir>` (beside `generation.lock`) rather than beside
+`gale.toml` keeps it out of project git without a new
+`.gitignore` entry — `.gale/` is already ignored, and
+`gale.lock.lock` needed an explicit line (`.gitignore:3, 23`).
+gc's `sweepCrashLeftovers` (`gc.go:942-950`) needs no change:
+lock files are meant to persist.
+
+Portability is unchanged: `internal/filelock` is already
+unix-only (`golang.org/x/sys/unix`).
+
+## 9. Open questions for the maintainer
+
+1. **Blocking or fail-fast?** direnv runs sync on every `cd`.
+   A blocking finalize lock behind a slow `gale install`
+   stalls the shell — the exact user-visible failure the
+   staleness regressions cost us (013b4a4, 688ce7d, af4c3f6).
+   Recommendation: `LOCK_NB` with a short bounded retry and a
+   stderr line. Confirm, since it needs a `filelock` API
+   addition.
+2. **Does `remove` join the finalize lock?** It has its own
+   compensation and its own ordering constraints around the
+   farm guard. Uniformity argues yes; the risk of disturbing
+   `remove.go:159-222` argues for a follow-up.
+3. **Is `gale lock` the named remedy**, or should there be a
+   dedicated `gale reconcile`? #197 is already writing
+   `docs/lockfile.md` remedies; this should agree with it
+   rather than introduce a second vocabulary.
+4. **Should `syncNeeded()` be a disjunction with
+   `lockIsStale`?** (§5.) If #186 lands stamp-only, #187's
+   detection regresses on the `gale shell` path. This wants a
+   decision before #186 merges, not after.
+5. **What evidence would justify phase 2?** Proposal: a
+   reproducible field report of row 1 arising from an
+   interruption rather than a refusal. Absent that, the
+   journal is speculative durability with real recovery-path
+   risk.
+6. **Should the per-version store lock stay per-version?** This
+   proposal says yes and puts the exclusion one layer up.
+   Disagreeing changes the shape of the whole fix.
