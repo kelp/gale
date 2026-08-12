@@ -143,23 +143,43 @@ The store path is derived from a digest of the artifact.
 Two sub-shapes, and the difference decides feasibility.
 
 **A1: `pkg/<hash>-<name>-<version>/`** (literal Nix layout).
-Rejected on one fact:
 `internal/build/fixup_linux.go:226-231` and
 `internal/build/fixup_darwin.go:399-417` bake
 `$ORIGIN/../../../lib` and
 `@executable_path/../../../lib` into every dynamically
 linked artifact — a hard-coded assumption that a store
 prefix is *exactly three* levels below the gale dir
-(`pkg/<name>/<ver-rev>`). A1 makes it two. Every prebuilt
+(`pkg/<name>/<ver-rev>`). A1 makes it two, so every prebuilt
 binary on GHCR, every attestation, and every installed
 dynamically linked package on every user machine would
 resolve the farm one directory too high. Migration cost is
 "rebuild and re-attest the entire recipe repository, then
-force every user to reinstall everything". Not viable.
+force every user to reinstall everything".
+
+**A1s: `pkg/<2hex>/<hash>-<name>-<version>/`** (sharded).
+The depth objection does **not** apply. Three components
+below the gale dir is exactly what the baked rpath needs, so
+a sharded content-addressed store keeps every published
+artifact valid. This is the strongest form of the opposing
+case and it survives the rpath argument intact.
+
+It does not survive the other two. Sharding moves the
+package name out of the path: `farm.packageName`
+(`internal/farm/farm.go:646-652`) reads it from
+`filepath.Base(filepath.Dir(storeDir))` and would return the
+shard `<2hex>`, and `farm.DirFromStoreDir`
+(`farm.go:75-86`) validates the layout by checking that the
+grandparent is literally `pkg`. Both break for *every*
+directory rather than only diverged ones — the §6 reversal
+inventory becomes an unconditional rewrite instead of a
+conditional one. And the set-selection problem below is
+unchanged: sharding decides where a directory sits, not how
+a bare pin picks among several.
 
 **A2: `pkg/<name>/<version>+h.<hash>-<revision>/`** — depth
-preserved, hash inside the single version component. Viable
-mechanically. What changes:
+preserved, hash inside the single version component, name
+still in the path. The best-shaped full-CA variant. What
+changes:
 
 - Path selection moves *after* the bytes exist. Today
   `installLocked` picks the directory at line 319 and
@@ -183,11 +203,16 @@ mechanically. What changes:
   answers "highest revision"; with hash siblings there is no
   ordering answer and it needs an explicit selector.
 
-What breaks: every bare pin now addresses a *set*. gc
+What breaks — and this is the real objection to full CA, in
+every spelling: **every bare pin now addresses a set.** gc
 retention keys, farm claimants, `gale list`, `gale which`,
 `.gale-deps.toml` dep resolution and the lockfile's
 cross-machine portability all need a selection rule that
-does not exist today.
+does not exist today, and they need it for *every* package
+rather than for the rare diverged one. Under full CA there
+is no unhashed name to fall back to, so the selection rule
+is on the critical path of every install on every machine
+from the first day it ships.
 
 Migration: every existing store directory is untagged and
 stays valid only if the untagged form remains addressable
@@ -216,19 +241,44 @@ keeps the existing parsers correct:
 is true, `store.SplitRevision` returns
 `("1.8.1+h.abc123def456", 2)`, and `store.CheckIdentity`
 passes. Putting it after the revision would parse as
-revision `12345678`. The shape already ships: git installs
-write `0.2.0-dev.7+5395b8f-1` today, and #213 added
-`0.2.0+dirty.<hex>` beside it
-(`cmd/gale/install.go:501-525`).
+revision `12345678`.
+
+**The grammar must be stated precisely, because the tag
+composes with an existing one.** `devVersionWithDirt`
+(`cmd/gale/install.go:516-525`) appends `.dirty.<hex>`
+*inside* an existing `+` segment rather than opening a
+second one, and `formatDevVersion` already emits
+`0.2.0-dev.7+5395b8f` for any non-tagged checkout. So a dev
+build's divergent sibling is spelled
+`0.2.0-dev.7+5395b8f.dirty.<hex>.h.<hex>-1`, never
+`+h.<hex>`. That is the headline case for phase 2 — #213's
+documented gap (`installer.go:593-596`) is a dev rebuild
+after a build-dep upgrade — so a splitter that matched only
+`+h.` would miss its own primary case and fall through to
+replacing in place: the exact bug the mechanism exists to
+prevent.
+
+The content tag is therefore defined as: **a terminal
+`h.<12 lowercase hex>` dot-segment at the end of the
+build-metadata segment**, immediately preceding the
+`-<revision>` suffix. `+h.<hex>` appears only when no
+build-metadata segment exists yet. `SplitContentTag` strips
+the revision first, then matches that terminal segment, and
+matches nothing else. An upstream version whose own build
+metadata happens to end in `.h.` plus twelve hex characters
+would alias; the splitter is a store-layout convenience and
+`.gale-provenance.toml` remains the authority on what a
+directory actually holds.
 
 What changes:
 
 - One new pair in `internal/store`: `TagVersion(canonical,
   digest) string` and `SplitContentTag(base) (canonical,
-  digest string)`. Every site that reverses a path into an
-  identity (§6) routes through the splitter, so a tagged
-  sibling reports the canonical identity to gc, the farm,
-  `.gale-deps.toml` and the config layer.
+  digest string)`, implementing the grammar above. Every
+  site that reverses a path into an identity (§6) routes
+  through the splitter, so a tagged sibling reports the
+  canonical identity to gc, the farm, `.gale-deps.toml` and
+  the config layer.
 - `commitStaged` (`installer.go:844-895`) gains a
   divergence check before `replaceStoreDir`: read the
   occupied directory's `.gale-provenance.toml`, compare to
@@ -236,20 +286,34 @@ What changes:
   the tagged sibling instead of replacing.
 - A default `ReplaceGuard` becomes possible, because a
   refusal now has somewhere to go.
-- Generation build prefers the canonical directory; a scope
-  selects a tagged sibling only when its own lock names that
-  hash.
+- **Generation selection**, without which the store change
+  does not converge — see §4, finding on forward
+  convergence. `canonicalizeForBuild`
+  (`cmd/gale/context.go:390-413`) already maps a config pin
+  to the on-disk identity a rebuild should link, and it is
+  the only such seam (called from `context.go:553` and
+  `sync.go:365`). It gains one step: when a tagged sibling
+  exists whose provenance hash matches what this scope's
+  lock names, substitute the tagged basename. No resolver
+  change is needed — a tagged basename carries a numeric
+  revision suffix, so `resolveVersionFromEntries` takes the
+  exact-match branch (`store.go:184-186`) and returns it
+  unchanged.
 
 What breaks: less than A2, because the common case is
 byte-identical to today. A machine that never diverges never
-sees a tag. The cost is concentrated in the §6 reversal
+sees a tag, and the selection step above is a no-op when no
+sibling exists. The cost is concentrated in the §6 reversal
 sites and in gc retention, which must keep a tagged sibling
-alive exactly as long as some generation links it.
+alive as long as *any retained* generation links it — a
+larger change than it sounds, see §4.
 
 Migration: no flag day. Existing directories are already in
 the canonical form and stay preferred. See §5.
 
-For #211: resolves it, without spending a revision. See §4.
+For #211: resolves both halves, without spending a revision,
+but only with the generation-selection bullet included. See
+§4.
 
 ### Option C — status quo plus enforcement
 
@@ -268,13 +332,13 @@ for not fixing it there: it changes what a revision *means*,
 and the `.gale-deps.toml` staleness model
 (`docs/revisions.md:159-209`) and gc retention both read it.
 
-A weaker variant — warn instead of refuse, plus have
-`rollback` verify the bytes a target generation links
-against the hashes recorded for it — is gh#211's own
-interim suggestion. It is worth shipping regardless of what
-else is chosen (§4).
+A weaker variant — warn at the replace, refuse at rollback —
+is gh#211's own interim suggestion and becomes phase 1 of
+the recommendation (§4). It is worth shipping regardless of
+what else is chosen.
 
-For #211: makes it visible, does not resolve it.
+For #211: fixes the rollback half, leaves forward
+convergence untouched.
 
 ### Option D — key the path by closure digest
 
@@ -302,11 +366,18 @@ user hits it.**
 
 Reasons.
 
-The rpath depth constraint (§3, A1) makes the Nix layout a
-recipe-repo-wide rebuild, and gale's value proposition rests
-on the GHCR binary cache. Any design that invalidates every
-attested artifact is not a store change, it is a
-re-bootstrap.
+Full content-addressing is rejected on **set selection and
+permanent back-compat**, not on the rpath depth. The depth
+constraint (§3, A1) kills only the flat Nix layout; the
+sharded variant A1s preserves it exactly, and A2 preserves
+it too. What no full-CA spelling avoids is that a bare pin
+stops addressing a directory and starts addressing a set —
+for every package, on every machine, from day one — so gc
+retention, farm claimants, dep resolution and display all
+need a selection rule on the critical path immediately.
+Alongside that, the untagged form must stay resolvable
+forever for the installed base, which means shipping full CA
+*and* keeping the current layout.
 
 The common case must stay byte-identical to today.
 `docs/revisions.md:78-93` already carries one transitional
@@ -321,33 +392,86 @@ motivating harm — rollback executing the wrong bytes, an
 edited recipe installing the old artifact, a stale reinstall
 silently rewriting history — is entirely about *one* machine
 replacing *its own* bytes. The cross-machine coexistence
-case that needs full per-scope selection is real but has no
-reported instance in the issue tracker.
+case is real but has no reported instance in the issue
+tracker, and it is gated on gh#198 regardless.
+
+**A store change alone does not converge.** Landing
+divergent bytes at a sibling without also selecting it
+creates an unbounded loop, and the trace is short enough to
+state in full. `generation.Build` links through
+`resolveStoreDir(storeRoot, name, version)`
+(`generation.go:29-31`, `:347`) — name and version only, no
+hash. Sync decides staleness from
+`Store.StorePath(name, r.Package.Full())`, the canonical
+directory (`cmd/gale/sync.go:530-542`). So: divergent bytes
+land at the sibling → the rebuilt generation still resolves
+the *canonical* directory → that directory's
+`.gale-deps.toml` is still stale → the next sync reinstalls
+→ §1a non-reproducibility mints a *different* sibling → and
+gc, taught to retain only what a generation links, reaps
+each orphan as it is made. That is an unbounded
+reinstall-and-mint loop, and it is precisely the class
+CLAUDE.md records at 013b4a4 / 688ce7d / af4c3f6.
+
+Generation selection therefore belongs in phase 2, not
+phase 3. It is cheaper there than it first appears — the
+seam already exists (`canonicalizeForBuild`,
+`context.go:390-413`) and `store.ResolveDir` already
+exact-matches a tagged basename (§3B) — but it is not
+optional, and the phasing reflects that.
 
 Phases:
 
-1. **Detect and report.** Default `ReplaceGuard` that
-   compares the staged hash against the occupied directory's
-   provenance record and warns when they differ and a
-   non-active generation links the target. `gale rollback`
-   verifies the linked directories still hold the hashes
-   recorded for the target generation and says so when they
-   do not. This is Option C's weak variant, it is gh#211's
-   own interim suggestion, and it is a tier-2 change.
-2. **Land divergent commits at a tagged sibling.**
-   `TagVersion`/`SplitContentTag` in `internal/store`, the
-   reversal sites routed through the splitter, `commitStaged`
-   choosing the sibling on divergence, gc retaining tagged
-   siblings any generation links, `gale migrate` learning the
-   fourth classification (§5). Tier 3. This closes gh#211.
-3. **Per-scope selection.** A scope's lock selects which
-   sibling its generation links, so two projects on one
-   machine hold different artifacts for one identity. Tier 3
-   again and larger than phase 2, because it changes what a
-   generation is built *from*. Defer until a concrete report;
-   the trigger is a user hitting `errScopeDisagrees`
-   (`cmd/gale/storereplace.go:24`) with two lockfiles neither
-   of which is wrong.
+1. **Detect, and refuse where the harm lands.** A default
+   `ReplaceGuard` that compares the staged hash against the
+   occupied directory's provenance record and warns when
+   they differ and a non-active generation links the target.
+   Refusing the *replace* is ruled out (§3C: sync stops
+   converging), but `gale generations rollback` is where the
+   harm actually lands, and refusing there blocks nothing:
+   it verifies that the directories a target generation
+   links still hold the hashes recorded for it, and requires
+   `--force` on a mismatch rather than merely reporting one.
+   A warning alone is not enough — gh#205 closes on exactly
+   that observation, that "an unresolvable `@rpath` that only
+   warns at build time becomes a dyld abort on a user's
+   machine, with nothing pointing back at the build". A
+   replace-time warning during sync will be read as often as
+   that one was. Tier 2.
+2. **Land divergent commits at a tagged sibling, and select
+   it.** `TagVersion`/`SplitContentTag` in `internal/store`;
+   the §6 reversal sites routed through the splitter;
+   `commitStaged` choosing the sibling on divergence;
+   **`canonicalizeForBuild` selecting the sibling this
+   scope's lock names**; gc retention re-keyed onto
+   generation symlink targets (below); `gale migrate`
+   learning the fourth classification (§5). Tier 3. This is
+   what closes gh#211.
+3. **Cross-scope coexistence.** Two projects on one machine
+   holding *different* siblings of one identity at the same
+   time. Phase 2 gives each scope a winner; this makes two
+   winners coexist, which the machine-global farm cannot
+   express — one soname, one link (`farm.Populate`,
+   `farm.go:257-278`). Gated on gh#198 and deferred until a
+   concrete report; the trigger is a user hitting
+   `errScopeDisagrees` (`cmd/gale/storereplace.go:24`) with
+   two lockfiles neither of which is wrong.
+
+**gc retention is the largest single item in phase 2**, and
+§6 rates it critical for the right reason. Today's
+referenced set is built from config-derived canonical keys
+(`gc.go:473-480`), with one generation-derived contribution:
+`addActiveGenerationRefs` (`gc.go:416-432`) reads the
+**active** generation only. Retaining a sibling for as long
+as any *retained* generation links it — which is what
+rollback needs — means keying retention on the symlink
+targets of every generation gc keeps, not only the current
+one. `generation.genVersions` cannot express the answer
+either: it returns `map[name]version`, first-seen-wins
+(`generation.go:141-143`), so it cannot report that gen 7
+links one sibling while gen 9 links another. That is new
+machinery, in the subsystem whose cross-scope deletion bugs
+recur (ad4e685, 289d13b).
 
 **Relation to #213.** Extended, not subsumed, and not
 replaced. `devVersionWithDirt`/`dirtDigest`
@@ -363,32 +487,53 @@ bytes the old dependency produced"
 (`installer.go:593-596`) — is exactly what phase 2 closes,
 because the rebuilt artifact hashes differently and lands
 beside rather than on top. Leave `devVersionWithDirt` alone;
-note only that the tag must append into an existing
-build-metadata segment rather than open a second `+`, the
-same rule `devVersionWithDirt` already applies at
-`install.go:521-524`.
+the composition is a constraint on the *tag grammar* rather
+than a change to #213, and §3B states it: a dev build's
+sibling is spelled `…+5395b8f.dirty.<hex>.h.<hex>-1`, so the
+splitter must match a terminal `.h.<hex>` segment and not
+`+h.` alone.
 
-**On gh#211.** Yes, phase 2 resolves it, and #211's own
-reading of why is correct. The stale reinstall gets a
-distinct path without spending a revision, so `Reinstall` →
-`installLocked` → `commitStaged` no longer renames over a
-pathname an older generation links, and the third acceptance
-criterion of gh#183 — "every committed store identity remains
-byte-stable for as long as any generation references it" —
-holds in general rather than for `--path` alone.
+**On gh#211.** Phase 2 resolves it — *including the
+generation-selection bullet*, and not without it. With
+selection, the stale reinstall gets a distinct path without
+spending a revision, `Reinstall` → `installLocked` →
+`commitStaged` no longer renames over a pathname an older
+generation links, and the next generation links the bytes
+that were just built. Both halves of gh#183's third
+acceptance criterion then hold in general rather than for
+`--path` alone: old generations keep their bytes, and the
+scope converges forward.
 
-Two caveats worth stating plainly. First, it converts #211's
-cost from a *revision* cost into a *retention* cost: gc must
-now keep N siblings alive while N generations link them, and
+Phase 1 alone fixes only the first half. It makes rollback
+refuse to execute bytes the target generation never
+described, which is the sharpest user-visible harm, but the
+store still replaces in place and forward convergence is
+untouched. If only one phase ships, the doc should say
+plainly that gh#211 stays open.
+
+Two caveats. First, it converts #211's cost from a
+*revision* cost into a *retention* cost, and that cost is
+the phase's largest item (above), not a footnote:
 `removeUnreferencedVersions` (`cmd/gale/gc.go:487-528`)
 compares `name@<basename>` against canonical keys, so an
-un-taught gc reaps every sibling on its first run. Second, it
-only holds if the divergence check reads the *committed*
+un-taught gc reaps every sibling on its first run. Second,
+it only holds if the divergence check reads the *committed*
 record and not a caller's prediction — the same reason
 `ReplaceGuard` takes the committed result rather than a
 predicted hash (`installer.go:175-180`). Phase 1 should ship
 first precisely so the divergence rate is observable before
 phase 2 changes behaviour on it.
+
+**On gh#191's own ask, stated plainly.** The issue's "what a
+fix looks like" is two projects on one machine holding
+genuinely different artifacts for one identity. That is
+phase 3, and this proposal **defers it** behind a named
+trigger and behind gh#198. What the recommendation delivers
+is gh#211 (phase 2) and the rollback harm (phase 1) — the
+single-machine, single-winner half. A maintainer approving
+this should understand they are approving a fix for #211
+that leaves #191's stated criterion unmet, not a fix for
+#191.
 
 **On gh#198's subsumption claim.** #198 is right, and this
 proposal makes its case stronger rather than weaker.
@@ -408,15 +553,25 @@ Content-addressing raises the pressure on #198: more distinct
 store paths per identity means more distinct claimants
 competing for the same soname link, so
 `farm.GuardPopulate`'s refusal fires *more* often once
-siblings exist. Phase 3 in particular is not shippable
-without #198 — per-scope store selection with a
-machine-global farm gives each project the store directory
-its lock names and then loads the other project's dylib
-through the farm. Phase 2 is safe because a divergent sibling
-is a transient state converged by the next sync, not a
-steady state two scopes both depend on.
+siblings exist. Phase 3 is not shippable without #198 at all
+— per-scope store selection with a machine-global farm gives
+each project the store directory its lock names and then
+loads the other project's dylib through the farm.
 
-Sequence: #198 before phase 3, independent of phase 2.
+**Phase 2 is only partly insulated, and the earlier draft of
+this section over-claimed it.** Once selection lands (§4), a
+diverged sibling is what its scope's generation links, so if
+that package provides farmed sonames and another scope still
+links the canonical directory, the two claim one link name
+and `GuardPopulate` refuses — the #198 conflict, reached
+through phase 2. The honest bound: phase 2 improves the case
+where the diverged package contributes nothing to the farm
+(static CLI tools, the majority) and leaves the farmed case
+behaving exactly as it does today, as a refusal. It does not
+make the farmed case worse, and it does not fix it.
+
+Sequence: #198 before phase 3, and before phase 2 can claim
+to help contended libraries.
 
 ## 5. Migration path
 
@@ -528,9 +683,12 @@ files reference store layout; 40 of 84
 in `internal/` + `cmd/`: 307.
 
 **Path construction** (identity → path): ~15 non-test sites.
-All join `(root, name, version)` and all are correct under
-Option B as long as `version` is canonical; they only need to
-change in phase 3, where the join needs a selector.
+All join `(root, name, version)` and all stay correct under
+Option B, because the selection happens upstream of them: a
+tagged basename is passed *as* the version and joins
+unchanged (§3B). Only one site chooses — `canonicalizeForBuild`
+(`cmd/gale/context.go:390-413`) — which is why phase 2's
+selection is bounded despite being in tier-2 territory.
 
 **Path reversal** (path → identity): 13 non-test sites, and
 these are the dangerous half. Each treats
@@ -576,6 +734,7 @@ Subsystems by risk:
 | **High** | `internal/generation` | gen symlink → identity reversal feeds gc retention, doctor drift, farm closure |
 | **High** | `internal/farm` | one soname → one link; more siblings means more guard refusals (gh#198) |
 | **High** | `internal/installer` commit paths | `commitStaged`/`replaceStoreDir` are where the change lands; `build.go` + darwin fixup already named the most regression-prone code in the repo |
+| **High** | `cmd/gale/context.go` selection | `canonicalizeForBuild` is the only sibling-selection seam; getting it wrong is the reinstall-loop class, and context.go is tier 2 by name in change-discipline |
 | **Medium** | `internal/depsmeta` staleness | a tagged basename mis-parsed as a version causes the infinite reinstall loop class (013b4a4, 688ce7d, af4c3f6) |
 | **Medium** | `cmd/gale/migrate*.go` | new classification, but the pass structure already exists |
 | **Medium** | `internal/store` resolution | new sibling dimension in `resolveVersionFromEntries` |
@@ -592,6 +751,17 @@ Subsystems by risk:
   `HasNumericRevisionSuffix` is true, `SplitRevision`
   returns the tagged base and the right revision, and
   `CheckIdentity` accepts it.
+- **The composed round-trip**, which is the case a naive
+  splitter gets wrong (§3B). Table the four shapes and
+  assert the splitter recovers the pre-tag identity from
+  each: `1.8.1-2` (no metadata), `1.8.1+h.<hex>-2` (tag
+  opens the segment), `0.2.0-dev.7+5395b8f-1` (metadata, no
+  tag — must return no digest), and
+  `0.2.0-dev.7+5395b8f.dirty.<hex>.h.<hex>-1` (#213's
+  output plus a tag). Pair it with a test that the *tagger*
+  produces the fourth form rather than a second `+`, since
+  that is the same rule `devVersionWithDirt` applies at
+  `install.go:521-524` and the two must not drift.
 - `resolveVersionFromEntries` given a fixture listing with
   canonical + N tagged siblings: canonical wins, an empty
   canonical does not win, an unknown tag is not preferred
@@ -602,9 +772,20 @@ Subsystems by risk:
   given a tagged store dir: both report the canonical
   identity.
 - gc retention: a table test asserting a tagged sibling
-  linked by any generation is retained, and one linked by
+  linked by any *retained* generation is kept — including
+  by a non-active one, which today's
+  `addActiveGenerationRefs` would miss — and one linked by
   none is reaped. This is the test that has to exist before
   any of the rest.
+- **Forward convergence**, the loop in §4. Fixture: a store
+  whose canonical dir is stale, an install that lands
+  divergent bytes at a sibling, then two successive syncs.
+  Assert the second sync is a no-op and that exactly one
+  sibling exists. Red before the `canonicalizeForBuild`
+  change and green after, which makes the most serious
+  finding in this design a genuinely red-green test rather
+  than an argument. It belongs at the `cmd/gale/` layer,
+  because `internal/generation` alone cannot see it.
 - `migrateScan` classification of a divergent directory,
   from a fixture store with a planted
   `.gale-provenance.toml` and a planted lock.
@@ -636,9 +817,9 @@ first:**
   Simulate with the existing `integration/support` fixture
   registry.
 - Whether divergence is *rare* — the assumption Option B's
-  cost model rests on. Only phase 1's telemetry-free warning
-  output answers it, from real machines. That is the main
-  argument for shipping phase 1 first.
+  cost model rests on. Only phase 1's output answers it, from
+  real machines. That is the main argument for shipping phase
+  1 first.
 
 **Layer discipline.** `internal/generation` and
 `internal/farm` are on
@@ -671,11 +852,15 @@ regression net for "nothing changed in the common case".
 4. **How many siblings before gale complains?** A pathological
    `--recipes` loop mints one per edit. A cap, an age sweep,
    or nothing?
-5. **Phase 1 default: warn or refuse?** #211 suggests warn.
-   Refuse is the honest answer to "rollback executes the
-   wrong bytes", but it makes sync stop converging (§3C), so
-   warn is the only phase-1-safe choice — is a warning users
-   will ignore worth shipping on its own?
+5. **Is `rollback --force` the right escape hatch?** Phase 1
+   refuses a rollback onto directories whose bytes no longer
+   match what the target generation recorded, and `--force`
+   is the override. The alternative is refusing outright and
+   telling the user to reinstall. `--force` is the smaller
+   change and keeps the command usable on a machine whose
+   history is already divergent; refusing outright is more
+   honest about the fact that the generation cannot be
+   restored. Your call.
 6. **Forward-compat patch timing.** §5's downgrade hazard
    requires the *current* release to skip store entries it
    does not understand, at least one release before phase 2.
@@ -693,3 +878,57 @@ regression net for "nothing changed in the common case".
    names. Worth deciding the vocabulary — "content tag" vs
    "content key" vs "content address" — before the code
    picks it.
+
+## Review
+
+First review pass, recorded so the delta is visible. The
+recommendation (Option B) did not change; the phasing did.
+
+- **Phase 2 now includes generation selection.** As first
+  written, phase 2 landed divergent bytes at a sibling that
+  no generation ever linked, so the canonical directory
+  stayed stale and every sync minted another sibling — an
+  unbounded reinstall loop. `canonicalizeForBuild`
+  (`context.go:390-413`) is the seam, and it moved from
+  phase 3 into phase 2. §4 now carries the trace, §7 makes it
+  a red-green test, §6 adds `cmd/gale/context.go` to the risk
+  table. The "phase 2 closes gh#211" claim survives only
+  because of this change; phase 1 alone fixes the rollback
+  half and leaves gh#211 open.
+- **The rpath argument was over-claimed.** Fixed depth 3
+  (`fixup_linux.go:226-231`, `fixup_darwin.go:399-417`) kills
+  the *flat* Nix layout, not content-addressing as such: a
+  sharded `pkg/<2hex>/<hash>-<name>-<ver>/` preserves the
+  depth exactly. §3 now names and dismisses the sharded
+  variant on its own merits, and §4 rests the rejection of
+  full CA on set-selection and permanent back-compat, which
+  hold against every spelling.
+- **The tag grammar is now specified.**
+  `devVersionWithDirt` (`install.go:516-525`) appends inside
+  an existing `+` segment, so a dev build's sibling is
+  `…+5395b8f.dirty.<hex>.h.<hex>-1`. A splitter matching only
+  `+h.` would miss the headline case and replace in place.
+  §3B defines a terminal `.h.<12hex>` segment; §7 tables the
+  composed round-trip.
+- **gc retention was undersold in §4.** §6 rated it critical
+  and §4 described it in a clause. `addActiveGenerationRefs`
+  (`gc.go:416-432`) reads the active generation only, and
+  `genVersions` returns `map[name]version` first-seen-wins
+  (`generation.go:141-143`), so retention across retained
+  generations is new machinery. §4 now says so.
+- **Phase 1 refuses at rollback** rather than only warning,
+  on the gh#205 precedent that a build-time warning becomes a
+  user-machine abort. Refusing the *replace* is still ruled
+  out. Open question 5 changed from "warn or refuse" to the
+  shape of the escape hatch.
+- **§4 now states outright** that this defers gh#191's own
+  criterion — two projects, one identity, different bytes —
+  to phase 3, behind gh#198, and delivers gh#211 instead.
+- **Found while integrating the above, not raised in
+  review:** pulling selection into phase 2 means a diverged
+  sibling goes live for its scope, so a package that provides
+  farmed sonames can reach the gh#198 conflict through phase
+  2. The claim in §4's gh#198 subsection that phase 2 was
+  insulated from the farm was wrong and is corrected there:
+  phase 2 helps packages that contribute nothing to the farm
+  and leaves the rest refusing as they do today.
