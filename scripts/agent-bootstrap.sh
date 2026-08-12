@@ -184,7 +184,22 @@ else
   record "git-history" "ok (full history)"
 fi
 
-# 9. The pre-commit gofumpt gate, same as `just hooks`.
+# 9. patchelf — Linux only, and a test dependency rather than a dev tool.
+#    internal/build/fixup_linux_test.go skips six rpath tests without it
+#    (`exec.LookPath("patchelf")`), so the most regression-prone file in the
+#    repo loses its Linux coverage in the sandbox. Not in gale.toml on
+#    purpose: that file drives a real dev machine's direnv toolchain, and gale
+#    is macOS-first, where patchelf is meaningless.
+patchelf_version="0.18.0"
+if [ "$(uname -s)" = "Linux" ] && [ -n "$arch" ]; then
+  install_release_tarball patchelf \
+    "https://github.com/NixOS/patchelf/releases/download/${patchelf_version}/patchelf-${patchelf_version}-${arch}.tar.gz" \
+    patchelf
+else
+  record "patchelf" "SKIPPED (linux-only, arch $(uname -m))"
+fi
+
+# 10. The pre-commit gofumpt gate, same as `just hooks`.
 if git -C "$repo_root" config core.hooksPath .githooks; then
   record "git-hooks" "ok (core.hooksPath=.githooks)"
 else

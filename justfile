@@ -22,11 +22,15 @@ lint:
     golangci-lint run ./...
     go vet ./...
 
+# Scope is the whole tree, matching ci.yml's `gofumpt -l .`.
+# Anything narrower lets a file outside cmd/internal/integration
+# (tools/, future top-level packages) pass here and fail CI.
+
 # Check formatting (fails if any file needs formatting)
 fmt-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    unformatted=$(gofumpt -l cmd internal integration)
+    unformatted=$(gofumpt -l .)
     if [ -n "$unformatted" ]; then
       echo "Files need formatting (run 'just fmt'):" >&2
       echo "$unformatted" >&2
@@ -35,7 +39,7 @@ fmt-check:
 
 # Fix formatting
 fmt:
-    gofumpt -w cmd internal integration
+    gofumpt -w .
 
 # Install the agent-sandbox toolchain. Blocks until the background
 # SessionStart bootstrap finishes, so it doubles as "wait for it".
@@ -59,6 +63,73 @@ cover:
 # Run tests with race detector
 test-race:
     go test -race ./...
+
+# ~22 tests assert an EACCES-style failure and skip themselves
+# when euid is 0, which is every run in an agent container. This
+# compiles as root, then runs each test binary under setpriv via
+# `go test -exec`, so the go build and module caches under a 0700
+# $HOME stay reachable. Linux only.
+# See docs/dev/agent-environment.md.
+
+# Run the suite as an unprivileged user (unskips the root-gated tests)
+test-unprivileged:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    if ! command -v setpriv >/dev/null 2>&1; then
+      echo "setpriv not found (util-linux); Linux only" >&2
+      exit 1
+    fi
+    # A HOME the test binaries can write. setpriv keeps the
+    # caller's env, and root's $HOME is 0700.
+    home="${TMPDIR:-/tmp}/gale-unprivileged-home"
+    mkdir -p "$home"
+    chmod 0777 "$home"
+    go test -count=1 \
+      -exec "env HOME=$home setpriv --reuid=65534 --regid=65534 --clear-groups" \
+      ./...
+
+# internal/build's fixup_darwin.go, fixup_uuid.go and
+# internal/inspect's binary_darwin.go sit behind //go:build
+# darwin, so on Linux `go build`, `go vet` and golangci-lint never
+# compile them: an undefined symbol there passes every other local
+# gate and fails on CI's macos runner. go vet covers _test.go too.
+
+# Typecheck and vet the darwin-only sources (GOOS=darwin)
+check-darwin:
+    GOOS=darwin GOARCH=arm64 go build ./...
+    GOOS=darwin GOARCH=arm64 go vet ./...
+
+# ci.yml runs this on pull_request only, so without a local target
+# it is invisible until the PR is already open.
+
+# Guard change-discipline test layers (scripts/check-pipeline-tests.sh)
+pipeline-check:
+    scripts/check-pipeline-tests.sh origin/main
+
+# Runs CI's gates in CI's order, stops at the first red one and
+# names it. Not covered: govulncheck (its database host is blocked
+# in agent containers) and integration Tier A (`just integration`).
+
+# Reproduce the CI gate locally — run before every push
+preflight:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    gate() {
+      name="$1"; shift
+      echo "==> preflight: $name"
+      if ! "$@"; then
+        echo "preflight: FAILED at '$name' — fix it before pushing" >&2
+        exit 1
+      fi
+    }
+    gate test go test ./...
+    gate test-race go test -race ./...
+    gate vet go vet ./...
+    gate lint golangci-lint run ./...
+    gate fmt-check {{ just_executable() }} fmt-check
+    gate pipeline-check {{ just_executable() }} pipeline-check
+    gate check-darwin {{ just_executable() }} check-darwin
+    echo "preflight: all gates passed"
 
 # Run the integration suite (Tier A: fixture-driven, fast)
 integration:
