@@ -37,10 +37,42 @@ type HostConfig struct {
 
 // GaleConfig represents a gale.toml file (global or project).
 type GaleConfig struct {
-	Packages map[string]string     `toml:"packages"`
-	Vars     map[string]string     `toml:"vars,omitempty"`
-	Pinned   map[string]bool       `toml:"pinned,omitempty"`
-	Hosts    map[string]HostConfig `toml:"hosts,omitempty"`
+	Packages map[string]string `toml:"packages"`
+	Vars     map[string]string `toml:"vars,omitempty"`
+	Pinned   map[string]bool   `toml:"pinned,omitempty"`
+	// Bin resolves executable-name collisions: basename → the
+	// package whose copy goes into the generation. Every other
+	// provider's entry for that basename is left out. Without an
+	// entry, two packages shipping one basename refuse the rebuild
+	// (gh#190) rather than letting sort order decide silently.
+	Bin   map[string]string     `toml:"bin,omitempty"`
+	Hosts map[string]HostConfig `toml:"hosts,omitempty"`
+}
+
+// ValidateBin reports an error when a [bin] override names a package
+// that is not declared. An override suppresses the basename in every
+// package it does not name, so a winner that provides nothing keeps
+// the binary off PATH entirely — the silent shadowing gh#190 removed,
+// in a new shape. Call it after host overlays are merged, so a winner
+// declared only under [hosts.<selector>.packages] still counts.
+func (c *GaleConfig) ValidateBin() error {
+	names := slices.Sorted(maps.Keys(c.Bin))
+	for _, bin := range names {
+		pkg := c.Bin[bin]
+		if pkg == "" {
+			return fmt.Errorf(
+				"[bin] %s names no package; give it the package whose "+
+					"%s belongs on PATH, or delete the entry", bin, bin,
+			)
+		}
+		if _, ok := c.Packages[pkg]; !ok {
+			return fmt.Errorf(
+				"[bin] %s = %q names a package that is not in [packages]; "+
+					"declare %s or delete the entry", bin, pkg, pkg,
+			)
+		}
+	}
+	return nil
 }
 
 // ParseGaleConfig parses a gale.toml string.

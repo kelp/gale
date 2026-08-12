@@ -1520,3 +1520,72 @@ environment = "production"
 		t.Error("AddPackage dropped the 'my-team' value from the unknown [custom] section")
 	}
 }
+
+// --- gh#190: [bin] executable-collision overrides ---
+
+const galeWithBin = `
+[packages]
+corepack = "0.34.0"
+node = "24.4.0"
+
+[bin]
+npx = "corepack"
+`
+
+func TestParseGaleConfigBin(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithBin)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Bin["npx"]; got != "corepack" {
+		t.Errorf("Bin[npx] = %q, want %q", got, "corepack")
+	}
+	if err := cfg.ValidateBin(); err != nil {
+		t.Errorf("ValidateBin: %v", err)
+	}
+}
+
+// TestValidateBinRejectsUndeclaredWinner keeps the override honest.
+// A winner that is not a declared package is a typo, and honoring it
+// would drop the basename from every provider — restoring, in a new
+// shape, the silent shadowing gh#190 fixed.
+func TestValidateBinRejectsUndeclaredWinner(t *testing.T) {
+	cfg, err := ParseGaleConfig(`
+[packages]
+node = "24.4.0"
+
+[bin]
+npx = "corepack"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	err = cfg.ValidateBin()
+	if err == nil {
+		t.Fatal("ValidateBin accepted an undeclared winner")
+	}
+	for _, want := range []string{"npx", "corepack"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q omits %q", err, want)
+		}
+	}
+}
+
+// TestValidateBinEmptyWinner rejects a blank value rather than
+// treating it as "no override": an empty winner matches no package,
+// so every provider would lose the name.
+func TestValidateBinEmptyWinner(t *testing.T) {
+	cfg, err := ParseGaleConfig(`
+[packages]
+node = "24.4.0"
+
+[bin]
+npx = ""
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := cfg.ValidateBin(); err == nil {
+		t.Fatal("ValidateBin accepted an empty winner")
+	}
+}

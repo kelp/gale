@@ -1,8 +1,10 @@
 package generation
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -340,7 +342,7 @@ func TestSymlinkDirErrorsWhenSrcDirMissing(t *testing.T) {
 	dstDir := t.TempDir()
 	srcDir := filepath.Join(t.TempDir(), "does-not-exist")
 
-	err := symlinkDir(srcDir, dstDir)
+	err := symlinkDir(srcDir, dstDir, nil)
 	if err == nil {
 		t.Fatal("expected symlinkDir to error on missing srcDir")
 	}
@@ -849,53 +851,57 @@ func TestBuildSymlinksManSubdirs(t *testing.T) {
 	}
 }
 
-// --- Behavior 10: Deterministic symlink conflict resolution ---
+// --- Behavior 10: Deterministic bin-collision refusal ---
 
+// TestBuildDeterministicSymlinkOrder keeps its original intent —
+// two packages shipping one basename must produce the same outcome
+// on every run — and re-anchors it to the outcome gh#190 fixed.
+// Sort order used to hand the name to whichever package sorted
+// first, silently. The build is now refused, and the refusal must
+// be identical every time: same error type, same two providers,
+// same rendered message.
 func TestBuildDeterministicSymlinkOrder(t *testing.T) {
-	// Two packages provide the same binary "tool". With
-	// sorted iteration, "alpha" (first alphabetically)
-	// should always win.
-	for i := 0; i < 20; i++ {
+	var first string
+	for i := range 20 {
 		galeDir := t.TempDir()
 		storeRoot := t.TempDir()
 
-		for _, name := range []string{"alpha", "beta"} {
-			binDir := filepath.Join(
-				storeRoot, name, "1.0", "bin",
-			)
-			if err := os.MkdirAll(binDir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			if err := os.WriteFile(
-				filepath.Join(binDir, "tool"),
-				[]byte(name), 0o755,
-			); err != nil {
-				t.Fatal(err)
-			}
-		}
+		createStoreEntry(t, storeRoot, "alpha", "1.0", []string{"tool"})
+		createStoreEntry(t, storeRoot, "beta", "1.0", []string{"tool"})
 
 		pkgs := map[string]string{
 			"alpha": "1.0",
 			"beta":  "1.0",
 		}
 
-		if err := Build(pkgs, galeDir, storeRoot); err != nil {
-			t.Fatal(err)
+		err := Build(pkgs, galeDir, storeRoot)
+		var collErr *BinCollisionError
+		if !errors.As(err, &collErr) {
+			t.Fatalf("iteration %d: error = %v (%T), want "+
+				"*BinCollisionError", i, err, err)
+		}
+		want := []BinCollision{
+			{Bin: "tool", Existing: "alpha", Incoming: "beta"},
+		}
+		if !slices.Equal(collErr.Collisions, want) {
+			t.Fatalf("iteration %d: collisions = %+v, want %+v",
+				i, collErr.Collisions, want)
+		}
+		if _, statErr := os.Lstat(
+			filepath.Join(galeDir, "current"),
+		); !os.IsNotExist(statErr) {
+			t.Fatalf("iteration %d: current symlink exists (err=%v); "+
+				"a refused build must not activate anything",
+				i, statErr)
 		}
 
-		toolLink := filepath.Join(
-			galeDir, "current", "bin", "tool",
-		)
-		target, err := os.Readlink(toolLink)
-		if err != nil {
-			t.Fatalf("iteration %d: readlink: %v", i, err)
+		if i == 0 {
+			first = err.Error()
+			continue
 		}
-
-		if !strings.Contains(target, "alpha") {
-			t.Fatalf(
-				"iteration %d: expected alpha to win "+
-					"conflict, got target %s", i, target,
-			)
+		if err.Error() != first {
+			t.Fatalf("iteration %d: message = %q, want %q — the "+
+				"refusal must not vary with map order", i, err.Error(), first)
 		}
 	}
 }
@@ -1098,7 +1104,7 @@ func TestPopulateGenerationCreatesSymlinks(t *testing.T) {
 		"fd": "10.4.2",
 	}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -1116,25 +1122,101 @@ func TestPopulateGenerationCreatesSymlinks(t *testing.T) {
 	}
 }
 
-func TestPopulateGenerationAlphabeticalConflictResolution(t *testing.T) {
-	storeRoot := t.TempDir()
+// newGenDir returns a temp generation dir with bin/ already
+// created, the state build() hands populateGeneration.
+func newGenDir(t *testing.T) string {
+	t.Helper()
 	genDir := t.TempDir()
-
 	if err := os.MkdirAll(
 		filepath.Join(genDir, "bin"), 0o755,
 	); err != nil {
 		t.Fatal(err)
 	}
+	return genDir
+}
 
-	// Two packages provide the same binary.
+// TestPopulateGenerationFailsOnBinCollision replaces
+// TestPopulateGenerationAlphabeticalConflictResolution, which pinned
+// the gh#190 bug: alphabetical order silently decided which package
+// owned a shared basename. Every collision is now reported at once,
+// naming both providers.
+func TestPopulateGenerationFailsOnBinCollision(t *testing.T) {
+	storeRoot := t.TempDir()
+	genDir := newGenDir(t)
+
+	createStoreEntry(t, storeRoot, "alpha", "1.0", []string{"tool", "cut"})
+	createStoreEntry(t, storeRoot, "beta", "1.0", []string{"tool"})
+	createStoreEntry(t, storeRoot, "gamma", "1.0", []string{"cut"})
+
+	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0", "gamma": "1.0"}
+
+	err := populateGeneration(genDir, pkgs, storeRoot, nil)
+	var collErr *BinCollisionError
+	if !errors.As(err, &collErr) {
+		t.Fatalf("error = %v (%T), want *BinCollisionError", err, err)
+	}
+	// Both collisions in one error: a user with two of them fixes
+	// them in one pass, not two sync cycles.
+	want := []BinCollision{
+		{Bin: "cut", Existing: "alpha", Incoming: "gamma"},
+		{Bin: "tool", Existing: "alpha", Incoming: "beta"},
+	}
+	if !slices.Equal(collErr.Collisions, want) {
+		t.Errorf("collisions = %+v, want %+v", collErr.Collisions, want)
+	}
+	for _, fragment := range []string{
+		"tool", "cut", "alpha", "beta", "gamma", "[bin]",
+	} {
+		if !strings.Contains(err.Error(), fragment) {
+			t.Errorf("error %q omits %q", err, fragment)
+		}
+	}
+}
+
+// TestPopulateGenerationHonorsBinOverride covers the escape hatch:
+// the named package wins, the other provider's entry is left out,
+// and no collision is reported.
+func TestPopulateGenerationHonorsBinOverride(t *testing.T) {
+	storeRoot := t.TempDir()
+	genDir := newGenDir(t)
+
+	createStoreEntry(t, storeRoot, "alpha", "1.0", []string{"tool"})
+	createStoreEntry(t, storeRoot, "beta", "1.0", []string{"tool"})
+
+	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
+	overrides := map[string]string{"tool": "beta"}
+
+	if err := populateGeneration(genDir, pkgs, storeRoot, overrides); err != nil {
+		t.Fatalf("populateGeneration error: %v", err)
+	}
+
+	target, err := os.Readlink(filepath.Join(genDir, "bin", "tool"))
+	if err != nil {
+		t.Fatalf("readlink: %v", err)
+	}
+	if !strings.Contains(target, string(filepath.Separator)+"beta"+
+		string(filepath.Separator)) {
+		t.Errorf("bin/tool -> %s, want beta's copy", target)
+	}
+}
+
+// TestPopulateGenerationAllowsNonBinCollisions scopes the refusal.
+// Only bin/ decides what runs from PATH; a man page or a dylib
+// shared by two packages keeps the long-standing skip-if-present
+// behavior, because failing there would refuse generations that
+// have always been correct.
+func TestPopulateGenerationAllowsNonBinCollisions(t *testing.T) {
+	storeRoot := t.TempDir()
+	genDir := newGenDir(t)
+
 	for _, name := range []string{"alpha", "beta"} {
-		binDir := filepath.Join(storeRoot, name, "1.0", "bin")
-		if err := os.MkdirAll(binDir, 0o755); err != nil {
+		createStoreEntry(t, storeRoot, name, "1.0", []string{name})
+		manDir := filepath.Join(storeRoot, name, "1.0", "man", "man1")
+		if err := os.MkdirAll(manDir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(
-			filepath.Join(binDir, "tool"),
-			[]byte(name), 0o755,
+			filepath.Join(manDir, "shared.1"), []byte(name), 0o644,
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -1142,18 +1224,13 @@ func TestPopulateGenerationAlphabeticalConflictResolution(t *testing.T) {
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
-
-	target, err := os.Readlink(
-		filepath.Join(genDir, "bin", "tool"),
-	)
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
-	}
-	if !strings.Contains(target, "alpha") {
-		t.Errorf("expected alpha to win conflict, got %s", target)
+	if _, err := os.Lstat(
+		filepath.Join(genDir, "man", "man1", "shared.1"),
+	); err != nil {
+		t.Errorf("shared man page not linked: %v", err)
 	}
 }
 
@@ -1181,7 +1258,7 @@ func TestPopulateGenerationRootLevelFiles(t *testing.T) {
 
 	pkgs := map[string]string{"go": "1.26.1"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
