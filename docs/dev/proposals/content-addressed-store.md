@@ -664,9 +664,15 @@ directories. Phase 2 adds:
 - Reuse of `finishRelocations` verbatim: one farm rebuild,
   then per-scope regeneration, then removal of anything no
   longer linked.
-- `reportUnresolved` (`migraterun.go:186-211`) loses one of
-  its two cases, since a source-built pre-revision directory
-  now has somewhere to land.
+
+Nothing here helps the gap `reportUnresolved`
+(`migraterun.go:186-211`) reports, and gh#200 stays open
+either way. The divergent class needs a provenanced,
+occupied canonical directory to diverge *from* — an absent
+one is skipped outright (`guardReplace`,
+`installer.go:906-919`) — while gh#200's case is a bare
+directory at an *absent* canonical path. Nothing occupies
+it, so nothing diverges and phase 2 builds nothing.
 
 No new command. `gale migrate` already exists to converge a
 machine-wide store state that per-scope commands cannot
@@ -924,6 +930,11 @@ recommendation (Option B) did not change; the phasing did.
 - **§4 now states outright** that this defers gh#191's own
   criterion — two projects, one identity, different bytes —
   to phase 3, behind gh#198, and delivers gh#211 instead.
+- **Raised by the gh#200 proposal, second pass:** §5 claimed
+  phase 2 would close one of `reportUnresolved`'s two cases.
+  It does not — that case is a bare directory at an absent
+  canonical path, and with no occupant there is nothing to
+  diverge from. Struck; gh#200 stays open independently.
 - **Found while integrating the above, not raised in
   review:** pulling selection into phase 2 means a diverged
   sibling goes live for its scope, so a package that provides
