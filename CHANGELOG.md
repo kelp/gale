@@ -8,6 +8,18 @@
   complete on the current `gale.toml` and `gale.lock`. The
   direnv hook uses it; a sync run by hand ignores it.
 
+- `[bin]` in gale.toml: name the package that wins an
+  executable-name collision, for example `npx = "corepack"`.
+  Every other provider's copy of that basename is left out of
+  the generation. A winner that is not in `[packages]` is an
+  error, not a silent no-op. `gale remove` prunes an entry
+  whose winner it removes, in the same write, so the manifest
+  still loads.
+
+- `gale which` reports `also provided by: <package>` when
+  another installed package ships the same binary. A shadowed
+  provider was previously invisible.
+
 - `gale gc --force`: sweep even when a project's config or
   generation cannot be read. The escape hatch for the refusal
   below, for a mount that is gone for good.
@@ -36,6 +48,16 @@
   `gale run` consult the same stamp; their lock-staleness gate
   cannot see a partial install failure either.
 
+- Executable name collisions no longer resolve silently by sort
+  order (gh#190). Two packages shipping the same `bin/` basename
+  put whichever sorted first on PATH, with no warning and no way
+  to see the shadowed provider. The generation rebuild now
+  refuses, names every colliding basename and both its providers,
+  and prints the `[bin]` stanza that resolves them — before
+  `current` moves, so the previous generation stays active and
+  PATH is unchanged. Only `bin/` is arbitrated; `lib/`, `man/`
+  and `share/` merge across packages as they always have.
+
 - gc no longer deletes store versions belonging to a live but
   unreadable project (gh#188). Project liveness counts any
   non-ENOENT stat failure as live — a down network mount, a
@@ -50,6 +72,25 @@
   `gale remove`'s cross-scope guard fails closed on the same
   error, and `gale doctor` reports its orphan count as
   unavailable rather than counting live packages as orphans.
+
+- install: `gale install --path` no longer rewrites a store
+  directory an existing generation links (gh#183). The version it
+  built under came from `git describe` alone, which says nothing
+  about the working tree, so every dirty build of one checkout
+  claimed one store identity and the newest build renamed itself
+  over the rest. Generations kept their symlinks and silently
+  started resolving to bytes they were never built with — `gale
+  rollback` could select an old generation and execute the newest
+  build. A dirty tree now carries a digest of its uncommitted
+  content in the version's build-metadata segment
+  (`0.2.0+dirty.<12 hex>`), so different content asks for a
+  different directory, and rebuilding an unchanged tree is a cache
+  hit rather than a replace. Clean checkouts are spelled exactly as
+  before, so tagged builds do not churn. `.gitignore`d build output
+  is excluded from the digest, so a build that writes into its own
+  tree does not mint a directory per run. Development loops now
+  accumulate store directories; `gale gc` reclaims them once no
+  generation links them.
 
 - farm: unversioned soname aliases (for example
   `libssl.dylib -> libssl.3.dylib`) are now linked into

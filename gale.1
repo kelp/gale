@@ -151,6 +151,13 @@ so a gc run from one directory cannot sweep versions
 another project still links.
 Registry entries whose project directory has vanished
 are pruned on each real run.
+Each build of a dirty tree installed with
+.Ic install Fl -path
+keeps its own store directory, so a development loop
+accumulates them.
+.Nm Cm gc
+is how they are reclaimed, once no generation links
+them.
 With
 .Fl -dry-run ,
 also lists the registered projects that contributed
@@ -646,6 +653,9 @@ go = true
 [vars]
 GOPATH = "${HOME}/go"
 
+[bin]
+npx = "corepack"
+
 [hosts.my-mac.packages]
 fzf = "0.50"
 
@@ -666,6 +676,22 @@ declare the same package.
 mirrors the shared
 .Ic [pinned]
 behavior per host.
+.Pp
+.Ic [bin]
+maps an executable's basename to the package whose copy
+belongs on
+.Ev PATH .
+Two packages shipping one basename refuse the generation
+rebuild, naming both providers, until an entry here picks
+the winner.
+The losing package stays installed; only that basename is
+left out, and
+.Cm which
+reports it as another provider.
+The winner must be a package the same file declares.
+.Cm remove
+deletes an entry whose winner it removes, so the
+manifest still loads.
 The active host is
 .Ev GALE_HOST
 if set, otherwise the value returned by

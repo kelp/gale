@@ -344,8 +344,33 @@ var galeReadme []byte
 // (gh#68). The missing package is reported on stderr so the
 // user learns which package fell off PATH. Previous
 // generations are retained for history and rollback.
+//
+// Two packages shipping the same bin/ basename are refused, before
+// the current symlink moves, unless Options.BinOverrides names a
+// winner (gh#190).
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
-	return BuildWithValidate(pkgs, galeDir, storeRoot, nil)
+	return BuildWithOptions(pkgs, galeDir, storeRoot, Options{})
+}
+
+// Options carries Build's optional inputs. A zero Options is plain
+// Build.
+type Options struct {
+	// Validate is design section 6's revalidation callback. See
+	// BuildWithValidate.
+	Validate func() error
+	// BinOverrides resolves executable-name collisions: basename →
+	// the package whose copy goes into the generation. Read from
+	// gale.toml's [bin] table. Without an entry, a contested
+	// basename refuses the build (gh#190).
+	BinOverrides map[string]string
+}
+
+// BuildWithOptions is Build with the optional inputs in Options.
+// Build and BuildWithValidate delegate here.
+func BuildWithOptions(
+	pkgs map[string]string, galeDir, storeRoot string, opts Options,
+) error {
+	return build(pkgs, galeDir, storeRoot, opts)
 }
 
 // BuildWithValidate is Build plus an optional revalidation callback
@@ -365,10 +390,30 @@ func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 func BuildWithValidate(
 	pkgs map[string]string, galeDir, storeRoot string, validate func() error,
 ) error {
-	return build(pkgs, galeDir, storeRoot, validate)
+	return BuildWithOptions(pkgs, galeDir, storeRoot, Options{Validate: validate})
 }
 
-func build(pkgs map[string]string, galeDir, storeRoot string, validate func() error) error {
+// nextGenNumber returns the number the next generation takes:
+// above the highest ever built, not above current.
+//
+// Rollback moves current backwards, and current+1 would then name a
+// snapshot that already exists and overwrite it (gh#189). A
+// generation number, once allocated, permanently identifies one
+// snapshot: current is a pointer into history, the counter only moves
+// forward, and a gap above current is normal.
+func nextGenNumber(galeDir string, prev int) (int, error) {
+	nums, err := genNumbers(galeDir)
+	if err != nil {
+		return 0, err
+	}
+	highest := 0
+	if len(nums) > 0 {
+		highest = nums[len(nums)-1]
+	}
+	return max(prev, highest) + 1, nil
+}
+
+func build(pkgs map[string]string, galeDir, storeRoot string, opts Options) error {
 	// Use the store-rooted lock path so project-scoped and global
 	// Build calls contend on the same lock file as the installer.
 	// filepath.Dir(storeRoot) is always the global galeDir
@@ -381,8 +426,8 @@ func build(pkgs map[string]string, galeDir, storeRoot string, validate func() er
 		// else — a caller's callback error must abort with zero
 		// mutation, and it must do so without ever releasing this
 		// lock in between (see BuildWithValidate doc).
-		if validate != nil {
-			if err := validate(); err != nil {
+		if opts.Validate != nil {
+			if err := opts.Validate(); err != nil {
 				return err
 			}
 		}
@@ -402,22 +447,10 @@ func build(pkgs map[string]string, galeDir, storeRoot string, validate func() er
 			)
 		}
 
-		// Allocate above the highest generation ever built, not
-		// above current. Rollback moves current backwards, and
-		// current+1 would then name a snapshot that already
-		// exists and overwrite it (gh#189). A generation number,
-		// once allocated, permanently identifies one snapshot:
-		// current is a pointer into history, the counter only
-		// moves forward, and a gap above current is normal.
-		nums, err := genNumbers(galeDir)
+		next, err := nextGenNumber(galeDir, prev)
 		if err != nil {
 			return err
 		}
-		highest := 0
-		if len(nums) > 0 {
-			highest = nums[len(nums)-1]
-		}
-		next := max(prev, highest) + 1
 
 		genDir := filepath.Join(
 			galeDir, "gen", strconv.Itoa(next),
@@ -450,7 +483,9 @@ func build(pkgs map[string]string, galeDir, storeRoot string, validate func() er
 		// subsequent error so we don't leave orphaned dirs.
 		cleanup := func() { os.RemoveAll(genDir) }
 
-		if err := populateGeneration(genDir, pkgs, storeRoot); err != nil {
+		if err := populateGeneration(
+			genDir, pkgs, storeRoot, opts.BinOverrides,
+		); err != nil {
 			cleanup()
 			return err
 		}
@@ -602,18 +637,29 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 	return removed, err
 }
 
-// populateGeneration symlinks each package's store
-// contents into genDir. Packages are sorted
-// alphabetically so the first package wins on
-// filename conflicts. Missing store dirs are silently
-// skipped with a warning (see Build).
-func populateGeneration(genDir string, pkgs map[string]string, storeRoot string) error {
+// populateGeneration symlinks each package's store contents into
+// genDir. Packages are visited in sorted order so the result never
+// depends on map iteration. Missing store dirs are silently skipped
+// with a warning (see Build).
+//
+// Two packages shipping the same bin/ basename fail the whole
+// generation, naming both providers, unless binOverrides (gale.toml's
+// [bin] table) names a winner. Sort order used to decide it silently,
+// which put a binary on PATH nobody chose (gh#190). Every collision
+// is collected before the error returns, so one edit fixes them all.
+// Only bin/ is arbitrated: nothing else decides what runs from PATH,
+// and lib/, man/ and share/ have always merged across packages.
+func populateGeneration(
+	genDir string, pkgs map[string]string, storeRoot string,
+	binOverrides map[string]string,
+) error {
 	names := make([]string, 0, len(pkgs))
 	for name := range pkgs {
 		names = append(names, name)
 	}
 	sort.Strings(names)
 
+	bins := NewBinArbiter(binOverrides)
 	for _, name := range names {
 		version := pkgs[name]
 		pkgDir := resolveStoreDir(storeRoot, name, version)
@@ -637,39 +683,69 @@ func populateGeneration(genDir string, pkgs map[string]string, storeRoot string)
 			}
 			return fmt.Errorf("read store %s: %w", name, err)
 		}
-		for _, e := range entries {
-			if e.IsDir() {
-				if skipTopLevelDirs[e.Name()] {
-					continue
-				}
-				srcDir := filepath.Join(pkgDir, e.Name())
-				dstDir := filepath.Join(genDir, e.Name())
-				if err := os.MkdirAll(dstDir, 0o755); err != nil {
-					return fmt.Errorf(
-						"create gen %s dir: %w", e.Name(), err,
-					)
-				}
-				if err := symlinkDir(srcDir, dstDir); err != nil {
-					return fmt.Errorf(
-						"symlink %s/%s: %w", name, e.Name(), err,
-					)
-				}
-				continue
-			}
-
-			// Symlink root-level files (e.g., go.env).
-			// Skip if already present from another package.
-			src := filepath.Join(pkgDir, e.Name())
-			dst := filepath.Join(genDir, e.Name())
-			if _, err := os.Lstat(dst); err == nil {
-				continue
-			}
-			if err := os.Symlink(src, dst); err != nil {
-				return fmt.Errorf(
-					"symlink %s/%s: %w", name, e.Name(), err,
-				)
-			}
+		if err := linkStoreEntries(
+			genDir, pkgDir, name, entries, bins,
+		); err != nil {
+			return err
 		}
+	}
+	return bins.Err()
+}
+
+// linkStoreEntries mirrors one package's store contents into the
+// generation: its top-level directories, plus root-level files like
+// go.env. A root-level file already present from another package is
+// left alone, the behavior every non-bin path has always had.
+func linkStoreEntries(
+	genDir, pkgDir, name string, entries []os.DirEntry, bins *BinArbiter,
+) error {
+	for _, e := range entries {
+		if e.IsDir() {
+			if skipTopLevelDirs[e.Name()] {
+				continue
+			}
+			if err := linkStoreDir(
+				genDir, pkgDir, name, e.Name(), bins,
+			); err != nil {
+				return err
+			}
+			continue
+		}
+
+		src := filepath.Join(pkgDir, e.Name())
+		dst := filepath.Join(genDir, e.Name())
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		}
+		if err := os.Symlink(src, dst); err != nil {
+			return fmt.Errorf(
+				"symlink %s/%s: %w", name, e.Name(), err,
+			)
+		}
+	}
+	return nil
+}
+
+// linkStoreDir mirrors one of a package's top-level store
+// directories into the generation. bin/ is arbitrated, so a basename
+// a previous package already claimed records a collision instead of
+// being skipped in silence; every other directory merges.
+func linkStoreDir(
+	genDir, pkgDir, name, dir string, bins *BinArbiter,
+) error {
+	srcDir := filepath.Join(pkgDir, dir)
+	dstDir := filepath.Join(genDir, dir)
+	if err := os.MkdirAll(dstDir, 0o755); err != nil {
+		return fmt.Errorf("create gen %s dir: %w", dir, err)
+	}
+	var claim func(string) bool
+	if dir == "bin" {
+		claim = func(binary string) bool {
+			return bins.Claim(name, binary)
+		}
+	}
+	if err := symlinkDir(srcDir, dstDir, claim); err != nil {
+		return fmt.Errorf("symlink %s/%s: %w", name, dir, err)
 	}
 	return nil
 }
@@ -809,7 +885,13 @@ func swapCurrentSymlink(galeDir string, genNum int) error {
 // mutated the store during the rebuild) rather than a
 // legitimate "package doesn't have this dir" state, so
 // the error propagates instead of being swallowed.
-func symlinkDir(srcDir, dstDir string) error {
+//
+// claim, when non-nil, arbitrates this directory's files: it reports
+// whether the calling package may provide each name. Only bin/ passes
+// one — a nil claim keeps the historical skip-if-present merge that
+// lib/, man/ and share/ rely on. Recursion passes nil as well: a file
+// nested under bin/ is not itself on PATH, so it merges like the rest.
+func symlinkDir(srcDir, dstDir string, claim func(name string) bool) error {
 	entries, err := os.ReadDir(srcDir)
 	if err != nil {
 		return err
@@ -824,9 +906,13 @@ func symlinkDir(srcDir, dstDir string) error {
 			if err := os.MkdirAll(dst, 0o755); err != nil {
 				return err
 			}
-			if err := symlinkDir(src, dst); err != nil {
+			if err := symlinkDir(src, dst, nil); err != nil {
 				return err
 			}
+			continue
+		}
+
+		if claim != nil && !claim(entry.Name()) {
 			continue
 		}
 

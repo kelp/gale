@@ -20,7 +20,7 @@ var rootCmd = &cobra.Command{
 	Short:   "Fast, isolated package management for developers",
 	Version: version,
 	Long: `Gale is a package manager for developer tools and runtimes.
-Each version installs in its own directory — nothing conflicts.
+Each version installs in its own directory, so versions never conflict.
 Projects get isolated environments, activated automatically on cd.`,
 	PersistentPreRun: func(cmd *cobra.Command, args []string) {
 		commandStarted = true

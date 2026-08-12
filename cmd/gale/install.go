@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -10,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/build"
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
@@ -273,10 +278,14 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	// limiter, then override Resolver for local recipe resolution.
 	inst := *ctx.Installer
 	inst.Resolver = resolverForRecipe(resolvedRecipe)
-
-	// Always rebuild local source — the source tree may have
-	// changed without a version bump. Do not short-circuit
-	// on IsInstalled for local builds.
+	// On the copy, not on ctx.Installer: the guard is this command's
+	// alone, and a copy needs no set-and-restore that a later error
+	// path could skip. The version above is derived from the source
+	// content, so an occupied canonical dir is already skipped as a
+	// cache hit; this catches the case where that identity failed to
+	// tell two builds apart and a rebuild is about to land on bytes
+	// a generation still reaches (gh#183).
+	inst.ReplaceGuard = localSourceReplaceGuard(ctx, r)
 
 	out.Info(fmt.Sprintf("Installing %s@%s from local source...",
 		r.Package.Name, r.Package.Version))
@@ -294,12 +303,66 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	return nil
 }
 
+// errGenerationReferenced reports a store directory an existing
+// generation still resolves through.
+var errGenerationReferenced = errors.New(
+	"a generation still references this store directory",
+)
+
+// localSourceReplaceGuard refuses to overwrite a store directory
+// that any generation links, so design.md's promise — a committed
+// store entry is byte-stable for as long as a generation references
+// it — is enforced rather than merely documented (gh#183).
+//
+// EVERY generation, not just the active one. `gale rollback` selects
+// an old generation by number and expects the environment that
+// generation described; rewriting the bytes under it turns a
+// rollback into a silent execution of a tree nobody asked for.
+// AuthoritativeGenerationDirs would see only `current`.
+//
+// Wired on the local-source path alone. A default guard on
+// newCmdContext would refuse an ordinary stale reinstall — a
+// revision bump reinstalls the same identity on purpose — and sync
+// would stop converging.
+func localSourceReplaceGuard(
+	ctx *cmdContext, r *recipe.Recipe,
+) func(installer.Replacement) error {
+	name, full := r.Package.Name, r.Package.Full()
+	target := filepath.Join(ctx.StoreRoot, name, full)
+	return func(rep installer.Replacement) error {
+		// Dependencies installed underneath this build share the
+		// installer and so share the guard. This answers for the
+		// package the command named, and for nothing else.
+		if rep.CanonicalDir != target {
+			return nil
+		}
+		gens, err := generation.List(ctx.GaleDir, ctx.StoreRoot)
+		if err != nil {
+			return fmt.Errorf("listing generations: %w", err)
+		}
+		for _, g := range gens {
+			if g.Packages[name] != full {
+				continue
+			}
+			return fmt.Errorf(
+				"%s@%s is linked by generation %d: %w",
+				name, full, g.Number, errGenerationReferenced,
+			)
+		}
+		return nil
+	}
+}
+
 // gitDevVersion returns a semver-compliant version string
 // for the given git directory. Uses git describe to find the
 // nearest tag and formats as:
 //   - "0.2.0" when exactly on tag v0.2.0
 //   - "0.2.0-dev.7+5395b8f" when 7 commits ahead
 //   - "0.0.0-dev+5395b8f" when no tags exist
+//
+// A dirty working tree adds a digest of the uncommitted content, so
+// two builds of two different trees do not claim one store
+// directory (gh#183).
 func gitDevVersion(dir string) (string, error) {
 	cmd := exec.Command("git", "describe",
 		"--tags", "--always")
@@ -308,7 +371,157 @@ func gitDevVersion(dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("git describe in %s: %w", dir, err)
 	}
-	return formatDevVersion(strings.TrimSpace(string(out))), nil
+	dirt, err := dirtDigest(dir)
+	if err != nil {
+		return "", err
+	}
+	return devVersionWithDirt(strings.TrimSpace(string(out)), dirt), nil
+}
+
+// dirtLen is how much of the digest the version carries. Twelve hex
+// characters read like the abbreviated hashes beside them, and the
+// digest names one working tree on one machine rather than
+// addressing content globally.
+const dirtLen = 12
+
+// dirtDigest fingerprints everything in dir that HEAD does not
+// describe. A clean tree returns "".
+//
+// Two sources, because git reports uncommitted work in two places:
+// the diff against HEAD covers tracked files (staged and unstaged
+// alike, and --binary so a changed binary file is more than the
+// words "Binary files differ"), and ls-files covers untracked ones,
+// whose content the diff never mentions.
+//
+// --exclude-standard is load-bearing. Without it every in-tree build
+// output — target/, node_modules/, a compiled binary — feeds the
+// digest, and rebuilding one project twice mints two store
+// directories because the first build changed the tree it was built
+// from. With it, gitignored output is invisible and an unchanged
+// tree keeps one identity.
+//
+// Reads only: no index refresh, no writes, no network.
+func dirtDigest(dir string) (string, error) {
+	status, err := gitOutput(dir, "status", "--porcelain=v1", "-z",
+		"--untracked-files=all")
+	if err != nil {
+		return "", err
+	}
+	if len(status) == 0 {
+		return "", nil
+	}
+
+	h := sha256.New()
+	// The status itself, so a rename or a deletion registers even
+	// when neither side contributes bytes below.
+	h.Write(status)
+
+	diff, err := gitOutput(dir, "diff", "--binary", "--no-ext-diff", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	h.Write(diff)
+
+	untracked, err := gitOutput(dir, "ls-files", "-o",
+		"--exclude-standard", "-z")
+	if err != nil {
+		return "", err
+	}
+	// git sorts its own output, so the walk order — and the digest —
+	// is a function of the tree rather than of the filesystem.
+	for _, rel := range strings.Split(string(untracked), "\x00") {
+		if rel == "" {
+			continue
+		}
+		h.Write([]byte(rel))
+		if err := hashPathContent(h, filepath.Join(dir, rel)); err != nil {
+			return "", err
+		}
+	}
+	return hex.EncodeToString(h.Sum(nil))[:dirtLen], nil
+}
+
+// hashPathContent folds one untracked entry's content into h. A
+// symlink contributes its target text rather than the bytes it
+// points at, which is both what git records and what keeps a
+// dangling link from failing the digest. Anything that is neither a
+// regular file nor a symlink contributes nothing but its path.
+func hashPathContent(h io.Writer, path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Raced with a build or an editor between the listing and
+			// the read. The path is already in the digest.
+			return nil
+		}
+		return fmt.Errorf("stat %s: %w", path, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, err := os.Readlink(path)
+		if err != nil {
+			return fmt.Errorf("read link %s: %w", path, err)
+		}
+		fmt.Fprint(h, target)
+		return nil
+	}
+	if !info.Mode().IsRegular() {
+		return nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("open %s: %w", path, err)
+	}
+	defer f.Close()
+	if _, err := io.Copy(h, f); err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	return nil
+}
+
+// gitOutput runs one read-only git command in dir and returns its
+// stdout. Stderr is folded into the error so a failure names its own
+// cause instead of an exit status.
+func gitOutput(dir string, args ...string) ([]byte, error) {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err == nil {
+		return out, nil
+	}
+	if msg := strings.TrimSpace(stderr.String()); msg != "" {
+		return nil, fmt.Errorf("git %s in %s: %w: %s",
+			strings.Join(args, " "), dir, err, msg)
+	}
+	return nil, fmt.Errorf("git %s in %s: %w",
+		strings.Join(args, " "), dir, err)
+}
+
+// devVersionWithDirt spells a local build's version, carrying the
+// working tree's digest when there is one. An empty dirt reproduces
+// formatDevVersion exactly, so a clean checkout keeps the identity
+// it has always had and tagged builds do not churn the store.
+//
+// The digest rides in the semver BUILD-METADATA segment, never in a
+// "-<hex>" suffix. lockfile.VersionMatches, version.SplitRevision
+// and store.HasNumericRevisionSuffix all read a trailing "-<digits>"
+// as a Debian revision, so an all-digit digest after a dash would
+// parse as revision 12345678. "+" is already legal in store paths —
+// "0.0.0-dev+5395b8f" ships today.
+//
+//	("v0.2.0", "")             → "0.2.0"
+//	("v0.2.0", "abc…")         → "0.2.0+dirty.abc…"
+//	("v0.2.0-7-g5395b8f", "…") → "0.2.0-dev.7+5395b8f.dirty.…"
+func devVersionWithDirt(describe, dirt string) string {
+	v := formatDevVersion(describe)
+	if dirt == "" {
+		return v
+	}
+	if strings.Contains(v, "+") {
+		return v + ".dirty." + dirt
+	}
+	return v + "+dirty." + dirt
 }
 
 // formatDevVersion converts git describe output to semver.

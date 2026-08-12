@@ -4,9 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/store"
 )
 
 var (
@@ -40,8 +44,46 @@ var whichCmd = &cobra.Command{
 
 		fmt.Printf("%s@%s\n", name, version)
 		fmt.Println(resolved)
+		if others := otherProviders(
+			args[0], name, galeDir, storeRoot,
+		); len(others) > 0 {
+			fmt.Printf("also provided by: %s\n", strings.Join(others, ", "))
+		}
 		return nil
 	},
+}
+
+// otherProviders returns the packages in the active generation,
+// besides winner, that also ship bin/<binary>.
+//
+// The answer comes from the store, not the generation: a shadowed
+// provider's entry was never linked, so the generation is exactly
+// where it cannot be seen. A collision now refuses the rebuild
+// (gh#190), which leaves one way to reach this state — a [bin]
+// override naming the winner — and that is the case worth reporting,
+// since the losing package is installed and its binary unreachable.
+//
+// Best effort: an unreadable generation costs the extra line, never
+// the answer `which` was asked for.
+func otherProviders(binary, winner, galeDir, storeRoot string) []string {
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		return nil
+	}
+	s := store.NewStore(storeRoot)
+	var out []string
+	for name, version := range active {
+		if name == winner {
+			continue
+		}
+		if _, err := os.Stat(filepath.Join(
+			s.ResolveDir(name, version), "bin", binary,
+		)); err == nil {
+			out = append(out, name)
+		}
+	}
+	sort.Strings(out)
+	return out
 }
 
 // resolveReadOnlyGaleDirForWhich returns the .gale dir used
