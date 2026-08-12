@@ -83,6 +83,12 @@ gale install fd
 chezmoi add ~/.gale/gale.toml
 ```
 
+Keep these files as copies. Gale refuses to write a
+path that is itself a symlink, so a `symlink_`
+target pointing `~/.gale/gale.toml` at your source
+directory makes every install fail; `chezmoi add` is
+the way.
+
 ## Example gale.toml
 
 ```toml
