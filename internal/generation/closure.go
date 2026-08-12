@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/depsmeta"
+	"github.com/kelp/gale/internal/farm"
 )
 
 // AuthoritativeClosure returns the store directories reachable from
@@ -344,12 +345,9 @@ func AuthoritativeGenerationDirs(galeDir, storeRoot string) ([]string, error) {
 }
 
 // canonicalDir resolves a store directory's spelling without touching
-// its version. EvalSymlinks fails on a path that does not exist, and
-// the raw spelling is the right answer then: the directory is absent
-// either way, and the caller's absence branch handles it.
+// its version. It delegates to farm.CanonicalDir: the guard compares
+// this package's keys against the farm's, so the two must be the same
+// rule and not merely the same rule today.
 func canonicalDir(dir string) string {
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		return resolved
-	}
-	return dir
+	return farm.CanonicalDir(dir)
 }

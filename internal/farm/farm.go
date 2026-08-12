@@ -56,6 +56,26 @@ var linuxVersioned = regexp.MustCompile(
 	`^lib[A-Za-z0-9_+.\-]+\.so\.[0-9]+(\.[0-9]+)*$`,
 )
 
+// CanonicalDir resolves a store directory's spelling without
+// touching its version: the one spelling every farm and generation
+// reader compares against, so a directory reached through macOS
+// /var and one reached through /private/var are the same key.
+//
+// EvalSymlinks fails on a path that does not exist, and the raw
+// spelling is the right answer then: the directory is absent under
+// either spelling, and the caller's absence branch handles it.
+//
+// It lives here because the guard and its claim builders must agree
+// on it. Three copies of this rule existed and every consumer of a
+// claim had to re-derive which one it was holding; one exported
+// spelling is what makes a claim's keys comparable across packages.
+func CanonicalDir(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return dir
+}
+
 // DirFromStoreRoot returns the shared farm directory for a store
 // root: <parent of storeRoot>/lib, which is ~/.gale/lib.
 //
