@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
 // Tests for audit unit U7 (issues #52, #53, #54). Helpers
-// compileTinyBinary, compileWithHeaderpad, isCodeSigned, and
-// otoolOutput live in fixup_darwin_test.go.
+// compileTinyBinary, compileWithHeaderpad, isCodeSigned,
+// otoolOutput, and newUnversionedRefFixture live in
+// fixup_darwin_test.go.
 
 // --- #53: libexec/ and lib64/ are not lib/ ---
 
@@ -121,6 +123,72 @@ func TestAddRpathRetryRestoresSignatureWhenAddFails(t *testing.T) {
 	}
 	if !isCodeSigned(t, bin) {
 		t.Error("binary left unsigned after failed rpath add")
+	}
+}
+
+// --- #205: a provable canonicalization failure aborts the build ---
+
+// makeUnwritable strips write permission from a Mach-O and its
+// directory so install_name_tool cannot rewrite it, whichever of
+// in-place or temp-file-and-rename the tool chooses. Restores both
+// on cleanup — t.TempDir's own cleanup cannot remove a read-only
+// directory.
+func makeUnwritable(t *testing.T, file string) {
+	t.Helper()
+	dir := filepath.Dir(file)
+	if err := os.Chmod(file, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = os.Chmod(dir, 0o755)
+		_ = os.Chmod(file, 0o755)
+	})
+}
+
+func TestAddDepRpathsFailsWhenCanonicalizationCannotBeApplied(t *testing.T) {
+	// A ref that gale PROVED needs canonicalization — a dep store
+	// provides the name and it resolves to a versioned real dylib
+	// the farm holds — must abort the build when the rewrite
+	// cannot be applied. Warning and shipping the artifact turns a
+	// build-time notice nobody reads into a dyld abort on a user's
+	// machine (issue #205).
+	if os.Geteuid() == 0 {
+		t.Skip("running as root: read-only files are still writable")
+	}
+	f := newUnversionedRefFixture(t)
+	makeUnwritable(t, f.binPath)
+
+	err := AddDepRpaths(f.pkgDir, []string{f.depDir})
+	if err == nil {
+		t.Fatal("AddDepRpaths returned nil for a canonicalization " +
+			"it could not apply")
+	}
+	if !strings.Contains(err.Error(), "canonicalize") {
+		t.Errorf("got error %q, want one naming the canonicalize step", err)
+	}
+}
+
+func TestAddDepRpathsSucceedsWhenNoRefIsCanonicalizable(t *testing.T) {
+	// The blast radius of the fatal path, made explicit: only a
+	// ref canonicalDepName resolved can abort. Here no dep store
+	// provides libdep, so nothing enters the rewrite plan — and an
+	// unwritable binary that merely misses its farm rpath stays
+	// non-fatal, exactly as before (addRpathRetry warns and skips).
+	f := newUnversionedRefFixture(t)
+	makeUnwritable(t, f.binPath)
+
+	// A dep store dir that provides no dylib at all.
+	emptyDep := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(emptyDep, "lib"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := AddDepRpaths(f.pkgDir, []string{emptyDep}); err != nil {
+		t.Fatalf("AddDepRpaths must not fail when no ref is "+
+			"canonicalizable: %v", err)
 	}
 }
 

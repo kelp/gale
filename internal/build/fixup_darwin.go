@@ -195,6 +195,16 @@ func fixupMachOFile(file, prefixDir, libDir string) error {
 // system left in LC_LOAD_DYLIB would otherwise fail to
 // resolve at runtime (issue #124).
 //
+// A canonicalization that gale has PROVED necessary — a dep
+// store dir provides the referenced name and it resolves to a
+// versioned real dylib — is fatal when it cannot be applied
+// (issue #205). Shipping the artifact anyway turns a build-time
+// warning nobody reads into a dyld abort on a user's machine,
+// with nothing pointing back at the build. Refs that are merely
+// out of scope (system libs, the package's own dylibs, refs
+// already naming the real file) never enter the rewrite plan and
+// are unaffected.
+//
 // FixupBinaries already adds @executable_path/../lib for
 // the package's own libs. This handles EXTERNAL deps whose
 // dylibs live in other store directories.
@@ -306,16 +316,16 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		ent := extractEntitlements(file)
 		mutated := false
 		for _, c := range changes {
-			if err := run("install_name_tool",
-				"-change", c.from, c.to, file); err != nil {
-				// A failed rewrite (e.g. no header space) is
-				// non-fatal: leave the ref as-is rather than
-				// abort the build, matching addRpathRetry.
-				fmt.Fprintf(os.Stderr,
-					"warning: cannot canonicalize %s -> %s"+
-						" in %s: %v\n",
+			// Unlike addRpathRetry, a failed rewrite aborts the
+			// build (issue #205): the ref is provably needed and
+			// provably unresolvable, so continuing would ship a
+			// Mach-O gale knows dyld cannot load. Deliberately no
+			// re-sign on this path — BuildLocal propagates the
+			// error and the build prefix is discarded, never
+			// installed, so an unsigned file here is unreachable.
+			if err := changeInstallName(file, c.from, c.to); err != nil {
+				return fmt.Errorf("canonicalize %s -> %s in %s: %w",
 					c.from, c.to, filepath.Base(file), err)
-				continue
 			}
 			mutated = true
 		}
@@ -448,6 +458,33 @@ func addRpathRetry(file, rpath string) error {
 				" add: %w", filepath.Base(file), serr)
 		}
 		return err
+	}
+	return nil
+}
+
+// changeInstallName rewrites a Mach-O's LC_LOAD_DYLIB entry from
+// one install name to another, stripping the ad-hoc signature and
+// retrying once if the header lacks space. The retry is what keeps
+// header-space exhaustion from turning a canonicalization into a
+// hard build failure; only a rewrite that fails twice returns an
+// error.
+//
+// It does not restore the signature it stripped. The sole caller,
+// AddDepRpaths, either re-signs the file after a successful
+// rewrite or aborts the build, discarding the prefix.
+func changeInstallName(file, from, to string) error {
+	if err := run("install_name_tool",
+		"-change", from, to, file); err == nil {
+		return nil
+	}
+	// Header too small — strip signature to free space, retry.
+	_ = run("codesign", "--remove-signature", file)
+	if err := run("install_name_tool",
+		"-change", from, to, file); err != nil {
+		return fmt.Errorf("rewrite %s to %s in %s: not enough "+
+			"header space (link with "+
+			"-Wl,-headerpad_max_install_names): %w",
+			from, to, filepath.Base(file), err)
 	}
 	return nil
 }

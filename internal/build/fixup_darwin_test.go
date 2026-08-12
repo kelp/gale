@@ -836,22 +836,30 @@ func TestAddDepRpathsAddsRpathForDepLib(t *testing.T) {
 // --- Issue #124: canonicalize unversioned/intermediate
 // @rpath dep refs to the versioned name the farm provides ---
 
-func TestAddDepRpathsCanonicalizesUnversionedDepRef(t *testing.T) {
-	// A dep store ships a versioned real dylib plus the
-	// unversioned + intermediate symlink aliases the linker
-	// resolves -lfoo through. gale's FixupBinaries gives the
-	// dep an UNVERSIONED install name (@rpath/libdep.dylib),
-	// so a dependent records that unversioned ref. The farm
-	// only ever holds the versioned real file
-	// (libdep.1.2.dylib), so the unversioned ref cannot
-	// resolve at runtime. AddDepRpaths must rewrite the ref to
-	// the versioned real name the farm provides.
+// unversionedRefFixture is the two-package layout the
+// canonicalization tests share: a dep store, and a consumer
+// package whose executable records an unversioned @rpath dep ref.
+type unversionedRefFixture struct {
+	depDir  string // dep store dir — pass in depStoreDirs
+	pkgDir  string // consumer prefix — pass as prefixDir
+	binPath string // consumer executable under pkgDir/bin
+}
+
+// newUnversionedRefFixture builds a dep store shipping a versioned
+// real dylib plus the unversioned + intermediate symlink aliases
+// the linker resolves -ldep through, and a consumer binary linked
+// against it. gale's FixupBinaries gives the dep an UNVERSIONED
+// install name (@rpath/libdep.dylib), so the consumer records that
+// unversioned ref while the farm holds only the versioned real
+// file (libdep.1.2.dylib) — the ref canonicalization exists to
+// rewrite (issue #124). Skips when the toolchain cannot produce
+// the layout.
+func newUnversionedRefFixture(t *testing.T) unversionedRefFixture {
+	t.Helper()
 	depDir := t.TempDir()
 	depLib := filepath.Join(depDir, "lib")
 	os.MkdirAll(depLib, 0o755)
 
-	// Build the versioned real dylib with an UNVERSIONED
-	// @rpath install name (what gale's FixupBinaries bakes).
 	libSrc := filepath.Join(depDir, "dep.c")
 	if err := os.WriteFile(libSrc,
 		[]byte("int dep_func(void) { return 7; }\n"),
@@ -876,9 +884,6 @@ func TestAddDepRpathsCanonicalizesUnversionedDepRef(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Build a binary in a separate package prefix that links
-	// the dep. -ldep resolves via the libdep.dylib alias, so
-	// the binary records the unversioned @rpath/libdep.dylib.
 	pkgDir := t.TempDir()
 	binDir := filepath.Join(pkgDir, "bin")
 	os.MkdirAll(binDir, 0o755)
@@ -895,18 +900,29 @@ func TestAddDepRpathsCanonicalizesUnversionedDepRef(t *testing.T) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Skipf("cc link failed: %v\n%s", err, out)
 	}
-
 	before := otoolOutput(t, binPath)
 	if !strings.Contains(before, "@rpath/libdep.dylib") {
 		t.Skipf("binary doesn't record unversioned ref, "+
 			"test setup issue:\n%s", before)
 	}
+	return unversionedRefFixture{
+		depDir:  depDir,
+		pkgDir:  pkgDir,
+		binPath: binPath,
+	}
+}
 
-	if err := AddDepRpaths(pkgDir, []string{depDir}); err != nil {
+func TestAddDepRpathsCanonicalizesUnversionedDepRef(t *testing.T) {
+	// The unversioned ref cannot resolve at runtime: the farm
+	// holds only the versioned real file. AddDepRpaths must
+	// rewrite the ref to the versioned real name.
+	f := newUnversionedRefFixture(t)
+
+	if err := AddDepRpaths(f.pkgDir, []string{f.depDir}); err != nil {
 		t.Fatalf("AddDepRpaths error: %v", err)
 	}
 
-	after := otoolOutput(t, binPath)
+	after := otoolOutput(t, f.binPath)
 	// The unversioned ref must be canonicalized to the
 	// versioned real name the farm provides.
 	if !strings.Contains(after, "@rpath/libdep.1.2.dylib") {
