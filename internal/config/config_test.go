@@ -1520,3 +1520,134 @@ environment = "production"
 		t.Error("AddPackage dropped the 'my-team' value from the unknown [custom] section")
 	}
 }
+
+// --- gh#190: [bin] executable-collision overrides ---
+
+const galeWithBin = `
+[packages]
+corepack = "0.34.0"
+node = "24.4.0"
+
+[bin]
+npx = "corepack"
+`
+
+func TestParseGaleConfigBin(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithBin)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.Bin["npx"]; got != "corepack" {
+		t.Errorf("Bin[npx] = %q, want %q", got, "corepack")
+	}
+	if err := cfg.ValidateBin(); err != nil {
+		t.Errorf("ValidateBin: %v", err)
+	}
+}
+
+// TestValidateBinRejectsUndeclaredWinner keeps the override honest.
+// A winner that is not a declared package is a typo, and honoring it
+// would drop the basename from every provider — restoring, in a new
+// shape, the silent shadowing gh#190 fixed.
+func TestValidateBinRejectsUndeclaredWinner(t *testing.T) {
+	cfg, err := ParseGaleConfig(`
+[packages]
+node = "24.4.0"
+
+[bin]
+npx = "corepack"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	err = cfg.ValidateBin()
+	if err == nil {
+		t.Fatal("ValidateBin accepted an undeclared winner")
+	}
+	for _, want := range []string{"npx", "corepack"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q omits %q", err, want)
+		}
+	}
+}
+
+// TestValidateBinEmptyWinner rejects a blank value rather than
+// treating it as "no override": an empty winner matches no package,
+// so every provider would lose the name.
+func TestValidateBinEmptyWinner(t *testing.T) {
+	cfg, err := ParseGaleConfig(`
+[packages]
+node = "24.4.0"
+
+[bin]
+npx = ""
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := cfg.ValidateBin(); err == nil {
+		t.Fatal("ValidateBin accepted an empty winner")
+	}
+}
+
+// TestValidateBinAcceptsHostDeclaredWinner keeps a host-scoped winner
+// from breaking the machines its selector misses. The override is
+// inert there — no provider, nothing suppressed — and erroring would
+// take out every command on those machines over an entry that is
+// correct where it applies.
+func TestValidateBinAcceptsHostDeclaredWinner(t *testing.T) {
+	cfg, err := ParseGaleConfig(`
+[packages]
+node = "24.4.0"
+
+[bin]
+npx = "corepack"
+
+[hosts.laptop.packages]
+corepack = "0.34.0"
+`)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if err := cfg.ValidateBin(); err != nil {
+		t.Errorf("ValidateBin: %v", err)
+	}
+}
+
+// TestRemovePackageSectionsPrunesBinOverride pins the invariant this
+// mechanism owes the manifest: a config that loaded before a removal
+// still loads after it. A [bin] entry whose winner is gone fails
+// ValidateBin, so it goes in the same write.
+func TestRemovePackageSectionsPrunesBinOverride(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gale.toml")
+	if err := os.WriteFile(path, []byte(`[packages]
+node = "24.4.0"
+corepack = "0.34.0"
+
+[bin]
+npx = "corepack"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, _, err := RemovePackageSections(
+		path, []string{""}, "corepack",
+	); err != nil {
+		t.Fatalf("RemovePackageSections: %v", err)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := ParseGaleConfig(string(data))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if _, has := cfg.Bin["npx"]; has {
+		t.Errorf("[bin] npx survived its winner's removal:\n%s", data)
+	}
+	if err := cfg.ValidateBin(); err != nil {
+		t.Errorf("config no longer validates: %v", err)
+	}
+}
