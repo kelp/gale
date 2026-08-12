@@ -248,3 +248,26 @@ func TestFarmPredicateDoesNotClaimAnEntryThatMerelyResolvesIn(t *testing.T) {
 		t.Errorf("Depopulate(p) deleted q's live farm entry: %v", err)
 	}
 }
+
+// CanonicalDir is the one spelling rule the guard and its claim
+// builders share. Both halves of it are load-bearing: an existing
+// directory resolves, and an absent one keeps its raw spelling
+// rather than becoming an error the caller has to interpret.
+func TestCanonicalDir(t *testing.T) {
+	raw := t.TempDir()
+	resolved, err := filepath.EvalSymlinks(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := CanonicalDir(raw); got != resolved {
+		t.Errorf("CanonicalDir(%s) = %s, want %s", raw, got, resolved)
+	}
+
+	// A directory that does not exist yet — the pre-commit state of
+	// every staged placement's final dir.
+	absent := filepath.Join(raw, "pkg", "p", "1.0-1")
+	if got := CanonicalDir(absent); got != absent {
+		t.Errorf("CanonicalDir(%s) = %s, want the raw spelling",
+			absent, got)
+	}
+}

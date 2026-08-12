@@ -815,8 +815,8 @@ func TestProposedClaimantStagedIgnoresTheSupersededMetadata(t *testing.T) {
 // old StoreDirs field held. A claim whose bytes are staged reports
 // where they will land, so the two agree for every assertion here.
 func claimDirs(c farm.Claimant) []string {
-	out := make([]string, 0, len(c.Claims))
-	for _, p := range c.Claims {
+	out := make([]string, 0, c.View.Len())
+	for _, p := range c.View.Placements() {
 		out = append(out, p.FinalDir)
 	}
 	return out

@@ -27,6 +27,13 @@ import (
 // and a registry-only scan would therefore miss entirely.
 // Unregistered projects and already-open shells remain the
 // acknowledged limitation until the scoped-farm follow-up.
+//
+// Every claim is a farm.ProposedStore: the store state that scope
+// requires once the operation commits. A scope with nothing staged
+// gets the committed view of its closure; the initiating scope gets
+// its closure with its own placements laid over it. One
+// representation for both is what keeps the guard from having to
+// know which kind of claimant it is holding.
 
 // FarmClaimants collects every scope that claims sonames in the
 // shared farm, excluding the scope at selfGaleDir: the initiating
@@ -82,7 +89,7 @@ func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 		}
 		if len(dirs) > 0 {
 			out = append(out, farm.Claimant{
-				Label: s.Label, Claims: farm.At(dirs...),
+				Label: s.Label, View: farm.Committed(dirs...),
 			})
 		}
 	}
@@ -145,7 +152,7 @@ func ProposedClaimant(
 	if err != nil {
 		return c, fmt.Errorf("reading the proposed closure: %w", err)
 	}
-	c.Claims = farm.At(dirs...)
+	c.View = farm.Committed(dirs...)
 	return c, nil
 }
 
@@ -163,9 +170,11 @@ func ProposedClaimant(
 // veto design §4 forbids, deadlocking a scope against its own
 // repair.
 //
-// So each changed package's own dir is dropped from the claim and
-// its placement carries it instead: sonames read from staging,
-// targets reported at the canonical path.
+// So the placement carries the package instead: in the proposed
+// store view its canonical directory has exactly one read path, the
+// staging dir, so sonames are read from staging while targets are
+// still reported at the canonical path. There is no dropping and no
+// filtering — a directory cannot be in the view twice.
 //
 // Its DEPENDENCIES come from the STAGED metadata too, not from what
 // the canonical directory currently records. Reading the old
@@ -205,23 +214,37 @@ func proposedClaimant(
 	if err != nil {
 		return c, fmt.Errorf("reading active generation: %w", err)
 	}
-	// Canonicalized, because the walk returns canonicalized paths and
-	// this map is compared against them. filepath.Clean alone leaves
-	// macOS /var and /private/var as different strings, and the
-	// mismatch is silent: the staged dir survives the filter below,
-	// its OLD sonames enter the claim, and the scope vetoes its own
-	// refresh.
-	staged := make(map[string]string, len(placements))
-	for _, p := range placements {
-		staged[canonicalDir(p.FinalDir)] = p.ScanDir
+	// The proposed state, built once and then read rather than
+	// re-derived. Canonicalization, staged-ness and the one-read-path
+	// rule are all settled here, so the walk below and the claim
+	// built from it cannot disagree about which directory is which.
+	staged, err := farm.NewProposedStore(placements, nil)
+	if err != nil {
+		return c, fmt.Errorf("reading the proposed closure: %w", err)
 	}
-	for name, version := range ChangedBy(placements) {
-		pkgs[name] = version
+	// The package a placement replaces leaves the generation's set:
+	// the placement itself carries it from here on.
+	for name := range placedNames(placements) {
+		delete(pkgs, name)
 	}
 
-	roots := make([]string, 0, len(pkgs))
+	roots := make([]string, 0, len(pkgs)+len(placements))
 	for name, version := range pkgs {
 		roots = append(roots, resolveStoreDir(storeRoot, name, version))
+	}
+	// A placement's OWN final dir, verbatim, never a name and version
+	// the store re-resolves. Store resolution falls back from a
+	// suffixed "1.0-1" to a bare "1.0" while the suffixed directory is
+	// absent, and absent is exactly what a staged placement's final
+	// dir is before the rename. The round trip therefore handed the
+	// walk the legacy directory being REPLACED while the substitution
+	// map was keyed on the canonical one, so the key never matched:
+	// the superseded artifact's metadata decided the claim, its
+	// sonames entered the claim beside the placement's and made the
+	// scope veto its own refresh, and the staged artifact's new
+	// dependencies were never walked at all (gh#194).
+	for _, p := range placements {
+		roots = append(roots, p.FinalDir)
 	}
 	// The whole closure in one walk, with staging substituted at the
 	// dirs being replaced. Walking the canonical dirs first and
@@ -238,16 +261,19 @@ func proposedClaimant(
 		c.Err = errStagedClosure
 		return c, nil
 	}
-	// One list, built once. The committed part of the closure claims
-	// from where it sits; the staged part claims through the caller's
-	// own placements, which read from staging and report the
-	// canonical destination.
-	for _, d := range slices.Sorted(maps.Keys(closure)) {
-		if _, isStaged := staged[canonicalDir(d)]; !isStaged {
-			c.Claims = append(c.Claims, farm.At(d)...)
-		}
+	// One list, built once, by laying the caller's own placements
+	// over the closure the walk found. The committed part claims from
+	// where it sits; the staged part claims through the placements,
+	// which read from staging and report the canonical destination.
+	// There is no filter here any more: a directory a placement
+	// carries simply has one read path, and the view is what says so.
+	claim, err := farm.NewProposedStore(
+		placements, slices.Sorted(maps.Keys(closure)),
+	)
+	if err != nil {
+		return c, fmt.Errorf("reading the proposed closure: %w", err)
 	}
-	c.Claims = append(c.Claims, placements...)
+	c.View = claim
 	return c, nil
 }
 
@@ -258,15 +284,20 @@ var errStagedClosure = errors.New(
 	"the proposed closure could not be read in full",
 )
 
-// ChangedBy reads the package set a batch of placements leaves
-// behind, keyed the way ProposedClaimant expects. A placement's
-// canonical dir is <storeRoot>/<name>/<version-revision>, which is
-// the only place the identity of a staged install is recorded.
-func ChangedBy(placements []farm.Placement) map[string]string {
-	out := make(map[string]string, len(placements))
+// placedNames is the set of package names a batch of placements
+// carries. A placement's canonical dir is
+// <storeRoot>/<name>/<version-revision>, so the name is the parent
+// directory's basename.
+//
+// Names only, deliberately. The version half used to come back here
+// too, and every caller fed it straight into the store resolver,
+// which does not round-trip: see the root construction in
+// proposedClaimant (gh#194).
+func placedNames(placements []farm.Placement) map[string]bool {
+	out := make(map[string]bool, len(placements))
 	for _, p := range placements {
 		dir := filepath.Clean(p.FinalDir)
-		out[filepath.Base(filepath.Dir(dir))] = filepath.Base(dir)
+		out[filepath.Base(filepath.Dir(dir))] = true
 	}
 	return out
 }
