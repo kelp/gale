@@ -9,12 +9,6 @@ import (
 	"github.com/kelp/gale/internal/lockfile"
 )
 
-// legacyLockBody is a pre-enforcement lockfile: entries with
-// checksums nothing ever verified and no platform dimension.
-const legacyLockBody = "[packages.hello]\nversion = \"1.0-1\"\n" +
-	"sha256 = \"1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a" +
-	"1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a\"\n"
-
 // writeGateFixture lays out a project with a gale.toml and a lockfile
 // body, and returns the project dir. galeDir is created so the scope
 // resolves the same way an activated project does.

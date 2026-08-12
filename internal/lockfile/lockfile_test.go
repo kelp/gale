@@ -1,13 +1,14 @@
 package lockfile
 
-import (
-	"bytes"
-	"os"
-	"path/filepath"
-	"testing"
-)
+import "testing"
 
-// --- Behavior 1: Read lock file ---
+// Tests for the flat pre-enforcement schema, which is read-only:
+// decodeLegacy, LockFile.Stale, and VersionMatches. The reader,
+// writer and file-level staleness check that used to live beside
+// them (Read, Write, IsStale) were culled with gh#197 — Load is the
+// reader, WriteV1 the writer, and lockIsStale the staleness check.
+
+// --- decodeLegacy ---
 
 const validLockTOML = `[packages.jq]
 version = "1.7.1"
@@ -18,21 +19,13 @@ version = "14.1.0"
 sha256 = "def456"
 `
 
-func TestReadParsesPackages(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path,
-		[]byte(validLockTOML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	lf, err := Read(path)
+func TestDecodeLegacyParsesPackages(t *testing.T) {
+	lf, err := decodeLegacy([]byte(validLockTOML))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(lf.Packages) != 2 {
-		t.Fatalf("got %d packages, want 2",
-			len(lf.Packages))
+		t.Fatalf("got %d packages, want 2", len(lf.Packages))
 	}
 	if lf.Packages["jq"].Version != "1.7.1" {
 		t.Errorf("jq version = %q, want 1.7.1",
@@ -48,276 +41,16 @@ func TestReadParsesPackages(t *testing.T) {
 	}
 }
 
-func TestReadMissingFileReturnsEmpty(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gale.lock")
-
-	lf, err := Read(path)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(lf.Packages) != 0 {
-		t.Errorf("got %d packages, want 0",
-			len(lf.Packages))
-	}
-}
-
-func TestReadMalformedTOMLErrors(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path,
-		[]byte("not [valid toml"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := Read(path)
-	if err == nil {
+func TestDecodeLegacyMalformedTOMLErrors(t *testing.T) {
+	if _, err := decodeLegacy([]byte("not [valid toml")); err == nil {
 		t.Fatal("expected error for malformed TOML")
 	}
 }
 
-// --- Behavior 2: Write lock file ---
-
-func TestWriteRoundTrips(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	original := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq":      {Version: "1.7.1", SHA256: "abc"},
-			"ripgrep": {Version: "14.1.0", SHA256: "def"},
-		},
-	}
-
-	if err := Write(path, original); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	parsed, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
-	if len(parsed.Packages) != 2 {
-		t.Fatalf("got %d packages, want 2",
-			len(parsed.Packages))
-	}
-	if parsed.Packages["jq"].Version != "1.7.1" {
-		t.Errorf("jq version = %q, want 1.7.1",
-			parsed.Packages["jq"].Version)
-	}
-	if parsed.Packages["jq"].SHA256 != "abc" {
-		t.Errorf("jq sha256 = %q, want abc",
-			parsed.Packages["jq"].SHA256)
-	}
-}
-
-func TestWriteOverwrites(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	first := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq": {Version: "1.7.1"},
-		},
-	}
-	if err := Write(path, first); err != nil {
-		t.Fatal(err)
-	}
-
-	second := &LockFile{
-		Packages: map[string]LockedPackage{
-			"ripgrep": {Version: "14.1.0"},
-		},
-	}
-	if err := Write(path, second); err != nil {
-		t.Fatal(err)
-	}
-
-	parsed, err := Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := parsed.Packages["jq"]; ok {
-		t.Error("jq should be gone after overwrite")
-	}
-	if parsed.Packages["ripgrep"].Version != "14.1.0" {
-		t.Errorf("ripgrep = %q, want 14.1.0",
-			parsed.Packages["ripgrep"].Version)
-	}
-}
-
-func TestWriteEmpty(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	lf := &LockFile{
-		Packages: map[string]LockedPackage{},
-	}
-	if err := Write(path, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	parsed, err := Read(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(parsed.Packages) != 0 {
-		t.Errorf("got %d, want 0", len(parsed.Packages))
-	}
-}
-
-// --- Behavior 3: Detect stale lock ---
-
-func writeLock(t *testing.T, path string, pkgs map[string]LockedPackage) {
-	t.Helper()
-	lf := &LockFile{Packages: pkgs}
-	if err := Write(path, lf); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestIsStaleInSync(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	pkgs := map[string]string{"jq": "1.7.1"}
-
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	stale, err := IsStale(lockPath, pkgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stale {
-		t.Error("expected not stale when in sync")
-	}
-}
-
-func TestIsStaleTOMLNewerContentMatches(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	pkgs := map[string]string{"jq": "1.7.1"}
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	// Content matches so the lock is not stale.
-	stale, err := IsStale(lockPath, pkgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stale {
-		t.Error("not stale when content matches")
-	}
-}
-
-func TestIsStaleTOMLNewerContentDiffers(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	stale, err := IsStale(lockPath,
-		map[string]string{"jq": "1.8.0"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stale {
-		t.Error("expected stale when content differs")
-	}
-}
-
-func TestIsStaleExtraPackage(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	tomlPkgs := map[string]string{
-		"jq": "1.7.1", "ripgrep": "14.1.0",
-	}
-
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	stale, err := IsStale(lockPath, tomlPkgs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stale {
-		t.Error("expected stale when toml has extra pkg")
-	}
-}
-
-func TestIsStaleMissingLock(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	stale, err := IsStale(lockPath,
-		map[string]string{"jq": "1.7.1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stale {
-		t.Error("expected stale when lock missing")
-	}
-}
-
-func TestIsStaleVersionDiffers(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	stale, err := IsStale(lockPath,
-		map[string]string{"jq": "1.8.0"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stale {
-		t.Error("expected stale when versions differ")
-	}
-}
-
-// --- Read: unreadable file returns error ---
-
-func TestReadUnreadableFileErrors(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("mode-0 files are readable as root")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path,
-		[]byte("[packages.jq]\nversion = \"1.7.1\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0o000); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := Read(path)
-	if err == nil {
-		t.Fatal("expected error for unreadable file")
-	}
-}
-
-// --- Read: TOML with no packages section ---
-
-func TestReadNoPackagesSection(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	if err := os.WriteFile(path,
-		[]byte("# empty lock file\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	lf, err := Read(path)
+// TestDecodeLegacyNoPackagesSection pins the empty-map guarantee the
+// doc comment makes: callers write into Packages without checking.
+func TestDecodeLegacyNoPackagesSection(t *testing.T) {
+	lf, err := decodeLegacy([]byte("# empty lock file\n"))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -325,522 +58,54 @@ func TestReadNoPackagesSection(t *testing.T) {
 		t.Fatal("Packages map should be initialized")
 	}
 	if len(lf.Packages) != 0 {
-		t.Errorf("got %d packages, want 0",
-			len(lf.Packages))
+		t.Errorf("got %d packages, want 0", len(lf.Packages))
 	}
 }
 
-// --- Write: nonexistent parent directory (created automatically) ---
-
-func TestWriteCreatesParentDir(t *testing.T) {
-	path := filepath.Join(t.TempDir(),
-		"no-such-dir", "gale.lock")
-	lf := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq": {Version: "1.7.1"},
-		},
-	}
-
-	if err := Write(path, lf); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	got, err := Read(path)
-	if err != nil {
-		t.Fatalf("reading back: %v", err)
-	}
-	if got.Packages["jq"].Version != "1.7.1" {
-		t.Errorf("got version %q, want 1.7.1",
-			got.Packages["jq"].Version)
-	}
-}
-
-// --- Write: preserves original on rename failure ---
-
-func TestWritePreservesOriginalOnFailure(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: read-only dirs are still writable")
-	}
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	original := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq": {Version: "1.7.1"},
-		},
-	}
-	if err := Write(path, original); err != nil {
-		t.Fatal(err)
-	}
-
-	// Write original to a directory, then make it
-	// read-only so the next Write fails.
-	readOnlyDir := filepath.Join(t.TempDir(), "readonly")
-	if err := os.Mkdir(readOnlyDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	roPath := filepath.Join(readOnlyDir, "gale.lock")
-
-	if err := Write(roPath, original); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(readOnlyDir, 0o555); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		os.Chmod(readOnlyDir, 0o755)
-	})
-
-	err := Write(roPath, &LockFile{
-		Packages: map[string]LockedPackage{
-			"ripgrep": {Version: "14.1.0"},
-		},
-	})
-	if err == nil {
-		t.Fatal("expected error writing to read-only dir")
-	}
-
-	// Original should still be readable.
-	os.Chmod(readOnlyDir, 0o755)
-	parsed, err := Read(roPath)
-	if err != nil {
-		t.Fatalf("original destroyed: %v", err)
-	}
-	if parsed.Packages["jq"].Version != "1.7.1" {
-		t.Error("original content was corrupted")
-	}
-}
-
-// --- Write + Read: SHA256 round-trip ---
-
-func TestWriteSHA256RoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	original := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq": {
-				Version: "1.7.1",
-				SHA256:  "e4287154fc6a0e9e24273b61b6e3b68ebc76e249b52093a457e65b9e40bdb278",
-			},
-		},
-	}
-
-	if err := Write(path, original); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	parsed, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
-
-	got := parsed.Packages["jq"].SHA256
-	want := "e4287154fc6a0e9e24273b61b6e3b68ebc76e249b52093a457e65b9e40bdb278"
-	if got != want {
-		t.Errorf("SHA256 = %q, want %q", got, want)
-	}
-}
-
-// --- Write: omits SHA256 when empty ---
-
-func TestWriteOmitsEmptySHA256(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	lf := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq": {Version: "1.7.1"},
-		},
-	}
-	if err := Write(path, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := string(data)
-	if bytes.Contains(data, []byte("sha256")) {
-		t.Errorf("expected no sha256 key, got:\n%s",
-			content)
-	}
-}
-
-// --- IsStale: lock file stat error (not ENOENT) ---
-
-func TestIsStaleStatLockError(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("running as root: mode-0 dirs are still traversable")
-	}
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "subdir", "gale.lock")
-
-	// Create lock inside a directory, then make directory
-	// unreadable so stat fails with permission error.
-	subdir := filepath.Join(dir, "subdir")
-	if err := os.Mkdir(subdir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(lockPath,
-		[]byte("[packages.jq]\nversion = \"1.7.1\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(subdir, 0o000); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		os.Chmod(subdir, 0o755)
-	})
-
-	_, err := IsStale(lockPath,
-		map[string]string{"jq": "1.7.1"})
-	if err == nil {
-		t.Fatal("expected error for unreadable lock dir")
-	}
-}
-
-// --- IsStale: malformed lock file ---
-
-func TestIsStaleMalformedLockErrors(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	if err := os.WriteFile(lockPath,
-		[]byte("not [valid toml"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	_, err := IsStale(lockPath,
-		map[string]string{"jq": "1.7.1"})
-	if err == nil {
-		t.Fatal("expected error for malformed lock")
-	}
-}
-
-// --- IsStale: lock has extra package not in toml ---
-
-func TestIsStaleLockHasExtraPackage(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq":      {Version: "1.7.1"},
-		"ripgrep": {Version: "14.1.0"},
-	})
-
-	stale, err := IsStale(lockPath,
-		map[string]string{"jq": "1.7.1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stale {
-		t.Error("expected stale when lock has extra pkg")
-	}
-}
-
-// --- IsStale: package in toml not in lock ---
-
-func TestIsStalePackageMissingFromLock(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"ripgrep": {Version: "14.1.0"},
-	})
-
-	stale, err := IsStale(lockPath,
-		map[string]string{"jq": "1.7.1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stale {
-		t.Error("expected stale when pkg missing from lock")
-	}
-}
-
-// --- Behavior: clock skew safety ---
-
-func TestIsStaleClockSkewContentDiffers(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	// Write lock with jq 1.7.1.
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	// Content shows version 1.8.0 vs 1.7.1. Must detect staleness.
-	stale, err := IsStale(lockPath,
-		map[string]string{"jq": "1.8.0"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !stale {
-		t.Error("IsStale = false, want true: content differs")
-	}
-}
-
-func TestIsStaleNewerMtimeContentMatches(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	// Write lock with jq 1.7.1.
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	// Content matches; should NOT be stale.
-	stale, err := IsStale(lockPath,
-		map[string]string{"jq": "1.7.1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stale {
-		t.Error("IsStale = true, want false: content matches")
-	}
-}
-
-func TestIsStaleClockSkewContentMatches(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	// Write lock with jq 1.7.1.
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.7.1"},
-	})
-
-	// Content matches, so not stale.
-	stale, err := IsStale(lockPath,
-		map[string]string{"jq": "1.7.1"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if stale {
-		t.Error("IsStale = true, want false: content matches")
-	}
-}
-
-// --- Read: extra fields in TOML are ignored ---
-
-func TestReadIgnoresUnknownFields(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	content := `[packages.jq]
+func TestDecodeLegacyIgnoresUnknownFields(t *testing.T) {
+	const content = `[packages.jq]
 version = "1.7.1"
 sha256 = "abc123"
 unknown_field = "should be ignored"
 `
-	if err := os.WriteFile(path,
-		[]byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	lf, err := Read(path)
+	lf, err := decodeLegacy([]byte(content))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if lf.Packages["jq"].Version != "1.7.1" {
-		t.Errorf("version = %q, want 1.7.1",
-			lf.Packages["jq"].Version)
+		t.Errorf("version = %q, want 1.7.1", lf.Packages["jq"].Version)
 	}
 	if lf.Packages["jq"].SHA256 != "abc123" {
-		t.Errorf("sha256 = %q, want abc123",
-			lf.Packages["jq"].SHA256)
+		t.Errorf("sha256 = %q, want abc123", lf.Packages["jq"].SHA256)
 	}
 }
 
-// --- Write + Read: multiple packages survive ---
-
-func TestWriteMultiplePackagesRoundTrip(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	original := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq":       {Version: "1.7.1", SHA256: "aaa"},
-			"ripgrep":  {Version: "14.1.0", SHA256: "bbb"},
-			"fd":       {Version: "9.0.0", SHA256: "ccc"},
-			"bat":      {Version: "0.24.0"},
-			"starship": {Version: "1.17.1", SHA256: "ddd"},
-		},
-	}
-
-	if err := Write(path, original); err != nil {
-		t.Fatalf("Write error: %v", err)
-	}
-
-	parsed, err := Read(path)
-	if err != nil {
-		t.Fatalf("Read error: %v", err)
-	}
-
-	if len(parsed.Packages) != len(original.Packages) {
-		t.Fatalf("got %d packages, want %d",
-			len(parsed.Packages),
-			len(original.Packages))
-	}
-
-	for name, orig := range original.Packages {
-		got, ok := parsed.Packages[name]
-		if !ok {
-			t.Errorf("package %q missing after round-trip",
-				name)
-			continue
-		}
-		if got.Version != orig.Version {
-			t.Errorf("%s version = %q, want %q",
-				name, got.Version, orig.Version)
-		}
-		if got.SHA256 != orig.SHA256 {
-			t.Errorf("%s sha256 = %q, want %q",
-				name, got.SHA256, orig.SHA256)
-		}
-	}
-}
-
-// TestIsStaleCanonicalAndBareVersionsAreEquivalent is the lockfile-level
-// test for finding 0006. install and update write the canonical form
-// (e.g. "1.8.1-1") to gale.lock via r.Package.Full(). sync and
-// syncIfNeeded call lockfile.IsStale with tomlPackages whose values are
-// the bare form (e.g. "1.8.1") read from gale.toml.
-//
-// IsStale must treat "1.8.1-1" as equivalent to "1.8.1" when the suffix
-// "-1" indicates revision 1 (the default). Failing to normalize causes a
-// perpetual stale-detection loop: every invocation of syncIfNeeded sees a
-// mismatch and triggers runSync, which finds packages up to date, skips
-// the install, and does not update the lockfile — so the mismatch persists.
-//
-// This test FAILS today because IsStale does a literal string comparison
-// (locked.Version != version). It will PASS once IsStale is updated to
-// strip a trailing "-1" suffix (or similar normalization) before comparing.
-func TestIsStaleCanonicalAndBareVersionsAreEquivalent(t *testing.T) {
-	dir := t.TempDir()
-	lockPath := filepath.Join(dir, "gale.lock")
-
-	// Write lockfile with canonical form — as install/update write it
-	// via r.Package.Full() when revision = 1.
-	writeLock(t, lockPath, map[string]LockedPackage{
-		"jq": {Version: "1.8.1-1", SHA256: "abc123"},
-	})
-
-	// tomlPackages mirrors what syncIfNeeded reads from gale.toml:
-	// bare versions only.
-	tomlPackages := map[string]string{"jq": "1.8.1"}
-
-	stale, err := IsStale(lockPath, tomlPackages)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// "1.8.1-1" and "1.8.1" represent the same version at revision 1.
-	// IsStale must return false so syncIfNeeded does not trigger an
-	// unnecessary resync loop (finding 0006).
-	if stale {
-		t.Error("IsStale returned true for lockfile version " +
-			"\"1.8.1-1\" vs toml version \"1.8.1\": " +
-			"these represent the same package at revision 1 and " +
-			"must not trigger a perpetual resync loop")
-	}
-}
-
-// --- Behavior: manifest digest persists in gale.lock ---
+// --- manifest digest: the third field the flat schema carries ---
 
 const testManifestDigest = "sha256:" +
 	"a3f1c2d4e5b6978800112233445566778899aabbccddeeff0011223344556677"
 
-func TestReadManifestDigest(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	content := `[packages.jq]
+func TestDecodeLegacyManifestDigest(t *testing.T) {
+	const content = `[packages.jq]
 version = "1.7.1"
 sha256 = "abc123"
 manifest_digest = "` + testManifestDigest + `"
 `
-	if err := os.WriteFile(path,
-		[]byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	lf, err := Read(path)
+	lf, err := decodeLegacy([]byte(content))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	got := lf.Packages["jq"].ManifestDigest
-	if got != testManifestDigest {
-		t.Errorf("manifest digest = %q, want %q",
-			got, testManifestDigest)
+	if got := lf.Packages["jq"].ManifestDigest; got != testManifestDigest {
+		t.Errorf("manifest digest = %q, want %q", got, testManifestDigest)
 	}
 }
 
-func TestWriteManifestDigestKey(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	lf := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq": {
-				Version:        "1.7.1",
-				ManifestDigest: testManifestDigest,
-			},
-		},
-	}
-	if err := Write(path, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Contains(data,
-		[]byte(`manifest_digest = "sha256:`)) {
-		t.Errorf("expected manifest_digest key with "+
-			"sha256: prefix, got:\n%s", data)
-	}
-}
-
-func TestWriteOmitsEmptyManifestDigest(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-
-	lf := &LockFile{
-		Packages: map[string]LockedPackage{
-			"jq": {Version: "1.7.1"},
-		},
-	}
-	if err := Write(path, lf); err != nil {
-		t.Fatal(err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if bytes.Contains(data, []byte("manifest_digest")) {
-		t.Errorf("expected no manifest_digest key, got:\n%s",
-			data)
-	}
-	if bytes.Contains(data, []byte("ManifestDigest")) {
-		t.Errorf("expected no ManifestDigest key, got:\n%s",
-			data)
-	}
-}
-
-func TestReadLockfileWithoutManifestDigest(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.lock")
-	content := `[packages.jq]
+func TestDecodeLegacyWithoutManifestDigest(t *testing.T) {
+	const content = `[packages.jq]
 version = "1.7.1"
 sha256 = "abc123"
 `
-	if err := os.WriteFile(path,
-		[]byte(content), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	lf, err := Read(path)
+	lf, err := decodeLegacy([]byte(content))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -848,7 +113,166 @@ sha256 = "abc123"
 		t.Errorf("manifest digest = %q, want empty", got)
 	}
 	if lf.Packages["jq"].Version != "1.7.1" {
-		t.Errorf("version = %q, want 1.7.1",
-			lf.Packages["jq"].Version)
+		t.Errorf("version = %q, want 1.7.1", lf.Packages["jq"].Version)
+	}
+}
+
+// TestLoadReadsTheLegacySchema is the one file-level case, kept
+// because a decoder test alone would not prove Load still classifies
+// a flat file as KindLegacy and hands back a populated LockFile.
+func TestLoadReadsTheLegacySchema(t *testing.T) {
+	path := writeTemp(t, validLockTOML)
+
+	v, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if v.Kind != KindLegacy {
+		t.Fatalf("kind = %v, want %v", v.Kind, KindLegacy)
+	}
+	if v.Legacy.Packages["jq"].Version != "1.7.1" {
+		t.Errorf("jq version = %q, want 1.7.1",
+			v.Legacy.Packages["jq"].Version)
+	}
+}
+
+// --- LockFile.Stale ---
+
+func TestLockFileStale(t *testing.T) {
+	tests := []struct {
+		name      string
+		locked    map[string]LockedPackage
+		declared  map[string]string
+		wantStale bool
+	}{
+		{
+			name:      "in sync",
+			locked:    map[string]LockedPackage{"jq": {Version: "1.7.1"}},
+			declared:  map[string]string{"jq": "1.7.1"},
+			wantStale: false,
+		},
+		{
+			name:      "version differs",
+			locked:    map[string]LockedPackage{"jq": {Version: "1.7.1"}},
+			declared:  map[string]string{"jq": "1.8.0"},
+			wantStale: true,
+		},
+		{
+			name:   "gale.toml declares an extra package",
+			locked: map[string]LockedPackage{"jq": {Version: "1.7.1"}},
+			declared: map[string]string{
+				"jq": "1.7.1", "ripgrep": "14.1.0",
+			},
+			wantStale: true,
+		},
+		{
+			name: "the lock holds an extra package",
+			locked: map[string]LockedPackage{
+				"jq":      {Version: "1.7.1"},
+				"ripgrep": {Version: "14.1.0"},
+			},
+			declared:  map[string]string{"jq": "1.7.1"},
+			wantStale: true,
+		},
+		{
+			name:      "declared package missing from the lock",
+			locked:    map[string]LockedPackage{"ripgrep": {Version: "14.1.0"}},
+			declared:  map[string]string{"jq": "1.7.1"},
+			wantStale: true,
+		},
+		{
+			// The normal state: install and update write the canonical
+			// form through r.Package.Full(), gale.toml carries the bare
+			// version. Reading these as different would make every
+			// direnv `cd` sync a project that is already synced
+			// (finding 0006).
+			name:      "canonical lock against a bare manifest pin",
+			locked:    map[string]LockedPackage{"jq": {Version: "1.8.1-1"}},
+			declared:  map[string]string{"jq": "1.8.1"},
+			wantStale: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			lf := &LockFile{Packages: tt.locked}
+			if got := lf.Stale(tt.declared); got != tt.wantStale {
+				t.Errorf("Stale = %v, want %v", got, tt.wantStale)
+			}
+		})
+	}
+}
+
+// --- VersionMatches ---
+
+// TestVersionMatchesSurvivesTheCull is a guard, not a repro. It
+// passes today and passed before this commit; its job is to fail
+// loudly if a later change finishes gh#197's literal instruction.
+//
+// The issue asks for `LockedPackage` and `IsStale` to be culled and
+// says only that `VersionMatches` must survive. Taking the first half
+// literally reaches this function, because `LockedPackage` is what
+// `LockFile.Stale` compares and `Stale` is VersionMatches' caller
+// inside this package. Deleting it is silent: nothing fails to
+// compile in a world where its callers went with it, and the user
+// sees a `jq = "1.7"` → `"1.8"` pin edit leave direnv reporting a
+// fresh lock — the exact silent failure gh#197 opens by naming.
+//
+// Five live callers, all verified against main at the time of the
+// cull:
+//
+//   - internal/lockfile/lockfile.go, LockFile.Stale — the legacy
+//     schema's comparison, reached from cmd/gale/lockstale.go for
+//     KindLegacy on every direnv `cd`.
+//   - internal/lockfile/roots.go, CheckDeclared — the enforced
+//     schema's comparison, the same `cd` for KindV1.
+//   - internal/lockwrite/lockwrite.go, the request's roots check.
+//   - internal/lockwrite/lockwrite.go, the carry-forward agreement
+//     check.
+//   - cmd/gale/storereplace.go, legacySHA — a legacy lock's byte
+//     claim keyed by a version spelled bare where the query's is
+//     canonical.
+func TestVersionMatchesSurvivesTheCull(t *testing.T) {
+	tests := []struct {
+		name   string
+		locked string
+		toml   string
+		want   bool
+	}{
+		{
+			// The bare-vs-canonical reconciliation itself: gale.toml
+			// records the bare version so an entry tracks revision
+			// bumps, the lock records the version-revision it resolved
+			// to.
+			name:   "canonical revision against a bare pin",
+			locked: "1.8.1-2",
+			toml:   "1.8.1",
+			want:   true,
+		},
+		{
+			// Revision 0 is not a canonical revision, so "-0" is part
+			// of the version string and not a suffix to reconcile away.
+			name:   "revision zero is not canonical",
+			locked: "1.8.1-0",
+			toml:   "1.8.1",
+			want:   false,
+		},
+		{
+			// The pin edit. This row is why the function cannot go:
+			// answering true here is what makes a changed pin invisible.
+			name:   "edited pin",
+			locked: "1.8",
+			toml:   "1.7",
+			want:   false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := VersionMatches(tt.locked, tt.toml); got != tt.want {
+				t.Errorf("VersionMatches(%q, %q) = %v, want %v",
+					tt.locked, tt.toml, got, tt.want)
+			}
+		})
 	}
 }

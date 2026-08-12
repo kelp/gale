@@ -291,6 +291,9 @@ lockfile (`./gale.lock`). For the global one
 (`~/.gale/gale.lock`), see
 [chezmoi.md](chezmoi.md#tracking-galelock).
 
+Schema, enforcement model and remedies:
+[lockfile.md](lockfile.md).
+
 ## Precedence
 
 For build debug mode:

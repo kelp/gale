@@ -1,7 +1,6 @@
 package lockfile
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -434,40 +433,20 @@ func TestV1GuardIsWireOnly(t *testing.T) {
 	}
 }
 
-// TestLegacyReadRefusesV1: the guard's whole point. An old gale
-// reading a v1 lock must stop, not decode it into near-empty
-// packages and rewrite it in the flat schema. The assertion is
-// refusal plus byte-identity, not destruction.
-func TestLegacyReadRefusesV1(t *testing.T) {
-	path := writeTemp(t, v1Fixture)
-	before, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-
-	if _, err := Read(path); err == nil {
-		t.Fatal("legacy Read accepted a v1 lockfile")
-	}
-
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read back: %v", err)
-	}
-	if !bytes.Equal(before, after) {
-		t.Error("legacy read modified the lockfile")
-	}
-}
-
-// TestLegacyReadStillWorks: existing callers keep working until
-// they are migrated, so the legacy reader must be untouched by the
-// v1 addition.
-func TestLegacyReadStillWorks(t *testing.T) {
-	legacy := "[packages.jq]\nversion = \"1.8.1-2\"\nsha256 = \"aaaa\"\n"
-	lf, err := Read(writeTemp(t, legacy))
-	if err != nil {
-		t.Fatalf("Read: %v", err)
-	}
-	if lf.Packages["jq"].SHA256 != "aaaa" {
-		t.Errorf("legacy read lost data: %#v", lf.Packages)
+// TestLegacyDecodeRefusesV1: the guard's whole point. The flat
+// decoder is what an already-shipped gale runs against every
+// lockfile it opens, and on a v1 file it must stop rather than
+// decode near-empty packages and rewrite the file in its own schema.
+// The guard entry's version is an integer where LockedPackage's is a
+// string, so the refusal is a decode failure and needs no cooperation
+// from the older build.
+//
+// This asserts the decoder, which is the half that can be tested from
+// inside one build. That an older gale BINARY refuses the same bytes,
+// and leaves the file byte-identical, needs a second binary and is a
+// release-checklist item (gh#197).
+func TestLegacyDecodeRefusesV1(t *testing.T) {
+	if _, err := decodeLegacy([]byte(v1Fixture)); err == nil {
+		t.Fatal("the legacy decoder accepted a v1 lockfile")
 	}
 }

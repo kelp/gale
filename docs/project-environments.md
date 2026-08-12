@@ -192,21 +192,22 @@ git add gale.toml gale.lock
 git commit -m "Pin project tool versions"
 ```
 
-`gale.lock` records the version and SHA256 hash of
-each package listed in `gale.toml`. Transitive
-dependencies are not recorded. Unlike the global
-lockfile, the project lockfile belongs in git.
+`gale.lock` records the whole closure — the packages
+`gale.toml` declares and their transitive dependencies
+— with the SHA256 of every artifact, per platform. The
+project lockfile belongs in git.
 
-What a teammate's install shares with yours is the
-version selection, from the exact pins in `gale.toml`,
-not the lockfile. That is not the same as identical
-bytes: the same version can resolve to changed
-artifacts. The recorded hashes are not yet enforced,
-so nothing catches that today. `gale sync`
-installs from the current recipe and rewrites the
-lockfile if the artifact changed. Enforcement is being
-added in
-[issue #182](https://github.com/kelp/gale/issues/182).
+A teammate's install shares your version selection and
+your bytes. `gale sync` installs what the lock names and
+refuses anything else; it never rewrites the lock to
+match what it found. If the same version resolves to a
+changed artifact on their machine, the sync fails
+instead of silently recording it.
+
+One caveat: a closure containing a source build is
+portable only as far as that build reproduces, which
+today is the exception. See
+[lockfile.md](lockfile.md#source-builds-and-portability).
 
 A teammate clones the repo, installs gale, and runs:
 

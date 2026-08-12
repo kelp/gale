@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/lockfile"
 )
 
 // TestUpdateNoInstallWritesPinSkipsBuild verifies that
@@ -95,14 +94,17 @@ func TestUpdateNoInstallWritesPinSkipsBuild(t *testing.T) {
 	// missing lockfile is both acceptable.
 	lp := filepath.Join(projDir, "gale.lock")
 	if _, statErr := os.Stat(lp); statErr == nil {
-		lf, err := lockfile.Read(lp)
-		if err != nil {
-			t.Fatal(err)
+		// Asserted over the bytes rather than through a decoder,
+		// because the claim is that this write did not touch the lock
+		// and that holds in either schema. The new version is a
+		// literal both would have to spell to record it.
+		data, readErr := os.ReadFile(lp)
+		if readErr != nil {
+			t.Fatal(readErr)
 		}
-		if entry, ok := lf.Packages["jq"]; ok &&
-			entry.Version != "1.7.0" && entry.Version != "" {
-			t.Errorf("lockfile jq = %q, want untouched (1.7.0 or absent)",
-				entry.Version)
+		if strings.Contains(string(data), "1.8.0") {
+			t.Errorf("lockfile records the new version, "+
+				"want untouched (1.7.0 or absent):\n%s", data)
 		}
 	}
 }
