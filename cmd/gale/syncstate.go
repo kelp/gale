@@ -198,17 +198,22 @@ func recordSyncOutcome(r syncOutcomeRecord) error {
 // The order matters, and every branch that cannot answer the question
 // falls toward doing the work: a wrong "sync" costs one sync, a wrong
 // "skip" leaves a package missing from PATH with nothing said.
+//
+// The stamp is read before the generation is looked for, deliberately.
+// A locked sync that fails leaves the generation untouched (§8), so a
+// project whose FIRST sync failed has no `current` at all — and a
+// missing-generation shortcut ahead of the backoff would run a full
+// failing sync on every activation, which for a source build is a
+// minutes-long stall on every cd. That is worse than the sticky-stale
+// environment this whole mechanism exists to prevent. The recorder is
+// deferred from runSync rather than from the rebuild, so the stamp is
+// written whether or not a generation was ever built.
 func syncNeeded(galeDir, fingerprint string, now time.Time) syncCheck {
-	// 0. No generation, nothing to vouch for. A stamp cannot describe
-	//    an environment that gc or a deleted .gale has since removed.
-	if _, err := os.Lstat(filepath.Join(galeDir, "current")); err != nil {
-		return syncCheck{Needed: true, Reason: "no active generation"}
-	}
-
 	st, err := readSyncState(galeDir)
 	switch {
 	// 1a. Never stamped: a project from before this gale, or one whose
-	//     first sync has not run.
+	//     first sync has not run. Covers the no-generation case too:
+	//     with no stamp there is nothing to back off from.
 	case errors.Is(err, fs.ErrNotExist):
 		return syncCheck{
 			Needed: true,
@@ -232,23 +237,34 @@ func syncNeeded(galeDir, fingerprint string, now time.Time) syncCheck {
 		}
 	}
 
-	// 3. The fast path this whole mechanism must not cost: silent.
+	// 3. Inside the interval after a failure: say what is missing, do
+	//    no work. Ahead of the generation check, so the bound holds
+	//    even when the failed sync never published one.
+	if st.Status == syncStatusIncomplete &&
+		now.Sub(st.RecordedAt) < syncRetryInterval {
+		return syncCheck{
+			Reason: "a sync failed recently on these inputs",
+			Notice: incompleteNotice(st),
+		}
+	}
+
+	// 4. No generation, nothing to vouch for. A stamp cannot describe
+	//    an environment that gc or a deleted .gale has since removed,
+	//    however cleanly the sync that wrote it went.
+	if _, err := os.Lstat(filepath.Join(galeDir, "current")); err != nil {
+		return syncCheck{Needed: true, Reason: "no active generation"}
+	}
+
+	// 5. The fast path this whole mechanism must not cost: silent.
 	if st.Status == syncStatusComplete {
 		return syncCheck{Reason: "last sync completed on these inputs"}
 	}
 
-	// 5. The interval elapsed — exactly one further attempt.
-	if now.Sub(st.RecordedAt) >= syncRetryInterval {
-		return syncCheck{
-			Needed: true,
-			Reason: "retrying a sync that did not complete",
-		}
-	}
-
-	// 4. Inside the interval: say what is missing, do no work.
+	// 6. Incomplete and the interval elapsed — exactly one further
+	//    attempt.
 	return syncCheck{
-		Reason: "a sync failed recently on these inputs",
-		Notice: incompleteNotice(st),
+		Needed: true,
+		Reason: "retrying a sync that did not complete",
 	}
 }
 
@@ -282,12 +298,22 @@ func readSyncState(galeDir string) (syncState, error) {
 // incompleteNotice is the single line an activation prints while it is
 // withholding a retry. It names the packages so the user can act
 // without running anything first.
+//
+// It must also name the escape hatch, because this line is the only
+// place it is ever said: a user-typed `gale sync` ignores the stamp
+// and the interval entirely. Stating both halves — retry now, or wait
+// this long — is what keeps the backoff from reading as "gale has
+// given up".
 func incompleteNotice(st syncState) string {
 	what := "the last sync did not complete"
 	if len(st.Failed) > 0 {
 		what = "not installed: " + strings.Join(st.Failed, ", ")
 	}
-	return what + "; run 'gale sync' to retry"
+	return fmt.Sprintf(
+		"%s — run 'gale sync' to retry now, or wait up to %s for the "+
+			"next automatic attempt",
+		what, syncRetryInterval,
+	)
 }
 
 // failedPackageNames lists the packages a sync could not install, in

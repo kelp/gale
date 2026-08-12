@@ -182,19 +182,32 @@ the host, and the platform. Content, not mtimes, so a
 
 | State | Result |
 |---|---|
-| No active generation | sync |
 | No stamp, or an unreadable one | sync |
 | Fingerprint differs | sync |
-| `complete`, fingerprint matches | silent no-op |
 | `incomplete`, within the retry interval | one warning naming the failed packages, exit 0 |
+| No active generation | sync |
+| `complete`, fingerprint matches | silent no-op |
 | `incomplete`, interval elapsed | sync |
 
-The interval bounds the work a permanently broken package
-can cause: one attempt per interval per fingerprint, and
-one file read plus one warning in between. Editing
-gale.toml or gale.lock moves the fingerprint and reaches
-the packages immediately. A user-typed `gale sync`
-ignores the stamp entirely.
+The stamp is consulted **before** the generation, which
+matters for the case that hurts most: a locked sync that
+fails leaves the generation untouched (§8), so a project
+whose first sync failed has no `current` at all. Asking
+for the generation first would run a full failing sync on
+every `cd` — a minutes-long stall for a source build, and
+worse than the stale environment the stamp exists to
+prevent. Sync's recorder is deferred from the command,
+not from the rebuild, so the stamp is written whether or
+not a generation was ever built.
+
+The interval therefore bounds the work a broken package
+can cause without exception: one attempt per interval per
+fingerprint, and one file read plus one warning in
+between. Editing gale.toml or gale.lock moves the
+fingerprint and reaches the packages immediately, and a
+user-typed `gale sync` ignores the stamp entirely — which
+the warning says, because it is the only place it is
+ever said.
 
 `gale shell` and `gale run` consult the same stamp. Their
 own gate asks whether the lock still describes the

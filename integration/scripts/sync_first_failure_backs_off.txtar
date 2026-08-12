@@ -1,0 +1,48 @@
+# gh#186, the no-generation case: a project whose FIRST sync fails
+# must not re-attempt it on every activation.
+#
+# A locked sync that fails leaves the generation untouched by design
+# (§8), and gc can remove one, so `.gale/current` can be absent while a
+# stamp exists. Checking for the generation ahead of the stamp would
+# run a full failing sync on every cd — for a source-built package, a
+# minutes-long stall, which is strictly worse than the sticky-stale
+# environment this issue is about.
+#
+# Offline throughout: `nosuch` has no recipe in the local directory.
+
+gale-fixture recipes $WORK/recipes
+
+exec sh -c 'printf "%s\n" "[packages]" "nosuch = \"1.0\"" > $HOME/.gale/gale.toml'
+
+exec sh -c 'gale sync -g --recipes=$WORK/recipes; echo status=$?'
+stdout 'status=1'
+stderr 'no local recipe'
+
+# The stamp is written even though nothing installed. The recorder is
+# deferred from the sync, not from the generation rebuild.
+grep 'status = "incomplete"' $HOME/.gale/sync-state.toml
+grep 'nosuch@1.0' $HOME/.gale/sync-state.toml
+
+# Reproduce the shape a locked failure (or a gc sweep) leaves behind.
+rm $HOME/.gale/current
+! exists $HOME/.gale/current
+
+# Still withheld. No resolve is attempted — the absent 'no local
+# recipe' line is the proof that no work was done — and exit 0 lets
+# direnv proceed.
+exec sh -c 'gale sync -g --recipes=$WORK/recipes --if-needed; echo status=$?'
+stdout 'status=0'
+stderr 'nosuch@1.0'
+! stderr 'no local recipe'
+
+# The notice names both halves of the choice: retry now, or wait. That
+# line is the only place the escape hatch is ever stated.
+stderr 'gale sync'
+stderr 'now'
+stderr '10m0s'
+
+# And the escape hatch works. A sync run by hand ignores the stamp and
+# the interval entirely, and does the work.
+exec sh -c 'gale sync -g --recipes=$WORK/recipes; echo status=$?'
+stdout 'status=1'
+stderr 'no local recipe'

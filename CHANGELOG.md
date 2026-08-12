@@ -28,10 +28,13 @@
   calls `gale sync --if-needed`, which reads it. A completed
   sync stays a silent no-op. An incomplete one is retried at
   most once every ten minutes, printing one line naming what is
-  still missing in between, so a permanently broken package
-  costs a file read per `cd` rather than a build. `gale shell`
-  and `gale run` consult the same stamp: their lock-staleness
-  gate cannot see a partial install failure either.
+  still missing in between, so a broken package costs a file read
+  per `cd` rather than a build — including a project whose very
+  first sync failed and therefore has no generation at all. The
+  warning names the escape hatch: a `gale sync` run by hand
+  ignores the stamp and the interval entirely. `gale shell` and
+  `gale run` consult the same stamp; their lock-staleness gate
+  cannot see a partial install failure either.
 
 - gc no longer deletes store versions belonging to a live but
   unreadable project (gh#188). Project liveness counts any

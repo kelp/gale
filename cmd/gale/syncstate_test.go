@@ -209,9 +209,9 @@ func TestSyncNeededDistinguishesMissingFromUnreadableState(t *testing.T) {
 	}
 }
 
-// Rule 0. A complete stamp cannot vouch for an environment that has no
-// active generation — `gale gc` or a hand-deleted .gale leaves exactly
-// that, and the packages must come back.
+// A complete stamp cannot vouch for an environment that has no active
+// generation — `gale gc` or a hand-deleted .gale leaves exactly that,
+// and the packages must come back.
 func TestSyncNeededWhenNoGenerationExists(t *testing.T) {
 	galeDir, _, fp := syncStateFixture(t)
 
@@ -223,6 +223,81 @@ func TestSyncNeededWhenNoGenerationExists(t *testing.T) {
 	if check := syncNeeded(galeDir, fp, stampTime); !check.Needed {
 		t.Errorf("no current generation, but sync was skipped: the "+
 			"project has nothing on PATH (%+v)", check)
+	}
+}
+
+// The worst instance of gh#186, and the one a missing-generation
+// shortcut would leave shipped: a project whose FIRST sync fails.
+//
+// A locked sync that fails leaves the generation untouched by design
+// (§8), so `current` never appears. If the absent generation is
+// checked before the stamp, every activation runs a full failing sync
+// — for a source build, a minutes-long stall on every cd. That is
+// strictly worse than the sticky-stale environment this issue is
+// about, and it is the 013b4a4 / 688ce7d / af4c3f6 shape.
+//
+// The stamp is written even when no generation was built (the
+// recorder is deferred from runSync, not from the rebuild), so the
+// backoff has everything it needs to cover this case.
+func TestSyncWithheldWithoutGenerationInsideBackoff(t *testing.T) {
+	galeDir, _, fp := syncStateFixture(t)
+
+	stamp(t, galeDir, fp, false, "python@3.13.1")
+	if err := os.Remove(filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	check := syncNeeded(galeDir, fp, stampTime.Add(time.Minute))
+	if check.Needed {
+		t.Error("a first sync that failed is retried on every " +
+			"activation because no generation exists: the retry " +
+			"interval must bound this case too")
+	}
+	if !strings.Contains(check.Notice, "python@3.13.1") {
+		t.Errorf("Notice = %q, want it to name the failed package",
+			check.Notice)
+	}
+}
+
+// The other half: withholding is the interval, not the absence of a
+// generation. Once it elapses the failed first sync is attempted
+// again.
+func TestSyncNeededWithoutGenerationAfterBackoff(t *testing.T) {
+	galeDir, _, fp := syncStateFixture(t)
+
+	stamp(t, galeDir, fp, false, "python@3.13.1")
+	if err := os.Remove(filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+
+	check := syncNeeded(galeDir, fp, stampTime.Add(syncRetryInterval+time.Minute))
+	if !check.Needed {
+		t.Errorf("a failed first sync was never retried after the "+
+			"interval elapsed (%+v)", check)
+	}
+}
+
+// The backoff's escape hatch is a user-typed `gale sync`, which
+// ignores the stamp entirely. The notice is the only place that is
+// ever said, so it has to say it unambiguously.
+func TestIncompleteNoticeNamesTheEscapeHatch(t *testing.T) {
+	galeDir, _, fp := syncStateFixture(t)
+
+	stamp(t, galeDir, fp, false, "python@3.13.1")
+
+	notice := syncNeeded(galeDir, fp, stampTime.Add(time.Minute)).Notice
+	for _, want := range []string{
+		"gale sync", // the command
+		"now",       // that it retries immediately, backoff and all
+	} {
+		if !strings.Contains(notice, want) {
+			t.Errorf("Notice = %q, missing %q", notice, want)
+		}
+	}
+	// And that waiting is the alternative, so the user can choose.
+	if !strings.Contains(notice, syncRetryInterval.String()) {
+		t.Errorf("Notice = %q, want it to state the automatic retry "+
+			"interval (%s)", notice, syncRetryInterval)
 	}
 }
 
