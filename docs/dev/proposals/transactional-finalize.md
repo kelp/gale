@@ -148,10 +148,19 @@ one thing sharpens it:
   for each disagreeing root, per-target.
 - **Softer:** nothing is mutated on the failing path, so the
   state does not degrade with repetition.
-- **Sharper:** under direnv the hook is
-  `gale sync 2>/dev/null || true`, so the user sees none of
-  it — that is #186, and it is why this state reads as silent
-  in the field even though the code is loud.
+- **Softer still:** the direnv hook does *not* hide the error.
+  `internal/env/env.go:42` is `gale sync || true` with stderr
+  deliberately kept, pinned by
+  `TestDirenvHook_NeverSuppressesStderr`
+  (`internal/env/env_test.go:101-108`). The hook is also
+  mtime-gated (`[ "$manifest" -nt "$gale_dir/current" ]`,
+  `env.go:41`), so it does not even run sync on every `cd`.
+  The user who edits gale.toml and cds in sees the stale-lock
+  error and its remedy.
+
+That last correction matters for the recommendation: the
+residue is loud on every path that reaches it, so the case for
+buying automatic recovery is weaker than the issue assumes.
 
 **Acceptance criterion 2 of #187 is already met on main**, on
 every path except the direnv one that #186 owns: a
@@ -169,48 +178,88 @@ all three steps of `FinalizeInstall`, released after the
 generation rebuild.
 
 **What changes.** `FinalizeInstall` wraps its body in
-`filelock.With`. `update.go`'s loop takes it once around the
-whole run (its N config writes plus one lock write plus one
-rebuild are one logical transaction). `remove.go` takes it
-around its existing sequence. Roughly 40 lines plus comments.
+`filelock.With`. `update.go` and `remove.go` need care — see
+the ordering constraint below, which is the expensive part of
+this option and the reason it is separable from D and C.
 
 **Contention.** The lock is per environment (global
-`~/.gale`, or one per project `.gale/`), and it is held only
-across finalization — never across a download, build, or
-extraction, all of which happen before `finalize()` is
-invoked. Expected hold time is milliseconds. The realistic
-contender is direnv-triggered sync racing a manual install in
-the same project, which is exactly the case worth
-serializing.
+`~/.gale`, or one per project `.gale/`). Note precisely what
+it does and does not serialize: **it serializes concurrent
+mutating commands' finalizations** — two installs, an install
+and an update, an install and a remove. It does **not**
+serialize sync against an install, because sync does not
+finalize through `FinalizeInstall` at all: it rebuilds through
+`finishSync` (`sync.go:394-419`) and never writes the lock.
+Making sync take a shared hold is possible but is a different,
+larger proposal with a real stall cost; this option should not
+be sold on a race it does not close.
 
-**Deadlock.** Current acquisition order inside finalization is
-`gale.toml.lock` → `gale.lock.lock` → `generation.lock`, each
-taken and released as a leaf; nothing nests them in the other
-direction. `WriteLock`'s comment (`context.go:783-789`)
-explicitly refuses to take the config lock inside the lockfile
-lock precisely to avoid establishing an invertible order. A
-finalize lock strictly outside all three adds no cycle **as
-long as nothing acquires it while already holding any of the
-three, or while holding a store package lock in a different
-order than finalize does.** Today finalize is entered from
-inside `lockPackage(name, version-full)`
-(`installer.go:1994-1999`), so the order is
-`package → finalize → {config, lock, generation}`. That is
-consistent across all five call sites (`install.go:146, 241,
-295, 625`, `switch.go:95`). `update.go:275` and
-`remove.go:181` write the lock *outside* any package lock, so
-they would take finalize as the outermost lock — still no
-inversion. The invariant is documentable in one sentence and
-checkable by grep; it is not free, and it must be written
-down.
+**Deadlock — the constraint that shapes the option.** Existing
+acquisition order inside finalization is `gale.toml.lock` →
+`gale.lock.lock` → `generation.lock`, each taken and released
+as a leaf. `WriteLock`'s comment (`context.go:783-789`)
+already refuses to take the config lock inside the lockfile
+lock to avoid an invertible order. A finalize lock outside all
+three adds no cycle among *those*. The store's package lock is
+where it gets dangerous.
 
-`internal/filelock.Acquire` blocks unconditionally
-(`filelock.go:38`). Behind a slow holder, `gale shell` in a
-direnv-hooked directory stalls the shell — the failure shape
-the staleness regressions already cost us (013b4a4, 688ce7d,
-af4c3f6). A bounded `LOCK_NB` retry with a "waiting for
-another gale command" line is part of the option, not a
-refinement of it.
+Install enters finalization from *inside*
+`lockPackage(name, version-full)`
+(`installer.go:1994-1999` → `context.go:1091`), giving
+`package → finalize`. Two commands invert that:
+
+- **`update`.** Its per-package config write runs inside
+  `InstallWithFinalize`'s package lock (`update.go:255-258`).
+  Wrapping "the whole run" in the finalize lock — the obvious
+  reading, since its N config writes, one lock write and one
+  rebuild look like one transaction — yields
+  `finalize → package`. That is AB-BA against install.
+- **`remove`.** Its sequence ends in `dropFromStore`
+  (`remove.go:312`), which calls `store.RemoveWithin`
+  (`internal/store/store.go:507`), which locks `dir+".lock"`
+  — byte-identical to `lockPackage`'s
+  `filepath.Join(storeRoot, name, version+".lock")`
+  (`installer.go:1956`). Wrapping remove's sequence gives
+  `finalize → package` too. `remove.go:294-302` already spells
+  out that this ordering is load-bearing and that inverting it
+  closes an AB-BA cycle on two blocking flocks.
+
+`internal/filelock.Acquire` takes `LOCK_EX` with no timeout
+(`filelock.go:39`), so both of these are hard deadlocks, not
+contention. The naive framing of option A is wrong.
+
+There is also an internal contradiction in the naive framing:
+holding the finalize lock across update's whole run means
+holding it across N downloads and builds, which is the
+opposite of "held only across finalization."
+
+**Corrected invariant.** `finalize.lock` is only ever acquired
+while holding *at most one* package lock, and **never before**
+acquiring one. Concretely:
+
+- `install` / `switch`: unchanged — finalize inside the
+  package lock, as today.
+- `update`: wraps each per-package config write (already
+  inside that package's lock) and, separately, its tail —
+  `WriteLock` plus the rebuild, held outside any package lock
+  and acquiring none. Update loses whole-run atomicity, which
+  it never actually had.
+- `remove`: wraps config-write → lock-write → rebuild and
+  **releases before `dropFromStore`**. Its late-refusal
+  compensation (`remove.go:216-222`) re-acquires for the
+  restore-and-rebuild sequence rather than holding across the
+  store deletion.
+
+That invariant is one sentence and greppable, but it is a
+standing obligation on anyone who later moves a lock
+acquisition, and getting it wrong hangs the process rather
+than failing it. It is the main cost of this option.
+
+Given no contender inside the direnv path (see Contention
+above), the "blocking flock stalls the shell" worry is
+largely moot. A `LOCK_NB` retry is still worth having so a
+wedged holder produces a message instead of a hang, but it is
+a refinement here rather than a prerequisite.
 
 **Crash safety.** None. Row 1 of the crash table is untouched.
 
@@ -260,6 +309,19 @@ same divergence the journal was bought to prevent.
   finalization deliberately skips the PATH-presence check
   (`context.go:1103-1108`), must be encoded in the record.
 
+**What it is worth.** Less than it appears, because the state
+it recovers from is not stuck. Finalization runs *after* the
+install has committed, so by the time row 1 exists the store
+already holds the artifact **and its provenance**
+(`recordProvenance`, `installer.go:1932`). `gale lock`
+(`cmd/gale/lock.go:130-175`) resolves the declared roots,
+verifies each against that store state, and writes the lock —
+which is exactly the config↔lock reconciliation row 1 needs,
+with no network and no rebuild. The generation follows from
+the next sync's drift check (`sync.go:155-170, 406-419`), and
+`gale install <pkg>` does all three in one command. There is
+no genuinely unrecoverable state for the journal to rescue.
+
 **Crash safety.** This is the only option that meets
 acceptance criterion 3 as literally written.
 
@@ -305,8 +367,12 @@ every failure after a committed step with
 `config.RestoreUnderLock` + `restoreLock`.
 
 **What changes.** `FinalizeInstall` grows from 8 lines to
-~35, plus a `WriteConfig` signature change with five call
-sites. No new files, no new on-disk state, no new lock. The
+~35, plus a `WriteConfig` signature change with three call
+sites — `context.go:1091` (`FinalizeInstall`),
+`context.go:1203` (`WriteConfigForRecipe`), and through the
+latter, `update.go:257`. The five *finalize* call sites do not
+call `WriteConfig` directly and need no edit. No new files, no
+new on-disk state, no new lock. The
 machinery, its correctness argument, and its tests
 (`remove_farmguard_test.go:425` `TestRemoveLateRefusalRestoresTheLock`,
 `:474` `TestRemoveLateRefusalRestoresAbsentLock`) already
@@ -314,11 +380,22 @@ exist and are already reviewed.
 
 **Crash safety.** None — compensation is in-process.
 
-**Failure modes.** The compare-and-swap can legitimately stand
-down (another command owns the file now), which leaves the
-divergence in place; that is the correct trade and is already
-the documented behavior on the remove path
-(`remove.go:502-512`). The user then needs §C's message.
+**Failure modes.** Two, and both end in the same place:
+
+1. The compare-and-swap stands down because another command
+   owns the file now (`remove.go:502-512`). Correct trade,
+   already the documented behavior on the remove path.
+2. The restore itself fails on I/O. `remove` joins that error
+   to the original with `errors.Join` and returns
+   (`remove.go:159-162, 183-186, 216-222`); nothing retries.
+
+**Say the end state plainly:** in both cases the user is left
+with the row-1 divergence and two error strings. That is
+acceptable *only* because of the §3B finding — the store holds
+the artifact and its provenance, so `gale lock` reconciles it
+in one command — and because §C guarantees they are told so.
+Without §C, D alone leaves a user holding an error they cannot
+act on.
 
 **Complexity.** Lowest of the four that change anything.
 
@@ -332,10 +409,14 @@ Concretely, phase 1:
    `config.RestoreUnderLock` and `restoreLock` verbatim. This
    closes every non-crash path to a persistent divergence.
 2. **A.** A per-environment `<galeDir>/finalize.lock` spanning
-   the three steps, acquired outermost, with the ordering
-   invariant written into `context.go` beside
-   `WriteLock`'s existing ordering comment, and with a bounded
-   non-blocking acquire so direnv cannot stall.
+   the three steps, under §3A's **corrected** invariant —
+   acquired while holding at most one package lock and never
+   before acquiring one, which means rescoping update's hold
+   to its tail plus each per-package config write, and
+   releasing remove's before `dropFromStore`. The invariant
+   goes into `context.go` beside `WriteLock`'s existing
+   ordering comment and into `remove.go:294-302`, which
+   already documents the half of it that exists today.
 3. **C.** `FinalizeInstall`'s failure path names the remedy,
    reusing `lockfile.staleRemedy`'s rendering rather than
    inventing a second wording.
@@ -347,13 +428,24 @@ Concretely, phase 1:
    config+lock+generation; the package lock is the right
    granularity for the store.
 
+**D and C can ship independently of A.** They touch only
+`FinalizeInstall`, `WriteConfig`, and error text; they need no
+new lock and therefore inherit none of §3A's ordering
+obligation. If the update/remove rescoping drags in review,
+land D+C first — that is the change that closes the reachable
+divergence path, and A is the one that closes the concurrent
+one. Do not let A hold D+C hostage.
+
 Why this and not B:
 
-- The crash window B addresses is three file writes wide, and
-  its worst outcome (row 1) is precisely the divergence phase
-  1 makes both impossible-to-create-concurrently and
-  loud-when-created. B buys automatic repair of a state that
-  becomes rare and self-announcing.
+- **The state B recovers from is not stuck** (§3B). The store
+  holds the artifact and its provenance before finalization
+  begins, so `gale lock` reconciles row 1 in one command with
+  no network. B buys automatic repair of a state that is
+  already one command from repaired, and that phase 1 makes
+  both harder to create and impossible to create silently.
+- The residue is also *loud*: the direnv hook keeps stderr by
+  design (§2), so the user is told.
 - B's own failure modes — poisoned replay blocking every
   command, replay racing a legitimate repin — are worse than
   the state it prevents, and they are the modes hardest to
@@ -366,7 +458,7 @@ Why this and not B:
 
 | AC | Met by phase 1 | Notes |
 |---|---|---|
-| 1. Concurrent install of pkg@A and pkg@B end only in agreeing states | **Yes** | The environment lock serializes finalization; the compensation handles the refusal case |
+| 1. Concurrent install of pkg@A and pkg@B end only in agreeing states | **Yes** | D handles the refusal case on its own; A adds the mutual exclusion. D alone narrows this to "agree, or diverge loudly with a named remedy" |
 | 2. Pre-existing divergence fails sync non-zero, mutates nothing, names the remedy | **Already met on main** | Phase 1 adds the test and the same message on the finalize path |
 | 3. Interruption is rolled back or completed from durable transaction state | **No** | Phase 1 has no durable transaction state. It narrows the window and makes the residue loud; it does not recover from it |
 
@@ -415,6 +507,18 @@ direction, and it matters:
   `gale shell` path (`shell.go:117`), converting #187's loud
   failure back into a silent skip. This is the single most
   important line of coordination between the two issues.
+- **`current`'s mtime is already a de-facto stamp**, and
+  finalization already refreshes it. The direnv hook gates on
+  `[ "$manifest" -nt "$gale_dir/current" ]` (`env.go:41`), and
+  `rebuildGeneration`'s atomic swap is what makes `current`
+  newer than the manifest again. So a successful install
+  currently *does* clear the gate. Whatever #186's stamp
+  becomes must preserve that property, or an install stops
+  satisfying the freshness check and every post-install `cd`
+  re-runs sync — or, worse if the stamp is only written by
+  sync, an install never refreshes it and the gate reads a
+  stamp that predates the install. This is the concrete
+  coupling, and #186 is landing now.
 - The stamp and the finalize lock want the same granularity
   (per environment, rooted at `galeDir`). That is convenient:
   one lock protects both, and the stamp write needs no lock of
@@ -500,13 +604,16 @@ production discipline as `beforeLockRead` and
   byte-identical to its pre-command content and gale.lock is
   unchanged.
 
-The environment-lock half of AC1 (option A) is testable
-without any seam by taking `<galeDir>/finalize.lock` in the
-test body and asserting a second finalize blocks — but only
-if acquisition is non-blocking-with-timeout as recommended,
-so the assertion is "returns a contention error" rather than
-"blocks for a while". If acquisition stays blocking, this
-degrades to a sleep test and should not be written.
+The environment-lock half of AC1 (option A) is harder to
+assert honestly. Taking `<galeDir>/finalize.lock` in the test
+body and calling finalize gives a deterministic assertion only
+if acquisition is non-blocking-with-timeout — then the
+assertion is "returns a contention error". Under a plain
+blocking `LOCK_EX` the only observable is that the call does
+not return, which is a sleep test and should not be written.
+So: if A ships with blocking acquisition, its exclusion
+property is reviewed, not tested. Say that in the PR rather
+than writing a timing test that looks like proof.
 
 ### AC2 — divergence refusal
 
@@ -556,12 +663,19 @@ Code touched by phase 1:
 - `cmd/gale/context.go` — `FinalizeInstall`, `WriteConfig`
   (returns witnesses), `WriteConfigForRecipe`, new seam.
 - Five finalize call sites: `install.go:146, 241, 295, 625`,
-  `switch.go:95`.
-- `update.go:255-275` — the loop's N config writes plus one
-  lock write become one transaction under one lock hold.
-- `remove.go:135-222` — joins the same lock, or a comment
-  explains why it does not. It must not end up with two
-  overlapping exclusion schemes.
+  `switch.go:95`. These need no edit for D (the signature
+  change is confined to `WriteConfig`'s three direct callers)
+  and no edit for A (they already run inside a package lock).
+- `update.go:255-275` — **A only.** The hold is rescoped, not
+  wrapped around the run: each per-package config write inside
+  its own package lock, plus the tail (`WriteLock` + rebuild)
+  outside all of them. Wrapping the run deadlocks (§3A).
+- `remove.go:135-222` — **A only.** Takes the lock across
+  config-write → lock-write → rebuild and releases it before
+  `dropFromStore`; the late-refusal compensation re-acquires.
+  It must not end up with two overlapping exclusion schemes,
+  and it must not invert the version→generation order
+  `remove.go:294-302` depends on.
 - `internal/config/gale.go:810-818` — `RestoreUnderLock`
   reused as-is; no change expected.
 
@@ -596,17 +710,20 @@ unix-only (`golang.org/x/sys/unix`).
 
 ## 9. Open questions for the maintainer
 
-1. **Blocking or fail-fast?** direnv runs sync on every `cd`.
-   A blocking finalize lock behind a slow `gale install`
-   stalls the shell — the exact user-visible failure the
-   staleness regressions cost us (013b4a4, 688ce7d, af4c3f6).
-   Recommendation: `LOCK_NB` with a short bounded retry and a
-   stderr line. Confirm, since it needs a `filelock` API
-   addition.
-2. **Does `remove` join the finalize lock?** It has its own
-   compensation and its own ordering constraints around the
-   farm guard. Uniformity argues yes; the risk of disturbing
-   `remove.go:159-222` argues for a follow-up.
+1. **Should sync take a shared hold on `finalize.lock`?** As
+   proposed it does not, so install-vs-sync is not serialized
+   (§3A). Closing that is a larger change and reintroduces the
+   direnv stall risk that the staleness regressions cost us
+   (013b4a4, 688ce7d, af4c3f6) — at which point `LOCK_NB` with
+   a bounded retry becomes a prerequisite and needs a
+   `filelock` API addition. Recommendation: no, not in this
+   work.
+2. **Is A worth its ordering obligation at all?** D+C close
+   the reachable divergence path on their own. A closes the
+   concurrent one and costs a standing invariant across
+   `install`, `update`, `remove`, and anything added later,
+   enforced only by review. A defensible answer is "ship D+C,
+   revisit A if a concurrent-divergence report arrives."
 3. **Is `gale lock` the named remedy**, or should there be a
    dedicated `gale reconcile`? #197 is already writing
    `docs/lockfile.md` remedies; this should agree with it
@@ -623,3 +740,54 @@ unix-only (`golang.org/x/sys/unix`).
 6. **Should the per-version store lock stay per-version?** This
    proposal says yes and puts the exclusion one layer up.
    Disagreeing changes the shape of the whole fix.
+
+## 10. Review
+
+Reviewed before merge; verdict sound-with-fixes. What changed
+as a result, so the delta is visible rather than only the
+final text:
+
+- **§3A was wrong and is rewritten.** The first draft claimed
+  the ordering invariant held because `update` and `remove`
+  "write the lock outside any package lock." Both were
+  falsified: `update`'s config writes run inside
+  `InstallWithFinalize`'s package lock (`update.go:255-258`),
+  and `remove`'s `dropFromStore` reaches
+  `store.RemoveWithin`, which locks the same file
+  `lockPackage` holds (`store.go:534` vs `installer.go:1956`).
+  Wrapping either as first proposed is a hard deadlock under
+  today's unconditional `LOCK_EX`, not contention. The
+  invariant is restated as a constraint on acquisition order,
+  and update's and remove's holds are rescoped. The draft also
+  contradicted itself by holding the lock across update's
+  downloads and builds; that is gone.
+- **§3A's rationale shrank to what it actually buys.** The
+  draft justified the lock by "direnv-triggered sync racing a
+  manual install," which it does not serialize — sync never
+  finalizes. It now claims only what it does: mutual exclusion
+  between concurrent mutating commands' finalizations.
+- **§2's direnv facts were stale and are corrected.** The hook
+  is `gale sync || true` with stderr kept
+  (`internal/env/env.go:42`, pinned by
+  `env_test.go:101-108`), and it is mtime-gated rather than
+  run on every `cd`. The residue is loud, which strengthens
+  the case for deferring the journal.
+- **§3B gained the evidence that carries the deferral.** The
+  store holds the artifact and its provenance before
+  finalization begins, so `gale lock` reconciles row 1 in one
+  command. No genuinely stuck state exists. The draft
+  under-used this; it is now the lead argument in §4.
+- **§3D states the end state of a failed compensation.** CAS
+  stand-down *and* restore I/O failure both leave the user
+  with the divergence plus error strings — acceptable only
+  because of the §3B finding and only if C ships alongside.
+- **§4 says D+C can ship without A**, since A's cost is
+  entirely the ordering obligation.
+- **§5 names `current`'s mtime as the existing de-facto
+  stamp** that finalization already refreshes, which #186's
+  stamp must preserve.
+- Minor: §3D's call-site count corrected to three direct
+  `WriteConfig` callers; §7's option-A testability claim
+  weakened to match blocking acquisition; open question 1
+  replaced, since the stall risk was predicated on a
+  contender that does not exist.
