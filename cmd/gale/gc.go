@@ -155,8 +155,7 @@ var gcCmd = &cobra.Command{
 		// rollback` survives gc instead of being silently
 		// re-advanced to config state (gh#46, gh#47).
 		referenced, retainedProjects, retErr := collectGCRetention(
-			globalDir, projPath, projGaleDir, s, resolver,
-			pinResolve, out,
+			globalDir, projPath, projGaleDir, s, resolver, pinResolve,
 		)
 		// An unreadable reference source is not proof of
 		// non-reference, so retention is incomplete and every
@@ -278,10 +277,9 @@ func collectGCRetention(
 	s *store.Store,
 	resolver installer.RecipeResolver,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
 ) (map[string]bool, []string, error) {
 	referenced, err := collectReferencedPackagesAllHosts(
-		globalDir, projPath, s, pinResolve, out,
+		globalDir, projPath, s, pinResolve,
 	)
 	errs := []error{
 		err,
@@ -289,7 +287,7 @@ func collectGCRetention(
 		addActiveGenerationRefs(projGaleDir, s, referenced),
 	}
 	retainedProjects, projErr := addRegisteredProjectRefs(
-		globalDir, projGaleDir, s, referenced, pinResolve, out,
+		globalDir, projGaleDir, s, referenced, pinResolve,
 	)
 	errs = append(errs, projErr)
 	if resolver != nil {
@@ -323,7 +321,6 @@ func addRegisteredProjectRefs(
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
 ) ([]string, error) {
 	if globalDir == "" {
 		return nil, nil
@@ -346,7 +343,7 @@ func addRegisteredProjectRefs(
 			continue // provably absent; Prune cleans it up
 		}
 		if err := addProjectPinRefs(
-			cfgPath, s, referenced, pinResolve, out,
+			cfgPath, s, referenced, pinResolve,
 		); err != nil {
 			errs = append(errs, projectRefError(proj, err))
 			continue
@@ -387,18 +384,17 @@ func addProjectPinRefs(
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
 ) error {
 	_, err := os.Stat(cfgPath)
 	switch {
 	case err == nil:
 		return mergeConfigAllHosts(
-			cfgPath, s, referenced, pinResolve, out,
+			cfgPath, s, referenced, pinResolve,
 		)
 	case errors.Is(err, fs.ErrNotExist):
 		return mergeToolVersions(
 			filepath.Join(filepath.Dir(cfgPath), ".tool-versions"),
-			s, referenced, pinResolve, out,
+			s, referenced, pinResolve,
 		)
 	default:
 		// *fs.PathError: already names the op and the path.
@@ -547,19 +543,18 @@ func collectReferencedPackagesAllHosts(
 	globalDir, projPath string,
 	s *store.Store,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
 ) (map[string]bool, error) {
 	referenced := map[string]bool{}
 	var errs []error
 	if globalDir != "" {
 		errs = append(errs, mergeConfigAllHosts(
 			filepath.Join(globalDir, "gale.toml"),
-			s, referenced, pinResolve, out,
+			s, referenced, pinResolve,
 		))
 	}
 	if projPath != "" {
 		errs = append(errs, mergeConfigAllHosts(
-			projPath, s, referenced, pinResolve, out,
+			projPath, s, referenced, pinResolve,
 		))
 	}
 	return referenced, errors.Join(errs...)
@@ -583,19 +578,18 @@ func collectReferencedPackagesWithResolver(
 	s *store.Store,
 	resolver installer.RecipeResolver,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
 ) (map[string]bool, error) {
 	referenced := map[string]bool{}
 	var errs []error
 	if globalDir != "" {
 		errs = append(errs, mergeConfig(
 			filepath.Join(globalDir, "gale.toml"),
-			s, referenced, pinResolve, out,
+			s, referenced, pinResolve,
 		))
 	}
 	if projPath != "" {
 		errs = append(errs, mergeConfig(
-			projPath, s, referenced, pinResolve, out,
+			projPath, s, referenced, pinResolve,
 		))
 	}
 	if resolver != nil {
@@ -606,17 +600,16 @@ func collectReferencedPackagesWithResolver(
 
 // mergeConfig reads a gale.toml and adds its packages
 // to the referenced set. A missing config is fine and returns
-// nil; any other read error is returned, because a config that
-// exists but cannot be read hides pins rather than proving
-// there are none (gh#188). Parse errors still warn. Each entry
-// is resolved via store.StorePath so the referenced key always
-// matches the on-disk version name produced by store.List.
+// nil; every other failure is returned, because a config that
+// exists but cannot be read or parsed hides pins rather than
+// proving there are none (gh#188). Each entry is resolved via
+// store.StorePath so the referenced key always matches the
+// on-disk version name produced by store.List.
 func mergeConfig(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
 ) error {
 	data, err := readReferenceSource(path)
 	if err != nil {
@@ -627,8 +620,7 @@ func mergeConfig(
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
-		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
-		return nil
+		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 	cfg.ApplyHost(config.CurrentHost())
 	addPackageRefs(s, cfg.Packages, referenced, pinResolve)
@@ -658,14 +650,13 @@ func readReferenceSource(path string) ([]byte, error) {
 // view, it adds the shared [packages] section plus every
 // [hosts.*.packages] overlay. When shared and overlay pin
 // different versions of the same package, both versions
-// are recorded — the union, not the override. Missing and
-// unreadable split the same way as in mergeConfig.
+// are recorded — the union, not the override. Missing,
+// unreadable and unparsable split as in mergeConfig.
 func mergeConfigAllHosts(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
 ) error {
 	data, err := readReferenceSource(path)
 	if err != nil {
@@ -676,8 +667,7 @@ func mergeConfigAllHosts(
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
-		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
-		return nil
+		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 	addPackageRefs(s, cfg.Packages, referenced, pinResolve)
 	addAllHostPackageRefs(string(data), s, referenced, pinResolve)
@@ -688,14 +678,13 @@ func mergeConfigAllHosts(
 // pins to the referenced set, resolving through addPackageRefs
 // so versions canonicalize via store.StorePath like every other
 // pin source. ParseToolVersions maps tool names to gale recipe
-// names (golang → go). Skips a missing file, returns other read
-// errors, and warns on parse errors, mirroring mergeConfig.
+// names (golang → go). Skips a missing file and returns every
+// other read or parse failure, mirroring mergeConfig.
 func mergeToolVersions(
 	path string,
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	out *output.Output,
 ) error {
 	data, err := readReferenceSource(path)
 	if err != nil {
@@ -706,8 +695,7 @@ func mergeToolVersions(
 	}
 	pkgs, err := config.ParseToolVersions(string(data))
 	if err != nil {
-		out.Warn(fmt.Sprintf("parsing %s: %v", path, err))
-		return nil
+		return fmt.Errorf("parsing %s: %w", path, err)
 	}
 	addPackageRefs(s, pkgs, referenced, pinResolve)
 	return nil
@@ -732,7 +720,7 @@ func addAllHostPackageRefs(
 ) {
 	var raw map[string]any
 	if _, err := toml.Decode(data, &raw); err != nil {
-		return // mergeConfigAllHosts already warned
+		return // mergeConfigAllHosts already rejected it
 	}
 	hosts, ok := raw["hosts"].(map[string]any)
 	if !ok {

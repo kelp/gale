@@ -468,7 +468,7 @@ func otherScopeReferences(
 		projPath, _ = config.FindGaleConfig(cwd)
 	}
 	referenced, err := collectReferencedPackagesAllHosts(
-		globalDir, projPath, st, pinResolve, out,
+		globalDir, projPath, st, pinResolve,
 	)
 	if err != nil {
 		// Fail closed. An unreadable config hides pins; it does

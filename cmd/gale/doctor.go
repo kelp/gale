@@ -777,7 +777,7 @@ func checkOrphans(ctx *doctorContext) bool {
 	}
 	referenced, err := collectReferencedPackagesWithResolver(
 		filepath.Dir(globalConfig), projPath,
-		ctx.store, resolver, pinResolve, ctx.out,
+		ctx.store, resolver, pinResolve,
 	)
 	if err != nil {
 		// A count computed from a partial reference set would

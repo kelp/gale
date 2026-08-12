@@ -40,8 +40,7 @@ func TestCollectReferencedPackages(t *testing.T) {
 	// should fall back to the raw config keys so unresolved
 	// references still register.
 	s := store.NewStore(t.TempDir())
-	out := output.New(os.Stderr, false)
-	ref, err := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -75,8 +74,7 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 	}
 
 	s := store.NewStore(t.TempDir())
-	out := output.New(os.Stderr, false)
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -114,8 +112,7 @@ func TestCollectReferencedPackagesResolvesBareToCanonical(t *testing.T) {
 	}
 
 	s := store.NewStore(storeRoot)
-	out := output.New(os.Stderr, false)
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -235,7 +232,7 @@ func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -283,7 +280,7 @@ func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -338,7 +335,7 @@ func TestGCRemovesOrphanRevisionAboveRecipe(t *testing.T) {
 		}, nil
 	})
 
-	ref, err := collectReferencedPackagesAllHosts(globalDir, "", s, pinResolve, out)
+	ref, err := collectReferencedPackagesAllHosts(globalDir, "", s, pinResolve)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -387,7 +384,7 @@ func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil, out)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -623,7 +620,6 @@ func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
 	}
 
 	s := store.NewStore(storeRoot)
-	out := output.New(os.Stderr, false)
 
 	resolver := recipeResolverFromMap(map[string]*recipe.Recipe{
 		"postgresql": makeTestRecipe("postgresql", "17.2", 1,
@@ -633,7 +629,7 @@ func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
 	})
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, nil, out,
+		globalDir, "", s, resolver, nil,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -680,7 +676,6 @@ func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
 	}
 
 	s := store.NewStore(storeRoot)
-	out := output.New(os.Stderr, false)
 
 	resolver := recipeResolverFromMap(map[string]*recipe.Recipe{
 		"curl": makeTestRecipe("curl", "8.19.0", 1,
@@ -691,7 +686,7 @@ func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
 	})
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, nil, out,
+		globalDir, "", s, resolver, nil,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -735,10 +730,9 @@ func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
 	}
 
 	s := store.NewStore(storeRoot)
-	out := output.New(os.Stderr, false)
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, nil, nil, out,
+		globalDir, "", s, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -912,9 +906,8 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 	}
 
 	s := store.NewStore(storeRoot)
-	out := output.New(os.Stderr, false)
 	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil, out,
+		globalDir, "", "", s, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -953,9 +946,8 @@ func TestGCRetentionSkipsVanishedRegisteredProjects(t *testing.T) {
 	}
 
 	s := store.NewStore(storeRoot)
-	out := output.New(os.Stderr, false)
 	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil, out,
+		globalDir, "", "", s, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -1453,10 +1445,9 @@ func TestGCForceSweepsDespiteUnreadableProject(t *testing.T) {
 func TestGCRetentionToleratesMissingConfigs(t *testing.T) {
 	globalDir := t.TempDir() // no gale.toml, no projects registry
 	s := store.NewStore(t.TempDir())
-	out := output.New(os.Stderr, false)
 
 	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil, out,
+		globalDir, "", "", s, nil, nil,
 	)
 	if err != nil {
 		t.Fatalf("a missing config must not block the sweep: %v", err)
@@ -1467,4 +1458,22 @@ func TestGCRetentionToleratesMissingConfigs(t *testing.T) {
 	if len(retained) != 0 {
 		t.Errorf("no project contributed retention: %v", retained)
 	}
+}
+
+// TestGCRefusesSweepWhenRegisteredProjectConfigUnparsable
+// extends gh#188 to the corrupt-config case: a gale.toml that
+// reads fine but does not parse hides its pins exactly as an
+// unreadable one does. A half-written config — an interrupted
+// editor, a bad merge — is the likelier trigger of the two.
+func TestGCRefusesSweepWhenRegisteredProjectConfigUnparsable(t *testing.T) {
+	storeRoot, proj := gcUnreadableProjectFixture(t)
+
+	if err := os.WriteFile(
+		filepath.Join(proj, "gale.toml"),
+		[]byte("[packages]\njq = \n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
 }
