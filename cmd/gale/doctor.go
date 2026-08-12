@@ -27,6 +27,14 @@ import (
 var (
 	doctorRepair bool
 
+	// doctorForce lets --repair rebuild a scope whose lock is
+	// present and cannot be modeled. Repair refuses such a scope
+	// otherwise, since it cannot tell whether the generation it is
+	// about to publish matches the lock (gh#197) — but a machine
+	// with an unrepairable lock is exactly where repair is run, so
+	// the refusal needs a way past it.
+	doctorForce bool
+
 	// doctorCheckRegistry gates the network-touching checks
 	// (stale-installs deps resolution, orphan runtime-dep
 	// expansion) behind an explicit opt-in. Default is off so
@@ -875,9 +883,25 @@ func newestModTime(dir string) time.Time {
 	return newest
 }
 
+// repairDoctor rebuilds every scope's generation from what is
+// declared and installed.
+//
+// The versions come from the scope's lock whenever it has a usable
+// one. Repair passes no pin resolver, so an unlocked rebuild takes
+// store.ResolveDir's bare→highest-revision answer — which after a
+// rolled-back install is an orphan the lock does not name, put on
+// PATH by the command a user runs to fix things (gh#197). Unlike gc,
+// repair rebuilds even when nothing about the version selection
+// changes: a generation linking the right versions through broken
+// symlinks, or over a stale farm, is exactly what it exists to fix.
 func repairDoctor(ctx *doctorContext) error {
 	globalConfig := filepath.Join(ctx.galeDir, "gale.toml")
-	if err := rebuildGeneration(ctx.galeDir, ctx.storeRoot, globalConfig, nil); err != nil {
+	opt := recoveryRebuild{force: doctorForce, out: ctx.out}
+	if err := rebuildUnderLock(genRebuild{
+		galeDir:    ctx.galeDir,
+		storeRoot:  ctx.storeRoot,
+		configPath: globalConfig,
+	}, opt); err != nil {
 		return fmt.Errorf("rebuild global generation: %w", err)
 	}
 	if projConfig, err := projectConfigPath(ctx.cwd); err == nil &&
@@ -890,7 +914,11 @@ func repairDoctor(ctx *doctorContext) error {
 		if dirErr != nil {
 			return fmt.Errorf("resolving project gale dir: %w", dirErr)
 		}
-		if err := rebuildGeneration(projGaleDir, ctx.storeRoot, projConfig, nil); err != nil {
+		if err := rebuildUnderLock(genRebuild{
+			galeDir:    projGaleDir,
+			storeRoot:  ctx.storeRoot,
+			configPath: projConfig,
+		}, opt); err != nil {
 			return fmt.Errorf("rebuild project generation: %w", err)
 		}
 	}
@@ -927,6 +955,8 @@ func repairDoctor(ctx *doctorContext) error {
 func init() {
 	doctorCmd.Flags().BoolVar(&doctorRepair, "repair", false,
 		"Repair active generations from current config and store")
+	doctorCmd.Flags().BoolVar(&doctorForce, "force", false,
+		"With --repair, rebuild a scope whose lockfile cannot be used")
 	doctorCmd.Flags().BoolVar(&doctorCheckRegistry, "check-registry", false,
 		"Probe the recipe registry for stale-install and "+
 			"orphan-dep diagnosis (off by default — implies network access)")

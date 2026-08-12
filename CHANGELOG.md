@@ -24,6 +24,11 @@
   generation cannot be read. The escape hatch for the refusal
   below, for a mount that is gone for good.
 
+- `gale doctor --repair --force`: repair a scope whose lockfile
+  is present and cannot be read. Repair refuses such a scope
+  otherwise, and a machine with an unrepairable lock is exactly
+  where repair gets run.
+
 ### Fixed
 
 - direnv no longer activates a partially synced environment
@@ -57,6 +62,19 @@
   `current` moves, so the previous generation stays active and
   PATH is unchanged. Only `bin/` is arbitrated; `lib/`, `man/`
   and `share/` merge across packages as they always have.
+
+- gc and `gale doctor --repair` no longer activate a version the
+  scope's lockfile does not name (gh#197). Both rebuilt the
+  generation from the recipe and the store, which after a
+  revision bump — or a withdrawn one — is a second version
+  selector: gc relinked whatever revision the recipe now offers,
+  and repair, which resolves no recipe at all, took the highest
+  revision on disk. Global scope runs no activation gate, so the
+  substitution was invisible there. A scope with a usable v1
+  lockfile now takes its versions from that lock's roots, and a
+  scope whose lockfile is present and cannot be read is refused
+  rather than rebuilt on a guess — `--force` rebuilds it without
+  the lock. Unlocked scopes are unchanged.
 
 - gc no longer deletes store versions belonging to a live but
   unreadable project (gh#188). Project liveness counts any
