@@ -4,10 +4,10 @@ Status: proposal (2026-08-12)
 Issue: gh#198
 Scope: `internal/farm`, `internal/generation`;
 `internal/build/fixup_*` read-only
-Verdict: **do not build a scoped farm.** It is not
-reachable from a shipped artifact, and the thing that
-makes it unreachable is the same fixed rpath depth that
-killed flat content-addressing in gh#191.
+Verdict: **do not build a scoped farm now.** A scoped
+farm is reachable only by mirroring the store into the
+scope, and that is rejected on cost, not on
+impossibility.
 
 ## 1. Problem
 
@@ -50,9 +50,25 @@ generation. Therefore:
 
 > The farm's identity is a function of the store path of
 > the binary that loads through it. The farm can only be
-> scoped as finely as the store is.
+> scoped as finely as the store-shaped path the binary
+> is loaded from.
 
-Everything in §3 follows from that one sentence.
+That is a weaker statement than "the farm can only be
+scoped as finely as the store is", and the difference is
+the whole of Option 1b: a scope can **host its own
+store-shaped path** for the same bytes. It is not free,
+but it is not impossible either, and §3 prices it rather
+than dismissing it.
+
+The distinction that makes it work is symlink vs
+hardlink. A symlinked mirror is resolved away — Linux
+`$ORIGIN` for a main executable comes from
+`/proc/self/exe`, and dyld canonicalizes the main
+executable path — so a symlink lands the rpath back at
+the shared farm. A hardlink (or an APFS `clonefile`) is
+not a second name resolved to a first; it is a name of
+equal standing, so `$ORIGIN`/`@executable_path` is the
+mirror's own directory.
 
 ### 1b. When two scopes genuinely need different targets
 
@@ -163,7 +179,8 @@ Not bought:
   three sites tolerate same-package divergence; the
   guard does not.
 - **The claimant set is a model, not the machine.**
-  `farmclaims.go:26-29` states the limit: unregistered
+  `internal/generation/farmclaims.go:28-29` states the
+  limit: unregistered
   projects and already-open shells are invisible. No
   amount of guard strictness closes that.
 
@@ -182,10 +199,11 @@ and the soname before the user hits it mid-install.
   swap is unchanged.
 - **Cost:** near zero. **Buys:** nothing for the case.
 
-### Option 1 — per-generation farm (`gen/<N>/lib`)
+### Option 1a — per-generation farm (`gen/<N>/lib`)
 
 Give each generation its own farm and rebuild it into
-the generation directory.
+the generation directory, leaving binaries in the shared
+store.
 
 - **Rpath:** fatal, twice over.
   1. A store binary's rpath resolves to
@@ -197,7 +215,7 @@ the generation directory.
      names the **global** `current`; a project's
      binaries live in the shared global store, so they
      would resolve the global scope's farm, not the
-     project's. The option does not deliver
+     project's. This variant does not deliver
      cross-project scoping at all.
   2. `gen/<N>/lib` is already occupied.
      `populateGeneration` mirrors every store subdir
@@ -205,13 +223,81 @@ the generation directory.
      (`generation.go:536-542`), so `lib/` in
      a generation holds the packages' own lib trees. A
      farm there merges with or displaces them.
-- **What it *would* buy** (and this is worth recording):
+- **Migration:** flag day (see §5). **Reject.**
+
+### Option 1b — store-shaped mirror in the scope
+
+The dodge Option 1a misses, and the strongest opposing
+case in this document. Hardlink (or `clonefile`) each
+closure member into `gen/<N>/store/pkg/<name>/<v-r>/…`
+and farm at `gen/<N>/store/lib`. The baked rpath string
+is **untouched**: four levels up from
+`gen/<N>/store/pkg/<n>/<v-r>/bin` is `gen/<N>/store`,
+then `lib`. Per-generation *and* per-project farms, with
+no rebuild and no flag day.
+
+Transitive resolution is scope-neutral for free: a
+package's own libs resolve through `$ORIGIN/../lib` /
+bare `@loader_path` (`fixup_darwin.go:396-398`), which
+anchor inside whichever mirror the object was loaded
+from.
+
+It is buildable. It is rejected on **cost**, and the
+cost is measured:
+
+- **It reverses d8aa78e.** That commit cut generation
+  inode footprint because a dev host hit ~6M inodes
+  under `~/.gale`, `gen/` alone accounting for 2.8M
+  across 33 untouched generations. It did so by
+  skipping `src/`, `api/`, `pkg/`, `doc/`, `misc/` —
+  Go's `src/` alone was ~45% of a typical generation's
+  inode count — taking a fresh generation from ~28K
+  inodes to ~14K, with auto-gc capping `gen/` at
+  ~140K.
+- **The mirror cannot take that cut.** It must be a
+  *complete* store-dir mirror, because the same
+  `realpath`-based lookups d8aa78e relies on now land
+  inside the mirror: Go resolves `$GOROOT` as
+  `dirname(dirname(realpath(go)))`, and for a hardlink
+  that is `gen/<N>/store/pkg/go/<v-r>`, which must
+  therefore contain `src/`. So the ~45% comes back and
+  the per-generation count roughly doubles against
+  today: ~280K+ for ten retained generations rather
+  than ~140K, on the same machine that had already
+  exhausted its inode budget once.
+- **Per-generation cost on every build.** Directory
+  hardlinks do not exist, so the mirror is per-file:
+  ~28K `link()` calls on every generation build, on the
+  install hot path.
+- **Same-volume only.** Hardlinks and `clonefile` both
+  require one filesystem. `<project>/.gale` on an
+  external disk, network mount or container bind mount
+  cannot hardlink from `~/.gale/pkg` — and that is
+  exactly the per-project half this variant is wanted
+  for. It would need a byte-copy fallback, which is
+  Option 4's cost after all.
+- **N farms to reason over.** `Depopulate`, `CheckDrift`,
+  `GuardStoreRemoval` and the claimant walk each take a
+  single `farmDir` today. Every retained generation
+  gaining one multiplies the guard's problem rather
+  than scoping it away.
+- **Inherits an unvalidated risk.**
+  `relocatable-binaries.md` names `@loader_path` across
+  a farm symlink hop as the primary risk and leaves its
+  validation item unchecked in the rollout checklist.
+  This variant adds a hardlink hop to that path.
+
+- **What Option 1a/1b *would* buy** beyond scoping:
   temporal isolation. A retained generation keeps the
   farm it was built with, so rollback and late `dlopen`
   by a pre-swap process stay correct. That is gh#184's
-  concern, and gh#184 solves it more cheaply with
+  concern, and gh#184 solves it far more cheaply with
   staging + per-name rename.
-- **Migration:** flag day (see §5). **Reject.**
+- **Verdict:** buildable, correctly shaped, and the
+  first thing to reconsider if the trigger in §4 fires
+  on a *machine-local* conflict. Rejected now on inode
+  footprint and on multiplying the guard's surface at
+  the exact moment three changes are converging on it.
 
 ### Option 2 — per-closure farm (`~/.gale/lib/<hash>/`)
 
@@ -276,9 +362,14 @@ sharded variant (`A1s`) survived the rpath objection.
   is load-bearing in `gc` retention, `storeRetentionKey`,
   `projects`, the store-rooted generation lock
   (`generation.go:378-380`), and the whole of pipeline 5
-  in `change-discipline.md`. Duplicated bytes per
-  conflicting closure. This is a multi-PR tier-3
+  in `change-discipline.md`. This is a multi-PR tier-3
   project.
+- **Not duplicated bytes, on one volume.** Option 1b's
+  materialization applies here too: hardlink or
+  `clonefile` makes the spill cost *directory entries*,
+  not bytes. Bytes return only when the project dir is
+  on a different filesystem. The honest cost of Option 4
+  is inodes plus the retention rewrite, not disk.
 - **#184:** each scope stages and publishes its own
   farm; `Staged` is already parameterised on `farmDir`,
   so the mechanism composes unchanged.
@@ -307,18 +398,35 @@ The direction matters and must be pinned by a test.
 - **Rpath:** untouched. No rebuild, no republish.
 - **Migration:** none. It only *accepts* states currently
   refused.
-- **Prerequisite (phase 0).** `Populate`'s same-package
-  overwrite is **last-writer-wins**, not
-  highest-wins: `farm.go:294-298` removes and re-links
-  whatever the loop reaches last, and `Rebuild`
-  (`farm.go:518-522`) feeds it the BFS order of
-  `farmStoreDirs`. That is unreachable today only
-  *because* the guard refuses first. Relaxing the guard
-  exposes it, and it is exactly the 940a67a class:
-  order-dependent output. Phase 0 makes `Populate`
-  order-independent and version-ordered, with a
-  shuffled-input test. **Phase 0 is worth landing on its
-  own merits even if nothing else here is accepted.**
+- **Prerequisite (phase 0), and it must not be spelled
+  the obvious way.** `Populate`'s same-package overwrite
+  is **last-writer-wins** (`farm.go:294-298`) and
+  `Rebuild` feeds it the BFS order of `farmStoreDirs`
+  (`farm.go:518-522`), so the winner over a set depends
+  on slice order — the 940a67a class. That is
+  unreachable today only *because* the guard refuses
+  first; relaxing the guard exposes it.
+
+  But **a blanket highest-wins inside `Populate` would
+  ship a bug.** `Populate`'s last-writer rule is not
+  arbitrary there — it is *intent-wins*. `gale install
+  openssl@3.0.1` over an installed 3.5.0 in the only
+  scope is guard-approved (the initiating scope
+  supersedes its own old claim, `guard.go:25-31`) and
+  the overwrite is the correct, deliberate downgrade.
+  Under highest-wins `Populate` would keep the 3.5.0
+  link while the generation links 3.0.1 — drift that
+  `CheckDrift`'s `pkgPrefix` branch (`farm.go:623-636`)
+  deliberately does not report. The next `Rebuild`
+  converges, so it is transient, but it is a real
+  regression on a path that works today.
+
+  Phase 0 therefore puts the ordering **in the fold, not
+  in the per-commit write**: `Rebuild`/`Stage` choose the
+  per-soname maximum over the whole set before laying
+  links; direct `Populate` keeps intent-wins. **Phase 0
+  is worth landing on its own merits even if nothing else
+  here is accepted.**
 - **#184:** `Stage` calls `Populate`
   (branch `claude/issue-184-farm-staged-publish`), so
   phase 0's determinism is inherited for free. Phase 1
@@ -331,39 +439,50 @@ The direction matters and must be pinned by a test.
 
 ## 4. Recommendation
 
-**Do not scope the farm. Land Option 5, phases 0 then 1,
-and only after gh#184 and gh#194 have landed. Keep
-Option 4 as the named route to real scoping, deferred
-behind a trigger. Re-scope gh#198 itself.**
+**Land Option 0 plus phase 0. Defer everything else
+behind observed occurrences.** Concretely:
 
-Decisively, in order:
+**Now — Option 0 + phase 0.** Document the
+configuration, improve the refusal text, add the `gale
+doctor` check that names both scopes and the soname, and
+fix the fold's order-dependence as specified in Option 5
+phase 0. Neither changes what gale accepts, so neither
+carries tier-3 acceptance risk while gh#184 and gh#194
+are in flight.
 
-1. **gh#198 as titled is not buildable.** "Scope the
-   farm to a generation or closure" asks for a farm
-   addressed by something the dynamic loader does not
-   know. Options 1, 2 and 3 each fail on that, not on
-   effort.
-2. **The farm can only be scoped by scoping the store**
-   (§1a). That makes Option 4, or gh#191 phase 3, the
-   real mechanism — and both are store work, not farm
-   work.
-3. **The guard is sufficient for now**, and Option 5 is
-   the cheap correction that makes the common divergence
-   work rather than wedge. It is a policy change, so it
-   belongs *after* gh#194 separates policy from
-   observation. Adding a fifth hand-maintained coherence
-   rule to `guard.go` before that refactor is precisely
-   how gh#194's defects 1–6 were produced.
-4. **If only one thing lands, land phase 0** (the
-   `Populate` determinism fix) and the `gale doctor`
-   diagnosis from Option 0. Both are cheap and neither
-   changes what gale accepts.
+**Triggered — Option 5 phase 1** (the tolerance). Build
+it when a real conflict is observed between two scopes
+diverging on the version of one soname family. Not
+before: §1c shows the state is currently unreachable
+through gale at all, so today the trigger has never
+fired, and phase 1 is a *policy* change to the repo's
+most regression-prone file at the exact moment two other
+changes are rewriting it. This gets the same treatment
+as Option 4 for the same reason — specified, costed,
+waiting on evidence.
 
-**Revisit trigger for Option 4 / gh#191 phase 3:** a user
-reports a conflict where the two versions carry the same
-soname *and* the older one must be loaded as bytes — i.e.
-a case §1b's condition 4 does not cover. Until then the
-duplication cost is not justified.
+**Triggered, later — Option 1b or Option 4 / gh#191
+phase 3.** Build one of these only when a conflict is
+observed that phase 1 cannot serve: the two versions
+share a soname *and* the older one must be loaded as
+bytes rather than as an ABI (§1b condition 4). Option 1b
+if the need is machine-local and same-volume; Option 4 or
+gh#191 phase 3 if it is genuinely per-project.
+
+Two claims that survive review and should be read as the
+document's findings rather than its recommendation:
+
+1. **gh#198 as titled is misdirected, not impossible.**
+   "Scope the farm to a generation or closure" cannot be
+   done by moving the farm (Options 1a, 2, 3 each fail on
+   the loader, not on effort). It *can* be done by giving
+   the scope a store-shaped path (Option 1b) or its own
+   store root (Option 4). Both are store work wearing a
+   farm issue's title.
+2. **The guard is sufficient for now.** It converts data
+   loss into an error, and the error is currently
+   unreachable in normal use. That is a legitimate place
+   to stop.
 
 ## 5. The rpath consequence, in full
 
@@ -372,15 +491,24 @@ plainly rather than burying it.
 
 ### The recommendation forces no rebuild
 
-Option 5 and Option 4 both leave
+Option 5, Option 4 and Option 1b all leave
 `fixup_linux.go:226-231` and `fixup_darwin.go:399-417`
 untouched. **No artifact is rebuilt, no attestation is
-reissued, no user reinstalls anything.** Option 4 works
-*because* it preserves the three-level store depth; the
-farm moves only because the store root moved with it, and
-the emitted rpath string is unchanged.
+reissued, no user reinstalls anything.** Options 4 and 1b
+work *because* they preserve the three-level store depth
+— the farm moves only because a store-shaped root moved
+with it, and the emitted rpath string is unchanged. Cost
+lives in inodes and in retention logic, not in the
+published binary contract.
 
-### What Options 1, 2 and 3 would cost
+That is the corrected form of an argument this document
+made too strongly in draft, and it matters: **every
+option that survives to §4 is rpath-neutral.** The rpath
+constraint rules out moving the farm *away* from the
+binary; it does not rule out moving a copy of the binary
+to the farm.
+
+### What Options 1a, 2 and 3 would cost
 
 Any farm at a path other than `parent(storeRoot)/lib`
 changes what the baked rpath resolves to. That is a flag
@@ -410,7 +538,10 @@ day, and its shape is worse than "rebuild everything":
    old binaries and new binaries want different farms.
 
 Point 3 is the one that makes these options unacceptable
-rather than merely expensive.
+rather than merely expensive. Note that it does **not**
+apply to Option 1b: a store-shaped mirror leaves the
+rpath alone, so there is no before/after population to
+straddle.
 
 ### One test worth adding regardless
 
@@ -428,10 +559,11 @@ Three changes are converging on the most
 regression-prone code in the repo. Ordering:
 
 ```
+#198 Option 0 (docs + doctor)         [now, independent]
 #184 (Stage/Publish)  →  #194 (view + observations)
-   →  #198 phase 0 (Populate determinism)
-   →  #198 phase 1 (tolerance)          [optional]
-   →  #191 phase 3 / Option 4           [triggered]
+   →  #198 phase 0 (fold ordering)     [now, after #184]
+   →  #198 phase 1 (tolerance)         [triggered]
+   →  #191 phase 3 / Option 4 / 1b     [triggered]
 ```
 
 ### gh#184 — staged publish
@@ -441,10 +573,13 @@ atomic renames, and `Stage` runs before the current-swap
 while `Publish` runs after
 (`claude/issue-184-farm-staged-publish`).
 
-- **This proposal adds nothing #184 must accommodate.**
-  Phase 0 lives inside `Populate`, which `Stage` calls;
-  phase 1 lives in `guard.go`, which #184 does not
-  touch.
+- **Phase 0 lands *in* `Stage`, so it must land after
+  #184.** The whole point of the corrected phase 0 is
+  that the ordering belongs in the fold rather than in
+  `Populate`, and after #184 the fold *is* `Stage`.
+  Writing phase 0 against today's `Rebuild` would be
+  work #184 immediately relocates. Phase 1 lives in
+  `guard.go`, which #184 does not touch.
 - **What #184 must not do:** put the soname→target
   comparison into `publishOne`. It currently compares
   `os.Readlink` equality, which is *identity*, not
@@ -507,11 +642,28 @@ maintainer should see the inversion.**
 
 **Red-green in Go, on Linux CI:**
 
-- Phase 0: `Populate` over shuffled `activeStoreDirs`
-  containing two dirs of one package, asserting the same
-  winner every time and that the winner is the higher
-  version-revision. The 940a67a rule makes this
-  mandatory, not optional.
+- Phase 0: the fold (`Rebuild`, or `Stage` after #184)
+  over shuffled `activeStoreDirs` containing two dirs of
+  one package, asserting the same winner every time and
+  that the winner is the higher version-revision. The
+  940a67a rule makes this mandatory, not optional.
+- Phase 0, the other half: direct `Populate` still
+  performs a deliberate downgrade. A test that installs
+  3.0.1 over a farm linking 3.5.0 in a single scope and
+  asserts the farm follows the *intent*, not the
+  maximum, is what stops the fold's ordering from
+  leaking into the per-commit path.
+- Phase 1, and this is easy to miss: `GuardRebuild`'s
+  `merged[soname] = target` write (`guard.go:268`) is
+  visited in `eachClaim`'s claimant-enumeration order,
+  which is the projects-walk order. Once the predicate
+  tolerates same-package divergence, whichever claimant
+  is seen first decides which identity a *later*
+  cross-package refusal names — so the message text
+  varies with directory listing order unless the
+  predicate maximizes there too. Shuffle the claimant
+  slice, assert byte-identical error text. Same 940a67a
+  class as the fold, one layer up.
 - Phase 1 policy: `GuardRebuild` / `GuardPopulate` with
   two claimants at same-package-different-version
   (allowed, highest wins) and
@@ -559,7 +711,8 @@ guard's claimant set only exists at the `cmd/gale` seam.
   and a real dependent on a real machine. "Runs on the
   build host" is not evidence here either.
 - Already-open shells and unregistered projects
-  (`farmclaims.go:26-29`). The claimant set is a model of
+  (`internal/generation/farmclaims.go:28-29`). The
+  claimant set is a model of
   the machine; no test can make the model true, and this
   proposal does not improve it.
 - Late `dlopen` timing. gh#184's `beforeFarmPublish`
@@ -574,8 +727,11 @@ guard's claimant set only exists at the `cmd/gale` seam.
 1. **Have you actually hit the divergent-version case,
    or is it hypothetical?** §1b argues the genuine
    population is small and bounded by the static-linking
-   policy. If you have never seen it, Option 0 alone is
-   the right answer and phase 1 should not be built.
+   policy, and §1c shows the state is unreachable through
+   gale today. This is the trigger for phase 1, so it is
+   the one question that has to be answered before any
+   behavior changes. The recommendation assumes the
+   answer is "not yet".
 2. **Does a lock pinning `openssl@3.0.1` promise bytes
    or ABI?** Revision already floats (gh#172). Phase 1
    extends the float to version within one soname
@@ -588,20 +744,71 @@ guard's claimant set only exists at the `cmd/gale` seam.
    is a bigger claim and probably deserves a `gale
    doctor` line naming both scopes rather than only a
    stderr line during a sync.
-4. **Is per-scope store duplication (Option 4)
-   acceptable in principle?** "The store is shared" is
-   load-bearing across gc retention, the store-rooted
-   generation lock and pipeline 5. If the answer is no,
-   Option 4 should be struck and gh#198's scoping ask
-   folded entirely into gh#191 phase 3.
-5. **Should gh#198 be re-scoped?** Its title asks for
-   something §1a shows is unreachable. Suggested
-   re-framing: "make farm contention survivable" for the
-   part that is buildable now, with the scoping ask moved
-   onto gh#191 phase 3 as its acceptance criterion.
-6. **Are you willing to hold this behind gh#184 and
-   gh#194?** That is the ordering this proposal
-   recommends, and it means nothing here lands for two
-   PRs. The alternative — phase 1 first — puts a policy
-   change into `guard.go` in exactly the state gh#194
-   exists to fix.
+4. **Is a store-shaped mirror (Option 1b) or a per-scope
+   store root (Option 4) acceptable in principle?** Both
+   are rpath-neutral, so the question is purely whether
+   you will pay inodes for scope isolation. d8aa78e says
+   you have already been burned by generation inode
+   growth once, on your own dev host, which is why this
+   document rejects 1b — but that is a cost judgement
+   and it is yours, not the document's.
+5. **Should gh#198 be re-scoped?** Its title asks for a
+   farm the loader cannot address, while the buildable
+   answers all move a store-shaped path instead.
+   Suggested re-framing: "make farm contention
+   survivable" for the part worth doing now, with the
+   scoping ask restated as a store question on gh#191
+   phase 3 / Option 1b.
+6. **Are you willing to hold phase 0 behind gh#184?**
+   The fold it corrects becomes `Stage` there, so
+   writing it first is work #184 relocates. Option 0 is
+   independent and can land immediately.
+
+## Review
+
+Recorded after review, as the delta from the first
+draft.
+
+- **The impossibility argument was overstated**, in the
+  same way gh#191's first draft overstated its own. The
+  claim "the farm can only be scoped as finely as the
+  store is" ignored that a scope can host a
+  *store-shaped path* for the same bytes: hardlink or
+  `clonefile` the closure into `gen/<N>/store/pkg/…` and
+  farm at `gen/<N>/store/lib`, with the baked rpath
+  string untouched. That is now Option 1b, priced
+  against d8aa78e rather than dismissed, and §4 no
+  longer says "not buildable". §1a's invariant is
+  restated in the weaker, true form, and §5 now says
+  plainly that every surviving option is rpath-neutral.
+- **Phase 0 as first specified would have shipped a
+  bug.** A blanket highest-wins inside `Populate` breaks
+  the single-scope deliberate downgrade, which is
+  guard-approved today and whose resulting drift
+  `CheckDrift` deliberately does not report. The
+  ordering moved to the fold; `Populate` keeps
+  intent-wins; §7 gained the test for the half that
+  must *not* change.
+- **§7 had a hole.** Under a tolerant predicate
+  `GuardRebuild`'s `merged` write is order-sensitive over
+  claimant enumeration order, which decides which
+  identity a later cross-package refusal names. Named,
+  with a shuffle test.
+- **Option 0 now headlines.** Phase 1 is specified and
+  deferred behind an observed occurrence, the same
+  treatment Option 4 already had — which is what §1c and
+  the original §8 Q1 were already arguing for.
+- **Option 4's cost was overstated too:** on one volume
+  the spill costs directory entries, not bytes.
+- Citation fixed: `internal/generation/farmclaims.go:28-29`.
+- **Not accepted as stated:** the review called Option
+  1b's transitive resolution proven. It is
+  scope-neutral, but `relocatable-binaries.md` still
+  lists `@loader_path` across a farm symlink hop as its
+  primary risk with the validation item unchecked, and
+  1b adds a hardlink hop to it. Recorded in Option 1b as
+  an inherited unvalidated risk rather than a solved
+  one. The per-project half of 1b is also conditional,
+  not free: hardlinks and `clonefile` are same-volume
+  only, so a project dir on another filesystem falls
+  back to Option 4's byte copy.
