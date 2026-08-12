@@ -74,27 +74,38 @@ re-migrated even when its dependent is. Libraries — the packages
 most likely to be source-method — are the ones most likely to
 survive as bare directories.
 
-**Half of what gh#200 prints today may already have a remedy.**
+**Part of what gh#200 prints today may already have a remedy.**
 `reportUnresolved` reports every bare source directory, whether or
-not any scope reaches it. A directory nothing links is a `gale gc`
-candidate — retention is built from config-derived canonical keys
-plus the active generation's symlink targets
-(`cmd/gale/gc.go:416-432`, `:487-528`), and a bare directory that
-neither names is swept. The report cannot currently tell a live
-trap from a dead leftover, so a user with an orphan is told there
-is no remedy when `gale gc` is one.
+not anything reaches it. A directory that no generation links
+**and** no config pins is a `gale gc` candidate and is swept.
+Both halves of that predicate matter: retention is the union of
+config-derived keys across every project and host
+(`cmd/gale/gc.go:608-628`, `:772-781`) and the active generation's
+symlink targets (`:416-432`), and `storeRetentionKey`
+(`cmd/gale/context.go:479-504`) resolves a pin through
+`StorePath`, whose bare fallback keys the **bare** directory
+whenever the canonical one is absent. So a pinned-but-unlinked
+bare directory is retained, not reaped. The report cannot
+currently tell any of these states apart, so a user with a true
+orphan is told there is no remedy when `gale gc` is one.
 
 ## 2. How common is this?
 
-Honestly: very rare, and the window is closed.
+Honestly: very rare.
 
-The repository's first commit is 2026-03-23
-(`git log --reverse`). Revisions shipped in v0.12.0 on
-2026-04-18. A bare store directory can only have been written in
-those 26 days, in gale's first month, before there was a Homebrew
-tap story or a recipe registry worth pointing anyone at.
+The window is **version-bound, not calendar-bound**, and the
+distinction matters. Revisions shipped in v0.12.0 on 2026-04-18;
+the repository's first commit is 2026-03-23
+(`git log --reverse`). A gale **older than v0.12.0** writes bare
+store directories, so the earliest possible one is 26 days wide
+in calendar terms but the window stays open on any machine that
+never upgraded. Someone still on v0.11 in June wrote bare
+directories in June. That widens the population — by however many
+people were running a pre-v0.12.0 gale after April, which in the
+project's second month was a small number — without changing the
+shape of the argument.
 
-The window narrows further from both ends.
+The window narrows again from both ends.
 
 **Unlocked `gale sync` already converges declared roots.**
 `installedStale` (`cmd/gale/sync.go:521-542`) reports stale for
@@ -111,13 +122,12 @@ dependencies (the back-compat cache hit above), packages dropped
 from gale.toml but still linked by a retained generation, and
 roots in a scope whose owner has not synced since April.
 
-So the affected population is: machines in continuous use since
-gale's first month, whose owner installed a source-method package
-in a 26-day window, and which have not had an unlocked sync reach
-that package since. That is a handful of early adopters and quite
-possibly only the maintainer's own machines. Nothing in the
-tracker reports an instance; gh#200 was found by review of #196,
-not by a user hitting it.
+So the affected population is: machines that ran a pre-v0.12.0
+gale, installed a source-method package with it, and have not had
+an unlocked sync reach that package since. That is a handful of
+early adopters and quite possibly only the maintainer's own
+machines. Nothing in the tracker reports an instance; gh#200 was
+found by review of #196, not by a user hitting it.
 
 The issue's own framing — "likely rare, and unbounded in cost when
 it happens" — is right about the cost and, on this evidence, right
@@ -132,10 +142,11 @@ run approximately once.
 | `gale migrate` | `cmd/gale/migrate.go:145` | The recipe declares no binary for this platform, so a refetch cannot produce the bytes; §13 forbids stamping a record beside a directory migrate did not replace. |
 | `gale lock` | `cmd/gale/lock.go:426-442` | The resolved directory is occupied and unprovenanced; adopting it would assert provenance for bytes gale never verified (§11). |
 | `gale lock --refresh` | `cmd/gale/lockrefresh.go:298` | `Lstat` of the **canonical** path fails, so the bare directory is out of scope by design: other scopes' generations link it, and relocation is machine-wide work. |
-| `gale sync` (unlocked) | `cmd/gale/sync.go:521-542` | Does **not** decline — it converges declared roots. It just never visits dependencies or undeclared leftovers. |
-| `gale sync` (locked) | `cmd/gale/sync.go:544-575` | The staleness check is gone under a plan; §4 permits committing only absent canonical dirs. Moot in practice, since a trapped scope cannot mint a v1 lock. |
-| `gale doctor` | `cmd/gale/doctor.go:614-660` | Flags it as a stale install (no `.gale-deps.toml`), but only under `--check-registry`, reads no provenance, and prescribes `gale sync`. |
-| `gale gc` | `cmd/gale/gc.go:487-528` | Reaps it once nothing references it — a real remedy for the orphan case that nothing currently tells the user about. |
+| `gale sync` (unlocked) | `cmd/gale/sync.go:521-542` | Does **not** decline — it converges declared roots additively. It just never visits dependencies or undeclared leftovers. |
+| `gale sync` (legacy lock) | `cmd/gale/sync.go:89-104`, `synclock.go:30-45` | Fails closed on a lock it cannot honor (§9) — **unless** `--no-frozen`, which skips loading the lock entirely and runs the unlocked body above. |
+| `gale sync` (v1 lock) | `cmd/gale/sync.go:544-575` | The staleness check is gone under a plan; §4 permits committing only absent canonical dirs. Moot in practice, since a trapped scope cannot mint a v1 lock. |
+| `gale doctor` | `cmd/gale/doctor.go:614-660` | Flags it as a stale install (no `.gale-deps.toml`), but only under `--check-registry`, reads no provenance, and prescribes `gale sync` — which is right, and which nothing else says. |
+| `gale gc` | `cmd/gale/gc.go:487-528` | Reaps it once **neither** a generation links it nor a config pins it — a real remedy for the true-orphan case that nothing currently tells the user about. |
 
 ## 4. Options
 
@@ -250,30 +261,83 @@ are all red-green testable against `migrateMachine`'s fixtures.
 The property that matters most — that a real rebuilt artifact
 attests and clears every scope — is not (§8).
 
-### D. Remove and reinstall
+### D. Reinstall into the canonical path
 
-Tell the user to `gale remove <pkg>` and install it again.
+The canonical directory is **absent**, so writing it destroys
+nothing. Two spellings, and the difference between them is the
+whole of this option.
 
-**What is actually lost:** the bytes, and nothing else. The store
-is derived state; gale.toml keeps the pin, the lockfile is
-untouched, and `Store.Remove`'s back-compat fallback
-(`store.go:479-506`) does find and delete the bare directory. For
-a **single-scope machine** and a **declared root**, the sequence
-converges: remove deletes the bare directory, install finds the
-canonical path absent, builds, and `recordProvenance` writes the
-record.
+**D1 — `gale sync` (recommended spelling).** §2's soft migration
+is not merely history; it is the escape. `installedStale`
+(`cmd/gale/sync.go:521-542`) reports stale for any store directory
+with no `.gale-deps.toml`, and sync routes it through `Reinstall`
+(`internal/installer/installer.go:294-296`), which stages into a
+sibling and commits at the canonical path. Nothing is deleted:
+the bare directory survives the operation and becomes a `gale gc`
+candidate once neither a generation links it nor a pin resolves to
+it — which happens by itself, since store resolution then prefers
+the populated canonical sibling (`store.go:159-196`).
 
-**Risk, and why `reportUnresolved` refuses to print it:** it does
-not generalize. If a second scope's generation links the bare
-path, the removal leaves dangling symlinks until that scope syncs.
-If the bare directory is a **dependency** rather than a root,
-there is no package to remove — `gale remove` operates on declared
-names. And the sequence is per-scope in a store that is
-machine-wide, which is the exact hazard `refreshable`'s doc
-comment describes.
+For a scope carrying a legacy lock — which is precisely the
+trapped scope's state after #196, since sync fails closed on a
+lock it cannot honor (`sync.go:89-104`) — the spelling is
+**`gale sync --no-frozen`**. That flag skips loading the lockfile
+entirely rather than loading and then bypassing it
+(`sync.go:89-104`, `cmd/gale/synclock.go:30-45`), which is exactly
+why it works on a lock that will not parse. §9 already documents
+it as the escape hatch. This proposal's earlier draft never
+mentioned it, and that omission is what made option D look worse
+than it is.
 
-**Verifiable:** yes, offline, as a documented sequence with its
-preconditions asserted.
+**A successful reinstall is not automatically the end.**
+`recordProvenance` (`internal/installer/provenance.go:54-82`) is
+all-or-nothing: it returns nil — committing the directory with
+**no record** — when the closure is unusable, when
+`stagedEdges` fails, or on `lockgraph.ErrMissingDep`. Since §1
+argues dependencies are the likely survivors, the common case is a
+root whose own rebuild lands canonically and still records
+nothing, because a dependency below it is itself unattested. That
+is progress, not failure: the identity moves from the bare
+directory to the canonical one, which is the state
+`lock --refresh` was built for (`refreshable`,
+`lockrefresh.go:285-303`). It is a **step in the sequence**, and
+the sequence converges bottom-up: dependencies first, then the
+root.
+
+**D2 — `gale remove` then `gale install` (fallback only).** This
+was the earlier draft's headline and it should not have been.
+
+- **`gale remove` deletes the pin.** Without `--host` it sweeps
+  every section listing the package — shared `[packages]` and
+  every host overlay — via `locatePackageSections` and
+  `config.RemovePackageSections`
+  (`cmd/gale/remove.go:105-140`, `internal/config/gale.go:757-782`).
+  The user must re-pin by hand, and **host-overlay placement is
+  lost**: a package that lived under one host's section comes back
+  in whichever section `UpsertPackage` chooses.
+- **It can be real data loss.** The store directory is the only
+  copy of those bytes. If the registry has since dropped that
+  version, the reinstall cannot fetch or build it and the deleted
+  bytes were the last working copy. A pre-revision install is by
+  definition old, so this is not a hypothetical for exactly the
+  population in question.
+- **It silently no-ops across scopes.** Not dangling symlinks, as
+  the earlier draft claimed: `storeRemovalPlan`
+  (`cmd/gale/remove.go:372-391`) keeps the store entry when
+  another scope's gale.toml still references it, and the
+  subsequent install then takes `IsInstalled`'s back-compat cache
+  hit (`installer.go:354-360`) and reports success without
+  building. Dangling requires the narrower case of a generation
+  link with no config pin anywhere.
+- **A dependency has nothing to remove.** `gale remove` operates
+  on declared names.
+
+D2 is worth naming only where D1 has been tried and the package
+is not declared in any manifest sync visits — and then only with
+the pin and data-loss warnings attached.
+
+**Verifiable:** the classification and the message are; the
+builds are not (§8).
 
 ### E. Report accurately and document the escape
 
@@ -282,25 +346,38 @@ Keep every refusal exactly as it is. Change only what gale says.
 **Changes:**
 
 1. `reportUnresolved` (`migraterun.go:193-214`) splits its list by
-   reachability, using machinery migrate already calls:
-   `generation.AuthoritativeGenerationDirs` +
-   `AuthoritativeClosure`, as in `checkNothingReaches`
-   (`migraterun.go:549-583`). A bare directory no scope's active
-   closure reaches is named as a `gale gc` candidate — true today,
-   and currently unsaid. A reached one keeps the honest "no
-   command converges this" line.
-2. For the reached case, name option D's sequence **with its
-   preconditions**: one scope, a declared root, and the warning
-   that a dependency or a second scope makes it unsafe. Naming a
-   sequence with its preconditions is different from naming one
-   that converges nothing, which is what the current comment
-   rejects.
-3. A short section in `docs/revisions.md`, beside "Soft
+   what actually holds each directory. Migrate already walks scope
+   closures (`generation.AuthoritativeGenerationDirs` +
+   `AuthoritativeClosure`, as in `checkNothingReaches`,
+   `migraterun.go:549-583`), but that predicate is **not** gc's:
+   gc additionally retains config-derived pin keys across every
+   project and host (§1). A directory named as a gc candidate must
+   satisfy gc's predicate, not migrate's — either reuse
+   `storeRetentionKey` (`cmd/gale/context.go:479-504`) or hedge
+   the wording to "unless a config still pins it". Telling a user
+   `gale gc` will clear something gc retains is a harmless no-op
+   and still wrong advice.
+2. For a **reached declared root**, name `gale sync` — and
+   `gale sync --no-frozen` where the scope carries a legacy lock.
+   This is the headline remedy (option D1) and the earlier draft
+   omitted it. It is additive: nothing is deleted, no pin is
+   touched, and there is no data-loss window.
+3. Say that a reinstall which commits **without** a record has
+   still made progress, and that the next step is converging the
+   closure bottom-up and then `gale lock --refresh <pkg>`
+   (option D, finding on `recordProvenance`).
+4. Mention `gale remove` + `gale install` only as the fallback it
+   is, with the pin-deletion and data-loss warnings attached
+   (option D2). This is the part the current comment is right to
+   refuse in its unqualified form.
+5. A short section in `docs/revisions.md`, beside "Soft
    migration", describing the state and the escape.
-4. The §13 amendment in §6 below.
+6. The §13 amendment in §6 below.
 
-**Risk:** the reached-and-multi-scope case still has no command.
-That is stated rather than fixed.
+**Risk:** the residue after all of that is a bare directory
+reached **only as a dependency** — no declared root for sync to
+visit, nothing to remove. That case is stated rather than fixed,
+and §9's open question 4 suspects it may be empty.
 
 **Cost:** tier 0-1.
 
@@ -311,8 +388,22 @@ already pins the current message and becomes the red test.
 
 **Take E. Hold C behind a report from a real machine.**
 
-The reasoning is cost against population, and both sides are
-unusually clear here. The population is bounded by a 26-day window
+The case is stronger than the earlier draft claimed, and the
+reason is §2 turned around. If unlocked sync soft-migrates
+declared roots into the canonical path — which it does — then a
+**reached declared root was never trapped**; it was only ever
+un-signposted. `gale sync`, or `gale sync --no-frozen` in the
+legacy-locked scope that #196 produces, converges it additively:
+no deletion, no re-pinning, no data-loss window. What gh#200
+actually describes, once the states are separated, is three
+buckets: true orphans (`gale gc`), reached declared roots
+(`gale sync`), and directories reached **only as a dependency**.
+Only the third has no command, and open question 4 suspects it is
+empty. So "improve the message" is not a consolation prize here —
+with the right commands named, almost nobody is stuck.
+
+The rest of the reasoning is cost against population, and both
+sides are unusually clear. The population is bounded by a 26-day window
 in the project's first month, further cut by unlocked sync's soft
 migration, with no reported instance. The cost of C is tier-3 work
 in the farm and generation subsystems — the area
@@ -362,16 +453,26 @@ and what rebuilding costs":
 > uses.
 >
 > Migrate therefore reports these directories and says what is
-> true of each. One that no scope's active closure reaches is a
-> `gale gc` candidate. One that a single scope reaches, as a
-> declared root, converges by removing the package and installing
-> it again in that scope: the store directory is derived state,
-> the manifest pin and the lockfile survive, and the reinstall
-> commits at the canonical path. One reached by more than one
-> scope, or reached only as a dependency, has no safe per-scope
-> sequence; gale says so rather than naming one.
+> true of each. One that no generation links and no config pins is
+> a `gale gc` candidate. One reached as a **declared root**
+> converges through `gale sync`, which reinstalls a directory with
+> no dependency metadata into the canonical path additively,
+> destroying nothing; where that scope carries a legacy lock the
+> spelling is `gale sync --no-frozen`. A reinstall whose closure
+> cannot be attested commits without a record, which is not a
+> failure but the next step: converge the closure bottom-up, then
+> `gale lock --refresh`. One reached **only as a dependency** has
+> no command; gale says so rather than naming a sequence that
+> converges nothing.
 >
-> Silence about that last case is what this paragraph replaces. A
+> `gale remove` followed by a reinstall is not offered as the
+> primary route. It deletes the manifest pin from every section
+> that carries it, losing host-overlay placement, and it destroys
+> the only copy of bytes whose version the registry may no longer
+> serve.
+>
+> Silence about the dependency case is what this paragraph
+> replaces. A
 > machine-wide rebuild relocation remains available as a future
 > extension of `gale migrate`, on the same enumerate-clear-replace
 > order, with the ordering caveat above; it is not authorized
@@ -420,9 +521,16 @@ is a constraint #200 places on #191, not help flowing back.
 
 If both land, C (if ever built) and #191 phase 2 share
 `migrateOne`'s shape-dispatch and `finishRelocations`. That is
-reuse, not subsumption. Recommend striking the `reportUnresolved`
-bullet from #191's §5, or restating it as "the canonical
-source-directory case only".
+reuse, not subsumption.
+
+**Recommendation: strike the bullet outright.** An earlier draft
+of this section suggested restating it as "the canonical
+source-directory case only", and that is wrong too:
+`reportUnresolved` handles bare directories exclusively, and the
+canonical source case belongs to `reportRebuildable`
+(`migraterun.go:164-185`), which already has a working remedy and
+loses nothing under #191. There is no narrowed form of the claim
+that survives.
 
 ## 8. Testability
 
@@ -439,8 +547,10 @@ source-directory case only".
   `gh#200` string and is the red test for any change to it.
 - `lockRoot`'s remedy text (`cmd/gale/lock.go:426-442`), which is
   string-asserted the same way.
-- That gc reaps an unreferenced bare directory and retains a
-  referenced one — `cmd/gale/gc_test.go` fixtures, no network.
+- That gc reaps an unreferenced bare directory and retains one a
+  config still pins — `cmd/gale/gc_test.go` fixtures, no network.
+  This is the assertion that keeps E's point 1 from advising
+  `gale gc` on a directory gc retains.
 - For option C, were it built: classification, candidate
   ordering, the preflight refusal, the resume branch, and the
   post-pass removal ordering. All of migrate's existing tests run
@@ -448,10 +558,17 @@ source-directory case only".
 
 **Requires a real source build, and therefore cannot run here:**
 
+- That option D1's `gale sync` escape actually converges a real
+  bare directory end to end. The classification and the message
+  are testable; the rebuild is not.
 - That a rebuilt source artifact actually attests — that
   `recordProvenance` writes a record whose graph digest recomputes
   against the closure on disk, for a package built now rather than
-  seeded by a fixture.
+  seeded by a fixture. Its all-or-nothing nil return
+  (`internal/installer/provenance.go:54-82`) is exactly the branch
+  that decides whether D1 finishes or hands off to
+  `lock --refresh`, and which branch a real machine takes is not
+  observable from a fixture.
 - That the rebuilt artifact's hash clears every scope, and that a
   committed foreign lock vetoes it as §3 predicts.
 - The farm rebuild across a real multi-soname package.
@@ -470,13 +587,20 @@ all.
 ## 9. Open questions
 
 1. **Does such a directory exist?** The cheapest possible answer,
-   on each machine that has run gale since April 2026:
+   on each machine that has ever run a pre-v0.12.0 gale:
    ```sh
    find ~/.gale/pkg -mindepth 2 -maxdepth 2 -type d \
-     ! -name '*-[0-9]*' -exec test ! -e {}/.gale-provenance.toml \; -print
+     '!' -exec test -e '{}/.gale-provenance.toml' ';' -print
    ```
-   Zero across the maintainer's machines makes E's message change
-   the entire fix and retires C without further design.
+   That lists every unprovenanced store directory; the
+   pre-revision ones are those whose basename carries no trailing
+   `-<N>`. Matching on the name directly is the wrong filter — a
+   version can contain a dash followed by digits without being
+   revision-qualified, which `store.HasNumericRevisionSuffix`
+   (`internal/store/store.go:213`) exists to decide and a `find`
+   glob cannot. Zero across the maintainer's machines makes E's
+   message change the entire fix and retires C without further
+   design.
 2. **Does the §13 ordering argument in §4C hold in the
    maintainer's reading?** "Fail BEFORE replacing" is satisfied
    for the destructive steps under the proposed order, since the
@@ -484,10 +608,12 @@ all.
    *build* before the machine is cleared, C is not merely
    expensive but out of bounds, and the amendment in §6 should say
    so instead of naming it as an extension.
-3. **Should the reachability split live in migrate or in gc?**
-   Migrate already walks scope closures; gc already owns the
-   remedy. Reporting it from both would be two derivations of one
-   fact, which this codebase avoids on principle.
+3. **Should the split live in migrate or in gc?** Migrate already
+   walks scope closures, but gc's retention predicate is the wider
+   one and gc owns the remedy. Reporting it from both would be two
+   derivations of one fact, which this codebase avoids on
+   principle; the cheap resolution is migrate calling
+   `storeRetentionKey` rather than restating it.
 4. **Is a bare *dependency* directory reachable in practice?** A
    dependent's `.gale-deps.toml` names a version, and the closure
    walk resolves it through `ResolveDir`, so it floats onto a
@@ -500,3 +626,44 @@ all.
 6. **Is the #191 §5 bullet worth a review comment on PR #218**, or
    should it be corrected when whichever proposal lands second is
    revised?
+7. **Does `gale sync --no-frozen` want naming in the error, or
+   only in the docs?** It is §9's documented escape hatch, and a
+   refusal that names it makes bypassing a lock one copy-paste
+   easier. That is the tradeoff, not an oversight.
+
+## Review
+
+Reviewed after the first draft; six findings, all verified
+against the code before integration. The delta:
+
+- **§4D was factually wrong and is rewritten.** `gale remove`
+  deletes the manifest pin from every section carrying it
+  (`remove.go:105-140`, `config/gale.go:757-782`), losing
+  host-overlay placement, and can destroy the last copy of a
+  version the registry no longer serves. Its cross-scope failure
+  is a silent **no-op**, not dangling symlinks
+  (`remove.go:372-391` keeps the entry; the reinstall then cache-
+  hits). §6's amendment carried the same error and is fixed.
+- **`gale sync` is the headline remedy, and `--no-frozen` was
+  missing entirely.** §2's soft migration is the escape for a
+  reached declared root: additive, no deletion, no re-pinning.
+  Strengthens §5 rather than weakening it — the residue is
+  reached-as-a-dependency-only, which open question 4 suspects is
+  empty.
+- **A successful reinstall may still not attest.**
+  `recordProvenance` returns nil on an unusable closure
+  (`installer/provenance.go:54-82`), so D1 converges layout and
+  hands off to `lock --refresh`. Stated as a step, not a failure.
+- **The gc-candidate predicate was migrate's, not gc's.** gc also
+  retains config-derived pins, and `storeRetentionKey`
+  (`context.go:479-504`) keys the bare directory through
+  `StorePath`'s fallback, so a pinned-but-unlinked one is
+  retained.
+- **§7 now recommends striking #191's bullet outright.** The
+  earlier suggested restatement was confused: `reportUnresolved`
+  handles bare directories only.
+- **§2's window is version-bound, not calendar-bound**, and §9.1's
+  `find` no longer filters on the directory name.
+
+The judgment calls survive unchanged: hold §4C, take E, amend
+§13.
