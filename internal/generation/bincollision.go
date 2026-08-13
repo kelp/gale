@@ -120,14 +120,14 @@ func (a *BinArbiter) Claim(pkg, name string) bool {
 	return true
 }
 
-// Err returns a *BinCollisionError covering every collision claimed
-// so far, or nil when there were none. Collisions are sorted by
-// basename, then by the package that lost the name, so the error
-// never varies with map iteration order.
-func (a *BinArbiter) Err() error {
-	if len(a.collisions) == 0 {
-		return nil
-	}
+// Collisions returns every collision claimed so far, sorted by name,
+// then by the package that lost it, so the result never varies with
+// map iteration order. The slice is a copy: the caller cannot mutate
+// the arbiter's bookkeeping through it.
+//
+// Exported for the callers that report collisions instead of refusing
+// them (gh#219). Only bin/ refuses.
+func (a *BinArbiter) Collisions() []BinCollision {
 	out := slices.Clone(a.collisions)
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Bin != out[j].Bin {
@@ -135,5 +135,15 @@ func (a *BinArbiter) Err() error {
 		}
 		return out[i].Incoming < out[j].Incoming
 	})
-	return &BinCollisionError{Collisions: out}
+	return out
+}
+
+// Err returns a *BinCollisionError covering every collision claimed
+// so far, or nil when there were none. Collisions come from
+// Collisions, so the error never varies with map iteration order.
+func (a *BinArbiter) Err() error {
+	if len(a.collisions) == 0 {
+		return nil
+	}
+	return &BinCollisionError{Collisions: a.Collisions()}
 }
