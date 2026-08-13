@@ -83,6 +83,18 @@
   another installed package ships the same binary. A shadowed
   provider was previously invisible.
 
+- `gale doctor` reports the man pages (`man/`, `share/man/`)
+  and root-level files more than one declared package provides
+  (#219). The report is advisory and does not change doctor's
+  exit code. These namespaces stay unarbitrated on purpose:
+  two packages shipping `man/man1/foo.1` is an ordinary setup —
+  a library and its CLI, a compat shim — so refusing the
+  rebuild the way `[bin]` does would reject installations that
+  have always been correct, and there is deliberately no
+  `[man]` table. The rebuild still links the first package in
+  sorted order; removing one provider is the only way to change
+  which.
+
 - `gale gc --force`: sweep even when a project's config or
   generation cannot be read. The escape hatch for the refusal
   below, for a mount that is gone for good.

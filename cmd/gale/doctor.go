@@ -157,6 +157,7 @@ var doctorChecks = []doctorCheck{
 	{"generation", checkGeneration},
 	{"symlinks", checkSymlinks},
 	{"shadowed executables", checkShadowedProviders},
+	{"shadowed files", checkShadowedFiles},
 	{"revision drift", checkRevisionDrift},
 	{"lib farm", checkFarm},
 	{"stale installs", checkStaleInstalls},
@@ -809,6 +810,67 @@ func shadowedProviders(
 		}
 	}
 	return bins.Err()
+}
+
+// checkShadowedFiles reports the man pages and root-level files more
+// than one declared package provides. It is advisory: it always
+// passes, so it never changes doctor's exit code.
+//
+// The verdict is a report because the state is legitimate. Two
+// packages shipping man/man1/foo.1 is expected — a library and its
+// CLI, a compat shim — and gh#190's argument for refusing bin/ does
+// not survive the move: a shadowed man page shows the wrong docs, it
+// does not run the wrong program. Refusing would reject setups that
+// have always worked, and warning on every activation is the trap
+// gh#190 already rejected. doctor is the home for a state worth
+// knowing about that nothing needs to act on (gh#219).
+func checkShadowedFiles(ctx *doctorContext) bool {
+	scopes, err := doctorScopes(ctx)
+	if err != nil {
+		ctx.out.Warn(fmt.Sprintf(
+			"shadowed-file check skipped: %v", err,
+		))
+		return true
+	}
+	for _, s := range scopes {
+		reportScopeShadowedFiles(ctx, s)
+	}
+	return true
+}
+
+// reportScopeShadowedFiles is checkShadowedFiles for one scope.
+// Scopes are judged separately because each builds its own generation
+// from its own manifest, so a shadowed path is shadowed only among
+// the packages one scope declares.
+func reportScopeShadowedFiles(ctx *doctorContext, s doctorScope) {
+	cfg, err := loadEffectiveConfig(s.configPath)
+	if err != nil {
+		// checkGlobalConfig and checkProjectConfig already report an
+		// unreadable manifest.
+		return
+	}
+	shadowed := generation.ShadowedFiles(cfg.Packages, ctx.storeRoot)
+	if len(shadowed) == 0 {
+		ctx.out.Success(fmt.Sprintf("No shadowed files (%s)", s.label))
+		return
+	}
+	items := make([]string, 0, len(shadowed))
+	for _, c := range shadowed {
+		items = append(items, fmt.Sprintf(
+			"%s: %s shadows %s", c.Path, c.Existing, c.Incoming,
+		))
+	}
+	ctx.out.Warn(cappedList(
+		fmt.Sprintf(
+			"%d shadowed file(s) in %s scope "+
+				"(man pages and root-level files provided by "+
+				"more than one package):",
+			len(shadowed), s.label,
+		),
+		items,
+		"the first package in sorted order provides it; "+
+			"remove one provider to change which",
+	))
 }
 
 // checkRevisionDrift compares each declared package's

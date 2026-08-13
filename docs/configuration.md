@@ -89,6 +89,19 @@ package leaves the entry alone: it still names a
 declared package, and it records the choice for the
 next time that package is installed.
 
+`bin/` is the only namespace gale arbitrates. Man
+pages and root-level files are **reported, not
+arbitrated**: `gale doctor` names each path more than
+one declared package provides, and the rebuild links
+the first package in sorted order, as it always has.
+There is deliberately no `[man]` table. Two packages
+shipping `man/man1/foo.1` is an ordinary setup — a
+library and its CLI, a compat shim — and refusing it
+would reject installations that have always been
+correct. A shadowed man page shows the wrong docs; a
+shadowed executable runs the wrong program. Remove one
+provider to change which copy wins.
+
 ### `[hosts.<key>.packages]`, `[hosts.<key>.pinned]` and `[hosts.<key>.bin]`
 
 Per-machine overlays. Top-level `[packages]`,

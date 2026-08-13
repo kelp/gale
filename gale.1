@@ -262,6 +262,11 @@ cannot be read, and two declared packages shipping the same
 executable name with no
 .Sy [bin]
 winner.
+It also reports, without failing, the man pages and root-level
+files more than one declared package provides.
+Those are not arbitrated: the first package in sorted order
+provides the file, and removing one provider is the only way to
+change which.
 Use
 .Fl -repair
 to rebuild active generations and re-sign Mach-O binaries.
