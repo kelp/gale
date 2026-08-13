@@ -32,6 +32,9 @@ func TestFarmPredicateIgnoresPathSpelling(t *testing.T) {
 		t.Fatal(err)
 	}
 	soname := "libspell.4.dylib"
+	if runtime.GOOS == "linux" {
+		soname = "libspell.so.4"
+	}
 	if err := os.WriteFile(
 		filepath.Join(lib, soname), []byte("x"), 0o644,
 	); err != nil {

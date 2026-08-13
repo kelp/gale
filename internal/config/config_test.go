@@ -1106,15 +1106,23 @@ func TestEffectivePackagesDoesNotMutateReceiver(t *testing.T) {
 const galeWithHostPinned = `
 [packages]
 jq = "1.7.1"
+node = "24.4.0"
 
 [pinned]
 jq = true
 
+[bin]
+npx = "node"
+
 [hosts.my-mac.packages]
 fzf = "0.50"
+corepack = "0.34.0"
 
 [hosts.my-mac.pinned]
 fzf = true
+
+[hosts.my-mac.bin]
+npx = "corepack"
 `
 
 func TestEffectivePinnedMergesSharedAndHost(t *testing.T) {
@@ -1128,6 +1136,36 @@ func TestEffectivePinnedMergesSharedAndHost(t *testing.T) {
 	}
 	if !pinned["fzf"] {
 		t.Error("expected fzf pinned (host)")
+	}
+}
+
+// TestEffectiveBinMergesHostOverlay puts [bin] on the footing
+// [packages] and [pinned] already have (gh#219). A machine whose
+// winner ships only in its own overlay has to resolve the collision
+// from there, and the overlay outranks the shared table.
+func TestEffectiveBinMergesHostOverlay(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHostPinned)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.EffectiveBin("my-mac")["npx"]; got != "corepack" {
+		t.Errorf("EffectiveBin(my-mac)[npx] = %q, want %q — the overlay "+
+			"outranks shared [bin]", got, "corepack")
+	}
+}
+
+// TestEffectiveBinIgnoresNonMatchingHost keeps the overlay scoped.
+// A selector that misses this machine must leave the shared winner
+// standing; borrowing another host's choice would drop the basename
+// from the package that actually provides it here.
+func TestEffectiveBinIgnoresNonMatchingHost(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHostPinned)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got := cfg.EffectiveBin("other-box")["npx"]; got != "node" {
+		t.Errorf("EffectiveBin(other-box)[npx] = %q, want %q — my-mac's "+
+			"overlay does not reach this host", got, "node")
 	}
 }
 
@@ -1619,23 +1657,62 @@ corepack = "0.34.0"
 // still loads after it. A [bin] entry whose winner is gone fails
 // ValidateBin, so it goes in the same write.
 func TestRemovePackageSectionsPrunesBinOverride(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "gale.toml")
-	if err := os.WriteFile(path, []byte(`[packages]
+	cfg, data := removeAndReparse(t, `[packages]
 node = "24.4.0"
 corepack = "0.34.0"
 
 [bin]
 npx = "corepack"
-`), 0o644); err != nil {
+`, []string{""}, "corepack")
+
+	if _, has := cfg.Bin["npx"]; has {
+		t.Errorf("[bin] npx survived its winner's removal:\n%s", data)
+	}
+	if err := cfg.ValidateBin(); err != nil {
+		t.Errorf("config no longer validates: %v", err)
+	}
+}
+
+// TestRemovePrunesHostScopedBinOverride carries that invariant to a
+// host-scoped winner. [hosts.<selector>.bin] merges into the
+// effective [bin] on a matching machine (gh#219), so an entry left
+// behind naming a removed package breaks the manifest the same way —
+// on exactly the hosts the selector reaches.
+func TestRemovePrunesHostScopedBinOverride(t *testing.T) {
+	cfg, data := removeAndReparse(t, `[packages]
+node = "24.4.0"
+
+[hosts.laptop.packages]
+corepack = "0.34.0"
+
+[hosts.laptop.bin]
+npx = "corepack"
+`, []string{"laptop"}, "corepack")
+
+	if winner, has := cfg.Hosts["laptop"].Bin["npx"]; has {
+		t.Errorf("[hosts.laptop.bin] npx = %q survived its winner's "+
+			"removal:\n%s", winner, data)
+	}
+	cfg.Bin = cfg.EffectiveBin("laptop")
+	if err := cfg.ValidateBin(); err != nil {
+		t.Errorf("config no longer validates on laptop: %v", err)
+	}
+}
+
+// removeAndReparse writes src to a temp gale.toml, removes pkg from
+// the named manifest sections, and hands back the reparsed config
+// with the file bytes for failure messages.
+func removeAndReparse(
+	t *testing.T, src string, sections []string, pkg string,
+) (*GaleConfig, []byte) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "gale.toml")
+	if err := os.WriteFile(path, []byte(src), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	if _, _, err := RemovePackageSections(
-		path, []string{""}, "corepack",
-	); err != nil {
+	if _, _, err := RemovePackageSections(path, sections, pkg); err != nil {
 		t.Fatalf("RemovePackageSections: %v", err)
 	}
-
 	data, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1644,10 +1721,5 @@ npx = "corepack"
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	if _, has := cfg.Bin["npx"]; has {
-		t.Errorf("[bin] npx survived its winner's removal:\n%s", data)
-	}
-	if err := cfg.ValidateBin(); err != nil {
-		t.Errorf("config no longer validates: %v", err)
-	}
+	return cfg, data
 }

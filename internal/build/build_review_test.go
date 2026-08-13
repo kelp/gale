@@ -23,7 +23,13 @@ import (
 // absolute HOME paths into output — a leak here produces
 // byte-nondeterministic archives across machines.
 func TestBuildEnvHomeIsBuildScoped(t *testing.T) {
-	t.Setenv("HOME", "/host/home/value")
+	// HOME must be a real writable directory: buildEnv
+	// allocates its scoped dirs under $HOME/.gale/tmp. A
+	// literal path made this test create /host/home/value on
+	// the machine when run as root, and skip past the real
+	// assertion when run unprivileged (gh#214).
+	hostHome := t.TempDir()
+	t.Setenv("HOME", hostHome)
 
 	env, cleanup, err := buildEnv(&BuildContext{
 		PrefixDir: "/tmp/prefix",
@@ -42,7 +48,7 @@ func TestBuildEnvHomeIsBuildScoped(t *testing.T) {
 	if home == "" {
 		t.Fatal("HOME should be set")
 	}
-	if home == "/host/home/value" {
+	if home == hostHome {
 		t.Errorf("HOME = %q, want build-scoped path "+
 			"(not host HOME)", home)
 	}
@@ -52,6 +58,19 @@ func TestBuildEnvHomeIsBuildScoped(t *testing.T) {
 	}
 	if !info.IsDir() {
 		t.Errorf("HOME = %q is not a directory", home)
+	}
+	// Scoped, not merely different: the build gets a fresh
+	// directory of its own. The host HOME already holds
+	// .gale/tmp by this point, so an empty directory is one
+	// buildEnv allocated rather than the host's own.
+	entries, readErr := os.ReadDir(home)
+	if readErr != nil {
+		t.Fatalf("read build-scoped HOME: %v", readErr)
+	}
+	if len(entries) != 0 {
+		t.Errorf("build-scoped HOME %q holds %d entries, "+
+			"want a directory allocated for this build",
+			home, len(entries))
 	}
 }
 

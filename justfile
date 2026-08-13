@@ -103,8 +103,8 @@ test-unprivileged:
 # property is why the link has to be at the root, and why the
 # target needs write access there.
 #
-# The baseline is NOT empty — read a failure against
-# docs/dev/agent-environment.md before treating it as yours.
+# The baseline is empty as of gh#230, so `just preflight` runs it
+# and any failure here is yours.
 
 # Run the suite with a macOS-shaped symlinked TMPDIR
 test-symlinked-tmp:
@@ -138,9 +138,9 @@ test-symlinked-tmp:
     TMPDIR="$link" go test -count=1 ./...
     status=$?
     if [ "$status" -ne 0 ]; then
-      echo "test-symlinked-tmp: FAILED — compare against origin/main's" >&2
-      echo "  baseline before reading these as yours; see" >&2
-      echo "  docs/dev/agent-environment.md" >&2
+      echo "test-symlinked-tmp: FAILED — the baseline is empty, so this" >&2
+      echo "  is a real path-spelling failure your branch introduced;" >&2
+      echo "  see docs/dev/agent-environment.md" >&2
     fi
     exit $status
 
@@ -192,6 +192,7 @@ preflight:
     gate fmt-check {{ just_executable() }} fmt-check
     gate pipeline-check {{ just_executable() }} pipeline-check
     gate check-darwin {{ just_executable() }} check-darwin
+    gate test-symlinked-tmp {{ just_executable() }} test-symlinked-tmp
     echo "preflight: all gates passed"
 
 # Run the integration suite (Tier A: fixture-driven, fast)

@@ -28,11 +28,12 @@ var ErrGaleConfigNotFound = errors.New(
 // not exist in the config.
 var ErrPackageNotFound = errors.New("package not found")
 
-// HostConfig represents a per-host packages/pinned overlay
+// HostConfig represents a per-host packages/pinned/bin overlay
 // stored under [hosts.<name>] in gale.toml.
 type HostConfig struct {
 	Packages map[string]string `toml:"packages,omitempty"`
 	Pinned   map[string]bool   `toml:"pinned,omitempty"`
+	Bin      map[string]string `toml:"bin,omitempty"`
 }
 
 // GaleConfig represents a gale.toml file (global or project).
@@ -150,13 +151,14 @@ func (c *GaleConfig) PackageOrigins(host string) map[string]string {
 	return out
 }
 
-// ApplyHost replaces Packages and Pinned with the effective
+// ApplyHost replaces Packages, Pinned and Bin with the effective
 // merged maps for the given host. Mutates the receiver.
 // Callers that need the raw on-disk view (e.g. mutators) must
 // not call this.
 func (c *GaleConfig) ApplyHost(host string) {
 	c.Packages = c.EffectivePackages(host)
 	c.Pinned = c.EffectivePinned(host)
+	c.Bin = c.EffectiveBin(host)
 }
 
 // EffectivePinned merges shared [pinned] with every matching
@@ -171,6 +173,27 @@ func (c *GaleConfig) EffectivePinned(host string) map[string]bool {
 	}
 	for _, k := range matchingHostKeys(c.Hosts, host) {
 		maps.Copy(out, c.Hosts[k].Pinned)
+	}
+	return out
+}
+
+// EffectiveBin merges shared [bin] with every matching
+// [hosts.<key>.bin] overlay, using the same multi-pattern matching
+// and override order as EffectivePackages. Does not mutate the
+// receiver.
+//
+// Two machines can need different providers of one basename on
+// PATH, and a manifest-wide winner cannot say so: naming either
+// package drops the basename on the other machine. The overlay is
+// the same answer [packages] and [pinned] already give (gh#219).
+func (c *GaleConfig) EffectiveBin(host string) map[string]string {
+	out := make(map[string]string, len(c.Bin))
+	maps.Copy(out, c.Bin)
+	if host == "" {
+		return out
+	}
+	for _, k := range matchingHostKeys(c.Hosts, host) {
+		maps.Copy(out, c.Hosts[k].Bin)
 	}
 	return out
 }
@@ -846,8 +869,15 @@ func RemovePackageSections(
 	return before, after, err
 }
 
-// pruneBinOverrides deletes every [bin] entry naming pkg as the
-// winner, but only once pkg is declared in no section of content.
+// pruneBinOverrides deletes every entry naming pkg as the winner,
+// from shared [bin] and from every [hosts.<selector>.bin] overlay,
+// but only once pkg is declared in no section of content.
+//
+// The overlays are not optional. loadEffectiveConfig merges them
+// into the effective [bin] on a matching machine, so an entry left
+// under a selector fails ValidateBin exactly as a shared one does —
+// just only on the hosts that selector reaches, which is the harder
+// failure to diagnose.
 //
 // A host-targeted removal that leaves the package in shared
 // [packages] (or in another host's overlay) keeps the entry: the
@@ -861,14 +891,29 @@ func RemovePackageSections(
 // a worse trade than leaving one stale override behind.
 func pruneBinOverrides(content []byte, pkg string) []byte {
 	cfg, err := ParseGaleConfig(string(content))
-	if err != nil || len(cfg.Bin) == 0 || cfg.declares(pkg) {
+	if err != nil || cfg.declares(pkg) {
 		return content
 	}
-	for _, bin := range slices.Sorted(maps.Keys(cfg.Bin)) {
-		if cfg.Bin[bin] != pkg {
+	content = pruneBinTable(content, binPath(), cfg.Bin, pkg)
+	for _, host := range slices.Sorted(maps.Keys(cfg.Hosts)) {
+		content = pruneBinTable(
+			content, hostBinPath(host), cfg.Hosts[host].Bin, pkg,
+		)
+	}
+	return content
+}
+
+// pruneBinTable deletes the entries of one [bin] table that name pkg
+// as the winner. bins is that table as parsed; section addresses it
+// in content, which the line editor rewrites in place.
+func pruneBinTable(
+	content []byte, section []string, bins map[string]string, pkg string,
+) []byte {
+	for _, bin := range slices.Sorted(maps.Keys(bins)) {
+		if bins[bin] != pkg {
 			continue
 		}
-		if modified, ok := deleteTOMLKey(content, binPath(), bin); ok {
+		if modified, ok := deleteTOMLKey(content, section, bin); ok {
 			content = modified
 		}
 	}
@@ -878,6 +923,14 @@ func pruneBinOverrides(content []byte, pkg string) []byte {
 // binPath returns the section path of the [bin] table.
 func binPath() []string {
 	return []string{"bin"}
+}
+
+// hostBinPath returns the section path for a host's bin table,
+// [hosts.<host>.bin]. The host segment is kept as a single key —
+// encodeSectionPath quotes it when it contains dots or other
+// non-bare-key characters.
+func hostBinPath(host string) []string {
+	return []string{"hosts", host, "bin"}
 }
 
 // readFileState captures a file's existence and content. os.Lstat
