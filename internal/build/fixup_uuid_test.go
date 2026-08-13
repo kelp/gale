@@ -257,7 +257,6 @@ func TestNormalizeAndResignRefusesWhenEntitlementsCannotBeRead(t *testing.T) {
 		t.Error("normalizeAndResign() modified the binary before " +
 			"failing; the entitlement capture is its first step")
 	}
-	t.Fatal("mutation probe")
 }
 
 // TestHasCodeSignatureDistinguishesSignedFromUnsigned pins the probe
@@ -289,5 +288,4 @@ func TestHasCodeSignatureDistinguishesSignedFromUnsigned(t *testing.T) {
 	if signed {
 		t.Error("hasCodeSignature() = true after --remove-signature")
 	}
-	t.Fatal("mutation probe")
 }
