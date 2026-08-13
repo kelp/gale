@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/recipe"
 )
@@ -114,10 +115,12 @@ func TestRebuildGenerationOverManyPackagesSymlinksAll(t *testing.T) {
 // through inodes — the dev-host incident hit ~3M inodes for
 // 33 untouched gens before manual gc.
 //
-// Default retention is config.DefaultGenerationKeep (10), so
-// staging 15 pre-existing gens plus a fresh Build (which
-// makes #16) should result in gens 1..6 removed, gens 7..16
-// preserved.
+// Retention is config.DefaultGenerationKeep, read from the
+// constant rather than written out, so the assertions track the
+// default instead of pinning a number the default may move away
+// from (it went 10 → 3 with gh#247). Staging 15 pre-existing
+// gens plus a fresh Build (which makes #16) leaves the highest
+// `keep` preserved and everything below them removed.
 func TestRebuildGenerationAutoPrunesOldGens(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
@@ -162,15 +165,17 @@ func TestRebuildGenerationAutoPrunesOldGens(t *testing.T) {
 	}
 
 	// Build advanced current to gen/16. Auto-gc keeps the last
-	// 10 (gens 7..16), prunes 1..6.
-	for i := 1; i <= 6; i++ {
+	// `keep` (gens cutoff..16) and prunes everything below.
+	const built = 16
+	cutoff := built - config.DefaultGenerationKeep + 1
+	for i := 1; i < cutoff; i++ {
 		if _, err := os.Stat(
 			filepath.Join(galeDir, "gen", strconv.Itoa(i)),
 		); !os.IsNotExist(err) {
 			t.Errorf("gen/%d should have been auto-pruned (err=%v)", i, err)
 		}
 	}
-	for i := 7; i <= 16; i++ {
+	for i := cutoff; i <= built; i++ {
 		if _, err := os.Stat(
 			filepath.Join(galeDir, "gen", strconv.Itoa(i)),
 		); err != nil {

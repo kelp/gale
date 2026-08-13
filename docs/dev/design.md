@@ -132,8 +132,11 @@ Updating the environment is a single `os.Rename` call:
 2. Create temp symlink: `current-new → gen/<N>`
 3. `os.Rename("current-new", "current")` — atomic
 4. Old generations accumulate; `gale gc` or
-   `PruneOldGenerations` removes them (default: keep 10).
-   This is required for `gale generations rollback`.
+   `PruneOldGenerations` removes them (default: keep 3).
+   This is required for `gale generations rollback`, so gc
+   also retains the store closure of every generation it
+   keeps — a generation without its packages cannot be
+   rolled onto (gh#247).
 
 Step 3 is one syscall. PATH never sees a broken or
 partially-built state.

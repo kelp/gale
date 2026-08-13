@@ -51,6 +51,49 @@
   are unchanged. The defect this closes is under **Fixed**
   below.
 
+### Changed
+
+- **`gale gc` now retains the store closure of every generation
+  it keeps, and `[generation] keep` defaults to 3 instead of 10
+  (#247).** gc kept `keep` generation directories while
+  retaining only the *active* generation's packages, so a
+  generation it kept could have its store versions swept.
+  Rolling onto one activated dangling PATH entries, with no
+  error at any step. One knob now decides both halves: gc keeps
+  the `keep` highest-numbered generations at or below `current`,
+  plus the whole branch above `current` (never capped by
+  `keep`), and retains every version each of them links — in the
+  global scope, the project scope, and every registered project.
+
+  **Machines holding 10 generations prune to 3 on their next
+  rebuild.** That is the intended trade: 10 was priced in inodes
+  (~28K per generation), and the same number now retains store
+  *bytes*, which cost far more. Set `[generation] keep` in
+  `~/.gale/config.toml` to keep deeper history and pay for it in
+  disk. `keep = 1` retains the current generation only and is
+  the only way back to the old sweep — `keep = 0` means "unset".
+  A negative `keep` retains every generation and every
+  generation's versions, while still sweeping versions nothing
+  references.
+
+  The consequence worth knowing: **`gale remove X && gale gc` no
+  longer reclaims X's bytes immediately.** X stays in the store
+  for `keep` generations, because rolling back past the removal
+  needs it. It goes once the generation that linked it falls out
+  of retention.
+
+  `gale gc --dry-run` reports how many generations it is
+  retaining beyond the active one and names the knob.
+
+- **`gale generations rollback` refuses an incomplete
+  generation (#247).** `build` has always validated a
+  generation's symlinks before activating it; rollback is the
+  same activation and had no equivalent, so it swapped onto a
+  generation whose packages were gone and reported success. The
+  error names the generation and points at `gale sync` or `gale
+  generations remove N`. There is no `--force`: activating known
+  broken PATH entries has no correct use.
+
 ### Added
 
 - `gale generations remove N [N...]`: discard generations by
