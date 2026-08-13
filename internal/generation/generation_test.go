@@ -908,6 +908,32 @@ func TestBuildDeterministicSymlinkOrder(t *testing.T) {
 
 // --- Behavior 11: Unique temp-link path for concurrent builds ---
 
+// deadlockBackstop bounds a positive assertion that waits on
+// genuinely asynchronous work — a Build running in another
+// goroutine, a contender parked in flock. It exists so a real
+// deadlock fails naming what hung, instead of running the package
+// out to the go test timeout.
+//
+// It is not a performance budget, and must not be tuned to
+// expected timing. Goroutine handoff plus filelock.Acquire on a
+// free lock peaked at 3.1 ms over 2000 iterations at load 12
+// (measured for gh#246); what made these deadlines flake was the
+// rare multi-second stall — race-detector stop-the-world,
+// container CPU throttling, an I/O stall inside Acquire's
+// MkdirAll/OpenFile. A margin sized against the steady-state cost
+// converts that slowness into a failure, so this is sized to be
+// unreachable by anything short of a hang (gh#251). It matches
+// the backstops internal/installer already uses.
+//
+// A wait that has a real synchronisation point wants no clock at
+// all: when the operation under test has already returned, probe
+// the lock with a non-blocking flock instead (gh#246, gh#250).
+// Neither use below has that option — one waits for a Build to
+// finish, the other for a blocked contender to wake, and a
+// non-blocking probe cannot tell a lock a live contender just
+// took from one that was never released.
+const deadlockBackstop = 30 * time.Second
+
 func TestBuildWaitsForGenerationLock(t *testing.T) {
 	galeDir := t.TempDir()
 	// storeRoot must be a child of galeDir so that
@@ -946,7 +972,7 @@ func TestBuildWaitsForGenerationLock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Build error after lock release: %v", err)
 		}
-	case <-time.After(1 * time.Second):
+	case <-time.After(deadlockBackstop):
 		t.Fatal("Build did not complete after generation lock release")
 	}
 }
