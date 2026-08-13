@@ -197,6 +197,29 @@ cache per GOOS) plus ~30s for the lint pass; warm, a few seconds each.
 The same blind spot runs the other way on CI's macos runner for
 `//go:build linux` files, but nothing here is Linux-only in the same way.
 
+### Proving a darwin test actually ran
+
+A green `macos-26` leg does **not** prove a darwin-only test executed. CI runs
+`go test ./...` without `-v`, and a skipped test is indistinguishable from a
+passing one in that output. #216 shipped on exactly that assumption.
+
+Two things do prove it, both by making the test *fail* on the macOS leg — a
+skipped test cannot fail:
+
+- **A red phase that reaches macOS.** If the test fails by assertion and CI
+  names it, it ran. It must be an assertion failure: a compile error names the
+  package, not the test, and proves nothing about the body executing.
+- **A mutation probe.** Append an unconditional `t.Fatal("mutation probe")` to
+  the **end** of the test body, push, confirm the macOS leg goes red naming it,
+  then revert. Putting it last matters: a `t.Skip` still short-circuits ahead of
+  it, so a genuinely-skipped test stays green and the probe correctly reports
+  "did not run".
+
+The matrix sets `fail-fast: false` so a red push reports both platforms. It did
+not always: whichever leg failed first cancelled the other mid-step, so a red
+push that failed on Linux produced *no* macOS evidence at all, and the probe was
+the only usable route (gh#215).
+
 ## Path spelling: the macOS-only test failure
 
 `check-darwin` compiles darwin code; it never *runs* anything. So the most
