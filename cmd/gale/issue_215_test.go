@@ -118,6 +118,11 @@ func TestDoctorFailsOnAnUnresolvableRpathDep(t *testing.T) {
 			t.Errorf("report must name %q; output: %q", want, buf.String())
 		}
 	}
+	// Mutation probe (temporary, reverted in the next commit): a
+	// terminal t.Fatal turns a test that RAN red while leaving one
+	// that SKIPPED green, which is the only way to tell the two
+	// apart on a macOS leg that runs without -v (gh#216).
+	t.Fatal("mutation probe")
 }
 
 // TestDoctorPassesWhenTheFarmResolvesTheRef is the guard against the
@@ -150,6 +155,11 @@ func TestDoctorPassesWhenTheFarmResolvesTheRef(t *testing.T) {
 		t.Errorf("nothing to report, so the ref must not appear; "+
 			"output: %q", buf.String())
 	}
+	// Mutation probe (temporary, reverted in the next commit): a
+	// terminal t.Fatal turns a test that RAN red while leaving one
+	// that SKIPPED green, which is the only way to tell the two
+	// apart on a macOS leg that runs without -v (gh#216).
+	t.Fatal("mutation probe")
 }
 
 // TestDoctorSkipsBinaryLinkageOffDarwin pins the runtime gate.
