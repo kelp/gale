@@ -144,11 +144,24 @@ Remove unused package versions from the store and
 old generations.
 Keeps versions referenced by any
 .Pa gale.toml ,
-by the active global and project generations, and by
-the active generation of every project recorded in
+by the active generation, and by every generation above
+the active one, in the global scope, the project scope,
+and every project recorded in
 .Pa ~/.gale/projects ,
 so a gc run from one directory cannot sweep versions
 another project still links.
+.Pp
+The generations above the current one are the branch a
+rollback abandoned.
+Their directories are never removed automatically, so the
+versions they link are never swept either: a generation
+whose packages are gone cannot be rolled onto.
+.Cm generations remove
+is the only way to discard that branch.
+Generations below the current one are removed, and the
+versions only they linked are reclaimed \(em that is how a
+superseded revision goes after
+.Cm update .
 Registry entries whose project directory has vanished
 are pruned on each real run.
 Each build of a dirty tree installed with
@@ -332,6 +345,14 @@ the previous one.
 Switch to a previous generation.
 Defaults to the previous generation (current \- 1).
 Atomic symlink swap, same as install/sync.
+Refuses a generation whose symlinks do not all resolve,
+naming it, and leaves the current one active.
+An incomplete generation is one whose store versions are
+gone; activating it would put broken entries on PATH.
+Rebuild from config with
+.Cm sync ,
+or discard it with
+.Cm generations remove .
 .Pp
 .Dl $ gale generations rollback
 .Dl $ gale generations rollback 3

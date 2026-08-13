@@ -697,6 +697,126 @@ var skipTopLevelDirs = map[string]bool{
 	"misc": true,
 }
 
+// retainedNumbers returns the generation numbers gc must not
+// sweep the store closure of, sorted ascending: the active
+// generation and every generation ABOVE it.
+//
+// The branch above current exists only after a rollback, and it
+// is retained history a roll-forward may return to — a number,
+// once allocated, permanently identifies one snapshot (gh#189).
+// cleanOldGenerations already kept those DIRECTORIES through its
+// `n >= curGen` skip; nothing kept the store versions they link,
+// so roll back, gc, roll forward activated dangling PATH entries
+// (gh#247). `gale generations remove N` stays the only way to
+// reclaim that branch (gh#206).
+//
+// Nothing below current is retained. Those generations are the
+// ones cleanOldGenerations deletes, and reclaiming a superseded
+// revision right after an update is gc's most common job
+// (gh#137). The set is the exact complement of what
+// cleanOldGenerations removes, which is what makes a hollow
+// generation — a directory gc keeps without the versions it
+// links — impossible by construction.
+//
+// curGen == 0 (no current symlink) retains everything, matching
+// the `n >= 0` skip that already stopped cleanOldGenerations
+// from deleting anything in that state. It also stops a lost
+// current symlink from letting gc sweep the store bare.
+//
+// The active generation is always in the set, even when its
+// directory is absent: a numeric current pointing at nothing must
+// reach RetainedVersionsStrict as an UNREADABLE generation, not
+// as a generation nobody listed, or gc's refuse-to-sweep path
+// (gh#188) never fires.
+//
+// curGen is read BEFORE the listing, as PruneOldGenerations and
+// cleanOldGenerations both do: under the generation lock that
+// ordering keeps the snapshot consistent with the directory scan.
+func retainedNumbers(galeDir string) ([]int, error) {
+	curGen, err := Current(galeDir)
+	if err != nil {
+		return nil, fmt.Errorf("read current: %w", err)
+	}
+	nums, err := genNumbers(galeDir)
+	if err != nil {
+		return nil, err
+	}
+
+	if curGen <= 0 {
+		return nums, nil
+	}
+	var retained []int
+	for _, n := range nums {
+		if n >= curGen {
+			retained = append(retained, n)
+		}
+	}
+	if !slices.Contains(retained, curGen) {
+		retained = append(retained, curGen)
+		slices.Sort(retained)
+	}
+	return retained, nil
+}
+
+// RetainedNumbers is retainedNumbers for callers outside the
+// package. The raw directory scan stays unexported — what widens
+// here is the retention POLICY, which gc has to agree with
+// exactly, not the listing (gh#206 declined to export that).
+func RetainedNumbers(galeDir string) ([]int, error) {
+	return retainedNumbers(galeDir)
+}
+
+// RetainedVersionsStrict returns every package version the
+// retained generations link, as name → versions. gc keys its
+// retention set from it, so a generation whose directory gc keeps
+// can never have its store closure swept — a directory without
+// its closure is a hollow generation, and rolling onto one puts
+// dangling entries on PATH (gh#247).
+//
+// The answer is name → VERSIONS, unlike CurrentVersions and its
+// strict sibling: those describe one active environment, where a
+// package has exactly one version. Retention spans generations,
+// and the active one plus an abandoned branch routinely link two
+// versions of the same package — that is the ordinary shape after
+// any upgrade. Collapsing to one version per name would drop the
+// other store dir out of retention and sweep it.
+//
+// Strict, never lenient (gh#210): an unreadable retained
+// generation is an error naming the number, which gc's
+// refuse-to-sweep path turns into a run that deletes nothing. The
+// lenient reader answers "links nothing" for a generation it
+// could not read, and a sweep computed from that deletes what it
+// could not see. generation.List is backed by the lenient reader
+// and must never become a retention source for the same reason.
+func RetainedVersionsStrict(
+	galeDir, storeRoot string,
+) (map[string][]string, error) {
+	nums, err := retainedNumbers(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	genBase := filepath.Join(galeDir, "gen")
+	out := map[string][]string{}
+	for _, n := range nums {
+		pkgs, err := genVersionsStrict(
+			filepath.Join(genBase, strconv.Itoa(n)), storeRoot,
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"reading retained generation %d: %w; discard it "+
+					"with `gale generations remove %d`, or rerun "+
+					"gc with --force", n, err, n,
+			)
+		}
+		for name, version := range pkgs {
+			if !slices.Contains(out[name], version) {
+				out[name] = append(out[name], version)
+			}
+		}
+	}
+	return out, nil
+}
+
 // PruneOldGenerations removes generation directories older than
 // (curGen - keep + 1), preserving the most recent `keep` gens
 // (including the current one). Anything at or above curGen —

@@ -2078,3 +2078,246 @@ func TestBuildSkipsNonFunctionalTopLevelDirs(t *testing.T) {
 		}
 	}
 }
+
+// stageGenNumbers creates exactly the named generation
+// directories under galeDir and points current at cur. Unlike
+// stageGens it takes an explicit set, so a listing with gaps —
+// legitimate since gh#189 made allocation max(prev,highest)+1 —
+// can be staged directly. cur == 0 stages no current symlink.
+func stageGenNumbers(t *testing.T, galeDir string, nums []int, cur int) {
+	t.Helper()
+	for _, n := range nums {
+		if err := os.MkdirAll(
+			filepath.Join(galeDir, "gen", strconv.Itoa(n)), 0o755,
+		); err != nil {
+			t.Fatalf("stage gen/%d: %v", n, err)
+		}
+	}
+	if cur == 0 {
+		return
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", strconv.Itoa(cur)),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatalf("link current: %v", err)
+	}
+}
+
+// TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt pins the
+// rule: the active generation plus every generation above it —
+// the branch a rollback abandoned, which a roll-forward may
+// return to (gh#189) — and nothing below.
+//
+// The set is the exact complement of what cleanOldGenerations
+// removes (n < curGen), which is what makes a hollow generation
+// impossible: gc never keeps a directory without the store dirs
+// it links, and never retains bytes for a directory it deleted.
+//
+// Gaps in the numbering are legitimate and irrelevant here: the
+// rule is a comparison against curGen, not a count.
+func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
+	galeDir := t.TempDir()
+	stageGenNumbers(t, galeDir, []int{1, 5, 9, 10}, 5)
+
+	got, err := retainedNumbers(galeDir)
+	if err != nil {
+		t.Fatalf("retainedNumbers: %v", err)
+	}
+	want := []int{5, 9, 10}
+	if !slices.Equal(got, want) {
+		t.Errorf("retainedNumbers(cur=5) = %v, want %v — current "+
+			"and the branch above it, and gen/1 below it left to "+
+			"cleanOldGenerations", got, want)
+	}
+}
+
+// TestRetainedNumbersNoCurrentRetainsEverything pins the
+// lost-current case: nothing is deleted, so nothing is swept.
+// cleanOldGenerations' n >= 0 skip already kept every directory
+// in that state; retention now agrees, which stops a missing
+// current symlink from letting gc sweep the store bare.
+func TestRetainedNumbersNoCurrentRetainsEverything(t *testing.T) {
+	galeDir := t.TempDir()
+	stageGenNumbers(t, galeDir, []int{1, 2, 3}, 0)
+
+	got, err := retainedNumbers(galeDir)
+	if err != nil {
+		t.Fatalf("retainedNumbers: %v", err)
+	}
+	if want := []int{1, 2, 3}; !slices.Equal(got, want) {
+		t.Errorf("retainedNumbers(no current) = %v, want %v", got, want)
+	}
+}
+
+// TestRetainedNumbersIncludesAbsentCurrent pins the strictness
+// hand-off. A numeric current pointing at a directory that is
+// gone is not "a generation nobody listed": it must reach
+// RetainedVersionsStrict as an unreadable generation so gc
+// refuses to sweep on it, exactly as CurrentVersionsStrict did
+// before (gh#188).
+func TestRetainedNumbersIncludesAbsentCurrent(t *testing.T) {
+	galeDir := t.TempDir()
+	stageGenNumbers(t, galeDir, []int{1, 2}, 2)
+	if err := os.RemoveAll(
+		filepath.Join(galeDir, "gen", "2"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := retainedNumbers(galeDir)
+	if err != nil {
+		t.Fatalf("retainedNumbers: %v", err)
+	}
+	if !slices.Contains(got, 2) {
+		t.Errorf("retainedNumbers = %v, must include the active "+
+			"generation 2 even though its directory is gone", got)
+	}
+}
+
+// TestRetainedVersionsStrictUnionsRetainedGenerations pins the
+// multi-version shape: the active generation and the branch
+// above it can link two versions of the same package — the
+// ordinary state after an upgrade then a rollback — and BOTH
+// must be retained. A name → version map cannot hold that, which
+// is why this reader answers with every version per name.
+func TestRetainedVersionsStrictUnionsRetainedGenerations(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+
+	createStoreEntry(t, storeRoot, "jq", "1.7", []string{"jq"})
+	createStoreEntry(t, storeRoot, "jq", "1.8", []string{"jq"})
+	if err := Build(
+		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 1: %v", err)
+	}
+	if err := Build(
+		map[string]string{"jq": "1.8"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 2: %v", err)
+	}
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
+		t.Fatalf("Rollback to gen 1: %v", err)
+	}
+
+	got, err := RetainedVersionsStrict(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("RetainedVersionsStrict: %v", err)
+	}
+	versions := got["jq"]
+	slices.Sort(versions)
+	if want := []string{"1.7", "1.8"}; !slices.Equal(versions, want) {
+		t.Errorf("RetainedVersionsStrict[jq] = %v, want %v — the "+
+			"active generation and the branch above it both "+
+			"contribute their closure", versions, want)
+	}
+}
+
+// TestRetainedVersionsStrictSkipsHistoryBelowCurrent is the
+// other half: a generation below current contributes nothing,
+// because cleanOldGenerations is about to delete it. Retaining
+// its closure would keep bytes alive for a directory that is
+// gone — and break `gale update && gale gc` (gh#137).
+func TestRetainedVersionsStrictSkipsHistoryBelowCurrent(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+
+	createStoreEntry(t, storeRoot, "jq", "1.7", []string{"jq"})
+	createStoreEntry(t, storeRoot, "jq", "1.8", []string{"jq"})
+	if err := Build(
+		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 1: %v", err)
+	}
+	if err := Build(
+		map[string]string{"jq": "1.8"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 2: %v", err)
+	}
+
+	got, err := RetainedVersionsStrict(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("RetainedVersionsStrict: %v", err)
+	}
+	if want := []string{"1.8"}; !slices.Equal(got["jq"], want) {
+		t.Errorf("RetainedVersionsStrict[jq] = %v, want %v — gen/1 "+
+			"is below current and its closure is not retained",
+			got["jq"], want)
+	}
+}
+
+// TestRetainedVersionsStrictRefusesUnreadableRetainedGeneration
+// pins gh#210 at the new reader: a retained generation that
+// cannot be read is not a generation that references nothing.
+// The error names the number so the user can act on it, and gc's
+// refuse-to-sweep path (gh#188) turns it into a run that deletes
+// nothing.
+//
+// The break is structural, not a chmod: CI and the agent
+// container run as root and bypass permission bits. Here the
+// active generation's directory is removed while current still
+// points at it — precisely the state a partial crash leaves.
+func TestRetainedVersionsStrictRefusesUnreadableRetainedGeneration(
+	t *testing.T,
+) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+
+	createStoreEntry(t, storeRoot, "jq", "1.7", []string{"jq"})
+	if err := Build(
+		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if err := os.RemoveAll(
+		filepath.Join(galeDir, "gen", "1"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := RetainedVersionsStrict(galeDir, storeRoot)
+	if err == nil {
+		t.Fatalf("RetainedVersionsStrict must refuse an unreadable "+
+			"retained generation, got %v", got)
+	}
+	for _, want := range []string{
+		"generation 1", "gale generations remove 1", "--force",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error must mention %q, got: %v", want, err)
+		}
+	}
+}
+
+// TestRetainedVersionsStrictRefusesUnreadableGenListing pins the
+// other structural failure: the gen tree itself unreadable. The
+// listing feeds the rule, so gc must refuse rather than compute
+// retention from an empty set.
+func TestRetainedVersionsStrictRefusesUnreadableGenListing(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+
+	createStoreEntry(t, storeRoot, "jq", "1.7", []string{"jq"})
+	if err := Build(
+		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	genRoot := filepath.Join(galeDir, "gen")
+	if err := os.RemoveAll(genRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		genRoot, []byte("not a directory"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if got, err := RetainedVersionsStrict(
+		galeDir, storeRoot,
+	); err == nil {
+		t.Fatalf("RetainedVersionsStrict must refuse an unreadable "+
+			"gen listing, got %v", got)
+	}
+}

@@ -156,14 +156,14 @@ var gcCmd = &cobra.Command{
 		}
 
 		// Retention covers config pins across ALL hosts,
-		// everything the active generations link — including
-		// every registered project's active generation
-		// (gh#115) — and each retained package's installed
-		// dep closure. Anything retained can never be deleted
-		// below, so the active generation needs no rebuild
-		// after gc — which also means a `gale generations
-		// rollback` survives gc instead of being silently
-		// re-advanced to config state (gh#46, gh#47).
+		// everything the active generation and the branch above
+		// it link — in every scope, including every registered
+		// project's (gh#115, gh#247) — and each retained
+		// package's installed dep closure. Anything retained can
+		// never be deleted below, so the active generation needs
+		// no rebuild after gc — which also means a `gale
+		// generations rollback` survives gc instead of being
+		// silently re-advanced to config state (gh#46, gh#47).
 		referenced, retainedProjects, retErr := collectGCRetention(
 			globalDir, projPath, projGaleDir, s, resolver, pinResolve,
 		)
@@ -285,13 +285,17 @@ var gcCmd = &cobra.Command{
 //   - config pins across ALL hosts — the store is shared by
 //     synced configs, so another host's [hosts.*.packages]
 //     overlay must keep its store entry alive (gh#48);
-//   - everything the active global and project generations
-//     link, read from their symlink targets, so gc can never
-//     leave current/bin dangling (gh#46);
-//   - the config pins and active generation of every project
+//   - everything the active global and project generations link
+//     AND everything the generations above them link, read from
+//     their symlink targets, so gc can never leave current/bin
+//     dangling (gh#46) and never leaves a retained generation
+//     without the store dirs it links (gh#247);
+//   - the config pins and retained generations of every project
 //     in the machine-local registry (<globalDir>/projects), so
 //     a gc run from $HOME or project A cannot sweep versions
-//     project B still links (gh#115);
+//     project B still links (gh#115) — every registered project
+//     contributes its whole branch, or the rollback-after-gc
+//     hole reopens for every scope but the cwd's;
 //   - a best-effort registry runtime-dep top-up (the recipe's
 //     current version, when a resolver is available);
 //   - the transitive dep closure recorded in each retained
@@ -320,8 +324,8 @@ func collectGCRetention(
 	)
 	errs := []error{
 		err,
-		addActiveGenerationRefs(globalDir, s, referenced),
-		addActiveGenerationRefs(projGaleDir, s, referenced),
+		addRetainedGenerationRefs(globalDir, s, referenced),
+		addRetainedGenerationRefs(projGaleDir, s, referenced),
 	}
 	retainedProjects, projErr := addRegisteredProjectRefs(
 		globalDir, projGaleDir, s, referenced, pinResolve,
@@ -385,7 +389,7 @@ func addRegisteredProjectRefs(
 			errs = append(errs, projectRefError(proj, err))
 			continue
 		}
-		if err := addActiveGenerationRefs(
+		if err := addRetainedGenerationRefs(
 			galeDir, s, referenced,
 		); err != nil {
 			errs = append(errs, projectRefError(proj, err))
@@ -439,36 +443,48 @@ func addProjectPinRefs(
 	}
 }
 
-// addActiveGenerationRefs adds every name@version the active
-// generation under galeDir links to the referenced set. The
-// versions come straight from the gen's symlink targets, so
-// the keys match store.List output exactly. This protects
-// store dirs the live generation still serves — including
-// versions a rollback re-activated that no config mentions
-// (gh#46). An unresolvable current pointer is an error, not an
-// empty contribution: everything the generation links would
-// otherwise become invisible to retention and be swept
-// (gh#188). A gale dir with no current symlink is not an error
-// — generation.Current reports gen 0 for it.
+// addRetainedGenerationRefs adds every name@version the RETAINED
+// generations under galeDir link to the referenced set. The
+// versions come straight from the gens' symlink targets, so the
+// keys match store.List output exactly. This protects store dirs
+// a live generation still serves — including versions a rollback
+// re-activated that no config mentions (gh#46).
 //
-// The read is strict all the way down (gh#210): a current pointer
-// that resolves onto a generation directory the walk cannot read
-// answers "links nothing" through the lenient reader, which is the
-// same fail-open one layer lower.
-func addActiveGenerationRefs(
+// Retained, not active. cleanOldGenerations already keeps every
+// generation directory at or above current — the branch a
+// rollback abandoned, retained so a roll-forward can return to
+// it (gh#189). Nothing kept the store versions those generations
+// link, so roll back, gc, roll forward activated dangling PATH
+// entries with no error at any step (gh#247). The retained set
+// is the exact complement of what cleanOldGenerations removes.
+//
+// An unresolvable current pointer is an error, not an empty
+// contribution: everything those generations link would otherwise
+// become invisible to retention and be swept (gh#188). A gale dir
+// with no current symlink is not an error — generation.Current
+// reports gen 0 for it, and every generation is then retained.
+//
+// The read is strict all the way down (gh#210): a generation
+// directory the walk cannot read answers "links nothing" through
+// the lenient reader, which is the same fail-open one layer
+// lower. generation.List is backed by that lenient reader and
+// must never be substituted here.
+func addRetainedGenerationRefs(
 	galeDir string, s *store.Store, referenced map[string]bool,
 ) error {
 	if galeDir == "" {
 		return nil
 	}
-	pkgs, err := generation.CurrentVersionsStrict(galeDir, s.Root)
+	pkgs, err := generation.RetainedVersionsStrict(galeDir, s.Root)
 	if err != nil {
 		return fmt.Errorf(
-			"reading active generation under %s: %w", galeDir, err,
+			"reading retained generations under %s: %w", galeDir, err,
 		)
 	}
-	for name, version := range pkgs {
-		referenced[name+"@"+version] = true
+	for name, versions := range pkgs {
+		for _, version := range versions {
+			referenced[name+"@"+version] = true
+		}
 	}
 	return nil
 }
@@ -846,6 +862,11 @@ func addPackageRefs(
 // that has created gen/N+1 but not yet swapped current is
 // never considered for deletion (n < curGen is the criterion,
 // not n != curGen).
+//
+// The generations it leaves alone — curGen and the branch above
+// it — are exactly the ones generation.RetainedNumbers reports,
+// so gc retains their store closures too. A directory kept
+// without the versions it links is a hollow generation (gh#247).
 func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 	out := newOutput()
 	genRoot := filepath.Join(galeDir, "gen")

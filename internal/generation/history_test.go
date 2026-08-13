@@ -3,6 +3,7 @@ package generation
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -294,17 +295,33 @@ func TestGenVersionsDanglingSymlinkSkipped(t *testing.T) {
 			d.Added, d.Removed)
 	}
 
-	// Rollback to gen 1 must succeed without error.
-	if err := Rollback(galeDir, storeRoot, 1); err != nil {
-		t.Fatalf("Rollback to gen 1 with dangling symlink: %v", err)
+	// Rollback to gen 1 must REFUSE. This assertion is inverted
+	// from what it was, and deliberately so: the reader contract
+	// this test is about — genVersions skipping a dangling link,
+	// checked above through List, CurrentVersions and Diff — is
+	// unchanged. What changed is the gate above it. Activating a
+	// generation with a dangling symlink puts a broken entry on
+	// PATH, and Build has always refused to do it; Rollback
+	// refusing too is gh#247's second half, and the reason the old
+	// expectation could stand was that nobody had asked what a
+	// successful rollback onto a swept closure leaves behind.
+	err = Rollback(galeDir, storeRoot, 1)
+	if err == nil {
+		t.Fatal("Rollback to gen 1 with a dangling symlink must " +
+			"refuse: reading past a dangling link is the history " +
+			"contract, activating one is not")
 	}
-	// Current must be gen 1 after rollback.
+	if !strings.Contains(err.Error(), "ghost") {
+		t.Errorf("refusal must name the dangling link, got: %v", err)
+	}
+	// Current must be unchanged — gen 2, where the second Build
+	// left it.
 	n, err := Current(galeDir)
 	if err != nil {
-		t.Fatalf("Current after rollback: %v", err)
+		t.Fatalf("Current after refused rollback: %v", err)
 	}
-	if n != 1 {
-		t.Errorf("current = %d after rollback, want 1", n)
+	if n != 2 {
+		t.Errorf("current = %d after a refused rollback, want 2", n)
 	}
 }
 
@@ -359,5 +376,72 @@ func TestGenVersionsLibOnlyPackageVisible(t *testing.T) {
 	if v, ok := cur["libfoo"]; !ok || v != "1.0" {
 		t.Errorf("CurrentVersions[libfoo] = %q (ok=%v), want 1.0 (lib-only package must appear)",
 			v, ok)
+	}
+}
+
+// TestRollbackRefusesGenerationWithDanglingSymlink pins gh#247's
+// second half. Build refuses to activate a generation with a
+// dangling symlink — validateGenerationSymlinks runs between
+// populate and swap — and Rollback is the same activation, so it
+// needs the same gate.
+//
+// Without it Rollback stat'd the directory, read the shrunken
+// package set through the LENIENT reader (which skips a package
+// whose store dir is gone, by contract), staged the farm from
+// that, and swapped. The user got a successful rollback onto a
+// broken PATH.
+//
+// Repair is not the alternative: rebuilding the generation here
+// would invert the generation → installer package order, and
+// carrying a different version forward would break the
+// one-number-one-snapshot invariant (gh#189).
+func TestRollbackRefusesGenerationWithDanglingSymlink(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	createStoreEntry(t, storeRoot, "jq", "1.7.1", []string{"jq"})
+	createStoreEntry(t, storeRoot, "fd", "9.0", []string{"fd"})
+	if err := Build(
+		map[string]string{"jq": "1.7.1"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 1: %v", err)
+	}
+	if err := Build(
+		map[string]string{"jq": "1.7.1", "fd": "9.0"},
+		galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 2: %v", err)
+	}
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
+		t.Fatalf("Rollback to gen 1: %v", err)
+	}
+	// gen/2's fd leaves the store, exactly as a gc run under the
+	// old retention rule left it.
+	if err := os.RemoveAll(
+		filepath.Join(storeRoot, "fd", "9.0"),
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	err := Rollback(galeDir, storeRoot, 2)
+	if err == nil {
+		t.Fatal("Rollback onto a generation with a dangling " +
+			"symlink must refuse — activating it puts a broken " +
+			"entry on PATH")
+	}
+	for _, want := range []string{"generation 2", "gale sync"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("refusal must mention %q, got: %v", want, err)
+		}
+	}
+
+	cur, cErr := Current(galeDir)
+	if cErr != nil {
+		t.Fatalf("Current after refused rollback: %v", cErr)
+	}
+	if cur != 1 {
+		t.Errorf("current = gen/%d after a refused rollback, want "+
+			"gen/1 — a refusal must leave the active generation "+
+			"and the farm untouched", cur)
 	}
 }

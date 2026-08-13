@@ -51,6 +51,35 @@
   are unchanged. The defect this closes is under **Fixed**
   below.
 
+### Changed
+
+- **`gale gc` no longer sweeps the store versions that only the
+  generations above `current` reference (#247).**
+  `cleanOldGenerations` has always kept those generation
+  directories — the branch a rollback abandons, retained so a
+  roll-forward can return to it — but retention covered only the
+  *active* generation, so their packages were swept as
+  unreferenced. Roll back, `gale gc`, roll forward, and the
+  generation activated with dangling entries on PATH, with no
+  error at any step. Retention now covers the active generation
+  *and* everything above it, in the global scope, the project
+  scope, and every registered project.
+
+  Nothing else about what gc reclaims changes. Generations below
+  `current` are removed exactly as before and the versions only
+  they linked are still reclaimed, so `gale update && gale gc`
+  and `gale remove && gale gc` behave as they always have.
+  `[generation] keep` and auto-prune are untouched.
+
+- **`gale generations rollback` refuses an incomplete
+  generation (#247).** `build` has always validated a
+  generation's symlinks before activating it; rollback is the
+  same activation and had no equivalent, so it swapped onto a
+  generation whose packages were gone and reported success. The
+  error names the generation and points at `gale sync` or `gale
+  generations remove N`. There is no `--force`: activating known
+  broken PATH entries has no correct use.
+
 ### Added
 
 - `gale generations remove N [N...]`: discard generations by
