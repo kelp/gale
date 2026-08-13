@@ -233,6 +233,19 @@ Lint checks required fields, TOML syntax, and
 structural correctness. Fix any errors before
 building.
 
+Issues come at two levels: errors and warnings. Plain
+`gale lint` exits non-zero on errors only. Add
+`--strict` to fail on warnings too:
+
+```sh
+gale lint --strict myrecipe.toml
+```
+
+Use `--strict` in CI. Without it a warning-level rule
+fires into a passing step and nobody sees it. The flag
+changes the exit code alone — the reported issues read
+the same either way.
+
 ## Testing a Recipe
 
 Build the recipe to verify the build steps work:

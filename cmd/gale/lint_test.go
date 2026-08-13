@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -138,4 +139,183 @@ steps = ["make install PREFIX=${PREFIX}"]
 			strings.TrimSpace(got),
 		)
 	}
+}
+
+// --- gale lint --strict (gale-recipes#189) ---
+//
+// Exit-code contract. Without --strict only error-level
+// issues fail, which leaves a CI step over a warning-only
+// recipe permanently green. With --strict any issue fails.
+
+// lintCleanRecipe has no lint issues at all.
+const lintCleanRecipe = `
+[package]
+name = "jq"
+version = "1.8.1"
+description = "Lightweight JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+repo = "jqlang/jq"
+url = "https://github.com/jqlang/jq/releases/download/jq-1.8.1/jq-1.8.1.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+
+[build]
+steps = [
+  "./configure --prefix=${PREFIX}",
+  "make -j${JOBS}",
+  "make install",
+]
+`
+
+// lintWarningRecipe trips lintCgoEnabled and nothing else:
+// a go build with no CGO_ENABLED. Warning level only.
+const lintWarningRecipe = `
+[package]
+name = "gojq"
+version = "0.12.17"
+description = "Pure Go implementation of jq"
+license = "MIT"
+homepage = "https://github.com/itchyny/gojq"
+
+[source]
+repo = "itchyny/gojq"
+url = "https://github.com/itchyny/gojq/archive/refs/tags/v0.12.17.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+
+[dependencies]
+build = ["go"]
+
+[build]
+steps = ["go build -o ${PREFIX}/bin/gojq ./cmd/gojq"]
+`
+
+// lintErrorRecipe is missing package.name: error level.
+const lintErrorRecipe = `
+[package]
+version = "1.0.0"
+
+[source]
+url = "https://example.com/foo-1.0.0.tar.gz"
+sha256 = "2be64e7129cecb11d5906290eba10af694fb9e3e7f9fc208a311dc33ca837eb0"
+
+[build]
+steps = ["make install PREFIX=${PREFIX}"]
+`
+
+var lintStrictCases = []struct {
+	name string
+	// file is the recipe path under a temp dir; lint checks
+	// the letter bucket against the package name.
+	file       string
+	data       string
+	wantFail   bool // plain `gale lint`
+	wantStrict bool // `gale lint --strict`
+}{
+	{
+		name: "clean recipe passes in both modes",
+		file: "j/jq.toml",
+		data: lintCleanRecipe,
+	},
+	{
+		name:       "warning-only recipe fails only under strict",
+		file:       "g/gojq.toml",
+		data:       lintWarningRecipe,
+		wantStrict: true,
+	},
+	{
+		name:       "error-level recipe fails in both modes",
+		file:       "f/foo.toml",
+		data:       lintErrorRecipe,
+		wantFail:   true,
+		wantStrict: true,
+	},
+}
+
+func TestLintStrictExitCode(t *testing.T) {
+	for _, tt := range lintStrictCases {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeLintRecipe(t, tt.file, tt.data)
+			for _, strict := range []bool{false, true} {
+				want := tt.wantFail
+				if strict {
+					want = tt.wantStrict
+				}
+				err := runLintCmd(t, path, strict)
+				if (err != nil) != want {
+					t.Errorf(
+						"gale lint (strict=%v) %s: got error %v, "+
+							"want failure=%v",
+						strict, tt.file, err, want,
+					)
+				}
+			}
+		})
+	}
+}
+
+// TestLintStrictKeepsIssueOutput pins --strict to the exit
+// code alone: the per-issue lines a CI log shows must not
+// depend on the flag.
+func TestLintStrictKeepsIssueOutput(t *testing.T) {
+	path := writeLintRecipe(t, "g/gojq.toml", lintWarningRecipe)
+
+	plain := captureStderr(t, func() {
+		_ = runLintCmd(t, path, false)
+	})
+	strict := captureStderr(t, func() {
+		_ = runLintCmd(t, path, true)
+	})
+
+	if plain != strict {
+		t.Errorf(
+			"--strict changed lint output:\n got: %q\nwant: %q",
+			strict, plain,
+		)
+	}
+	if !strings.Contains(plain, "CGO_ENABLED") {
+		t.Fatalf(
+			"expected the cgo warning in lint output, got: %q",
+			plain,
+		)
+	}
+}
+
+// runLintCmd runs lintCmd over one recipe, with or without
+// --strict, and returns the command's error.
+func runLintCmd(t *testing.T, path string, strict bool) error {
+	t.Helper()
+	flag := lintCmd.Flags().Lookup("strict")
+	if flag == nil {
+		if !strict {
+			return lintCmd.RunE(lintCmd, []string{path})
+		}
+		t.Fatal("gale lint has no --strict flag")
+	}
+	if err := lintCmd.Flags().Set(
+		"strict", strconv.FormatBool(strict),
+	); err != nil {
+		t.Fatalf("setting --strict=%v: %v", strict, err)
+	}
+	t.Cleanup(func() {
+		_ = lintCmd.Flags().Set("strict", "false")
+	})
+	return lintCmd.RunE(lintCmd, []string{path})
+}
+
+// writeLintRecipe writes data to <tempdir>/<rel> and returns
+// the path. rel carries the letter bucket lint checks.
+func writeLintRecipe(t *testing.T, rel, data string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), rel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("creating recipe dir: %v", err)
+	}
+	if err := os.WriteFile(
+		path, []byte(data), 0o644,
+	); err != nil {
+		t.Fatalf("writing test recipe: %v", err)
+	}
+	return path
 }
