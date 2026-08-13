@@ -17,9 +17,16 @@ test-v:
 test-pkg pkg:
     go test -v ./internal/{{pkg}}/...
 
+# golangci-lint takes one exclusive lock per machine, so a second
+# run — another worktree's preflight, or preflight's own check-darwin
+# pass overlapping this one — exits with `parallel golangci-lint is
+# running`, which reads as a lint failure in your change. The wrapper
+# keeps "blocked" and "broken" apart and queues behind the other run.
+# See scripts/golangci-lint.sh and docs/dev/agent-environment.md.
+
 # Lint with golangci-lint and go vet
 lint:
-    golangci-lint run ./...
+    scripts/golangci-lint.sh ./...
     go vet ./...
 
 # Scope is the whole tree, matching ci.yml's `gofumpt -l .`.
@@ -160,13 +167,18 @@ test-symlinked-tmp:
 check-darwin:
     GOOS=darwin GOARCH=arm64 go build ./...
     GOOS=darwin GOARCH=arm64 go vet ./...
-    GOOS=darwin GOARCH=arm64 golangci-lint run ./...
+    GOOS=darwin GOARCH=arm64 scripts/golangci-lint.sh ./...
 
 # ci.yml runs this on pull_request only, so without a local target
 # it is invisible until the PR is already open.
 
-# Guard change-discipline test layers (scripts/check-pipeline-tests.sh)
+# Guard change-discipline test layers (scripts/check-pipeline-tests.sh).
+# The guard's own cases run first (~0.5s, no network): it decides what
+# is allowed to land, and gh#237 widened it to see untracked files, so
+# a change to it must not quietly launder the rule. CI runs the guard
+# alone; the cases are a local-only gate.
 pipeline-check:
+    scripts/check-pipeline-tests-selftest.sh
     scripts/check-pipeline-tests.sh origin/main
 
 # Runs CI's gates in CI's order, stops at the first red one and
@@ -177,10 +189,22 @@ pipeline-check:
 preflight:
     #!/usr/bin/env bash
     set -uo pipefail
+    # Exit 75 (EX_TEMPFAIL) is a gate reporting that it could not run,
+    # not that your change is bad — scripts/golangci-lint.sh uses it
+    # when another golangci-lint holds the lock for the whole wait.
+    # Saying FAILED there sends people hunting a defect that does not
+    # exist, which is the whole of gh#237.
     gate() {
       name="$1"; shift
       echo "==> preflight: $name"
-      if ! "$@"; then
+      "$@"
+      status=$?
+      if [ "$status" -eq 75 ]; then
+        echo "preflight: BLOCKED at '$name' — the gate could not run; nothing here" >&2
+        echo "  says your change is broken. Re-run once the message above clears." >&2
+        exit 75
+      fi
+      if [ "$status" -ne 0 ]; then
         echo "preflight: FAILED at '$name' — fix it before pushing" >&2
         exit 1
       fi
@@ -188,7 +212,7 @@ preflight:
     gate test go test ./...
     gate test-race go test -race ./...
     gate vet go vet ./...
-    gate lint golangci-lint run ./...
+    gate lint scripts/golangci-lint.sh ./...
     gate fmt-check {{ just_executable() }} fmt-check
     gate pipeline-check {{ just_executable() }} pipeline-check
     gate check-darwin {{ just_executable() }} check-darwin
