@@ -1329,6 +1329,105 @@ func TestCurrentVersionsReadsActiveGeneration(t *testing.T) {
 	}
 }
 
+// TestCurrentVersionsStrictReportsUnreadableGenerationDir pins
+// gh#210: a generation directory that cannot be walked is not an
+// empty generation. The lenient reader keeps swallowing the walk
+// error — Build's carry-forward and the history readers depend on
+// that — while the strict sibling names the directory it could not
+// read, so a caller deciding whether to destroy bytes can tell
+// "references nothing" from "could not look".
+//
+// The failure is induced structurally, not with permission bits:
+// CI and the agent container run tests as root and bypass a chmod,
+// so a permission fixture passes for the wrong reason. Replacing
+// the gen tree with a regular file makes the walk's root Lstat
+// fail with ENOTDIR while current still readlinks to "gen/1" —
+// Current parses the basename and never stats the directory.
+func TestCurrentVersionsStrictReportsUnreadableGenerationDir(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+
+	createStoreEntry(t, storeRoot, "alpha", "1.0", []string{"alpha"})
+	if err := Build(
+		map[string]string{"alpha": "1.0"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	genRoot := filepath.Join(galeDir, "gen")
+	if err := os.RemoveAll(genRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		genRoot, []byte("not a directory"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"), filepath.Join(galeDir, "current"),
+	); err != nil && !errors.Is(err, os.ErrExist) {
+		t.Fatal(err)
+	}
+
+	lenient, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("CurrentVersions must stay lenient: %v", err)
+	}
+	if len(lenient) != 0 {
+		t.Errorf("lenient CurrentVersions = %v, want empty", lenient)
+	}
+
+	got, err := CurrentVersionsStrict(galeDir, storeRoot)
+	if err == nil {
+		t.Fatalf("CurrentVersionsStrict must report an unreadable "+
+			"generation, got %v", got)
+	}
+	if want := filepath.Join("gen", "1"); !strings.Contains(
+		err.Error(), want,
+	) {
+		t.Errorf("error must name %s, got: %v", want, err)
+	}
+}
+
+// TestCurrentVersionsStrictReadsActiveGeneration pins the other
+// half of gh#210: strictness must not cost the answer. A readable
+// generation yields the same map the lenient reader returns, and
+// no error.
+func TestCurrentVersionsStrictReadsActiveGeneration(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+
+	createStoreEntry(t, storeRoot, "alpha", "1.0", []string{"alpha"})
+	createStoreEntry(t, storeRoot, "beta", "2.0", []string{"beta"})
+
+	pkgs := map[string]string{"alpha": "1.0", "beta": "2.0"}
+	if err := Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	got, err := CurrentVersionsStrict(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("CurrentVersionsStrict: %v", err)
+	}
+	if got["alpha"] != "1.0" || got["beta"] != "2.0" {
+		t.Errorf("CurrentVersionsStrict = %v, want alpha=1.0, beta=2.0",
+			got)
+	}
+}
+
+// TestCurrentVersionsStrictReturnsEmptyWhenNoGeneration keeps the
+// fresh-install case out of the strict path's refusals: a scope
+// that has never built a generation genuinely references nothing.
+func TestCurrentVersionsStrictReturnsEmptyWhenNoGeneration(t *testing.T) {
+	got, err := CurrentVersionsStrict(t.TempDir(), t.TempDir())
+	if err != nil {
+		t.Fatalf("CurrentVersionsStrict: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("CurrentVersionsStrict = %v, want empty", got)
+	}
+}
+
 // TestCurrentVersionsReturnsEmptyWhenNoGeneration covers the
 // fresh-install case where no current symlink exists yet.
 func TestCurrentVersionsReturnsEmptyWhenNoGeneration(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
@@ -1338,19 +1339,42 @@ func gcUnreadableProjectFixture(t *testing.T) (string, string) {
 	return storeRoot, proj
 }
 
-// assertGCRefused checks that gc aborted naming proj and that
-// the whole store survived: neither the pinned version nor the
+// breakGenerationWalk makes the generation tree under galeDir
+// unwalkable while leaving its current symlink resolvable: the gen
+// directory becomes a regular file, so the walk's root Lstat fails
+// with ENOTDIR, and current still readlinks to "gen/1", which
+// generation.Current parses without ever stating the directory.
+//
+// Structural, not a chmod: CI and the agent container run tests as
+// root and bypass permission bits (gh#210).
+func breakGenerationWalk(t *testing.T, galeDir string) {
+	t.Helper()
+	genRoot := filepath.Join(galeDir, "gen")
+	if err := os.RemoveAll(genRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		genRoot, []byte("not a directory"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertGCRefused checks that gc aborted with an error naming
+// wantPath — the project whose references could not be read, or
+// the store dir whose metadata could not be read — and that the
+// whole store survived: neither the pinned version nor the
 // unreferenced control was swept. fd@9.0 is the control — it is
 // referenced by nothing, so its survival proves the sweep never
 // ran rather than that retention happened to cover it.
-func assertGCRefused(t *testing.T, err error, proj, storeRoot string) {
+func assertGCRefused(t *testing.T, err error, wantPath, storeRoot string) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("gc must refuse to sweep when a live project's " +
 			"references cannot be read")
 	}
-	if !strings.Contains(err.Error(), proj) {
-		t.Errorf("error must name the project %s, got: %v", proj, err)
+	if !strings.Contains(err.Error(), wantPath) {
+		t.Errorf("error must name %s, got: %v", wantPath, err)
 	}
 	for _, pkg := range []struct{ name, ver string }{
 		{"jq", "1.7"}, {"fd", "9.0"},
@@ -1407,6 +1431,73 @@ func TestGCRefusesSweepWhenProjectGenerationUnreadable(t *testing.T) {
 	}
 
 	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+}
+
+// TestGCRefusesSweepWhenProjectGenerationWalkUnreadable extends
+// gh#188's posture one layer down (gh#210). The current pointer
+// resolves, so generation.Current succeeds, but the generation
+// directory itself cannot be walked. The lenient reader answers
+// with an empty map and no error, which retention reads as "this
+// project links nothing" — the exact fail-open #188 removed from
+// the layer above.
+func TestGCRefusesSweepWhenProjectGenerationWalkUnreadable(t *testing.T) {
+	storeRoot, proj := gcUnreadableProjectFixture(t)
+
+	breakGenerationWalk(t, filepath.Join(proj, ".gale"))
+
+	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+}
+
+// TestGCRefusesSweepWhenDepsMetadataUnreadable pins the third
+// acceptance criterion of gh#210: .gale-deps.toml records the
+// versions installed binaries actually link, which a recipe bump
+// or an offline resolver miss leaves unprotected otherwise
+// (gh#48). An unreadable one dropped its whole subtree from the
+// retention closure with nothing but a warning on stderr.
+//
+// The metadata path is a directory, so os.ReadFile returns EISDIR
+// — a non-ENOENT error, which absence must not be confused with:
+// depsmeta.Read reports a missing file as an empty closure.
+func TestGCRefusesSweepWhenDepsMetadataUnreadable(t *testing.T) {
+	storeRoot, _ := gcUnreadableProjectFixture(t)
+
+	// jq@1.7 is pinned by the registered project, so it is in the
+	// retention set whose closure gets expanded.
+	metaPath := filepath.Join(
+		storeRoot, "jq", "1.7", depsmeta.File,
+	)
+	if err := os.Mkdir(metaPath, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	assertGCRefused(
+		t, gcCmd.RunE(gcCmd, nil),
+		filepath.Join(storeRoot, "jq", "1.7"), storeRoot,
+	)
+}
+
+// TestGCForceSweepsDespiteUnreadableGenerationWalk verifies the
+// gh#210 refusals reuse gh#188's one escape hatch rather than
+// adding a second: --force restores the old lenient behavior for
+// the generation walk too. fd@9.0 is unreferenced everywhere, so
+// its removal proves the sweep ran.
+func TestGCForceSweepsDespiteUnreadableGenerationWalk(t *testing.T) {
+	storeRoot, proj := gcUnreadableProjectFixture(t)
+
+	breakGenerationWalk(t, filepath.Join(proj, ".gale"))
+
+	gcForce = true
+	t.Cleanup(func() { gcForce = false })
+
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("gc --force must sweep anyway: %v", err)
+	}
+	if _, err := os.Stat(
+		filepath.Join(storeRoot, "fd", "9.0"),
+	); !os.IsNotExist(err) {
+		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
+			"gc --force (proves the sweep ran), err=%v", err)
+	}
 }
 
 // TestGCForceSweepsDespiteUnreadableProject verifies the escape

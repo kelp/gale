@@ -92,6 +92,40 @@ func carryForwardMissingVersions(
 //     active generation still references rather than dropping it
 //     over a missing leaf.
 func genVersions(genDir, storeRoot string) map[string]string {
+	out, _ := genVersionsWalk(genDir, storeRoot,
+		func(error) error { return nil }) // keep walking past every error
+	return out
+}
+
+// genVersionsStrict is genVersions for callers that must not act on
+// a partial answer: an unreadable walk root, an unreadable entry or
+// an unreadable link stops the walk and returns the error, named by
+// path, instead of shrinking the map in silence.
+//
+// gc's retention needs this. genVersions' leniency is correct for a
+// rebuild, which should still link everything it can read, and wrong
+// for a decision to destroy bytes: "I could not read this
+// generation" arrives at retention as "this generation references
+// nothing", and the sweep then deletes what it could not see
+// (gh#210). It is the same split AuthoritativeGenerationDirs draws
+// against this walk, and FarmStoreDirsStrict against FarmStoreDirs —
+// tolerate a partial answer where a partial answer is still useful,
+// never where a decision rests on it.
+func genVersionsStrict(
+	genDir, storeRoot string,
+) (map[string]string, error) {
+	return genVersionsWalk(genDir, storeRoot,
+		func(err error) error { return err })
+}
+
+// genVersionsWalk is the shared walk. onErr decides whether an
+// unreadable entry stops it. Walk reports a root that cannot be
+// Lstat'd through the same callback, so an unreadable generation
+// directory reaches onErr like any other entry.
+func genVersionsWalk(
+	genDir, storeRoot string,
+	onErr func(err error) error,
+) (map[string]string, error) {
 	// Resolve storeRoot through symlinks so relative path
 	// computation works on macOS where /var → /private/var.
 	absStore, err := filepath.EvalSymlinks(storeRoot)
@@ -100,16 +134,18 @@ func genVersions(genDir, storeRoot string) map[string]string {
 	}
 
 	out := map[string]string{}
-	//nolint:errcheck // best-effort walk; per-entry errors below are intentionally swallowed
-	filepath.Walk(genDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.Mode()&os.ModeSymlink == 0 {
-			return nil //nolint:nilerr // skip unreadable entries, keep walking
+	walkErr := filepath.Walk(genDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return onErr(fmt.Errorf("walking %s: %w", path, err))
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return nil
 		}
 		// Read the link text rather than resolving it: the leaf
 		// target may be absent while the store dir still exists.
 		target, readErr := os.Readlink(path)
 		if readErr != nil {
-			return nil //nolint:nilerr // skip unreadable link, keep walking
+			return onErr(fmt.Errorf("reading link %s: %w", path, readErr))
 		}
 		if !filepath.IsAbs(target) {
 			target = filepath.Join(filepath.Dir(path), target)
@@ -143,7 +179,10 @@ func genVersions(genDir, storeRoot string) map[string]string {
 		}
 		return nil
 	})
-	return out
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	return out, nil
 }
 
 // relWithinStore returns the path of target relative to root
@@ -173,15 +212,49 @@ func storeDirExists(root, name, version string) bool {
 // even if no installs happened, so removed packages drop off
 // PATH.
 func CurrentVersions(galeDir, storeRoot string) (map[string]string, error) {
-	cur, err := Current(galeDir)
+	genDir, err := currentGenDir(galeDir)
 	if err != nil {
 		return nil, err
 	}
-	if cur == 0 {
+	if genDir == "" {
 		return map[string]string{}, nil
 	}
-	prevGenDir := filepath.Join(galeDir, "gen", strconv.Itoa(cur))
-	return genVersions(prevGenDir, storeRoot), nil
+	return genVersions(genDir, storeRoot), nil
+}
+
+// CurrentVersionsStrict is CurrentVersions backed by
+// genVersionsStrict: an unreadable active generation is an error
+// naming the directory, not an empty map. Callers that decide
+// whether to destroy bytes use this one — see genVersionsStrict for
+// why the two exist (gh#210).
+//
+// A scope with no active generation is still empty, not a failure:
+// a registered project that has never synced genuinely references
+// nothing.
+func CurrentVersionsStrict(
+	galeDir, storeRoot string,
+) (map[string]string, error) {
+	genDir, err := currentGenDir(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	if genDir == "" {
+		return map[string]string{}, nil
+	}
+	return genVersionsStrict(genDir, storeRoot)
+}
+
+// currentGenDir returns the directory of the active generation
+// under galeDir, or "" when no generation is active yet.
+func currentGenDir(galeDir string) (string, error) {
+	cur, err := Current(galeDir)
+	if err != nil {
+		return "", err
+	}
+	if cur == 0 {
+		return "", nil
+	}
+	return filepath.Join(galeDir, "gen", strconv.Itoa(cur)), nil
 }
 
 // ActiveStoreDirs resolves each (name, version) in pkgs to
