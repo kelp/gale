@@ -4,6 +4,26 @@ Proposal for [#187](https://github.com/kelp/gale/issues/187).
 Design only — no production code changes in this PR.
 Line references are against `origin/main` at `6d81908`.
 
+> **What shipped: D alone.** The recommendation below is D + A + C.
+> The maintainer cut it to **D**, the compensation in
+> `FinalizeInstall` (§3D): a witnessed config write, undone with
+> `config.RestoreUnderLock` when the lock write fails.
+>
+> **A (the per-environment `finalize.lock`) and B (the journal) were
+> deliberately not built, and are not pending.** No new lock exists,
+> so §3A's ordering obligation is not in force and `update`'s and
+> `remove`'s existing package-lock holds keep their current scope.
+> The store's per-version lock is unchanged, for §4's reason. The
+> interleaving A was proposed for degrades safely without it:
+> `RestoreUnderLock` is a compare-and-swap, so when another command
+> owns gale.toml by the time the undo runs, the undo stands down and
+> says which file it left alone rather than discarding that command's
+> work. C (rendering `staleRemedy` on the finalize failure path) has
+> not shipped either.
+>
+> Read §3 and §4 as the record of a decision taken, not as a plan
+> still in progress.
+
 ## 1. Problem
 
 `FinalizeInstall` (`cmd/gale/context.go:1090-1097`) is the

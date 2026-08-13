@@ -741,35 +741,16 @@ func hostPinned(cfg *GaleConfig, host string) map[string]bool {
 // that was; deriving it again from the file would be the same rule
 // in two places, free to disagree.
 func UpsertPackage(path, host, name, version string) (string, error) {
-	written := ""
-	err := withFileLock(path, func() error {
-		content, err := readOrEmpty(path)
-		if err != nil {
-			return err
-		}
-		section := packagesPath()
-		written = ""
-		if host != "" {
-			content = normalizeLegacyHostHeader(content, host)
-			// Check if the package is already in the host section.
-			hostSection := hostPackagesPath(host)
-			lines := splitLines(content)
-			secIdx := sectionLineIndex(lines, hostSection)
-			if secIdx >= 0 {
-				endIdx := nextSectionIndex(lines, secIdx+1)
-				if keyLineIndex(lines, secIdx+1, endIdx, name) >= 0 {
-					section = hostSection
-					written = host
-				}
-			}
-		}
-		content = setTOMLStringKey(content, section, name, version)
-		return atomicfile.Write(path, content)
-	})
-	if err != nil {
-		return "", err
-	}
-	return written, nil
+	w, err := UpsertPackageWitnessed(path, host, name, version)
+	return w.Section, err
+}
+
+// UpsertPackageWitnessed is UpsertPackage reporting the manifest
+// either side of the edit. See PackageWrite.
+func UpsertPackageWitnessed(
+	path, host, name, version string,
+) (PackageWrite, error) {
+	return putPackage(path, host, name, version, true)
 }
 
 // AddPackage adds or updates a package in the gale.toml at path.
@@ -778,21 +759,85 @@ func UpsertPackage(path, host, name, version string) (string, error) {
 // [hosts.<host>.packages]. If the file does not exist, it is
 // bootstrapped.
 func AddPackage(path, host, name, version string) error {
-	return withFileLock(path, func() error {
-		section := packagesPath()
-		if host != "" {
-			section = hostPackagesPath(host)
-		}
-		content, err := readOrEmpty(path)
-		if err != nil {
+	_, err := AddPackageWitnessed(path, host, name, version)
+	return err
+}
+
+// AddPackageWitnessed is AddPackage reporting the manifest either
+// side of the edit. See PackageWrite.
+func AddPackageWitnessed(
+	path, host, name, version string,
+) (PackageWrite, error) {
+	return putPackage(path, host, name, version, false)
+}
+
+// PackageWrite reports where a package landed in gale.toml and the
+// file either side of the edit. Section is the host key of the
+// section written: empty for shared [packages].
+//
+// The two states are the point, and they are why the witnessed forms
+// exist. A caller whose operation can still fail after this edit needs
+// tokens that are atomic with it to undo it safely: one read before
+// the lock, or after its release, could have captured a concurrent
+// writer's file instead, and a restore keyed on that would discard
+// their work while believing it was undoing its own. Feed them to
+// RestoreUnderLock.
+type PackageWrite struct {
+	Section string
+	Before  FileState
+	After   FileState
+}
+
+// putPackage writes name=version into the manifest at path under ONE
+// hold of the config lock and reports the file either side of the
+// edit. The read, the edit and the write share the hold, so the
+// witness cannot straddle another writer's atomic replacement.
+//
+// preserve picks the section rule: UpsertPackage's location-preserving
+// one, where host names the current machine and an existing overlay
+// entry is updated in place, or AddPackage's fixed target, where host
+// names the section to write.
+func putPackage(
+	path, host, name, version string, preserve bool,
+) (PackageWrite, error) {
+	var w PackageWrite
+	err := withFileLock(path, func() error {
+		var err error
+		if w.Before, err = readFileState(path); err != nil {
 			return err
 		}
+		content := w.Before.Bytes
+		section := packagesPath()
 		if host != "" {
 			content = normalizeLegacyHostHeader(content, host)
+			if !preserve || hostSectionDeclares(content, host, name) {
+				section = hostPackagesPath(host)
+				w.Section = host
+			}
 		}
 		content = setTOMLStringKey(content, section, name, version)
-		return atomicfile.Write(path, content)
+		if err := atomicfile.Write(path, content); err != nil {
+			return err
+		}
+		w.After, err = readFileState(path)
+		return err
 	})
+	if err != nil {
+		return PackageWrite{}, err
+	}
+	return w, nil
+}
+
+// hostSectionDeclares reports whether [hosts.<host>.packages] already
+// lists name in content.
+func hostSectionDeclares(content []byte, host, name string) bool {
+	lines := splitLines(content)
+	secIdx := sectionLineIndex(lines, hostPackagesPath(host))
+	if secIdx < 0 {
+		return false
+	}
+	endIdx := nextSectionIndex(lines, secIdx+1)
+	return keyLineIndex(lines, secIdx+1, endIdx, name) >= 0
 }
 
 // FileState is a file's content together with whether it exists.
