@@ -60,6 +60,13 @@ import (
 // A scope that is known but cannot be read is returned with Err
 // set, and the guard fails closed on it. Scopes with nothing to
 // claim are dropped.
+//
+// "Cannot be read" reaches all the way down to the generation walk
+// (gh#210). Every claim here is read strictly, because a claim is
+// the record of what a scope must not lose: one that silently omits
+// a package permits exactly the mutation it exists to refuse. Since
+// #223 made the staged image authoritative, a shrunk union does not
+// merely fail to restore another scope's farm link, it deletes it.
 func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 	// One definition of the scope set, shared with the migration veto
 	// (design §13), which asks a different question of exactly these
@@ -121,6 +128,12 @@ func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 // the mapping being proposed, and the guard compares this claim
 // against it.
 //
+// The generation read is strict (gh#210). This claim is the one
+// standing between `gale remove` and a farm entry another package in
+// the SAME scope still resolves through, so a generation the walk
+// could not enumerate must abort the removal rather than arrive as
+// a scope that links nothing.
+//
 // LIMIT, and it is a real one: this models the ACTIVE generation
 // plus the change in front of it, which is the whole operation only
 // when the operation is a single commit against a settled scope. A
@@ -137,7 +150,7 @@ func ProposedClaimant(
 	changed map[string]string, galeDir, storeRoot string,
 ) (farm.Claimant, error) {
 	c := farm.Claimant{Label: "this scope"}
-	pkgs, err := CurrentVersions(galeDir, storeRoot)
+	pkgs, err := CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		return c, fmt.Errorf("reading active generation: %w", err)
 	}
@@ -176,6 +189,11 @@ func ProposedClaimant(
 // still reported at the canonical path. There is no dropping and no
 // filtering — a directory cannot be in the view twice.
 //
+// What the scope ALREADY has still comes from its active
+// generation, read strictly (gh#210): the staged placements are laid
+// over that set, so a generation the walk could not enumerate makes
+// the whole proposed closure wrong by however much it could not see.
+//
 // Its DEPENDENCIES come from the STAGED metadata too, not from what
 // the canonical directory currently records. Reading the old
 // metadata is not merely imprecise, it is fail-open in one
@@ -210,7 +228,7 @@ func proposedClaimant(
 	placements []farm.Placement, galeDir, storeRoot string, require bool,
 ) (farm.Claimant, error) {
 	c := farm.Claimant{Label: "this scope"}
-	pkgs, err := CurrentVersions(galeDir, storeRoot)
+	pkgs, err := CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		return c, fmt.Errorf("reading active generation: %w", err)
 	}
@@ -305,12 +323,27 @@ func placedNames(placements []farm.Placement) map[string]bool {
 // scopeClosureDirs resolves one scope's claimed closure to store
 // dirs: its active generation always, plus its v1 lock's runtime
 // closure when it has one.
+//
+// Strict on both halves. Reading the generation leniently while
+// walking its dep closure through FarmStoreDirsStrict is the
+// inconsistency gh#210 names: the walk refuses a dep record it
+// cannot parse, then accepts a generation directory it could not
+// enumerate as a scope that links nothing at all.
 func scopeClosureDirs(
 	lockPath, galeDir, storeRoot, host, platform string,
 ) ([]string, error) {
-	pkgs, err := CurrentVersions(galeDir, storeRoot)
+	pkgs, err := CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {
-		return nil, fmt.Errorf("reading active generation: %w", err)
+		// Carrying the repair, as the deps-metadata refusal does and
+		// for the same reason: this one scope now blocks every
+		// install and removal on the machine until it clears, so the
+		// error has to say how. Rebuilding the scope's generation is
+		// the escape, and sync reads an unreadable generation as
+		// drift precisely so that it rebuilds rather than refuses.
+		return nil, fmt.Errorf(
+			"reading active generation: %w (repair: run gale sync in "+
+				"that scope to rebuild its generation)", err,
+		)
 	}
 	dirs, err := FarmStoreDirsStrict(pkgs, storeRoot)
 	if err != nil {

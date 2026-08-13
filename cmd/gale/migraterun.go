@@ -723,10 +723,18 @@ func regenerateScopes(
 //
 // A scope that has never synced links nothing and is skipped: there
 // is no generation to move and Build would manufacture one.
+//
+// Which is why the read is strict (gh#210). The lenient reader
+// answers a generation it could not walk with an empty set, and an
+// empty set is indistinguishable from "never synced" — so the scope
+// takes the skip branch in silence, and the pass then removes the
+// pre-revision directory that scope's symlinks still name. This
+// relocates bytes and already errors when generation.Current fails;
+// the same refusal belongs one layer down.
 func regenerateScope(
 	s projects.Scope, storeRoot string, out *output.Output,
 ) error {
-	pkgs, err := generation.CurrentVersions(s.GaleDir, storeRoot)
+	pkgs, err := generation.CurrentVersionsStrict(s.GaleDir, storeRoot)
 	if err != nil {
 		return fmt.Errorf(
 			"reading the active generation of %s: %w", s.Label, err,

@@ -366,10 +366,18 @@ func lockedGenerationDrifted(
 	if err != nil {
 		return true
 	}
-	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	active, err := generation.CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		// Prefer a wasted rebuild to a stale PATH; the rebuild itself
 		// surfaces a follow-on error if the state is broken.
+		//
+		// Strict read, tolerant answer (gh#210). The lenient reader
+		// never reaches this branch: it reports a generation it could
+		// not walk as an empty one, which against a plan rooting
+		// nothing compares EQUAL, so the sync skips the rebuild and
+		// no one ever learns the walk failed. Strictness makes the
+		// failure visible; aborting on it would strand a user whose
+		// generation is broken in the one command that repairs it.
 		return true
 	}
 	if len(active) != len(want) {
@@ -398,11 +406,18 @@ func generationDrifted(
 	want map[string]string,
 	pinResolve versionedRecipeResolver,
 ) bool {
-	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	active, err := generation.CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		// On read error, prefer to rebuild — better a wasted
 		// gen than a stale PATH. The rebuild itself will
 		// surface a follow-on error if the state is broken.
+		//
+		// Strict for the reason lockedGenerationDrifted is: an
+		// emptied manifest is exactly the state whose rebuild must
+		// still run, and it is exactly the state an unreadable
+		// generation compares equal to under the lenient reader
+		// (gh#210). The answer stays true either way — sync is the
+		// repair, so it must never refuse to run in a broken scope.
 		return true
 	}
 	if len(active) != len(want) {

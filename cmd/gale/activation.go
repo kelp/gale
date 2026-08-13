@@ -34,11 +34,20 @@ func gateActivation(galeDir, configPath string) error {
 		return err
 	}
 	storeRoot := defaultStoreRoot()
-	// CurrentVersions recovers name to version from the active
+	// CurrentVersionsStrict recovers name to version from the active
 	// generation's symlinks. A generation holds bin, lib, and man
 	// links rather than per-package directories, so this is the only
 	// place the installed identities can be read back from.
-	installed, err := generation.CurrentVersions(galeDir, storeRoot)
+	//
+	// Strict, because this is an enforcement gate (gh#210). Installed
+	// is the set Check compares against the lock, and the lenient
+	// reader answers a generation it could not walk with an EMPTY
+	// set — which satisfies every lock, so each violation the gate
+	// exists to catch vanishes. Fail-open on an enforcement gate is
+	// worse than the refusal, and the refusal is not new surface:
+	// the gate already errors when generation.Current fails, so the
+	// shell-lockout it can cause is bounded and already reachable.
+	installed, err := generation.CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		return fmt.Errorf("reading the active generation: %w", err)
 	}
