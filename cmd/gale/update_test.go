@@ -481,6 +481,8 @@ func TestUpdatePathRequiresPackageInConfig(t *testing.T) {
 }
 
 func TestUpdatePathRespectsDryRun(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (gh#214)
+
 	// Create a temp dir with a minimal gale.toml.
 	tmp := t.TempDir()
 	if err := os.WriteFile(
