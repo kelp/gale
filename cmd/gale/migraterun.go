@@ -10,11 +10,13 @@ import (
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
+	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/store"
 )
 
 // runMigrate converges the whole machine on attestable store
@@ -51,7 +53,7 @@ func runMigrate(ctx *cmdContext, out *output.Output) error {
 		for _, t := range ordered {
 			out.Info(fmt.Sprintf("migrate %s@%s (%s)", t.name, t.version, t.dir))
 		}
-		reportSourceOnly(out, ctx.StoreRoot, scan.sourceOnly)
+		reportSourceOnly(ctx, galeHome, out, scan.sourceOnly)
 		return nil
 	}
 	var relocated []migrateTarget
@@ -67,7 +69,7 @@ func runMigrate(ctx *cmdContext, out *output.Output) error {
 	if err := finishRelocations(ctx, galeHome, relocated, out); err != nil {
 		return err
 	}
-	reportSourceOnly(out, ctx.StoreRoot, scan.sourceOnly)
+	reportSourceOnly(ctx, galeHome, out, scan.sourceOnly)
 	return nil
 }
 
@@ -138,26 +140,27 @@ func finishRelocations(
 // which makes saying what is left the command's whole obligation
 // toward these.
 //
-// Split by WHERE the directory sits, because only one half has a
-// remedy. A canonical source directory is what `lock --refresh` was
-// built to replace. A pre-revision one is not: refresh checks the
-// canonical path alone and declines a bare directory by design, and
-// migrate cannot refetch a source build, so nothing on the machine
-// converges it today. Saying so is the honest report; offering a
-// command that must refuse would not be.
+// Split by WHERE the directory sits, because the two halves are
+// replaced by different commands. A canonical source directory is what
+// `lock --refresh` was built to replace. A pre-revision one is not:
+// refresh checks the canonical path alone and declines a bare
+// directory by design, and migrate cannot refetch a source build. What
+// converges a bare directory instead depends on what holds it, which
+// is reportUnresolved's subject.
 func reportSourceOnly(
-	out *output.Output, storeRoot string, sourceOnly []migrateTarget,
+	ctx *cmdContext, galeHome string, out *output.Output,
+	sourceOnly []migrateTarget,
 ) {
 	var canonical, bare []migrateTarget
 	for _, t := range sourceOnly {
-		if sameDir(t.dir, filepath.Join(storeRoot, t.name, t.version)) {
+		if sameDir(t.dir, filepath.Join(ctx.StoreRoot, t.name, t.version)) {
 			canonical = append(canonical, t)
 			continue
 		}
 		bare = append(bare, t)
 	}
 	reportRebuildable(out, canonical)
-	reportUnresolved(out, bare)
+	reportUnresolved(ctx, galeHome, out, bare)
 }
 
 // reportRebuildable names the source directories a refresh can clear.
@@ -184,33 +187,316 @@ func reportRebuildable(out *output.Output, targets []migrateTarget) {
 		"rebuilt; `gale gc` clears it once nothing links it.")
 }
 
-// reportUnresolved names the source directories nothing can clear.
+// reportUnresolved names, for each pre-revision source directory, the
+// command that converges it — and says plainly where there is none.
 //
-// A pre-revision source build sits in the gap between the two
-// commands: migrate relocates only what it can refetch, and refresh
-// replaces only the canonical path. The user is told plainly rather
-// than sent to either.
-func reportUnresolved(out *output.Output, targets []migrateTarget) {
+// One line used to cover all of them: "No gale command converges them
+// today". That was true of one of the three states such a directory
+// can be in, and it hid working escapes from the other two (gh#200).
+//
+//   - Nothing holds it. It is an orphan, and `gale gc` sweeps it.
+//   - One scope holds it, as a declared root. Unlocked sync reports a
+//     directory with no dependency metadata as stale and reinstalls it
+//     into the canonical path, additively: `gale sync`, or
+//     `gale sync --no-frozen` where that scope carries a lock a locked
+//     sync fails closed on.
+//   - Anything else — several scopes, or one that reaches it only
+//     through a closure. No per-scope sequence converges that, and
+//     naming one that converges nothing would be worse than naming
+//     none.
+//
+// Nothing here mutates, and no refusal moved. Migrate still may not
+// replace any of these directories; all that changed is what it says
+// about them.
+func reportUnresolved(
+	ctx *cmdContext, galeHome string, out *output.Output,
+	targets []migrateTarget,
+) {
 	if len(targets) == 0 {
 		return
 	}
 	out.Warn(fmt.Sprintf(
-		"%d source-built %s predate revisions, and gale has no command "+
-			"that converges them: migrate relocates only what it can "+
-			"refetch, and `lock --refresh` replaces only the canonical "+
-			"directory:", len(targets),
+		"%d source-built %s predate revisions, so each sits in a bare "+
+			"directory migrate cannot refetch and `lock --refresh` does "+
+			"not look at:", len(targets),
 		plural(len(targets), "package", "packages"),
 	))
-	listTargets(out, targets)
-	// No manual sequence is offered, and that is deliberate. Removing
-	// the directory leaves every other scope's generation linking a
-	// missing path, reinstalling in one scope regenerates only that
-	// scope, and the reinstall meets the same bare-versus-canonical
-	// farm conflict migrate handles for itself. Naming a sequence
-	// that converges nothing would be worse than naming none.
-	out.Info("Each stays unattested, so a locked environment will keep " +
-		"refusing to activate it. No gale command converges them " +
-		"today; the gap is tracked in gh#200.")
+	out.Info("Each stays unattested until it moves, so a locked " +
+		"environment will keep refusing to activate it.")
+	// Read once, after the early return: the retention set costs a
+	// registry walk, and a store with no pre-revision directory in it
+	// must not pay for a report with nothing to say.
+	holds := readPreRevisionHolds(ctx, galeHome)
+	var orphans, stuck []migrateTarget
+	var roots []preRevisionRoot
+	for _, t := range targets {
+		state, s := holds.classify(t)
+		switch state {
+		case preRevisionOrphaned:
+			orphans = append(orphans, t)
+		case preRevisionDeclared:
+			roots = append(roots, preRevisionRoot{target: t, scope: s})
+		case preRevisionStuck:
+			stuck = append(stuck, t)
+		}
+	}
+	reportPreRevisionRoots(out, roots)
+	reportPreRevisionOrphans(out, holds, orphans)
+	reportPreRevisionStuck(out, stuck)
+}
+
+// preRevisionRoot pairs a bare directory with the one scope whose sync
+// converges it, since the spelling of that sync is the scope's.
+type preRevisionRoot struct {
+	target migrateTarget
+	scope  projects.Scope
+}
+
+// reportPreRevisionRoots names the sync that converges each declared
+// root, and hands off the case where the sync lands the bytes without
+// attesting them.
+//
+// Additive, which is why it may be named at all: `Reinstall` stages
+// into a sibling and commits at the CANONICAL path, so the bare
+// directory survives the operation and becomes a gc candidate by
+// itself once store resolution prefers the populated sibling. No pin
+// is touched and there is no window in which the bytes are gone.
+func reportPreRevisionRoots(out *output.Output, roots []preRevisionRoot) {
+	if len(roots) == 0 {
+		return
+	}
+	out.Info("These are declared roots of the scope named beside each, " +
+		"which a sync reinstalls into the canonical directory. That " +
+		"adds a directory and deletes nothing:")
+	for _, r := range roots {
+		out.Info(fmt.Sprintf(
+			"  %s@%s (%s): run `%s` in %s",
+			r.target.name, r.target.version, r.target.dir,
+			syncSpelling(r.scope), r.scope.Label,
+		))
+	}
+	// recordProvenance is all-or-nothing: it commits the directory
+	// with NO record when the closure below it cannot be attested.
+	// Since a pre-revision leftover is most often a dependency, the
+	// common shape is a root that lands canonically and still records
+	// nothing. Unsaid, that reads as the sync having failed.
+	out.Info("A reinstall whose closure cannot be attested commits " +
+		"with no provenance record. That is the next step rather than " +
+		"a failure: converge the closure from the bottom up, then " +
+		"`gale lock --refresh <pkg>`.")
+}
+
+// reportPreRevisionOrphans names the directories `gale gc` sweeps.
+//
+// Hedged when gc's own retention could not be computed, because the
+// claim is gc's to keep: promising a sweep gc declines to perform is
+// a harmless no-op and still wrong advice.
+func reportPreRevisionOrphans(
+	out *output.Output, holds preRevisionHolds, orphans []migrateTarget,
+) {
+	if len(orphans) == 0 {
+		return
+	}
+	if holds.retentionUncertain {
+		out.Info("Nothing links or pins these, so `gale gc` clears " +
+			"them — unless a config gale could not read still pins one:")
+	} else {
+		out.Info("Nothing links or pins these, so `gale gc` clears them:")
+	}
+	listTargets(out, orphans)
+}
+
+// reportPreRevisionStuck says what has no remedy, and why the obvious
+// manual sequence is not one.
+//
+// `gale remove` plus a reinstall is refused in its unqualified form
+// for three separate reasons, each of which costs something the user
+// cannot get back: it deletes the pin from every section carrying it,
+// the store directory may be the last copy of a version the registry
+// no longer serves, and across scopes it does not even fail — the
+// store entry another scope references is kept and the reinstall then
+// takes the back-compat cache hit and reports success.
+func reportPreRevisionStuck(out *output.Output, stuck []migrateTarget) {
+	if len(stuck) == 0 {
+		return
+	}
+	out.Info("These are reached by more than one scope, or by one scope " +
+		"that holds them as a dependency rather than as a declared " +
+		"root. There is no safe sequence of per-scope commands for " +
+		"those, and gale names none rather than one that converges " +
+		"nothing; the gap is tracked in gh#200:")
+	listTargets(out, stuck)
+	out.Info("Removing and reinstalling is not that sequence: it " +
+		"deletes the pin from every section carrying it, losing " +
+		"host-overlay placement; the directory may hold the last copy " +
+		"of a version the registry no longer serves; and where another " +
+		"scope still references the entry it silently does nothing, " +
+		"because the store entry is kept and the reinstall then meets " +
+		"the back-compat cache hit.")
+}
+
+// preRevisionState is what holds a bare source directory, and
+// therefore which command converges it.
+type preRevisionState int
+
+const (
+	// preRevisionOrphaned: no scope's active closure reaches the
+	// directory and gc's retention set does not hold it.
+	preRevisionOrphaned preRevisionState = iota
+	// preRevisionDeclared: exactly one scope holds it, and holds it as
+	// a root its own manifest declares.
+	preRevisionDeclared
+	// preRevisionStuck: several scopes hold it, or the one that does
+	// reaches it only through a recorded closure.
+	preRevisionStuck
+)
+
+// preRevisionHolds is the machine read once, in the terms the report
+// needs: every scope, and gc's retention set.
+type preRevisionHolds struct {
+	storeRoot string
+	scopes    []projects.Scope
+	// retained is GC'S retention set, deliberately not the closure
+	// walk migrate already owns. The two disagree: gc additionally
+	// keeps config-derived pin keys across every project and host and
+	// expands each retained package's recorded dep closure, so a
+	// pinned-but-unlinked directory is retained by gc and reached by
+	// nobody. Only gc's answer may be reported as gc's behaviour.
+	retained map[string]bool
+	// retentionUncertain records that gc's predicate could not be
+	// computed. An unreadable reference source is not proof of
+	// non-reference, so the report hedges rather than promising a
+	// sweep — the same reading gc itself takes when it refuses.
+	retentionUncertain bool
+	// scopesUnknown records that the scope list itself could not be
+	// read, which is a stronger failure than an unreadable retention
+	// source: with no scopes there is nothing to walk, so an empty
+	// holder set would read as "nothing reaches it" and every
+	// directory would be reported as an orphan.
+	scopesUnknown bool
+}
+
+// readPreRevisionHolds collects the facts the classification rests on.
+//
+// Best-effort throughout, because this is a report: migrate has
+// already done its work and returned success, and a machine gale
+// cannot fully read is a reason to say less, never to fail a pass that
+// converged everything it could.
+func readPreRevisionHolds(ctx *cmdContext, galeHome string) preRevisionHolds {
+	h := preRevisionHolds{storeRoot: ctx.StoreRoot, retained: map[string]bool{}}
+	scopes, err := projects.Scopes(galeHome)
+	if err != nil {
+		// Every directory then lands in the no-remedy bucket.
+		// Unreachable in practice — migratePreflight reads the same
+		// registry before anything here runs — but silence about a
+		// scope must not read as that scope agreeing there is nothing
+		// to do.
+		h.retentionUncertain, h.scopesUnknown = true, true
+		return h
+	}
+	h.scopes = scopes
+	// gc's own entry point, with gc's own arguments. The project pass
+	// is the context's scope when it is not the global one, exactly as
+	// gc resolves it; every other project arrives through the registry
+	// walk inside.
+	projPath, projGaleDir := "", ""
+	if ctx.GaleDir != "" && !sameDir(ctx.GaleDir, galeHome) {
+		projPath, projGaleDir = ctx.GalePath, ctx.GaleDir
+	}
+	retained, _, retErr := collectGCRetention(
+		galeHome, projPath, projGaleDir, store.NewStore(ctx.StoreRoot),
+		ctx.Resolver, ctx.versionedRecipeResolver(),
+	)
+	h.retained = retained
+	h.retentionUncertain = retErr != nil
+	return h
+}
+
+// classify decides which of the three states one bare directory is in,
+// and for a declared root which scope's sync converges it.
+//
+// Reachability comes from checkNothingReaches, one scope at a time.
+// The walk is migrate's own and is asked the question it already
+// answers; asking it per scope is what turns "something reaches this"
+// into the count the classification needs. A scope whose closure
+// cannot be read counts as reaching, which is the conservative
+// reading: gale cannot tell, so it must not promise a sweep.
+func (h preRevisionHolds) classify(
+	t migrateTarget,
+) (preRevisionState, projects.Scope) {
+	var holders, declarers []projects.Scope
+	for _, s := range h.scopes {
+		declares := scopeDeclares(s, t.name)
+		if declares {
+			declarers = append(declarers, s)
+		}
+		if !declares && checkNothingReaches(
+			[]projects.Scope{s}, h.storeRoot, t,
+		) == nil {
+			continue
+		}
+		holders = append(holders, s)
+	}
+	switch {
+	// Every declarer is a holder, so one of each is the same scope:
+	// the only one that holds the directory, and it holds it as a root
+	// its own sync visits.
+	case len(holders) == 1 && len(declarers) == 1:
+		return preRevisionDeclared, holders[0]
+	case len(holders) == 0 && !h.scopesUnknown && !h.retains(t):
+		return preRevisionOrphaned, projects.Scope{}
+	default:
+		return preRevisionStuck, projects.Scope{}
+	}
+}
+
+// retains reports whether gc keeps this directory.
+//
+// Keyed on the directory's own basename rather than on the target's
+// canonical version: a pre-revision directory IS the bare spelling,
+// and gc's keys come from store.List and from StorePath's bare
+// fallback, both of which name it that way.
+func (h preRevisionHolds) retains(t migrateTarget) bool {
+	return isReferenced(t.name, filepath.Base(t.dir), h.retained)
+}
+
+// scopeDeclares reports whether the scope's manifest names the
+// package, which is what makes it a root that scope's sync visits.
+//
+// The effective package set for the current host, because that is the
+// set sync reads. A manifest that cannot be read declares nothing:
+// this only ever narrows the advice, and the alternative is telling
+// someone to sync a scope that will not sync.
+func scopeDeclares(s projects.Scope, name string) bool {
+	pkgs, err := readConfigPackages(scopeConfigPath(s))
+	if err != nil {
+		return false
+	}
+	_, ok := pkgs[name]
+	return ok
+}
+
+// scopeConfigPath is the gale.toml beside a scope's lock, which is
+// where it sits for both scope shapes: <project>/gale.toml next to
+// <project>/gale.lock, and <gale home>/gale.toml next to
+// <gale home>/gale.lock.
+func scopeConfigPath(s projects.Scope) string {
+	return filepath.Join(filepath.Dir(s.LockPath), "gale.toml")
+}
+
+// syncSpelling is the sync that actually runs in this scope.
+//
+// A legacy lock, or one that will not parse, hard-fails a locked sync
+// before any package is looked at, so plain `gale sync` in such a
+// scope converges nothing. `--no-frozen` skips loading the lock
+// entirely rather than loading and bypassing it, which is why it works
+// on a file the loader rejects.
+func syncSpelling(s projects.Scope) string {
+	lv, err := lockfile.Load(s.LockPath)
+	if err != nil || lv.Kind == lockfile.KindLegacy {
+		return "gale sync --no-frozen"
+	}
+	return "gale sync"
 }
 
 func listTargets(out *output.Output, targets []migrateTarget) {

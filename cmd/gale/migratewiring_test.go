@@ -732,11 +732,13 @@ func (m *migrateMachine) sourceOnlyPkg(name string) {
 // Dropping the report would leave a run that exits zero having
 // silently abandoned half of upgrade day.
 //
-// Both halves are asserted because their remedies differ and only one
-// exists. A canonical source directory is what `lock --refresh` was
-// built to replace. A pre-revision one is not, since refresh checks
-// the canonical path alone, so it is reported as gh#200 rather than
-// handed a command that must refuse.
+// Both halves are asserted because their remedies differ. A canonical
+// source directory is what `lock --refresh` was built to replace. A
+// pre-revision one is not, since refresh checks the canonical path
+// alone; this fixture leaves it unreached and unpinned, which is the
+// state `gale gc` clears. Which remedy each pre-revision state gets is
+// TestRunMigrateNamesTheConvergencePathItFound's subject; what this
+// test holds is that the two HALVES stay split at all.
 //
 // Nothing is destroyed either. A source directory is not migrate's to
 // touch under any classification, and the surviving bytes are what
@@ -753,9 +755,13 @@ func TestRunMigrateReportsWhatItCannotConverge(t *testing.T) {
 		t.Fatalf("runMigrate: %v", err)
 	}
 
+	// "Nothing links or pins" rather than "gale gc": the canonical
+	// half names gc too, for the directory no scope declares, so an
+	// assertion on the command alone would pass without the
+	// pre-revision half printing anything at all.
 	for _, want := range []string{
 		"canon@1.0-1", "gale lock --refresh",
-		"legacy@1.0-1", "gh#200",
+		"legacy@1.0-1", "Nothing links or pins",
 	} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("the report never mentions %q:\n%s", want, buf)
@@ -764,6 +770,194 @@ func TestRunMigrateReportsWhatItCannotConverge(t *testing.T) {
 	for _, dir := range []string{canonical, bare} {
 		if _, err := os.Lstat(dir); err != nil {
 			t.Errorf("a source-built directory was destroyed: %v", err)
+		}
+	}
+}
+
+// preRevisionScope is one machine state a bare directory can be in,
+// expressed as the things that hold it: a scope's active generation,
+// a scope's manifest, and the lock that scope carries.
+//
+// Spelled as a fixture rather than as four near-identical setups
+// because the classification is a function of exactly these three
+// facts, and a reader comparing two rows should be able to see which
+// one moved.
+type preRevisionScope struct {
+	// dir is the scope's gale dir. Empty means the global scope,
+	// whose gale dir IS galeHome.
+	dir string
+	// links puts the bare directory in this scope's active
+	// generation, which is what "reached" means.
+	links bool
+	// declares writes the package into this scope's gale.toml, which
+	// is what makes it a root sync would visit.
+	declares bool
+	// legacyLock gives the scope a flat pre-enforcement lock, which
+	// syncLockView hard-fails on — the state that makes the escape
+	// `gale sync --no-frozen` rather than `gale sync`.
+	legacyLock bool
+}
+
+// seedPreRevisionScope puts one scope into the state s describes,
+// registering it when it is a project so projects.Scopes sees it.
+func seedPreRevisionScope(
+	t *testing.T, m *migrateMachine, pkg string, s preRevisionScope,
+) {
+	t.Helper()
+	galeDir, configPath := m.galeHome, filepath.Join(m.galeHome, "gale.toml")
+	if s.dir != "" {
+		galeDir = filepath.Join(s.dir, ".gale")
+		configPath = filepath.Join(s.dir, "gale.toml")
+		if err := projects.Register(m.galeHome, s.dir); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if s.declares {
+		writeFile(t, configPath,
+			fmt.Sprintf("[packages]\n%s = \"1.0\"\n", pkg))
+	}
+	if s.legacyLock {
+		writeLegacyLock(t, filepath.Join(filepath.Dir(configPath), "gale.lock"),
+			pkg, "1.0", shaX)
+	}
+	if s.links {
+		if err := generation.Build(
+			map[string]string{pkg: "1.0"}, galeDir, m.storeRoot,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Migrate names the command that converges each pre-revision
+// directory, and says plainly when there is none (gh#200).
+//
+// One report line used to cover every bare source directory: "No gale
+// command converges them today". That was true of only one of the
+// three states such a directory can be in, and the other two have
+// working escapes the report was hiding.
+//
+//   - Nothing links or pins it: it is an orphan, and `gale gc` sweeps
+//     it. The predicate has to be GC'S, not the closure walk migrate
+//     already owns — gc additionally retains config pins across every
+//     project and host, so a pinned-but-unlinked directory would be
+//     promised a sweep gc declines to perform.
+//   - One scope reaches it and declares it: unlocked sync reinstalls a
+//     directory with no dependency metadata into the canonical path,
+//     additively. The escape is `gale sync`, and `gale sync
+//     --no-frozen` where that scope carries a legacy lock, since a
+//     locked sync fails closed on one it cannot honor.
+//   - More than one scope reaches it, or none declares it: there is no
+//     per-scope sequence that converges it, and saying so is the whole
+//     obligation. Naming one that converges nothing would be worse.
+//
+// Driven through runMigrate rather than through reportUnresolved,
+// because the classification reads the machine — scopes, generations,
+// manifests, locks — and a unit test on the reporter would assert the
+// wording while nothing supplied it the facts.
+func TestRunMigrateNamesTheConvergencePathItFound(t *testing.T) {
+	tests := []struct {
+		name   string
+		scopes []preRevisionScope
+		want   []string
+		reject []string
+	}{
+		{
+			name: "an orphan is swept by gc",
+			want: []string{"Nothing links or pins", "gale gc"},
+			// The two escapes belong to states this directory is not
+			// in, and offering one costs the user a command that
+			// cannot help.
+			reject: []string{"gale sync", "no safe sequence"},
+		},
+		{
+			name:   "a reached declared root converges through sync",
+			scopes: []preRevisionScope{{links: true, declares: true}},
+			want:   []string{"gale sync"},
+			reject: []string{"--no-frozen", "gale gc"},
+		},
+		{
+			name: "a legacy-locked scope needs --no-frozen",
+			scopes: []preRevisionScope{
+				{links: true, declares: true, legacyLock: true},
+			},
+			want: []string{"gale sync --no-frozen"},
+		},
+		{
+			name: "two scopes reaching it have no safe sequence",
+			scopes: []preRevisionScope{
+				{links: true, declares: true},
+				{dir: "project", links: true},
+			},
+			want:   []string{"no safe sequence", "gh#200"},
+			reject: []string{"gale sync", "gale gc"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := newMigrateMachine(t)
+			m.sourceOnlyPkg("legacy")
+			bare := seedStore(t, m.storeRoot, "legacy", "1.0")
+			writeDepsMeta(t, m.storeRoot, "legacy", "1.0")
+			for _, s := range tt.scopes {
+				if s.dir != "" {
+					s.dir = filepath.Join(t.TempDir(), s.dir)
+				}
+				seedPreRevisionScope(t, m, "legacy", s)
+			}
+
+			out, buf := recordedOutput()
+			if err := runMigrate(m.ctx, out); err != nil {
+				t.Fatalf("runMigrate: %v", err)
+			}
+
+			for _, want := range tt.want {
+				if !strings.Contains(buf.String(), want) {
+					t.Errorf("the report never mentions %q:\n%s", want, buf)
+				}
+			}
+			for _, no := range tt.reject {
+				if strings.Contains(buf.String(), no) {
+					t.Errorf("the report offers %q for a directory that "+
+						"state does not describe:\n%s", no, buf)
+				}
+			}
+			if _, err := os.Lstat(bare); err != nil {
+				t.Errorf("a source-built directory was destroyed: %v", err)
+			}
+		})
+	}
+}
+
+// A reinstall that lands canonically without a provenance record is
+// the next step, and the report says so.
+//
+// recordProvenance is all-or-nothing: an unattestable closure commits
+// the directory with NO record at all. Since a pre-revision leftover
+// is most often a dependency, the common shape is a root whose own
+// rebuild lands in the canonical path and still records nothing,
+// because something below it is unattested. Left unsaid, a user who
+// followed the sync advice and then met `gale lock`'s unprovenanced
+// error would read the whole sequence as having failed.
+func TestRunMigrateNamesTheAttestationHandoff(t *testing.T) {
+	m := newMigrateMachine(t)
+	m.sourceOnlyPkg("legacy")
+	seedStore(t, m.storeRoot, "legacy", "1.0")
+	writeDepsMeta(t, m.storeRoot, "legacy", "1.0")
+	seedPreRevisionScope(t, m, "legacy",
+		preRevisionScope{links: true, declares: true})
+
+	out, buf := recordedOutput()
+	if err := runMigrate(m.ctx, out); err != nil {
+		t.Fatalf("runMigrate: %v", err)
+	}
+
+	for _, want := range []string{
+		"no provenance record", "gale lock --refresh",
+	} {
+		if !strings.Contains(buf.String(), want) {
+			t.Errorf("the sync advice never mentions %q:\n%s", want, buf)
 		}
 	}
 }

@@ -237,6 +237,42 @@ routes stale packages through `Reinstall` rather than the
 regular `Install` path so bare dirs don't block the migration
 via back-compat fallback.
 
+### What that sync never reaches
+
+Sync visits declared roots. A bare dir it never visits — a
+dependency, or a package dropped from gale.toml but still
+linked by a retained generation — stays bare, and since it
+carries no provenance record a locked environment refuses to
+activate it. `gale migrate` cannot converge one either: it
+relocates what it can refetch, and a source-method package
+has nothing to refetch.
+
+So `gale migrate` reports these and names the escape, which
+depends on what holds the directory (gh#200):
+
+- **Nothing links or pins it.** It is an orphan; `gale gc`
+  sweeps it.
+- **One scope declares it.** That scope's `gale sync`
+  reinstalls it into the canonical path. Nothing is deleted
+  — the bare dir survives and becomes a gc candidate once
+  resolution prefers the populated canonical sibling. Where
+  the scope carries a legacy lock, the spelling is `gale
+  sync --no-frozen`, since a locked sync fails closed on a
+  lock it cannot honor.
+- **Several scopes reach it, or only a dependent does.**
+  There is no safe per-scope sequence, and gale says so
+  instead of naming one. In particular, do not reach for
+  `gale remove` plus a reinstall: it deletes the pin from
+  every section carrying it, the store dir may be the last
+  copy of a version the registry no longer serves, and
+  across scopes the removal is kept and the reinstall
+  cache-hits, so nothing happens at all.
+
+A reinstall whose closure cannot be attested commits with no
+provenance record. That is the next step, not a failure:
+converge the closure bottom-up, then `gale lock --refresh
+<pkg>`.
+
 ## `.versions` index and revisions
 
 `.versions` files in gale-recipes track the known versions of
