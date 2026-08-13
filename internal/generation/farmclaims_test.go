@@ -91,6 +91,30 @@ func (f *claimsFixture) lockV1(roots []string, pkgs map[string]lockfile.Package)
 	}
 }
 
+// lockV1Host writes a v1 lock whose roots live ONLY in a host
+// overlay, so the scope's claim exists only for that --host
+// dimension.
+func (f *claimsFixture) lockV1Host(host string, roots []string) {
+	f.t.Helper()
+	pkgs := make(map[string]lockfile.Package, len(roots))
+	for _, id := range roots {
+		pkgs[id] = artifact("binary", nil, nil)
+	}
+	if err := lockfile.WriteV1(
+		filepath.Join(f.proj, "gale.lock"), &lockfile.V1{
+			Version: lockfile.SchemaVersion,
+			Targets: lockfile.Targets{
+				Host: map[string]lockfile.Target{
+					host: {Roots: roots},
+				},
+			},
+			Packages: pkgs,
+		},
+	); err != nil {
+		f.t.Fatal(err)
+	}
+}
+
 // artifact builds a minimal locked node for the current platform.
 func artifact(method string, runtimeDeps, buildDeps []string) lockfile.Package {
 	return lockfile.Package{
@@ -824,4 +848,209 @@ func claimDirs(c farm.Claimant) []string {
 		out = append(out, p.FinalDir)
 	}
 	return out
+}
+
+// breakGenerationWalk makes the generation tree under galeDir
+// unwalkable while its current pointer still resolves: the gen
+// directory becomes a regular file, so the walk's root Lstat fails
+// with ENOTDIR, and current still readlinks "gen/1", which
+// generation.Current parses without ever stating the directory.
+//
+// Structural, not a chmod: CI and the agent container run tests as
+// root and bypass permission bits, so a chmod fixture passes for the
+// wrong reason (gh#210).
+func breakGenerationWalk(t *testing.T, galeDir string) {
+	t.Helper()
+	genRoot := filepath.Join(galeDir, "gen")
+	if err := os.RemoveAll(genRoot); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		genRoot, []byte("not a directory"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"), filepath.Join(galeDir, "current"),
+	); err != nil && !errors.Is(err, os.ErrExist) {
+		t.Fatal(err)
+	}
+}
+
+// A scope whose active generation cannot be walked is a scope whose
+// claim is unknown, and the guard must fail closed on it (gh#210).
+//
+// scopeClosureDirs already refuses an unreadable dep closure through
+// FarmStoreDirsStrict; feeding that strict walk from the LENIENT
+// generation reader is the inconsistency #210 names. A claim that
+// silently omits a package permits exactly the mutation it exists to
+// refuse, and since #223's pruneUnstaged made the staged image
+// authoritative, a shrunk union deletes another scope's farm link
+// rather than merely failing to restore it.
+//
+// All three scopes, because cross-scope claim bugs recur here
+// (ad4e685, 289d13b): the project scope reached through the registry
+// walk, the global scope the registry skips by design, and a scope
+// whose roots live in a --host overlay.
+func TestFarmClaimants_UnreadableGenerationWalkFailsClosed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// setup breaks one scope's generation and returns the gale
+		// dir of the INITIATING scope, which the claim walk excludes.
+		setup func(t *testing.T, f *claimsFixture) string
+	}{
+		{
+			name: "project scope",
+			setup: func(t *testing.T, f *claimsFixture) string {
+				projGale := filepath.Join(f.proj, ".gale")
+				if err := Build(
+					map[string]string{"curl": "8.19.0-1"},
+					projGale, f.storeRoot,
+				); err != nil {
+					t.Fatal(err)
+				}
+				breakGenerationWalk(t, projGale)
+				return f.galeHome
+			},
+		},
+		{
+			name: "global scope",
+			setup: func(t *testing.T, f *claimsFixture) string {
+				if err := Build(
+					map[string]string{"curl": "8.19.0-1"},
+					f.galeHome, f.storeRoot,
+				); err != nil {
+					t.Fatal(err)
+				}
+				breakGenerationWalk(t, f.galeHome)
+				return filepath.Join(f.proj, ".gale")
+			},
+		},
+		{
+			name: "host-overlay scope",
+			setup: func(t *testing.T, f *claimsFixture) string {
+				t.Setenv("GALE_HOST", "laptop")
+				projGale := filepath.Join(f.proj, ".gale")
+				if err := Build(
+					map[string]string{"curl": "8.19.0-1"},
+					projGale, f.storeRoot,
+				); err != nil {
+					t.Fatal(err)
+				}
+				// Roots reachable only through the host overlay, so
+				// the scope's whole claim depends on the --host
+				// dimension. The generation read still comes first,
+				// and its refusal must survive that.
+				f.lockV1Host("laptop", []string{"curl@8.19.0-1"})
+				breakGenerationWalk(t, projGale)
+				return f.galeHome
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newClaimsFixture(t)
+			f.install("curl", "8.19.0-1", "libcurl")
+
+			self := tc.setup(t, f)
+
+			claimants := FarmClaimants(f.storeRoot, self)
+			if len(claimants) != 1 {
+				t.Fatalf("claimants = %+v, want the broken scope", claimants)
+			}
+			if claimants[0].Err == nil {
+				t.Fatalf("claimant = %+v, want Err set: a generation "+
+					"the walk cannot read is an unknown claim, and a "+
+					"claim that omits a package permits the mutation "+
+					"it exists to refuse", claimants[0])
+			}
+			if want := filepath.Join("gen", "1"); !strings.Contains(
+				claimants[0].Err.Error(), want,
+			) {
+				t.Errorf("error must name %s, got: %v",
+					want, claimants[0].Err)
+			}
+			// One broken scope blocks every install and removal on
+			// the machine until it clears, so the refusal has to
+			// carry its escape — the rule the unreadable-deps
+			// refusal already follows.
+			if !strings.Contains(claimants[0].Err.Error(), "gale sync") {
+				t.Errorf("error %q must carry its repair",
+					claimants[0].Err)
+			}
+		})
+	}
+}
+
+// The initiating scope's own claim rests on the same read, and every
+// builder of it must refuse an unreadable generation rather than
+// propose a smaller closure (gh#210).
+//
+// ProposedClaimant backs `gale remove`'s depopulate guard, and the
+// two staged builders back the installer's populate and remove
+// guards. All three answer "may these bytes go away"; a generation
+// the walk could not read arriving as "this scope links nothing"
+// approves every one of them.
+//
+// Both scopes, because the initiating gale dir is global for a
+// global install and the project's for a project one, and the guard
+// is the same code either way.
+func TestProposedClaimantsFailClosedOnUnreadableGeneration(t *testing.T) {
+	for _, scope := range []string{"global scope", "project scope"} {
+		t.Run(scope, func(t *testing.T) {
+			f := newClaimsFixture(t)
+			f.install("curl", "8.19.0-1", "libcurl")
+
+			galeDir := f.galeHome
+			if scope == "project scope" {
+				galeDir = filepath.Join(f.proj, ".gale")
+			}
+			if err := Build(
+				map[string]string{"curl": "8.19.0-1"},
+				galeDir, f.storeRoot,
+			); err != nil {
+				t.Fatal(err)
+			}
+			breakGenerationWalk(t, galeDir)
+
+			placements := []farm.Placement{{
+				ScanDir:  filepath.Join(f.storeRoot, "curl", "8.19.0-1"),
+				FinalDir: filepath.Join(f.storeRoot, "curl", "8.19.0-1"),
+			}}
+			for _, b := range []struct {
+				name string
+				call func() (farm.Claimant, error)
+			}{
+				{"ProposedClaimant", func() (farm.Claimant, error) {
+					return ProposedClaimant(
+						map[string]string{"curl": ""}, galeDir, f.storeRoot,
+					)
+				}},
+				{"ProposedClaimantStaged", func() (farm.Claimant, error) {
+					return ProposedClaimantStaged(
+						placements, galeDir, f.storeRoot,
+					)
+				}},
+				{"ProposedClaimantRequired", func() (farm.Claimant, error) {
+					return ProposedClaimantRequired(
+						placements, galeDir, f.storeRoot,
+					)
+				}},
+			} {
+				c, err := b.call()
+				if err == nil {
+					t.Errorf("%s = %+v, want an error: the guard must "+
+						"abort on a generation it could not read, not "+
+						"propose a closure missing whatever the walk "+
+						"could not see", b.name, c)
+					continue
+				}
+				if want := filepath.Join("gen", "1"); !strings.Contains(
+					err.Error(), want,
+				) {
+					t.Errorf("%s error must name %s, got: %v",
+						b.name, want, err)
+				}
+			}
+		})
+	}
 }

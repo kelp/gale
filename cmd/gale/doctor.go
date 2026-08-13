@@ -964,14 +964,31 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 		ctx.out.Success("Revision drift (no global packages declared)")
 		return true
 	}
-	actual, err := generation.CurrentVersions(ctx.galeDir, ctx.storeRoot)
+	actual, err := generation.CurrentVersionsStrict(
+		ctx.galeDir, ctx.storeRoot,
+	)
 	if err != nil {
-		// checkGeneration already surfaces a broken current
-		// symlink; stay quiet here to avoid a double-error.
-		ctx.out.Success(
-			"Revision drift (current generation unreadable; see above)",
-		)
-		return true
+		// Report it, and name the path (gh#210). This check exists
+		// to surface silent generation corruption, so a green line
+		// over a generation that could not be enumerated is the one
+		// answer it must never give. Under the lenient reader it did
+		// not even reach this branch: an unwalkable generation came
+		// back empty, every declared package was skipped as missing,
+		// and the check printed "Revision drift (none)".
+		//
+		// Deferring to checkGeneration is not enough either. That
+		// check catches a current pointer whose target will not
+		// stat; a walk failing deeper in the tree resolves fine and
+		// leaves nothing above to see.
+		//
+		// It reports and returns — it never aborts the run. This is
+		// the thirteenth of nineteen checks, and stopping here would
+		// suppress PATH, direnv, orphans and the sigstore trust root
+		// on exactly the machine doctor exists to diagnose.
+		ctx.out.Error(fmt.Sprintf(
+			"Revision drift unknown: %v\n  Run: gale sync", err,
+		))
+		return false
 	}
 	expected := generation.ActiveVersions(ctx.globalPkgs, ctx.storeRoot)
 	var drift []string

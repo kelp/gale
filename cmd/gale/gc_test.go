@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -1347,8 +1348,15 @@ func gcUnreadableProjectFixture(t *testing.T) (string, string) {
 //
 // Structural, not a chmod: CI and the agent container run tests as
 // root and bypass permission bits (gh#210).
+//
+// The current symlink is created when the scope has none, so a
+// fixture that never built a generation can be broken the same way
+// a synced one is.
 func breakGenerationWalk(t *testing.T, galeDir string) {
 	t.Helper()
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	genRoot := filepath.Join(galeDir, "gen")
 	if err := os.RemoveAll(genRoot); err != nil {
 		t.Fatal(err)
@@ -1356,6 +1364,11 @@ func breakGenerationWalk(t *testing.T, galeDir string) {
 	if err := os.WriteFile(
 		genRoot, []byte("not a directory"), 0o644,
 	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", "1"), filepath.Join(galeDir, "current"),
+	); err != nil && !errors.Is(err, os.ErrExist) {
 		t.Fatal(err)
 	}
 }

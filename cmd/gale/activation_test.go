@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/lockfile"
@@ -82,6 +83,72 @@ func TestGateActivationSkipsGlobalScope(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
+
+	if err := gateActivation(
+		galeDir, filepath.Join(galeDir, "gale.toml"),
+	); err != nil {
+		t.Fatalf("global scope must not be gated, got %v", err)
+	}
+}
+
+// The gate is an enforcement gate, so it must fail CLOSED on a
+// generation it cannot read (gh#210).
+//
+// Installed is the set the gate compares against the lock. Read
+// leniently, a generation the walk could not enumerate arrives as an
+// EMPTY set, and an empty set satisfies every lock: each violation
+// the gate exists to catch simply vanishes. That is fail-open on the
+// one check that runs on every cd.
+//
+// The shell-lockout surface this opens is bounded and already
+// present: the gate errors today when generation.Current itself
+// fails. This widens the same refusal from the pointer to the tree
+// it points at.
+//
+// The host dimension is covered too: the lock's roots may live in a
+// --host overlay, and the generation read precedes it, so the
+// refusal must not depend on which target rooted the closure.
+func TestGateActivationFailsClosedOnUnreadableGeneration(t *testing.T) {
+	for _, tc := range []struct{ name, host string }{
+		{"default target", ""},
+		{"host overlay", "laptop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.host != "" {
+				t.Setenv("GALE_HOST", tc.host)
+			}
+			proj := writeGateFixture(t, "")
+			chdirTo(t, proj)
+			galeDir := filepath.Join(proj, ".gale")
+			breakGenerationWalk(t, galeDir)
+
+			err := gateActivation(
+				galeDir, filepath.Join(proj, "gale.toml"),
+			)
+			if err == nil {
+				t.Fatal("the gate accepted a generation it could " +
+					"not read; every lock violation in it is now " +
+					"invisible")
+			}
+			if want := filepath.Join("gen", "1"); !strings.Contains(
+				err.Error(), want,
+			) {
+				t.Errorf("error must name %s, got: %v", want, err)
+			}
+		})
+	}
+}
+
+// The global scope stays ungated, unreadable generation included
+// (gh#210). ~/.gale/current/bin reaches PATH from the user's shell
+// rc with no gale invocation, so there is nothing to hook; extending
+// the refusal there would cost a user their shell without gaining an
+// enforcement point. Global relies on sync-time enforcement.
+func TestGateActivationSkipsGlobalScopeWithUnreadableGeneration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	breakGenerationWalk(t, galeDir)
 
 	if err := gateActivation(
 		galeDir, filepath.Join(galeDir, "gale.toml"),

@@ -1402,8 +1402,14 @@ func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
 //
 // An unreadable generation answers false: a rebuild is the safe
 // direction, and it is what the caller was about to do anyway.
+//
+// Which needs the STRICT reader to be reachable at all (gh#210).
+// Read leniently, a generation the walk could not enumerate arrives
+// as an empty map, and against a lock rooting nothing an empty map
+// compares equal — so gc and `doctor --repair`, the two recovery
+// commands, skip the rebuild on exactly the machine that needs it.
 func generationAlreadyLinks(galeDir, storeRoot string, pkgs map[string]string) bool {
-	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	active, err := generation.CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		return false
 	}

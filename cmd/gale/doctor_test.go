@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -1017,4 +1018,108 @@ func TestCheckShadowedProvidersReadsTheProjectScope(t *testing.T) {
 	if msg := buf.String(); !strings.Contains(msg, contestedBin) {
 		t.Errorf("the report must name the contested binary, got: %q", msg)
 	}
+}
+
+// Doctor must REPORT a generation it cannot read and still finish
+// the run (gh#210).
+//
+// Both halves matter, and they pull in opposite directions.
+//
+// Today the lenient reader answers an unwalkable generation with an
+// empty map and no error, so the check does not even reach its
+// "unreadable; see above" branch: it compares the declared packages
+// against an empty map, skips every one as missing, and prints the
+// green "Revision drift (none)" — a clean verdict on a machine whose
+// active generation cannot be enumerated, from the one check that
+// exists to surface silent gen corruption (the gen/308 regression).
+//
+// Deferring to another check is not a substitute. checkGeneration
+// catches only a current pointer whose target will not stat; a walk
+// that fails on an entry deeper in the tree resolves fine and leaves
+// nothing "above" to see.
+//
+// The other half is why this caller does not get gc's posture.
+// Revision drift is the thirteenth of nineteen checks. Aborting the
+// run would suppress PATH, direnv, orphans and the sigstore trust
+// root on exactly the machine doctor exists to diagnose, so the
+// check reports and returns false; it never stops the loop.
+func TestDoctorReportsUnreadableGenerationWithoutAborting(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GALE_OFFLINE", "1")
+	galeDir := filepath.Join(home, ".gale")
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// A declared package, or checkRevisionDrift returns early with
+	// "no global packages declared" and never reads the generation.
+	if err := os.WriteFile(
+		filepath.Join(galeDir, "gale.toml"),
+		[]byte("[packages]\njq = \"1.7\"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	breakGenerationWalk(t, galeDir)
+
+	var stdout, stderr bytes.Buffer
+	// An error is expected: doctor found problems. The subject here
+	// is what it printed, not the verdict.
+	_ = runDoctor(&doctorIO{
+		galeDir: galeDir,
+		cwd:     home,
+		stdout:  &stdout,
+		stderr:  &stderr,
+	})
+
+	logged := stderr.String()
+	drift := checkLine(t, logged, "Revision drift")
+	if !strings.HasPrefix(drift, "xxx ") {
+		t.Errorf("revision drift must be reported as an error, got: %q",
+			drift)
+	}
+	if want := filepath.Join("gen", "1"); !strings.Contains(drift, want) {
+		t.Errorf("the report must name the path it could not read "+
+			"(%s), got: %q", want, drift)
+	}
+
+	// Every later check still ran. Without this the "never abort"
+	// half of the posture is untested, and a strict rewrite that
+	// swallowed the rest of the run would pass.
+	//
+	// PATH and the sigstore trust root are the two later checks that
+	// print unconditionally — direnv and orphans stay silent when
+	// they have nothing to say, so their absence proves nothing.
+	// Sigstore is the LAST entry in doctorChecks, which is what makes
+	// its line evidence that the loop ran to the end.
+	for _, later := range []string{"PATH", "sigstore"} {
+		if !strings.Contains(logged, later) {
+			t.Errorf("check %q did not run after the unreadable "+
+				"generation; doctor aborted. stderr:\n%s",
+				later, logged)
+		}
+	}
+	if want := fmt.Sprintf("of %d checks", len(doctorChecks)); !strings.Contains(
+		stdout.String(), want,
+	) {
+		t.Errorf("summary must count every check (%q), got: %q",
+			want, stdout.String())
+	}
+}
+
+// checkLine returns the single progress line whose text contains
+// substr, marker prefix included, and fails when there is not
+// exactly one.
+func checkLine(t *testing.T, logged, substr string) string {
+	t.Helper()
+	var found []string
+	for _, line := range strings.Split(logged, "\n") {
+		if strings.Contains(line, substr) {
+			found = append(found, line)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("want exactly one line containing %q, got %d:\n%s",
+			substr, len(found), logged)
+	}
+	return found[0]
 }
