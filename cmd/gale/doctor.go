@@ -20,6 +20,7 @@ import (
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/inspect"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
@@ -161,6 +162,7 @@ var doctorChecks = []doctorCheck{
 	{"shadowed files", checkShadowedFiles},
 	{"revision drift", checkRevisionDrift},
 	{"lib farm", checkFarm},
+	{"binary linkage", checkMachOLinkage},
 	{"stale installs", checkStaleInstalls},
 	{"PATH", checkPATH},
 	{"direnv", checkDirenvIntegration},
@@ -1495,4 +1497,24 @@ func init() {
 		"Probe the recipe registry for stale-install and "+
 			"orphan-dep diagnosis (off by default — implies network access)")
 	rootCmd.AddCommand(doctorCmd)
+}
+
+// checkMachOLinkage reports installed binaries whose @rpath dep
+// references nothing on their own rpath list resolves (gh#215).
+//
+// Red-phase stub: the tests in issue_215_test.go describe the
+// behavior; the next commit supplies it.
+func checkMachOLinkage(ctx *doctorContext) bool {
+	return checkMachOLinkageOn(ctx, runtime.GOOS)
+}
+
+func checkMachOLinkageOn(ctx *doctorContext, _ string) bool {
+	ctx.out.Success("Binary linkage")
+	return true
+}
+
+// unresolvableRefLines renders the unresolvable-ref issues of a scan
+// as report lines.
+func unresolvableRefLines(_ []inspect.Issue) []string {
+	return nil
 }

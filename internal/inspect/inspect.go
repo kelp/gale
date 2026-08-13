@@ -309,3 +309,11 @@ func declaredDepSet(r *recipe.Recipe) map[string]struct{} {
 	}
 	return s
 }
+
+// hasBinaryMagic reports whether the first four bytes of path match a
+// binary format this platform's readBinary can parse.
+//
+// Red-phase stub.
+func hasBinaryMagic(_ string) bool {
+	return false
+}

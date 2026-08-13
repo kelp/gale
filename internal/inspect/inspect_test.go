@@ -1,6 +1,7 @@
 package inspect
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,6 +209,57 @@ func TestScanReportsUnresolvableRef(t *testing.T) {
 	}
 	if !sawStale {
 		t.Errorf("expected stale-rpath, got %v", issues)
+	}
+}
+
+// TestMagicPrefilterRejectsANonBinary covers the cost half of the
+// scan: ScanInstalled opens every regular file under an install, and
+// on darwin a non-Mach-O otherwise costs two full parser opens
+// (macho.Open, then macho.OpenFat). hasBinaryMagic is the single
+// gate readBinary consults first, so a file it rejects never reaches
+// the parser.
+func TestMagicPrefilterRejectsANonBinary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "share", "doc.txt")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Large, because size is what the prefilter saves: the parser
+	// reads headers and section tables, not four bytes.
+	if err := os.WriteFile(path,
+		bytes.Repeat([]byte("gale documentation\n"), 60000),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if hasBinaryMagic(path) {
+		t.Errorf("a text file must not reach the binary parser")
+	}
+	refs, err := readBinary(path)
+	if err != nil || refs != nil {
+		t.Errorf("readBinary(text) = (%v, %v), want (nil, nil)", refs, err)
+	}
+}
+
+// TestMagicPrefilterKeepsRealBinaries is the no-behavior-change
+// half: the prefilter must not shrink what gale inspect sees. This
+// test binary is itself a real Mach-O (or ELF), so it proves the
+// gate passes a genuine binary through to the parser on whichever
+// platform the suite runs.
+func TestMagicPrefilterKeepsRealBinaries(t *testing.T) {
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasBinaryMagic(self) {
+		t.Fatalf("the test binary %s is a real binary", self)
+	}
+	refs, err := readBinary(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refs == nil {
+		t.Errorf("readBinary(%s) = nil: the prefilter dropped a real "+
+			"binary", self)
 	}
 }
 
