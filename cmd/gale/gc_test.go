@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
@@ -432,6 +433,13 @@ func TestGCShortMentionsGenerations(t *testing.T) {
 // one. We set up a fake gale dir with gen/1, gen/2,
 // gen/3 and current -> gen/3/bin, then verify only
 // gen/3 survives.
+//
+// keep = 1 is passed explicitly to preserve that meaning. gc
+// retains `[generation] keep` generations now, not just the
+// current one (gh#247), so under the default this fixture would
+// legitimately remove nothing; keep = 1 is the setting that means
+// "the current generation only", which is what this test is
+// about. The assertions are unchanged.
 func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := filepath.Join(galeDir, "pkg")
@@ -459,7 +467,7 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	t.Cleanup(func() { dryRun = false })
 
 	// Call cleanOldGenerations directly.
-	removed := cleanOldGenerations(galeDir, storeRoot, true)
+	removed := cleanOldGenerations(galeDir, storeRoot, 1, true)
 	if removed != 2 {
 		t.Errorf("dry-run: want 2 flagged, got %d", removed)
 	}
@@ -474,7 +482,7 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 
 	// Now run for real.
 	dryRun = false
-	removed = cleanOldGenerations(galeDir, storeRoot, false)
+	removed = cleanOldGenerations(galeDir, storeRoot, 1, false)
 	if removed != 2 {
 		t.Errorf("want 2 removed, got %d", removed)
 	}
@@ -499,7 +507,23 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 // for package versions and generation directories
 // rather than conflating them into a single counter.
 func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (gh#214)
+	home := t.TempDir()
+	t.Setenv("HOME", home) // isolate ~/.gale (gh#214)
+
+	// keep = 1 so the fixture still has a generation to remove.
+	// gc retains `[generation] keep` generations now (gh#247), and
+	// under the default this two-generation fixture is entirely
+	// retained — a summary of nothing says nothing about the two
+	// counters this test is checking.
+	if err := os.MkdirAll(filepath.Join(home, ".gale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(home, ".gale", "config.toml"),
+		[]byte("[generation]\nkeep = 1\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 
 	// Create a project dir with an empty config (no
 	// referenced packages) and a store with one
@@ -912,6 +936,7 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	ref, retained, err := collectGCRetention(
 		globalDir, "", "", s, nil, nil,
+		config.DefaultGenerationKeep,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -952,6 +977,7 @@ func TestGCRetentionSkipsVanishedRegisteredProjects(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	ref, retained, err := collectGCRetention(
 		globalDir, "", "", s, nil, nil,
+		config.DefaultGenerationKeep,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -1554,6 +1580,7 @@ func TestGCRetentionToleratesMissingConfigs(t *testing.T) {
 
 	ref, retained, err := collectGCRetention(
 		globalDir, "", "", s, nil, nil,
+		config.DefaultGenerationKeep,
 	)
 	if err != nil {
 		t.Fatalf("a missing config must not block the sweep: %v", err)
