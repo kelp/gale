@@ -306,6 +306,111 @@ func SplitRevision(version string) (string, int) {
 	return version[:i], n
 }
 
+// contentTagMarker is the dot-segment that introduces a content
+// tag inside a version's semver build-metadata segment.
+const contentTagMarker = "h"
+
+// contentDigestLen is the length of a content tag's digest, in
+// hex characters. It matches dirtLen in cmd/gale/install.go so
+// the two abbreviated digests a store path can carry read alike.
+const contentDigestLen = 12
+
+// TagVersion spells the content-tagged sibling of a canonical
+// version-revision: a terminal "h.<12 lowercase hex>" dot-segment
+// at the end of the semver build-metadata segment, immediately
+// preceding the "-<revision>" suffix.
+//
+// The digest rides in the BUILD-METADATA segment, never in a
+// "-<hex>" suffix, for the reason devVersionWithDirt states:
+// HasNumericRevisionSuffix and SplitRevision read a trailing
+// "-<digits>" as a Debian revision, so an all-digit digest after
+// a dash would parse as revision 12345678.
+//
+// The tag composes with an existing metadata segment rather than
+// opening a second one, mirroring devVersionWithDirt exactly. A
+// dirty dev build's sibling is therefore spelled
+// "0.2.0-dev.7+5395b8f.dirty.<hex>.h.<hex>-1", never "+h.<hex>".
+// An empty digest returns canonical unchanged.
+//
+//	("1.8.1-2", "abc123def456")             → "1.8.1+h.abc123def456-2"
+//	("0.2.0-dev.7+5395b8f-1", "abc…")       → "0.2.0-dev.7+5395b8f.h.abc…-1"
+func TagVersion(canonical, digest string) string {
+	if digest == "" {
+		return canonical
+	}
+	base, suffix := splitRevisionSuffix(canonical)
+	sep := "+" + contentTagMarker + "."
+	if strings.Contains(base, "+") {
+		sep = "." + contentTagMarker + "."
+	}
+	return base + sep + digest + suffix
+}
+
+// SplitContentTag reverses TagVersion: it recovers the canonical
+// version-revision a store basename addresses, plus the content
+// digest tagging it. An untagged basename is returned unchanged
+// with an empty digest, so every path→identity reversal site can
+// route through this blindly.
+//
+// The revision is stripped with SplitRevision's rule FIRST, then
+// the terminal segment is matched, then the revision is
+// re-attached. Matching before the strip would read the revision
+// as part of the metadata.
+//
+// The match is deliberately narrow: exactly "h" followed by
+// exactly contentDigestLen lowercase hex characters, as the last
+// two dot-segments of the build metadata. An upstream version
+// whose own build metadata happens to end that way would alias;
+// the splitter is a store-layout convenience and
+// .gale-provenance.toml remains the authority on what a directory
+// actually holds.
+func SplitContentTag(base string) (string, string) {
+	stripped, suffix := splitRevisionSuffix(base)
+	plus := strings.Index(stripped, "+")
+	if plus < 0 {
+		return base, ""
+	}
+	segs := strings.Split(stripped[plus+1:], ".")
+	n := len(segs)
+	if n < 2 || segs[n-2] != contentTagMarker ||
+		!isContentDigest(segs[n-1]) {
+		return base, ""
+	}
+	canonical := stripped[:plus]
+	if rest := strings.Join(segs[:n-2], "."); rest != "" {
+		canonical += "+" + rest
+	}
+	return canonical + suffix, segs[n-1]
+}
+
+// splitRevisionSuffix splits version into its base and its
+// literal "-<N>" suffix, keeping the suffix's exact spelling so a
+// caller can re-attach it byte for byte. A version without a
+// numeric revision suffix yields an empty suffix — unlike
+// SplitRevision, which reports the default revision 1 and cannot
+// tell the two spellings apart.
+func splitRevisionSuffix(version string) (string, string) {
+	if !HasNumericRevisionSuffix(version) {
+		return version, ""
+	}
+	i := strings.LastIndex(version, "-")
+	return version[:i], version[i:]
+}
+
+// isContentDigest reports whether s is a content tag's digest:
+// exactly contentDigestLen lowercase hex characters.
+func isContentDigest(s string) bool {
+	if len(s) != contentDigestLen {
+		return false
+	}
+	for _, r := range s {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
 // IsInstalled checks if a package version exists in the store.
 // Returns false for empty directories left by failed installs.
 // When version ends with "-1" and the exact directory is absent,

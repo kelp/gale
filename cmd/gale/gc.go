@@ -1008,7 +1008,7 @@ func expandRuntimeDeps(
 				continue
 			}
 			if dir, ok := s.StorePath(dep, version); ok {
-				referenced[dep+"@"+filepath.Base(dir)] = true
+				referenced[storeDirRetentionKey(dep, dir)] = true
 			}
 		}
 	}

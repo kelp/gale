@@ -79,6 +79,12 @@ func Read(dir string) (Metadata, error) {
 // "1.2.3-2" suffix becomes revision 2; a bare "1.2.3" defaults
 // to revision 1.
 //
+// A content-tagged sibling (gh#191) is canonicalized first, so
+// what lands in the file is the identity a recipe names. Record
+// the tag and IsStale compares "1.0+h.abc123def456" against the
+// recipe's "1.0", never matches, and every dependent reinstalls
+// on every run — the loop class at 013b4a4, 688ce7d, af4c3f6.
+//
 // Entries with empty name or path are skipped.
 func FromNamedDirs(namedDirs map[string]string) []ResolvedDep {
 	if len(namedDirs) == 0 {
@@ -89,7 +95,8 @@ func FromNamedDirs(namedDirs map[string]string) []ResolvedDep {
 		if name == "" || dir == "" {
 			continue
 		}
-		version, revision := store.SplitRevision(filepath.Base(dir))
+		canonical, _ := store.SplitContentTag(filepath.Base(dir))
+		version, revision := store.SplitRevision(canonical)
 		result = append(result, ResolvedDep{
 			Name:     name,
 			Version:  version,

@@ -708,6 +708,14 @@ func TestResolveVersionAllCasesOnFixedLayout(t *testing.T) {
 		filepath.Join(root, "jq", ".build-tmp-1.8.1-9"),
 		filepath.Join(root, "foo", "2.0.0"),
 		filepath.Join(root, "bar", "3.0.0-5"),
+		// Canonical plus two content-tagged siblings (gh#191).
+		// A tagged basename carries no "1.0.0-" prefix, so the
+		// bare-request revision scan cannot see it, and it
+		// carries a numeric revision suffix, so an exact request
+		// takes the existing exact-match branch.
+		filepath.Join(root, "hello", "1.0.0-1"),
+		filepath.Join(root, "hello", "1.0.0+h.aaaaaaaaaaaa-1"),
+		filepath.Join(root, "hello", "1.0.0+h.bbbbbbbbbbbb-1"),
 	}
 	for _, d := range dirs {
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -762,6 +770,24 @@ func TestResolveVersionAllCasesOnFixedLayout(t *testing.T) {
 		{"bar", "3.0.0-1", "3.0.0-1", false, false},
 		// Nonexistent package.
 		{"missing", "1.0.0", "1.0.0", false, false},
+		// A bare pin can NEVER resolve to a content-tagged
+		// sibling: the scan builds the prefix "1.0.0-", which a
+		// tagged basename does not carry. This is what keeps
+		// every bare-pin path byte-identical to today (gh#191).
+		{"hello", "1.0.0", "1.0.0-1", true, true},
+		// The canonical identity likewise resolves to itself.
+		{"hello", "1.0.0-1", "1.0.0-1", true, true},
+		// An exact request for a tagged basename takes the
+		// existing exact-match branch and is returned unchanged,
+		// so no resolver change is needed to address a sibling.
+		{
+			"hello", "1.0.0+h.aaaaaaaaaaaa-1",
+			"1.0.0+h.aaaaaaaaaaaa-1", true, true,
+		},
+		{
+			"hello", "1.0.0+h.bbbbbbbbbbbb-1",
+			"1.0.0+h.bbbbbbbbbbbb-1", true, true,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name+"@"+tc.version, func(t *testing.T) {
@@ -898,5 +924,141 @@ func TestStorePathIgnoresBuildTempAndLockSiblings(t *testing.T) {
 	want := filepath.Join(root, "foo", "1.0.0-2")
 	if got != want {
 		t.Errorf("StorePath = %q, want %q", got, want)
+	}
+}
+
+// TestContentTagRoundTrip pins the content-tag grammar (gh#191
+// proposal §3B) and, from the same table, the four parser
+// properties the spelling was chosen for. A content tag is a
+// terminal "h.<12 lowercase hex>" dot-segment at the END of the
+// semver build-metadata segment, immediately preceding the
+// "-<revision>" suffix.
+//
+// The fourth row is the one that matters. #213's
+// devVersionWithDirt appends ".dirty.<hex>" INSIDE an existing
+// "+" segment, so a dev build's divergent sibling is spelled
+// "…+5395b8f.dirty.<hex>.h.<hex>-1", never "+h.<hex>". A
+// splitter matching "+h." alone would miss the headline case
+// and fall through to replacing a store dir in place — the
+// exact harm the mechanism exists to prevent.
+func TestContentTagRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		// tagged is the on-disk store basename.
+		tagged string
+		// canonical is the identity it must reverse to.
+		canonical string
+		digest    string
+		// The parser-compatibility expectations.
+		wantRevSuffix bool
+		wantSplitBase string
+		wantSplitRev  int
+	}{
+		{
+			name:          "no metadata and no tag",
+			tagged:        "1.8.1-2",
+			canonical:     "1.8.1-2",
+			digest:        "",
+			wantRevSuffix: true,
+			wantSplitBase: "1.8.1",
+			wantSplitRev:  2,
+		},
+		{
+			name:          "tag opens the metadata segment",
+			tagged:        "1.8.1+h.abc123def456-2",
+			canonical:     "1.8.1-2",
+			digest:        "abc123def456",
+			wantRevSuffix: true,
+			wantSplitBase: "1.8.1+h.abc123def456",
+			wantSplitRev:  2,
+		},
+		{
+			name:          "metadata without a tag",
+			tagged:        "0.2.0-dev.7+5395b8f-1",
+			canonical:     "0.2.0-dev.7+5395b8f-1",
+			digest:        "",
+			wantRevSuffix: true,
+			wantSplitBase: "0.2.0-dev.7+5395b8f",
+			wantSplitRev:  1,
+		},
+		{
+			name: "tag appended to a dirty dev build's metadata",
+			tagged: "0.2.0-dev.7+5395b8f.dirty.aaaaaaaaaaaa." +
+				"h.bbbbbbbbbbbb-1",
+			canonical:     "0.2.0-dev.7+5395b8f.dirty.aaaaaaaaaaaa-1",
+			digest:        "bbbbbbbbbbbb",
+			wantRevSuffix: true,
+			wantSplitBase: "0.2.0-dev.7+5395b8f.dirty.aaaaaaaaaaaa." +
+				"h.bbbbbbbbbbbb",
+			wantSplitRev: 1,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			canonical, digest := SplitContentTag(tc.tagged)
+			if canonical != tc.canonical || digest != tc.digest {
+				t.Errorf("SplitContentTag(%q) = (%q, %q), want (%q, %q)",
+					tc.tagged, canonical, digest, tc.canonical, tc.digest)
+			}
+			if got := TagVersion(tc.canonical, tc.digest); got != tc.tagged {
+				t.Errorf("TagVersion(%q, %q) = %q, want %q",
+					tc.canonical, tc.digest, got, tc.tagged)
+			}
+			// Splitting an already-canonical identity is a no-op,
+			// so every reversal site can route through it blindly.
+			if c, d := SplitContentTag(tc.canonical); c != tc.canonical || d != "" {
+				t.Errorf("SplitContentTag(%q) = (%q, %q), want (%q, \"\")",
+					tc.canonical, c, d, tc.canonical)
+			}
+			// Parser compatibility: the tag rides in the build-
+			// metadata segment, so the revision parsers are blind
+			// to it.
+			if got := HasNumericRevisionSuffix(tc.tagged); got != tc.wantRevSuffix {
+				t.Errorf("HasNumericRevisionSuffix(%q) = %v, want %v",
+					tc.tagged, got, tc.wantRevSuffix)
+			}
+			base, rev := SplitRevision(tc.tagged)
+			if base != tc.wantSplitBase || rev != tc.wantSplitRev {
+				t.Errorf("SplitRevision(%q) = (%q, %d), want (%q, %d)",
+					tc.tagged, base, rev, tc.wantSplitBase, tc.wantSplitRev)
+			}
+			// "+" and "." are already legal store path components,
+			// so a tagged basename addresses one directory.
+			if err := CheckIdentity("jq", tc.tagged); err != nil {
+				t.Errorf("CheckIdentity(jq, %q) = %v, want nil",
+					tc.tagged, err)
+			}
+		})
+	}
+}
+
+// TestSplitContentTagRejectsNonTags pins what the splitter must
+// NOT match. The tag is a store-layout convenience;
+// .gale-provenance.toml stays the authority on what a directory
+// holds, so the splitter errs towards matching nothing.
+func TestSplitContentTagRejectsNonTags(t *testing.T) {
+	for _, in := range []string{
+		"",
+		"1.8.1",
+		"1.8.1-2",
+		// Wrong digest length.
+		"1.8.1+h.abc123-2",
+		"1.8.1+h.abc123def4567-2",
+		// Uppercase hex is not the minted spelling.
+		"1.8.1+h.ABC123DEF456-2",
+		// Non-hex.
+		"1.8.1+h.zzzzzzzzzzzz-2",
+		// Not terminal: another segment follows the tag.
+		"1.8.1+h.abc123def456.extra-2",
+		// "h" is not its own dot-segment.
+		"1.8.1+xh.abc123def456-2",
+		// No build-metadata segment at all.
+		"1.8.1-h.abc123def456-2",
+	} {
+		if canonical, digest := SplitContentTag(in); canonical != in || digest != "" {
+			t.Errorf("SplitContentTag(%q) = (%q, %q), want (%q, \"\")",
+				in, canonical, digest, in)
+		}
 	}
 }

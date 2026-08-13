@@ -374,9 +374,7 @@ func storeRemovalPlan(
 	out *output.Output,
 ) (string, error) {
 	storeDir := st.ResolveDir(name, version)
-	if otherScopeReferences(
-		st, name, storeDir, ctx.versionedRecipeResolver(), out,
-	) {
+	if otherScopeReferences(ctx, st, name, storeDir, out) {
 		out.Info(fmt.Sprintf(
 			"%s@%s still referenced by another "+
 				"gale.toml — keeping store entry",
@@ -454,9 +452,16 @@ func rawGaleConfig(path string) (*config.GaleConfig, error) {
 // config versions resolve to the same canonical <v>-<rev>
 // key as storeDir via storeRetentionKey (recipe-canonical when
 // a resolver is available).
+//
+// Configs are not the only reference source. What the other
+// scope's retained generations link counts too, and it is the
+// only source that can name a content-tagged sibling (gh#191):
+// a tag never enters a gale.toml, so the config-derived set
+// misses one by construction and this guard would approve
+// deleting a directory another scope's PATH resolves through.
+// The same rule gc already applies (gh#46, gh#247).
 func otherScopeReferences(
-	st *store.Store, name, storeDir string,
-	pinResolve versionedRecipeResolver,
+	ctx *cmdContext, st *store.Store, name, storeDir string,
 	out *output.Output,
 ) bool {
 	globalDir, err := galeConfigDir()
@@ -468,18 +473,64 @@ func otherScopeReferences(
 		projPath, _ = config.FindGaleConfig(cwd)
 	}
 	referenced, err := collectReferencedPackagesAllHosts(
-		globalDir, projPath, st, pinResolve,
+		globalDir, projPath, st, ctx.versionedRecipeResolver(),
 	)
+	if err == nil {
+		err = addOtherScopeGenerationRefs(
+			ctx, globalDir, projPath, st, referenced,
+		)
+	}
 	if err != nil {
-		// Fail closed. An unreadable config hides pins; it does
-		// not prove there are none, and the deletion this guards
-		// is irreversible (gh#188).
+		// Fail closed. An unreadable config or generation hides
+		// references; it does not prove there are none, and the
+		// deletion this guards is irreversible (gh#188).
 		out.Warn(fmt.Sprintf(
 			"keeping %s: %v", storeDir, err,
 		))
 		return true
 	}
 	return referenced[name+"@"+filepath.Base(storeDir)]
+}
+
+// addOtherScopeGenerationRefs unions every store version the
+// OTHER scopes' retained generations link into referenced.
+//
+// Other, not all. This runs before the initiating scope's own
+// generation is rebuilt, so that scope's current generation still
+// links the package being removed; counting it would make `gale
+// remove` refuse every removal it was asked for.
+//
+// The read is strict (gh#210). This is a decision to destroy, and
+// generation.List is backed by the lenient reader, which answers
+// "links nothing" for a generation it could not read — a deletion
+// computed from that destroys what it could not see.
+func addOtherScopeGenerationRefs(
+	ctx *cmdContext, globalDir, projPath string,
+	st *store.Store, referenced map[string]bool,
+) error {
+	var self string
+	if ctx != nil {
+		self = ctx.GaleDir
+	}
+	galeDirs := []string{globalDir}
+	if projPath != "" {
+		projGaleDir, err := galeDirForConfig(projPath)
+		if err != nil {
+			return fmt.Errorf(
+				"resolving project gale dir for %s: %w", projPath, err,
+			)
+		}
+		galeDirs = append(galeDirs, projGaleDir)
+	}
+	var errs []error
+	for _, galeDir := range galeDirs {
+		if galeDir == "" || (self != "" && sameDir(galeDir, self)) {
+			continue
+		}
+		errs = append(errs,
+			addRetainedGenerationRefs(galeDir, st, referenced))
+	}
+	return errors.Join(errs...)
 }
 
 // formatSections renders the section list from

@@ -483,24 +483,44 @@ func storeRetentionKey(
 ) string {
 	if store.HasNumericRevisionSuffix(version) {
 		if dir, ok := s.StorePath(name, version); ok {
-			return name + "@" + filepath.Base(dir)
+			return storeDirRetentionKey(name, dir)
 		}
-		return name + "@" + version
+		return canonicalRetentionKey(name, version)
 	}
 	if pinResolve != nil {
 		r, err := pinResolve(name, version)
 		if err == nil && r.Package.Version == version {
 			canon := r.Package.Full()
 			if dir, ok := s.StorePath(name, canon); ok {
-				return name + "@" + filepath.Base(dir)
+				return storeDirRetentionKey(name, dir)
 			}
-			return name + "@" + canon
+			return canonicalRetentionKey(name, canon)
 		}
 	}
 	if dir, ok := s.StorePath(name, version); ok {
-		return name + "@" + filepath.Base(dir)
+		return storeDirRetentionKey(name, dir)
 	}
-	return name + "@" + version
+	return canonicalRetentionKey(name, version)
+}
+
+// storeDirRetentionKey is canonicalRetentionKey for a resolved
+// store directory rather than a version string.
+func storeDirRetentionKey(name, storeDir string) string {
+	return canonicalRetentionKey(name, filepath.Base(storeDir))
+}
+
+// canonicalRetentionKey spells the name@version-revision key a
+// config- or recipe-derived reference is compared against,
+// canonicalizing a content-tagged sibling back to the identity a
+// gale.toml or gale.lock can name (gh#191). Neither file ever
+// carries a tag: source builds are not reproducible across
+// machines, so a lock naming a tagged version would name a path a
+// teammate cannot produce. Retention for the tagged directory
+// itself comes from the generations that link it, which report
+// the real on-disk basename.
+func canonicalRetentionKey(name, version string) string {
+	canonical, _ := store.SplitContentTag(version)
+	return name + "@" + canonical
 }
 
 // rebuildGeneration reads the effective project/global
