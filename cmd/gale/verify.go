@@ -132,16 +132,21 @@ func checkPrebuilt(name string, e lockfile.Entry) error {
 // `gale verify` can fall back to the GitHub Attestations API for
 // packages published before OCI attestations were pushed as referrers.
 func downloadArchive(name, sha256 string) (string, error) {
+	// Scratch space first: it is a local precondition, so failing
+	// on it costs no token exchange and no round trip. The error
+	// is propagated, never swallowed — build.TmpDir already
+	// exhausted its own fallback before returning one (gh#235).
+	tmpDir, err := build.TmpDir()
+	if err != nil {
+		return "", fmt.Errorf("build temp dir: %w", err)
+	}
+
 	token, err := ghcr.Token(localGHCRBase + "/" + name)
 	if err != nil {
 		return "", fmt.Errorf("fetch ghcr token: %w", err)
 	}
 	blobURL := verifyBlobURL(name, sha256)
 
-	tmpDir := build.TmpDir()
-	if tmpDir == "" {
-		return "", fmt.Errorf("build temp dir unavailable")
-	}
 	f, err := os.CreateTemp(tmpDir, "gale-verify-archive-*.tar.zst")
 	if err != nil {
 		return "", fmt.Errorf("create temp archive: %w", err)

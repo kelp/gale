@@ -3,6 +3,7 @@ package main
 import (
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -54,4 +55,36 @@ func captureStderr(t *testing.T, fn func()) string {
 	captured := <-ch
 	r.Close()
 	return captured
+}
+
+// breakGaleDir points HOME at a fresh directory and plants a
+// regular file where ~/.gale has to be a directory, so every
+// MkdirAll beneath it fails with ENOTDIR. Denying access with
+// chmod proves nothing in the agent container, which runs as root
+// (docs/dev/agent-environment.md); a structurally impossible path
+// fails for root too.
+func breakGaleDir(t *testing.T) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	blocker := filepath.Join(home, ".gale")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatalf("plant %s as a regular file: %v", blocker, err)
+	}
+}
+
+// breakSystemTemp points TMPDIR at a path underneath a regular
+// file, so os.TempDir() names a location nothing — root included
+// — can create. Together with breakGaleDir this is what makes
+// build.TmpDir fail rather than fall back (gh#235).
+//
+// The scratch dir it needs is allocated before TMPDIR moves,
+// since t.TempDir() resolves through os.TempDir() itself.
+func breakSystemTemp(t *testing.T) {
+	t.Helper()
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatalf("plant %s as a regular file: %v", blocker, err)
+	}
+	t.Setenv("TMPDIR", filepath.Join(blocker, "tmp"))
 }

@@ -1119,13 +1119,40 @@ func reportResult(out *output.Output, result *installer.InstallResult, verb, sou
 // post-rebuild check below enforces the contract: this
 // install must put the package on PATH, or surface a clear
 // error.
+//
+// The config write is compensated. It is committed before the lock
+// write runs, so a lock write that fails used to leave gale.toml
+// declaring a package gale.lock does not record (gh#187) — see the
+// undo below. `remove` already unwinds the same pair the same way.
 func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion string) error {
-	if err := ctx.WriteConfig(name, configVersion, lockVersion); err != nil {
+	// Witnessed, because the lock write below may have to undo it.
+	cw, err := ctx.writeConfigWitnessed(name, configVersion, lockVersion)
+	if err != nil {
 		return fmt.Errorf("writing config: %w", err)
 	}
 	if err := ctx.WriteLock(); err != nil {
-		return fmt.Errorf("writing lock: %w", err)
+		// gale.toml is committed by now and gale.lock is not. That is
+		// exactly the divergence lock enforcement refuses on, so the
+		// NEXT command in this scope fails too, on a manifest that
+		// declares a package the lock does not record — one command
+		// removed from the failure that caused it. Put the manifest
+		// back and the scope is left as this command found it.
+		//
+		// errors.Join, not a wrap: whether the undo landed is a second
+		// fact about the machine, and reporting only one of the two
+		// hides either why the install failed or that the manifest is
+		// still modified.
+		return errors.Join(
+			fmt.Errorf("writing lock: %w", err),
+			config.RestoreUnderLock(ctx.GalePath, cw.Before, cw.After),
+		)
 	}
+	// Nothing below is compensated, deliberately. Config and lock now
+	// agree, so lock enforcement passes and no later command is
+	// blocked; what a failure here leaves is a stale generation, which
+	// `gale sync` rebuilds from its own drift check. Undoing two
+	// committed files to repair a state that already describes itself
+	// would be the larger and riskier change.
 	if err := rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, nil); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
 	}
@@ -1210,23 +1237,36 @@ func configVersionForRecipe(storeRoot string, r *recipe.Recipe) string {
 // section was actually written, so a concrete-host operation never
 // rewrites the shared graph and vice versa.
 func (ctx *cmdContext) WriteConfig(name, configVersion, lockVersion string) error {
+	_, err := ctx.writeConfigWitnessed(name, configVersion, lockVersion)
+	return err
+}
+
+// writeConfigWitnessed is WriteConfig reporting gale.toml either side
+// of the edit, both observed inside the one hold of the config lock
+// that produced it. FinalizeInstall feeds the pair to
+// config.RestoreUnderLock when the lock write that follows fails; a
+// caller that cannot fail after the write wants WriteConfig.
+func (ctx *cmdContext) writeConfigWitnessed(
+	name, configVersion, lockVersion string,
+) (config.PackageWrite, error) {
 	if ctx.Host != "" {
-		if err := config.AddPackage(
+		w, err := config.AddPackageWitnessed(
 			ctx.GalePath, ctx.Host, name, configVersion,
-		); err != nil {
-			return fmt.Errorf("adding to config: %w", err)
+		)
+		if err != nil {
+			return w, fmt.Errorf("adding to config: %w", err)
 		}
 		ctx.noteLockRoot(ctx.Host, name, lockVersion)
-		return nil
+		return w, nil
 	}
-	section, err := config.UpsertPackage(
+	w, err := config.UpsertPackageWitnessed(
 		ctx.GalePath, config.CurrentHost(), name, configVersion,
 	)
 	if err != nil {
-		return fmt.Errorf("adding to config: %w", err)
+		return w, fmt.Errorf("adding to config: %w", err)
 	}
-	ctx.noteLockRoot(section, name, lockVersion)
-	return nil
+	ctx.noteLockRoot(w.Section, name, lockVersion)
+	return w, nil
 }
 
 // WriteConfigForRecipe is WriteConfig for the recipe-in-hand case.

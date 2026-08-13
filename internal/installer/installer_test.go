@@ -3537,13 +3537,14 @@ func TestInstallBinaryVerifiesOCIReferrer(t *testing.T) {
 		t.Errorf("VerifyFile was called unexpectedly; OCI referrer verification succeeded")
 	}
 
-	tmpDir := build.TmpDir()
-	if tmpDir != "" {
-		pattern := filepath.Join(tmpDir, "gale-verify-*")
-		leaked, err := filepath.Glob(pattern)
-		if err == nil && len(leaked) > 0 {
-			t.Errorf("leaked tempfile(s) under %s: %v", tmpDir, leaked)
-		}
+	tmpDir, err := build.TmpDir()
+	if err != nil {
+		t.Fatalf("build.TmpDir: %v", err)
+	}
+	pattern := filepath.Join(tmpDir, "gale-verify-*")
+	leaked, err := filepath.Glob(pattern)
+	if err == nil && len(leaked) > 0 {
+		t.Errorf("leaked tempfile(s) under %s: %v", tmpDir, leaked)
 	}
 }
 

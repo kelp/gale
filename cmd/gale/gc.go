@@ -215,9 +215,12 @@ var gcCmd = &cobra.Command{
 		// Sweep crash leftovers: transient store entries,
 		// stale current-new.* swap symlinks, and ~/.gale/tmp
 		// build scratch (gh#78, gh#79).
-		sweptArtifacts := sweepCrashLeftovers(
+		sweptArtifacts, err := sweepCrashLeftovers(
 			s, globalDir, projGaleDir, dryRun,
 		)
+		if err != nil {
+			return err
+		}
 
 		// In dry-run mode, make the registry's contribution
 		// visible so a stale entry holding store versions
@@ -1115,12 +1118,15 @@ var gcSwapDebrisPrefixes = []string{
 // drown the rest of the gc report.
 func sweepCrashLeftovers(
 	s *store.Store, globalDir, projGaleDir string, dry bool,
-) int {
+) (int, error) {
 	swept := len(s.SweepTransient(gcSweepGrace, dry))
 	swept += sweepStaleSwapDebris(globalDir, dry)
 	swept += sweepStaleSwapDebris(projGaleDir, dry)
-	swept += sweepBuildScratch(s, dry)
-	return swept
+	scratch, err := sweepBuildScratch(s, dry)
+	if err != nil {
+		return swept, err
+	}
+	return swept + scratch, nil
 }
 
 // sweepStaleSwapDebris removes the PID-scoped leftovers under
@@ -1173,24 +1179,30 @@ func hasSwapDebrisPrefix(name string) bool {
 	return false
 }
 
-// sweepBuildScratch removes gale-owned scratch dirs under
-// ~/.gale/tmp older than gcSweepGrace (gh#79). Interrupted
+// sweepBuildScratch removes gale-owned scratch dirs under the
+// build scratch dir older than gcSweepGrace (gh#79). Interrupted
 // builds skip their cleanup defers, so this is the only
 // reclamation path. The whole sweep is skipped while any
 // per-package store lock is held: a build in flight may have
 // scratch of any age here, and there is no way to map a
 // scratch dir back to the package that owns it.
-func sweepBuildScratch(s *store.Store, dry bool) int {
-	tmpDir := build.TmpDir()
-	if tmpDir == "" {
-		return 0
+//
+// The build.TmpDir error is returned rather than absorbed into a
+// zero count. gc's job is to report what it reclaimed, and "0
+// swept" for an unreachable scratch dir is indistinguishable
+// from "0 swept because there was nothing there" — the same
+// silent-degradation shape gh#235 removed from TmpDir itself.
+func sweepBuildScratch(s *store.Store, dry bool) (int, error) {
+	tmpDir, err := build.TmpDir()
+	if err != nil {
+		return 0, fmt.Errorf("build temp dir: %w", err)
 	}
 	if s.AnyLockHeld() {
-		return 0 // an install or build is in flight
+		return 0, nil // an install or build is in flight
 	}
 	entries, err := os.ReadDir(tmpDir)
 	if err != nil {
-		return 0
+		return 0, fmt.Errorf("read %s: %w", tmpDir, err)
 	}
 	cutoff := time.Now().Add(-gcSweepGrace)
 	var swept int
@@ -1211,7 +1223,7 @@ func sweepBuildScratch(s *store.Store, dry bool) int {
 		}
 		swept++
 	}
-	return swept
+	return swept, nil
 }
 
 // hasScratchPrefix reports whether name matches one of the

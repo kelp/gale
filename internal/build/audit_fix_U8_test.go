@@ -351,9 +351,9 @@ func TestBuildEvictsCorruptSourceCacheEntry(t *testing.T) {
 
 	// Seed a corrupt (truncated) cache entry under the
 	// correct hash-keyed name, as an interrupted copy would.
-	cacheDir := sourceCache()
-	if cacheDir == "" {
-		t.Fatal("sourceCache returned empty dir")
+	cacheDir, err := sourceCache()
+	if err != nil {
+		t.Fatalf("sourceCache: %v", err)
 	}
 	cachedFile := filepath.Join(cacheDir, hash)
 	if err := os.WriteFile(cachedFile, []byte("truncated junk"), 0o644); err != nil { //nolint:gosec
