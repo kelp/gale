@@ -59,6 +59,41 @@ this (its environment was never activated since
 upgrading), one `gale sync` inside the project both
 relinks it and registers it.
 
+### Generations left behind by a rollback
+
+`gale generations rollback 5` moves `current` back to
+gen 5 and leaves gens 6 and up on disk. The next sync
+builds gen 11, not gen 6. That is deliberate: a
+generation number permanently identifies one snapshot,
+so rolling forward still works and no history is
+overwritten.
+
+`gale generations` marks those generations with `+`
+and the active one with `*`:
+
+```
+  4   12 packages
+* 5   12 packages
++ 6   13 packages
++ 7   13 packages
+```
+
+Nothing reclaims them on its own. `gale gc` skips
+everything at or above `current`, and automatic
+retention only reaches them once `current` climbs back
+past its cutoff. `gale gc -n` reports how many are
+being retained.
+
+To discard a branch you abandoned on purpose, name it:
+
+```sh
+gale generations remove 6 7
+```
+
+The command refuses the current generation and removes
+nothing at all when any number in the batch is not a
+generation.
+
 ### Build failures
 
 Source builds can fail for several reasons:

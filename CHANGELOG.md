@@ -53,6 +53,22 @@
 
 ### Added
 
+- `gale generations remove N [N...]`: discard generations by
+  number. Written for the branch a rollback abandons — those
+  generations sit above `current`, so gc skips them and
+  automatic retention cannot reach them until `current` climbs
+  back past the cutoff (gh#206). The command refuses the
+  current generation, refuses a number that is not a
+  generation directory, and validates every number before
+  removing any, so a batch naming `current` removes nothing.
+  It takes the same generation lock as a rebuild.
+
+  `gale generations` now marks those generations with `+`,
+  next to `*` for the active one; they used to render exactly
+  like history below `current`. `gale gc -n` reports how many
+  it is retaining. Neither `gc` nor retention changed: nothing
+  sweeps generations above `current` on its own.
+
 - `gale lint --strict`: exit non-zero on warnings as well as
   errors. Plain `gale lint` fails on errors only, so a CI step
   over a recipe tree stays green while a warning-level rule

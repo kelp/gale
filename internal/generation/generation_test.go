@@ -1910,6 +1910,117 @@ func TestPruneOldGenerationsKeepZeroIsNoop(t *testing.T) {
 	}
 }
 
+// stageGens creates gen/1..n under galeDir and points current at
+// cur. Prune and Remove read only the directory names and the
+// current symlink, so empty dirs are a faithful fixture.
+func stageGens(t *testing.T, galeDir string, n, cur int) {
+	t.Helper()
+	for i := 1; i <= n; i++ {
+		if err := os.MkdirAll(
+			filepath.Join(galeDir, "gen", strconv.Itoa(i)), 0o755,
+		); err != nil {
+			t.Fatalf("stage gen/%d: %v", i, err)
+		}
+	}
+	if err := os.Symlink(
+		filepath.Join("gen", strconv.Itoa(cur)),
+		filepath.Join(galeDir, "current"),
+	); err != nil {
+		t.Fatalf("link current: %v", err)
+	}
+}
+
+// TestRemoveGenerationsRefusesCurrent pins the guard that keeps
+// Remove from cutting the branch it stands on: removing the
+// generation current points at would dangle the symlink, empty
+// PATH, and fail doctor's generation check. Validation covers
+// every target before anything is removed, so a batch naming
+// current removes nothing at all.
+func TestRemoveGenerationsRefusesCurrent(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stageGens(t, galeDir, 3, 2)
+
+	removed, err := Remove(galeDir, storeRoot, []int{3, 2})
+	if err == nil {
+		t.Fatalf("Remove of current generation returned nil error, "+
+			"removed %v", removed)
+	}
+	if !strings.Contains(err.Error(), "2") {
+		t.Errorf("error = %q, want it to name generation 2", err)
+	}
+	if len(removed) != 0 {
+		t.Errorf("removed = %v, want none — validation must cover "+
+			"every target before the first removal", removed)
+	}
+	for i := 1; i <= 3; i++ {
+		if _, sErr := os.Stat(
+			filepath.Join(galeDir, "gen", strconv.Itoa(i)),
+		); sErr != nil {
+			t.Errorf("gen/%d must survive a refused Remove: %v", i, sErr)
+		}
+	}
+}
+
+// TestRemoveGenerationsSerializesWithBuild pins the lock
+// contract: Remove destroys directories Build creates and swaps
+// between, so it must take the same store-rooted generation lock
+// Build, Rollback and PruneOldGenerations take. Holding that lock
+// across Build's whole create-then-swap span is also what makes
+// refusing `current` a sufficient in-flight guard — no half-built
+// generation is visible to Remove while the lock is held.
+func TestRemoveGenerationsSerializesWithBuild(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := filepath.Join(galeDir, "pkg")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stageGens(t, galeDir, 3, 2)
+
+	lockPath := filepath.Join(galeDir, "generation.lock")
+
+	const holdDuration = 100 * time.Millisecond
+	holdAcquired := make(chan struct{})
+	holdDone := make(chan struct{})
+
+	// Own the lock for holdDuration, then release. The timer
+	// starts inside the lock so the hold is always bounded, even
+	// if Remove never waits (the bug case).
+	go func() {
+		defer close(holdDone)
+		_ = filelock.With(lockPath, func() error {
+			close(holdAcquired)
+			time.Sleep(holdDuration)
+			return nil
+		})
+	}()
+	<-holdAcquired
+
+	start := time.Now()
+	removed, err := Remove(galeDir, storeRoot, []int{3})
+	waited := time.Since(start)
+	<-holdDone
+
+	if err != nil {
+		t.Fatalf("Remove while gen lock held: %v", err)
+	}
+	if len(removed) != 1 || removed[0] != 3 {
+		t.Errorf("removed = %v, want [3]", removed)
+	}
+
+	// Allow scheduling jitter below the hold time.
+	const jitter = 20 * time.Millisecond
+	if waited < holdDuration-jitter {
+		t.Errorf("Remove returned in %v, want it to block at least "+
+			"%v — it is not taking the store-rooted generation lock, "+
+			"so it can delete a generation an in-flight Build is "+
+			"populating", waited, holdDuration-jitter)
+	}
+}
+
 // TestBuildSkipsNonFunctionalTopLevelDirs pins the inode budget
 // for a gen: top-level dirs that no consumer reads through the
 // gen path (src/, api/, pkg/, doc/, misc/) must not be mirrored.

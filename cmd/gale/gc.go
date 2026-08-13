@@ -219,6 +219,23 @@ var gcCmd = &cobra.Command{
 			))
 		}
 
+		// Same reason, for the generations gc never touches: after
+		// a rollback the gens above current are skipped by the
+		// n >= curGen guard and unreachable to auto-prune's numeric
+		// cutoff, so "gc removed nothing" reads as a bug rather
+		// than the policy it is (gh#206).
+		if dryRun {
+			branch := countBranchGens(globalDir, storeRoot) +
+				countBranchGens(projGaleDir, storeRoot)
+			if branch > 0 {
+				out.Info(fmt.Sprintf(
+					"Retaining %d %s above current; discard one "+
+						"with `gale generations remove N`",
+					branch, pluralGeneration(branch),
+				))
+			}
+		}
+
 		if removedPkgs == 0 && removedGens == 0 &&
 			failedPkgs == 0 && sweptArtifacts == 0 {
 			// A refused or failed rebuild still has to reach the
@@ -871,6 +888,32 @@ func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 		return nil
 	})
 	return removed
+}
+
+// countBranchGens returns how many generations sit above current
+// in the given gale dir — the branch a rollback abandoned, which
+// gc retains deliberately. An empty dir or an unreadable listing
+// counts zero: this only feeds a dry-run notice, and gc must not
+// fail on it.
+func countBranchGens(galeDir, storeRoot string) int {
+	if galeDir == "" {
+		return 0
+	}
+	gens, err := generation.List(galeDir, storeRoot)
+	if err != nil {
+		return 0
+	}
+	cur := currentGenNumber(gens)
+	if cur == 0 {
+		return 0
+	}
+	var n int
+	for _, g := range gens {
+		if g.Number > cur {
+			n++
+		}
+	}
+	return n
 }
 
 // expandRuntimeDeps walks the runtime-dep closure of every
