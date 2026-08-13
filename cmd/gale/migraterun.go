@@ -406,7 +406,6 @@ func readPreRevisionHolds(ctx *cmdContext, galeHome string) preRevisionHolds {
 	retained, _, retErr := collectGCRetention(
 		galeHome, projPath, projGaleDir, store.NewStore(ctx.StoreRoot),
 		ctx.Resolver, ctx.versionedRecipeResolver(),
-		loadGenerationKeep(),
 	)
 	h.retained = retained
 	h.retentionUncertain = retErr != nil

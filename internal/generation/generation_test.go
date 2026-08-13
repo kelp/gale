@@ -2104,83 +2104,49 @@ func stageGenNumbers(t *testing.T, galeDir string, nums []int, cur int) {
 	}
 }
 
-// TestRetainedNumbersCountsPositionallyOverGaps pins rule A: at
-// or below current, the retained set is the highest `keep`
-// generation numbers counted POSITIONALLY over the listing, not
-// the numeric window current-keep+1..current.
+// TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt pins the
+// rule: the active generation plus every generation above it —
+// the branch a rollback abandoned, which a roll-forward may
+// return to (gh#189) — and nothing below.
 //
-// The distinction is the whole reason gh#248 can stay open with
-// gc correct: with gaps 1,5,9,10 and keep=3 the numeric cutoff
-// (8) reaches only 9 and 10, retaining two generations where
-// three were asked for. gc counts, so it retains 5, 9 and 10.
-func TestRetainedNumbersCountsPositionallyOverGaps(t *testing.T) {
+// The set is the exact complement of what cleanOldGenerations
+// removes (n < curGen), which is what makes a hollow generation
+// impossible: gc never keeps a directory without the store dirs
+// it links, and never retains bytes for a directory it deleted.
+//
+// Gaps in the numbering are legitimate and irrelevant here: the
+// rule is a comparison against curGen, not a count.
+func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	galeDir := t.TempDir()
-	stageGenNumbers(t, galeDir, []int{1, 5, 9, 10}, 10)
+	stageGenNumbers(t, galeDir, []int{1, 5, 9, 10}, 5)
 
-	got, err := retainedNumbers(galeDir, 3)
+	got, err := retainedNumbers(galeDir)
 	if err != nil {
 		t.Fatalf("retainedNumbers: %v", err)
 	}
 	want := []int{5, 9, 10}
 	if !slices.Equal(got, want) {
-		t.Errorf("retainedNumbers(keep=3) = %v, want %v — the rule "+
-			"counts generations, it does not derive a numeric "+
-			"cutoff (gh#248)", got, want)
+		t.Errorf("retainedNumbers(cur=5) = %v, want %v — current "+
+			"and the branch above it, and gen/1 below it left to "+
+			"cleanOldGenerations", got, want)
 	}
 }
 
-// TestRetainedNumbersKeepsEverythingAboveCurrent pins rule B:
-// the branch above current is retained history a rollback
-// abandoned and a roll-forward may return to (gh#189/gh#206).
-// It is never capped by keep — `gale generations remove N` is
-// the only way to reclaim it.
-func TestRetainedNumbersKeepsEverythingAboveCurrent(t *testing.T) {
-	galeDir := t.TempDir()
-	stageGenNumbers(t, galeDir, []int{1, 2, 3, 4, 5}, 2)
-
-	got, err := retainedNumbers(galeDir, 1)
-	if err != nil {
-		t.Fatalf("retainedNumbers: %v", err)
-	}
-	want := []int{2, 3, 4, 5}
-	if !slices.Equal(got, want) {
-		t.Errorf("retainedNumbers(cur=2, keep=1) = %v, want %v — "+
-			"keep bounds history below current only", got, want)
-	}
-}
-
-// TestRetainedNumbersNoCurrentRetainsEverything pins the lost-
-// current case. Rule A is empty and rule B matches every
-// generation, so nothing is deleted — the same answer
-// cleanOldGenerations and PruneOldGenerations already gave, and
-// it stops a missing current symlink from letting gc sweep the
-// store bare.
+// TestRetainedNumbersNoCurrentRetainsEverything pins the
+// lost-current case: nothing is deleted, so nothing is swept.
+// cleanOldGenerations' n >= 0 skip already kept every directory
+// in that state; retention now agrees, which stops a missing
+// current symlink from letting gc sweep the store bare.
 func TestRetainedNumbersNoCurrentRetainsEverything(t *testing.T) {
 	galeDir := t.TempDir()
 	stageGenNumbers(t, galeDir, []int{1, 2, 3}, 0)
 
-	got, err := retainedNumbers(galeDir, 1)
+	got, err := retainedNumbers(galeDir)
 	if err != nil {
 		t.Fatalf("retainedNumbers: %v", err)
 	}
 	if want := []int{1, 2, 3}; !slices.Equal(got, want) {
 		t.Errorf("retainedNumbers(no current) = %v, want %v", got, want)
-	}
-}
-
-// TestRetainedNumbersNegativeKeepRetainsEverything pins the
-// disabled sentinel: a negative keep retires no generation, the
-// same way PruneOldGenerations treats keep <= 0 as a no-op.
-func TestRetainedNumbersNegativeKeepRetainsEverything(t *testing.T) {
-	galeDir := t.TempDir()
-	stageGenNumbers(t, galeDir, []int{1, 2, 3, 4}, 3)
-
-	got, err := retainedNumbers(galeDir, -1)
-	if err != nil {
-		t.Fatalf("retainedNumbers: %v", err)
-	}
-	if want := []int{1, 2, 3, 4}; !slices.Equal(got, want) {
-		t.Errorf("retainedNumbers(keep=-1) = %v, want %v", got, want)
 	}
 }
 
@@ -2199,7 +2165,7 @@ func TestRetainedNumbersIncludesAbsentCurrent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	got, err := retainedNumbers(galeDir, 1)
+	got, err := retainedNumbers(galeDir)
 	if err != nil {
 		t.Fatalf("retainedNumbers: %v", err)
 	}
@@ -2209,72 +2175,12 @@ func TestRetainedNumbersIncludesAbsentCurrent(t *testing.T) {
 	}
 }
 
-// TestRetainedNumbersSupersetOfPruneRetention pins the lemma
-// that lets gh#248 stay open: everything PruneOldGenerations
-// retains, gc retains too.
-//
-// The numeric cutoff set {n : cur-keep+1 <= n <= cur} spans at
-// most `keep` integers and is the topmost such window at or
-// below cur, so it is a subset of the positional top-`keep`;
-// above cur both rules retain everything. gc therefore never
-// sweeps the store closure of a generation auto-prune preserved,
-// and PruneOldGenerations can keep its cutoff untouched.
-//
-// Checked against the real function, not a restatement of it:
-// each case runs PruneOldGenerations and asserts every survivor
-// is in retainedNumbers.
-func TestRetainedNumbersSupersetOfPruneRetention(t *testing.T) {
-	cases := []struct {
-		name string
-		nums []int
-		cur  int
-		keep int
-	}{
-		{"contiguous", []int{1, 2, 3, 4, 5, 6, 7, 8}, 8, 3},
-		{"gaps under-retain (gh#248)", []int{1, 5, 9, 10}, 10, 3},
-		{"gaps over-retain (gh#248)", []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10}, 5, 3},
-		{"keep exceeds history", []int{1, 2, 3}, 3, 10},
-		{"keep one", []int{2, 3}, 3, 1},
-		{"rollback branch", []int{1, 2, 3, 4, 5}, 2, 2},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			galeDir := t.TempDir()
-			storeRoot := filepath.Join(t.TempDir(), "pkg")
-			if err := os.MkdirAll(storeRoot, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			stageGenNumbers(t, galeDir, tc.nums, tc.cur)
-
-			retained, err := retainedNumbers(galeDir, tc.keep)
-			if err != nil {
-				t.Fatalf("retainedNumbers: %v", err)
-			}
-			removed, err := PruneOldGenerations(galeDir, storeRoot, tc.keep)
-			if err != nil {
-				t.Fatalf("PruneOldGenerations: %v", err)
-			}
-			for _, n := range tc.nums {
-				if slices.Contains(removed, n) {
-					continue
-				}
-				if !slices.Contains(retained, n) {
-					t.Errorf("auto-prune retained gen/%d but gc's "+
-						"retention set %v does not — gc would sweep "+
-						"the closure of a generation auto-prune kept",
-						n, retained)
-				}
-			}
-		})
-	}
-}
-
 // TestRetainedVersionsStrictUnionsRetainedGenerations pins the
-// multi-version shape: two retained generations linking two
-// versions of the same package contribute BOTH. A name → version
-// map cannot hold that, which is why this reader answers with
-// every version per name — retention is a set of store dirs, not
-// a picture of one active environment.
+// multi-version shape: the active generation and the branch
+// above it can link two versions of the same package — the
+// ordinary state after an upgrade then a rollback — and BOTH
+// must be retained. A name → version map cannot hold that, which
+// is why this reader answers with every version per name.
 func TestRetainedVersionsStrictUnionsRetainedGenerations(t *testing.T) {
 	storeRoot := t.TempDir()
 	galeDir := filepath.Join(t.TempDir(), ".gale")
@@ -2291,17 +2197,53 @@ func TestRetainedVersionsStrictUnionsRetainedGenerations(t *testing.T) {
 	); err != nil {
 		t.Fatalf("Build gen 2: %v", err)
 	}
+	if err := Rollback(galeDir, storeRoot, 1); err != nil {
+		t.Fatalf("Rollback to gen 1: %v", err)
+	}
 
-	got, err := RetainedVersionsStrict(galeDir, storeRoot, 2)
+	got, err := RetainedVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		t.Fatalf("RetainedVersionsStrict: %v", err)
 	}
 	versions := got["jq"]
 	slices.Sort(versions)
 	if want := []string{"1.7", "1.8"}; !slices.Equal(versions, want) {
-		t.Errorf("RetainedVersionsStrict[jq] = %v, want %v — both "+
-			"retained generations contribute their closure",
-			versions, want)
+		t.Errorf("RetainedVersionsStrict[jq] = %v, want %v — the "+
+			"active generation and the branch above it both "+
+			"contribute their closure", versions, want)
+	}
+}
+
+// TestRetainedVersionsStrictSkipsHistoryBelowCurrent is the
+// other half: a generation below current contributes nothing,
+// because cleanOldGenerations is about to delete it. Retaining
+// its closure would keep bytes alive for a directory that is
+// gone — and break `gale update && gale gc` (gh#137).
+func TestRetainedVersionsStrictSkipsHistoryBelowCurrent(t *testing.T) {
+	storeRoot := t.TempDir()
+	galeDir := filepath.Join(t.TempDir(), ".gale")
+
+	createStoreEntry(t, storeRoot, "jq", "1.7", []string{"jq"})
+	createStoreEntry(t, storeRoot, "jq", "1.8", []string{"jq"})
+	if err := Build(
+		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 1: %v", err)
+	}
+	if err := Build(
+		map[string]string{"jq": "1.8"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 2: %v", err)
+	}
+
+	got, err := RetainedVersionsStrict(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("RetainedVersionsStrict: %v", err)
+	}
+	if want := []string{"1.8"}; !slices.Equal(got["jq"], want) {
+		t.Errorf("RetainedVersionsStrict[jq] = %v, want %v — gen/1 "+
+			"is below current and its closure is not retained",
+			got["jq"], want)
 	}
 }
 
@@ -2334,7 +2276,7 @@ func TestRetainedVersionsStrictRefusesUnreadableRetainedGeneration(
 		t.Fatal(err)
 	}
 
-	got, err := RetainedVersionsStrict(galeDir, storeRoot, 3)
+	got, err := RetainedVersionsStrict(galeDir, storeRoot)
 	if err == nil {
 		t.Fatalf("RetainedVersionsStrict must refuse an unreadable "+
 			"retained generation, got %v", got)
@@ -2373,7 +2315,7 @@ func TestRetainedVersionsStrictRefusesUnreadableGenListing(t *testing.T) {
 	}
 
 	if got, err := RetainedVersionsStrict(
-		galeDir, storeRoot, 3,
+		galeDir, storeRoot,
 	); err == nil {
 		t.Fatalf("RetainedVersionsStrict must refuse an unreadable "+
 			"gen listing, got %v", got)

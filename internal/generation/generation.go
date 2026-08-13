@@ -697,30 +697,31 @@ var skipTopLevelDirs = map[string]bool{
 	"misc": true,
 }
 
-// retainedNumbers returns the generation numbers a `keep`-aware
-// gc must preserve, sorted ascending. Two rules, unioned:
+// retainedNumbers returns the generation numbers gc must not
+// sweep the store closure of, sorted ascending: the active
+// generation and every generation ABOVE it.
 //
-//   - At or below current: the highest `keep` numbers, counted
-//     POSITIONALLY over the sorted listing, not the numeric
-//     window curGen-keep+1..curGen. Positional is gap-proof, and
-//     gh#189 made gaps legitimate — allocation is
-//     max(prev, highest)+1, so a rollback leaves holes.
-//   - Above current: every one, unconditionally, never capped by
-//     `keep`. That branch is retained history a roll-forward may
-//     return to (gh#189); `gale generations remove N` is the only
-//     way to reclaim it (gh#206).
+// The branch above current exists only after a rollback, and it
+// is retained history a roll-forward may return to — a number,
+// once allocated, permanently identifies one snapshot (gh#189).
+// cleanOldGenerations already kept those DIRECTORIES through its
+// `n >= curGen` skip; nothing kept the store versions they link,
+// so roll back, gc, roll forward activated dangling PATH entries
+// (gh#247). `gale generations remove N` stays the only way to
+// reclaim that branch (gh#206).
 //
-// The active generation satisfies rule A for any keep >= 1 and an
-// in-flight gen/curGen+1 satisfies rule B always, so the
-// "never touch n >= curGen" guarantee cleanOldGenerations used to
-// spell out survives the rewrite.
+// Nothing below current is retained. Those generations are the
+// ones cleanOldGenerations deletes, and reclaiming a superseded
+// revision right after an update is gc's most common job
+// (gh#137). The set is the exact complement of what
+// cleanOldGenerations removes, which is what makes a hollow
+// generation — a directory gc keeps without the versions it
+// links — impossible by construction.
 //
-// keep <= 0 retains every generation, matching
-// PruneOldGenerations' keep<=0 no-op. curGen == 0 (no current
-// symlink) leaves rule A empty and rule B matching everything, so
-// nothing is deleted — the same answer as before, and it also
-// stops a lost current symlink from letting gc sweep the store
-// bare.
+// curGen == 0 (no current symlink) retains everything, matching
+// the `n >= 0` skip that already stopped cleanOldGenerations
+// from deleting anything in that state. It also stops a lost
+// current symlink from letting gc sweep the store bare.
 //
 // The active generation is always in the set, even when its
 // directory is absent: a numeric current pointing at nothing must
@@ -728,19 +729,10 @@ var skipTopLevelDirs = map[string]bool{
 // as a generation nobody listed, or gc's refuse-to-sweep path
 // (gh#188) never fires.
 //
-// Subset lemma, load-bearing for gh#248 staying open: everything
-// PruneOldGenerations retains, this retains too. Its cutoff set
-// {n : curGen-keep+1 <= n <= curGen} spans at most `keep`
-// integers and is the topmost such window at or below curGen, so
-// it is a subset of the positional top-`keep`; above curGen both
-// rules keep everything. gc therefore never sweeps the closure of
-// a generation auto-prune preserved, and PruneOldGenerations can
-// keep its numeric cutoff.
-//
 // curGen is read BEFORE the listing, as PruneOldGenerations and
 // cleanOldGenerations both do: under the generation lock that
 // ordering keeps the snapshot consistent with the directory scan.
-func retainedNumbers(galeDir string, keep int) ([]int, error) {
+func retainedNumbers(galeDir string) ([]int, error) {
 	curGen, err := Current(galeDir)
 	if err != nil {
 		return nil, fmt.Errorf("read current: %w", err)
@@ -750,28 +742,19 @@ func retainedNumbers(galeDir string, keep int) ([]int, error) {
 		return nil, err
 	}
 
-	var retained, below []int
-	switch {
-	case keep <= 0 || curGen <= 0:
-		retained = slices.Clone(nums)
-	default:
-		for _, n := range nums {
-			if n > curGen {
-				retained = append(retained, n) // rule B
-				continue
-			}
-			below = append(below, n)
-		}
-		if len(below) > keep {
-			below = below[len(below)-keep:] // rule A
-		}
-		retained = append(retained, below...)
+	if curGen <= 0 {
+		return nums, nil
 	}
-
-	if curGen > 0 && !slices.Contains(retained, curGen) {
+	var retained []int
+	for _, n := range nums {
+		if n >= curGen {
+			retained = append(retained, n)
+		}
+	}
+	if !slices.Contains(retained, curGen) {
 		retained = append(retained, curGen)
+		slices.Sort(retained)
 	}
-	slices.Sort(retained)
 	return retained, nil
 }
 
@@ -779,8 +762,8 @@ func retainedNumbers(galeDir string, keep int) ([]int, error) {
 // package. The raw directory scan stays unexported — what widens
 // here is the retention POLICY, which gc has to agree with
 // exactly, not the listing (gh#206 declined to export that).
-func RetainedNumbers(galeDir string, keep int) ([]int, error) {
-	return retainedNumbers(galeDir, keep)
+func RetainedNumbers(galeDir string) ([]int, error) {
+	return retainedNumbers(galeDir)
 }
 
 // RetainedVersionsStrict returns every package version the
@@ -793,10 +776,10 @@ func RetainedNumbers(galeDir string, keep int) ([]int, error) {
 // The answer is name → VERSIONS, unlike CurrentVersions and its
 // strict sibling: those describe one active environment, where a
 // package has exactly one version. Retention spans generations,
-// and two of them routinely link two versions of the same package
-// — that is the ordinary shape after any upgrade. Collapsing to
-// one version per name would drop the other store dir out of
-// retention and sweep it.
+// and the active one plus an abandoned branch routinely link two
+// versions of the same package — that is the ordinary shape after
+// any upgrade. Collapsing to one version per name would drop the
+// other store dir out of retention and sweep it.
 //
 // Strict, never lenient (gh#210): an unreadable retained
 // generation is an error naming the number, which gc's
@@ -806,9 +789,9 @@ func RetainedNumbers(galeDir string, keep int) ([]int, error) {
 // could not see. generation.List is backed by the lenient reader
 // and must never become a retention source for the same reason.
 func RetainedVersionsStrict(
-	galeDir, storeRoot string, keep int,
+	galeDir, storeRoot string,
 ) (map[string][]string, error) {
-	nums, err := retainedNumbers(galeDir, keep)
+	nums, err := retainedNumbers(galeDir)
 	if err != nil {
 		return nil, err
 	}

@@ -143,41 +143,25 @@ to list both with section headers.
 Remove unused package versions from the store and
 old generations.
 Keeps versions referenced by any
-.Pa gale.toml
-and by every retained generation, in the global scope,
-the project scope, and every project recorded in
+.Pa gale.toml ,
+by the active generation, and by every generation above
+the active one, in the global scope, the project scope,
+and every project recorded in
 .Pa ~/.gale/projects ,
 so a gc run from one directory cannot sweep versions
 another project still links.
 .Pp
-A generation is retained when it is one of the
-.Va keep
-highest-numbered generations at or below the current one,
-or when it sits above the current one.
-The branch above current, left by a rollback, is retained
-whatever
-.Va keep
-says;
+The generations above the current one are the branch a
+rollback abandoned.
+Their directories are never removed automatically, so the
+versions they link are never swept either: a generation
+whose packages are gone cannot be rolled onto.
 .Cm generations remove
-is the only way to discard it.
-.Va keep
-is
-.Bq generation
-.Va keep
-in
-.Pa ~/.gale/config.toml ,
-the same setting auto-gc uses, and it decides both which
-generation directories survive and which versions the store
-keeps: a retained generation always keeps every version it
-links, so it can be rolled onto.
-A negative
-.Va keep
-retains every generation and every generation's versions,
-and still sweeps versions nothing references.
-.Va keep Ns
-=1 retains the current generation only, and is the narrowest
-setting available \(em 0 means
-.Dq unset .
+is the only way to discard that branch.
+Generations below the current one are removed, and the
+versions only they linked are reclaimed \(em that is how a
+superseded revision goes after
+.Cm update .
 Registry entries whose project directory has vanished
 are pruned on each real run.
 Each build of a dirty tree installed with

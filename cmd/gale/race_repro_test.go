@@ -116,13 +116,7 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 		// With the bug it will not acquire the lock and will
 		// delete gen/3. With the fix it will block, then only
 		// delete gen/1 (n < curGen=2).
-		//
-		// keep = 1 preserves that meaning under gh#247's
-		// retention rule: it is the setting that retains the
-		// current generation and nothing below it, so gen/1 is
-		// still the one generation eligible for removal. The
-		// lock contract under test is unchanged.
-		cleanOldGenerations(galeDir, storeRoot, 1, false)
+		cleanOldGenerations(galeDir, storeRoot, false)
 	}()
 
 	// Wait for gc to finish. It should either return quickly

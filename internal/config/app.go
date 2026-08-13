@@ -62,33 +62,19 @@ type BuildConfig struct {
 
 // GenerationConfig holds gen-retention settings. Keep is the
 // number of recent generations (including the current one)
-// preserved after each rebuild's auto-gc pass, and the number
-// whose store closures `gale gc` retains. Default
-// DefaultGenerationKeep when unset; set to a negative value to
-// disable retirement entirely.
+// preserved after each rebuild's auto-gc pass. Default 10 when
+// unset or non-positive; set to a negative value to disable
+// auto-gc entirely.
 type GenerationConfig struct {
 	Keep int `toml:"keep,omitempty"`
 }
 
 // DefaultGenerationKeep is the number of generations preserved
-// when config.toml has no [generation] section.
-//
-// It prices two costs, not one. Generation directories are
-// inodes: ~28K per gen, so even 10 gens (~280K) sat two orders
-// of magnitude under typical ext4 budgets. Since gh#247 the same
-// number also decides how much of the STORE gc retains — a
-// retained generation keeps every version it links alive, and
-// those are bytes. A package upgraded once per retained
-// generation holds one full store directory per generation, so a
-// large toolchain turns each retained generation into hundreds of
-// megabytes. Bytes price far higher than inodes, which is why
-// this is 3 rather than 10.
-//
-// Users who want deeper rollback history set [generation] keep
-// higher and pay for it in store bytes. keep = 1 retains the
-// current generation only, the narrowest setting reachable —
-// keep = 0 means "unset" under omitempty.
-const DefaultGenerationKeep = 3
+// when config.toml has no [generation] section. Sized to cover
+// a typical week of installs while keeping inode usage bounded:
+// at ~28K inodes per gen, 10 gens ≈ 280K inodes total, two
+// orders of magnitude under typical ext4 default budgets.
+const DefaultGenerationKeep = 10
 
 // EffectiveGenerationKeep returns the configured Keep value
 // when positive, otherwise DefaultGenerationKeep. A negative

@@ -1,7 +1,7 @@
 # After updating a package past a revision, the old
 # revision dir is retained in the store (update is not
-# destructive). gc reaps it once no generation, no
-# gale.toml and no runtime-dep chain references it.
+# destructive). gc reaps it because it's no longer
+# referenced by gale.toml or any runtime-dep chain.
 
 gale-fixture recipes $WORK/recipes
 
@@ -15,18 +15,6 @@ exec gale update hello --recipes=$WORK/recipes
 exists $HOME/.gale/pkg/hello/1.0-1
 exists $HOME/.gale/pkg/hello/1.0-2
 
-# Under the default retention the old revision stays: the
-# generation the update superseded is still within
-# [generation] keep, and gc retains the whole closure of every
-# generation it keeps, or that generation cannot be rolled onto
-# (gh#247). This is the cost of `gale update && gale gc` not
-# reclaiming immediately.
-exec gale gc --recipes=$WORK/recipes
-exists $HOME/.gale/pkg/hello/1.0-1
-
-# keep = 1 retains the current generation only, so nothing
-# references the old revision any more.
-cp keep-current-only.toml $HOME/.gale/config.toml
 exec gale gc --recipes=$WORK/recipes
 stderr 'Removed hello@1\.0-1'
 
@@ -37,7 +25,3 @@ exists $HOME/.gale/pkg/hello/1.0-2
 # Current generation still serves the binary.
 exec $HOME/.gale/current/bin/hello
 stdout 'hello from gale integration fixture'
-
--- keep-current-only.toml --
-[generation]
-keep = 1

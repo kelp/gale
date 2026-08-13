@@ -29,14 +29,6 @@ func TestSyncAfterRollbackAllocatesAboveHighestGeneration(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
 	configPath := filepath.Join(galeDir, "gale.toml")
 
-	// keep = 10 explicitly: this test is about how a number is
-	// ALLOCATED, and it needs ten generations of history to say
-	// anything about it. The default moved to 3 with gh#247,
-	// which would prune gen/5 away before the rollback under
-	// test. Every assertion below is unchanged, including the
-	// cutoff arithmetic in the last one.
-	writeGenerationKeep(t, galeDir, 10)
-
 	// Ten builds, each pinning a distinct jq version, so every
 	// generation's bin/jq resolves to a different store dir. A
 	// clobbered gen is then detectable by its symlink target, not

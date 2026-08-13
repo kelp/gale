@@ -6,7 +6,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,14 +69,6 @@ var gcCmd = &cobra.Command{
 		// Remove unreferenced package versions.
 		storeRoot := defaultStoreRoot()
 		s := store.NewStore(storeRoot)
-
-		// One knob, read once. `[generation] keep` decides both
-		// which generation directories survive and which
-		// generations' store closures are retained; a single read
-		// passed down keeps the two from ever disagreeing, and a
-		// disagreement is exactly the hollow generation gh#247
-		// describes.
-		keep := loadGenerationKeep()
 
 		// Best-effort resolver so gc can top up retention with
 		// registry-resolved runtime deps. Build deps are reaped
@@ -165,17 +156,16 @@ var gcCmd = &cobra.Command{
 		}
 
 		// Retention covers config pins across ALL hosts,
-		// everything the RETAINED generations link — every
-		// generation whose directory survives below, in every
-		// scope, including every registered project's (gh#115,
-		// gh#247) — and each retained package's installed dep
-		// closure. Anything retained can never be deleted
-		// below, so the active generation needs no rebuild
-		// after gc — which also means a `gale generations
-		// rollback` survives gc instead of being silently
-		// re-advanced to config state (gh#46, gh#47).
+		// everything the active generation and the branch above
+		// it link — in every scope, including every registered
+		// project's (gh#115, gh#247) — and each retained
+		// package's installed dep closure. Anything retained can
+		// never be deleted below, so the active generation needs
+		// no rebuild after gc — which also means a `gale
+		// generations rollback` survives gc instead of being
+		// silently re-advanced to config state (gh#46, gh#47).
 		referenced, retainedProjects, retErr := collectGCRetention(
-			globalDir, projPath, projGaleDir, s, resolver, pinResolve, keep,
+			globalDir, projPath, projGaleDir, s, resolver, pinResolve,
 		)
 		// An unreadable reference source is not proof of
 		// non-reference, so retention is incomplete and every
@@ -203,12 +193,12 @@ var gcCmd = &cobra.Command{
 		var removedGens int
 		if globalDir != "" {
 			removedGens += cleanOldGenerations(
-				globalDir, storeRoot, keep, dryRun,
+				globalDir, storeRoot, dryRun,
 			)
 		}
 		if projGaleDir != "" {
 			removedGens += cleanOldGenerations(
-				projGaleDir, storeRoot, keep, dryRun,
+				projGaleDir, storeRoot, dryRun,
 			)
 		}
 
@@ -245,21 +235,6 @@ var gcCmd = &cobra.Command{
 					"Retaining %d %s above current; discard one "+
 						"with `gale generations remove N`",
 					branch, pluralGeneration(branch),
-				))
-			}
-			// And the generations below it. Their store closures
-			// are retained too, so "gc reclaimed less than I
-			// expected" points at the knob that decided it rather
-			// than reading as a leak (gh#247). A count, not a
-			// size: gc must not walk the store to print a notice.
-			kept := countRetainedGens(globalDir, keep) +
-				countRetainedGens(projGaleDir, keep)
-			if kept > 0 {
-				out.Info(fmt.Sprintf(
-					"Retaining %d %s beyond the active one, with "+
-						"their store closures ([generation] keep = "+
-						"%d in config.toml)",
-					kept, pluralGeneration(kept), keep,
 				))
 			}
 		}
@@ -310,16 +285,16 @@ var gcCmd = &cobra.Command{
 //   - config pins across ALL hosts — the store is shared by
 //     synced configs, so another host's [hosts.*.packages]
 //     overlay must keep its store entry alive (gh#48);
-//   - everything the RETAINED global and project generations
-//     link, read from their symlink targets, so gc can never
-//     leave current/bin dangling (gh#46) and never leaves a
-//     generation it keeps without the store dirs it links
-//     (gh#247);
+//   - everything the active global and project generations link
+//     AND everything the generations above them link, read from
+//     their symlink targets, so gc can never leave current/bin
+//     dangling (gh#46) and never leaves a retained generation
+//     without the store dirs it links (gh#247);
 //   - the config pins and retained generations of every project
 //     in the machine-local registry (<globalDir>/projects), so
 //     a gc run from $HOME or project A cannot sweep versions
 //     project B still links (gh#115) — every registered project
-//     gets the full `keep` treatment, or the rollback-after-gc
+//     contributes its whole branch, or the rollback-after-gc
 //     hole reopens for every scope but the cwd's;
 //   - a best-effort registry runtime-dep top-up (the recipe's
 //     current version, when a resolver is available);
@@ -343,18 +318,17 @@ func collectGCRetention(
 	s *store.Store,
 	resolver installer.RecipeResolver,
 	pinResolve versionedRecipeResolver,
-	keep int,
 ) (map[string]bool, []string, error) {
 	referenced, err := collectReferencedPackagesAllHosts(
 		globalDir, projPath, s, pinResolve,
 	)
 	errs := []error{
 		err,
-		addRetainedGenerationRefs(globalDir, s, referenced, keep),
-		addRetainedGenerationRefs(projGaleDir, s, referenced, keep),
+		addRetainedGenerationRefs(globalDir, s, referenced),
+		addRetainedGenerationRefs(projGaleDir, s, referenced),
 	}
 	retainedProjects, projErr := addRegisteredProjectRefs(
-		globalDir, projGaleDir, s, referenced, pinResolve, keep,
+		globalDir, projGaleDir, s, referenced, pinResolve,
 	)
 	errs = append(errs, projErr)
 	if resolver != nil {
@@ -388,7 +362,6 @@ func addRegisteredProjectRefs(
 	s *store.Store,
 	referenced map[string]bool,
 	pinResolve versionedRecipeResolver,
-	keep int,
 ) ([]string, error) {
 	if globalDir == "" {
 		return nil, nil
@@ -417,7 +390,7 @@ func addRegisteredProjectRefs(
 			continue
 		}
 		if err := addRetainedGenerationRefs(
-			galeDir, s, referenced, keep,
+			galeDir, s, referenced,
 		); err != nil {
 			errs = append(errs, projectRefError(proj, err))
 			continue
@@ -477,14 +450,13 @@ func addProjectPinRefs(
 // a live generation still serves — including versions a rollback
 // re-activated that no config mentions (gh#46).
 //
-// Retained, not active. `keep` decides which generation
-// directories cleanOldGenerations leaves on disk, and a
-// generation gc keeps but whose closure it swept is a hollow
-// generation: rolling onto it activates dangling PATH entries,
-// with no error at any step (gh#247). The generations above
-// current — the branch a rollback abandoned — are in the set
-// unconditionally, which is the half that made roll-back, gc,
-// roll-forward lose bytes.
+// Retained, not active. cleanOldGenerations already keeps every
+// generation directory at or above current — the branch a
+// rollback abandoned, retained so a roll-forward can return to
+// it (gh#189). Nothing kept the store versions those generations
+// link, so roll back, gc, roll forward activated dangling PATH
+// entries with no error at any step (gh#247). The retained set
+// is the exact complement of what cleanOldGenerations removes.
 //
 // An unresolvable current pointer is an error, not an empty
 // contribution: everything those generations link would otherwise
@@ -499,12 +471,11 @@ func addProjectPinRefs(
 // must never be substituted here.
 func addRetainedGenerationRefs(
 	galeDir string, s *store.Store, referenced map[string]bool,
-	keep int,
 ) error {
 	if galeDir == "" {
 		return nil
 	}
-	pkgs, err := generation.RetainedVersionsStrict(galeDir, s.Root, keep)
+	pkgs, err := generation.RetainedVersionsStrict(galeDir, s.Root)
 	if err != nil {
 		return fmt.Errorf(
 			"reading retained generations under %s: %w", galeDir, err,
@@ -881,37 +852,30 @@ func addPackageRefs(
 	}
 }
 
-// cleanOldGenerations removes the generation directories
-// `[generation] keep` does not retain. Returns the count of
-// generations removed (or flagged in dry-run mode).
-//
-// The rule is generation.RetainedNumbers — the same function
-// that decides which generations contribute to gc's retention
-// set. One function, because a one-number divergence between
-// "which directories survive" and "whose closures are retained"
-// is a hollow generation (gh#247).
-//
-// The old criterion, "anything below curGen", is subsumed:
-// curGen is retained for any keep >= 1, and an in-flight
-// gen/curGen+1 a concurrent Build may have created sits above
-// curGen, which is retained unconditionally. So the n >= curGen
-// guarantee survives without being spelled out here.
+// cleanOldGenerations removes all generation directories
+// older than the current one. Returns the count of generations
+// removed (or flagged in dry-run mode).
 //
 // The function holds the generation lock for its entire
-// execution so it serializes with generation.Build, and
-// RetainedNumbers runs inside that hold — it reads curGen before
-// the listing, keeping the snapshot consistent with the
-// directory scan below.
-func cleanOldGenerations(galeDir, storeRoot string, keep int, dry bool) int {
+// execution so it serializes with generation.Build. Inside
+// the lock, curGen is read first so that an in-flight Build
+// that has created gen/N+1 but not yet swapped current is
+// never considered for deletion (n < curGen is the criterion,
+// not n != curGen).
+//
+// The generations it leaves alone — curGen and the branch above
+// it — are exactly the ones generation.RetainedNumbers reports,
+// so gc retains their store closures too. A directory kept
+// without the versions it links is a hollow generation (gh#247).
+func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 	out := newOutput()
 	genRoot := filepath.Join(galeDir, "gen")
 	lockPath := genLockPath(storeRoot)
 	var removed int
 	_ = filelock.With(lockPath, func() error {
-		retained, err := generation.RetainedNumbers(galeDir, keep)
-		if err != nil {
-			return nil //nolint:nilerr
-		}
+		// Read curGen first (while holding the lock) so the
+		// snapshot is consistent with the directory listing.
+		curGen, _ := generation.Current(galeDir)
 		entries, err := os.ReadDir(genRoot)
 		if err != nil {
 			return nil //nolint:nilerr
@@ -921,10 +885,9 @@ func cleanOldGenerations(galeDir, storeRoot string, keep int, dry bool) int {
 				continue
 			}
 			n, err := strconv.Atoi(e.Name())
-			if err != nil || slices.Contains(retained, n) {
-				// Skip non-numeric entries and every retained
-				// generation (includes current and any in-flight
-				// gen/curGen+1).
+			if err != nil || n >= curGen {
+				// Skip non-numeric entries and anything at or
+				// above curGen (includes in-flight gen/N+1).
 				continue
 			}
 			genPath := filepath.Join(genRoot, e.Name())
@@ -949,32 +912,6 @@ func cleanOldGenerations(galeDir, storeRoot string, keep int, dry bool) int {
 		return nil
 	})
 	return removed
-}
-
-// countRetainedGens returns how many generations gc is retaining
-// in the given gale dir beyond the active one — history below
-// current that `keep` preserves, plus the whole branch above it.
-// An empty dir or an unreadable listing counts zero: this only
-// feeds a dry-run notice, and gc must not fail on it.
-func countRetainedGens(galeDir string, keep int) int {
-	if galeDir == "" {
-		return 0
-	}
-	nums, err := generation.RetainedNumbers(galeDir, keep)
-	if err != nil {
-		return 0
-	}
-	cur, err := generation.Current(galeDir)
-	if err != nil {
-		return 0
-	}
-	var n int
-	for _, g := range nums {
-		if g != cur {
-			n++
-		}
-	}
-	return n
 }
 
 // countBranchGens returns how many generations sit above current
