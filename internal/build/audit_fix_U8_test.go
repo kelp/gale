@@ -329,7 +329,7 @@ func TestRelocateStalePathsInTextFilesScansInclude(t *testing.T) {
 
 func TestBuildEvictsCorruptSourceCacheEntry(t *testing.T) {
 	// Isolate ~/.gale (source cache + tmp) in a temp home.
-	t.Setenv("HOME", t.TempDir())
+	isolateHome(t)
 
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",

@@ -26,9 +26,30 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
+// isolateHome points HOME at a fresh directory for the rest
+// of the test and returns it. Anything reaching buildEnv,
+// Build or BuildLocal allocates under $HOME/.gale — TmpDir()
+// for the build-scoped tools/home/tmp dirs, sourceCache() for
+// downloaded tarballs — so a test that leaves HOME alone
+// writes into the developer's real gale store and, when it
+// skips cleanup, leaves the directories behind (gh#235).
+//
+// The directory must be real and writable: TmpDir() returns ""
+// when its MkdirAll fails, and os.MkdirTemp reads "" as "use
+// os.TempDir()", so a bogus HOME degrades silently into /tmp
+// with the test's assertion never exercised (gh#214).
+func isolateHome(t *testing.T) string {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	return home
+}
+
 // --- Behavior 1: Successful build ---
 
 func TestBuildSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -81,6 +102,8 @@ func TestBuildSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 // rather than an invisible gap. The build runs inside
 // buildFromDir, which is currently un-instrumented.
 func TestBuildEmitsSourceBuildTimingPhase(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -124,6 +147,8 @@ func TestBuildEmitsSourceBuildTimingPhase(t *testing.T) {
 // --- Behavior 2: Build step execution ---
 
 func TestBuildStepRunsWithPREFIXAndJOBS(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -172,6 +197,8 @@ func TestBuildStepRunsWithPREFIXAndJOBS(t *testing.T) {
 }
 
 func TestBuildStepMultipleStepsRunInOrder(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -226,6 +253,8 @@ func TestBuildStepMultipleStepsRunInOrder(t *testing.T) {
 // step 2 ("/bin/sh: 1: .../sccache: not found", exit 127 on
 // every meson recipe in CI).
 func TestBuildToolsDirStableAcrossSteps(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -262,6 +291,8 @@ func TestBuildToolsDirStableAcrossSteps(t *testing.T) {
 // --- Behavior 3: Build step failure ---
 
 func TestBuildStepFailureReturnsError(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -291,6 +322,8 @@ func TestBuildStepFailureReturnsError(t *testing.T) {
 }
 
 func TestBuildStepFailureErrorContainsStep(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -325,6 +358,8 @@ func TestBuildStepFailureErrorContainsStep(t *testing.T) {
 }
 
 func TestBuildStepFailureSecondStepStopsExecution(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -358,6 +393,8 @@ func TestBuildStepFailureSecondStepStopsExecution(t *testing.T) {
 // --- Behavior 4: Source hash mismatch ---
 
 func TestBuildSourceHashMismatchReturnsError(t *testing.T) {
+	isolateHome(t)
+
 	tarball, _ := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -395,6 +432,8 @@ func TestBuildSourceHashMismatchReturnsError(t *testing.T) {
 }
 
 func TestBuildSourceHashMismatchDoesNotRunSteps(t *testing.T) {
+	isolateHome(t)
+
 	tarball, _ := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -432,6 +471,8 @@ func TestBuildSourceHashMismatchDoesNotRunSteps(t *testing.T) {
 // --- Behavior 5: Detect single top-level directory ---
 
 func TestBuildCdIntoSingleTopLevelDirectory(t *testing.T) {
+	isolateHome(t)
+
 	// The source tarball has a single top-level dir with a
 	// script inside. The build step references a file that
 	// only exists inside that directory, proving the build
@@ -483,6 +524,8 @@ func TestBuildCdIntoSingleTopLevelDirectory(t *testing.T) {
 // --- Behavior 6: Output tar.zst ---
 
 func TestBuildOutputIsValidTarZstd(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -527,6 +570,8 @@ func TestBuildOutputIsValidTarZstd(t *testing.T) {
 }
 
 func TestBuildOutputSHA256MatchesArchive(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -693,6 +738,8 @@ func serveFile(t *testing.T, filePath string) *httptest.Server {
 // --- Extra PATH dirs ---
 
 func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
+	isolateHome(t)
+
 	// Create a fake tool in a temp dir.
 	toolDir := t.TempDir()
 	toolPath := filepath.Join(toolDir, "mytool")
@@ -759,6 +806,8 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 // when a build dep exposes a bin/m4, gale must export M4 pointing
 // at it.
 func TestBuildEnvExportsM4FromDepBin(t *testing.T) {
+	isolateHome(t)
+
 	binDir := t.TempDir()
 	m4Path := filepath.Join(binDir, "m4")
 	if err := os.WriteFile(m4Path,
@@ -796,6 +845,8 @@ func TestBuildEnvExportsM4FromDepBin(t *testing.T) {
 // exactly the "exec of m4 failed" failure from the issue. This is
 // the test that fails if the fix is a no-op at the step-env layer.
 func TestBuildSurfacesDepM4ToFlexCustomCommand(t *testing.T) {
+	isolateHome(t)
+
 	// Dep "m4": writes a marker proving the dep binary ran.
 	binDir := t.TempDir()
 	m4Path := filepath.Join(binDir, "m4")
@@ -868,6 +919,8 @@ func TestBuildSurfacesDepM4ToFlexCustomCommand(t *testing.T) {
 // to, and the recipe's M4 (a distinct marker) must be the one
 // that runs, not the dep bin/m4.
 func TestBuildRecipeM4WinsOverDepM4(t *testing.T) {
+	isolateHome(t)
+
 	// Dep m4 stub: would write the WRONG marker if it ran.
 	binDir := t.TempDir()
 	depM4 := filepath.Join(binDir, "m4")
@@ -931,6 +984,8 @@ func TestBuildRecipeM4WinsOverDepM4(t *testing.T) {
 // --- Behavior 8: BuildLocal uses local source directory ---
 
 func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
+	isolateHome(t)
+
 	// Create a local source directory with a simple script.
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
@@ -976,6 +1031,8 @@ func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 }
 
 func TestBuildLocalDoesNotRequireSourceSection(t *testing.T) {
+	isolateHome(t)
+
 	srcDir := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(srcDir, "README"),
@@ -1008,6 +1065,8 @@ func TestBuildLocalDoesNotRequireSourceSection(t *testing.T) {
 }
 
 func TestBuildLocalStepFailureReturnsError(t *testing.T) {
+	isolateHome(t)
+
 	srcDir := t.TempDir()
 
 	r := &recipe.Recipe{
@@ -1028,6 +1087,8 @@ func TestBuildLocalStepFailureReturnsError(t *testing.T) {
 }
 
 func TestBuildLocalWithExtraPaths(t *testing.T) {
+	isolateHome(t)
+
 	toolDir := t.TempDir()
 	toolPath := filepath.Join(toolDir, "mytool")
 	if err := os.WriteFile(toolPath,
@@ -1080,6 +1141,8 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 }
 
 func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
+	isolateHome(t)
+
 	// Issue: the installer used to overwrite .gale-deps.toml
 	// with locally-resolved versions because builds did not
 	// emit it. Now the build records the exact linked
@@ -1159,6 +1222,8 @@ func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
 }
 
 func TestBuildLocalSkipsDepsMetadataWhenNoDeps(t *testing.T) {
+	isolateHome(t)
+
 	// Recipes with no build deps shouldn't ship a metadata
 	// file — the installer treats a missing file as "old
 	// install, possibly stale" for soft migration. A zero-
@@ -1248,6 +1313,8 @@ func TestResolveToolsCreatesSymlinks(t *testing.T) {
 // timestamp >= 1980-01-01 (315532800) without each recipe
 // author having to set it.
 func TestBuildEnvExportsSourceDateEpoch(t *testing.T) {
+	isolateHome(t)
+
 	env, cleanup, _ := buildEnv(&BuildContext{
 		PrefixDir:       "/tmp/prefix",
 		Jobs:            "4",
@@ -1293,6 +1360,8 @@ func TestBuildEnvSourceDateEpochClampedToZipFloor(t *testing.T) {
 // --- Behavior 10: Dynamic linker paths in buildEnv ---
 
 func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
+	isolateHome(t)
+
 	storeDir := t.TempDir()
 	os.MkdirAll(filepath.Join(storeDir, "lib"), 0o755)
 	os.MkdirAll(filepath.Join(storeDir, "include"), 0o755)
@@ -1344,6 +1413,8 @@ func TestBuildEnvIncludesDynamicLinkerPath(t *testing.T) {
 }
 
 func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
+	isolateHome(t)
+
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
@@ -1371,6 +1442,8 @@ func TestBuildEnvNoDynamicLinkerPathWithoutDeps(t *testing.T) {
 // --- Behavior 11: Platform variables in buildEnv ---
 
 func TestBuildEnvIncludesPlatformVars(t *testing.T) {
+	isolateHome(t)
+
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
@@ -1432,6 +1505,8 @@ func TestCheckPlatformCurrentNotInListReturnsError(t *testing.T) {
 // --- Behavior 13: VERSION variable in buildEnv ---
 
 func TestBuildEnvIncludesVersion(t *testing.T) {
+	isolateHome(t)
+
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.8.1", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
@@ -1475,6 +1550,8 @@ func TestSystemDepsReturnsCorrectDeps(t *testing.T) {
 }
 
 func TestBuildEnvCargoSetsRustflagsHeaderpadOnDarwin(t *testing.T) {
+	isolateHome(t)
+
 	// cargo/rustc ignore LDFLAGS, so the headerpad that
 	// compilerFlags injects via LDFLAGS never reaches a Rust
 	// link. Without headerpad the post-build install_name_tool
@@ -1501,6 +1578,8 @@ func TestBuildEnvCargoSetsRustflagsHeaderpadOnDarwin(t *testing.T) {
 }
 
 func TestBuildEnvNonCargoDoesNotSetRustflags(t *testing.T) {
+	isolateHome(t)
+
 	// Headerpad-via-RUSTFLAGS is cargo-specific; a C/autotools
 	// build (which honours LDFLAGS) must not get RUSTFLAGS.
 	env, _, _ := buildEnv(&BuildContext{
@@ -1513,6 +1592,8 @@ func TestBuildEnvNonCargoDoesNotSetRustflags(t *testing.T) {
 }
 
 func TestBuildEnvHeaderOnlyDepStillSetsIncludePath(t *testing.T) {
+	isolateHome(t)
+
 	// A dep that ships only include/ (header-only library)
 	// alongside a bin-only dep (e.g. cmake, no lib/) must
 	// still produce C_INCLUDE_PATH / CMAKE_INCLUDE_PATH.
@@ -1549,6 +1630,8 @@ func TestBuildEnvHeaderOnlyDepStillSetsIncludePath(t *testing.T) {
 }
 
 func TestBuildEnvBinOnlyDepStillSetsCMakePrefixPath(t *testing.T) {
+	isolateHome(t)
+
 	// A cmake-system build with a bin-only dep must still
 	// receive CMAKE_PREFIX_PATH, even though the dep has no
 	// lib/ or include/ subdirs. Regression against the same
@@ -1576,6 +1659,8 @@ func TestBuildEnvBinOnlyDepStillSetsCMakePrefixPath(t *testing.T) {
 // --- Behavior 15: CMAKE_PREFIX_PATH in buildEnv ---
 
 func TestBuildEnvCMakePrefixPath(t *testing.T) {
+	isolateHome(t)
+
 	storeA := t.TempDir()
 	storeB := t.TempDir()
 	for _, d := range []string{storeA, storeB} {
@@ -1599,6 +1684,8 @@ func TestBuildEnvCMakePrefixPath(t *testing.T) {
 }
 
 func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
+	isolateHome(t)
+
 	deps := &BuildDeps{
 		StoreDirs: []string{"/fake/store/a"},
 	}
@@ -1611,6 +1698,8 @@ func TestBuildEnvNoCMakePrefixPathWithoutCMake(t *testing.T) {
 }
 
 func TestBuildEnvNoCMakePrefixPathWithoutDeps(t *testing.T) {
+	isolateHome(t)
+
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "cmake", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
@@ -1631,6 +1720,8 @@ func wantCFLAGS(base string) string {
 }
 
 func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
+	isolateHome(t)
+
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
@@ -1647,6 +1738,8 @@ func TestBuildEnvReleaseFlagsDefault(t *testing.T) {
 }
 
 func TestBuildEnvFPICOnLinux(t *testing.T) {
+	isolateHome(t)
+
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
@@ -1673,6 +1766,8 @@ func TestBuildEnvFPICOnLinux(t *testing.T) {
 }
 
 func TestBuildEnvDebugFlags(t *testing.T) {
+	isolateHome(t)
+
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: true, Deps: nil})
 	envMap := envToMap(env)
 
@@ -1689,6 +1784,8 @@ func TestBuildEnvDebugFlags(t *testing.T) {
 }
 
 func TestBuildEnvZeroARDateAlwaysSet(t *testing.T) {
+	isolateHome(t)
+
 	// Release mode.
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
@@ -1712,6 +1809,8 @@ func TestBuildEnvZeroARDateAlwaysSet(t *testing.T) {
 // build_review_test.go.
 
 func TestBuildEnvExportsDepCPPFLAGSAndDepLDFLAGS(t *testing.T) {
+	isolateHome(t)
+
 	depDir := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(depDir, "include"), 0o755); err != nil {
 		t.Fatal(err)
@@ -1750,6 +1849,8 @@ func TestBuildEnvExportsDepCPPFLAGSAndDepLDFLAGS(t *testing.T) {
 }
 
 func TestBuildEnvNoDepFlagsWithoutDeps(t *testing.T) {
+	isolateHome(t)
+
 	env, _, _ := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	envMap := envToMap(env)
 
@@ -2025,6 +2126,8 @@ func TestCompilerFlagsWithDepFlags(t *testing.T) {
 }
 
 func TestBuildEnvLLVMToolchainSetsCompilerDefaults(t *testing.T) {
+	isolateHome(t)
+
 	llvmDir := t.TempDir()
 	binDir := filepath.Join(llvmDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -2074,6 +2177,8 @@ func TestBuildEnvLLVMToolchainSetsCompilerDefaults(t *testing.T) {
 }
 
 func TestBuildEnvLLVMToolchainMissingDepReturnsError(t *testing.T) {
+	isolateHome(t)
+
 	_, cleanup, err := buildEnv(&BuildContext{
 		PrefixDir: "/tmp/prefix",
 		Jobs:      "4",
@@ -2099,6 +2204,8 @@ func TestBuildEnvLLVMToolchainMissingDepReturnsError(t *testing.T) {
 // that pass-through: declared `toolchain = "llvm"` is
 // authoritative, host env is ignored.
 func TestBuildEnvLLVMToolchainIgnoresHostCompilerEnv(t *testing.T) {
+	isolateHome(t)
+
 	llvmDir := t.TempDir()
 	binDir := filepath.Join(llvmDir, "bin")
 	if err := os.MkdirAll(binDir, 0o755); err != nil {
@@ -2306,6 +2413,8 @@ func TestSourceExtensionExtractsCorrectSuffix(t *testing.T) {
 // --- Behavior 18: Build handles .tar.xz sources ---
 
 func TestBuildSuccessWithTarXzSource(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceArchive(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	}, "xz")
@@ -2433,6 +2542,8 @@ func TestFixupShebangsSkipsBinaries(t *testing.T) {
 // --- BUG-2: buildEnv propagates MkdirTemp failure ---
 
 func TestBuildEnvReturnsNilOnTmpDirFailure(t *testing.T) {
+	isolateHome(t)
+
 	// When MkdirTemp fails (e.g., TmpDir returns empty
 	// string pointing to a non-writable location), buildEnv
 	// should return nil env instead of falling back to a
@@ -2585,6 +2696,8 @@ func TestCopyFilePreservesPermissions(t *testing.T) {
 // --- BUG-1: buildEnv cleanup removes tools dir ---
 
 func TestBuildEnvCleanupRemovesToolsDir(t *testing.T) {
+	isolateHome(t)
+
 	env, cleanup, err := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
 	if err != nil {
 		t.Fatalf("buildEnv error: %v", err)
@@ -2803,6 +2916,8 @@ func TestBuildEnvReturnsErrorOnTmpDirFailure(t *testing.T) {
 // --- BUG FIX 2: Build step error preserves error chain ---
 
 func TestBuildStepErrorPreservesChain(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(t, map[string]string{
 		"testpkg-1.0/README": "hello",
 	})
@@ -2840,6 +2955,8 @@ func TestBuildStepErrorPreservesChain(t *testing.T) {
 }
 
 func TestBuildEnvIncludesRecipeEnvVars(t *testing.T) {
+	isolateHome(t)
+
 	bc := &BuildContext{
 		PrefixDir: "/tmp/prefix",
 		SourceDir: t.TempDir(),
@@ -2866,6 +2983,8 @@ func TestBuildEnvIncludesRecipeEnvVars(t *testing.T) {
 }
 
 func TestBuildEnvExpandsPrefixInRecipeEnvVars(t *testing.T) {
+	isolateHome(t)
+
 	bc := &BuildContext{
 		PrefixDir: "/tmp/test-prefix",
 		SourceDir: t.TempDir(),
