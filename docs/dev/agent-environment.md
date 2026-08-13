@@ -355,8 +355,17 @@ on costs more than the two minutes it takes.
 | `scripts/check-pipeline-tests.sh origin/main` | `just pipeline-check` | yes |
 | the `macos-26` matrix leg | `just check-darwin` (typecheck + lint, no execution) | yes |
 | the `macos-26` leg's path spellings | `just test-symlinked-tmp` | yes |
-| integration Tier A | `just integration` | no — run it separately |
+| integration Tier A | `just integration` | yes |
 | govulncheck | not reproducible, see below | no |
+
+`integration/` is behind `//go:build integration`, so the `test` gate never
+compiles it and a green `go test ./...` says nothing about the txtar suite.
+It used to be left out of `preflight` as "run it separately", and the cost
+landed on gh#247: a gc-retention change passed every local gate and failed
+`gc_reaps_old_revision.txtar` on **both** CI legs. Any change to gc, install,
+or generation semantics can only be seen here. It roughly doubles preflight's
+wall time, which is still two orders of magnitude cheaper than a CI round
+trip.
 
 Three of those exist only because the sandbox needs them.
 `just pipeline-check` wraps a script CI runs on `pull_request` only, so
