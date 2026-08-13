@@ -217,6 +217,13 @@ preflight:
     gate pipeline-check {{ just_executable() }} pipeline-check
     gate check-darwin {{ just_executable() }} check-darwin
     gate test-symlinked-tmp {{ just_executable() }} test-symlinked-tmp
+    # `integration/` is behind `//go:build integration`, so the
+    # `test` gate above never compiles it — CI runs it as its own
+    # tagged step. Without this gate the whole txtar suite is
+    # invisible locally, and a change to gc/install/generation
+    # semantics passes preflight and fails CI on both legs. That
+    # is exactly what happened to gh#247.
+    gate integration {{ just_executable() }} integration
     echo "preflight: all gates passed"
 
 # Run the integration suite (Tier A: fixture-driven, fast)
