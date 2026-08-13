@@ -149,11 +149,18 @@ test-symlinked-tmp:
 # darwin, so on Linux `go build`, `go vet` and golangci-lint never
 # compile them: an undefined symbol there passes every other local
 # gate and fails on CI's macos runner. go vet covers _test.go too.
+#
+# The lint pass matters as much as build+vet: darwin _test.go files
+# are linted on the macos leg like any other source, so a dupl or
+# funlen hit in darwin-only test code is otherwise invisible until
+# the PR is open. GOOS=darwin makes golangci-lint typecheck and
+# lint them here. Warm cache ~6s, cold ~30s.
 
-# Typecheck and vet the darwin-only sources (GOOS=darwin)
+# Typecheck, vet and lint the darwin-only sources (GOOS=darwin)
 check-darwin:
     GOOS=darwin GOARCH=arm64 go build ./...
     GOOS=darwin GOARCH=arm64 go vet ./...
+    GOOS=darwin GOARCH=arm64 golangci-lint run ./...
 
 # ci.yml runs this on pull_request only, so without a local target
 # it is invisible until the PR is already open.
