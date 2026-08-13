@@ -198,6 +198,22 @@
 
 ### Fixed
 
+- Auto-gc no longer deletes generations `[generation] keep`
+  promised to preserve (gh#248). Retention derived a numeric
+  cutoff, `current - keep + 1`, which counts integers rather
+  than generations — exact only while the numbering is
+  contiguous. Since gh#189 allocation is `max(prev, highest)+1`,
+  so gaps are ordinary: with generations 1, 5, 9, 10 and
+  `keep = 3`, the next install kept two of them and removed
+  gen/5, a rollback target the user could still see in `gale
+  generations`. A `current` above every generation on disk swept
+  the lot. Retention is now a count over the generations that
+  exist — the highest `keep` at or below `current` — so it can
+  only ever retain more than the old rule did, never less.
+  Everything above `current` is preserved exactly as before
+  (gh#189), and contiguous histories, the common case, prune
+  identically.
+
 - direnv no longer activates a partially synced environment
   forever without saying so (gh#186). A sync that could not
   install every package still rebuilds the generation so the

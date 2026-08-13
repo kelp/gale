@@ -817,17 +817,62 @@ func RetainedVersionsStrict(
 	return out, nil
 }
 
-// PruneOldGenerations removes generation directories older than
-// (curGen - keep + 1), preserving the most recent `keep` gens
-// (including the current one). Anything at or above curGen —
-// including any in-flight gen/curGen+1 a concurrent Build may
-// have created — is preserved. Holds the store-rooted gen lock
-// for its critical section so it serializes with Build.
+// prunableNumbers returns the generation numbers
+// PruneOldGenerations must remove, given the ascending scan nums
+// and the active generation curGen: everything at or below curGen
+// except the highest keep, counted POSITIONALLY over the scan.
+// The result is ascending, and empty when keep or curGen is
+// non-positive.
 //
-// The cutoff is numeric, so after a rollback (current below the
-// highest gen) the gens above current are all preserved, and the
-// numbering may have gaps. Both are expected: current is a pointer
-// into history, not a high-water mark (gh#189).
+// Positional, not numeric: gh#189 made allocation
+// max(prev, highest)+1, so the numbering legitimately has gaps,
+// and the old cutoff curGen-keep+1 counted the integers in a
+// range rather than the generations that exist. With gens
+// 1, 5, 9, 10 and keep 3 it retained two, destroying a rollback
+// target the keep setting promised (gh#248); with a current above
+// every staged generation it retained none.
+//
+// Generations above curGen are never prunable. That branch —
+// visible after a rollback — is retained history a roll-forward
+// may return to, and a user who abandoned it on purpose reclaims
+// it by name (gh#189, gh#206). It is also where an in-flight
+// gen/curGen+1 from a concurrent Build lives.
+//
+// The split at curGen is the same one retainedNumbers makes, but
+// the two answer different questions and neither implements the
+// other. retainedNumbers is gc's store-closure policy: it is
+// keep-independent, retains {n >= curGen} and nothing below, and
+// injects curGen even when its directory is gone so gc's
+// refuse-to-sweep path fires (gh#247, gh#258). Retention here is
+// a count below current, over the set gc deliberately retains
+// nothing of.
+func prunableNumbers(nums []int, curGen, keep int) []int {
+	if keep <= 0 || curGen <= 0 {
+		return nil
+	}
+	var atOrBelow []int
+	for _, n := range nums {
+		if n <= curGen {
+			atOrBelow = append(atOrBelow, n)
+		}
+	}
+	if len(atOrBelow) <= keep {
+		return nil
+	}
+	return atOrBelow[:len(atOrBelow)-keep]
+}
+
+// PruneOldGenerations removes old generation directories,
+// preserving the highest `keep` generations at or below curGen
+// (the current one among them) and everything above curGen —
+// including any in-flight gen/curGen+1 a concurrent Build may
+// have created. Holds the store-rooted gen lock for its critical
+// section so it serializes with Build.
+//
+// Retention is a count over the generations that exist, not a
+// numeric cutoff: the numbering may have gaps, and current is a
+// pointer into history rather than a high-water mark (gh#189).
+// prunableNumbers has the rule.
 //
 // Returns the removed gen numbers in ascending order so the
 // caller can report them. keep<=0 or no current symlink is a
@@ -844,26 +889,19 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
 	var removed []int
 	err := filelock.With(lockPath, func() error {
+		// curGen is read BEFORE the listing, as retainedNumbers
+		// and Build do: under the lock that ordering keeps the
+		// snapshot consistent with the directory scan.
 		curGen, err := Current(galeDir)
 		if err != nil {
 			return fmt.Errorf("read current: %w", err)
-		}
-		if curGen == 0 {
-			return nil
-		}
-		cutoff := curGen - keep + 1
-		if cutoff <= 1 {
-			return nil
 		}
 		nums, err := genNumbers(galeDir)
 		if err != nil {
 			return err
 		}
 		genRoot := filepath.Join(galeDir, "gen")
-		for _, n := range nums {
-			if n >= cutoff {
-				continue
-			}
+		for _, n := range prunableNumbers(nums, curGen, keep) {
 			if err := os.RemoveAll(
 				filepath.Join(genRoot, strconv.Itoa(n)),
 			); err != nil {

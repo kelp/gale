@@ -45,7 +45,8 @@ func genMarkers(t *testing.T) map[int]byte {
 // half of gh#206. After a rollback, `current` points below the
 // highest generation and the gens above it are an abandoned
 // branch: reachable only by rolling forward, skipped by gc's
-// `n >= curGen` guard and by PruneOldGenerations' numeric cutoff,
+// `n >= curGen` guard and by PruneOldGenerations, which counts
+// only the generations at or below current (gh#248),
 // and reclaimed only once `current` climbs back past them.
 //
 // The listing rendered them identically to history below current —

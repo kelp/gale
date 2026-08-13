@@ -310,9 +310,10 @@ func currentGenNumber(gens []generation.GenInfo) int {
 //
 // A generation above current exists only after a rollback, and
 // it is retained on purpose: the number permanently identifies
-// that snapshot (gh#189), so gc skips it and auto-prune's
-// numeric cutoff cannot reach it until current climbs back past
-// it. Rendering it like history below current hid the one state
+// that snapshot (gh#189), so gc skips it and auto-prune — which
+// counts only the generations at or below current — cannot reach
+// it until current climbs back past it. Rendering it like
+// history below current hid the one state
 // a user has to see before naming a generation to
 // `gale generations remove` (gh#206).
 func genMarker(g generation.GenInfo, cur int) string {
