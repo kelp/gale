@@ -20,7 +20,7 @@ just test              # 21s, hermetic
 just lint              # golangci-lint + go vet, 15s
 just fmt-check         # gofumpt, whole tree
 just check-darwin      # the darwin-only files Linux never compiles
-just test-symlinked-tmp  # the macOS /var path-spelling class; baseline is not empty
+just test-symlinked-tmp  # the macOS /var path-spelling class; baseline is empty
 just integration       # hermetic Tier A, fake GHCR
 ```
 
@@ -227,16 +227,25 @@ the resolved one is what makes the root-level symlink necessary, which is
 why the target needs `/` writable — free in this container, `sudo` on a
 Linux dev box.
 
-**The baseline is not empty.** On `origin/main` one test fails:
+**The baseline is empty**, and `just preflight` runs it as its last gate. A
+failure here is a path-spelling bug your branch introduced — read it as yours
+rather than comparing against `origin/main`.
 
-| Test | Why |
-| --- | --- |
-| `internal/farm` `TestFarmPredicateIgnoresPathSpelling` (both subtests) | hardcodes the soname `libspell.4.dylib`; `farm.IsVersionedDylib` switches on `runtime.GOOS`, so nothing is farmed on Linux and `StaleLinks` is empty. It skips itself when the temp prefix is not symlinked, so a symlinked `$TMPDIR` is the only thing that un-skips it here. Its sibling `TestFarmPredicateDoesNotFollowTheFarmedAlias` has the `runtime.GOOS == "linux"` soname switch it is missing (gh#230). |
+It was not always. Until gh#230 the target had one known failure,
+`internal/farm` `TestFarmPredicateIgnoresPathSpelling` (both subtests): the
+fixture hardcoded the soname `libspell.4.dylib`, and `farm.IsVersionedDylib`
+switches on `runtime.GOOS`, so nothing was farmed on Linux and `StaleLinks`
+came back empty. The test guards itself with a skip when the temp prefix is
+not symlinked, so a symlinked `$TMPDIR` was the only thing that un-skipped it
+here — and it then failed for a platform reason rather than a spelling one.
+Giving the fixture the `runtime.GOOS == "linux"` switch its three siblings in
+the file already had cleared it, which is what let the target join
+`preflight`.
 
-So the target is **comparative**: run it on `origin/main`, run it on your
-branch, and a failure your branch adds is yours. It is deliberately not in
-`just preflight` — a gate that is red on a clean tree teaches people to
-ignore it. Reconsider once the baseline is empty.
+The gate costs roughly 9s on a warm cache, taking `preflight` from ~11s to
+~20s. It is a full `go test -count=1 ./...` and cannot reuse the `test`
+gate's cached results, because running under a different `$TMPDIR` is
+exactly the point.
 
 ## Running as root
 
@@ -322,7 +331,7 @@ on costs more than the two minutes it takes.
 | `gofumpt -l .` | `just fmt-check` | yes |
 | `scripts/check-pipeline-tests.sh origin/main` | `just pipeline-check` | yes |
 | the `macos-26` matrix leg | `just check-darwin` (typecheck + lint, no execution) | yes |
-| the `macos-26` leg's path spellings | `just test-symlinked-tmp` | no — baseline is not empty |
+| the `macos-26` leg's path spellings | `just test-symlinked-tmp` | yes |
 | integration Tier A | `just integration` | no — run it separately |
 | govulncheck | not reproducible, see below | no |
 
