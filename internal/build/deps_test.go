@@ -54,6 +54,8 @@ func TestBuildDepsCanonicalizeSortsAndDedupes(t *testing.T) {
 // win while keeping each group deterministic.
 
 func TestBuildEnvExplicitBinDirsBeatSystemBinDirs(t *testing.T) {
+	isolateHome(t)
+
 	t.Setenv("PATH", "/usr/bin:/bin")
 
 	explicit := "/s/pkg/zig15/0.15.2-1/bin"

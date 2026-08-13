@@ -28,8 +28,7 @@ func TestBuildEnvHomeIsBuildScoped(t *testing.T) {
 	// literal path made this test create /host/home/value on
 	// the machine when run as root, and skip past the real
 	// assertion when run unprivileged (gh#214).
-	hostHome := t.TempDir()
-	t.Setenv("HOME", hostHome)
+	hostHome := isolateHome(t)
 
 	env, cleanup, err := buildEnv(&BuildContext{
 		PrefixDir: "/tmp/prefix",
@@ -79,6 +78,8 @@ func TestBuildEnvHomeIsBuildScoped(t *testing.T) {
 // to TMPDIR (libtool intermediate files in particular)
 // embed paths that leak the host layout into output.
 func TestBuildEnvTmpDirIsBuildScoped(t *testing.T) {
+	isolateHome(t)
+
 	t.Setenv("TMPDIR", "/host/tmp/value")
 
 	env, cleanup, err := buildEnv(&BuildContext{
@@ -117,6 +118,8 @@ func TestBuildEnvTmpDirIsBuildScoped(t *testing.T) {
 // build finishes. Leaking these across builds defeats
 // the isolation and fills ~/.gale/tmp/.
 func TestBuildEnvCleanupRemovesHomeAndTmpDir(t *testing.T) {
+	isolateHome(t)
+
 	env, cleanup, err := buildEnv(&BuildContext{
 		PrefixDir: "/tmp/prefix",
 		Jobs:      "4",
@@ -175,6 +178,8 @@ func TestSetDefaultDoesNotFallBackToHostEnv(t *testing.T) {
 // host CFLAGS=-march=native is ignored; the deterministic
 // gale default wins.
 func TestBuildEnvCFLAGSIgnoresHostCFLAGS(t *testing.T) {
+	isolateHome(t)
+
 	t.Setenv("CFLAGS", "-march=native")
 
 	env, cleanup, err := buildEnv(&BuildContext{
@@ -205,6 +210,8 @@ func TestBuildEnvCFLAGSIgnoresHostCFLAGS(t *testing.T) {
 // in the catalog depends on it. See build.go near the
 // compiler-flag construction for the rationale comment.
 func TestBuildEnvDoesNotPassThroughHostCC(t *testing.T) {
+	isolateHome(t)
+
 	t.Setenv("CC", "/host/bin/gcc-11")
 	t.Setenv("CXX", "/host/bin/g++-11")
 
@@ -328,6 +335,8 @@ func TestTouchAllStampsFilesWithFixedTime(t *testing.T) {
 // and H4 together guarantee: byte-identical inputs
 // produce byte-identical output.
 func TestBuildWithReleasedAtProducesIdenticalArchiveHash(t *testing.T) {
+	isolateHome(t)
+
 	tarball, hash := createSourceTarGz(
 		t,
 		map[string]string{
@@ -476,6 +485,8 @@ func fakeSccacheOnPATH(t *testing.T) {
 // resolve makes every rustc invocation fail with a confusing
 // "sccache: command not found".
 func TestBuildEnvNoSccacheLeavesWrapperUnset(t *testing.T) {
+	isolateHome(t)
+
 	// PATH without sccache anywhere.
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("SCCACHE_GHA_ENABLED", "")
@@ -509,6 +520,8 @@ func TestBuildEnvNoSccacheLeavesWrapperUnset(t *testing.T) {
 // the sandbox PATH so the wrapper binary actually resolves.
 // Either alone is broken; tested together.
 func TestBuildEnvSccachePresentSetsWrapper(t *testing.T) {
+	isolateHome(t)
+
 	fakeSccacheOnPATH(t)
 
 	env, cleanup, err := buildEnv(&BuildContext{
@@ -544,6 +557,8 @@ func TestBuildEnvSccachePresentSetsWrapper(t *testing.T) {
 // passing GHA tokens into a vanilla local build is needless
 // surface area.
 func TestBuildEnvPassesGitHubActionsCacheVars(t *testing.T) {
+	isolateHome(t)
+
 	fakeSccacheOnPATH(t)
 	t.Setenv("SCCACHE_GHA_ENABLED", "true")
 	t.Setenv("ACTIONS_CACHE_URL", "https://example/cache")
@@ -583,6 +598,8 @@ func TestBuildEnvPassesGitHubActionsCacheVars(t *testing.T) {
 // active wrapper. Covers SCCACHE_DIR, SCCACHE_REDIS, and
 // future keys without needing a fixed allowlist.
 func TestBuildEnvForwardsArbitrarySccachePrefixVars(t *testing.T) {
+	isolateHome(t)
+
 	fakeSccacheOnPATH(t)
 	t.Setenv("SCCACHE_DIR", "/tmp/sccache-dir")
 	t.Setenv("SCCACHE_BUCKET", "my-s3-bucket")
@@ -614,6 +631,8 @@ func TestBuildEnvForwardsArbitrarySccachePrefixVars(t *testing.T) {
 // what to do with SCCACHE_GHA_ENABLED. The trigger is
 // strictly the presence of the sccache binary on host PATH.
 func TestBuildEnvSccacheConfigNotPassedWhenWrapperAbsent(t *testing.T) {
+	isolateHome(t)
+
 	t.Setenv("PATH", "/usr/bin:/bin")
 	t.Setenv("SCCACHE_GHA_ENABLED", "true")
 	t.Setenv("ACTIONS_CACHE_URL", "https://example/cache")
@@ -652,6 +671,8 @@ func TestBuildEnvSccacheConfigNotPassedWhenWrapperAbsent(t *testing.T) {
 // auto-set. Same precedence rule as every other recipe-
 // declared env key: [build] env wins.
 func TestBuildEnvRecipeRustcWrapperWinsOverAutoSet(t *testing.T) {
+	isolateHome(t)
+
 	fakeSccacheOnPATH(t)
 
 	env, cleanup, err := buildEnv(&BuildContext{
