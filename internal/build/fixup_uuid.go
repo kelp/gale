@@ -16,6 +16,7 @@ const (
 	machMagic32     = 0xfeedface
 	fatMagic        = 0xcafebabe
 	lcUUID          = 0x1b
+	lcCodeSignature = 0x1d
 	machHeaderLen64 = 32
 	machHeaderLen32 = 28
 	uuidCmdLen      = 24 // cmd + cmdsize + 16 uuid bytes
@@ -81,12 +82,35 @@ func rewriteUUID(path string) error {
 }
 
 // machoSlice describes one architecture slice of a Mach-O file:
-// its extent within the file and the absolute offsets of the
-// 16-byte LC_UUID payloads found inside it. A thin file is a
-// single slice spanning the whole file.
+// its extent within the file, the absolute offsets of the 16-byte
+// LC_UUID payloads found inside it, and whether it carries a code
+// signature. A thin file is a single slice spanning the whole
+// file.
 type machoSlice struct {
 	start, size int
 	uuidOffs    []int
+	signed      bool
+}
+
+// hasCodeSignature reports whether the Mach-O at path carries an
+// LC_CODE_SIGNATURE load command in any architecture slice.
+//
+// This is the probe extractEntitlements tells "unsigned, so no
+// entitlements" apart from "signed, but I could not read them"
+// with. It has to read the file rather than ask codesign, because
+// the case being identified is precisely the one where codesign
+// will not answer (gh#254).
+func hasCodeSignature(path string) (bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return false, fmt.Errorf("read mach-o: %w", err)
+	}
+	for _, s := range machoSlices(data) {
+		if s.signed {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // machoSlices splits a Mach-O file into its architecture slices
@@ -98,10 +122,12 @@ func machoSlices(data []byte) []machoSlice {
 		return nil
 	}
 	if binary.BigEndian.Uint32(data) != fatMagic {
+		uuidOffs, signed := scanLoadCommands(data, 0)
 		return []machoSlice{{
 			start:    0,
 			size:     len(data),
-			uuidOffs: thinUUIDOffsets(data, 0),
+			uuidOffs: uuidOffs,
+			signed:   signed,
 		}}
 	}
 	// Universal binary: fat headers are always big-endian.
@@ -118,21 +144,26 @@ func machoSlices(data []byte) []machoSlice {
 		if start+size > len(data) {
 			continue
 		}
+		uuidOffs, signed := scanLoadCommands(data[start:start+size], start)
 		parts = append(parts, machoSlice{
 			start:    start,
 			size:     size,
-			uuidOffs: thinUUIDOffsets(data[start:start+size], start),
+			uuidOffs: uuidOffs,
+			signed:   signed,
 		})
 	}
 	return parts
 }
 
-// thinUUIDOffsets scans one little-endian Mach-O slice for
-// LC_UUID commands and returns the absolute offsets (slice
-// offset base + local offset) of their 16-byte payloads.
-func thinUUIDOffsets(d []byte, base int) []int {
+// scanLoadCommands walks one little-endian Mach-O slice's load
+// commands, returning the absolute offsets (slice offset base +
+// local offset) of every LC_UUID's 16-byte payload and whether the
+// slice carries an LC_CODE_SIGNATURE. One walk answers both
+// questions; two would be two chances to disagree about where a
+// slice's commands end.
+func scanLoadCommands(d []byte, base int) (uuidOffs []int, signed bool) {
 	if len(d) < machHeaderLen32 {
-		return nil
+		return nil, false
 	}
 	var hdrLen int
 	switch binary.LittleEndian.Uint32(d) {
@@ -143,9 +174,8 @@ func thinUUIDOffsets(d []byte, base int) []int {
 	default:
 		// Big-endian slices (PPC-era) are not produced by any
 		// toolchain gale drives; leave them untouched.
-		return nil
+		return nil, false
 	}
-	var offs []int
 	ncmds := int(binary.LittleEndian.Uint32(d[16:]))
 	p := hdrLen
 	for range ncmds {
@@ -157,12 +187,15 @@ func thinUUIDOffsets(d []byte, base int) []int {
 		if cmdsize < 8 || p+cmdsize > len(d) {
 			break
 		}
-		if cmd == lcUUID && cmdsize >= uuidCmdLen {
-			offs = append(offs, base+p+8)
+		switch {
+		case cmd == lcUUID && cmdsize >= uuidCmdLen:
+			uuidOffs = append(uuidOffs, base+p+8)
+		case cmd == lcCodeSignature:
+			signed = true
 		}
 		p += cmdsize
 	}
-	return offs
+	return uuidOffs, signed
 }
 
 // normalizeAndResign makes a Mach-O that gale modified
@@ -172,7 +205,14 @@ func thinUUIDOffsets(d []byte, base int) []int {
 // codesign's ad-hoc signature is a pure function of the file
 // content and its basename.
 func normalizeAndResign(file string) error {
-	ent := extractEntitlements(file)
+	// Before the strip below, and fatal when it fails: the
+	// signature this reads from is about to be removed, so an
+	// entitlement missed here cannot be recovered afterwards
+	// (gh#254).
+	ent, err := extractEntitlements(file)
+	if err != nil {
+		return err
+	}
 	_ = run("codesign", "--remove-signature", file)
 	if err := rewriteUUID(file); err != nil {
 		return fmt.Errorf("rewrite uuid: %w", err)

@@ -51,7 +51,11 @@ var verifyCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}
-		pkg, ok, err := lv.Entry(name, config.CurrentHost(), currentPlatform())
+		host, hErr := config.CurrentHost()
+		if hErr != nil {
+			return hErr
+		}
+		pkg, ok, err := lv.Entry(name, host, currentPlatform())
 		if err != nil {
 			return fmt.Errorf("reading lockfile: %w", err)
 		}

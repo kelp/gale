@@ -1171,14 +1171,21 @@ func TestEffectiveBinIgnoresNonMatchingHost(t *testing.T) {
 
 func TestCurrentHostHonorsEnvVar(t *testing.T) {
 	t.Setenv("GALE_HOST", "test-host-xyz")
-	if got := CurrentHost(); got != "test-host-xyz" {
+	got, err := CurrentHost()
+	if err != nil {
+		t.Fatalf("CurrentHost() error = %v, want nil", err)
+	}
+	if got != "test-host-xyz" {
 		t.Errorf("CurrentHost() = %q, want %q", got, "test-host-xyz")
 	}
 }
 
 func TestCurrentHostFallsBackToHostname(t *testing.T) {
 	t.Setenv("GALE_HOST", "")
-	got := CurrentHost()
+	got, err := CurrentHost()
+	if err != nil {
+		t.Fatalf("CurrentHost() error = %v, want nil", err)
+	}
 	if got == "" {
 		t.Error("CurrentHost() returned empty string")
 	}
@@ -1186,6 +1193,70 @@ func TestCurrentHostFallsBackToHostname(t *testing.T) {
 	if err == nil && got != osHost {
 		t.Errorf("CurrentHost() = %q, want os.Hostname() = %q",
 			got, osHost)
+	}
+}
+
+// failingHostname is the os.Hostname stand-in the two tests below
+// drive currentHost with. os.Hostname reads the kernel's hostname
+// through uname(2)/sysctl(3) and cannot be made to fail from a
+// test — no permission bit, no path, no environment variable
+// reaches it — so the seam is a parameter rather than a fixture
+// (docs/dev/agent-environment.md: chmod proves nothing as root
+// either). Passing the real os.Hostname is the only thing
+// production does.
+func failingHostname(err error, name string) func() (string, error) {
+	return func() (string, error) { return name, err }
+}
+
+// TestCurrentHostErrorsWhenHostnameFails pins the gh#254 contract:
+// an unresolvable host identity is an error, never "". Callers read
+// "" as "this machine has no [hosts.<name>] overlay", so collapsing
+// the failure into it silently drops every host-scoped package —
+// and for gc, silently drops them from the retention set, which is
+// the cross-scope deletion class ad4e685 and 289d13b came from.
+func TestCurrentHostErrorsWhenHostnameFails(t *testing.T) {
+	t.Setenv("GALE_HOST", "")
+	boom := errors.New("uname: no such device")
+
+	got, err := currentHost(failingHostname(boom, ""))
+	if err == nil {
+		t.Fatalf("currentHost() = (%q, nil) when the hostname could "+
+			"not be read; a failure must not be reported as a host "+
+			"identity", got)
+	}
+	if got != "" {
+		t.Errorf("currentHost() = %q alongside error %v; want an "+
+			"empty host with the error", got, err)
+	}
+	if !errors.Is(err, boom) {
+		t.Errorf("currentHost() error = %v, want it to wrap %v",
+			err, boom)
+	}
+	// GALE_HOST is the documented way out of this state and the
+	// error is the only place a user meets it.
+	if !strings.Contains(err.Error(), "GALE_HOST") {
+		t.Errorf("currentHost() error = %q, want it to name "+
+			"GALE_HOST as the override", err)
+	}
+}
+
+// TestCurrentHostErrorsWhenHostnameIsEmpty covers the other half of
+// the same silent drop. os.Hostname can succeed and hand back "" on
+// a machine whose hostname was never set; the old code passed that
+// straight through, so every overlay stopped applying with no error
+// at all.
+func TestCurrentHostErrorsWhenHostnameIsEmpty(t *testing.T) {
+	t.Setenv("GALE_HOST", "")
+
+	got, err := currentHost(failingHostname(nil, ""))
+	if err == nil {
+		t.Fatalf("currentHost() = (%q, nil) for an empty hostname; "+
+			"an unnamed machine matches no [hosts.<name>] section, "+
+			"so it must be an error", got)
+	}
+	if !strings.Contains(err.Error(), "GALE_HOST") {
+		t.Errorf("currentHost() error = %q, want it to name "+
+			"GALE_HOST as the override", err)
 	}
 }
 

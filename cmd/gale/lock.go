@@ -58,12 +58,16 @@ var lockCmd = &cobra.Command{
 		// chosen, so the lock is keyed on the concrete hostname the
 		// manifest overlay uses. A target keyed "current" would match
 		// no machine and every reader would plan without it.
+		host, err := resolveHostFlag(lockHost)
+		if err != nil {
+			return err
+		}
 		if lockRefresh {
 			return runLockRefresh(
-				ctx, resolveHostFlag(lockHost), args, newCmdOutput(cmd),
+				ctx, host, args, newCmdOutput(cmd),
 			)
 		}
-		return runLock(ctx, resolveHostFlag(lockHost), newCmdOutput(cmd))
+		return runLock(ctx, host, newCmdOutput(cmd))
 	},
 }
 

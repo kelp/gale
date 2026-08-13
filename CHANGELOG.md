@@ -198,6 +198,29 @@
 
 ### Fixed
 
+- Three functions no longer collapse a failure into `""`, where
+  the caller reads it as a valid answer (gh#254, following
+  gh#235). `extractEntitlements` returned `""` both for "this
+  Mach-O carries no entitlements" and "I could not read them",
+  and `resignWithEntitlements` reads `""` as "sign without
+  `--entitlements`" — so on macOS a failed read re-signed a
+  binary with its capabilities stripped while the build stayed
+  green. It now returns an error for a *signed* binary whose
+  entitlements cannot be read and aborts the fixup, while an
+  unsigned one still reports "none"; the two are told apart by
+  the file's own `LC_CODE_SIGNATURE`, not by codesign's exit
+  status. `config.CurrentHost` returned `""` when `os.Hostname`
+  failed or answered empty, which matches no `[hosts.<name>]`
+  section — every host overlay silently stopped applying, and
+  for `gale gc` that meant host-scoped pins vanishing from the
+  retention set. It now errors and names `GALE_HOST` as the
+  override. `registry.defaultCacheDir` returned `""` without
+  `$HOME` (cron, systemd units, launchd agents, `sudo` without
+  `-H`), which the registry reads as "caching off"; it now
+  falls back to a uid-scoped directory under the system temp
+  dir, matching the source cache, and errors only when neither
+  location is usable.
+
 - direnv no longer activates a partially synced environment
   forever without saying so (gh#186). A sync that could not
   install every package still rebuilds the generation so the

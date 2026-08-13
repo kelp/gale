@@ -66,7 +66,10 @@ var removeCmd = &cobra.Command{
 		// flattens to the *current* host's view, which hides
 		// foreign-host entries and reports the wrong version
 		// when the pins differ (gh#75).
-		host := resolveHostFlag(removeHost)
+		host, err := resolveHostFlag(removeHost)
+		if err != nil {
+			return err
+		}
 		var version string
 		if host != "" {
 			raw, err := rawGaleConfig(ctx.GalePath)

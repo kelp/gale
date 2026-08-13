@@ -233,8 +233,12 @@ var updateCmd = &cobra.Command{
 			// install the new version; the lockfile stays
 			// untouched because it tracks installed artifacts.
 			if updateNoInstall {
+				host, hErr := config.CurrentHost()
+				if hErr != nil {
+					return hErr
+				}
 				if _, err := config.UpsertPackage(
-					ctx.GalePath, config.CurrentHost(),
+					ctx.GalePath, host,
 					name, noInstallPin(r.Package.Version,
 						r.Package.Full(), t.current),
 				); err != nil {

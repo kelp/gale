@@ -227,3 +227,65 @@ func TestRewriteUUIDDeterministicForIdenticalContent(t *testing.T) {
 		t.Error("rewriteUUID left the linker-assigned UUID in place")
 	}
 }
+
+// TestNormalizeAndResignRefusesWhenEntitlementsCannotBeRead pins
+// the third gh#254 caller. normalizeAndResign captures entitlements,
+// strips the signature, rewrites LC_UUID and signs the result; a
+// capture that answered "" for a failed read handed
+// resignWithEntitlements a signature with the entitlement removed,
+// after the original had already been stripped and could no longer
+// be recovered.
+func TestNormalizeAndResignRefusesWhenEntitlementsCannotBeRead(t *testing.T) {
+	bin := entitledBinary(t, "qemu-like")
+	before, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubFailingCodesign(t)
+
+	if err := normalizeAndResign(bin); err == nil {
+		t.Fatal("normalizeAndResign() succeeded while the binary's " +
+			"entitlements could not be read; it strips the " +
+			"signature next, so a guess here is unrecoverable " +
+			"(gh#254)")
+	}
+	after, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("normalizeAndResign() modified the binary before " +
+			"failing; the entitlement capture is its first step")
+	}
+}
+
+// TestHasCodeSignatureDistinguishesSignedFromUnsigned pins the probe
+// the signed/unsigned split rests on. It reads the Mach-O's load
+// commands rather than asking codesign, because the case that must
+// be told apart is exactly the one where codesign will not answer.
+func TestHasCodeSignatureDistinguishesSignedFromUnsigned(t *testing.T) {
+	bin := compileTinyBinary(t, t.TempDir(), "probe")
+	if out, err := exec.Command("codesign", "--force", "--sign", "-", bin).
+		CombinedOutput(); err != nil {
+		t.Skipf("codesign --sign - failed: %v\n%s", err, out)
+	}
+	signed, err := hasCodeSignature(bin)
+	if err != nil {
+		t.Fatalf("hasCodeSignature(signed) error = %v", err)
+	}
+	if !signed {
+		t.Error("hasCodeSignature() = false for a signed Mach-O")
+	}
+
+	if out, err := exec.Command("codesign", "--remove-signature", bin).
+		CombinedOutput(); err != nil {
+		t.Fatalf("remove-signature: %v\n%s", err, out)
+	}
+	signed, err = hasCodeSignature(bin)
+	if err != nil {
+		t.Fatalf("hasCodeSignature(unsigned) error = %v", err)
+	}
+	if signed {
+		t.Error("hasCodeSignature() = true after --remove-signature")
+	}
+}

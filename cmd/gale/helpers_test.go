@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/kelp/gale/internal/config"
 )
 
 // chdirTo changes the working directory to dir for the
@@ -87,4 +89,18 @@ func breakSystemTemp(t *testing.T) {
 		t.Fatalf("plant %s as a regular file: %v", blocker, err)
 	}
 	t.Setenv("TMPDIR", filepath.Join(blocker, "tmp"))
+}
+
+// currentHost resolves this machine's host identity for tests that
+// build a config or lock keyed on it. CurrentHost returns an error
+// rather than "" since gh#254, and a test that swallowed it would
+// key its fixture on the shared section instead of a host overlay
+// — silently testing the wrong thing.
+func currentHost(t *testing.T) string {
+	t.Helper()
+	host, err := config.CurrentHost()
+	if err != nil {
+		t.Fatalf("resolving current host: %v", err)
+	}
+	return host
 }

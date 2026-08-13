@@ -106,7 +106,14 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 		))
 		return
 	}
-	cfg.ApplyHost(config.CurrentHost())
+	host, hErr := config.CurrentHost()
+	if hErr != nil {
+		out.Warn(fmt.Sprintf(
+			"sync: host identity: %v", hErr,
+		))
+		return
+	}
+	cfg.ApplyHost(host)
 	lp, lpErr := lockfilePath(configPath)
 	if lpErr != nil {
 		out.Warn(fmt.Sprintf(
@@ -114,7 +121,6 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 		))
 		return
 	}
-	host := config.CurrentHost()
 	stale, err := lockIsStale(lp, cfg.Packages, host)
 	if err != nil {
 		out.Warn(fmt.Sprintf(

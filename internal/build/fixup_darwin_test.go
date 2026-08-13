@@ -187,7 +187,10 @@ func TestResignWithEntitlementsSurvivesSignatureStrip(t *testing.T) {
 
 	// Self-sign with the HVF entitlement, mimicking qemu's mains.
 	signWithEntitlement(t, bin)
-	entBefore := extractEntitlements(bin)
+	entBefore, err := extractEntitlements(bin)
+	if err != nil {
+		t.Fatalf("extractEntitlements: %v", err)
+	}
 	if entBefore == "" {
 		t.Skip("setup: entitlement did not stick after signing")
 	}
@@ -198,7 +201,13 @@ func TestResignWithEntitlementsSurvivesSignatureStrip(t *testing.T) {
 		CombinedOutput(); err != nil {
 		t.Fatalf("remove-signature: %v\n%s", err, out)
 	}
-	if after := extractEntitlements(bin); after != "" {
+	// An unsigned Mach-O reports "no entitlements" without error;
+	// that is the benign half of the gh#254 split.
+	after, err := extractEntitlements(bin)
+	if err != nil {
+		t.Fatalf("extractEntitlements after --remove-signature: %v", err)
+	}
+	if after != "" {
 		t.Fatalf("expected no entitlement after --remove-signature "+
 			"(this is why post-strip capture drops it); got:\n%s",
 			after)
@@ -318,7 +327,10 @@ func TestResignWithEntitlementsClearsDetritusXattrs(t *testing.T) {
 	// Sign WITH the entitlement first (entitlement.sh order: codesign
 	// precedes Rez/SetFile), then capture it.
 	signWithEntitlement(t, bin)
-	ent := extractEntitlements(bin)
+	ent, err := extractEntitlements(bin)
+	if err != nil {
+		t.Fatalf("extractEntitlements: %v", err)
+	}
 	if ent == "" {
 		t.Skip("setup: entitlement did not stick after signing")
 	}
@@ -1492,4 +1504,173 @@ func otoolOutput(t *testing.T, path string) string {
 	cmd2 := exec.Command("otool", "-l", path)
 	out2, _ := cmd2.CombinedOutput()
 	return string(out) + "\n" + string(out2)
+}
+
+// --- gh#254: a failed entitlement read must not read as "none" ---
+//
+// extractEntitlements returned "" for both "this Mach-O carries no
+// entitlements" and "I could not read them", and
+// resignWithEntitlements takes "" to mean "sign without
+// --entitlements". So a read failure re-signed the binary with its
+// capabilities removed while the build stayed green — issue #27's
+// failure mode reached through the error path instead of the
+// ordering one. The tests below pin the two answers apart.
+
+// stubFailingCodesign puts a `codesign` that exits non-zero for
+// every invocation ahead of the real one on PATH, for the rest of
+// the test. It is how the harmful case is staged: a Mach-O that
+// genuinely carries entitlements, whose extraction fails anyway.
+//
+// The real failures behind gh#254 are a malformed Mach-O, a
+// codesign erroring for an unrelated reason, and the --xml retry
+// path failing twice; none can be provoked reliably on a runner,
+// and all three reach extractEntitlements the same way — as a
+// codesign that will not answer. Stubbing the tool reproduces that
+// exactly, and it is what forces the signed/unsigned distinction to
+// be drawn from the file rather than from codesign's exit status.
+func stubFailingCodesign(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "codesign")
+	script := "#!/bin/sh\necho 'stub: codesign unavailable' >&2\nexit 1\n"
+	if err := os.WriteFile(stub, []byte(script), 0o755); err != nil { //nolint:gosec // G306 — a stub that must be executable
+		t.Fatalf("write codesign stub: %v", err)
+	}
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+}
+
+// entitledBinary compiles a Mach-O, signs it with the HVF
+// entitlement, and returns its path. Skips when the toolchain
+// cannot produce the state the assertion depends on.
+func entitledBinary(t *testing.T, name string) string {
+	t.Helper()
+	bin := compileTinyBinary(t, t.TempDir(), name)
+	signWithEntitlement(t, bin)
+	if !binaryHasEntitlement(t, bin) {
+		t.Skipf("setup: entitlement did not stick after signing")
+	}
+	return bin
+}
+
+// TestExtractEntitlementsReportsNoneForUnsignedBinary pins the
+// benign half. An unsigned Mach-O is the ordinary "no entitlements"
+// answer — codesign --display exits non-zero on it, and re-signing
+// it without entitlements is exactly right — so it must not be an
+// error.
+func TestExtractEntitlementsReportsNoneForUnsignedBinary(t *testing.T) {
+	bin := compileTinyBinary(t, t.TempDir(), "plain")
+	if out, err := exec.Command("codesign", "--remove-signature", bin).
+		CombinedOutput(); err != nil {
+		t.Fatalf("remove-signature: %v\n%s", err, out)
+	}
+
+	ent, err := extractEntitlements(bin)
+	if err != nil {
+		t.Fatalf("extractEntitlements(unsigned) error = %v; an "+
+			"unsigned binary has no entitlements to lose, so this "+
+			"is the ordinary case and must not abort a build", err)
+	}
+	if ent != "" {
+		t.Errorf("extractEntitlements(unsigned) = %q, want \"\"", ent)
+	}
+}
+
+// TestExtractEntitlementsReportsNoneForSignedBinaryWithoutAny keeps
+// the third state distinct: signed, readable, and carrying nothing.
+func TestExtractEntitlementsReportsNoneForSignedBinaryWithoutAny(t *testing.T) {
+	bin := compileTinyBinary(t, t.TempDir(), "signed")
+	if out, err := exec.Command("codesign", "--force", "--sign", "-", bin).
+		CombinedOutput(); err != nil {
+		t.Skipf("codesign --sign - failed: %v\n%s", err, out)
+	}
+
+	ent, err := extractEntitlements(bin)
+	if err != nil {
+		t.Fatalf("extractEntitlements(signed, no entitlements) "+
+			"error = %v, want no error", err)
+	}
+	if ent != "" {
+		t.Errorf("extractEntitlements() = %q, want \"\"", ent)
+	}
+}
+
+// TestExtractEntitlementsErrorsWhenSignedBinaryCannotBeRead is the
+// bug. The binary carries an entitlement and the read fails; "" here
+// costs the entitlement on the next re-sign.
+func TestExtractEntitlementsErrorsWhenSignedBinaryCannotBeRead(t *testing.T) {
+	bin := entitledBinary(t, "qemu-like")
+	stubFailingCodesign(t)
+
+	ent, err := extractEntitlements(bin)
+	if err == nil {
+		t.Fatalf("extractEntitlements() = (%q, nil) for a signed "+
+			"binary whose entitlements could not be read; \"\" is "+
+			"what resignWithEntitlements reads as \"sign without "+
+			"--entitlements\", so this silently strips capabilities "+
+			"(gh#254)", ent)
+	}
+	if ent != "" {
+		t.Errorf("extractEntitlements() = %q alongside error %v; "+
+			"want an empty result with the error", ent, err)
+	}
+}
+
+// TestResignRefusesWhenEntitlementsCannotBeRead pins the caller at
+// fixup_darwin.go's resign(): a read it cannot trust must abort the
+// fixup, not re-sign with a guess. RelocateStaleRpaths propagates
+// the error, and its caller discards the prefix.
+func TestResignRefusesWhenEntitlementsCannotBeRead(t *testing.T) {
+	bin := entitledBinary(t, "qemu-like")
+	before, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubFailingCodesign(t)
+
+	if err := resign(bin); err == nil {
+		t.Fatal("resign() succeeded while the binary's entitlements " +
+			"could not be read; it must abort rather than sign " +
+			"without them (gh#254)")
+	}
+	after, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("resign() modified the binary before failing; the " +
+			"entitlement read happens first precisely so a refusal " +
+			"leaves the file as it was")
+	}
+}
+
+// TestAddDepRpathsRefusesWhenEntitlementsCannotBeRead pins the
+// fixup_darwin.go:316 caller — the one that captures entitlements
+// BEFORE any mutation so the strip-and-retry branch cannot lose
+// them (issue #27, point 2). A capture that failed there returned
+// "", and every re-sign downstream of it dropped the entitlement.
+func TestAddDepRpathsRefusesWhenEntitlementsCannotBeRead(t *testing.T) {
+	f := newUnversionedRefFixture(t)
+	signWithEntitlement(t, f.binPath)
+	if !binaryHasEntitlement(t, f.binPath) {
+		t.Skipf("setup: entitlement did not stick after signing")
+	}
+	before, err := os.ReadFile(f.binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubFailingCodesign(t)
+
+	if err := AddDepRpaths(f.pkgDir, []string{f.depDir}); err == nil {
+		t.Fatal("AddDepRpaths succeeded while the binary's " +
+			"entitlements could not be read; the capture guards " +
+			"every re-sign below it, so it must abort (gh#254)")
+	}
+	after, err := os.ReadFile(f.binPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("AddDepRpaths modified the binary before failing; " +
+			"the entitlement capture precedes every mutation")
+	}
 }

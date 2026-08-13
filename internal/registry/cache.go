@@ -76,15 +76,42 @@ func cacheKey(url string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// defaultCacheDir returns ~/.gale/cache/, or the empty string
-// if the home directory can't be determined. Matches the
-// directory used by internal/build for source tarballs.
-func defaultCacheDir() string {
+// defaultCacheDir returns the root for registry response caching:
+// ~/.gale/cache when $HOME is known — the same directory
+// internal/build uses for source tarballs — and a gale-owned
+// directory under os.TempDir() when it is not.
+//
+// It never answers "". cachedGet reads an empty CacheDir as "no
+// cache configured", a real and useful setting tests rely on, so a
+// $HOME lookup that failed and reported "" switched registry
+// caching off for the whole process with nothing saying why
+// (gh#254). $HOME is absent under cron, systemd units, launchd
+// agents, and `sudo` without -H.
+//
+// The fallback is a named subdirectory rather than os.TempDir()
+// itself, and it is created rather than merely named: entries are
+// keyed by the SHA256 of their URL, a fixed filename, and a fixed
+// name directly in a world-writable /tmp is a collision surface.
+// The uid suffix keeps two users on one machine out of each
+// other's cache. It matches internal/build's source-cache fallback
+// so both halves of ~/.gale/cache relocate together.
+//
+// The ~/.gale/cache branch is named, not created. Creating it is
+// writeCacheEntry's job, and a failure there is already documented
+// as a correctness-preserving degradation — the next fetch simply
+// re-downloads.
+func defaultCacheDir() (string, error) {
 	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
+	if err == nil {
+		return filepath.Join(home, ".gale", "cache"), nil
 	}
-	return filepath.Join(home, ".gale", "cache")
+	fallback := filepath.Join(os.TempDir(),
+		fmt.Sprintf("gale-cache-%d", os.Getuid()))
+	if mkErr := os.MkdirAll(fallback, 0o700); mkErr != nil {
+		return "", fmt.Errorf("no usable registry cache dir: %w; %w",
+			err, mkErr)
+	}
+	return fallback, nil
 }
 
 // cachedGet fetches url with an HTTP conditional GET, applying

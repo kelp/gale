@@ -80,7 +80,15 @@ func FarmClaimants(storeRoot, selfGaleDir string) []farm.Claimant {
 		return []farm.Claimant{{Label: "the project registry", Err: err}}
 	}
 
-	host := config.CurrentHost()
+	host, err := config.CurrentHost()
+	if err != nil {
+		// Every scope's host-scoped lock entries are selected by this
+		// name, so a claim set computed without it omits all of them
+		// — the silently shrunk union this guard exists to refuse.
+		return []farm.Claimant{
+			{Label: "this machine's host identity", Err: err},
+		}
+	}
 	platform := runtime.GOOS + "/" + runtime.GOARCH
 	var out []farm.Claimant
 	for _, s := range scopes {
