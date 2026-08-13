@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 
@@ -45,14 +46,11 @@ var generationsCmd = &cobra.Command{
 			return nil
 		}
 
+		cur := currentGenNumber(gens)
 		for _, g := range gens {
-			marker := " "
-			if g.Current {
-				marker = "*"
-			}
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"%s %-3d %d packages\n",
-				marker, g.Number, len(g.Packages))
+				genMarker(g, cur), g.Number, len(g.Packages))
 		}
 
 		return nil
@@ -222,6 +220,112 @@ var genRollbackCmd = &cobra.Command{
 	},
 }
 
+var genRemoveCmd = &cobra.Command{
+	Use:   "remove N [N...]",
+	Short: "Discard generations by number",
+	Args:  cobra.MinimumNArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := validateScopeFlags(generationsGlobal, generationsProject); err != nil {
+			return err
+		}
+		galeDir, err := resolveGenerationsGaleDir(
+			generationsGlobal, generationsProject,
+		)
+		if err != nil {
+			return err
+		}
+
+		out := newCmdOutput(cmd)
+
+		targets := make([]int, 0, len(args))
+		for _, arg := range args {
+			n, cErr := strconv.Atoi(arg)
+			if cErr != nil {
+				return fmt.Errorf(
+					"invalid generation number: %w", cErr,
+				)
+			}
+			if n <= 0 {
+				return errors.New(
+					"generation number must be positive",
+				)
+			}
+			targets = append(targets, n)
+		}
+
+		if dryRun {
+			for _, n := range targets {
+				out.Info(fmt.Sprintf(
+					"Would remove generation %d", n,
+				))
+			}
+			return nil
+		}
+
+		removed, err := generation.Remove(
+			galeDir, defaultStoreRoot(), targets,
+		)
+		// Report before returning: a removal that lands and then
+		// hits an error on a later target still destroyed a
+		// snapshot, and the user has to learn which.
+		if len(removed) > 0 {
+			out.Success(fmt.Sprintf(
+				"Removed %s %s",
+				pluralGeneration(len(removed)),
+				formatGenList(removed),
+			))
+		}
+		if err != nil {
+			return fmt.Errorf("removing generations: %w", err)
+		}
+		return nil
+	},
+}
+
+// pluralGeneration returns the noun matching a count of
+// generations.
+func pluralGeneration(n int) string {
+	if n == 1 {
+		return "generation"
+	}
+	return "generations"
+}
+
+// currentGenNumber returns the active generation's number from a
+// listing, or 0 when no generation is current. Reads the flag
+// generation.List already computed rather than re-reading the
+// current symlink.
+func currentGenNumber(gens []generation.GenInfo) int {
+	for _, g := range gens {
+		if g.Current {
+			return g.Number
+		}
+	}
+	return 0
+}
+
+// genMarker returns the one-column marker for a generation:
+// "*" for the active one, "+" for a generation above it, " "
+// for history below it.
+//
+// A generation above current exists only after a rollback, and
+// it is retained on purpose: the number permanently identifies
+// that snapshot (gh#189), so gc skips it and auto-prune's
+// numeric cutoff cannot reach it until current climbs back past
+// it. Rendering it like history below current hid the one state
+// a user has to see before naming a generation to
+// `gale generations remove` (gh#206).
+func genMarker(g generation.GenInfo, cur int) string {
+	switch {
+	case g.Current:
+		return "*"
+	case cur > 0 && g.Number > cur:
+		return "+"
+	default:
+		return " "
+	}
+}
+
 // resolveGenerationsGaleDir returns the .gale dir for the
 // generations commands. Like which, it does not require
 // gale.toml to exist — only the generation symlinks.
@@ -244,7 +348,9 @@ func init() {
 	addGenerationsScopeFlags(generationsCmd)
 	addGenerationsScopeFlags(genDiffCmd)
 	addGenerationsScopeFlags(genRollbackCmd)
+	addGenerationsScopeFlags(genRemoveCmd)
 	generationsCmd.AddCommand(genDiffCmd)
 	generationsCmd.AddCommand(genRollbackCmd)
+	generationsCmd.AddCommand(genRemoveCmd)
 	rootCmd.AddCommand(generationsCmd)
 }

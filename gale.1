@@ -310,7 +310,11 @@ Search for packages by name or description.
 .Ss Generation Management
 .Bl -tag -width Ds
 .It Cm generations Op Fl g | Fl p
-List all generations, marking the active one.
+List all generations.
+.Sy *
+marks the active one,
+.Sy +
+a generation above it left by a rollback.
 Scope flags select the project or global generation
 directory.
 .Pp
@@ -331,6 +335,15 @@ Atomic symlink swap, same as install/sync.
 .Pp
 .Dl $ gale generations rollback
 .Dl $ gale generations rollback 3
+.It Cm generations remove Ar N Op Ar N ... Op Fl g | Fl p
+Discard the named generations.
+Refuses the current generation.
+Removes nothing when any argument is not a generation.
+Generations above the current one, left by a rollback, are
+never removed automatically.
+.Pp
+.Dl $ gale generations remove 7
+.Dl $ gale generations remove 6 7 8
 .El
 .Ss Project Environment
 .Bl -tag -width Ds

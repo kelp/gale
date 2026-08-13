@@ -53,6 +53,22 @@
 
 ### Added
 
+- `gale generations remove N [N...]`: discard generations by
+  number. Written for the branch a rollback abandons — those
+  generations sit above `current`, so gc skips them and
+  automatic retention cannot reach them until `current` climbs
+  back past the cutoff (gh#206). The command refuses the
+  current generation, refuses a number that is not a
+  generation directory, and validates every number before
+  removing any, so a batch naming `current` removes nothing.
+  It takes the same generation lock as a rebuild.
+
+  `gale generations` now marks those generations with `+`,
+  next to `*` for the active one; they used to render exactly
+  like history below `current`. `gale gc -n` reports how many
+  it is retaining. Neither `gc` nor retention changed: nothing
+  sweeps generations above `current` on its own.
+
 - `gale doctor` now fails on macOS when an installed binary
   references `@rpath/libX` that none of its own rpath entries
   resolves (#215). A GHCR prebuilt from a gale that predated

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -749,6 +750,83 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 				return fmt.Errorf(
 					"remove gen %d: %w", n, err,
 				)
+			}
+			removed = append(removed, n)
+		}
+		return nil
+	})
+	return removed, err
+}
+
+// Remove deletes the generation directories the caller names and
+// returns the removed numbers in ascending order. Duplicated
+// targets are removed once.
+//
+// The verb PruneOldGenerations is not: retention reclaims history
+// below current on a numeric cutoff, and after a rollback the
+// generations ABOVE current are unreachable to it by design — the
+// number permanently identifies that snapshot (gh#189), so they
+// survive until current climbs back past the cutoff. A user who
+// abandoned that branch on purpose names it here instead (gh#206).
+// Nothing sweeps it automatically: an unnamed set is exactly what
+// makes a destructive default unsafe.
+//
+// Guards, in order:
+//
+//   - the store-rooted generation lock, the same one Build,
+//     Rollback and PruneOldGenerations take. Build holds it across
+//     its whole create-then-swap span, so no half-built generation
+//     is ever visible here and refusing current needs no companion
+//     in-flight guard.
+//   - current is read INSIDE the lock, so the snapshot agrees with
+//     the directory listing (the reason cleanOldGenerations reads
+//     it there too), and removing it is refused: a dangling current
+//     empties PATH.
+//   - a target absent from genNumbers is refused as nonexistent.
+//     genNumbers skips entries that are not directories, so a stray
+//     regular file at gen/N is reported, never deleted.
+//
+// Every target is validated before the first removal, so a batch
+// naming current removes nothing at all.
+func Remove(galeDir, storeRoot string, targets []int) ([]int, error) {
+	if len(targets) == 0 {
+		return nil, nil
+	}
+	lockPath := filepath.Join(filepath.Dir(storeRoot), "generation.lock")
+	var removed []int
+	err := filelock.With(lockPath, func() error {
+		curGen, err := Current(galeDir)
+		if err != nil {
+			return fmt.Errorf("read current: %w", err)
+		}
+		nums, err := genNumbers(galeDir)
+		if err != nil {
+			return err
+		}
+
+		wanted := make([]int, 0, len(targets))
+		for _, n := range targets {
+			if curGen > 0 && n == curGen {
+				return fmt.Errorf(
+					"refusing to remove generation %d: "+
+						"it is the current generation", n,
+				)
+			}
+			if !slices.Contains(nums, n) {
+				return fmt.Errorf("generation %d does not exist", n)
+			}
+			if !slices.Contains(wanted, n) {
+				wanted = append(wanted, n)
+			}
+		}
+		slices.Sort(wanted)
+
+		genRoot := filepath.Join(galeDir, "gen")
+		for _, n := range wanted {
+			if err := os.RemoveAll(
+				filepath.Join(genRoot, strconv.Itoa(n)),
+			); err != nil {
+				return fmt.Errorf("remove gen %d: %w", n, err)
 			}
 			removed = append(removed, n)
 		}
