@@ -63,6 +63,7 @@ not need multiple package managers.
 ~/.gale/
   gale.toml       Package manifest (source of truth)
   config.toml     Settings (registry URL, API keys)
+  sync-state.toml Last sync's verdict (see Environment Activation)
   current → gen/2 Symlink to active generation
   gen/            Generation snapshots
     2/bin/        Symlinks into pkg/
@@ -72,6 +73,10 @@ not need multiple package managers.
   README.md       Auto-generated, explains this layout
 ```
 
+A project's `.gale/` has the same shape, so `sync-state.toml` is
+per-scope by construction. It is derived state: deleting it costs
+one extra sync, never correctness.
+
 ## Terminology
 
 **Store** (`pkg/`): where package contents live. Each
@@ -80,6 +85,17 @@ entry is never modified — only deleted when the package
 is removed. Inspired by the Nix store, but simpler:
 no content-addressing, just `name/version-revision/`
 (e.g. `jq/1.8.1-2/`).
+
+A committed store directory is byte-stable for as long
+as any generation links it, and `gale install --path`
+enforces that rather than assuming it: a local build's
+version carries a digest of the uncommitted working
+tree, so a changed tree asks for a different directory,
+and a replace that would land on a referenced one is
+refused. The identity is content-**keyed**, not
+content-**addressed** — the digest distinguishes one
+tree from another on one machine; it does not address
+the artifact globally the way a Nix hash does.
 
 **Generation** (`gen/`): a numbered snapshot of symlinks
 pointing into the store. "Gen" is short for generation.
@@ -154,6 +170,59 @@ to PATH. When you leave, direnv restores PATH.
 
 **CI / scripts**: `eval "$(gale env)"` prints the
 right `export PATH=...` for the current directory.
+
+### Deciding whether to sync
+
+The hook runs `gale sync --if-needed`, and gale decides.
+It used to be a shell mtime comparison against
+`.gale/current`, which could not work: a partial sync
+rebuilds the generation on purpose so the packages that
+did install stay usable (issue #20), and the swap gives
+`current` a fresh mtime. From the next activation on the
+comparison was false forever, so the failed packages were
+never retried and nothing was printed (gh#186).
+
+Sync therefore records its own verdict in
+`sync-state.toml`: `complete` or `incomplete`, the
+packages that failed, and a fingerprint of the inputs —
+the manifest's bytes, the lock's bytes or its absence,
+the host, and the platform. Content, not mtimes, so a
+`git checkout` does not force a resync.
+
+`--if-needed` reads it back:
+
+| State | Result |
+|---|---|
+| No stamp, or an unreadable one | sync |
+| Fingerprint differs | sync |
+| `incomplete`, within the retry interval | one warning naming the failed packages, exit 0 |
+| No active generation | sync |
+| `complete`, fingerprint matches | silent no-op |
+| `incomplete`, interval elapsed | sync |
+
+The stamp is consulted **before** the generation, which
+matters for the case that hurts most: a locked sync that
+fails leaves the generation untouched (§8), so a project
+whose first sync failed has no `current` at all. Asking
+for the generation first would run a full failing sync on
+every `cd` — a minutes-long stall for a source build, and
+worse than the stale environment the stamp exists to
+prevent. Sync's recorder is deferred from the command,
+not from the rebuild, so the stamp is written whether or
+not a generation was ever built.
+
+The interval therefore bounds the work a broken package
+can cause without exception: one attempt per interval per
+fingerprint, and one file read plus one warning in
+between. Editing gale.toml or gale.lock moves the
+fingerprint and reaches the packages immediately, and a
+user-typed `gale sync` ignores the stamp entirely — which
+the warning says, because it is the only place it is
+ever said.
+
+`gale shell` and `gale run` consult the same stamp. Their
+own gate asks whether the lock still describes the
+manifest, which a partial install failure leaves true.
 
 We chose direnv over custom shell hooks because:
 - direnv is battle-tested and handles PATH restoration

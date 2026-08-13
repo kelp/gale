@@ -56,6 +56,26 @@ var linuxVersioned = regexp.MustCompile(
 	`^lib[A-Za-z0-9_+.\-]+\.so\.[0-9]+(\.[0-9]+)*$`,
 )
 
+// CanonicalDir resolves a store directory's spelling without
+// touching its version: the one spelling every farm and generation
+// reader compares against, so a directory reached through macOS
+// /var and one reached through /private/var are the same key.
+//
+// EvalSymlinks fails on a path that does not exist, and the raw
+// spelling is the right answer then: the directory is absent under
+// either spelling, and the caller's absence branch handles it.
+//
+// It lives here because the guard and its claim builders must agree
+// on it. Three copies of this rule existed and every consumer of a
+// claim had to re-derive which one it was holding; one exported
+// spelling is what makes a claim's keys comparable across packages.
+func CanonicalDir(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return dir
+}
+
 // DirFromStoreRoot returns the shared farm directory for a store
 // root: <parent of storeRoot>/lib, which is ~/.gale/lib.
 //
@@ -491,32 +511,70 @@ func Depopulate(storeDir, farmDir string) error {
 	return nil
 }
 
-// Rebuild wipes farmDir and repopulates it from the given
-// store dirs. Callers pass the resolved store dir for every
-// package in the current generation; older revisions still
-// on disk are ignored because they're not on PATH.
-func Rebuild(activeStoreDirs []string, farmDir string) error {
-	if err := os.RemoveAll(farmDir); err != nil {
-		return fmt.Errorf("clear farm dir: %w", err)
-	}
+// StagingPrefix names the directories Stage builds farm images in.
+// Exported for `gale gc`, which reclaims one left by a killed
+// process: they sit beside the farm in ~/.gale, where the stale
+// current-new.<pid> swap links are already swept from.
+const StagingPrefix = "lib.staging."
+
+// Staged is a complete farm image built beside the farm, resolvable
+// by nothing until Publish moves it in.
+//
+// It exists because the fallible half of a rebuild has to happen
+// before its caller's commit point and the visible half after it.
+// The generation rebuild swaps the current symlink in between, and
+// that swap is what it cannot undo (gh#184).
+type Staged struct {
+	dir     string
+	farmDir string
+	// names is the image: every basename staged, read once, so
+	// publication never re-enumerates a directory it is mutating.
+	names []string
+}
+
+// Stage builds the farm image for the given store dirs without
+// publishing any of it. Callers pass the resolved store dir for
+// every package in the current generation plus every other scope's
+// claim; older revisions still on disk are ignored because they're
+// not on PATH.
+//
+// Everything that can realistically fail happens here: reading each
+// store dir's lib, resolving the closure's unversioned aliases,
+// creating the links, and proving the farm directory itself is
+// usable. A caller that has not reached its commit point can
+// therefore abandon the whole operation for free.
+//
+// Errors are COLLECTED rather than returned at the first failure,
+// which costs nothing now that nothing is published either way: the
+// caller learns about every unreadable package in one run instead of
+// one per re-run.
+//
+// They are returned, not merely logged (design revision 6, section
+// 6). An unpopulated shared farm means binaries cannot load their
+// dylibs, and a line on stderr inside a direnv hook is invisible.
+func Stage(activeStoreDirs []string, farmDir string) (*Staged, error) {
+	// The farm directory is proved usable HERE, while a refusal is
+	// still free. It used to be wiped and recreated, which quietly
+	// replaced whatever occupied the path — a stray file, a symlink
+	// pointing elsewhere — and reported success.
 	if err := os.MkdirAll(farmDir, 0o755); err != nil {
-		return fmt.Errorf("create farm dir: %w", err)
+		return nil, fmt.Errorf("create farm dir: %w", err)
+	}
+	s := &Staged{dir: stagingPath(farmDir), farmDir: farmDir}
+	// A leftover of this PID's own, from a run killed between
+	// staging and publication. The same reasoning swapCurrentSymlink
+	// applies to current-new.<pid>: another process's staging dir is
+	// its business, this one's is ours.
+	if err := os.RemoveAll(s.dir); err != nil {
+		return nil, fmt.Errorf("clear stale farm staging dir: %w", err)
+	}
+	if err := os.MkdirAll(s.dir, 0o755); err != nil {
+		return nil, fmt.Errorf("create farm staging dir: %w", err)
 	}
 
-	// Progressive, not transactional: one package's failure must
-	// not abandon the rest of the batch, so every store dir is
-	// attempted and the failures are collected.
-	//
-	// They are RETURNED, not merely logged (design revision 6,
-	// section 6). The generation rebuild calls this after the
-	// current-symlink swap, which is the activation commit point, so
-	// a failure here cannot roll the generation back — but it must
-	// still reach the caller. An unpopulated shared farm means
-	// binaries cannot load their dylibs, and a line on stderr inside
-	// a direnv hook is invisible.
 	var errs []error
 	for _, storeDir := range activeStoreDirs {
-		if err := Populate(storeDir, farmDir); err != nil {
+		if err := Populate(storeDir, s.dir); err != nil {
 			errs = append(errs, fmt.Errorf("populate %s: %w", storeDir, err))
 		}
 	}
@@ -525,10 +583,131 @@ func Rebuild(activeStoreDirs []string, farmDir string) error {
 	// second provider exists, which Populate cannot see. Doing
 	// it here, once, over the whole set is what makes the drop
 	// stable rather than provisional (gh#199).
-	if err := linkAliases(activeStoreDirs, farmDir); err != nil {
+	if err := linkAliases(activeStoreDirs, s.dir); err != nil {
 		errs = append(errs, err)
 	}
-	return errors.Join(errs...)
+	if err := errors.Join(errs...); err != nil {
+		s.Discard()
+		return nil, err
+	}
+
+	entries, err := os.ReadDir(s.dir)
+	if err != nil {
+		s.Discard()
+		return nil, fmt.Errorf("read staged farm image: %w", err)
+	}
+	for _, e := range entries {
+		s.names = append(s.names, e.Name())
+	}
+	return s, nil
+}
+
+// Publish makes the staged image the farm.
+//
+// Per name, atomically: an entry the image agrees with is left
+// exactly as it is, and any other is renamed over within the one
+// directory. Nothing is ever removed first, so no soname is absent
+// at any instant it was present before — which is the property a
+// running process's late dlopen depends on, and the one a
+// wipe-and-recreate could not offer.
+//
+// Not atomic ACROSS names. A dlopen of two sonames landing mid
+// publication can see one old and one new, which the farm's own
+// premise makes safe: the entries it carries are SONAME-compatible
+// by construction, and the alternative this replaces had both
+// absent.
+//
+// Fail fast, unlike Stage: a rename failing within a directory the
+// process just wrote means the filesystem is not cooperating, and
+// continuing would only widen the mixed window.
+//
+// The farm directory is deliberately not fsync'd afterwards, exactly
+// as the generation swap does not fsync ~/.gale. The farm is
+// derivable from the store and a rebuild reconstructs it, so
+// durability across a power loss buys nothing that `gale sync` does
+// not already give.
+func (s *Staged) Publish() error {
+	staged := make(map[string]bool, len(s.names))
+	for _, name := range s.names {
+		staged[name] = true
+		if err := s.publishOne(name); err != nil {
+			return err
+		}
+	}
+	if err := s.pruneUnstaged(staged); err != nil {
+		return err
+	}
+	s.Discard()
+	return nil
+}
+
+// publishOne moves one staged entry into the farm, leaving an
+// already-correct entry untouched.
+func (s *Staged) publishOne(name string) error {
+	from := filepath.Join(s.dir, name)
+	want, err := os.Readlink(from)
+	if err != nil {
+		return fmt.Errorf("read staged farm entry %s: %w", name, err)
+	}
+	to := filepath.Join(s.farmDir, name)
+	if have, rerr := os.Readlink(to); rerr == nil && have == want {
+		return nil
+	}
+	if err := os.Rename(from, to); err != nil {
+		return fmt.Errorf("publish farm entry %s: %w", name, err)
+	}
+	return nil
+}
+
+// pruneUnstaged drops the farm entries the image does not carry.
+// The image is the whole state being established, so an entry
+// outside it is one the closure no longer provides.
+func (s *Staged) pruneUnstaged(staged map[string]bool) error {
+	entries, err := os.ReadDir(s.farmDir)
+	if err != nil {
+		return fmt.Errorf("read farm dir: %w", err)
+	}
+	for _, e := range entries {
+		if staged[e.Name()] {
+			continue
+		}
+		if err := os.Remove(filepath.Join(s.farmDir, e.Name())); err != nil {
+			return fmt.Errorf("remove superseded farm entry %s: %w",
+				e.Name(), err)
+		}
+	}
+	return nil
+}
+
+// Discard removes the staged image, published or not. Best effort:
+// it runs on paths that already have an error to report, and a
+// surviving staging dir is inert — nothing resolves through it, and
+// `gale gc` sweeps it.
+func (s *Staged) Discard() {
+	_ = os.RemoveAll(s.dir)
+}
+
+// stagingPath is the directory an image is staged in: a sibling of
+// the farm, so the publishing renames stay within one filesystem by
+// construction, and PID-scoped exactly as swapCurrentSymlink scopes
+// current-new.<pid>.
+func stagingPath(farmDir string) string {
+	return filepath.Join(
+		filepath.Dir(farmDir),
+		fmt.Sprintf("%s%d", StagingPrefix, os.Getpid()),
+	)
+}
+
+// Rebuild rebuilds farmDir from the given store dirs, for callers
+// with no commit point of their own to order against: Stage and
+// Publish back to back.
+func Rebuild(activeStoreDirs []string, farmDir string) error {
+	staged, err := Stage(activeStoreDirs, farmDir)
+	if err != nil {
+		return err
+	}
+	defer staged.Discard()
+	return staged.Publish()
 }
 
 // CheckDrift reports farm entries that don't match the

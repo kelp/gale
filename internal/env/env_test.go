@@ -36,12 +36,38 @@ func TestDirenvHookWatchesManifest(t *testing.T) {
 	}
 }
 
-func TestDirenvHookSkipsSyncWhenFresh(t *testing.T) {
+// TestDirenvHook_DelegatesSyncFreshnessToGale replaces
+// TestDirenvHookSkipsSyncWhenFresh, which pinned the shell-level
+// mtime gate `[ "$manifest" -nt "$gale_dir/current" ]`.
+//
+// That gate is the gh#186 defect, not a property worth keeping. A
+// partial sync rebuilds the generation (issue #20) and the swap gives
+// `current` a now-mtime, so the comparison is false forever and the
+// failed packages are never retried. The shell cannot tell a
+// completed sync from an abandoned one; only gale can, so the
+// decision moved into `gale sync --if-needed`, where
+// cmd/gale/syncstate_test.go tests it.
+//
+// What the hook still owes the user is unchanged and asserted here:
+// it calls the freshness-aware form, and it no longer decides
+// freshness itself.
+func TestDirenvHook_DelegatesSyncFreshnessToGale(t *testing.T) {
 	hook := DirenvHook()
-	// The freshness check guards `gale sync` behind a mtime
-	// comparison so activation is a no-op when nothing changed.
-	if !strings.Contains(hook, "-nt") {
-		t.Errorf("direnv hook missing '-nt' freshness check: %q", hook)
+
+	if !strings.Contains(hook, "gale sync --if-needed") {
+		t.Errorf("direnv hook does not call 'gale sync --if-needed': %q",
+			hook)
+	}
+	// An unguarded `gale sync` would resolve recipes on every cd.
+	if strings.Contains(hook, "gale sync\n") ||
+		strings.Contains(hook, "gale sync |") ||
+		strings.Contains(hook, "gale sync ||") {
+		t.Errorf("direnv hook still calls a bare 'gale sync': %q", hook)
+	}
+	if strings.Contains(hook, "-nt") {
+		t.Errorf("direnv hook still compares mtimes to decide "+
+			"freshness; a partial sync's rebuilt generation defeats "+
+			"that comparison (gh#186): %q", hook)
 	}
 }
 
@@ -73,20 +99,15 @@ func TestDirenvHook_RunsGateUnconditionally(t *testing.T) {
 			"checks them: %q", hook)
 	}
 
-	// Unconditional means the gate is not nested in the mtime
-	// guard's `if`. The guard opens with `if [ ! -L` and closes
-	// with the next `fi`, so a gate between them is conditional.
-	guard := strings.Index(hook, "if [ ! -L")
-	if guard < 0 {
-		t.Fatal("direnv hook has no mtime guard to compare against")
-	}
-	guardEnd := strings.Index(hook[guard:], "\n  fi\n")
-	if guardEnd < 0 {
-		t.Fatal("direnv hook's mtime guard has no closing fi")
-	}
-	if gate > guard && gate < guard+guardEnd {
-		t.Errorf("activation gate is nested inside the mtime "+
-			"guard, so a gale upgrade skips it: %q", hook)
+	// Unconditional means the gate sits at the top level of
+	// use_gale, not inside any `if`. It used to be phrased as "not
+	// between the mtime guard's `if [ ! -L` and its `fi`"; the mtime
+	// guard is gone (gh#186), so the property is now checked
+	// directly: every `if` opened before the gate must already be
+	// closed by a `fi`.
+	if depth := shellIfDepthAt(hook, gate); depth != 0 {
+		t.Errorf("activation gate is nested %d level(s) inside an "+
+			"if, so some activations skip it: %q", depth, hook)
 	}
 
 	// A failed gate must stop activation rather than warn.
@@ -94,6 +115,27 @@ func TestDirenvHook_RunsGateUnconditionally(t *testing.T) {
 		t.Errorf("direnv hook does not refuse activation when the "+
 			"gate fails: %q", hook)
 	}
+}
+
+// shellIfDepthAt counts how many `if` blocks are still open at byte
+// offset idx. Zero means the statement there runs on every call.
+// Comment lines are skipped: the hook's prose names both `if` and
+// the commands it describes.
+func shellIfDepthAt(hook string, idx int) int {
+	depth := 0
+	for _, line := range strings.Split(hook[:idx], "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		switch {
+		case strings.HasPrefix(trimmed, "if "):
+			depth++
+		case trimmed == "fi":
+			depth--
+		}
+	}
+	return depth
 }
 
 // TestDirenvHook_NeverSuppressesStderr pins design §12's

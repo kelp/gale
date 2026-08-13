@@ -88,6 +88,62 @@ test-unprivileged:
       -exec "env HOME=$home setpriv --reuid=65534 --regid=65534 --clear-groups" \
       ./...
 
+# macOS reaches every temp dir through a symlink: $TMPDIR lives
+# under /var and /var is a symlink to private/var, so t.TempDir()
+# hands back a spelling EvalSymlinks changes. A test comparing a
+# raw temp path against one production canonicalized passes here
+# and fails only on the macos runner (gh#227). `just check-darwin`
+# cannot catch it: it compiles darwin code, it never runs it.
+#
+# The link sits at / pointing to /private/<name>, which is macOS's
+# shape exactly — the raw path is a SUBSTRING of the resolved one,
+# so `strings.Contains(err, rawDir)` assertions pass here as they
+# do on macOS. A sibling link (tmp -> tmp.real) breaks those too
+# and over-reports 5 tests that macOS is fine with. That substring
+# property is why the link has to be at the root, and why the
+# target needs write access there.
+#
+# The baseline is NOT empty — read a failure against
+# docs/dev/agent-environment.md before treating it as yours.
+
+# Run the suite with a macOS-shaped symlinked TMPDIR
+test-symlinked-tmp:
+    #!/usr/bin/env bash
+    set -uo pipefail
+    if [ "$(uname -s)" = "Darwin" ]; then
+      echo "macOS already runs every test this way (\$TMPDIR is under /var)"
+      exec go test -count=1 ./...
+    fi
+    name="gale-symtmp-$$"
+    link="/$name"
+    real="/private/$name"
+    made_private=""
+    [ -d /private ] || made_private=yes
+    if ! mkdir -p "$real" 2>/dev/null; then
+      echo "test-symlinked-tmp: cannot create $real — / must be writable" >&2
+      echo "  (the raw path must be a substring of the resolved one, which" >&2
+      echo "   only holds when the symlink is a root-level component)" >&2
+      exit 1
+    fi
+    cleanup() {
+      rm -rf "$link" "$real"
+      [ -n "$made_private" ] && rmdir /private 2>/dev/null
+      return 0
+    }
+    trap cleanup EXIT INT TERM
+    if ! ln -s "private/$name" "$link"; then
+      echo "test-symlinked-tmp: cannot create the symlink $link" >&2
+      exit 1
+    fi
+    TMPDIR="$link" go test -count=1 ./...
+    status=$?
+    if [ "$status" -ne 0 ]; then
+      echo "test-symlinked-tmp: FAILED — compare against origin/main's" >&2
+      echo "  baseline before reading these as yours; see" >&2
+      echo "  docs/dev/agent-environment.md" >&2
+    fi
+    exit $status
+
 # internal/build's fixup_darwin.go, fixup_uuid.go and
 # internal/inspect's binary_darwin.go sit behind //go:build
 # darwin, so on Linux `go build`, `go vet` and golangci-lint never

@@ -185,6 +185,158 @@ func TestFormatDevVersion(t *testing.T) {
 	}
 }
 
+// TestDevVersionWithDirt: a clean tree spells its version exactly
+// as it always has, so tagged builds do not churn the store, and a
+// dirty tree carries the digest in the SEMVER BUILD-METADATA
+// segment.
+//
+// Never a "-<hex>" suffix. lockfile.VersionMatches,
+// version.SplitRevision and store.HasNumericRevisionSuffix all read
+// a trailing "-<digits>" as a Debian revision, so an all-digit
+// digest after a dash would parse as revision 12345678.
+func TestDevVersionWithDirt(t *testing.T) {
+	tests := []struct {
+		name     string
+		describe string
+		dirt     string
+		want     string
+	}{
+		{
+			"clean tree on tag",
+			"v0.2.0",
+			"",
+			"0.2.0",
+		},
+		{
+			"clean tree ahead of tag",
+			"v0.2.0-7-g5395b8f",
+			"",
+			"0.2.0-dev.7+5395b8f",
+		},
+		{
+			"clean tree with no tags",
+			"5395b8f",
+			"",
+			"0.0.0-dev+5395b8f",
+		},
+		{
+			"dirty tree on tag gains a metadata segment",
+			"v0.2.0",
+			"abcdef123456",
+			"0.2.0+dirty.abcdef123456",
+		},
+		{
+			"dirty tree ahead of tag extends the segment",
+			"v0.2.0-7-g5395b8f",
+			"abcdef123456",
+			"0.2.0-dev.7+5395b8f.dirty.abcdef123456",
+		},
+		{
+			"dirty tree with no tags extends the segment",
+			"5395b8f",
+			"abcdef123456",
+			"0.0.0-dev+5395b8f.dirty.abcdef123456",
+		},
+		{
+			"dirty pre-release tag gains a metadata segment",
+			"v1.0.0-rc1",
+			"abcdef123456",
+			"1.0.0-rc1+dirty.abcdef123456",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := devVersionWithDirt(tt.describe, tt.dirt)
+			if got != tt.want {
+				t.Errorf("devVersionWithDirt(%q, %q) = %q, want %q",
+					tt.describe, tt.dirt, got, tt.want)
+			}
+			if store.HasNumericRevisionSuffix(got) {
+				t.Errorf("%q ends in a numeric suffix — the store "+
+					"and the lockfile would read it as a revision", got)
+			}
+			if !store.SafeComponent(got) {
+				t.Errorf("%q is not a usable store path component", got)
+			}
+		})
+	}
+}
+
+// TestGitDevVersionDistinguishesDirtyTrees: gh#183's root cause.
+// `git describe --tags --always` says nothing about the working
+// tree, so every dirty build of a tagged checkout claimed the same
+// store identity and the newest one silently replaced the rest.
+func TestGitDevVersionDistinguishesDirtyTrees(t *testing.T) {
+	src := t.TempDir()
+	for _, args := range [][]string{
+		{"init"},
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"config", "commit.gpgsign", "false"},
+		{"commit", "--allow-empty", "-m", "init"},
+		{"tag", "v1.0.0"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = src
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, string(out), err)
+		}
+	}
+
+	clean, err := gitDevVersion(src)
+	if err != nil {
+		t.Fatalf("gitDevVersion on a clean tree: %v", err)
+	}
+	if clean != "1.0.0" {
+		t.Fatalf("clean tree = %q, want %q — a tagged build must "+
+			"keep spelling its version the way it always has",
+			clean, "1.0.0")
+	}
+
+	aPath := filepath.Join(src, "a.txt")
+	if err := os.WriteFile(aPath, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	first, err := gitDevVersion(src)
+	if err != nil {
+		t.Fatalf("gitDevVersion on the first dirty tree: %v", err)
+	}
+
+	if err := os.WriteFile(aPath, []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	second, err := gitDevVersion(src)
+	if err != nil {
+		t.Fatalf("gitDevVersion on the second dirty tree: %v", err)
+	}
+
+	if first == clean {
+		t.Errorf("dirty tree = %q, same as the clean tree: an "+
+			"uncommitted change would overwrite the tagged build",
+			first)
+	}
+	if second == clean {
+		t.Errorf("dirty tree = %q, same as the clean tree", second)
+	}
+	if first == second {
+		t.Errorf("both dirty trees = %q: two different working "+
+			"trees share one store identity", first)
+	}
+
+	// Deterministic: the same tree must not mint a new identity on
+	// every invocation, or a rebuild loop would grow the store by a
+	// directory per run.
+	again, err := gitDevVersion(src)
+	if err != nil {
+		t.Fatalf("gitDevVersion repeated: %v", err)
+	}
+	if again != second {
+		t.Errorf("same tree gave %q then %q — the identity must be "+
+			"a function of the content", second, again)
+	}
+}
+
 func TestRecipesFlagReplacesLocal(t *testing.T) {
 	cmds := map[string]*cobra.Command{
 		"install":  installCmd,

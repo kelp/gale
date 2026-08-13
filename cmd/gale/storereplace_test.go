@@ -287,16 +287,7 @@ func TestCheckReplaceableFailsClosedOnAnIncompleteLock(t *testing.T) {
 // elsewhere. Over-refusing beats destroying bytes another scope names.
 func writeLegacyScopeLock(t *testing.T, path, version, sha string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := lockfile.Write(path, &lockfile.LockFile{
-		Packages: map[string]lockfile.LockedPackage{
-			testPkg: {Version: version, SHA256: sha},
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
+	writeLegacyLock(t, path, testPkg, version, sha)
 }
 
 // A legacy lock names bytes, and a replacement that disagrees with

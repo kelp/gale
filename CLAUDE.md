@@ -164,7 +164,12 @@ or resolves scope without a context (`gale env`).
   without the flag.
 - macOS `/var` is a symlink to `/private/var`. Tests
   comparing paths must `filepath.EvalSymlinks` both
-  sides.
+  sides. `just check-darwin` cannot catch a violation —
+  it compiles darwin code, it never runs it.
+  `just test-symlinked-tmp` reproduces the spelling on
+  Linux; its baseline is one known failure, so use it
+  comparatively against `origin/main`
+  ([`docs/dev/agent-environment.md`](docs/dev/agent-environment.md)).
 - Prefer static linking for CLI tools to avoid dylib
   path issues — `--disable-shared --enable-all-static`
   for autotools projects like jq.

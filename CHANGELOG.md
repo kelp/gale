@@ -2,13 +2,146 @@
 
 ## Unreleased
 
+### Changed (breaking)
+
+- **`gale.lock` is now enforced, and a lockfile written by an
+  earlier gale is refused (#182).** Every project and global
+  scope carrying a pre-enforcement `gale.lock` fails on the
+  first run after upgrading — including inside direnv. The
+  error names the remedy: `gale lock --refresh` in that scope,
+  or `gale migrate` to refetch and replace every unprovenanced
+  binary-method store directory in one pass. `gale doctor`
+  reports the state in either scope. Treating a legacy lock as
+  absent was considered and rejected: it is a silent downgrade
+  of a security control.
+
+  What the new schema changes for anyone who has been reading
+  `gale.lock`: it is versioned (`version = 1`), records the
+  whole closure rather than declared packages alone, keys
+  package nodes `name@version-revision`, carries platform as an
+  artifact dimension, and carries a mandatory
+  `[packages."!gale-lock-v1"]` guard entry. The guard is what
+  stops an already-shipped gale from rewriting a v1 file in its
+  own flat schema; it turns silent data loss into a loud
+  failure rather than removing it, so **upgrade gale everywhere
+  before committing a v1 lock.**
+
+  `gale sync` no longer writes `gale.lock`. It installs the
+  closure the lock names and fails if it cannot, which is what
+  makes the lock a control instead of a record — previously
+  sync rewrote the lock to match whatever it had installed, so
+  a changed upstream artifact was recorded rather than refused.
+  The writers are `install`, `update`, `remove` and `lock`.
+  `gale sync --no-frozen` ignores the lock and installs
+  unenforced, with a warning.
+
+  Failures now carry an exit code by class: 3 for a lock
+  integrity violation, 4 for a lock that is present and cannot
+  be modeled, 5 for activation drift. gale used only exit 1
+  before, so the taxonomy is additive. Full schema, enforcement
+  model and remedies: [`docs/lockfile.md`](docs/lockfile.md);
+  the exit-code table for pipelines is in
+  [`docs/ci-cd.md`](docs/ci-cd.md).
+
+- `gale gc` and `gale doctor --repair` take their versions from
+  the scope's lockfile, and refuse the rebuild outright when
+  that lockfile is present and cannot be read (gh#197). Both
+  previously selected versions from the recipe and the store
+  alone. `--force` rebuilds without the lock. Unlocked scopes
+  are unchanged. The defect this closes is under **Fixed**
+  below.
+
 ### Added
+
+- `gale sync --if-needed`: sync only when the last sync did not
+  complete on the current `gale.toml` and `gale.lock`. The
+  direnv hook uses it; a sync run by hand ignores it.
+
+- `[bin]` in gale.toml: name the package that wins an
+  executable-name collision, for example `npx = "corepack"`.
+  Every other provider's copy of that basename is left out of
+  the generation. A winner that is not in `[packages]` is an
+  error, not a silent no-op. `gale remove` prunes an entry
+  whose winner it removes, in the same write, so the manifest
+  still loads.
+
+- `gale which` reports `also provided by: <package>` when
+  another installed package ships the same binary. A shadowed
+  provider was previously invisible.
 
 - `gale gc --force`: sweep even when a project's config or
   generation cannot be read. The escape hatch for the refusal
   below, for a mount that is gone for good.
 
+- `gale doctor --repair --force`: repair a scope whose lockfile
+  is present and cannot be read. Repair refuses such a scope
+  otherwise, and a machine with an unrepairable lock is exactly
+  where repair gets run.
+
+- `gale doctor` reports three states that block a rebuild and
+  had no diagnosis. A lockfile in a schema this build cannot
+  use, in either scope, with `gale lock --refresh` as the
+  remedy. A store directory whose `.gale-deps.toml` cannot be
+  read strictly, which fails the farm claim walk machine-wide.
+  And two declared packages shipping the same executable name
+  with no `[bin]` winner, reported through the same arbiter the
+  generation build decides by, so doctor and the rebuild cannot
+  disagree about which names collide.
+
+- `gale doctor --repair` clears an unreadable `.gale-deps.toml`
+  by deleting that store directory and every package directory
+  on a dependency path to it, then rebuilding the generations.
+  Nothing less works: deleting the metadata file alone shrinks
+  the closure silently, and an install over a surviving
+  directory returns cached without descending. Run `gale sync`
+  afterwards to reinstall what was removed.
+
 ### Fixed
+
+- direnv no longer activates a partially synced environment
+  forever without saying so (gh#186). A sync that could not
+  install every package still rebuilds the generation so the
+  rest stays usable (issue #20), and that rebuild's fresh
+  `current` symlink defeated the hook's
+  `[ gale.toml -nt .gale/current ]` gate: every later activation
+  skipped sync entirely, and the missing package never came back
+  short of editing `gale.toml`. Sync now records its verdict in
+  `<galeDir>/sync-state.toml` — complete or incomplete, the
+  packages that failed, and a content fingerprint of the
+  manifest, the lock, the host and the platform — and the hook
+  calls `gale sync --if-needed`, which reads it. A completed
+  sync stays a silent no-op. An incomplete one is retried at
+  most once every ten minutes, printing one line naming what is
+  still missing in between, so a broken package costs a file read
+  per `cd` rather than a build — including a project whose very
+  first sync failed and therefore has no generation at all. The
+  warning names the escape hatch: a `gale sync` run by hand
+  ignores the stamp and the interval entirely. `gale shell` and
+  `gale run` consult the same stamp; their lock-staleness gate
+  cannot see a partial install failure either.
+
+- Executable name collisions no longer resolve silently by sort
+  order (gh#190). Two packages shipping the same `bin/` basename
+  put whichever sorted first on PATH, with no warning and no way
+  to see the shadowed provider. The generation rebuild now
+  refuses, names every colliding basename and both its providers,
+  and prints the `[bin]` stanza that resolves them — before
+  `current` moves, so the previous generation stays active and
+  PATH is unchanged. Only `bin/` is arbitrated; `lib/`, `man/`
+  and `share/` merge across packages as they always have.
+
+- gc and `gale doctor --repair` no longer activate a version the
+  scope's lockfile does not name (gh#197). Both rebuilt the
+  generation from the recipe and the store, which after a
+  revision bump — or a withdrawn one — is a second version
+  selector: gc relinked whatever revision the recipe now offers,
+  and repair, which resolves no recipe at all, took the highest
+  revision on disk. Global scope runs no activation gate, so the
+  substitution was invisible there. A scope with a usable v1
+  lockfile now takes its versions from that lock's roots, and a
+  scope whose lockfile is present and cannot be read is refused
+  rather than rebuilt on a guess — `--force` rebuilds it without
+  the lock. Unlocked scopes are unchanged.
 
 - gc no longer deletes store versions belonging to a live but
   unreadable project (gh#188). Project liveness counts any
@@ -24,6 +157,25 @@
   `gale remove`'s cross-scope guard fails closed on the same
   error, and `gale doctor` reports its orphan count as
   unavailable rather than counting live packages as orphans.
+
+- install: `gale install --path` no longer rewrites a store
+  directory an existing generation links (gh#183). The version it
+  built under came from `git describe` alone, which says nothing
+  about the working tree, so every dirty build of one checkout
+  claimed one store identity and the newest build renamed itself
+  over the rest. Generations kept their symlinks and silently
+  started resolving to bytes they were never built with — `gale
+  rollback` could select an old generation and execute the newest
+  build. A dirty tree now carries a digest of its uncommitted
+  content in the version's build-metadata segment
+  (`0.2.0+dirty.<12 hex>`), so different content asks for a
+  different directory, and rebuilding an unchanged tree is a cache
+  hit rather than a replace. Clean checkouts are spelled exactly as
+  before, so tagged builds do not churn. `.gitignore`d build output
+  is excluded from the digest, so a build that writes into its own
+  tree does not mint a directory per run. Development loops now
+  accumulate store directories; `gale gc` reclaims them once no
+  generation links them.
 
 - farm: unversioned soname aliases (for example
   `libssl.dylib -> libssl.3.dylib`) are now linked into

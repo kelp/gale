@@ -543,22 +543,47 @@ type genRebuild struct {
 }
 
 func rebuildGenerationWith(r genRebuild) error {
-	pkgs := r.pkgs
-	if pkgs == nil {
-		var err error
-		pkgs, err = readConfigPackages(r.configPath)
-		if err != nil {
-			return err
-		}
-		pkgs = canonicalizeForBuild(pkgs, r.pinResolve)
+	pkgs, binOverrides, err := rebuildInputs(r)
+	if err != nil {
+		return err
 	}
-	if err := generation.BuildWithValidate(
-		pkgs, r.galeDir, r.storeRoot, r.validate,
+	if err := generation.BuildWithOptions(
+		pkgs, r.galeDir, r.storeRoot, generation.Options{
+			Validate:     r.validate,
+			BinOverrides: binOverrides,
+		},
 	); err != nil {
 		return err
 	}
 	autoPruneGenerations(r.galeDir, r.storeRoot)
 	return nil
+}
+
+// rebuildInputs resolves the package set the generation is built from
+// and the [bin] overrides that settle executable-name collisions in
+// it (gh#190).
+//
+// A locked rebuild brings its own package set — the lock is the
+// version selector — but still reads [bin], because the override is
+// the only way out of a collision refusal and a sync that could not
+// see it would be a convergence trap. It reads nothing when no config
+// path came with the package set.
+func rebuildInputs(r genRebuild) (pkgs, binOverrides map[string]string, err error) {
+	if r.pkgs != nil && r.configPath == "" {
+		return r.pkgs, nil, nil
+	}
+	cfg, err := loadEffectiveConfig(r.configPath)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r.pkgs != nil {
+		return r.pkgs, cfg.Bin, nil
+	}
+	declared := cfg.Packages
+	if declared == nil {
+		declared = map[string]string{}
+	}
+	return canonicalizeForBuild(declared, r.pinResolve), cfg.Bin, nil
 }
 
 // autoPruneGenerations is the post-Build hook that bounds gen
@@ -659,6 +684,11 @@ func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
 	host := config.CurrentHost()
 	cfg.Packages = cfg.EffectivePackages(host)
 	cfg.Pinned = cfg.EffectivePinned(host)
+	// After the host merge, so a [bin] winner declared only under
+	// [hosts.<selector>.packages] validates on the host it applies to.
+	if err := cfg.ValidateBin(); err != nil {
+		return nil, fmt.Errorf("%s: %w", configPath, err)
+	}
 	return cfg, nil
 }
 
@@ -1249,12 +1279,133 @@ func (ctx *cmdContext) RebuildGenerationLocked() error {
 	if err != nil {
 		return err
 	}
+	// configPath rides along for [bin] alone: the versions come from
+	// the plan, but a locked sync must still be able to resolve an
+	// executable-name collision (gh#190).
 	return rebuildGenerationWith(genRebuild{
-		galeDir:   ctx.GaleDir,
-		storeRoot: ctx.StoreRoot,
-		pkgs:      pkgs,
-		validate:  ctx.revalidatePlannedClosure,
+		galeDir:    ctx.GaleDir,
+		storeRoot:  ctx.StoreRoot,
+		configPath: ctx.GalePath,
+		pkgs:       pkgs,
+		validate:   ctx.revalidatePlannedClosure,
 	})
+}
+
+// recoveryRebuild is rebuildUnderLock's policy, beside the generation
+// inputs themselves.
+type recoveryRebuild struct {
+	// force downgrades a lock that cannot be modeled from a refusal
+	// to a warning plus an unlocked rebuild. Without it a user whose
+	// lock is beyond repair could not run the very commands that
+	// exist to get a broken machine working again.
+	force bool
+	// skipUnchanged suppresses a locked rebuild that would relink
+	// exactly what is already active. gc sets it: its rebuild is
+	// gated on a recipe-versus-store disagreement that the lock does
+	// not resolve, so rebuilding unconditionally would mint a fresh
+	// generation on every scheduled run forever.
+	skipUnchanged bool
+	out           *output.Output
+}
+
+// rebuildUnderLock rebuilds one scope's generation with that scope's
+// lock as the version selector.
+//
+// gc and doctor --repair are recovery commands, and both rebuild from
+// the recipe and the store. After a revision bump — or a withdrawn
+// one — that selection is a second version selector, so either can
+// publish a version the lock does not name. Design §12 runs no
+// activation gate at global scope, so nothing downstream would ever
+// notice; the writer has to enforce it (gh#197).
+//
+// Three lock states, three answers. Absent is unlocked mode and keeps
+// the caller's own selection. A usable v1 lock supplies the versions
+// and no recipe is consulted, exactly as RebuildGenerationLocked
+// activates a plan. A lock that is present and cannot be modeled
+// refuses this scope's rebuild, because a rebuild nothing can check
+// against the lock is the bug itself.
+func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
+	lockPath, err := lockfilePath(r.configPath)
+	if err != nil {
+		return fmt.Errorf("resolving lockfile path: %w", err)
+	}
+	pkgs, locked, err := lockedRebuildPkgs(lockPath, config.CurrentHost())
+	switch {
+	case err != nil && !opt.force:
+		return fmt.Errorf(
+			"%w; run 'gale lock --refresh' to regenerate it, or rerun "+
+				"with --force to rebuild without it", err,
+		)
+	case err != nil:
+		opt.out.Warn(fmt.Sprintf(
+			"rebuilding without %s: %v", lockPath, err,
+		))
+	case locked:
+		r.pkgs = pkgs
+		if opt.skipUnchanged &&
+			generationAlreadyLinks(r.galeDir, r.storeRoot, pkgs) {
+			return nil
+		}
+	}
+	return rebuildGenerationWith(r)
+}
+
+// lockedRebuildPkgs returns the name→version set a recovery rebuild
+// must activate: the scope lock's effective roots for host. The bool
+// reports whether a lock supplied them, which an empty map cannot —
+// a lock rooting nothing and no lock at all are different answers.
+//
+// Roots only, and no plan. A generation links roots; the closure
+// behind them is what supports those roots, not what it links. Going
+// through lockplan would hash and validate that whole closure, which
+// is a demand gc and doctor --repair have no business making: they
+// are run precisely when the store is in a state nothing else
+// tolerates.
+func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
+	v, err := lockfile.Load(lockPath)
+	if err != nil {
+		return nil, false, err
+	}
+	switch v.Kind {
+	case lockfile.KindAbsent:
+		return nil, false, nil
+	case lockfile.KindLegacy:
+		return nil, false, fmt.Errorf(
+			"%s: %w: it names versions this build cannot model",
+			lockPath, lockfile.ErrLegacySchema,
+		)
+	case lockfile.KindV1:
+		roots, rErr := v.V1.EffectiveRoots(host)
+		if rErr != nil {
+			return nil, false, fmt.Errorf("%s: %w", lockPath, rErr)
+		}
+		pkgs := make(map[string]string, len(roots))
+		for name, id := range roots {
+			_, version, pErr := lockfile.ParseIdentity(id)
+			if pErr != nil {
+				return nil, false, fmt.Errorf("%s: %w", lockPath, pErr)
+			}
+			pkgs[name] = version
+		}
+		return pkgs, true, nil
+	default:
+		return nil, false, fmt.Errorf("unhandled lockfile kind %s", v.Kind)
+	}
+}
+
+// generationAlreadyLinks reports whether the active generation links
+// exactly the store dirs a rebuild from pkgs would link. Both sides
+// are store-directory basenames, so a canonical "-1" version and the
+// bare directory a pre-revision install left it in compare equal.
+//
+// An unreadable generation answers false: a rebuild is the safe
+// direction, and it is what the caller was about to do anyway.
+func generationAlreadyLinks(galeDir, storeRoot string, pkgs map[string]string) bool {
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		return false
+	}
+	return maps.Equal(active, generation.ActiveVersions(pkgs, storeRoot))
 }
 
 // lockedRebuildPackages turns the plan's roots into the name→version

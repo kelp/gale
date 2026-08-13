@@ -1003,60 +1003,14 @@ func TestReplaceStoreDirPreservesExistingOnRenameFailure(t *testing.T) {
 	}
 }
 
-func TestInstallLocalPreservesExistingStoreOnReplaceFailure(t *testing.T) {
-	storeRoot := t.TempDir()
-	s := store.NewStore(storeRoot)
-
-	// Pre-create the canonical <version>-<revision> dir
-	// that InstallLocal would target, since the test's
-	// rename hook matches against newPath == storeDir.
-	storeDir, err := s.Create("localpkg", "1.0-1")
-	if err != nil {
-		t.Fatalf("create store dir: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(storeDir, "bin"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	oldBin := filepath.Join(storeDir, "bin", "localpkg")
-	if err := os.WriteFile(oldBin, []byte("old"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	srcDir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(srcDir, "README"), []byte("hello"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	inst := &Installer{Store: s}
-	r := &recipe.Recipe{
-		Package: recipe.Package{Name: "localpkg", Version: "1.0"},
-		Build: recipe.Build{Steps: []string{
-			"mkdir -p $PREFIX/bin && echo new > $PREFIX/bin/localpkg && chmod +x $PREFIX/bin/localpkg",
-		}},
-	}
-
-	origRename := renameDir
-	renameDir = func(oldPath, newPath string) error {
-		if strings.Contains(filepath.Base(oldPath), ".build-") && newPath == storeDir {
-			return fmt.Errorf("boom")
-		}
-		return origRename(oldPath, newPath)
-	}
-	defer func() { renameDir = origRename }()
-
-	_, err = inst.InstallLocalWithFinalize(r, srcDir, nil)
-	if err == nil {
-		t.Fatal("expected InstallLocalWithFinalize error")
-	}
-
-	data, err := os.ReadFile(oldBin)
-	if err != nil {
-		t.Fatalf("read old binary after failed InstallLocalWithFinalize: %v", err)
-	}
-	if string(data) != "old" {
-		t.Fatalf("old binary content = %q, want %q", string(data), "old")
-	}
-}
+// The pipeline-level companion to the test above lives in
+// replaceguard_test.go as
+// TestInstallLocalLeavesAnOccupiedCanonicalDirAlone. It used to
+// assert the weaker property — that a FAILED replace restored the
+// previous canonical dir — but gh#183 stopped the local-source path
+// from replacing an occupied canonical dir at all, so that premise
+// is no longer reachable through InstallLocalWithFinalize. The
+// restore itself is covered directly, above.
 
 // --- Install SHA256 populated ---
 

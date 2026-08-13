@@ -4,9 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"maps"
-	"path/filepath"
 	"slices"
 
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
@@ -436,11 +436,8 @@ func v1SHA(lf *lockfile.V1, id, platform string) (string, bool, error) {
 
 // canonicalStoreDir resolves a store directory's spelling without
 // touching its version, matching what the generation and closure
-// readers return. A path that does not exist keeps its raw spelling,
-// which is correct: it is absent under either spelling.
+// readers return. It delegates to farm.CanonicalDir, which is the
+// one spelling those readers use.
 func canonicalStoreDir(dir string) string {
-	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
-		return resolved
-	}
-	return dir
+	return farm.CanonicalDir(dir)
 }

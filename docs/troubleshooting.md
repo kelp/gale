@@ -76,6 +76,33 @@ Source builds can fail for several reasons:
   specific platforms. Check the recipe for platform
   constraints.
 
+#### A locked source build fails on another machine
+
+A source build in `gale.lock` is enforced strictly, and
+strict means the artifact must hash to what the lock
+records. Source builds are not reproducible today — see
+"Audit reports a mismatch" below for why — so a build
+locked on one machine may legitimately fail on another.
+The failure is real; the mismatch is not evidence of
+tampering.
+
+The remedy is to re-lock on the machine that failed:
+
+```sh
+gale lock --refresh <pkg>
+```
+
+Or pin a version with a prebuilt binary, so the closure
+carries an artifact rather than a build.
+
+This is why a committed lock is portable across machines
+with certainty **only when its whole closure is binary.**
+A source node's output hash feeds the `graph_digest` of
+every package above it, so one unreproducible build makes
+the digests above it unreproducible too. A closure
+containing a source build is portable exactly as far as
+that build reproduces. See [lockfile.md](lockfile.md).
+
 ### Audit reports a mismatch
 
 `gale audit <pkg>` rebuilds a package from source and

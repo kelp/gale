@@ -449,11 +449,44 @@ func regenerateScope(
 	if len(pkgs) == 0 {
 		return nil
 	}
-	if err := generation.Build(pkgs, s.GaleDir, storeRoot); err != nil {
+	// [bin] alone is read from the scope's manifest — never its
+	// packages, per the paragraph above. A generation built before
+	// gh#190 may hold a shadowed executable, and the rebuild below
+	// refuses one. Without the overrides the scope could not be
+	// migrated at all: the collision lives in the active package set,
+	// so declaring the winner would fix every other command and leave
+	// this one stuck.
+	if err := generation.BuildWithOptions(
+		pkgs, s.GaleDir, storeRoot,
+		generation.Options{BinOverrides: scopeBinOverrides(s.GaleDir)},
+	); err != nil {
 		return fmt.Errorf("regenerating %s: %w", s.Label, err)
 	}
 	out.Info(fmt.Sprintf("  regenerated %s", s.Label))
 	return nil
+}
+
+// scopeBinOverrides returns the [bin] table of the gale.toml that
+// owns galeDir, or nil when there is none to read.
+//
+// nil on any failure, deliberately: this only ever widens what a
+// rebuild accepts, so an unreadable manifest costs the scope its
+// overrides and nothing else. The rebuild still refuses the
+// collision, with the message that names the fix.
+func scopeBinOverrides(galeDir string) map[string]string {
+	globalDir, err := galeConfigDir()
+	if err != nil {
+		return nil
+	}
+	configPath := filepath.Join(filepath.Dir(galeDir), "gale.toml")
+	if sameDir(galeDir, globalDir) {
+		configPath = filepath.Join(globalDir, "gale.toml")
+	}
+	cfg, err := loadEffectiveConfig(configPath)
+	if err != nil {
+		return nil
+	}
+	return cfg.Bin
 }
 
 // errBareDirStillReferenced reports a pre-revision directory some

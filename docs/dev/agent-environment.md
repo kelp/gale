@@ -20,6 +20,7 @@ just test              # 21s, hermetic
 just lint              # golangci-lint + go vet, 15s
 just fmt-check         # gofumpt, whole tree
 just check-darwin      # the darwin-only files Linux never compiles
+just test-symlinked-tmp  # the macOS /var path-spelling class; baseline is not empty
 just integration       # hermetic Tier A, fake GHCR
 ```
 
@@ -196,6 +197,47 @@ cache per GOOS) plus ~30s for the lint pass; warm, a few seconds each.
 The same blind spot runs the other way on CI's macos runner for
 `//go:build linux` files, but nothing here is Linux-only in the same way.
 
+## Path spelling: the macOS-only test failure
+
+`check-darwin` compiles darwin code; it never *runs* anything. So the most
+common macOS-only failure in this repo slips past it entirely: a test that
+compares a raw `t.TempDir()` path against one production canonicalized.
+
+On macOS `$TMPDIR` sits under `/var`, and `/var` is a symlink to
+`private/var`, so `t.TempDir()` returns `/var/folders/…` while
+`filepath.EvalSymlinks` returns `/private/var/folders/…`. On Linux `/tmp` is
+a real directory, both spellings are identical, and the comparison passes.
+That is what cost PR #227 a round trip.
+
+```sh
+just test-symlinked-tmp   # the suite under a macOS-shaped $TMPDIR
+```
+
+It points `$TMPDIR` at `/<name>`, a symlink to `/private/<name>`, runs
+`go test -count=1 ./...`, and removes both on exit including on failure. On
+macOS it is a no-op wrapper around `go test` — the real thing already runs
+that way.
+
+The shape is deliberate. macOS's resolved spelling *contains* its raw one
+(`/private` + `/var/folders/…`), so assertions like
+`strings.Contains(err.Error(), rawDir)` pass there. A sibling symlink
+(`tmp -> tmp.real`) breaks that property and reports 5 extra `cmd/gale`
+failures macOS is perfectly happy with. Keeping the raw path a substring of
+the resolved one is what makes the root-level symlink necessary, which is
+why the target needs `/` writable — free in this container, `sudo` on a
+Linux dev box.
+
+**The baseline is not empty.** On `origin/main` one test fails:
+
+| Test | Why |
+| --- | --- |
+| `internal/farm` `TestFarmPredicateIgnoresPathSpelling` (both subtests) | hardcodes the soname `libspell.4.dylib`; `farm.IsVersionedDylib` switches on `runtime.GOOS`, so nothing is farmed on Linux and `StaleLinks` is empty. It skips itself when the temp prefix is not symlinked, so a symlinked `$TMPDIR` is the only thing that un-skips it here. Its sibling `TestFarmPredicateDoesNotFollowTheFarmedAlias` has the `runtime.GOOS == "linux"` soname switch it is missing (gh#230). |
+
+So the target is **comparative**: run it on `origin/main`, run it on your
+branch, and a failure your branch adds is yours. It is deliberately not in
+`just preflight` — a gate that is red on a clean tree teaches people to
+ignore it. Reconsider once the baseline is empty.
+
 ## Running as root
 
 The container runs as root, and root bypasses file permission checks. Tests
@@ -280,13 +322,16 @@ on costs more than the two minutes it takes.
 | `gofumpt -l .` | `just fmt-check` | yes |
 | `scripts/check-pipeline-tests.sh origin/main` | `just pipeline-check` | yes |
 | the `macos-26` matrix leg | `just check-darwin` (typecheck + lint, no execution) | yes |
+| the `macos-26` leg's path spellings | `just test-symlinked-tmp` | no — baseline is not empty |
 | integration Tier A | `just integration` | no — run it separately |
 | govulncheck | not reproducible, see below | no |
 
-Two of those exist only because the sandbox needs them.
+Three of those exist only because the sandbox needs them.
 `just pipeline-check` wraps a script CI runs on `pull_request` only, so
 without it the change-discipline guard stays invisible until the PR is already
-open. `just check-darwin` substitutes for a macOS runner nobody has locally.
+open. `just check-darwin` substitutes for a macOS runner nobody has locally,
+and `just test-symlinked-tmp` covers the one macOS failure class typechecking
+cannot see.
 
 CI-only, do not attempt locally:
 
