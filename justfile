@@ -29,15 +29,24 @@ lint:
     scripts/golangci-lint.sh ./...
     go vet ./...
 
-# Scope is the whole tree, matching ci.yml's `gofumpt -l .`.
+# Scope is every TRACKED .go file, matching ci.yml exactly.
 # Anything narrower lets a file outside cmd/internal/integration
 # (tools/, future top-level packages) pass here and fail CI.
+#
+# Not `gofumpt -l .`: gofumpt parses anything named *.go, including
+# files under .git/. A branch whose name ends in .go gives a full
+# clone's reflog a path like
+# .git/logs/refs/remotes/origin/<branch>.go, and gofumpt exits 2
+# trying to parse it — failing every PR in the repo for a reason
+# unrelated to any change. This bit gh#254's PR. It does not
+# reproduce in a git worktree, where .git is a file rather than a
+# directory, so the local gate stayed green while CI went red.
 
 # Check formatting (fails if any file needs formatting)
 fmt-check:
     #!/usr/bin/env bash
     set -euo pipefail
-    unformatted=$(gofumpt -l .)
+    unformatted=$(git ls-files -z '*.go' | xargs -0 gofumpt -l)
     if [ -n "$unformatted" ]; then
       echo "Files need formatting (run 'just fmt'):" >&2
       echo "$unformatted" >&2
@@ -46,7 +55,7 @@ fmt-check:
 
 # Fix formatting
 fmt:
-    gofumpt -w .
+    git ls-files -z '*.go' | xargs -0 gofumpt -w
 
 # Install the agent-sandbox toolchain. Blocks until the background
 # SessionStart bootstrap finishes, so it doubles as "wait for it".
