@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -309,7 +310,7 @@ func collectGCRetention(
 	if resolver != nil {
 		expandRuntimeDeps(s, resolver, referenced)
 	}
-	expandInstalledDeps(s, referenced)
+	errs = append(errs, expandInstalledDeps(s, referenced))
 	return referenced, retainedProjects, errors.Join(errs...)
 }
 
@@ -429,13 +430,18 @@ func addProjectPinRefs(
 // otherwise become invisible to retention and be swept
 // (gh#188). A gale dir with no current symlink is not an error
 // — generation.Current reports gen 0 for it.
+//
+// The read is strict all the way down (gh#210): a current pointer
+// that resolves onto a generation directory the walk cannot read
+// answers "links nothing" through the lenient reader, which is the
+// same fail-open one layer lower.
 func addActiveGenerationRefs(
 	galeDir string, s *store.Store, referenced map[string]bool,
 ) error {
 	if galeDir == "" {
 		return nil
 	}
-	pkgs, err := generation.CurrentVersions(galeDir, s.Root)
+	pkgs, err := generation.CurrentVersionsStrict(galeDir, s.Root)
 	if err != nil {
 		return fmt.Errorf(
 			"reading active generation under %s: %w", galeDir, err,
@@ -453,22 +459,35 @@ func addActiveGenerationRefs(
 // recipe's CURRENT version, but installed binaries have rpaths
 // into the versions recorded at build time — after a recipe
 // bump (or offline with a cold cache) only the installed
-// metadata knows them. generation.FarmStoreDirs already walks
-// that metadata for the dylib farm; reuse it per retained
+// metadata knows them. generation.FarmStoreDirsStrict already
+// walks that metadata for the dylib farm; reuse it per retained
 // package and key the resulting store dirs back into the set.
-func expandInstalledDeps(s *store.Store, referenced map[string]bool) {
+//
+// Strict, not the lenient FarmStoreDirs the farm rebuild uses
+// (gh#210): an unreadable .gale-deps.toml drops its whole subtree
+// from the closure, and a subtree missing from retention is a
+// subtree the sweep deletes. Keys are walked in sorted order so a
+// run that hits several unreadable files names them in the same
+// order every time; map order would shuffle the message.
+func expandInstalledDeps(s *store.Store, referenced map[string]bool) error {
 	keys := make([]string, 0, len(referenced))
 	for key := range referenced {
 		keys = append(keys, key)
 	}
+	sort.Strings(keys)
+	var errs []error
 	for _, key := range keys {
 		at := strings.LastIndexByte(key, '@')
 		if at < 0 {
 			continue
 		}
-		dirs := generation.FarmStoreDirs(
+		dirs, err := generation.FarmStoreDirsStrict(
 			map[string]string{key[:at]: key[at+1:]}, s.Root,
 		)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
 		for _, dir := range dirs {
 			rel, err := filepath.Rel(s.Root, dir)
 			if err != nil || strings.HasPrefix(rel, "..") {
@@ -483,6 +502,7 @@ func expandInstalledDeps(s *store.Store, referenced map[string]bool) {
 			referenced[parts[0]+"@"+parts[1]] = true
 		}
 	}
+	return errors.Join(errs...)
 }
 
 // isReferenced reports whether a store entry is kept by
