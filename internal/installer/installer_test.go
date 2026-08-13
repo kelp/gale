@@ -6,6 +6,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -31,6 +32,7 @@ import (
 	"github.com/kelp/gale/internal/store"
 	"github.com/kelp/gale/internal/timing"
 	"github.com/klauspost/compress/zstd"
+	"golang.org/x/sys/unix"
 )
 
 func TestInstallFromSourceCreatesBinary(t *testing.T) {
@@ -1673,10 +1675,9 @@ func TestInstallBlocksOnStoreGenLock(t *testing.T) {
 }
 
 // TestInstallReleasesStoreGenLock confirms the install does
-// not leak the store-gen lock: after a successful install,
-// a subsequent Acquire on the same lock path must succeed
-// without blocking. Guards against an unlock leak in the
-// critical-section wrapper.
+// not leak the store-gen lock: once a successful install has
+// returned, the lock on that path must be free. Guards against
+// an unlock leak in the critical-section wrapper.
 func TestInstallReleasesStoreGenLock(t *testing.T) {
 	srcTar := createTestSourceTarGz(t)
 	hash := hashFile(t, srcTar)
@@ -1711,27 +1712,50 @@ func TestInstallReleasesStoreGenLock(t *testing.T) {
 		t.Fatalf("Install: %v", err)
 	}
 
-	// Post-install: the store-gen lock should be free.
-	// Acquire-with-timeout to surface a leaked lock.
+	// Post-install: the store-gen lock must be free. The
+	// release is synchronous — withStoreGenLock unlocks in a
+	// defer that runs before Install returns — so Install
+	// returning is the synchronisation point and there is
+	// nothing left to wait for. Probe it with a non-blocking
+	// acquire: a leaked lock fails right here, and a slow,
+	// loaded, -race run cannot be mistaken for one (gh#246).
 	lockPath := filepath.Join(galeDir, "generation.lock")
-	acquired := make(chan struct{})
-	go func() {
-		unlock, err := filelock.Acquire(lockPath)
-		if err != nil {
-			t.Errorf("Acquire after install: %v", err)
-			close(acquired)
-			return
-		}
-		close(acquired)
-		unlock()
-	}()
-
-	select {
-	case <-acquired:
-		// Good: lock was free.
-	case <-time.After(2 * time.Second):
+	if lockIsHeld(t, lockPath) {
 		t.Fatal("store-gen lock not released after install")
 	}
+}
+
+// lockIsHeld reports whether the flock at path is held by
+// anyone, this process included — flock conflicts across
+// separate opens of the same file, so a lock the installer
+// leaked is visible here.
+//
+// filelock.Acquire blocks until the lock is free, which is
+// what production wants and what forces a test to wait out a
+// wall-clock deadline to tell "released" from "slow". The
+// non-blocking form answers that question outright, with no
+// timing in the assertion.
+func lockIsHeld(t *testing.T, path string) bool {
+	t.Helper()
+
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open lock file %s: %v", path, err)
+	}
+	defer f.Close()
+
+	fd := int(f.Fd()) //nolint:gosec // fd fits int on all supported platforms
+	err = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB)
+	if errors.Is(err, unix.EWOULDBLOCK) {
+		return true
+	}
+	if err != nil {
+		t.Fatalf("flock %s: %v", path, err)
+	}
+	if err := unix.Flock(fd, unix.LOCK_UN); err != nil {
+		t.Fatalf("unlock %s: %v", path, err)
+	}
+	return false
 }
 
 // TestInstallLocalBlocksOnStoreGenLock asserts InstallLocalWithFinalize
