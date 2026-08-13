@@ -267,6 +267,12 @@ files more than one declared package provides.
 Those are not arbitrated: the first package in sorted order
 provides the file, and removing one provider is the only way to
 change which.
+A scope whose last sync did not complete is reported the same
+way, naming the packages that failed.
+Run
+.Cm gale sync
+to retry them at once; an automatic retry waits out the
+ten-minute interval.
 Use
 .Fl -repair
 to rebuild active generations and re-sign Mach-O binaries.

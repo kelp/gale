@@ -154,6 +154,7 @@ var doctorChecks = []doctorCheck{
 	{"store", checkStore},
 	{"dependency metadata", checkDepsMetadata},
 	{"packages installed", checkPackagesInstalled},
+	{"sync state", checkSyncState},
 	{"generation", checkGeneration},
 	{"symlinks", checkSymlinks},
 	{"shadowed executables", checkShadowedProviders},
@@ -663,6 +664,82 @@ func checkPackagesInstalled(ctx *doctorContext) bool {
 		ctx.out.Success("All packages installed")
 	}
 	return true
+}
+
+// checkSyncState reports a scope whose sync completion stamp records
+// that the last sync gave up, naming the packages it gave up on
+// (gh#221).
+//
+// Until now the stamp was read by `gale sync --if-needed` alone, which
+// prints its one line during an activation. A user who wants to know
+// why a binary is missing from PATH had to cd out and back in to see
+// it. The state is exactly what doctor exists to surface: recorded, not
+// obvious, and cleared by one command.
+//
+// It is advisory — the check always passes. The environment really is
+// short a package, but the exit code for that is already
+// checkPackagesInstalled's, and a second red line for one condition
+// double-counts it. The stamp is also a record of a past run rather
+// than a fact about the environment now: a package installed by hand
+// after the failure leaves it reading "incomplete" until the next sync,
+// and failing there would turn doctor red on a machine that is fine.
+// That is the unfixable-red shape gh#50 and gh#219 both rejected.
+//
+// A stale fingerprint is deliberately not reported. Whether the stamp
+// still describes the current manifest and lock is the question
+// `sync --if-needed` is built to answer, and answering it again here
+// would flag a comment-only edit of gale.toml as a problem.
+func checkSyncState(ctx *doctorContext) bool {
+	scopes, err := doctorScopes(ctx)
+	if err != nil {
+		ctx.out.Warn(fmt.Sprintf("sync state check skipped: %v", err))
+		return true
+	}
+	for _, s := range scopes {
+		reportScopeSyncState(ctx, s)
+	}
+	return true
+}
+
+// reportScopeSyncState is checkSyncState for one scope. Each scope
+// stamps beside the generation it describes — <project>/.gale for a
+// project, ~/.gale globally — so the answer is per-scope by
+// construction.
+//
+// The four on-disk states stay four. gh#186 draws the missing/
+// unreadable line deliberately: a machine that has never synced under
+// this gale has no stamp and no finding, while one whose stamp cannot
+// be read has a file worth looking at. Collapsing them would invent a
+// problem on every fresh install or hide a corrupt one.
+//
+// The incomplete report is doctor's own text rather than
+// incompleteNotice's. That line offers the wait — "or wait up to 10m
+// for the next automatic attempt" — because an activation printed it
+// while withholding a retry. A user reading doctor has already decided
+// to look, so the report names the escape hatch alone.
+func reportScopeSyncState(ctx *doctorContext, s doctorScope) {
+	st, err := readSyncState(s.galeDir)
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		ctx.out.Success(fmt.Sprintf("No sync recorded (%s)", s.label))
+	case err != nil:
+		ctx.out.Warn(fmt.Sprintf(
+			"Sync state unreadable (%s): %v\n"+
+				"  Run: gale sync (rewrites the stamp)",
+			s.label, err,
+		))
+	case st.Status == syncStatusIncomplete:
+		ctx.out.Warn(cappedList(
+			fmt.Sprintf(
+				"The last sync did not complete (%s, recorded %s):",
+				s.label, st.RecordedAt.Format(time.RFC3339),
+			),
+			st.Failed,
+			"Run: gale sync (retries now, ignoring the retry interval)",
+		))
+	default:
+		ctx.out.Success(fmt.Sprintf("Last sync completed (%s)", s.label))
+	}
 }
 
 // checkGeneration verifies an active generation exists and

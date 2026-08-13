@@ -83,6 +83,22 @@
   another installed package ships the same binary. A shadowed
   provider was previously invisible.
 
+- `gale doctor` reports a scope whose last sync did not
+  complete, naming the packages it gave up on and the remedy
+  (#221). The stamp `gale sync` writes was read by
+  `gale sync --if-needed` alone, so the only way to see it was
+  to trigger an activation; a user who runs doctor because a
+  binary is missing from PATH is now told the sync gave up on
+  it, and that `gale sync` retries immediately rather than
+  after the ten-minute interval. Both scopes are read — the
+  stamp lives beside the generation it describes. The report is
+  advisory and does not change doctor's exit code: a declared
+  package missing from the store is already a failure of the
+  packages-installed check, and the stamp records a past run
+  that a hand-fixed install can outlive. A stamp that is absent
+  is not a finding; one that cannot be read is reported as
+  exactly that.
+
 - `gale doctor` reports the man pages (`man/`, `share/man/`)
   and root-level files more than one declared package provides
   (#219). The report is advisory and does not change doctor's
