@@ -1002,6 +1002,47 @@ another name. Source-method packages cannot be migrated this way,
 so `migrate` prints the precise list of them and what rebuilding
 costs.
 
+**Pre-revision source directories.** A source-method package
+installed before revisions existed sits in a bare `<version>`
+directory neither command may replace: migrate cannot refetch it,
+and `--refresh` acts on the canonical path alone. This section
+does not extend its exception to cover it. A record written beside
+those bytes would be the unverified marker rejected above; and
+rebuilding into the canonical path is a machine-wide relocation
+whose proposed hash cannot be known before the build, so the
+clearance this section requires before a destructive commit cannot
+run in the order the binary case uses.
+
+Migrate therefore reports these directories and says what is true
+of each. One that no generation links and no config pins is a
+`gale gc` candidate, decided by gc's own retention predicate
+rather than by migrate's closure walk — the two disagree, and only
+gc's answer may be reported as gc's behaviour. One reached as a
+**declared root** converges through `gale sync`, which reinstalls
+a directory with no dependency metadata into the canonical path
+additively, destroying nothing; where that scope carries a legacy
+lock the spelling is `gale sync --no-frozen`. A reinstall whose
+closure cannot be attested commits without a record, which is not
+a failure but the next step: converge the closure bottom-up, then
+`gale lock --refresh`. One reached by several scopes, or **only as
+a dependency**, has no command; gale says so rather than naming a
+sequence that converges nothing.
+
+`gale remove` followed by a reinstall is not offered as the
+primary route. It deletes the manifest pin from every section that
+carries it, losing host-overlay placement; it destroys the only
+copy of bytes whose version the registry may no longer serve; and
+across scopes it does not even fail loudly — the store entry
+another scope references is kept and the reinstall then takes the
+back-compat cache hit.
+
+Silence about the dependency case is what this paragraph replaces.
+A machine-wide rebuild relocation remains available as a future
+extension of `gale migrate`, on the same enumerate-clear-replace
+order, with the ordering caveat above; it is not authorized here.
+The full evaluation is
+[`docs/dev/proposals/prerevision-convergence.md`](../docs/dev/proposals/prerevision-convergence.md).
+
 That makes `migrate` a constrained form of `--refresh` rather
 than an alternative to it: same replacement mechanism, restricted
 to unprovenanced binary-method directories, in bulk. Both are
