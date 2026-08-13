@@ -497,6 +497,8 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 // for package versions and generation directories
 // rather than conflating them into a single counter.
 func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
+	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (gh#214)
+
 	// Create a project dir with an empty config (no
 	// referenced packages) and a store with one
 	// unreferenced package plus old generations.
