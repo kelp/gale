@@ -4,9 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/generation"
 )
 
 // gcKeepFixture stages the two-generation shape every retention
@@ -284,6 +286,56 @@ func TestGCRetainsHostOverlayPinsInRetainedGenerations(t *testing.T) {
 			"must survive gc: %v", err)
 	}
 	assertGenerationWhole(t, galeDir, 1, "is within [generation] keep")
+}
+
+// TestRollbackRefusesIncompleteGeneration is gh#247's second
+// half. `build` refuses to activate a generation with a dangling
+// symlink (validateGenerationSymlinks, called between populate
+// and swap); Rollback is the same activation and had no
+// equivalent. It stat'd the directory, read the shrunken package
+// set through the LENIENT reader — which skips a package whose
+// store dir is gone by contract — staged the farm from that, and
+// swapped.
+//
+// The result was a successful-looking rollback onto dangling
+// PATH entries. Repair is not an option here: it would invert
+// the generation → installer package order, and carrying a
+// different version forward would violate the one-number-
+// one-snapshot invariant (gh#189).
+func TestRollbackRefusesIncompleteGeneration(t *testing.T) {
+	env := gcKeepFixture(t, 1, "1.7")
+	// gen/2's only package leaves the store, exactly as a gc run
+	// under the old retention rule left it.
+	if err := os.RemoveAll(env.jq18); err != nil {
+		t.Fatal(err)
+	}
+
+	generationsGlobal = true
+	dryRun = false
+	t.Cleanup(func() {
+		generationsGlobal = false
+		dryRun = false
+	})
+
+	err := genRollbackCmd.RunE(genRollbackCmd, []string{"2"})
+	if err == nil {
+		t.Fatal("rollback onto a generation whose store closure " +
+			"is incomplete must refuse: gen/2/bin/jq dangles, and " +
+			"activating it puts a broken entry on PATH")
+	}
+	if !strings.Contains(err.Error(), "2") {
+		t.Errorf("refusal must name the generation, got: %v", err)
+	}
+
+	cur, cErr := generation.Current(env.galeDir)
+	if cErr != nil {
+		t.Fatalf("reading current after refused rollback: %v", cErr)
+	}
+	if cur != 1 {
+		t.Errorf("current = gen/%d after a refused rollback, want "+
+			"gen/1 — a refusal must leave the active generation "+
+			"untouched", cur)
+	}
 }
 
 // TestGCDeletesGenerationsBeyondKeep is the guard on the other

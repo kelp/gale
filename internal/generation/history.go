@@ -151,6 +151,29 @@ func Rollback(galeDir, storeRoot string, target int) error {
 				target, err)
 		}
 
+		// Rollback is an activation, and Build refuses to activate
+		// a generation with a dangling symlink at this exact point
+		// in its sequence. Rollback had no equivalent, so a
+		// generation whose store closure had been swept — the
+		// other half of gh#247 — swapped in reporting success and
+		// put broken entries on PATH. genVersions below is the
+		// LENIENT reader by design: it skips a package whose store
+		// dir is gone, which is right for reading history and
+		// silent for activating it.
+		//
+		// Refusal, not repair. Rebuilding here would invert the
+		// generation → installer package order, and carrying a
+		// different version forward would break the
+		// one-number-one-snapshot invariant (gh#189).
+		if err := validateGenerationSymlinks(genDir); err != nil {
+			return fmt.Errorf(
+				"refusing to activate generation %d: %w; run "+
+					"`gale sync` to rebuild from config, or "+
+					"`gale generations remove %d` to discard it",
+				target, err, target,
+			)
+		}
+
 		// Farm guard before the swap, mirroring Build: the
 		// rolled-to closure is this scope's proposed claim, and
 		// a refusal must leave the current generation active
