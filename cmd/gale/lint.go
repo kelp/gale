@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -10,6 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var lintStrict bool
+
 var lintCmd = &cobra.Command{
 	Use:   "lint <recipe.toml> [recipe.toml...]",
 	Short: "Validate recipe files",
@@ -17,7 +20,7 @@ var lintCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newCmdOutput(cmd)
 
-		hasErrors := false
+		failed := false
 		for _, path := range args {
 			if strings.HasSuffix(path, ".binaries.toml") ||
 				strings.HasSuffix(path, ".versions") {
@@ -35,13 +38,19 @@ var lintCmd = &cobra.Command{
 				continue
 			}
 
-			if emitLintIssues(out, path, issues) {
-				hasErrors = true
+			// --strict fails on any issue. Warnings are the
+			// only reason a recipe CI step over a whole tree
+			// stays green while a rule fires (gale-recipes#189).
+			if emitLintIssues(out, path, issues) || lintStrict {
+				failed = true
 			}
 		}
 
-		if hasErrors {
-			return fmt.Errorf("lint errors found")
+		if failed {
+			if lintStrict {
+				return errors.New("lint issues found")
+			}
+			return errors.New("lint errors found")
 		}
 		return nil
 	},
@@ -71,5 +80,7 @@ func emitLintIssues(
 }
 
 func init() {
+	lintCmd.Flags().BoolVar(&lintStrict, "strict", false,
+		"Fail on warnings as well as errors")
 	rootCmd.AddCommand(lintCmd)
 }

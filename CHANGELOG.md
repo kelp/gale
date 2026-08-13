@@ -53,6 +53,13 @@
 
 ### Added
 
+- `gale lint --strict`: exit non-zero on warnings as well as
+  errors. Plain `gale lint` fails on errors only, so a CI step
+  over a recipe tree stays green while a warning-level rule
+  fires — the cgo linkage rule is one — and proves nothing.
+  The flag changes the exit code alone; the reported issues and
+  their prefixes are identical either way.
+
 - `gale sync --if-needed`: sync only when the last sync did not
   complete on the current `gale.toml` and `gale.lock`. The
   direnv hook uses it; a sync run by hand ignores it.
