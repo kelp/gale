@@ -7,6 +7,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func TestWithRunsFnAndReturnsResult(t *testing.T) {
@@ -156,22 +158,26 @@ func TestWithReleasesLockOnPanic(t *testing.T) {
 		})
 	}()
 
-	// Second call should succeed (lock was released)
-	done := make(chan struct{})
-	go func() {
-		err := With(lockPath, func() error {
-			return nil
-		})
-		if err != nil {
-			t.Errorf("second With() error: %v", err)
-		}
-		close(done)
-	}()
+	// With's deferred unlock ran while the panic unwound, so
+	// the lock is free by now and nothing is pending. Probe it
+	// with a non-blocking flock rather than waiting out a
+	// deadline: a still-held lock fails right here, and a
+	// loaded machine is never mistaken for one (gh#246).
+	f, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open lock file: %v", err)
+	}
+	defer f.Close()
+	fd := int(f.Fd()) //nolint:gosec // fd fits int on all supported platforms
+	if err := unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); err != nil {
+		t.Fatalf("lock still held after panic: %v", err)
+	}
+	if err := unix.Flock(fd, unix.LOCK_UN); err != nil {
+		t.Fatalf("unlock probe: %v", err)
+	}
 
-	select {
-	case <-done:
-		// Success - lock was released
-	case <-time.After(1 * time.Second):
-		t.Fatal("deadlock: second With() did not acquire lock after panic")
+	// And the released lock is usable again through the API.
+	if err := With(lockPath, func() error { return nil }); err != nil {
+		t.Errorf("second With() error: %v", err)
 	}
 }
