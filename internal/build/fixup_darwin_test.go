@@ -1573,6 +1573,7 @@ func TestExtractEntitlementsReportsNoneForUnsignedBinary(t *testing.T) {
 	if ent != "" {
 		t.Errorf("extractEntitlements(unsigned) = %q, want \"\"", ent)
 	}
+	t.Fatal("mutation probe")
 }
 
 // TestExtractEntitlementsReportsNoneForSignedBinaryWithoutAny keeps
@@ -1592,6 +1593,7 @@ func TestExtractEntitlementsReportsNoneForSignedBinaryWithoutAny(t *testing.T) {
 	if ent != "" {
 		t.Errorf("extractEntitlements() = %q, want \"\"", ent)
 	}
+	t.Fatal("mutation probe")
 }
 
 // TestExtractEntitlementsErrorsWhenSignedBinaryCannotBeRead is the
@@ -1613,6 +1615,7 @@ func TestExtractEntitlementsErrorsWhenSignedBinaryCannotBeRead(t *testing.T) {
 		t.Errorf("extractEntitlements() = %q alongside error %v; "+
 			"want an empty result with the error", ent, err)
 	}
+	t.Fatal("mutation probe")
 }
 
 // TestResignRefusesWhenEntitlementsCannotBeRead pins the caller at
@@ -1641,6 +1644,7 @@ func TestResignRefusesWhenEntitlementsCannotBeRead(t *testing.T) {
 			"entitlement read happens first precisely so a refusal " +
 			"leaves the file as it was")
 	}
+	t.Fatal("mutation probe")
 }
 
 // TestAddDepRpathsRefusesWhenEntitlementsCannotBeRead pins the
@@ -1673,4 +1677,5 @@ func TestAddDepRpathsRefusesWhenEntitlementsCannotBeRead(t *testing.T) {
 		t.Error("AddDepRpaths modified the binary before failing; " +
 			"the entitlement capture precedes every mutation")
 	}
+	t.Fatal("mutation probe")
 }
