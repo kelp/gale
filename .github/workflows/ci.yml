@@ -53,7 +53,13 @@ jobs:
       - name: Format check
         run: |
           go install mvdan.cc/gofumpt@latest
-          UNFORMATTED=$(gofumpt -l .)
+          # Tracked files only, never `.` — gofumpt parses anything
+          # named *.go, including files under .git/. A branch whose
+          # name ends in .go gives checkout's reflog a path like
+          # .git/logs/refs/remotes/origin/<branch>.go, which gofumpt
+          # then fails to parse, exiting 2 and failing every PR in
+          # the repo for a reason unrelated to any change.
+          UNFORMATTED=$(git ls-files -z '*.go' | xargs -0 gofumpt -l)
           if [ -n "$UNFORMATTED" ]; then
             echo "::error::Files need formatting:"
             echo "$UNFORMATTED"

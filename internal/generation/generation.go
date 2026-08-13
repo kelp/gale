@@ -316,6 +316,29 @@ func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
 // same split the provenance reader draws against depsmeta's
 // leniency — tolerate a partial answer where a partial answer is
 // still useful, never where a decision rests on it.
+//
+// Strict about an UNREADABLE record, deliberately not about an
+// ABSENT one. Both walks read through depsmeta.Read, which decodes a
+// missing .gale-deps.toml to an empty Metadata, so a committed store
+// dir that records nothing is a LEAF here. Moving this reader to
+// depsmeta.ReadStrict, which tells StateAbsent from StateRecorded,
+// looks like the cleanup that lets one reader serve every caller. It
+// is not (gh#238). closure.go's proposed() states the constraint:
+// calling a committed directory with no metadata unknown would make
+// the claim unusable for every package installed before metadata
+// existed, and an unusable claim refuses every operation on the
+// machine. Every caller here fails closed, so that refusal is every
+// install and every removal, with no upgrade path for a store that
+// predates the file.
+//
+// AuthoritativeClosure is the contrasting case, and the contrast is
+// what makes both readers right where they sit. It decides whether to
+// DESTROY bytes, so absence there is unknown and unknown is a
+// refusal — its doc comment says why this walk cannot serve it. This
+// walk decides what a scope must KEEP, where absence costs nothing it
+// could have named and a refusal costs the machine everything.
+//
+// TestFarmStoreDirsStrictTreatsAbsentDepsMetadataAsLeaf pins it.
 func FarmStoreDirsStrict(
 	pkgs map[string]string, storeRoot string,
 ) ([]string, error) {

@@ -208,6 +208,27 @@ before it starts.
 `gale sync` reinstalls stale packages automatically.
 `gale doctor` surfaces them with a hint to run sync.
 
+### An absent file is not an empty closure
+
+Two readers, on purpose. `depsmeta.Read` decodes a missing
+file to an empty `Metadata` with a nil error;
+`depsmeta.ReadStrict` reports `StateAbsent`, `StateUnusable`
+or `StateRecorded` and lets the caller decide.
+
+Which one a walk uses follows from what the answer
+authorizes. `AuthoritativeClosure` decides whether to
+destroy bytes, so it reads strictly and treats an absent
+record as unknown — a refusal. `FarmStoreDirsStrict` decides
+what a scope must keep, so a committed store dir with no
+metadata is a leaf. Reading it strictly there would mark the
+closure of every package installed before the file existed
+unknown, and every caller of that walk fails closed: the
+machine would refuse every install and removal with no
+upgrade path (gh#238).
+
+The strictness those two names share is about an *unreadable*
+record, never an absent one.
+
 ## gc and revision matching
 
 `cmd/gale/gc.go:105-113`'s `isReferenced` helper expands a

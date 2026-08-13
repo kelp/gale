@@ -241,25 +241,32 @@ func TestMagicPrefilterRejectsANonBinary(t *testing.T) {
 }
 
 // TestMagicPrefilterKeepsRealBinaries is the no-behavior-change
-// half: the prefilter must not shrink what gale inspect sees. This
-// test binary is itself a real Mach-O (or ELF), so it proves the
+// half: the prefilter must not shrink what gale inspect sees. The
+// fixture is a freshly compiled Mach-O (or ELF), so it proves the
 // gate passes a genuine binary through to the parser on whichever
 // platform the suite runs.
+//
+// The fixture is compiled rather than reusing os.Executable(): under
+// `just test-unprivileged` the test binary sits in a root-owned temp
+// dir that uid 65534 cannot open, so the prefilter rejects it —
+// correctly, and for a reason that says nothing about the prefilter
+// (gh#256). A binary the test owns is readable under every uid.
 func TestMagicPrefilterKeepsRealBinaries(t *testing.T) {
-	self, err := os.Executable()
-	if err != nil {
-		t.Fatal(err)
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available: the fixture is a compiled binary")
 	}
-	if !hasBinaryMagic(self) {
-		t.Fatalf("the test binary %s is a real binary", self)
+	bin := compileBinary(t, t.TempDir())
+
+	if !hasBinaryMagic(bin) {
+		t.Fatalf("the compiled fixture %s is a real binary", bin)
 	}
-	refs, err := readBinary(self)
+	refs, err := readBinary(bin)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if refs == nil {
 		t.Errorf("readBinary(%s) = nil: the prefilter dropped a real "+
-			"binary", self)
+			"binary", bin)
 	}
 }
 
