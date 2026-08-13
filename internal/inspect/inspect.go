@@ -8,9 +8,11 @@ package inspect
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 
@@ -37,6 +39,33 @@ type binaryRefs struct {
 // Implementations live in binary_{darwin,linux}.go.
 // readBinary returns (nil, nil) for files the scanner
 // should skip silently.
+
+// hasBinaryMagic reports whether path begins with one of the 4-byte
+// words this platform's binary parser accepts (binaryMagics, defined
+// per platform beside readBinary).
+//
+// It exists for cost, not correctness. ScanInstalled opens every
+// regular file under an install — a 30-package closure is tens of
+// thousands of them, nearly all documentation, headers and share/
+// data — and on darwin each non-binary otherwise costs two full
+// parser opens, macho.Open followed by macho.OpenFat. Every file
+// either parser accepts starts with one of these words, so the filter
+// changes what the scan COSTS and never what it ANSWERS.
+//
+// An unopenable or too-short file is not a binary, which is the same
+// answer the parsers gave for it.
+func hasBinaryMagic(path string) bool {
+	f, err := os.Open(path) //nolint:gosec // walks an install prefix
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false
+	}
+	return slices.Contains(binaryMagics, magic)
+}
 
 // ScanInstalled scans one installed package. r may be nil,
 // in which case checks that require the recipe

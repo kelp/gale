@@ -53,6 +53,19 @@
 
 ### Added
 
+- `gale doctor` now fails on macOS when an installed binary
+  references `@rpath/libX` that none of its own rpath entries
+  resolves (#215). A GHCR prebuilt from a gale that predated
+  `canonicalDepName` carries unversioned `@rpath` refs, and a
+  binary install never canonicalizes them, so the user found
+  out when dyld aborted. The report names the package, the file
+  and the reference; `gale install --build <pkg>` rebuilds from
+  source with current rpaths. Scope is the active generation's
+  closure — the same set the lib-farm check judges — so orphans
+  and superseded revisions, which nothing execs, stay out. The
+  check is skipped off darwin: a bare `libc.so.6` ELF
+  `DT_NEEDED` resolves through the system loader, not an rpath.
+
 - `gale lint --strict`: exit non-zero on warnings as well as
   errors. Plain `gale lint` fails on errors only, so a CI step
   over a recipe tree stays green while a warning-level rule

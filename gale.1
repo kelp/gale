@@ -267,6 +267,16 @@ files more than one declared package provides.
 Those are not arbitrated: the first package in sorted order
 provides the file, and removing one provider is the only way to
 change which.
+On macOS it fails when an installed binary in the active
+generation's closure carries an
+.Pa @rpath
+dependency reference that none of its own rpath entries
+resolves.
+Such a binary aborts under
+.Xr dyld 1
+on the next exec; rebuild it with
+.Cm gale install --build Ar pkg .
+The check is skipped on other platforms.
 A scope whose last sync did not complete is reported the same
 way, naming the packages that failed.
 Run

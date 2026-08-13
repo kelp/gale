@@ -20,6 +20,7 @@ import (
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/inspect"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
@@ -91,6 +92,14 @@ type doctorCheck struct {
 	run  func(ctx *doctorContext) bool // true = passed
 }
 
+// Scope labels. They name the scope in every report line, and
+// scopePkgs keys off them, so the enumeration and the package set a
+// check reads cannot drift apart.
+const (
+	scopeGlobal  = "global"
+	scopeProject = "project"
+)
+
 // doctorScope is one scope a doctor run covers: the gale dir whose
 // generation, lock and farm it owns, and the manifest that declares
 // its packages.
@@ -98,6 +107,19 @@ type doctorScope struct {
 	label      string
 	galeDir    string
 	configPath string
+}
+
+// scopePkgs returns the declared packages doctor resolved for a
+// scope: the same maps checkFarmScope validates the farm against,
+// already host-overlaid by checkGlobalConfig and checkProjectConfig.
+// A scope whose manifest failed to parse has an empty map, which is
+// the right answer — those checks report the parse failure, and a
+// second red line for it would double-count one problem.
+func scopePkgs(ctx *doctorContext, s doctorScope) map[string]string {
+	if s.label == scopeProject {
+		return ctx.projPkgs
+	}
+	return ctx.globalPkgs
 }
 
 // doctorScopes enumerates the scopes a run covers: the global one
@@ -109,7 +131,7 @@ type doctorScope struct {
 // --repair never touches, or stay silent about one it does.
 func doctorScopes(ctx *doctorContext) ([]doctorScope, error) {
 	scopes := []doctorScope{{
-		label:      "global",
+		label:      scopeGlobal,
 		galeDir:    ctx.galeDir,
 		configPath: filepath.Join(ctx.galeDir, "gale.toml"),
 	}}
@@ -130,7 +152,7 @@ func doctorScopes(ctx *doctorContext) ([]doctorScope, error) {
 		return nil, fmt.Errorf("resolving project gale dir: %w", err)
 	}
 	return append(scopes, doctorScope{
-		label:      "project",
+		label:      scopeProject,
 		galeDir:    projGaleDir,
 		configPath: projConfig,
 	}), nil
@@ -161,6 +183,7 @@ var doctorChecks = []doctorCheck{
 	{"shadowed files", checkShadowedFiles},
 	{"revision drift", checkRevisionDrift},
 	{"lib farm", checkFarm},
+	{"binary linkage", checkMachOLinkage},
 	{"stale installs", checkStaleInstalls},
 	{"PATH", checkPATH},
 	{"direnv", checkDirenvIntegration},
@@ -1121,6 +1144,148 @@ func reportContestedAliases(ctx *doctorContext, active []string) {
 		"Binaries recording these names resolve them only via "+
 			"per-dep rpaths; rebuild them against one provider.",
 	))
+}
+
+// checkMachOLinkage reports installed Mach-Os carrying an @rpath dep
+// reference that none of their own LC_RPATH entries resolves (gh#215).
+//
+// The state is created before gale ever sees it. AddDepRpaths runs in
+// BuildLocal only; a binary install runs RelocateStaleRpaths and
+// EnsureCodeSigned and never canonicalizes, so a GHCR prebuilt from a
+// gale predating canonicalDepName keeps its unversioned @rpath refs
+// indefinitely. #205 stopped gale creating such artifacts and does
+// nothing for the ones already in the store.
+//
+// It fails rather than warns because the binary is broken now, not
+// predicted to break: dyld aborts on the next exec. That is the class
+// of checkSymlinks' broken links and checkGeneration's dead current,
+// both of which fail. It is not gh#50's unfixable-drift shape either
+// — `gale install --build <pkg>` rebuilds from source, where
+// AddDepRpaths runs, and the source fallback is always available.
+//
+// A contested alias is a real finding here even though
+// reportContestedAliases warns and passes. Dropping libssl.dylib when
+// openssl and openssl4 both provide it is right FOR THE FARM; a binary
+// that recorded @rpath/libssl.dylib and carries only the farm rpath
+// still aborts at exec, and this names that concrete file.
+//
+// No --repair. Repair would have to reinstall, colliding with "the
+// installed binary equals the CI-built, hashed, attested artifact";
+// doctor's repair surface is generation, farm and re-sign only.
+func checkMachOLinkage(ctx *doctorContext) bool {
+	return checkMachOLinkageOn(ctx, runtime.GOOS)
+}
+
+// checkMachOLinkageOn is checkMachOLinkage with the platform as an
+// argument. internal/inspect compiles everywhere, so the check is
+// gated by runtime rather than a build tag — `just check` typechecks
+// it on Linux, and only the behavior is darwin-only. The seam is what
+// lets the skip branch be tested on both platforms.
+//
+// The gate is not squeamishness about ELF. resolveRef answers "does
+// some rpath entry hold this name", which is the whole question on
+// darwin and half of it on Linux: a bare libc.so.6 DT_NEEDED resolves
+// through the system loader's search path, no rpath involved. Run on
+// Linux it would flag nearly every binary on the machine.
+func checkMachOLinkageOn(ctx *doctorContext, goos string) bool {
+	if goos != "darwin" {
+		ctx.out.Success("Binary linkage (skipped — darwin only)")
+		return true
+	}
+	dirs, err := linkageScanDirs(ctx)
+	if err != nil {
+		ctx.out.Warn(fmt.Sprintf("binary linkage check skipped: %v", err))
+		return true
+	}
+	var lines []string
+	for _, dir := range dirs {
+		// r is nil: the recipe-dependent kinds need the registry, and
+		// doctor stays airplane-clean by default (network-perf/0004).
+		issues, sErr := inspect.ScanInstalled(
+			dir, filepath.Base(filepath.Dir(dir)), filepath.Base(dir), nil,
+		)
+		if sErr != nil {
+			ctx.out.Warn(fmt.Sprintf(
+				"binary linkage unreadable in %s: %v", dir, sErr,
+			))
+			continue
+		}
+		lines = append(lines, unresolvableRefLines(issues)...)
+	}
+	if len(lines) == 0 {
+		ctx.out.Success(fmt.Sprintf(
+			"Binary linkage (%d package(s) scanned)", len(dirs),
+		))
+		return true
+	}
+	ctx.out.Error(cappedList(
+		fmt.Sprintf(
+			"Unresolvable @rpath reference(s) in %d installed binary "+
+				"file(s):", len(lines),
+		),
+		lines,
+		"Run: gale install --build <pkg> "+
+			"(rebuilds from source with current rpaths)",
+	))
+	return false
+}
+
+// linkageScanDirs returns the store dirs one doctor run scans: every
+// scope's active-generation closure, deduped.
+//
+// FarmStoreDirs, not store.List. The closure — declared packages plus
+// the transitive runtime deps recorded in .gale-deps.toml — is what
+// the active generation puts on PATH and what the farm serves.
+// Superseded revisions and orphans are deliberately out: they are not
+// on PATH, nothing execs them, and checkOrphans and gc own them. It
+// is also the set checkFarmScope judges, so the two checks cannot
+// disagree about which binaries matter.
+//
+// CanonicalDir keys the dedupe because the same store dir reached
+// through macOS /var and through /private/var is one directory, and
+// scanning it twice would report every finding twice.
+func linkageScanDirs(ctx *doctorContext) ([]string, error) {
+	scopes, err := doctorScopes(ctx)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var dirs []string
+	for _, s := range scopes {
+		for _, dir := range generation.FarmStoreDirs(
+			scopePkgs(ctx, s), ctx.storeRoot,
+		) {
+			key := farm.CanonicalDir(dir)
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			dirs = append(dirs, dir)
+		}
+	}
+	sort.Strings(dirs)
+	return dirs, nil
+}
+
+// unresolvableRefLines renders the unresolvable refs of one scan,
+// naming the package, the file relative to its store dir, and the
+// reference dyld would fail on.
+//
+// One kind of the five. stale-rpath is `gale inspect`'s: a dead rpath
+// entry beside a live one costs a stat, it does not break the binary.
+// version-skew, undeclared-dep and over-declared-dep are recipe- and
+// audit-shaped, and the last two need a registry doctor does not
+// touch by default.
+func unresolvableRefLines(issues []inspect.Issue) []string {
+	var lines []string
+	for _, iss := range issues {
+		if iss.Kind != inspect.KindUnresolvableRef {
+			continue
+		}
+		lines = append(lines, fmt.Sprintf("%s@%s: %s -> %s",
+			iss.Package, iss.Version, iss.Binary, iss.Details))
+	}
+	return lines
 }
 
 // checkStaleInstalls reports installed packages whose
