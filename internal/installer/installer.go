@@ -730,7 +730,11 @@ func (inst *Installer) installGitPrepare(r *recipe.Recipe) (*build.BuildResult, 
 	}
 
 	// Build from git — returns hash as version.
-	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
+	scratch, err := build.TmpDir()
+	if err != nil {
+		return nil, "", nil, noop, fmt.Errorf("build temp dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(scratch, "gale-install-*")
 	if err != nil {
 		return nil, "", nil, noop, fmt.Errorf("create temp dir: %w", err)
 	}
@@ -1198,7 +1202,11 @@ func setupAttestTempfile(bin *recipe.Binary, v attestation.Verifier) (bool, stri
 	if bin.EffectiveTrust() != recipe.TrustSigstore || v == nil {
 		return false, "", nil
 	}
-	af, err := os.CreateTemp(build.TmpDir(), "gale-verify-*.tar.zst")
+	scratch, err := build.TmpDir()
+	if err != nil {
+		return false, "", fmt.Errorf("build temp dir: %w", err)
+	}
+	af, err := os.CreateTemp(scratch, "gale-verify-*.tar.zst")
 	if err != nil {
 		return false, "", fmt.Errorf("create attestation tempfile: %w", err)
 	}
@@ -1761,7 +1769,11 @@ func (inst *Installer) installDepsInner(
 }
 
 func (inst *Installer) installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *build.BuildDeps) (string, error) {
-	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
+	scratch, err := build.TmpDir()
+	if err != nil {
+		return "", fmt.Errorf("build temp dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(scratch, "gale-install-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}
@@ -1781,7 +1793,11 @@ func (inst *Installer) installFromLocalSource(r *recipe.Recipe, sourceDir, store
 // means the caller is staging. A method so the in-place commit
 // inherits the installer's farm guard.
 func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) (string, error) {
-	tmpDir, err := os.MkdirTemp(build.TmpDir(), "gale-install-*")
+	scratch, err := build.TmpDir()
+	if err != nil {
+		return "", fmt.Errorf("build temp dir: %w", err)
+	}
+	tmpDir, err := os.MkdirTemp(scratch, "gale-install-*")
 	if err != nil {
 		return "", fmt.Errorf("create temp dir: %w", err)
 	}

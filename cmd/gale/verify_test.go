@@ -138,3 +138,60 @@ func TestCheckPrebuilt(t *testing.T) {
 		})
 	}
 }
+
+// --- gh#235: build.TmpDir's error is propagated, not absorbed ---
+
+// TestDownloadArchiveErrorsWhenNoScratchDirAvailable pins the
+// contract at a cmd/gale caller. downloadArchive used to test the
+// return value itself (`if tmpDir == ""`), which never fired,
+// because "" meant "os.TempDir()" to os.CreateTemp — the verify
+// archive silently landed in /tmp. Now build.TmpDir has already
+// exhausted its own fallback, so the only thing left for the
+// caller to do is propagate.
+//
+// GALE_GITHUB_TOKEN and GALE_GHCR_URL are set so a regression that
+// reordered the check behind the token exchange would fail on a
+// network error here rather than hang: the assertion is that the
+// error names the scratch dir, not merely that one occurred.
+func TestDownloadArchiveErrorsWhenNoScratchDirAvailable(t *testing.T) {
+	t.Setenv("GALE_GITHUB_TOKEN", "test-token")
+	t.Setenv("GALE_GHCR_URL", "http://127.0.0.1:1")
+	breakGaleDir(t)
+	breakSystemTemp(t)
+
+	const sha = "0123456789abcdef0123456789abcdef" +
+		"0123456789abcdef0123456789abcdef"
+	path, err := downloadArchive("hello", sha)
+	if err == nil {
+		os.Remove(path)
+		t.Fatal("downloadArchive returned nil error with no usable " +
+			"scratch dir")
+	}
+	if path != "" {
+		t.Errorf("downloadArchive returned path %q alongside error %v",
+			path, err)
+	}
+	if !strings.Contains(err.Error(), "build temp dir") {
+		t.Errorf("downloadArchive error %q does not name the scratch "+
+			"dir as the cause", err)
+	}
+}
+
+// TestDownloadArchiveUsesFallbackScratchDir is the other half:
+// an unusable ~/.gale is survivable, so downloadArchive must get
+// past scratch allocation and fail at the network instead.
+func TestDownloadArchiveUsesFallbackScratchDir(t *testing.T) {
+	t.Setenv("GALE_GITHUB_TOKEN", "test-token")
+	t.Setenv("GALE_GHCR_URL", "http://127.0.0.1:1")
+	breakGaleDir(t)
+
+	const sha = "0123456789abcdef0123456789abcdef" +
+		"0123456789abcdef0123456789abcdef"
+	if _, err := downloadArchive("hello", sha); err == nil {
+		t.Fatal("downloadArchive unexpectedly succeeded against an " +
+			"unroutable registry")
+	} else if strings.Contains(err.Error(), "build temp dir") {
+		t.Errorf("downloadArchive failed on scratch allocation (%v); "+
+			"an unusable ~/.gale must fall back, not abort", err)
+	}
+}

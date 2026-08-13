@@ -34,15 +34,59 @@ import (
 // writes into the developer's real gale store and, when it
 // skips cleanup, leaves the directories behind (gh#235).
 //
-// The directory must be real and writable: TmpDir() returns ""
-// when its MkdirAll fails, and os.MkdirTemp reads "" as "use
-// os.TempDir()", so a bogus HOME degrades silently into /tmp
-// with the test's assertion never exercised (gh#214).
+// The directory must be real and writable. A HOME whose
+// ~/.gale/tmp cannot be created does not fail the test — TmpDir()
+// falls back to the system temp dir by design (gh#235) — it just
+// moves the test's allocations into the developer's /tmp, where
+// nothing cleans them up.
 func isolateHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	return home
+}
+
+// breakGaleDir isolates HOME and then plants a regular file
+// where ~/.gale has to be a directory, so every MkdirAll beneath
+// it fails with ENOTDIR. Denying access with chmod proves nothing
+// in the agent container, which runs as root
+// (docs/dev/agent-environment.md); a structurally impossible path
+// fails for root too.
+func breakGaleDir(t *testing.T) {
+	t.Helper()
+	home := isolateHome(t)
+	blocker := filepath.Join(home, ".gale")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatalf("plant %s as a regular file: %v", blocker, err)
+	}
+}
+
+// breakSystemTemp points TMPDIR at a path underneath a regular
+// file, so os.TempDir() names a location nothing — root included
+// — can create. os.TempDir reads TMPDIR on every unix including
+// darwin (os/file_unix.go, //go:build unix), so this works the
+// same on both platforms gale ships for.
+//
+// The scratch dir it needs is allocated before TMPDIR moves,
+// since t.TempDir() itself resolves through os.TempDir().
+func breakSystemTemp(t *testing.T) {
+	t.Helper()
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatalf("plant %s as a regular file: %v", blocker, err)
+	}
+	t.Setenv("TMPDIR", filepath.Join(blocker, "tmp"))
+}
+
+// captureBuildOutput redirects the package output writer for the
+// rest of the test and returns a func reading what was written.
+func captureBuildOutput(t *testing.T) func() string {
+	t.Helper()
+	var buf bytes.Buffer
+	prev := out
+	SetOutput(output.New(&buf, false))
+	t.Cleanup(func() { SetOutput(prev) })
+	return buf.String
 }
 
 // --- Behavior 1: Successful build ---
@@ -2541,32 +2585,72 @@ func TestFixupShebangsSkipsBinaries(t *testing.T) {
 
 // --- BUG-2: buildEnv propagates MkdirTemp failure ---
 
+// gh#235 rewrote this test. It used to bail out with "we can't
+// easily simulate MkdirTemp failure in a unit test", so both of
+// its early returns passed vacuously. Breaking both scratch
+// locations structurally provokes the failure for real, which
+// the old TmpDir contract could not express at all: it returned
+// "" and os.MkdirTemp read that as os.TempDir(), so buildEnv
+// either succeeded somewhere unexpected or failed for a reason
+// no caller could name.
 func TestBuildEnvReturnsNilOnTmpDirFailure(t *testing.T) {
-	isolateHome(t)
+	// Both locations have to be broken: an unusable ~/.gale alone
+	// is a fallback, not a failure.
+	breakGaleDir(t)
+	breakSystemTemp(t)
 
-	// When MkdirTemp fails (e.g., TmpDir returns empty
-	// string pointing to a non-writable location), buildEnv
-	// should return nil env instead of falling back to a
-	// shared fixed path.
-	//
-	// We can't easily simulate MkdirTemp failure in a unit
-	// test without mocking, but we can verify the fixed
-	// fallback path is no longer used by checking that
-	// buildEnv never produces a PATH containing a
-	// non-unique "gale-tools" dir (without random suffix).
-	env, cleanup, err := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0",
+	})
 	if cleanup != nil {
 		defer cleanup()
 	}
 
-	if env == nil {
-		// MkdirTemp actually failed in test env — that's
-		// fine, the important thing is no shared fallback.
-		return
+	if err == nil {
+		t.Fatalf("buildEnv returned nil error with no usable "+
+			"scratch dir anywhere; env = %v", env)
+	}
+	if env != nil {
+		t.Errorf("buildEnv returned env %v alongside error %v; a "+
+			"failed allocation must return nil env", env, err)
+	}
+}
+
+// TestBuildEnvUsesFallbackScratchWhenGaleDirUnusable pins the
+// other half of the contract: a broken ~/.gale is survivable, so
+// buildEnv still hands back a working environment.
+func TestBuildEnvUsesFallbackScratchWhenGaleDirUnusable(t *testing.T) {
+	breakGaleDir(t)
+	captureBuildOutput(t)
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0",
+	})
+	if cleanup != nil {
+		defer cleanup()
 	}
 	if err != nil {
-		// Error returned properly — test passed.
-		return
+		t.Fatalf("buildEnv: %v", err)
+	}
+	if envToMap(env)["TMPDIR"] == "" {
+		t.Error("buildEnv produced no TMPDIR from the fallback scratch dir")
+	}
+}
+
+// TestBuildEnvUsesUniqueToolsDir keeps BUG-2's original
+// assertion: the tools dir carries MkdirTemp's random suffix
+// rather than a fixed, shared "gale-tools" name.
+func TestBuildEnvUsesUniqueToolsDir(t *testing.T) {
+	isolateHome(t)
+
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0",
+	})
+	if cleanup != nil {
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
 	}
 
 	envMap := envToMap(env)
@@ -2875,41 +2959,54 @@ func TestRestorePrefixPlaceholderSkipsBinaries(t *testing.T) {
 
 // --- BUG FIX 1: buildEnv returns error on MkdirTemp failure ---
 
-func TestBuildEnvReturnsErrorOnTmpDirFailure(t *testing.T) {
+// TestBuildEnvFallsBackWhenGaleTmpUnwritable was
+// TestBuildEnvReturnsErrorOnTmpDirFailure, and gh#235 reverses
+// what it asserts. A read-only ~/.gale/tmp is now a fallback
+// condition rather than a failure: TmpDir() relocates the
+// allocation to the verified system temp dir and warns about the
+// reproducibility cost. buildEnv fails only when the fallback is
+// unusable too, which this fixture cannot express — that case is
+// TestBuildEnvReturnsNilOnTmpDirFailure, which breaks both
+// locations structurally and therefore needs no privilege gate.
+//
+// The root gate stays: chmod does not constrain uid 0, so the
+// premise evaporates there (docs/dev/agent-environment.md).
+func TestBuildEnvFallsBackWhenGaleTmpUnwritable(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("running as root: MkdirTemp succeeds in a read-only dir")
+		t.Skip("running as root: writes succeed in a read-only dir")
 	}
-	// Save original HOME for cleanup.
-	oldHome := os.Getenv("HOME")
-	defer os.Setenv("HOME", oldHome)
+	stderr := captureBuildOutput(t)
 
-	// Create a temp dir structure with ~/.gale/tmp that is not writable.
-	tmpBase := t.TempDir()
-	fakeHome := filepath.Join(tmpBase, "home")
-	galeDir := filepath.Join(fakeHome, ".gale")
-	tmpDir := filepath.Join(galeDir, "tmp")
-
+	fakeHome := filepath.Join(t.TempDir(), "home")
+	tmpDir := filepath.Join(fakeHome, ".gale", "tmp")
 	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-
-	// Make ~/.gale/tmp read-only so MkdirTemp inside it will fail.
 	if err := os.Chmod(tmpDir, 0o444); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Chmod(tmpDir, 0o755) // restore for cleanup
+	t.Cleanup(func() { _ = os.Chmod(tmpDir, 0o755) })
+	t.Setenv("HOME", fakeHome)
 
-	os.Setenv("HOME", fakeHome)
-
-	env, cleanup, err := buildEnv(&BuildContext{PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0", System: "", Debug: false, Deps: nil})
-	if err == nil {
-		t.Fatal("expected error when MkdirTemp fails")
-	}
-	if env != nil {
-		t.Error("expected nil env on error")
-	}
+	env, cleanup, err := buildEnv(&BuildContext{
+		PrefixDir: "/tmp/prefix", Jobs: "4", Version: "1.0.0",
+	})
 	if cleanup != nil {
-		cleanup() // clean up if somehow it succeeded
+		defer cleanup()
+	}
+	if err != nil {
+		t.Fatalf("buildEnv: %v; an unwritable ~/.gale/tmp must fall "+
+			"back to the system temp dir, not fail", err)
+	}
+	if env == nil {
+		t.Fatal("buildEnv returned nil env with nil error")
+	}
+	if buildTmp := envToMap(env)["TMPDIR"]; strings.HasPrefix(buildTmp, tmpDir) {
+		t.Errorf("buildEnv allocated TMPDIR %q inside the unwritable "+
+			"~/.gale/tmp", buildTmp)
+	}
+	if got := stderr(); !strings.Contains(got, "~/.gale/tmp") {
+		t.Errorf("fallback was silent; stderr = %q", got)
 	}
 }
 
@@ -3105,5 +3202,158 @@ func TestRelocateStalePathsInTextFilesSkipsBinaryFiles(t *testing.T) {
 	got, _ := os.ReadFile(binFile)
 	if string(got) != string(content) {
 		t.Errorf("binary file was modified but should be unchanged")
+	}
+}
+
+// --- gh#235: TmpDir returns a usable dir or a real error ---
+//
+// TmpDir's result is fed straight to os.MkdirTemp/os.CreateTemp,
+// both of which read "" as "use os.TempDir()". Returning "" for
+// an unusable ~/.gale/tmp therefore never disabled the
+// build-scoped directory; it silently relocated every build,
+// install and verify scratch dir to /tmp, with no caller able to
+// tell. The fallback itself is intended and stays — it just has
+// to be an explicit, announced decision inside TmpDir rather
+// than an accident of the sentinel value.
+
+func TestTmpDirReturnsBuildScopedPath(t *testing.T) {
+	home := isolateHome(t)
+	stderr := captureBuildOutput(t)
+
+	dir, err := TmpDir()
+	if err != nil {
+		t.Fatalf("TmpDir: %v", err)
+	}
+	assertSamePath(t, dir, filepath.Join(home, ".gale", "tmp"))
+	if got := stderr(); got != "" {
+		t.Errorf("TmpDir warned on the normal path: %q", got)
+	}
+}
+
+func TestTmpDirFallsBackToSystemTempWhenGaleDirUnusable(t *testing.T) {
+	breakGaleDir(t)
+	stderr := captureBuildOutput(t)
+
+	dir, err := TmpDir()
+	if err != nil {
+		t.Fatalf("TmpDir returned %v; an unusable ~/.gale/tmp must "+
+			"fall back to the system temp dir, not fail", err)
+	}
+	assertSamePath(t, dir, os.TempDir())
+
+	// The returned directory has to be usable, not merely named:
+	// every caller's next move is MkdirTemp or CreateTemp in it.
+	probe, err := os.MkdirTemp(dir, "gale-fallback-probe-*")
+	if err != nil {
+		t.Fatalf("TmpDir returned an unusable path %q: %v", dir, err)
+	}
+	_ = os.RemoveAll(probe)
+
+	// The fallback changes the workspace path length, which
+	// changes Mach-O load-command layout (gale-recipes#79). It is
+	// allowed, but it must not be silent.
+	warning := stderr()
+	if !strings.Contains(warning, os.TempDir()) {
+		t.Errorf("fallback warning %q does not name the directory "+
+			"used (%s)", warning, os.TempDir())
+	}
+	if !strings.Contains(warning, "~/.gale/tmp") {
+		t.Errorf("fallback warning %q does not name the reason "+
+			"(~/.gale/tmp being unavailable)", warning)
+	}
+}
+
+func TestTmpDirErrorsWhenNeitherLocationUsable(t *testing.T) {
+	breakGaleDir(t)
+	breakSystemTemp(t)
+
+	dir, err := TmpDir()
+	if err == nil {
+		t.Fatalf("TmpDir() = %q, <nil>; want an error when neither "+
+			"~/.gale/tmp nor the system temp dir can be created", dir)
+	}
+	if dir != "" {
+		t.Errorf("TmpDir() returned path %q alongside error %v; a "+
+			"failed allocation must not hand back a path a caller "+
+			"could pass to os.MkdirTemp", dir, err)
+	}
+}
+
+// --- gh#235: sourceCache carries the identical contract ---
+
+func TestSourceCacheReturnsHomeScopedPath(t *testing.T) {
+	home := isolateHome(t)
+	stderr := captureBuildOutput(t)
+
+	dir, err := sourceCache()
+	if err != nil {
+		t.Fatalf("sourceCache: %v", err)
+	}
+	assertSamePath(t, dir, filepath.Join(home, ".gale", "cache"))
+	if got := stderr(); got != "" {
+		t.Errorf("sourceCache warned on the normal path: %q", got)
+	}
+}
+
+// TestSourceCacheFallbackIsGaleOwned pins the one way the two
+// fallbacks differ. TmpDir's callers name their scratch with
+// MkdirTemp, so sharing os.TempDir() is safe; sourceCache's
+// entries are named by their SHA256, and a fixed filename
+// directly in a world-writable /tmp is a collision and poisoning
+// surface. The fallback is therefore a gale-owned subdirectory.
+func TestSourceCacheFallbackIsGaleOwned(t *testing.T) {
+	breakGaleDir(t)
+	stderr := captureBuildOutput(t)
+
+	dir, err := sourceCache()
+	if err != nil {
+		t.Fatalf("sourceCache returned %v; an unusable ~/.gale/cache "+
+			"must fall back, not fail", err)
+	}
+	assertSamePath(t, dir, filepath.Join(os.TempDir(),
+		fmt.Sprintf("gale-cache-%d", os.Getuid())))
+
+	probe, err := os.CreateTemp(dir, "gale-cache-probe-*")
+	if err != nil {
+		t.Fatalf("sourceCache returned an unusable path %q: %v", dir, err)
+	}
+	_ = probe.Close()
+	_ = os.Remove(probe.Name())
+
+	if got := stderr(); !strings.Contains(got, "~/.gale/cache") {
+		t.Errorf("fallback warning %q does not name the reason", got)
+	}
+}
+
+func TestSourceCacheErrorsWhenNeitherLocationUsable(t *testing.T) {
+	breakGaleDir(t)
+	breakSystemTemp(t)
+
+	dir, err := sourceCache()
+	if err == nil {
+		t.Fatalf("sourceCache() = %q, <nil>; want an error when "+
+			"neither location can be created", dir)
+	}
+	if dir != "" {
+		t.Errorf("sourceCache() returned path %q alongside error %v",
+			dir, err)
+	}
+}
+
+// assertSamePath compares two paths with both sides resolved.
+// macOS /var is a symlink to /private/var, so os.TempDir() and a
+// path built from it can spell the same directory differently.
+func assertSamePath(t *testing.T, got, want string) {
+	t.Helper()
+	gotResolved, err := filepath.EvalSymlinks(got)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", got, err)
+	}
+	wantResolved, err := filepath.EvalSymlinks(want)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", want, err)
+	}
+	if gotResolved != wantResolved {
+		t.Errorf("path = %q, want %q", gotResolved, wantResolved)
 	}
 }

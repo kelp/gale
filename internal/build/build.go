@@ -69,7 +69,11 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 		return nil, err
 	}
 
-	workspace, err := makeBuildWorkspace(TmpDir())
+	tmpDir, err := TmpDir()
+	if err != nil {
+		return nil, fmt.Errorf("build temp dir: %w", err)
+	}
+	workspace, err := makeBuildWorkspace(tmpDir)
 	if err != nil {
 		return nil, err
 	}
@@ -115,7 +119,11 @@ func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, debug bool, deps 
 		return nil, err
 	}
 
-	workspace, err := makeBuildWorkspace(TmpDir())
+	tmpDir, err := TmpDir()
+	if err != nil {
+		return nil, fmt.Errorf("build temp dir: %w", err)
+	}
+	workspace, err := makeBuildWorkspace(tmpDir)
 	if err != nil {
 		return nil, err
 	}
@@ -266,7 +274,11 @@ func BuildGit(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (
 		return nil, "", fmt.Errorf("no source.repo for git build")
 	}
 
-	cloneDir, err := os.MkdirTemp(TmpDir(), "gale-git-*")
+	tmpDir, err := TmpDir()
+	if err != nil {
+		return nil, "", fmt.Errorf("build temp dir: %w", err)
+	}
+	cloneDir, err := os.MkdirTemp(tmpDir, "gale-git-*")
 	if err != nil {
 		return nil, "", fmt.Errorf("create clone dir: %w", err)
 	}
@@ -749,16 +761,20 @@ func depBinTool(deps *BuildDeps, tool string) string {
 // consults the real home for base search dirs like ~/.gale/bin.
 func buildEnv(bc *BuildContext) ([]string, func(), error) {
 	deps := bc.Deps
-	toolsDir, err := os.MkdirTemp(TmpDir(), "gale-tools-*")
+	tmpDir, err := TmpDir()
+	if err != nil {
+		return nil, nil, fmt.Errorf("build temp dir: %w", err)
+	}
+	toolsDir, err := os.MkdirTemp(tmpDir, "gale-tools-*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create tools directory: %w", err)
 	}
-	buildHome, err := os.MkdirTemp(TmpDir(), "gale-home-*")
+	buildHome, err := os.MkdirTemp(tmpDir, "gale-home-*")
 	if err != nil {
 		os.RemoveAll(toolsDir)
 		return nil, nil, fmt.Errorf("create home directory: %w", err)
 	}
-	buildTmp, err := os.MkdirTemp(TmpDir(), "gale-tmp-*")
+	buildTmp, err := os.MkdirTemp(tmpDir, "gale-tmp-*")
 	if err != nil {
 		os.RemoveAll(toolsDir)
 		os.RemoveAll(buildHome)
@@ -1319,32 +1335,118 @@ func isTextContent(data []byte) bool {
 	return n > 0
 }
 
-// TmpDir returns the path to ~/.gale/tmp/, creating it
-// if needed. Falls back to system temp if unavailable.
-func TmpDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return ""
-	}
-	dir := filepath.Join(home, ".gale", "tmp")
+// ensureWritableDir creates dir if needed and proves it is
+// writable by creating and removing a file inside it.
+//
+// MkdirAll alone is not proof. It returns nil for a directory
+// that already exists but rejects writes, which is precisely the
+// case a fallback location has to rule out before it is offered
+// to a caller as usable.
+func ensureWritableDir(dir string) error {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ""
+		return fmt.Errorf("create %s: %w", dir, err)
 	}
-	return dir
+	probe, err := os.CreateTemp(dir, ".gale-probe-*")
+	if err != nil {
+		return fmt.Errorf("write to %s: %w", dir, err)
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return nil
 }
 
-// sourceCache returns the path to ~/.gale/cache/, creating
-// it if needed. Returns empty string if unavailable.
-func sourceCache() string {
+// galeHomeSubdir returns ~/.gale/<name>, created and verified
+// writable.
+func galeHomeSubdir(name string) (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("locate home directory: %w", err)
 	}
-	dir := filepath.Join(home, ".gale", "cache")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return ""
+	dir := filepath.Join(home, ".gale", name)
+	if err := ensureWritableDir(dir); err != nil {
+		return "", err
 	}
-	return dir
+	return dir, nil
+}
+
+// TmpDir returns a directory for build and install scratch
+// work. It prefers ~/.gale/tmp: gc sweeps interrupted builds out
+// of it (gh#79), and it lives on the home volume rather than a
+// small /tmp tmpfs. When $HOME is unavailable (cron, systemd
+// units, launchd agents, sudo without -H) or ~/.gale/tmp cannot
+// be created (read-only home, full disk, a regular file already
+// in the way), it falls back to os.TempDir(). Only when neither
+// location is usable does it return an error.
+//
+// The result is always a real, writable directory or a real
+// error — never "" for the caller to test. "" is what
+// os.MkdirTemp and os.CreateTemp read as "use os.TempDir()", so
+// the old sentinel did not disable the build-scoped directory,
+// it silently relocated every scratch dir to /tmp (gh#235).
+//
+// The fallback is warned about because it is not free. The build
+// workspace path is baked into Mach-O install names at link
+// time, and install_name_tool preserves each load command's
+// original size, so moving the parent from ~/.gale/tmp to /tmp
+// changes the path length and with it the binary's load-command
+// layout: a HOME-less build is not byte-reproducible against a
+// normal one (gale-recipes#79 — the same invariant behind
+// makeBuildWorkspace's fixed-length suffix). The fallback is the
+// intended behavior; the warning only makes its consequence
+// visible instead of silent.
+func TmpDir() (string, error) {
+	dir, err := galeHomeSubdir("tmp")
+	if err == nil {
+		return dir, nil
+	}
+	fallback := os.TempDir()
+	if fbErr := ensureWritableDir(fallback); fbErr != nil {
+		return "", fmt.Errorf(
+			"no usable build temp dir: %w; %w", err, fbErr,
+		)
+	}
+	out.Warn(fmt.Sprintf(
+		"~/.gale/tmp unavailable (%v) — building under %s "+
+			"instead. Binaries built here are not byte-identical "+
+			"to ones built under ~/.gale/tmp, and `gale gc` "+
+			"cannot reclaim their scratch.", err, fallback,
+	))
+	return fallback, nil
+}
+
+// sourceCache returns a directory for cached source tarballs,
+// preferring ~/.gale/cache and falling back to a gale-owned
+// subdirectory of os.TempDir(). Same contract as TmpDir: a real,
+// writable directory or a real error, never "".
+//
+// The fallback is a named subdirectory rather than os.TempDir()
+// itself because cache entries are keyed by their SHA256 — a
+// fixed filename, unlike the random ones TmpDir's callers
+// generate — and a fixed name directly in a world-writable /tmp
+// is a collision surface. The uid suffix keeps two users on one
+// machine out of each other's cache: without it the first user
+// to fall back owns the directory and every later one gets
+// EACCES. Entries are still SHA256-verified on read
+// (fetchSource), so the directory is a cache, never trust.
+func sourceCache() (string, error) {
+	dir, err := galeHomeSubdir("cache")
+	if err == nil {
+		return dir, nil
+	}
+	fallback := filepath.Join(os.TempDir(),
+		fmt.Sprintf("gale-cache-%d", os.Getuid()))
+	if fbErr := ensureWritableDir(fallback); fbErr != nil {
+		return "", fmt.Errorf(
+			"no usable source cache dir: %w; %w", err, fbErr,
+		)
+	}
+	out.Warn(fmt.Sprintf(
+		"~/.gale/cache unavailable (%v) — caching sources in %s "+
+			"instead, where they do not survive a reboot.",
+		err, fallback,
+	))
+	return fallback, nil
 }
 
 // fetchSource places the verified source tarball for r at
@@ -1355,21 +1457,22 @@ func sourceCache() string {
 // failure. A fresh download is verified and then saved back to
 // the cache atomically.
 func fetchSource(r *recipe.Recipe, tarballPath string) error {
-	cacheDir := sourceCache()
-	if cacheDir != "" {
-		cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
-		if _, err := os.Stat(cachedFile); err == nil {
-			if err := copyFile(cachedFile, tarballPath); err == nil {
-				out.Step(fmt.Sprintf("Using cached source (%s)",
-					r.Source.SHA256[:12]))
-				out.Step("Verifying SHA256...")
-				if download.VerifySHA256(tarballPath, r.Source.SHA256) == nil {
-					return nil
-				}
-				out.Step("Cached source is corrupt — " +
-					"evicting and re-downloading")
-				_ = os.Remove(cachedFile)
+	cacheDir, err := sourceCache()
+	if err != nil {
+		return fmt.Errorf("source cache: %w", err)
+	}
+	cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
+	if _, err := os.Stat(cachedFile); err == nil {
+		if err := copyFile(cachedFile, tarballPath); err == nil {
+			out.Step(fmt.Sprintf("Using cached source (%s)",
+				r.Source.SHA256[:12]))
+			out.Step("Verifying SHA256...")
+			if download.VerifySHA256(tarballPath, r.Source.SHA256) == nil {
+				return nil
 			}
+			out.Step("Cached source is corrupt — " +
+				"evicting and re-downloading")
+			_ = os.Remove(cachedFile)
 		}
 	}
 
@@ -1385,16 +1488,13 @@ func fetchSource(r *recipe.Recipe, tarballPath string) error {
 	// Save to cache after successful verify. Atomic (write
 	// aside, then rename) so an interrupted write never leaves
 	// a truncated file under the correct hash name.
-	if cacheDir != "" {
-		cachedFile := filepath.Join(cacheDir, r.Source.SHA256)
-		tmp := cachedFile + ".tmp"
-		if err := copyFile(tarballPath, tmp); err == nil {
-			if err := os.Rename(tmp, cachedFile); err != nil {
-				_ = os.Remove(tmp)
-			}
-		} else {
+	tmp := cachedFile + ".tmp"
+	if err := copyFile(tarballPath, tmp); err == nil {
+		if err := os.Rename(tmp, cachedFile); err != nil {
 			_ = os.Remove(tmp)
 		}
+	} else {
+		_ = os.Remove(tmp)
 	}
 	return nil
 }

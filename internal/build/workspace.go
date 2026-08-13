@@ -20,13 +20,11 @@ import (
 // load-command layouts and break byte reproducibility
 // (gale-recipes#79). MkdirTemp's suffix varies from 1 to 10
 // digits; this one is always 10 hex characters.
+//
+// parent is always a real directory: TmpDir() resolves ~/.gale/tmp
+// or falls back to a verified system temp dir, so there is no
+// empty-parent case to handle here (gh#235).
 func makeBuildWorkspace(parent string) (string, error) {
-	if parent == "" {
-		// TmpDir() returns "" when the home dir is unavailable;
-		// os.MkdirTemp treated "" as the system temp dir, and
-		// this must preserve that fallback.
-		parent = os.TempDir()
-	}
 	const attempts = 1000
 	for range attempts {
 		buf := make([]byte, 5)

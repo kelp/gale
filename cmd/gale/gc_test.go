@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
@@ -1582,4 +1584,63 @@ func TestGCRefusesSweepWhenRegisteredProjectConfigUnparsable(t *testing.T) {
 	}
 
 	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+}
+
+// --- gh#235: gc surfaces an unreachable scratch dir ---
+
+// TestSweepBuildScratchErrorsWhenNoScratchDirAvailable covers the
+// one call site that could not simply propagate: sweepBuildScratch
+// returned a bare count, so build.TmpDir's failure collapsed into
+// "swept 0" — indistinguishable from "there was nothing to sweep".
+// It now returns an error alongside the count.
+func TestSweepBuildScratchErrorsWhenNoScratchDirAvailable(t *testing.T) {
+	storeRoot := t.TempDir() // before TMPDIR moves
+	breakGaleDir(t)
+	breakSystemTemp(t)
+
+	swept, err := sweepBuildScratch(store.NewStore(storeRoot), false)
+	if err == nil {
+		t.Fatalf("sweepBuildScratch returned (%d, nil) with no usable "+
+			"scratch dir; a count of 0 cannot be distinguished from "+
+			"an empty scratch dir", swept)
+	}
+	if swept != 0 {
+		t.Errorf("sweepBuildScratch reported %d swept alongside error %v",
+			swept, err)
+	}
+}
+
+// TestSweepBuildScratchSweepsFallbackScratchDir pins that the
+// sweep follows build.TmpDir wherever it resolves, including the
+// system-temp fallback — otherwise a HOME-less machine would
+// accumulate scratch gc could never reclaim.
+func TestSweepBuildScratchSweepsFallbackScratchDir(t *testing.T) {
+	storeRoot := t.TempDir()
+	breakGaleDir(t)
+
+	scratchRoot, err := build.TmpDir()
+	if err != nil {
+		t.Fatalf("build.TmpDir: %v", err)
+	}
+	stale := filepath.Join(scratchRoot, "gale-build-deadbeef01")
+	if err := os.Mkdir(stale, 0o700); err != nil {
+		t.Fatalf("create stale scratch dir: %v", err)
+	}
+	t.Cleanup(func() { os.RemoveAll(stale) })
+	old := time.Now().Add(-2 * gcSweepGrace)
+	if err := os.Chtimes(stale, old, old); err != nil {
+		t.Fatalf("age stale scratch dir: %v", err)
+	}
+
+	swept, err := sweepBuildScratch(store.NewStore(storeRoot), false)
+	if err != nil {
+		t.Fatalf("sweepBuildScratch: %v", err)
+	}
+	if swept == 0 {
+		t.Errorf("sweepBuildScratch reclaimed nothing; %s was left "+
+			"behind in the fallback scratch dir", stale)
+	}
+	if _, err := os.Stat(stale); !os.IsNotExist(err) {
+		t.Errorf("stale scratch dir %s still present after sweep", stale)
+	}
 }
