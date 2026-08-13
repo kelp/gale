@@ -67,19 +67,34 @@ machine. A winner declared nowhere is an error;
 honoring it would keep the binary off PATH for every
 provider.
 
+`[hosts.<key>.bin]` overrides the shared table on the
+machines `<key>` matches, using the same precedence as
+the other overlays. Two machines can therefore put
+different providers of one basename on PATH:
+
+```toml
+[bin]
+  npx = "node"
+
+[hosts.laptop.bin]
+  npx = "corepack"
+```
+
 `gale remove` deletes a `[bin]` entry whose winner it
 removes, in the same write, so the manifest still
-loads. Removing the losing package leaves the entry
-alone: it still names a declared package, and it
-records the choice for the next time that package is
-installed.
+loads. It prunes the host tables as well — an entry
+left under a selector fails to load on exactly the
+machines that selector reaches. Removing the losing
+package leaves the entry alone: it still names a
+declared package, and it records the choice for the
+next time that package is installed.
 
-### `[hosts.<key>.packages]` and `[hosts.<key>.pinned]`
+### `[hosts.<key>.packages]`, `[hosts.<key>.pinned]` and `[hosts.<key>.bin]`
 
-Per-machine overlays. Top-level `[packages]` and
-`[pinned]` apply on every machine. Host sections add
-or override entries when the local hostname matches
-`<key>`.
+Per-machine overlays. Top-level `[packages]`,
+`[pinned]` and `[bin]` apply on every machine. Host
+sections add or override entries when the local
+hostname matches `<key>`.
 
 The key can be:
 

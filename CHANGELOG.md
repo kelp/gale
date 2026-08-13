@@ -72,6 +72,13 @@
   whose winner it removes, in the same write, so the manifest
   still loads.
 
+  `[hosts.<key>.bin]` overlays the table per machine, with the
+  same selector precedence `[packages]` and `[pinned]` use
+  (gh#219). Two machines can put different providers of one
+  basename on PATH; a manifest-wide winner could not say that,
+  since naming either package drops the basename on the other
+  machine. `gale remove` prunes the host tables too.
+
 - `gale which` reports `also provided by: <package>` when
   another installed package ships the same binary. A shadowed
   provider was previously invisible.
