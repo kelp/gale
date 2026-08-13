@@ -15,6 +15,13 @@ jobs:
   test:
     timeout-minutes: 30
     strategy:
+      # Report both platforms on every run. With the default fail-fast,
+      # whichever leg failed first cancelled the other mid-step, so a red
+      # push taught you nothing about the platform that got cancelled —
+      # and for a macOS-first tool that is usually the leg you needed.
+      # It also makes a darwin-only test unprovable from a red push: the
+      # macOS leg has to reach the failure and name it (gh#215).
+      fail-fast: false
       matrix:
         os: [macos-26, ubuntu-latest]
     runs-on: ${{ matrix.os }}
