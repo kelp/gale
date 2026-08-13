@@ -342,6 +342,37 @@ open. `just check-darwin` substitutes for a macOS runner nobody has locally,
 and `just test-symlinked-tmp` covers the one macOS failure class typechecking
 cannot see.
 
+**A gate can fail because it could not run.** `preflight` distinguishes the
+two, because conflating them costs a session (gh#237): a gate exiting 75
+(`EX_TEMPFAIL`) prints `BLOCKED at '<name>'` rather than `FAILED`, and
+`preflight` itself exits 75. `BLOCKED` means the environment got in the way and
+nothing was learned about your change — re-run it, do not go hunting for a
+defect. Today only the lint gate raises it, when another golangci-lint holds
+the lock for the entire wait (below).
+
+### pipeline-check and untracked files
+
+`scripts/check-pipeline-tests.sh` scans `git diff` **plus**
+`git ls-files --others --exclude-standard`, so uncommitted and untracked files
+count. Before gh#237 it read the diff alone, which cannot see untracked files:
+writing the new `cmd/gale/*_test.go` first — the repo's own TDD rule — made the
+guard report that you had shipped a sensitive change with only `internal/`
+tests, while the test it was asking for sat unstaged in the tree.
+
+Two consequences worth knowing:
+
+- Only `.gitignore`d files are invisible to it now. A test parked under `tmp/`
+  does not count, and should not.
+- The local verdict now matches what CI will say after you commit, in both
+  directions. An untracked `internal/`-only test used to slip through locally
+  by being invisible; it fails now, as it will on the PR.
+
+`just pipeline-check` runs `scripts/check-pipeline-tests-selftest.sh` first —
+six cases over throwaway git repos, ~0.5s, no network. It exists because the
+guard decides what may land, so widening it must not launder the rule: two of
+its cases assert that a sensitive change carrying only `internal/` tests still
+fails. CI runs the guard alone; the cases are a local-only gate.
+
 CI-only, do not attempt locally:
 
 - **govulncheck.** The bootstrap installs it and it loads packages fine, but
@@ -377,6 +408,30 @@ way or the binary is useless.
 `.golangci.yml` also sets `issues: new-from-merge-base: origin/main`, so only
 lines changed relative to `origin/main` are reported. A shallow clone silently
 changes which findings appear; the bootstrap unshallows for this reason.
+
+#### One lock per machine
+
+golangci-lint takes an exclusive lock (`$TMPDIR/golangci-lint.lock`) for the
+whole run, so a second run exits 3 with `Error: parallel golangci-lint is
+running`. That collides more often than it sounds: several worktrees is the
+normal shape here, and `preflight` invokes golangci-lint twice itself — once
+for `lint`, once for `check-darwin` — so one agent can collide with its own
+still-draining run.
+
+`just lint`, `just check-darwin` and `preflight` therefore call
+`scripts/golangci-lint.sh` rather than the binary. It runs golangci-lint
+plainly, and only when the run dies on the lock does it do anything: name the
+collision as a collision, print the process holding the lock, and queue behind
+it with golangci-lint's own `--allow-serial-runners`. If the lock is still held
+after `GALE_LINT_LOCK_WAIT` seconds (default 600) it gives up with exit 75, and
+`preflight` reports `BLOCKED`. Real findings are untouched — they print and
+exit 1 exactly as before.
+
+The uncontended path is a plain `golangci-lint run` on the shared cache, so it
+costs nothing. Giving each invocation its own `GOLANGCI_LINT_CACHE` would dodge
+the lock instead, but that was measured at ~105s cold against ~1s warm on this
+repo, per invocation — far more expensive than waiting out an occasional
+collision.
 
 ## Working in this repo
 

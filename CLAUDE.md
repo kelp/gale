@@ -66,7 +66,11 @@ install one. Full reference:
   gate. Local green without it is not CI green: darwin
   files never compile on Linux (`just check-darwin`),
   and the change-discipline guard runs on
-  `pull_request` only (`just pipeline-check`).
+  `pull_request` only (`just pipeline-check`). A gate that
+  exits 75 prints `BLOCKED`, not `FAILED` — the
+  environment got in the way and nothing was learned
+  about your change; re-run rather than hunting a defect
+  (gh#237).
 - **The container runs as root**, so tests asserting a
   permission error skip themselves
   (`os.Geteuid() == 0`). They still run on CI, and

@@ -23,8 +23,18 @@ fi
 
 merge_base="$(git merge-base HEAD "$base")"
 
+# `git diff` cannot see untracked files, and the repo's own TDD rule says to
+# write the new test file first — so before gh#237 a fresh cmd/gale/*_test.go
+# was invisible here and the guard reported "only internal/ test updates"
+# while the test it asked for sat right there in the tree. Union the diff with
+# untracked, non-ignored files so the guard judges the tree you actually have,
+# staged or not. On CI (`pull_request`, clean checkout) there are no untracked
+# files, so this changes nothing there.
 diff_files() {
-  git diff --name-only "$merge_base" -- "$@"
+  {
+    git diff --name-only "$merge_base" -- "$@"
+    git ls-files --others --exclude-standard -- "$@"
+  } | sort -u
 }
 
 # Pipeline-sensitive production paths (tier 3). Match non-test .go files.
@@ -79,4 +89,8 @@ echo "$test_files" | sed 's/^/  /' >&2
 echo >&2
 echo "Add or extend a repro in cmd/gale/*_test.go or integration/." >&2
 echo "See docs/dev/change-discipline.md (Test layer choice)." >&2
+echo >&2
+echo "This scan covers uncommitted and untracked files too, so a new test" >&2
+echo "counts without being staged or committed. Only files excluded by" >&2
+echo ".gitignore are invisible to it." >&2
 exit 1
