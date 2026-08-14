@@ -110,26 +110,35 @@ type Registry struct {
 // default on-disk cache under ~/.gale/cache/. Offline is set
 // when GALE_OFFLINE=1 is in the environment; callers that need
 // to override (e.g. for tests) can mutate the returned value.
-func New() *Registry {
+//
+// It fails only when no location on the machine can hold a cache
+// (see defaultCacheDir). A Registry with caching deliberately off
+// is written as a literal with an empty CacheDir; it is not
+// something this constructor produces from a failure.
+func New() (*Registry, error) {
+	cacheDir, err := defaultCacheDir()
+	if err != nil {
+		return nil, err
+	}
 	return &Registry{
 		BaseURL:  DefaultURL,
-		CacheDir: defaultCacheDir(),
+		CacheDir: cacheDir,
 		Offline:  os.Getenv("GALE_OFFLINE") == "1",
-	}
+	}, nil
 }
 
 // NewWithURL returns a Registry with the given base URL and
 // the default on-disk cache. If url is empty, DefaultURL is
 // used. Honours GALE_OFFLINE=1 in the environment.
-func NewWithURL(url string) *Registry {
-	if url == "" {
-		return New()
+func NewWithURL(url string) (*Registry, error) {
+	reg, err := New()
+	if err != nil {
+		return nil, err
 	}
-	return &Registry{
-		BaseURL:  url,
-		CacheDir: defaultCacheDir(),
-		Offline:  os.Getenv("GALE_OFFLINE") == "1",
+	if url != "" {
+		reg.BaseURL = url
 	}
+	return reg, nil
 }
 
 // repoBase returns BaseURL with the trailing path segment

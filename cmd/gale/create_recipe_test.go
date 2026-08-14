@@ -190,7 +190,10 @@ func TestBuildRecipeCheckerLocalFound(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	checker := buildRecipeChecker(dir)
+	checker, err := buildRecipeChecker(dir)
+	if err != nil {
+		t.Fatalf("buildRecipeChecker: %v", err)
+	}
 	if !checker("openssl") {
 		t.Error("expected true for local recipe")
 	}
@@ -198,7 +201,10 @@ func TestBuildRecipeCheckerLocalFound(t *testing.T) {
 
 func TestBuildRecipeCheckerLocalNotFound(t *testing.T) {
 	dir := t.TempDir()
-	checker := buildRecipeChecker(dir)
+	checker, err := buildRecipeChecker(dir)
+	if err != nil {
+		t.Fatalf("buildRecipeChecker: %v", err)
+	}
 	// "zzzznotreal" won't exist locally or in registry.
 	if checker("zzzznotreal") {
 		t.Error("expected false for nonexistent recipe")
@@ -207,7 +213,10 @@ func TestBuildRecipeCheckerLocalNotFound(t *testing.T) {
 
 func TestBuildRecipeCheckerEmptyName(t *testing.T) {
 	dir := t.TempDir()
-	checker := buildRecipeChecker(dir)
+	checker, err := buildRecipeChecker(dir)
+	if err != nil {
+		t.Fatalf("buildRecipeChecker: %v", err)
+	}
 	// Empty name must not panic.
 	if checker("") {
 		t.Error("expected false for empty name")

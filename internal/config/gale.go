@@ -300,18 +300,42 @@ func HostSectionExists(path, host string) bool {
 	return false
 }
 
-// CurrentHost returns the active host identifier. Reads
-// $GALE_HOST first; falls back to os.Hostname(). Returns "" if
-// both fail.
-func CurrentHost() string {
+// CurrentHost returns the identifier this machine's
+// [hosts.<name>] sections are matched against: $GALE_HOST when
+// set, otherwise the kernel's hostname.
+//
+// It never answers "". Callers read a host name as "apply the
+// overlays matching it", and "" matches none — so a hostname that
+// could not be read and a machine with no overlays would be the
+// same answer, and every [hosts.<name>] package would silently
+// drop out of the effective set. For gc that means dropping out
+// of the retention set too, which is the cross-scope deletion
+// class ad4e685 and 289d13b came from. An unreadable or empty
+// hostname is therefore an error, and it names GALE_HOST, which
+// is the way out of the state (gh#254).
+func CurrentHost() (string, error) {
+	return currentHost(os.Hostname)
+}
+
+// currentHost is CurrentHost with its hostname source injected.
+// os.Hostname reads the kernel through uname(2)/sysctl(3); no
+// permission bit, path, or environment variable reaches it, so a
+// parameter is the only way its error path is covered by a test.
+// Production passes os.Hostname and nothing else.
+func currentHost(hostname func() (string, error)) (string, error) {
 	if h := os.Getenv("GALE_HOST"); h != "" {
-		return h
+		return h, nil
 	}
-	h, err := os.Hostname()
+	h, err := hostname()
 	if err != nil {
-		return ""
+		return "", fmt.Errorf("reading this machine's hostname: %w"+
+			" (set GALE_HOST to name it)", err)
 	}
-	return h
+	if h == "" {
+		return "", errors.New("this machine reports an empty" +
+			" hostname (set GALE_HOST to name it)")
+	}
+	return h, nil
 }
 
 // FindGaleConfig walks up from dir to find gale.toml.

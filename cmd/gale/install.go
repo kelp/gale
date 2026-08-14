@@ -63,7 +63,10 @@ var installCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		ctx.Host = resolveHostFlag(installHost)
+		ctx.Host, err = resolveHostFlag(installHost)
+		if err != nil {
+			return err
+		}
 		// A typo'd --host would silently create a new
 		// [hosts.<typo>] section at finalize; make that
 		// visible up front (gh#108).
@@ -205,7 +208,11 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 	// inherited, then override Resolver when --recipe is set.
 	inst := *ctx.Installer
 	if recipePath != "" {
-		inst.Resolver = resolverForRecipe(recipePath)
+		resolver, err := resolverForRecipe(recipePath)
+		if err != nil {
+			return err
+		}
+		inst.Resolver = resolver
 	}
 
 	// Resolve recipe.
@@ -277,7 +284,11 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	// Shallow-copy ctx.Installer to inherit the Downloads
 	// limiter, then override Resolver for local recipe resolution.
 	inst := *ctx.Installer
-	inst.Resolver = resolverForRecipe(resolvedRecipe)
+	resolver, err := resolverForRecipe(resolvedRecipe)
+	if err != nil {
+		return err
+	}
+	inst.Resolver = resolver
 	// On the copy, not on ctx.Installer: the guard is this command's
 	// alone, and a copy needs no set-and-restore that a later error
 	// path could skip. The version above is derived from the source
@@ -594,11 +605,15 @@ func resolveRecipePath(name, recipePath, sourceDir string) (string, error) {
 // recipe file path. If the recipe is inside a letter-bucketed
 // recipes repo, uses recipeFileResolver for local dep
 // resolution. Otherwise falls back to the registry.
-func resolverForRecipe(recipePath string) installer.RecipeResolver {
+func resolverForRecipe(recipePath string) (installer.RecipeResolver, error) {
 	if detectRecipesRepo(recipePath) != "" {
-		return recipeFileResolver(recipePath)
+		return recipeFileResolver(recipePath), nil
 	}
-	return newRegistry().FetchRecipe
+	reg, err := newRegistry()
+	if err != nil {
+		return nil, err
+	}
+	return reg.FetchRecipe, nil
 }
 
 func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Output) error {
@@ -610,7 +625,11 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 	// Shallow-copy ctx.Installer to inherit the Downloads
 	// limiter, then override Resolver for local recipe resolution.
 	inst := *ctx.Installer
-	inst.Resolver = resolverForRecipe(recipePath)
+	resolver, err := resolverForRecipe(recipePath)
+	if err != nil {
+		return err
+	}
+	inst.Resolver = resolver
 
 	out.Info(fmt.Sprintf("Installing %s@%s...",
 		r.Package.Name, r.Package.Version))

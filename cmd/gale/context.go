@@ -327,7 +327,11 @@ func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	cfg.ApplyHost(config.CurrentHost())
+	host, err := config.CurrentHost()
+	if err != nil {
+		return nil, err
+	}
+	cfg.ApplyHost(host)
 	return cfg, nil
 }
 
@@ -681,7 +685,10 @@ func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	host := config.CurrentHost()
+	host, err := config.CurrentHost()
+	if err != nil {
+		return nil, err
+	}
 	cfg.Packages = cfg.EffectivePackages(host)
 	cfg.Pinned = cfg.EffectivePinned(host)
 	cfg.Bin = cfg.EffectiveBin(host)
@@ -747,16 +754,21 @@ func resolveBuildDebug(recipeDebug, cliDebug, cliRelease bool) bool {
 // `dryRun` flag and the `GALE_OFFLINE` environment variable
 // (already honoured by registry.New) into the returned
 // Registry so the cache contract is uniform across commands.
-func newRegistry() *registry.Registry {
-	var reg *registry.Registry
-	cfg, err := loadAppConfig()
-	if err != nil {
-		reg = registry.New()
+func newRegistry() (*registry.Registry, error) {
+	var (
+		reg *registry.Registry
+		err error
+	)
+	if cfg, cfgErr := loadAppConfig(); cfgErr != nil {
+		reg, err = registry.New()
 	} else {
-		reg = registry.NewWithURL(cfg.Registry.URL)
+		reg, err = registry.NewWithURL(cfg.Registry.URL)
+	}
+	if err != nil {
+		return nil, err
 	}
 	reg.DryRun = dryRun
-	return reg
+	return reg, nil
 }
 
 // lockfilePath returns the gale.lock path for a given
@@ -1060,10 +1072,14 @@ func addToConfig(name, version, host, configPath string) (string, error) {
 		}
 		return configPath, nil
 	}
+	host, err := config.CurrentHost()
+	if err != nil {
+		return "", err
+	}
 	// The written section is discarded: `gale add` is manifest-only
 	// and never touches the lock (design §11).
 	if _, err := config.UpsertPackage(
-		configPath, config.CurrentHost(), name, version,
+		configPath, host, name, version,
 	); err != nil {
 		return "", fmt.Errorf("adding %s to config: %w", name, err)
 	}
@@ -1163,8 +1179,14 @@ func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion string) 
 	// Running the presence check anyway mis-reported every
 	// cross-host install as store corruption — after config,
 	// lock, and store were already mutated (gh#72).
-	if ctx.Host != "" && !config.HostKeyMatches(ctx.Host, config.CurrentHost()) {
-		return nil
+	if ctx.Host != "" {
+		current, err := config.CurrentHost()
+		if err != nil {
+			return err
+		}
+		if !config.HostKeyMatches(ctx.Host, current) {
+			return nil
+		}
 	}
 	active, err := generation.CurrentVersions(ctx.GaleDir, ctx.StoreRoot)
 	if err != nil {
@@ -1259,8 +1281,12 @@ func (ctx *cmdContext) writeConfigWitnessed(
 		ctx.noteLockRoot(ctx.Host, name, lockVersion)
 		return w, nil
 	}
+	host, err := config.CurrentHost()
+	if err != nil {
+		return config.PackageWrite{}, err
+	}
 	w, err := config.UpsertPackageWitnessed(
-		ctx.GalePath, config.CurrentHost(), name, configVersion,
+		ctx.GalePath, host, name, configVersion,
 	)
 	if err != nil {
 		return w, fmt.Errorf("adding to config: %w", err)
@@ -1371,7 +1397,11 @@ func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
 	if err != nil {
 		return fmt.Errorf("resolving lockfile path: %w", err)
 	}
-	pkgs, locked, err := lockedRebuildPkgs(lockPath, config.CurrentHost())
+	host, err := config.CurrentHost()
+	if err != nil {
+		return err
+	}
+	pkgs, locked, err := lockedRebuildPkgs(lockPath, host)
 	switch {
 	case err != nil && !opt.force:
 		return fmt.Errorf(

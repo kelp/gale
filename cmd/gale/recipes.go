@@ -50,7 +50,10 @@ func resolveRecipeResolver(recipesFlag string) (installer.RecipeResolver, *regis
 		return nil, nil, err
 	}
 
-	reg := newRegistry()
+	reg, err := newRegistry()
+	if err != nil {
+		return nil, nil, err
+	}
 	if len(repoResolvers) == 0 {
 		return reg.FetchRecipe, reg, nil
 	}

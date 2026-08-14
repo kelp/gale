@@ -15,9 +15,11 @@ var searchCmd = &cobra.Command{
 	Long:  "Search for packages by name or description using fuzzy matching.",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runSearch(
-			cmd.OutOrStdout(), newRegistry(), args[0],
-		)
+		reg, err := newRegistry()
+		if err != nil {
+			return err
+		}
+		return runSearch(cmd.OutOrStdout(), reg, args[0])
 	},
 }
 

@@ -60,7 +60,10 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 
 	retargetSync(ctx, projectDir)
 
-	host := config.CurrentHost()
+	host, err := config.CurrentHost()
+	if err != nil {
+		return err
+	}
 
 	record, withheld := beginSyncStamp(out, ctx.GaleDir, ctx.GalePath, host)
 	if withheld {

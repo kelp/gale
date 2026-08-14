@@ -394,14 +394,17 @@ func TestResolveVersionedRecipeWrapsRegistryError(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	addr := srv.URL
 	srv.Close()
-	reg := registry.NewWithURL(addr)
+	reg, err := registry.NewWithURL(addr)
+	if err != nil {
+		t.Fatalf("registry.NewWithURL: %v", err)
+	}
 	ctx := &cmdContext{
 		Resolver: func(name string) (*recipe.Recipe, error) {
 			return want, nil
 		},
 		Registry: reg,
 	}
-	_, err := resolveVersionedRecipe(ctx, "atuin", "18.13.6-2")
+	_, err = resolveVersionedRecipe(ctx, "atuin", "18.13.6-2")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -463,5 +466,40 @@ func TestFinalizeInstallWrapsRebuildError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "rebuild generation") {
 		t.Errorf("FinalizeInstall error %q does not contain 'rebuild generation' context", err.Error())
+	}
+}
+
+// TestNewRegistryKeepsCachingWithoutHome carries gh#254's contract
+// to the command layer. `gale` runs from cron jobs, systemd units,
+// launchd agents and `sudo` without -H, none of which export $HOME.
+// defaultCacheDir answered that with "", newRegistry stored it, and
+// cachedGet reads "" as "no cache configured" — so every recipe
+// read in those contexts went to the network uncached, with nothing
+// in the output saying so.
+func TestNewRegistryKeepsCachingWithoutHome(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	reg, err := newRegistry()
+	if err != nil {
+		t.Fatalf("newRegistry() error = %v; the system temp dir is "+
+			"usable, so a missing $HOME must fall back to it", err)
+	}
+	if reg.CacheDir == "" {
+		t.Error("newRegistry() left CacheDir empty without $HOME, " +
+			"silently disabling registry caching (gh#254)")
+	}
+}
+
+// TestNewRegistryFailsWhenNoCacheLocationUsable pins the far end:
+// when nothing on the machine can hold a cache, the command layer
+// gets a real error instead of a quietly uncached registry.
+func TestNewRegistryFailsWhenNoCacheLocationUsable(t *testing.T) {
+	breakSystemTemp(t)
+	t.Setenv("HOME", "")
+
+	reg, err := newRegistry()
+	if err == nil {
+		t.Fatalf("newRegistry() = (%+v, nil) with no usable cache "+
+			"location; want an error", reg)
 	}
 }

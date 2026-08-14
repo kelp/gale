@@ -694,7 +694,16 @@ func mergeConfig(
 	if err != nil {
 		return fmt.Errorf("parsing %s: %w", path, err)
 	}
-	cfg.ApplyHost(config.CurrentHost())
+	// Host-scoped pins are packages this machine's generation links.
+	// Applying no overlay would drop every one of them from the
+	// retention set, and gc deletes what retention does not name —
+	// the cross-scope deletion class ad4e685 and 289d13b came from
+	// (gh#254).
+	host, err := config.CurrentHost()
+	if err != nil {
+		return err
+	}
+	cfg.ApplyHost(host)
 	addPackageRefs(s, cfg.Packages, referenced, pinResolve)
 	return nil
 }

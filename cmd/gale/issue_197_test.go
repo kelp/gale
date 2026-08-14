@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/activation"
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
@@ -158,7 +157,7 @@ func assertGenerationMatchesLock(
 	if err != nil {
 		t.Fatalf("loading %s: %v", lockPath, err)
 	}
-	roots, err := v.V1.EffectiveRoots(config.CurrentHost())
+	roots, err := v.V1.EffectiveRoots(currentHost(t))
 	if err != nil {
 		t.Fatalf("effective roots of %s: %v", lockPath, err)
 	}

@@ -119,7 +119,10 @@ func (rc *recipeCreator) create(repo string, depth int) error {
 		))
 	}
 
-	checker := buildRecipeChecker(rc.outputDir)
+	checker, err := buildRecipeChecker(rc.outputDir)
+	if err != nil {
+		return err
+	}
 	tools, cleanup, err := ai.RecipeTools(tmpDir, checker)
 	if err != nil {
 		return fmt.Errorf("setting up tools: %w", err)
@@ -310,7 +313,11 @@ func warnMissingDeps(
 		return
 	}
 
-	checker := buildRecipeChecker(outputDir)
+	checker, err := buildRecipeChecker(outputDir)
+	if err != nil {
+		out.Warn(fmt.Sprintf("dependency check skipped: %v", err))
+		return
+	}
 	var allDeps []string
 	allDeps = append(allDeps, r.Dependencies.Build...)
 	allDeps = append(allDeps, r.Dependencies.Runtime...)
@@ -355,7 +362,7 @@ func warnNoRelease(recipePath string, out *output.Output) {
 // only checks locally — the registry may have recipes
 // that aren't available for local builds. When no
 // outputDir is set (stdout mode), checks the registry.
-func buildRecipeChecker(outputDir string) func(string) bool {
+func buildRecipeChecker(outputDir string) (func(string) bool, error) {
 	if outputDir != "" {
 		return func(name string) bool {
 			if name == "" {
@@ -367,13 +374,16 @@ func buildRecipeChecker(outputDir string) func(string) bool {
 			)
 			_, err := os.Stat(path) //nolint:gosec // G703 — name from recipe deps, not user input
 			return err == nil
-		}
+		}, nil
 	}
-	reg := newRegistry()
+	reg, err := newRegistry()
+	if err != nil {
+		return nil, err
+	}
 	return func(name string) bool {
 		_, err := reg.FetchRecipe(name)
 		return err == nil
-	}
+	}, nil
 }
 
 // checkDepCycle returns an error if depRepo has already

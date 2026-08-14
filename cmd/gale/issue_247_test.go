@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 )
 
@@ -236,7 +235,7 @@ func TestGCRetainsRegisteredProjectBranchAboveCurrent(t *testing.T) {
 // alone is the point — the union must survive one sweep.
 func TestGCRetainsHostOverlayPinsWithBranchAboveCurrent(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
-	other := config.CurrentHost() + "-other"
+	other := currentHost(t) + "-other"
 	writeGlobalConfig(t, galeDir, fmt.Sprintf(
 		"[packages]\njq = \"1.7\"\n\n[hosts.%s.packages]\nfd = \"9.0\"\n",
 		other,
