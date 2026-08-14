@@ -236,19 +236,23 @@ That is what cost PR #227 a round trip.
 just test-symlinked-tmp   # the suite under a macOS-shaped $TMPDIR
 ```
 
-It points `$TMPDIR` at `/<name>`, a symlink to `/private/<name>`, runs
+It points `$TMPDIR` at a symlink under a writable base (`$TMPDIR`, else
+`/tmp`) whose resolved spelling re-spells that base beneath a pad directory —
+`$base/<name>` resolves to `$base/real-<name>$base/<name>` — runs
 `go test -count=1 ./...`, and removes both on exit including on failure. On
 macOS it is a no-op wrapper around `go test` — the real thing already runs
 that way.
 
-The shape is deliberate. macOS's resolved spelling *contains* its raw one
-(`/private` + `/var/folders/…`), so assertions like
+The shape is deliberate. macOS's resolved spelling *contains* its raw one as
+a suffix (`/private` + `/var/folders/…`), so assertions like
 `strings.Contains(err.Error(), rawDir)` pass there. A sibling symlink
-(`tmp -> tmp.real`) breaks that property and reports 5 extra `cmd/gale`
-failures macOS is perfectly happy with. Keeping the raw path a substring of
-the resolved one is what makes the root-level symlink necessary, which is
-why the target needs `/` writable — free in this container, `sudo` on a
-Linux dev box.
+(`tmp -> tmp.real`) breaks that suffix and reports 5 extra `cmd/gale`
+failures macOS is perfectly happy with. The layout above keeps the raw
+`$TMPDIR` a suffix of its resolved form — the same property, obtained under a
+writable base rather than at the filesystem root. It used to symlink
+`/<name> -> private/<name>` and so needed `/` writable; anchoring it under
+`$TMPDIR` lets the gate run unprivileged (e.g. in a Cursor Cloud Agent VM,
+where the agent is not root) without a `sudo` or a root-owned container.
 
 **The baseline is empty**, and `just preflight` runs it as its last gate. A
 failure here is a path-spelling bug your branch introduced — read it as yours
