@@ -351,12 +351,26 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	// sibling staging dir first. The live canonical dir stays
 	// intact until the final replace succeeds, so a failed
 	// stale reinstall does not break the active generation.
+	//
+	// A working-tree recipe whose digest no longer matches the
+	// sidecar is not a cache hit: the occupied dir was built
+	// from different recipe bytes (gh#265). Force the staged
+	// rebuild rather than falling through into Store.Create on
+	// the live dir — binary-fallback's os.RemoveAll would
+	// otherwise delete the canonical package.
 	if !locked && !force && inst.Store.IsInstalled(name, storeVersion) {
-		return &InstallResult{
-			Name:    name,
-			Version: version,
-			Method:  MethodCached,
-		}, nil
+		occupied := canonicalDir
+		if dir, ok := inst.Store.StorePath(name, storeVersion); ok {
+			occupied = dir
+		}
+		if !workingTreeRecipeStale(occupied, r) {
+			return &InstallResult{
+				Name:    name,
+				Version: version,
+				Method:  MethodCached,
+			}, nil
+		}
+		force = true
 	}
 
 	if force {
@@ -1163,6 +1177,10 @@ func (inst *Installer) installBinaryTo(
 		}
 	}
 
+	if err := recordRecipeDigest(stagingDir, r.Digest); err != nil {
+		return fmt.Errorf("write recipe metadata: %w", err)
+	}
+
 	// Record what this install verified, beside the metadata and
 	// before the commit rename, so the canonical dir never appears
 	// without its provenance. Identity is the recipe's canonical
@@ -1822,6 +1840,7 @@ func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalSt
 		Deps:          deps,
 		Artifact:      sourceArtifact(r, r.Package.Full(), deps),
 		InPlace:       inPlace,
+		RecipeDigest:  r.Digest,
 		FarmGuard:     inst.FarmGuard,
 		DeferFarm:     inst.deferFarm(),
 	})
@@ -1864,6 +1883,10 @@ type extractRequest struct {
 	Deps          *build.BuildDeps
 	Artifact      commitArtifact
 	InPlace       bool
+	// RecipeDigest is the working-tree recipe fingerprint to
+	// record beside the payload (gh#265). Empty for registry
+	// installs.
+	RecipeDigest string
 	// FarmGuard is the cross-project farm claimant guard,
 	// forwarded to the in-place commit; nil means unwired
 	// (tests). See Installer.FarmGuard.
@@ -1948,6 +1971,9 @@ func extractBuildTo(req extractRequest) error {
 	a.SHA256 = result.SHA256
 	if err := recordProvenance(storeRoot, workDir, a); err != nil {
 		return err
+	}
+	if err := recordRecipeDigest(workDir, req.RecipeDigest); err != nil {
+		return fmt.Errorf("write recipe metadata: %w", err)
 	}
 	if !inPlace {
 		return nil

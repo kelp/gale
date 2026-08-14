@@ -166,6 +166,12 @@ linux-arm64 = { sha256 = "ledgerarm", manifest_digest = "sha256:` +
 			t.Error("ManifestDigest empty, want it set from the ledger")
 		}
 	}
+	if !rec.FromWorkingTree {
+		t.Error("FromWorkingTree = false, want true for a --recipes load")
+	}
+	if rec.Digest == "" {
+		t.Error("Digest empty, want a fingerprint of the recipe and binaries files")
+	}
 }
 
 func TestDetectRecipesRepoWithMultiCharBucket(t *testing.T) {

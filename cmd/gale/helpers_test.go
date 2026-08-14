@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/config"
+	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/recipemeta"
 )
 
 // chdirTo changes the working directory to dir for the
@@ -103,4 +105,20 @@ func currentHost(t *testing.T) string {
 		t.Fatalf("resolving current host: %v", err)
 	}
 	return host
+}
+
+// writeMatchingRecipeDigest records the working-tree recipe
+// fingerprint a completed install would have written, so tests
+// that pre-seed the store still cache-hit after gh#265.
+func writeMatchingRecipeDigest(t *testing.T, storeDir, recipePath string) {
+	t.Helper()
+	data, err := os.ReadFile(recipePath)
+	if err != nil {
+		t.Fatalf("read recipe for digest: %v", err)
+	}
+	if err := recipemeta.Write(storeDir, recipemeta.Metadata{
+		Digest: recipe.Digest(data),
+	}); err != nil {
+		t.Fatalf("write recipe digest: %v", err)
+	}
 }

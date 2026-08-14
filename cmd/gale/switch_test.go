@@ -231,6 +231,9 @@ func TestSwitchWritesPinWhenLocalRecipeMatches(t *testing.T) {
 		os.RemoveAll(filepath.Join(storeRoot, "jq"))
 	})
 	writeProvenance(t, storeRoot, "jq", "1.7.0-1")
+	writeMatchingRecipeDigest(t,
+		filepath.Join(storeRoot, "jq", "1.7.0-1"),
+		filepath.Join(recipesDir, "jq.toml"))
 
 	orig, _ := os.Getwd()
 	os.Chdir(projDir)
