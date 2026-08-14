@@ -72,6 +72,7 @@ sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
 	if err := os.WriteFile(recipePath, []byte(recipeTOML), 0o644); err != nil {
 		t.Fatalf("write recipe: %v", err)
 	}
+	writeMatchingRecipeDigest(t, dir, recipePath)
 
 	ctx := &cmdContext{
 		GalePath:  filepath.Join(galeDir, "gale.toml"),

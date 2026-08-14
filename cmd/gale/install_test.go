@@ -767,6 +767,7 @@ func TestInstallFromRecipeFileRotatesGeneration(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeProvenance(t, storeRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(storeRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	// Bootstrap an empty gale.toml.
 	configPath := filepath.Join(galeDir, "gale.toml")
@@ -871,6 +872,7 @@ func TestInstallFromRecipeFileRotatesGenWhenOtherPackagesMissing(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeProvenance(t, storeRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(storeRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	// gale.toml lists testpkg AND another package whose
 	// store dir is INTENTIONALLY missing — mirrors the

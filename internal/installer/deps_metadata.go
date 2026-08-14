@@ -11,9 +11,8 @@ import (
 
 // IsStale reports whether an installed package is stale
 // relative to the current recipes of its declared
-// dependencies. Stale means the package was built against
-// a dep version-revision that differs from what the
-// current recipe for that dep produces.
+// dependencies, or — for a working-tree recipe — relative
+// to the recipe bytes recorded at install time (gh#265).
 //
 // goos and goarch identify the current platform (typically
 // runtime.GOOS and runtime.GOARCH). They are passed to
@@ -36,6 +35,10 @@ func IsStale(storeDir string, r *recipe.Recipe, goos, goarch string, resolver Re
 	// zero-dep install (not stale).
 	metaPath := filepath.Join(storeDir, depsmeta.File)
 	if _, statErr := os.Stat(metaPath); os.IsNotExist(statErr) {
+		return true, nil
+	}
+
+	if workingTreeRecipeStale(storeDir, r) {
 		return true, nil
 	}
 

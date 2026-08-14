@@ -22,10 +22,17 @@ func loadRecipeFile(path string, local bool) (*recipe.Recipe, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading recipe %s: %w", path, err)
 	}
+	var rec *recipe.Recipe
 	if local {
-		return recipe.ParseLocal(string(data))
+		rec, err = recipe.ParseLocal(string(data))
+	} else {
+		rec, err = recipe.Parse(string(data))
 	}
-	return recipe.Parse(string(data))
+	if err != nil {
+		return nil, err
+	}
+	rec.MarkWorkingTree(data)
+	return rec, nil
 }
 
 // resolveRecipeResolver constructs a RecipeResolver from
@@ -101,12 +108,20 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 
 		// If recipe has no inline binaries, try the
 		// separate .binaries.toml file.
+		parts := [][]byte{data}
 		if len(rec.Binary) == 0 {
 			binPath := filepath.Join(
 				recipesDir, letter, name+".binaries.toml",
 			)
 			binData, readErr := os.ReadFile(binPath)
 			if readErr == nil {
+				// Fingerprint the sibling whenever it was
+				// read. MergeBinariesForRecipe returns true
+				// only for a ledger match so the registry
+				// can still fall back to .versions; a flat
+				// merge still produced these binaries
+				// (gh#265).
+				parts = append(parts, binData)
 				idx, parseErr := recipe.ParseBinaryIndex(
 					string(binData),
 				)
@@ -120,6 +135,7 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 				}
 			}
 		}
+		rec.MarkWorkingTree(parts...)
 
 		return rec, nil
 	}

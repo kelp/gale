@@ -16,6 +16,15 @@ type Recipe struct {
 	Build        Build             `toml:"-"`
 	Binary       map[string]Binary `toml:"binary"`
 	Dependencies Dependencies
+
+	// Digest is SHA-256 of the TOML bytes this recipe was
+	// parsed from, plus a sibling .binaries.toml when one was
+	// merged. Empty when the recipe was not loaded from a file
+	// (registry cache, in-memory tests).
+	Digest string `toml:"-"`
+	// FromWorkingTree is true when the recipe was loaded from
+	// a local file (--recipe / --recipes), not the registry.
+	FromWorkingTree bool `toml:"-"`
 }
 
 // Binary holds a prebuilt archive location for a platform.

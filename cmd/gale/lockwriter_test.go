@@ -151,6 +151,7 @@ func TestInstallHostCurrentWritesConcreteTarget(t *testing.T) {
 	recipePath := writeTestRecipe(t, tmp)
 	ctx := installCtx(t, tmp, "[packages]\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
 	host, err := resolveHostFlag("current")
 	if err != nil {
 		t.Fatalf("resolveHostFlag: %v", err)
@@ -203,6 +204,7 @@ func TestInstallWritesDefaultTarget(t *testing.T) {
 	recipePath := writeTestRecipe(t, tmp)
 	ctx := installCtx(t, tmp, "[packages]\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	if err := installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
@@ -242,6 +244,7 @@ func TestInstallPreservesHostLocationInLock(t *testing.T) {
 	ctx := installCtx(t, tmp,
 		"[packages]\n\n[hosts.testbox.packages]\n  testpkg = \"0.9.0\"\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	if err := installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
@@ -398,6 +401,9 @@ func TestUpdateRegeneratesTheSectionItRewrote(t *testing.T) {
 	// The new version is already in the store, so the install is a
 	// cache hit and the test needs no network.
 	seedProvenanced(t, defaultStoreRoot(), "jq", "1.8.0-1")
+	writeMatchingRecipeDigest(t,
+		filepath.Join(defaultStoreRoot(), "jq", "1.8.0-1"),
+		filepath.Join(recipesDir, "jq.toml"))
 
 	orig, _ := os.Getwd()
 	os.Chdir(projDir)
@@ -471,6 +477,7 @@ func TestInstallRefusesALegacyLock(t *testing.T) {
 	recipePath := writeTestRecipe(t, tmp)
 	ctx := installCtx(t, tmp, "[packages]\n  testpkg = \"1.0.0\"\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	lp, err := lockfilePath(ctx.GalePath)
 	if err != nil {

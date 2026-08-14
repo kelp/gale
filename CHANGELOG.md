@@ -198,6 +198,14 @@
 
 ### Fixed
 
+- Editing a local recipe without bumping version no longer
+  installs the previous artifact (gh#265). `--recipe`,
+  `--recipes`, and `gale sync --recipes` now record the
+  resolved recipe's digest in `.gale-recipe.toml` and rebuild
+  when it changes, including a sibling `.binaries.toml`.
+  Registry installs are unchanged: a registry recipe at a
+  version still comes with a revision bump.
+
 - Three functions no longer collapse a failure into `""`, where
   the caller reads it as a valid answer (gh#254, following
   gh#235). `extractEntitlements` returned `""` both for "this
