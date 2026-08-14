@@ -28,8 +28,13 @@ func TestInfoCommandRegistered(t *testing.T) {
 }
 
 // testRegistry returns a *registry.Registry pointed at url.
-func testRegistry(url string) *registry.Registry {
-	return registry.NewWithURL(url)
+func testRegistry(t *testing.T, url string) *registry.Registry {
+	t.Helper()
+	reg, err := registry.NewWithURL(url)
+	if err != nil {
+		t.Fatalf("registry.NewWithURL: %v", err)
+	}
+	return reg
 }
 
 // withIsolatedHome points HOME at a temp dir so info doesn't
@@ -103,7 +108,7 @@ func TestInfoParsesAtVersion(t *testing.T) {
 	defer srv.Close()
 
 	withIsolatedHome(t)
-	reg := testRegistry(srv.URL)
+	reg := testRegistry(t, srv.URL)
 
 	var buf bytes.Buffer
 	if err := runInfo(&buf, reg, "testpkg@1.0.0"); err != nil {
@@ -132,7 +137,7 @@ func TestInfoRejectsInvalidName(t *testing.T) {
 	defer srv.Close()
 
 	withIsolatedHome(t)
-	reg := testRegistry(srv.URL)
+	reg := testRegistry(t, srv.URL)
 
 	bad := []string{
 		"jq?foo=bar", "%2e%2e/etc", "jq/sub", "../etc",
@@ -167,7 +172,7 @@ func TestInfoWritesThroughCmdStdout(t *testing.T) {
 	defer srv.Close()
 
 	withIsolatedHome(t)
-	reg := testRegistry(srv.URL)
+	reg := testRegistry(t, srv.URL)
 
 	var buf bytes.Buffer
 	if err := runInfo(&buf, reg, "testpkg"); err != nil {
@@ -205,7 +210,7 @@ func TestInfoMakesOneRequest(t *testing.T) {
 	defer srv.Close()
 
 	withIsolatedHome(t)
-	reg := testRegistry(srv.URL)
+	reg := testRegistry(t, srv.URL)
 
 	var buf bytes.Buffer
 	if err := runInfo(&buf, reg, "testpkg"); err != nil {
@@ -228,7 +233,7 @@ func TestInfoInstalledFromConfig(t *testing.T) {
 	defer srv.Close()
 
 	home := withIsolatedHome(t)
-	reg := testRegistry(srv.URL)
+	reg := testRegistry(t, srv.URL)
 
 	galeDir := filepath.Join(home, ".gale")
 	if err := os.MkdirAll(galeDir, 0o755); err != nil {

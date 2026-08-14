@@ -167,6 +167,14 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 		return nil, fmt.Errorf("creating context: %w", err)
 	}
 
+	// One resolution for the whole walk: the host identity does not
+	// change between configs, and asking once means one place can
+	// fail rather than two that could disagree.
+	host, err := config.CurrentHost()
+	if err != nil {
+		return nil, err
+	}
+
 	// Pre-size to zero so JSON emits `[]` not `null` even when
 	// no config yields any entries.
 	entries := make([]sbomEntry, 0)
@@ -179,7 +187,7 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 		if err != nil {
 			return nil, err
 		}
-		cfg.ApplyHost(config.CurrentHost())
+		cfg.ApplyHost(host)
 
 		lp, lpErr := lockfilePath(sc.path)
 		if lpErr != nil {
@@ -215,7 +223,6 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 			hasLock       bool
 		}
 		items := make([]item, 0, len(packages))
-		host := config.CurrentHost()
 		platform := currentPlatform()
 		for name, version := range packages {
 			locked, ok, err := lv.Entry(name, host, platform)

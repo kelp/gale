@@ -24,7 +24,10 @@ var pinCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newCmdOutput(cmd)
 		name := args[0]
-		host := resolveHostFlag(pinHost)
+		host, err := resolveHostFlag(pinHost)
+		if err != nil {
+			return err
+		}
 
 		configPath, err := resolvePinConfigPath(
 			pinGlobal, pinProject,
@@ -85,7 +88,10 @@ var unpinCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		out := newCmdOutput(cmd)
 		name := args[0]
-		host := resolveHostFlag(unpinHost)
+		host, err := resolveHostFlag(unpinHost)
+		if err != nil {
+			return err
+		}
 
 		configPath, err := resolvePinConfigPath(
 			unpinGlobal, unpinProject,

@@ -9,7 +9,6 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
@@ -196,7 +195,7 @@ func TestGCRetainsDepsFromInstalledMetadata(t *testing.T) {
 // even though ApplyHost hides it on this machine.
 func TestGCRetainsOtherHostPins(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
-	other := config.CurrentHost() + "-other"
+	other := currentHost(t) + "-other"
 	writeGlobalConfig(t, galeDir,
 		"[packages]\n[hosts."+other+".packages]\njq = \"1.7\"\n")
 	jqDir := mkStorePkg(t, storeRoot, "jq", "1.7-1")

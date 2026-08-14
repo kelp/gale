@@ -60,7 +60,10 @@ var addCmd = &cobra.Command{
 			return err
 		}
 
-		host := resolveHostFlag(addHost)
+		host, err := resolveHostFlag(addHost)
+		if err != nil {
+			return err
+		}
 		if host != "" {
 			noticeNewHostSection(out, configPath, host)
 		}
@@ -114,12 +117,15 @@ var addCmd = &cobra.Command{
 
 // resolveHostFlag turns a --host CLI value into a host name.
 // Empty string means shared [packages]. "current" expands to
-// the local hostname.
-func resolveHostFlag(v string) string {
+// the local hostname, and fails when that cannot be read: an
+// unresolved "current" would flatten to "", which every caller
+// reads as shared [packages] — writing host-scoped packages into
+// the set every machine shares (gh#254).
+func resolveHostFlag(v string) (string, error) {
 	if v == "current" {
 		return config.CurrentHost()
 	}
-	return v
+	return v, nil
 }
 
 // noticeNewHostSection warns when a --host value names a host
@@ -134,7 +140,18 @@ func noticeNewHostSection(out *output.Output, configPath, host string) {
 	if host == "" || dryRun {
 		return
 	}
-	if config.HostKeyMatches(host, config.CurrentHost()) {
+	current, err := config.CurrentHost()
+	if err != nil {
+		// Whether host names this machine is exactly what cannot be
+		// decided now, and the notice is advisory — so say so rather
+		// than answer it with a guess.
+		out.Warn(fmt.Sprintf(
+			"cannot tell whether '%s' names this machine: %v",
+			host, err,
+		))
+		return
+	}
+	if config.HostKeyMatches(host, current) {
 		return
 	}
 	if config.HostSectionExists(configPath, host) {

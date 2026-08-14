@@ -4,8 +4,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/kelp/gale/internal/config"
 )
 
 // TestGCRetainsOtherHostPinsDottedHost reproduces the macOS CI
@@ -24,7 +22,7 @@ func TestGCRetainsOtherHostPinsDottedHost(t *testing.T) {
 	// first, so this makes the original test's exact config
 	// content appear on Linux too.
 	t.Setenv("GALE_HOST", "mac-ci.local")
-	other := config.CurrentHost() + "-other"
+	other := currentHost(t) + "-other"
 	writeGlobalConfig(t, galeDir,
 		"[packages]\n[hosts."+other+".packages]\njq = \"1.7\"\n")
 	jqDir := mkStorePkg(t, storeRoot, "jq", "1.7-1")

@@ -128,7 +128,10 @@ func printConfigList(stdout, stderr io.Writer, configPath, prefix string) error 
 		return err
 	}
 
-	host := config.CurrentHost()
+	host, err := config.CurrentHost()
+	if err != nil {
+		return err
+	}
 	hostPkgs := hostOverlayPackages(cfg, host)
 	s := store.NewStore(defaultStoreRoot())
 

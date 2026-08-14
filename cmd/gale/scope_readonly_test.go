@@ -254,7 +254,11 @@ func TestInfoGlobalOverridesProjectShadow(t *testing.T) {
 	t.Cleanup(func() { infoGlobal = false })
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, newRegistry(), "jq"); err != nil {
+	reg, err := newRegistry()
+	if err != nil {
+		t.Fatalf("newRegistry: %v", err)
+	}
+	if err := runInfo(&buf, reg, "jq"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()

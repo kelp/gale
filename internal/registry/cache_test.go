@@ -429,3 +429,85 @@ func TestOfflineNoCacheSentinel(t *testing.T) {
 			err)
 	}
 }
+
+// --- gh#254: defaultCacheDir returns a usable dir or a real error
+
+// breakSystemTemp points TMPDIR at a path underneath a regular
+// file, so os.TempDir() names a location nothing — root included —
+// can create. Denying access with chmod proves nothing in the agent
+// container, which runs as root (docs/dev/agent-environment.md); a
+// structurally impossible path fails for uid 0 too. os.TempDir
+// reads TMPDIR on every unix including darwin (os/file_unix.go,
+// //go:build unix), so this holds on both platforms gale ships for.
+//
+// The scratch dir it needs is allocated before TMPDIR moves, since
+// t.TempDir() itself resolves through os.TempDir().
+func breakSystemTemp(t *testing.T) {
+	t.Helper()
+	blocker := filepath.Join(t.TempDir(), "blocker")
+	if err := os.WriteFile(blocker, nil, 0o600); err != nil {
+		t.Fatalf("plant %s as a regular file: %v", blocker, err)
+	}
+	t.Setenv("TMPDIR", filepath.Join(blocker, "tmp"))
+}
+
+// TestDefaultCacheDirFallsBackWhenHomeUnknown pins the gh#254
+// contract. $HOME is absent under cron, systemd units, launchd
+// agents and `sudo` without -H; the old code answered that with "",
+// which New() stored as CacheDir and cachedGet reads as "caching is
+// switched off". Every registry read then went to the network with
+// nothing saying why.
+func TestDefaultCacheDirFallsBackWhenHomeUnknown(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	dir, err := defaultCacheDir()
+	if err != nil {
+		t.Fatalf("defaultCacheDir() error = %v; the system temp dir "+
+			"is usable, so a missing $HOME must fall back rather "+
+			"than fail", err)
+	}
+	if dir == "" {
+		t.Fatal(`defaultCacheDir() = "" with a nil error; "" is what ` +
+			`cachedGet reads as "no caching", so a failure reported ` +
+			`that way disables the cache silently`)
+	}
+	info, statErr := os.Stat(dir)
+	if statErr != nil || !info.IsDir() {
+		t.Errorf("defaultCacheDir() = %q, which is not an existing "+
+			"directory (stat: %v)", dir, statErr)
+	}
+}
+
+// TestDefaultCacheDirErrorsWhenNoLocationUsable pins the other half:
+// with neither ~/.gale/cache nor the system temp dir available there
+// is no cache root, and that is an error rather than a quiet "".
+func TestDefaultCacheDirErrorsWhenNoLocationUsable(t *testing.T) {
+	breakSystemTemp(t)
+	t.Setenv("HOME", "")
+
+	dir, err := defaultCacheDir()
+	if err == nil {
+		t.Fatalf("defaultCacheDir() = (%q, nil) with no usable "+
+			"location anywhere; want an error", dir)
+	}
+	if dir != "" {
+		t.Errorf("defaultCacheDir() = %q alongside error %v; want an "+
+			"empty dir with the error", dir, err)
+	}
+}
+
+// TestNewKeepsCachingWhenHomeUnknown carries the contract up to the
+// constructor: a registry built without $HOME still caches.
+func TestNewKeepsCachingWhenHomeUnknown(t *testing.T) {
+	t.Setenv("HOME", "")
+
+	reg, err := New()
+	if err != nil {
+		t.Fatalf("New() error = %v, want a registry using the "+
+			"fallback cache root", err)
+	}
+	if reg.CacheDir == "" {
+		t.Error("New() left CacheDir empty without $HOME, which " +
+			"disables registry caching for the whole process (gh#254)")
+	}
+}

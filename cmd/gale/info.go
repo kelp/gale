@@ -24,7 +24,11 @@ var infoCmd = &cobra.Command{
 	Short: "Show package information",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		return runInfo(cmd.OutOrStdout(), newRegistry(), args[0])
+		reg, err := newRegistry()
+		if err != nil {
+			return err
+		}
+		return runInfo(cmd.OutOrStdout(), reg, args[0])
 	},
 }
 
@@ -184,7 +188,11 @@ func printConfigInfo(w io.Writer, name, configPath, scope string) (bool, error) 
 		return false, fmt.Errorf("parsing %s: %w",
 			configPath, err)
 	}
-	cfg.ApplyHost(config.CurrentHost())
+	host, err := config.CurrentHost()
+	if err != nil {
+		return false, err
+	}
+	cfg.ApplyHost(host)
 
 	version, ok := cfg.Packages[name]
 	if !ok {

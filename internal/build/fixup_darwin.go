@@ -3,6 +3,7 @@
 package build
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -313,7 +314,16 @@ func AddDepRpaths(prefixDir string, depStoreDirs []string) error {
 		// preserves an entitlement (e.g. qemu's HVF entitlement)
 		// even when the strip-and-retry branch fires (issue #27,
 		// point 2). resignWithEntitlements re-applies it.
-		ent := extractEntitlements(file)
+		//
+		// Fatal when the read fails. This capture guards every
+		// re-sign below it, so a failure answered with "no
+		// entitlements" would strip them from a binary gale is
+		// about to modify — and the file is still untouched here,
+		// so aborting costs nothing (gh#254).
+		ent, err := extractEntitlements(file)
+		if err != nil {
+			return err
+		}
 		mutated := false
 		for _, c := range changes {
 			// Unlike addRpathRetry, a failed rewrite aborts the
@@ -698,8 +708,17 @@ func isSuspiciousDepRef(ref string, depStoreDirs []string) bool {
 // entitlement it needs for HVF acceleration. A plain ad-hoc
 // re-sign would drop that entitlement (issue #27, point 2), so we
 // extract the existing entitlements first and re-apply them.
+// A read it cannot trust aborts the fixup instead of re-signing
+// with a guess: RelocateStaleRpaths propagates the error and its
+// caller discards the prefix, where signing without the
+// entitlements would ship a binary whose capabilities are gone
+// (gh#254).
 func resign(file string) error {
-	return resignWithEntitlements(file, extractEntitlements(file))
+	ent, err := extractEntitlements(file)
+	if err != nil {
+		return err
+	}
+	return resignWithEntitlements(file, ent)
 }
 
 // clearSigningDetritus strips the extended attributes codesign
@@ -759,19 +778,35 @@ func resignWithEntitlements(file, ent string) error {
 }
 
 // extractEntitlements returns the embedded entitlements plist (XML)
-// of a Mach-O, or "" if it carries none (or codesign fails). The
-// returned XML is suitable for re-applying via codesign
-// --entitlements.
+// of a Mach-O, or "" when it carries none. The returned XML is
+// suitable for re-applying via codesign --entitlements.
+//
+// "It carries none" and "I could not read them" are different
+// answers and do not share a return value. resignWithEntitlements
+// reads "" as "sign without --entitlements", so an extraction
+// failure reported as "" re-signs the binary with its capabilities
+// removed while the build still succeeds (gh#254) — issue #27's
+// failure mode reached through the error path instead of the
+// ordering one. CLAUDE.md states the invariant this protects:
+// always re-sign after a Mach-O mutation, preserving entitlements.
+//
+// An UNSIGNED Mach-O is the ordinary "none" case, not a failure.
+// codesign --display exits non-zero on one, and re-signing it
+// without entitlements is exactly right. The two are told apart by
+// the file itself — whether it carries an LC_CODE_SIGNATURE —
+// rather than by codesign's exit status or message text, because
+// the harmful case is the one where codesign will not answer at
+// all.
 //
 // `codesign --display --entitlements - --xml` writes the plist as
 // clean XML to stdout (macOS 12+). On older toolchains --xml is
 // absent and the raw blob is emitted with an 8-byte binary magic
 // header (0xfade7171 + length) before the <?xml prologue; we strip
-// any bytes preceding the XML prologue so either format works. An
-// unsigned or entitlement-free binary yields no <key> elements,
+// any bytes preceding the XML prologue so either format works. A
+// signed but entitlement-free binary yields no <key> elements,
 // which we treat as "none" so we don't pass an empty entitlements
 // file (which codesign rejects).
-func extractEntitlements(file string) string {
+func extractEntitlements(file string) (string, error) {
 	cmd := exec.Command("codesign", "--display", "--entitlements",
 		"-", "--xml", file)
 	out, err := cmd.Output()
@@ -780,9 +815,24 @@ func extractEntitlements(file string) string {
 		// carries the same XML after a binary magic header.
 		cmd = exec.Command("codesign", "--display",
 			"--entitlements", "-", file)
-		out, err = cmd.Output()
-		if err != nil {
-			return ""
+		var retryErr error
+		out, retryErr = cmd.Output()
+		if retryErr != nil {
+			signed, probeErr := hasCodeSignature(file)
+			if probeErr != nil {
+				return "", fmt.Errorf(
+					"reading entitlements of %s: %w",
+					filepath.Base(file),
+					errors.Join(retryErr, probeErr),
+				)
+			}
+			if !signed {
+				return "", nil
+			}
+			return "", fmt.Errorf(
+				"reading entitlements of signed %s: %w",
+				filepath.Base(file), retryErr,
+			)
 		}
 	}
 	s := string(out)
@@ -796,9 +846,9 @@ func extractEntitlements(file string) string {
 	// an empty document; re-applying that would be a no-op at best
 	// and a codesign error at worst, so skip it.
 	if !strings.Contains(s, "<key>") {
-		return ""
+		return "", nil
 	}
-	return s
+	return s, nil
 }
 
 // run executes a command and returns any error.

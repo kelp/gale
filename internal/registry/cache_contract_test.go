@@ -246,7 +246,10 @@ func TestSearchStaleOnError(t *testing.T) {
 // constructor honours GALE_OFFLINE=1 by setting Offline.
 func TestNewRespectsGaleOfflineEnv(t *testing.T) {
 	t.Setenv("GALE_OFFLINE", "1")
-	reg := New()
+	reg, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if !reg.Offline {
 		t.Error("New() should set Offline=true when GALE_OFFLINE=1")
 	}

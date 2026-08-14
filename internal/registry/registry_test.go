@@ -161,7 +161,10 @@ func TestFetchRecipeErrorsOnMalformedTOML(t *testing.T) {
 // --- Behavior 5: New() uses default URL ---
 
 func TestNewUsesDefaultURL(t *testing.T) {
-	reg := New()
+	reg, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
 	if reg.BaseURL != DefaultURL {
 		t.Errorf("BaseURL = %q, want %q",
 			reg.BaseURL, DefaultURL)
@@ -987,8 +990,11 @@ func TestParseIndex(t *testing.T) {
 // --- Behavior 22: FetchRecipe empty name ---
 
 func TestFetchRecipeEmptyName(t *testing.T) {
-	reg := New()
-	_, err := reg.FetchRecipe("")
+	reg, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = reg.FetchRecipe("")
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -997,8 +1003,11 @@ func TestFetchRecipeEmptyName(t *testing.T) {
 // --- Behavior 23: FetchRecipeVersion empty name ---
 
 func TestFetchRecipeVersionEmptyName(t *testing.T) {
-	reg := New()
-	_, err := reg.FetchRecipeVersion("", "1.0.0")
+	reg, err := New()
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	_, err = reg.FetchRecipeVersion("", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -1155,7 +1164,10 @@ func TestFetchRecipeMetadataSkipsBinariesFetch(t *testing.T) {
 // --- Behavior 24: NewWithURL empty string uses default ---
 
 func TestNewWithURLEmpty(t *testing.T) {
-	reg := NewWithURL("")
+	reg, err := NewWithURL("")
+	if err != nil {
+		t.Fatalf("NewWithURL: %v", err)
+	}
 	if reg.BaseURL != DefaultURL {
 		t.Errorf("BaseURL = %q, want %q",
 			reg.BaseURL, DefaultURL)
@@ -1163,7 +1175,10 @@ func TestNewWithURLEmpty(t *testing.T) {
 }
 
 func TestNewWithURLCustom(t *testing.T) {
-	reg := NewWithURL("https://example.com/recipes")
+	reg, err := NewWithURL("https://example.com/recipes")
+	if err != nil {
+		t.Fatalf("NewWithURL: %v", err)
+	}
 	if reg.BaseURL != "https://example.com/recipes" {
 		t.Errorf("BaseURL = %q, want %q",
 			reg.BaseURL, "https://example.com/recipes")

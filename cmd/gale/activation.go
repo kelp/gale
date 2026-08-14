@@ -51,9 +51,16 @@ func gateActivation(galeDir, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("reading the active generation: %w", err)
 	}
+	// Same reasoning as the strict read above: Host selects which lock
+	// roots this machine is held to, so an unknown one would quietly
+	// hold it to fewer of them.
+	host, err := config.CurrentHost()
+	if err != nil {
+		return err
+	}
 	return activation.Check(activation.Request{
 		LockPath:  lockPath,
-		Host:      config.CurrentHost(),
+		Host:      host,
 		Platform:  currentPlatform(),
 		StoreRoot: storeRoot,
 		Installed: installed,

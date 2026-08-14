@@ -312,7 +312,12 @@ func checkGlobalConfig(ctx *doctorContext) bool {
 		))
 		return false
 	}
-	cfg.ApplyHost(config.CurrentHost())
+	host, err := config.CurrentHost()
+	if err != nil {
+		ctx.out.Error(fmt.Sprintf("Host identity: %v", err))
+		return false
+	}
+	cfg.ApplyHost(host)
 	ctx.out.Success(fmt.Sprintf(
 		"Global config (%d packages)", len(cfg.Packages),
 	))
@@ -344,7 +349,12 @@ func checkProjectConfig(ctx *doctorContext) bool {
 		))
 		return false
 	}
-	cfg.ApplyHost(config.CurrentHost())
+	host, err := config.CurrentHost()
+	if err != nil {
+		ctx.out.Error(fmt.Sprintf("Host identity: %v", err))
+		return false
+	}
+	cfg.ApplyHost(host)
 	ctx.out.Success(fmt.Sprintf(
 		"Project config (%d packages)", len(cfg.Packages),
 	))
@@ -359,7 +369,11 @@ func checkProjectConfig(ctx *doctorContext) bool {
 // shared entry effectively becomes dead config. Warns so the
 // user can decide whether to clean up; never fails.
 func checkHostOverrides(ctx *doctorContext) bool {
-	host := config.CurrentHost()
+	host, err := config.CurrentHost()
+	if err != nil {
+		ctx.out.Error(fmt.Sprintf("Host identity: %v", err))
+		return false
+	}
 	overrides := loadHostOverrides(
 		filepath.Join(ctx.galeDir, "gale.toml"), host,
 	)
@@ -438,7 +452,11 @@ func checkLegacyLockfile(ctx *doctorContext) bool {
 		ctx.out.Warn(fmt.Sprintf("lockfile check skipped: %v", err))
 		return true
 	}
-	host := config.CurrentHost()
+	host, err := config.CurrentHost()
+	if err != nil {
+		ctx.out.Error(fmt.Sprintf("Host identity: %v", err))
+		return false
+	}
 	var unusable []string
 	for _, s := range scopes {
 		lockPath, pErr := lockfilePath(s.configPath)
