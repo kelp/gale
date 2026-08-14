@@ -174,6 +174,67 @@ linux-arm64 = { sha256 = "ledgerarm", manifest_digest = "sha256:` +
 	}
 }
 
+// MergeBinariesForRecipe returns false for a flat-section merge so
+// the registry can still fall back to .versions. The working-tree
+// digest must still fingerprint the sibling: editing those bytes is
+// a recipe change (gh#265).
+func TestLocalRecipeResolverDigestIncludesFlatBinaries(t *testing.T) {
+	dir := t.TempDir()
+	bucket := filepath.Join(dir, "j")
+	if err := os.MkdirAll(bucket, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	recipeTOML := `[package]
+name = "jq"
+version = "1.8.1"
+
+[source]
+url = "https://example.com/jq.tar.gz"
+sha256 = "abc"
+`
+	write := func(name, body string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(bucket, name),
+			[]byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("jq.toml", recipeTOML)
+	write("jq.binaries.toml", `version = "1.8.1"
+
+[darwin-arm64]
+sha256 = "firstsha"
+`)
+
+	first, err := localRecipeResolver(dir)("jq")
+	if err != nil {
+		t.Fatalf("resolver error: %v", err)
+	}
+	if first.Digest == "" {
+		t.Fatal("Digest empty, want a fingerprint that includes .binaries.toml")
+	}
+	if got := first.Binary["darwin-arm64"].SHA256; got != "firstsha" {
+		t.Errorf("SHA256 = %q, want firstsha from the flat section", got)
+	}
+
+	write("jq.binaries.toml", `version = "1.8.1"
+
+[darwin-arm64]
+sha256 = "secondsha"
+`)
+	second, err := localRecipeResolver(dir)("jq")
+	if err != nil {
+		t.Fatalf("resolver after binaries edit: %v", err)
+	}
+	if second.Digest == first.Digest {
+		t.Fatal("digest unchanged after editing a flat .binaries.toml; " +
+			"MergeBinariesForRecipe returning false must not drop those bytes")
+	}
+	if got := second.Binary["darwin-arm64"].SHA256; got != "secondsha" {
+		t.Errorf("SHA256 = %q, want secondsha after the edit", got)
+	}
+}
+
 func TestDetectRecipesRepoWithMultiCharBucket(t *testing.T) {
 	// Letter bucket must be single character.
 	path := "/home/user/code/gale-recipes/recipes/jq/jq.toml"

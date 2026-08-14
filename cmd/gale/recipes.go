@@ -115,6 +115,13 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 			)
 			binData, readErr := os.ReadFile(binPath)
 			if readErr == nil {
+				// Fingerprint the sibling whenever it was
+				// read. MergeBinariesForRecipe returns true
+				// only for a ledger match so the registry
+				// can still fall back to .versions; a flat
+				// merge still produced these binaries
+				// (gh#265).
+				parts = append(parts, binData)
 				idx, parseErr := recipe.ParseBinaryIndex(
 					string(binData),
 				)
@@ -122,11 +129,9 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 					// Prefer the version-matching [[history]] ledger
 					// entry over the flat section, matching registry
 					// resolution (gh#121).
-					if recipe.MergeBinariesForRecipe(
+					recipe.MergeBinariesForRecipe(
 						rec, idx, localGHCRBase,
-					) {
-						parts = append(parts, binData)
-					}
+					)
 				}
 			}
 		}
