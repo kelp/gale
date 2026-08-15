@@ -131,8 +131,9 @@ resolve name@version → URL + sha256
 
 ## 4. What goes
 
-Stop funding these. Do not ifdef them. Delete or
-mothball once the fetch path is the only installer.
+Stop funding these. Do not ifdef them. Delete
+once the fetch path is the only installer. No
+stubs.
 
 **In gale**
 
@@ -193,19 +194,16 @@ latest = "1.56.0"
 
 [versions."1.56.0".artifacts."darwin/arm64"]
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-aarch64-apple-darwin.tar.gz"
+format = "tar.gz"  # tar.gz | tar.zst | zip | bin
 sha256 = "…"
 tree_digest = "…"
 hash_source = "upstream-sha256sums"  # or "computed"
 strip = 1
-bin = ["just"]
 
-[versions."1.56.0".artifacts."linux/amd64"]
-url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-x86_64-unknown-linux-musl.tar.gz"
-sha256 = "…"
-tree_digest = "…"
-hash_source = "upstream-sha256sums"
-strip = 1
-bin = ["just"]
+[[versions."1.56.0".artifacts."darwin/arm64".files]]
+src = "just"
+dest = "bin/just"
+mode = 0o755
 ```
 
 Version blocks are append-only. A published
@@ -220,13 +218,17 @@ to contain.
 
 Templates (`{{version}}`, `{{os}}`, `{{arch}}`) are
 authoring sugar only. The lock stores the resolved
-URL, hash, strip, bin, and any attestation
-requirement — never the template.
+URL, format, hash, strip, file map, and any
+attestation requirement — never the template.
 
-`strip` and `bin` tell the extractor how to land a
-tree that `generation.Build` can link. Some upstreams
-ship a bare binary (`jq-macos-arm64`). Some ship a
-tarball with `bin/`. The installer does not guess.
+`format` and `files` tell the extractor how to
+land a tree that `generation.Build` can link.
+`files` is a source-path → dest-path map with
+a fixed mode. A bare `jq-macos-arm64` becomes
+`bin/jq` because the entry says so. A
+`bin = ["just"]` list cannot describe that
+rename. The installer does not guess format
+from the URL.
 
 **Permitted transformations:** download, hash, safe
 extract, strip-components, place named bins. Nothing
@@ -393,19 +395,27 @@ These are already paid for. Keep them.
    SHA-256" — extraction, strip, and mode bits
    intervene. The claim is: the archive matched
    the lock, Gale performed no mutation, and a
-   **tree digest** (sorted `path + mode +
-   sha256` of each regular file) binds the
-   store to the lock. Admission computes it
-   once per platform and writes it on the
-   index entry. Lock writers copy it.
-   Installers recompute and check it. That is
-   how one lock names every platform without
-   extracting them here. Provenance, `verify`,
-   doctor, and staleness compare that digest.
-   It occupies the slot `graph_digest`
-   vacates. Activation still reads provenance
-   and the lock; it does not rehash the tree
-   on every `cd`. `gale verify` and doctor do.
+   **tree digest** binds the store to the
+   lock. Each entry is `path + type + mode`
+   plus `sha256` for a regular file or the
+   target for a symlink. A swapped
+   executable symlink must change the
+   digest. Gale metadata
+   (`.gale-provenance.toml`,
+   `.gale-deps.toml`) is excluded so the
+   record does not hash itself. Admission
+   computes the digest once per platform
+   and writes it on the index entry. Lock
+   writers copy it. Installers recompute
+   and check it. That is how one lock names
+   every platform without extracting them
+   here. Provenance, `verify`, doctor, and
+   staleness compare that digest. It
+   occupies the slot `graph_digest`
+   vacates. Activation still reads
+   provenance and the lock; it does not
+   rehash the tree on every `cd`.
+   `gale verify` and doctor do.
 
 6. **Provenance is all-or-nothing.** Each store
    directory writes `.gale-provenance.toml` only
@@ -494,8 +504,13 @@ Mitigations, in order:
 - index changes are git PRs, same as recipes
 - after the first lock, **the index cannot change
   those bytes**. Sync is lock-only.
-- the lock records the index commit (or bundle
-  digest) used at resolve, so a later rewrite is
+- the lock records **one** `index_commit` per
+  install / update / lock run. Every package
+  in that run resolves against that commit.
+  Fetching each file from moving `main` can
+  assemble a lock no single index state
+  ever contained. `--index <dir>` records
+  that checkout's HEAD. A later rewrite is
   a visible diff, not a silent reread.
 
 `gale update` is a new resolve. It is supposed to
@@ -573,8 +588,14 @@ re-fetched URL. It never mutates.
   metadata (`.gale-provenance.toml`,
   `.gale-deps.toml`), device/FIFO nodes, or
   escaping symlinks/hardlinks.
-- Mask setuid/setgid (`07000`). Cap entry count
-  and decompressed size.
+- Mask setuid/setgid (`07000`). Cap entry count,
+  compressed download size, and decompressed
+  size. Both caps are compiled constants.
+- Every fetch honors `context.Context`: index
+  HTTP, artifact HTTP, hashing, extract.
+  Cancel stops work. A deadline around
+  `sync --if-needed` is not enough if the
+  download path ignores it.
 - Hold `ExtractZip` to `extractTar`'s rules
   before any zip-distributed package enters the
   index. Zip is a primary format here
@@ -818,14 +839,19 @@ index is not reread:
 ```toml
 [packages."just@1.56.0".artifacts."darwin/arm64"]
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-aarch64-apple-darwin.tar.gz"
+format = "tar.gz"
 sha256 = "…"
 tree_digest = "…"
 method = "fetch"
 strip = 1
-bin = ["just"]
 hash_source = "upstream-sha256sums"
 index_commit = "…"
 # attestation = { issuer = "…", san = "…", repo = "…" }  # if locked
+
+[[packages."just@1.56.0".artifacts."darwin/arm64".files]]
+src = "just"
+dest = "bin/just"
+mode = 0o755
 ```
 
 Writers record **every platform** present in the
@@ -903,12 +929,13 @@ Keep: `install`, `remove`, `sync`, `update`,
 to `list` and `rollback` (one step).
 
 `pin` / `unpin`, `search`, `switch`, `add`,
-`repo *`, `sbom`, and `inspect` are mothballed
-or deleted. Each is another finalize-adjacent
-path. `[pinned]` goes with `pin`.
+`repo *`, `sbom`, and `inspect` are deleted.
+Each is another finalize-adjacent path.
+`[pinned]` goes with `pin`.
 
-`install` resolves the index (or the lock, when
-present and matching), fetches, finalizes.
+`install` resolves one `index_commit` (or the
+lock, when present and matching), fetches,
+finalizes. `gale lock` writes the lock only.
 
 `outdated` / `update` talk to the index, not to
 GHCR ledgers.
@@ -920,8 +947,8 @@ matches. Farm, deps-meta, and legacy-lock
 novels go when those packages die. The remedy
 it prints is a command the user runs.
 
-Drop or mothball: `build`, `create-recipe`,
-`audit` (rebuild), `lint` (recipe), `recipes`,
+Delete: `build`, `create-recipe`, `audit`
+(rebuild), `lint` (recipe), `recipes`,
 `verify` as GHCR-attestation. Reuse `verify`
 only if it means "store matches lock."
 
@@ -944,8 +971,12 @@ replacement, not equivalence.
 unprovenanced binary-method dirs"
 (`lockfile.md`). Use a new verb
 (`gale migrate --to-fetch` is still a
-collision). Pick `gale fetch-adopt` or
-similar before Phase 1.
+collision). The verb is `gale fetch-adopt`.
+It ships unused with the fetch path, and
+is available in the same cutover that
+makes source unreachable. A window where
+source is dead and adopt does not exist
+strands every v1 lock.
 
 Plan:
 
@@ -955,9 +986,14 @@ Plan:
    prints the lock diff, requires
    confirmation, and refuses when frozen / in
    CI. Fetch and verify everything, then
-   atomically write the v2 lock and a new
-   generation. Any failure leaves the old
-   lock, generation, and store usable.
+   publish in this order: stage store
+   bytes, register the project root,
+   write the v2 lock, swap `current` last.
+   Any failure leaves the old lock,
+   generation, and store usable. Crash
+   recovery is fail-closed plus sync
+   convergence. Do not claim multi-file
+   atomicity.
 3. Write fetch-namespace store paths only
    after every machine that shares that store
    has a gale new enough not to resolve them
@@ -983,48 +1019,49 @@ hardened; redirect allowlist; no ambient
 credential on fetch. These are not Phase 3
 cleanup.
 
-**Phase 1 — fetch installer, ten packages.**
-`jq`, `ripgrep`, `fd`, `just`, `gh`, `go`,
-`gofumpt`, `golangci-lint`, `direnv`, `uv`.
-Each passes the §5 admission gate. **Index
-all ten first.** Then one switch PR. A
-jq-only switch is a dual backend: every
-other name still builds. Not-in-index is an
-error, not a build. **One installer.** Build
-fetch on a branch or as dead `internal/fetch`
-until that switch. Do not ship
-`backend = "fetch"` next to source install.
-Mixed source/fetch locks are refused. Tests
-at `cmd/gale` and `integration/`: hash
-mismatch refuses; sync does not write the
+**Phase 1 — unused fetch path, ten packages,
+adopt command.** `jq`, `ripgrep`, `fd`,
+`just`, `gh`, `go`, `gofumpt`,
+`golangci-lint`, `direnv`, `uv`. Each
+passes the §5 admission gate. **Index all
+ten first.** Land `internal/fetch`, the
+index client, `gale fetch-adopt`, and the
+v2 lock writer as unused code. Source
+install stays the only installer. Do not
+ship `backend = "fetch"`. Mixed
+source/fetch locks are refused. Tests at
+`cmd/gale` and `integration/` run against
+the unused path: hash mismatch refuses;
+one `index_commit` per operation; `gale
+lock` writes the lock only.
+
+**Phase 2 — one cutover.** Fetch is the
+only installer. Source build is
+unreachable. `fetch-adopt` is the
+migration path, so v1 locks are not
+stranded. Not-in-index is an error, not a
+build. Amend `design.md`, `CLAUDE.md`,
+and the README in the same change. Delete
+the long-tail commands; do not leave
+stubs. Tests: sync does not write the
 lock; activation gate still holds; tree
 digest drift is doctor-visible; rollback
 then sync returns to the lock.
 
-Phase 1 is fetch + lock v2 + global/project.
-Host sections, `.tool-versions`, pins, and a
-dual backend are out of that session (§15).
-`[bin]` overlays stay until fetch is
-default. 193 source recipes still collide.
-
-**Phase 2 — default fetch, grow the catalog
-by admission, not by 91.** `gale install`
-fetches. Source build is unreachable from the
-CLI. Index linter: required hashes,
-`hash_source`, `tree_digest`, allowlisted
-hosts, `bin` / `strip`, version blocks
-immutable, `latest` names an existing
-block. Amend
-`design.md`, `CLAUDE.md`, and the README in
-the same change.
+Host sections, `.tool-versions`, pins, and
+a dual backend are out of that session
+(§15). `[bin]` overlays die at this
+cutover. Growing the catalog by admission
+starts after the cutover is boring.
 
 **Phase 3 — delete the distro.** Remove
 `internal/build`, farm, GHCR bottle wiring,
 recipe build steps, recipes CI
 promote/ledger. Keep a generalized attestation
 verifier. `gale-recipes` becomes the index
-repo. §11 adopt is required before this
-delete.
+repo. Adopt shipped at the Phase 2
+cutover. This phase deletes the dead
+source path.
 
 **Phase 4 — leftovers, if any.** Each is its
 own proposal: python-build-standalone,
@@ -1133,12 +1170,14 @@ stays.
 
 **Before Phase 1 lands on main**
 
-1. **One installer.** No `backend = "fetch"`
-   flag beside source install. Fetch is
-   unused code or a branch until the switch
-   PR. The switch is global, after the first
-   ten are in the index. A jq-only cutover
-   is a dual backend. Mixed-method locks
+1. **One installer, one cutover.** No
+   `backend = "fetch"` flag. Fetch, the
+   index, and `fetch-adopt` land unused.
+   The switch PR makes fetch the only
+   installer and makes adopt available in
+   the same release. A jq-only cutover is
+   a dual backend. A switch without adopt
+   strands v1 locks. Mixed-method locks
    are refused.
 2. **Freeze host sections.** No new
    `[hosts.*]` or `--host` semantics. Cross-
@@ -1198,8 +1237,15 @@ stays.
 **After fetch is default**
 
 13. **One finalize function** for install,
-    update, remove, and lock. One test
-    family. `context.go` is the smell.
+    update, and remove. Stage store bytes,
+    register, write the lock, swap
+    `current` last. One mutation lock per
+    scope covers revalidation and
+    publication. `gale lock` is not this
+    function: one `index_commit`, write
+    the lock, no fetch, no `current` swap.
+    One test family. `context.go` is the
+    smell.
 14. **Bin collisions are a hard error.**
     No `[bin]` overlay, no per-host winner.
     Safe once fetch is default and the
@@ -1215,16 +1261,19 @@ stays.
     lock.** Global, project, and `--host`.
     None rebuild from the manifest or
     store alone when a lock is present.
-18. **Mothball the long tail:** `sbom`,
+18. **Delete the long tail.** `sbom`,
     `inspect`, `search`, `switch`, `add`,
-    `repo *`.
+    `repo *`, `build`, `create-recipe`,
+    `audit`, recipe `lint`. No stubs.
 19. **GC does not repair.** No resolver,
     network, generation rebuild, or
-    `--force`. Mark symlink targets of
-    the two kept generations; sweep the
-    rest. Fail closed if retention is
-    incomplete. Milestone 2 is keep=2
-    only. This rewrite is Milestone 5.
+    `--force`. Mark and sweep under the
+    same store/generation lock as
+    publication. Never delete a live
+    fetch's staging directory. Fail
+    closed if retention is incomplete.
+    Milestone 2 is keep=2 only. This
+    rewrite is Milestone 5.
 
 **Do not do**
 
@@ -1448,3 +1497,16 @@ per-package; rollback vs sync is
 specified; gc is a sweeper, not a
 repairer; project registration is part
 of publication.
+
+A third pass (sol; fable still out)
+folded: Milestone 4 is the sole
+cutover and adopt ships unused before
+it; artifacts name `format` and a file
+map; the tree digest covers symlinks
+and excludes Gale metadata; fetch
+honors context and a compressed-size
+cap; one `index_commit` per operation;
+`gale lock` writes the lock only;
+publication is serialized per scope;
+GC marks and sweeps under the same
+lock; mothballed commands are deleted.
