@@ -113,8 +113,8 @@ func TestReadV2ParsesOnDiskKeys(t *testing.T) {
 	if !reflect.DeepEqual(darwin, want) {
 		t.Errorf("darwin artifact = %#v, want %#v", darwin, want)
 	}
-	if want.Files[0].Mode != 493 {
-		t.Errorf("0o755 fixture pin drifted: Mode = %d, want 493", want.Files[0].Mode)
+	if darwin.Files[0].Mode != 493 {
+		t.Errorf("decoded mode = %d, want 493 (0o755)", darwin.Files[0].Mode)
 	}
 }
 
@@ -189,6 +189,20 @@ func TestReadV2RejectsUnknownField(t *testing.T) {
 			key:     "stray",
 		},
 		{
+			name: "targets default",
+			content: strings.Replace(v2Fixture,
+				`roots = ["just@1.56.0"]`,
+				"roots = [\"just@1.56.0\"]\nstray = true", 1),
+			key: "targets.default.stray",
+		},
+		{
+			name: "targets host",
+			content: strings.Replace(v2Fixture,
+				`roots = ["just@1.56.0", "jq@1.8.1"]`,
+				"roots = [\"just@1.56.0\", \"jq@1.8.1\"]\nstray = true", 1),
+			key: `targets.host."ci-*,build-*".stray`,
+		},
+		{
 			name: "package",
 			content: strings.Replace(v2Fixture,
 				`[packages."just@1.56.0".artifacts."darwin/arm64"]`,
@@ -245,6 +259,11 @@ func TestReadV2RejectsBadGuard(t *testing.T) {
 		{
 			name:    "absent",
 			content: strings.Replace(v2Fixture, v2Guard, "", 1),
+		},
+		{
+			name: "version key missing",
+			content: strings.Replace(v2Fixture, v2Guard,
+				"[packages.\"!gale-lock-v2\"]\n", 1),
 		},
 		{
 			name: "wrong value",
@@ -316,6 +335,42 @@ func TestLegacyDecodeRefusesV2(t *testing.T) {
 	}
 }
 
+func TestReadV2Malformed(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{
+			name:    "syntax error",
+			content: "version = 2\n[targets\n",
+		},
+		{
+			name: "type mismatch",
+			content: strings.Replace(v2Fixture,
+				`roots = ["just@1.56.0"]`,
+				"roots = 5", 1),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ReadV2(writeTemp(t, tt.content))
+			if !errors.Is(err, ErrMalformed) {
+				t.Fatalf("err = %v, want ErrMalformed", err)
+			}
+			if !strings.Contains(err.Error(), "toml:") {
+				t.Errorf("error dropped the decoder's detail: %v", err)
+			}
+		})
+	}
+}
+
+func TestReadV1RefusesV2Fixture(t *testing.T) {
+	_, err := ReadV1(writeTemp(t, v2Fixture))
+	if !errors.Is(err, ErrUnknownVersion) {
+		t.Fatalf("err = %v, want ErrUnknownVersion", err)
+	}
+}
+
 func TestReadV2OmitsAbsentAttestation(t *testing.T) {
 	content := strings.Replace(v2Fixture,
 		`[packages."just@1.56.0".artifacts."darwin/arm64".attestation]
@@ -331,5 +386,27 @@ repo = "casey/just"
 	art := lf.Packages["just@1.56.0"].Artifacts["darwin/arm64"]
 	if art.Attestation != nil {
 		t.Errorf("attestation = %#v, want nil", art.Attestation)
+	}
+}
+
+func TestReadV2EmptyAttestationIsPresent(t *testing.T) {
+	content := strings.Replace(v2Fixture,
+		`[packages."just@1.56.0".artifacts."darwin/arm64".attestation]
+issuer = "https://token.actions.githubusercontent.com"
+san = "https://github.com/casey/just/.github/workflows/release.yml@refs/tags/1.56.0"
+repo = "casey/just"
+`,
+		`[packages."just@1.56.0".artifacts."darwin/arm64".attestation]
+`, 1)
+	lf, err := ReadV2(writeTemp(t, content))
+	if err != nil {
+		t.Fatalf("ReadV2: %v", err)
+	}
+	art := lf.Packages["just@1.56.0"].Artifacts["darwin/arm64"]
+	if art.Attestation == nil {
+		t.Fatal("empty attestation table decoded as absent")
+	}
+	if *art.Attestation != (V2Attestation{}) {
+		t.Errorf("attestation = %#v, want zero value", art.Attestation)
 	}
 }

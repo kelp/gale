@@ -34,7 +34,7 @@ type V2Artifact struct {
 	Strip       int            `toml:"strip"`
 	HashSource  string         `toml:"hash_source"`
 	IndexCommit string         `toml:"index_commit"`
-	Attestation *V2Attestation `toml:"attestation,omitempty"`
+	Attestation *V2Attestation `toml:"attestation"`
 	Files       []V2File       `toml:"files"`
 }
 

@@ -36,6 +36,14 @@ func TestLoadClassifies(t *testing.T) {
 			wantKind: KindV1,
 		},
 		{
+			// A later case SchemaV2 in Load would classify this
+			// as KindV2 and still pass the version=99 row. The
+			// real fixture is what keeps this gale refusing v2.
+			name:    "v2 schema",
+			content: v2Fixture,
+			wantErr: ErrUnknownVersion,
+		},
+		{
 			name:    "unknown schema version",
 			content: "version = 99\n",
 			wantErr: ErrUnknownVersion,
