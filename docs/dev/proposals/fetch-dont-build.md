@@ -102,15 +102,19 @@ Unchanged in shape, and still the product:
 
 | Piece | Role |
 |---|---|
-| `gale.toml` | declared pins, `[vars]`, host sections |
+| `gale.toml` | declared pins and `[vars]` |
 | `gale.lock` | enforced artifact identity |
 | store (fetch namespace, §7f) | immutable trees |
 | `gen/<N>` + `current` | atomic environment swap |
 | direnv hook, `gale env` / `shell` / `run` | activation |
-| global / project / host scopes | where the manifest lives |
+| global and project scopes | where the manifest lives |
 | `gale sync --if-needed` + `sync-state.toml` | direnv must not stall |
-| `gale gc`, `generations rollback` | retention and undo |
+| `gale gc`, one-step rollback | retention and undo |
 | `internal/download` | fetch, hash, extract |
+
+Host sections, `.tool-versions`, `[pinned]`, and
+`[bin]` overlays are frozen or removed (§15).
+They are not part of Phase 1.
 
 The pipeline collapses to:
 
@@ -857,24 +861,30 @@ lock + host + platform.
 
 ### gc and rollback
 
-Retention is every store directory linked by
-every generation we keep, in every registered
-scope — including generations *below* `current`
-that rollback still targets. Today's keep-N
-window stays. "At or above `current`" would
-make rollback impossible.
+Keep **current + one previous** generation.
+That is enough for "I just broke PATH."
+Older undo is the lockfile in git. Today's
+keep-10 window is what made gc retain the
+wrong set (gh#247).
 
-No farm claimants. No revision orphans.
-Rollback still refuses an incomplete
-generation.
+Retention is every store directory linked by
+those two generations, in every registered
+scope. No farm claimants. No revision
+orphans. Rollback still refuses an
+incomplete generation.
 
 ## 10. Commands
 
 Keep: `install`, `remove`, `sync`, `update`,
-`list`, `info`, `outdated`, `search`, `which`,
-`doctor`, `gc`, `generations`, `init`, `env`,
-`shell`, `run`, `pin`, `unpin`, `lock`,
-`completion`, `hook`.
+`list`, `info`, `outdated`, `which`, `doctor`,
+`gc`, `init`, `env`, `shell`, `run`, `lock`,
+`completion`, `hook`. `generations` shrinks
+to `list` and `rollback` (one step).
+
+`pin` / `unpin`, `search`, `switch`, `add`,
+`repo *`, `sbom`, and `inspect` are mothballed
+or deleted. Each is another finalize-adjacent
+path. `[pinned]` goes with `pin`.
 
 `install` resolves the index (or the lock, when
 present and matching), fetches, finalizes.
@@ -940,7 +950,8 @@ Projects without a lock install fresh.
 
 ## 12. Phases
 
-Phase 0 is this document. No code.
+Phase 0 is this document. No code in this
+change. Implementation is a later session.
 
 **Prerequisites, before any fetch lock is
 written:** lock v2 reader and guard; collision-safe
@@ -952,12 +963,21 @@ cleanup.
 **Phase 1 — fetch installer, ten packages.**
 `jq`, `ripgrep`, `fd`, `just`, `gh`, `go`,
 `gofumpt`, `golangci-lint`, `direnv`, `uv`.
-Each passes the §5 admission gate. Experimental
-command or config flag. Mixed source/fetch
-locks are refused. Tests at `cmd/gale` and
-`integration/`: hash mismatch refuses; sync
-does not write the lock; activation gate
-still holds; tree digest drift is doctor-visible.
+Each passes the §5 admission gate. **One
+installer.** Build fetch on a branch or as
+dead `internal/fetch` until a single switch
+PR points `install` at it. Do not ship
+`backend = "fetch"` next to source install.
+Mixed source/fetch locks are refused. Tests
+at `cmd/gale` and `integration/`: hash
+mismatch refuses; sync does not write the
+lock; activation gate still holds; tree
+digest drift is doctor-visible.
+
+Phase 1 is fetch + lock v2 + global/project.
+Host sections, `.tool-versions`, pins,
+`[bin]` overlays, and a dual backend are
+out of that session (§15).
 
 **Phase 2 — default fetch, grow the catalog
 by admission, not by 91.** `gale install`
@@ -1009,6 +1029,14 @@ distro overhead.
 - System packages, daemons, GUI apps.
 - aqua-registry as a resolver.
 - A Homebrew bottle backend in v1.
+- Gale invoking `brew`. Coexistence is
+  documented in §8e: brew for leftovers,
+  gale for the fetch catalog, gale first
+  on PATH.
+- Two live installers in one binary.
+- `.tool-versions` as a manifest.
+- `[pinned]` / `gale pin`.
+- `[bin]` collision overlays.
 
 ## 14. Open questions
 
@@ -1034,6 +1062,12 @@ Closed after owner review:
 - Leftovers you still want (`git`, …) are
   Homebrew or the OS. Gale does not wrap
   brew (§8e).
+- Control-plane cuts in §15 are in scope
+  for the same program. Host sections are
+  frozen, not extended. `.tool-versions`,
+  pins, and `[bin]` overlays are out of
+  Phase 1. Generations keep current + one
+  previous. One installer, never two.
 
 Still open, and not merge-blocking:
 
@@ -1048,6 +1082,85 @@ Still open, and not merge-blocking:
 4. **Who runs the index-update PR bot,**
    and under which app token. Wait until
    there is an index to update.
+5. **Host sections: freeze or delete.**
+   Freeze is the default. Delete if unused
+   after fetch is default.
+
+## 15. Control plane
+
+The distro is not the only extra control
+plane. These cuts stop the remaining
+tier-3 shape: three scopes, two manifests,
+ten generations, pin vs lock vs disk, and
+a second installer.
+
+**Do not simplify away:** the lock as a
+control, fail-closed reads, the project
+activation gate, no post-extract mutation,
+`sync` never writing the lock,
+`sync-state.toml`. Global vs project
+stays.
+
+**Before Phase 1 lands on main**
+
+1. **One installer.** No `backend = "fetch"`
+   flag beside source install. Fetch is
+   unused code or a branch until the switch
+   PR. Mixed-method locks are refused.
+2. **Freeze host sections.** No new
+   `[hosts.*]` or `--host` semantics. Cross-
+   scope bugs are a named class. Chezmoi
+   or a second file already does
+   multi-machine. Delete later if unused.
+3. **Drop `.tool-versions`.** Gale reads
+   `gale.toml` only.
+4. **Keep current + one previous
+   generation.** `generations` is `list`
+   and one-step `rollback`.
+5. **Drop `[pinned]` and `gale pin`.**
+   `gale update` updates what you name.
+   The lock is the pin.
+6. **No `--recipes` override.** `--index
+   <dir>` pointing at a gale-recipes
+   checkout is the only local escape.
+
+**After fetch is default**
+
+7. **One finalize function** for install,
+   update, remove, and lock. One test
+   family. `context.go` is the smell.
+8. **Bin collisions are a hard error.**
+   No `[bin]` overlay, no per-host winner.
+   Fetched CLIs almost never share a
+   basename.
+9. **Doctor is four checks:** PATH, lock
+   readable, generation matches lock
+   roots, tree digest matches.
+10. **Index fetch errors are errors.**
+    Do not inherit stale-on-error or the
+    one-hour negative 404 for resolve.
+11. **Global rebuilds only from the lock.**
+    `install` always writes a lock. A
+    global generation is not rebuilt from
+    the store when a lock exists and
+    cannot be read.
+12. **Mothball the long tail:** `sbom`,
+    `inspect`, `search`, `switch`, `add`,
+    `repo *`.
+
+**Do not do**
+
+- A `system` or brew backend in the
+  installer. Coexistence is §8e.
+- Content-addressed store paths in v1.
+- Index signing, required attestations,
+  aqua-registry.
+- Parallel fetch as a reliability project.
+  Serial is fine for ten packages.
+- Linux as a Phase 1 admission platform.
+  macOS-first until the ten are boring.
+
+PR-sized steps live in [`TODO.md`](../../../TODO.md).
 
 ## Appendix A — Recipe audit (2026-08-15)
 
