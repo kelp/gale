@@ -1,15 +1,20 @@
 # Fetch, Don't Build
 
-Status: proposal (2026-08-15)
+Status: proposal (2026-08-15); revised the same day
+after reviews by fable, opus 5, and sol. Appendix C
+records the findings. The cut stands. Several
+security and schema claims were narrowed or closed.
 Scope: gale CLI + gale-recipes. A product cut, not a
 patch.
 Verdict: stop being a distro. Keep the environment
 manager. Fetch upstream artifacts. Pin them in the
-lock. Do not compile, attest, or cache our own
-bottles.
+lock. Do not compile or cache our own bottles.
 
 This is the written form of the 2026-08-15 pivot
 discussion. It is a plan, not an implementation.
+Do not treat it as ready to code until §12's
+prerequisites are decided in this file — they now
+are.
 
 Related: [`design.md`](../design.md),
 [`lockfile.md`](../../lockfile.md),
@@ -42,6 +47,19 @@ User-facing commands stay. `gale install jq` still
 works. What changes is where the bytes come from, and
 what we stop operating.
 
+This proposal **supersedes** three current
+principles in `design.md`: "everything from source,"
+"prebuilt binaries only for compiler bootstraps,"
+and "one tool" as a full Homebrew replacement. The
+new claim is narrower: a declarative environment
+for developer CLI tools that already publish
+relocatable binaries. The leftover policy in §8 is
+the product decision, not a temporary gap. Those
+three sentences in `design.md`, plus the matching
+lines in `CLAUDE.md` and the README, are amended
+when Phase 2 lands — not before, and not left
+contradicting the shipped installer.
+
 ## 2. Why
 
 The March 2026 design listed "building from source by
@@ -67,8 +85,9 @@ value.
 
 A 2026-08-15 audit of all 193 recipes (appendix A)
 found 91 packages whose upstream already publishes a
-relocatable binary for gale's primary platforms. That
-is almost every name a developer types. The other half
+plausibly named binary for gale's primary platforms.
+That is a candidate pool, not a proven catalog. It
+is still almost every name a developer types. The other half
 of the catalog is libraries we compile against, or
 source-only C tools, or gems.
 
@@ -85,7 +104,7 @@ Unchanged in shape, and still the product:
 |---|---|
 | `gale.toml` | declared pins, `[vars]`, host sections |
 | `gale.lock` | enforced artifact identity |
-| `~/.gale/pkg/<name>/<version>/` | immutable store |
+| store (fetch namespace, §7f) | immutable trees |
 | `gen/<N>` + `current` | atomic environment swap |
 | direnv hook, `gale env` / `shell` / `run` | activation |
 | global / project / host scopes | where the manifest lives |
@@ -117,7 +136,9 @@ mothball once the fetch path is the only installer.
   `patchelf`, pkg-config rewrite
 - `internal/farm` — shared dylibs
 - `internal/ghcr` — our bottle host
-- `internal/attestation` — Sigstore of *our* bottles
+- Sigstore *of our bottles*. Keep a generalized
+  verifier for upstream attestations the lock
+  requires (§7d). Delete the GHCR-only wiring.
 - `internal/ai` / `create-recipe` — recipe authorship
 - recipe `[build] steps`, revisions, `.gale-deps.toml`
 - `gale build`, `gale audit` (rebuild-and-compare),
@@ -164,29 +185,52 @@ description = "Save and run project-specific commands"
 license = "CC0-1.0"
 homepage = "https://github.com/casey/just"
 repo = "casey/just"
+latest = "1.56.0"
 
-[artifacts.darwin-arm64]
+[versions."1.56.0".artifacts."darwin/arm64"]
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-aarch64-apple-darwin.tar.gz"
 sha256 = "…"
+hash_source = "upstream-sha256sums"  # or "computed"
 strip = 1
 bin = ["just"]
 
-[artifacts.linux-amd64]
+[versions."1.56.0".artifacts."linux/amd64"]
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-x86_64-unknown-linux-musl.tar.gz"
 sha256 = "…"
+hash_source = "upstream-sha256sums"
 strip = 1
 bin = ["just"]
 ```
 
+Version blocks are append-only. A published
+`[versions."1.56.0"]` is immutable under the linter.
+`gale update` appends a new block and moves `latest`.
+`gale install just@1.56.0` reads that block, not
+whatever the URL string happens to contain.
+
 Templates (`{{version}}`, `{{os}}`, `{{arch}}`) are
-allowed as authoring sugar. The lock stores the
-resolved URL and hash, never the template.
+authoring sugar only. The lock stores the resolved
+URL, hash, strip, bin, and any attestation
+requirement — never the template.
 
 `strip` and `bin` tell the extractor how to land a
 tree that `generation.Build` can link. Some upstreams
 ship a bare binary (`jq-macos-arm64`). Some ship a
-tarball with `bin/`. The index names the layout. The
-installer does not guess.
+tarball with `bin/`. The installer does not guess.
+
+**Permitted transformations:** download, hash, safe
+extract, strip-components, place named bins. Nothing
+else. No package-specific hooks, patches, wrappers,
+repacking, rpath changes, or re-signing. An artifact
+that needs one is omitted.
+
+**Admission, per platform, recorded in the entry:**
+correct arch, darwin code signature valid if the
+file is Mach-O, and `otool -L` / `ldd` shows only
+system libraries (`/usr/lib`, `/System`, linux
+loader + libc). That is the gate for the whole
+catalog, not a one-off for §8b. Filename
+classification (appendix A) is a candidate list.
 
 Official non-GitHub hosts use the same shape:
 
@@ -224,16 +268,34 @@ are compilers. They recreate the farm.
 
 The index replaces gale-recipes-as-a-build-farm.
 
-**Start curated.** One entry per package we will
-actually fetch, ~90 names from appendix A. Do not
-import aqua-registry as the default resolver. Aqua is
-an escape hatch later, not the trust root.
+**Start curated.** The first catalog is Phase 1's
+ten packages, after the admission gate in §5.
+Appendix A's ~90 names are candidates, not a
+launch list. Do not import aqua-registry. Its
+first-fetch TOFU without a reviewed hash
+contradicts this section. If aqua returns, it is
+its own proposal.
 
-**Hashes are required.** An entry without a
-per-platform `sha256` is invalid. A URL template
-without resolved hashes is invalid. First install
+**Hashes are required, and their origin is
+recorded.** Prefer an upstream-published checksum
+file, and verify that file's signature where one
+exists (Go `.sha256`, HashiCorp GPG-signed
+`SHA256SUMS`, Zig's signed index, GitHub
+attestations). Fall back to a hash we computed
+only when upstream publishes none, and set
+`hash_source = "computed"`. An entry without a
+per-platform `sha256` is invalid. First install
 must not be "download whatever GitHub latest
 returns."
+
+**Who writes new hashes.** Deleting
+`auto-update.yml` does not delete the job. A
+narrow bot (or a human) opens a PR that appends a
+version block. Constraints: PR-only, no write
+token on main, verifies upstream checksums when
+present, human-reviewed diff. The bot is a new
+trust root. Name it when it exists. Do not
+pretend the toil vanished.
 
 **Host allowlist.** Every `url` host must be on a
 list the installer and the index linter share.
@@ -255,6 +317,15 @@ and promote a ledger."
 writes a new lock entry. The lock diff is the review
 surface. The index cannot change bytes of an already
 locked version: sync reads the lock, not the index.
+
+**Index fetch errors are errors.** Do not inherit
+today's stale-on-error / one-hour negative-404
+cache for resolve. `install` and `update` hard-fail
+when the index cannot be fetched and no lock
+already names the package. A cached index body may
+serve `outdated` as a hint, labeled stale, never as
+a silent "nothing newer." The lock still wins for
+sync.
 
 ## 7. Security
 
@@ -294,13 +365,22 @@ These are already paid for. Keep them.
    is on PATH from shell rc — and still forbids
    carry-forward of unlocked versions.
 
-5. **Verify equals run.** Hash the archive (or the
-   bare binary) *before* extract. Extract into the
-   store. Do not rewrite rpaths, pkg-config, or
-   codesign. The bytes on PATH are the bytes that
-   hashed. This is the relocatable-binaries
-   proposal, and the fetch model makes it the
-   default instead of a rebuild of our bottles.
+5. **No post-extract mutation.** Hash the archive
+   (or the bare binary) *before* extract. Extract
+   into the store. Do not rewrite rpaths,
+   pkg-config, or codesign. The honest claim is
+   not "the bytes on PATH hash to the archive
+   SHA-256" — extraction, strip, and mode bits
+   intervene. The claim is: the archive matched
+   the lock, Gale performed no mutation, and a
+   **tree digest** (sorted `path + mode +
+   sha256` of each regular file) computed at
+   extract time is what provenance, `verify`,
+   doctor, and staleness compare. That digest
+   occupies the slot `graph_digest` vacates.
+   Activation still reads provenance and the
+   lock; it does not rehash the tree on every
+   `cd`. `gale verify` and doctor do.
 
 6. **Provenance is all-or-nothing.** Each store
    directory writes `.gale-provenance.toml` only
@@ -331,17 +411,26 @@ and says a mismatch is not tampering.
 The fetch model is a narrower claim, and we can
 keep it:
 
-> This store directory is the bytes the lock named.
-> The lock named the bytes the index named at
-> resolve time. The index named an upstream URL
-> and a SHA-256. The installer checked the hash
-> and did not mutate the result.
+> The archive matched the lock's SHA-256. Gale
+> extracted it without mutation. The store
+> directory's tree digest matches the lock. The
+> lock named the URL, layout, and hash the index
+> named at resolve time.
 
-That is the cargo / aqua / go module model. It is
-weaker on "we built it." It is stronger on "the
-thing we run is the thing we hashed," and on "a
-network blip cannot flip us into an unattested
-source build."
+That is weaker origin authentication than today's
+Sigstore-on-our-CI. A compromised index that
+supplies both URL and hash is a single factor.
+Curation, PRs, and an allowlist are process, not
+a second mechanism. The mechanisms are: required
+hashes, `hash_source` preferring upstream-signed
+checksums, host allowlist, lock-only sync, sticky
+attestation when one was locked (§7d), and the
+index commit recorded in the lock so a later
+index rewrite is visible.
+
+It is stronger on "Gale did not mutate the
+artifact" and on "a network blip cannot flip us
+into an unattested source build."
 
 ### 7c. Trust on first resolve
 
@@ -363,9 +452,14 @@ source. A compromised index can point a *new*
 install at malware that matches the (also
 compromised) hash.
 
-That is the same class as a compromised recipe +
-`.binaries.toml` today, minus Sigstore on our
-rebuild. Mitigations, in order:
+That is **weaker** than today. Substituting an
+artifact on a new resolve currently needs the
+recipes-repo content *and* the Sigstore identity
+of gale-recipes CI. After the cut, the index file
+alone suffices for most of the catalog. "Minus
+Sigstore" is the second factor, not a footnote.
+
+Mitigations, in order:
 
 - curated index, not a scrape of every GitHub
   release
@@ -375,6 +469,9 @@ rebuild. Mitigations, in order:
 - index changes are git PRs, same as recipes
 - after the first lock, **the index cannot change
   those bytes**. Sync is lock-only.
+- the lock records the index commit (or bundle
+  digest) used at resolve, so a later rewrite is
+  a visible diff, not a silent reread.
 
 `gale update` is a new resolve. It is supposed to
 be. The review surface is the lock diff, the same
@@ -388,53 +485,106 @@ TOFU source; it would not replace the lock. If we
 add index integrity later, sign a bundled index
 snapshot, not per-file ad-hoc keys.
 
-### 7d. Optional upstream attestations
+### 7d. Attestation is sticky and gale-owned
 
-Some upstreams (Go, a few GitHub-attested
-releases) publish provenance we can verify.
+Some upstreams publish provenance we can verify.
+Most do not. Do not require an attestation for
+every package.
 
-Rule: if the index *declares* an attestation, the
-installer verifies it and fails closed. If the
-index does not declare one, the SHA-256 is the
-control. Do not require attestations. That would
-drop most of the catalog.
+The index may *declare* an attestation. The
+installer then verifies it and fails closed. The
+expected issuer, SAN, and source repo live in
+**gale**, not in the index. Verifying a bundle
+with no identity policy is not a control.
 
-Do not call this `gale verify` of *our* GHCR
-bottle. If the command stays, it verifies the
-lock's hash against the store, and any declared
-upstream attestation against the archive. It
-never mutates.
+The lock records whether that artifact was
+attested, and under which identity. An update
+that drops attestation for a package that had it
+is a **refusal**, not a silent downgrade. The
+index linter treats removing an attestation
+field as a breaking change.
+
+The index cannot switch the verifier off. That
+is the regression §7d had in the first draft: a
+compromised index deletes one line and
+verification disappears. The lock is the switch.
+`gale update --allow-attestation-drop` is the
+explicit escape, and it warns.
+
+**Required declarations:** the `gale` package
+itself (we control that release), and
+python-build-standalone if it is ever indexed.
+Those cost nothing and close the worst entries.
+
+Keep a generalized attestation verifier. Delete
+only the "this is our GHCR bottle" wiring.
+
+`gale verify` means: store tree digest matches
+the lock, and any locked attestation still
+verifies against the retained archive or the
+re-fetched URL. It never mutates.
 
 ### 7e. URL and extract safety
 
-- Allowlisted hosts only. No GHCR anonymous token
-  dance unless a bottle-allowlist entry uses
-  `ghcr.io/homebrew`, and then the token is scoped
-  to that host.
-- Reject `url` values with credentials, redirects
-  off the allowlist, or path traversal in the
-  archive (already in `extractTar`).
+- Allowlisted hosts only. The list includes known
+  redirect targets per host, hop-validated
+  (`github.com` → `objects.githubusercontent.com`;
+  `dl.k8s.io` is a redirector). A naive "no
+  off-list redirects" rule either rejects GitHub
+  or gets wildcarded back into BUG-3.
+- **No ambient credential on an artifact fetch.**
+  `GALE_GITHUB_TOKEN` is unavailable on this path.
+  If a later bottle entry uses `ghcr.io`, it uses
+  the anonymous token only.
+- Delete `download.Fetch`'s GNU `mirrors` map
+  with the source builds. It substitutes a
+  different host on HTTP error.
+- Reject `url` values with credentials.
 - Version / tag fields are `[A-Za-z0-9._+-]` or
   the URL is fully written in the index.
-- Checksums are hex SHA-256, compared in
-  constant time with the existing helper.
+- Extract stages atomically. Write provenance
+  only after the tree digest is computed.
+- Reject archive entries that would write Gale
+  metadata (`.gale-provenance.toml`,
+  `.gale-deps.toml`), device/FIFO nodes, or
+  escaping symlinks/hardlinks.
+- Mask setuid/setgid (`07000`). Cap entry count
+  and decompressed size.
+- Hold `ExtractZip` to `extractTar`'s rules
+  before any zip-distributed package enters the
+  index. Zip is a primary format here
+  (`ninja-mac.zip`, terraform, protoc,
+  1password-cli).
 
 ### 7f. Store identity
 
-Drop recipe revisions. Identity is
-`<name>/<version>/`.
+Drop recipe revisions. The user-facing identity
+is `name@version`. The on-disk path is **not**
+bare `<name>/<version>/`.
 
-A version's bytes are the lock's SHA-256. A
-re-tagged upstream that changes bytes fails the
-hash check. It does not overwrite the store
-directory. That is the content-addressed-store
-concern (gh#191) without content-addressed paths:
-the path stays human, the hash refuses the swap.
+Two reasons. Old gale's `resolveVersion` still
+falls back from `<v>-1` to a bare `<v>`
+directory (`internal/store/store.go`). During
+coexistence, an old gale with a v1 lock and no
+activation gate in the global scope can
+cache-hit a fetched tree under a gale-built
+identity. And two locks can pin the same
+upstream version to different hashes; one bare
+path cannot hold both.
+
+Use a fetch namespace or a hash-qualified
+internal path (`pkg/fetch/<name>/<version>-<sha12>/`
+or similar). User-facing commands still print
+`just@1.56.0`.
+
+A re-tagged upstream that changes bytes fails
+the hash check. It does not overwrite a
+referenced directory.
 
 `--path` local builds are out of scope for the
 first cut. If they return, they keep the
-working-tree digest in the version so they cannot
-collide with a fetched identity.
+working-tree digest so they cannot collide with
+a fetched identity.
 
 ### 7g. What this does not buy
 
@@ -448,6 +598,16 @@ collide with a fetched identity.
 - A global `PATH` entry is still unhooked. The
   lock still cannot police a binary the user
   copied by hand into `~/.gale/pkg`.
+- **A lock is installable only while upstream
+  keeps the artifact.** Deleting GHCR removes
+  gale's only immutable copy. A deleted GitHub
+  release is a permanent sync failure, with no
+  attacker. Accept that, as aqua and mise do.
+  Mitigate with a local
+  `~/.gale/cache/artifacts/<sha256>` of verified
+  archives. Long-term reproducibility is a
+  user-side mirror, not a return of our bottle
+  farm.
 
 ## 8. Leftovers
 
@@ -463,8 +623,14 @@ A 2026-08-15 pass over all 193 recipes:
 | Source-only CLI / server | 38 | §8c |
 | Library / build-dep | 44 | Drop |
 
-The first thin catalog is the 91 fetchable
-packages. That is the product.
+The first catalog is Phase 1's ten packages,
+after the §5 admission gate. The 91 are
+candidates. Several appendix A names are
+misclassified or contradictory (`rust` vs
+`rustup`, `awscli` macOS `.pkg`,
+`google-cloud-sdk` self-updates, `llvm` exists
+for the deleted toolchain, `gale` is us). Do
+not treat 91 as a launch number.
 
 ### 8a. Drop libraries and servers
 
@@ -487,13 +653,17 @@ Decide per package. Do not invent a general
 | `ninja` | `ninja-mac.zip` / `ninja-linux.zip`, arch implicit | Fetch; verify arch once |
 | `ccache` | `darwin.tar.gz` arch unspecified | Fetch; verify arch |
 | `procs` | `aarch64-mac` + linux | Fetch |
-| `eza` | linux only on current release | Omit on Darwin, or bottle |
-| `dust` | no `darwin-arm64` | Omit on Darwin arm, or bottle |
-| `btop` | linux musl only | Omit on Darwin, or bottle |
+| `eza` | linux only on current release | Omit on Darwin |
+| `dust` | no `darwin-arm64` | Omit on Darwin arm |
+| `btop` | linux musl only | Omit on Darwin |
 | `gitui` | `gitui-mac.tar.gz`, arch unclear | Verify; else omit on arm64 |
-| `fish` | linux tarball; mac is `.pkg` | Omit on Darwin, or bottle |
+| `fish` | linux tarball; mac is `.pkg` | Omit on Darwin |
 | `podman`, `renode`, `mosh` | installer / dmg / pkg | Omit |
 | `patchelf` | linux only, by design | Fetch on Linux; skip on mac |
+| `awscli` | macOS is a `.pkg` | Omit on Darwin |
+
+Do not write "or bottle" here. That grows §8c
+before Phase 4 exists.
 
 "Verify arch" means a one-time `file` / Mach-O
 check when adding the index entry, recorded in the
@@ -510,19 +680,23 @@ the 38 by need:
 PATH." No store entry, no lock hash. Not required
 for the first cut.
 
-**Short bottle allowlist.** The names people will
-actually miss: `tmux`, `htop`, `tree`, `wget`,
-maybe a newer `git`, `nmap`, `socat`. Fetch a
-Homebrew bottle as a tarball into the store. Do
-not run `brew`. Pin the bottle's SHA-256. Host
-allowlist `ghcr.io` for that path only.
+**Bottle allowlist size is zero in v1.** The
+names people will miss (`tmux`, `htop`, `wget`,
+`nmap`, `socat`, a newer `git`) dynamically
+link other Homebrew kegs. A bottle poured into
+`~/.gale/pkg` without rewrite either breaks, or
+resolves dylibs against the user's mutable
+`/opt/homebrew` — unlocked bytes inside a
+"locked" closure. Vendoring those kegs and
+rewriting rpaths is the farm.
 
-If the bottle is not relocatable enough to run
-from `~/.gale/pkg/…` without `install_name_tool`,
-**skip the package**. Rewriting rpaths reopens
-verify-equals-run and `fixup_darwin.go`. The
-allowlist should stay short and embarrassing.
-Each entry is debt.
+Admission if this ever returns (Phase 4, own
+proposal): `otool -L` / `ldd` shows only system
+paths, no Cellar assumptions, no post-install
+scripts, no rewrite, and the binary runs from a
+deep `GALE_HOME` through a generation symlink.
+Expected result: still zero. Do not resolve
+against `/opt/homebrew`.
 
 **Omit until upstream ships a binary.** `gopls`,
 `httpstat`, `flarectl`, `tokei` (v12 had assets,
@@ -533,65 +707,85 @@ v14 does not), `deadnix`, `statix`, `lua`,
 
 ### 8d. Runtimes that are awkward
 
-**`python`.** Official macOS installers are not a
-store prefix. Use python-build-standalone
-(indygreg / astral), which is what aqua and mise
-use. Hash-pin those artifacts. Treat the builder
-as an upstream, not as "our rebuild."
+**`python` and `ruby` are out of the first
+catalog.** python-build-standalone is a
+third-party builder with its own trust story,
+not "upstream." Add it later with declared
+attestations (§7d) and tests for SSL, venvs,
+and relocatability. Ruby has no named
+maintained relocatable tarball. Omitting ruby
+drops `cocoapods`, `tmuxinator`, and `colorls`
+users. That is a non-goal, not an accident
+(§13).
 
-**`ruby`.** No good official relocatable tarball.
-Either omit from the first catalog or use a
-known ruby-build standalone, same rule as
-Python. Gems (`cocoapods`, `colorls`,
-`tmuxinator`, `ruby-lsp`) are not Gale packages.
-They install into a Ruby prefix if we have one.
+**The store is never written after finalize.**
+`pip install`, `gem install`, and gcloud
+self-update into a store prefix contradict
+§7f. Interpreter user-site and self-updating
+SDKs live outside the store, or the package
+is omitted. `google-cloud-sdk` is omitted
+until that policy has a home.
 
-**`rust`.** Do not ship a gale-built rustc. Ship
-`rustup`. Toolchain versions are rustup's job.
+**`rust`.** Index `rustup` only. Do not also
+index `rust`.
 
 **Interpreted packages** (`httpie`, `glances`,
-`meson`, the gems): not in the core catalog. A
-runtime plus that language's installer is enough.
+`meson`, the gems): not in the core catalog.
 
 ## 9. Lock, store, generations
 
 ### Lock schema
 
-Keep enforcement. Simplify the node.
+Keep enforcement. **Require lock `version = 2`.**
+A v1 subset is undefined in every released gale
+(`method` is `binary | source`). The moment a
+scope contains one fetch node, the file is v2
+plus a new downgrade guard. Mixed v1/v2 locks
+do not exist. Mixed source/fetch locks are
+refused.
 
-A v2 (or a v1 subset) node is:
+A v2 node carries every field sync needs. The
+index is not reread:
 
 ```toml
 [packages."just@1.56.0".artifacts."darwin/arm64"]
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-aarch64-apple-darwin.tar.gz"
 sha256 = "…"
+tree_digest = "…"
 method = "fetch"
+strip = 1
+bin = ["just"]
+hash_source = "upstream-sha256sums"
+index_commit = "…"
+# attestation = { issuer = "…", san = "…", repo = "…" }  # if locked
 ```
+
+Writers record **every platform** present in the
+index entry, not only the running one. One
+committed lock still serves every host.
 
 Gone: `revision`, `runtime_deps`, `build_deps`,
 `graph_digest` as a dep-closure hash, GHCR
 `manifest_digest`, `method = "source"`.
+`provenance.Record.graph_digest` becomes
+optional; existing records remain readable.
+`tree_digest` is the new bind.
 
-Keep: schema version, the downgrade guard
-pattern so an old gale cannot silently rewrite
-the file, `[targets.*]` roots, platform as an
-artifact dimension, fail-closed unknown fields.
-
-`graph_digest` today binds a node to its
-dependency closure. Fetch packages are leaves.
-If a future package needs a runtime file from
-another store dir, add it explicitly. Do not
-keep the farm's implicit closure.
+Fetch packages are leaves. Admission (§5) must
+show every dynamic dependency is inside the
+artifact or on the OS-library allowlist. An
+artifact that needs another store directory is
+out of v1.
 
 Sync still never writes the lock. Activation
 still checks roots and provenance.
 
 ### Store
 
-`~/.gale/pkg/<name>/<version>/`. No `-N` suffix.
-
-Occupied directory + different hash = refuse.
-Occupied directory + same hash = cache hit.
+See §7f. Occupied directory + different
+`tree_digest` = refuse. Same digest = cache hit.
+The comparison is the tree digest, not a
+directory hash the codebase cannot compute.
 
 Generation rebuild does not walk
 `.gale-deps.toml`. It links `bin/` (and `man/`
@@ -602,8 +796,10 @@ populate.
 
 A package is stale when the lock root disagrees
 with `gale.toml`, or the store directory's
-provenance hash disagrees with the lock. That is
-the whole check.
+provenance `tree_digest` disagrees with the
+lock. That is the whole check. Doctor's
+"store-hash drift" means the same comparison,
+recomputed.
 
 Missing vs empty `.gale-deps.toml` goes away.
 "Highest revision on disk" goes away. The
@@ -618,10 +814,14 @@ lock + host + platform.
 
 ### gc and rollback
 
-Retention keys are lock roots plus generations
-at or above `current`, in every registered
-scope. No farm claimants. No revision orphans.
+Retention is every store directory linked by
+every generation we keep, in every registered
+scope — including generations *below* `current`
+that rollback still targets. Today's keep-N
+window stays. "At or above `current`" would
+make rollback impossible.
 
+No farm claimants. No revision orphans.
 Rollback still refuses an incomplete
 generation.
 
@@ -642,7 +842,7 @@ GHCR ledgers.
 `doctor` loses farm, deps-meta, and
 legacy-provenance migration checks. It keeps
 PATH, scope, lock readability, sync-state, and
-store-hash drift.
+tree-digest drift.
 
 Drop or mothball: `build`, `create-recipe`,
 `audit` (rebuild), `lint` (recipe), `recipes`,
@@ -661,69 +861,92 @@ provenance, and v1 locks with dep graphs.
 
 Do not silently reuse those directories. A
 fetched `just@1.56.0` is not the gale-built
-`just@1.56.0-3`.
+`just@1.56.0-3`. Ignoring a revision is
+replacement, not equivalence.
+
+`gale migrate` already means "refetch
+unprovenanced binary-method dirs"
+(`lockfile.md`). Use a new verb
+(`gale migrate --to-fetch` is still a
+collision). Pick `gale fetch-adopt` or
+similar before Phase 1.
 
 Plan:
 
-1. Ship a gale that can fetch and that still
-   *reads* old locks enough to print a
-   migration command. It does not treat an old
-   lock as unlocked.
-2. `gale migrate --fetch` walks each locked
-   root, resolves the same *version* (ignore
-   revision) through the new index, fetches,
-   writes new store paths, writes a new lock,
-   rebuilds the generation.
-3. Old store dirs become gc candidates.
-4. A version with no index entry is reported,
+1. Ship the v2 reader before any v2 writer.
+   An old gale handed a v2 lock fails loud.
+2. The adopt command plans every root first,
+   prints the lock diff, requires
+   confirmation, and refuses when frozen / in
+   CI. Fetch and verify everything, then
+   atomically write the v2 lock and a new
+   generation. Any failure leaves the old
+   lock, generation, and store usable.
+3. Write fetch-namespace store paths only
+   after every machine that shares that store
+   has a gale new enough not to resolve them
+   as bare `<version>` (§7f). Global scope
+   has no activation gate; the namespace is
+   what closes that window.
+4. Old store dirs become gc candidates once
+   no retained generation links them.
+5. A version with no index entry is reported,
    not built from source.
 
 Projects without a lock install fresh.
-
-Do not require a flag day across every
-machine on day one. Require it before the old
-installer is deleted. The downgrade-guard
-lesson still applies: an old gale handed a new
-lock must fail loud, not rewrite.
 
 ## 12. Phases
 
 Phase 0 is this document. No code.
 
-**Phase 1 — fetch installer, small index.**
-Ten packages we already use (`jq`, `ripgrep`,
-`fd`, `just`, `gh`, `go`, `gofumpt`,
-`golangci-lint`, `direnv`, `zoxide` or `uv`).
-New installer path next to the old one, behind
-a clear config or a new command, until it is
-the default. Lock nodes for those packages use
-the fetch schema. Tests at `cmd/gale` and
+**Prerequisites, before any fetch lock is
+written:** lock v2 reader and guard; collision-safe
+store paths (§7f); tree digest; `ExtractZip`
+hardened; redirect allowlist; no ambient
+credential on fetch. These are not Phase 3
+cleanup.
+
+**Phase 1 — fetch installer, ten packages.**
+`jq`, `ripgrep`, `fd`, `just`, `gh`, `go`,
+`gofumpt`, `golangci-lint`, `direnv`, `uv`.
+Each passes the §5 admission gate. Experimental
+command or config flag. Mixed source/fetch
+locks are refused. Tests at `cmd/gale` and
 `integration/`: hash mismatch refuses; sync
 does not write the lock; activation gate
-still holds.
+still holds; tree digest drift is doctor-visible.
 
-**Phase 2 — default fetch, index of the 91.**
-`gale install` fetches. Source build is
-unreachable from the CLI. Index linter:
-required hashes, allowlisted hosts, `bin` /
-`strip` present. Doctor and gc ignore farm
-and revisions for new installs.
+**Phase 2 — default fetch, grow the catalog
+by admission, not by 91.** `gale install`
+fetches. Source build is unreachable from the
+CLI. Index linter: required hashes,
+`hash_source`, allowlisted hosts, `bin` /
+`strip`, version blocks immutable. Amend
+`design.md`, `CLAUDE.md`, and the README in
+the same change.
 
 **Phase 3 — delete the distro.** Remove
-`internal/build`, farm, GHCR, Sigstore of our
-bottles, recipe build steps, recipes CI
-promote/ledger. `gale-recipes` becomes the
-index repo, or folds into a directory in
-gale. Migration path from §11 is required
-before this delete.
+`internal/build`, farm, GHCR bottle wiring,
+recipe build steps, recipes CI
+promote/ledger. Keep a generalized attestation
+verifier. `gale-recipes` becomes the index
+repo. §11 adopt is required before this
+delete.
 
-**Phase 4 — leftovers, if any.** Bottle
-allowlist. Python standalone. `system` pins.
-None of this blocks 1–3.
+**Phase 4 — leftovers, if any.** Each is its
+own proposal: python-build-standalone,
+`system` pins, bottle allowlist (expected
+empty). None of this blocks 1–3.
 
 Each phase keeps the environment invariants
-in §7a. A phase that needs a rpath rewrite
-has taken a wrong turn.
+in §7a. A phase that needs a rpath rewrite,
+a package-specific hook, or a runtime dep
+on another store dir has taken a wrong turn.
+
+`docs/dev/change-discipline.md` still governs
+this work. Version identity, finalize, and
+staleness all change. That document is not
+distro overhead.
 
 ## 13. Non-goals
 
@@ -738,39 +961,42 @@ has taken a wrong turn.
 - Index signing in v1.
 - Attestation required for every package.
 - Language package management (npm, pip,
-  gems, crates).
+  gems, crates), including cocoapods /
+  tmuxinator / colorls once ruby is omitted.
 - System packages, daemons, GUI apps.
+- aqua-registry as a resolver.
+- A Homebrew bottle backend in v1.
 
 ## 14. Open questions
 
-1. **Lock schema version.** New `version = 2`
-   versus a v1 subset that drops unused
-   fields. v2 is cleaner. v1-with-omissions
-   is less migration code. Old gale must fail
-   on the new file either way.
-2. **Where the index lives.** A slim
+Closed in this revision:
+
+- Lock schema is **v2**. No v1 subset.
+- `rustup` only. Not `rust`.
+- Bottle allowlist is **zero** in v1.
+- aqua-registry is **out**. Own proposal if
+  ever.
+- Phase 1 uses an experimental command or
+  flag; mixed locks are refused.
+
+Still open:
+
+1. **Where the index lives.** A slim
    gale-recipes, or `index/` inside gale.
    Two repos still have a coordination cost.
    One repo couples CLI releases to catalog
    edits. Lean: keep a second repo, but it
    is only TOML pointers.
-3. **aqua-registry as a fallback.** Useful
-   for one-offs. It is not hashed the way
-   §6 requires unless we snapshot hashes
-   into *our* lock on first fetch (TOFU
-   without a reviewed index hash). Default
-   off.
-4. **`rust` vs `rustup`.** Index `rustup`
-   only, unless someone has a concrete need
-   for a pinned rustc tarball.
-5. **Bottle allowlist size.** Zero for
-   phases 1–3 is acceptable. Non-zero needs
-   a relocatable-bottle test that does not
-   call `install_name_tool`.
-6. **Command compatibility.** Keeping the
-   same verbs is the point. A
-   `~/.gale/config.toml` `backend = "fetch"`
-   during phase 1, then delete the flag.
+2. **Adopt command name.** Must not collide
+   with documented `gale migrate`.
+3. **Exact fetch store path spelling.**
+   Namespace vs hash-qualified. Must not be
+   resolvable by old `resolveVersion`.
+4. **`darwin-amd64`.** Appendix A did not
+   survey it. Admit per package or drop the
+   platform from the first catalog.
+5. **Who runs the index-update PR bot,**
+   and under which app token.
 
 ## Appendix A — Recipe audit (2026-08-15)
 
@@ -868,12 +1094,14 @@ Measured on gale `main` at the time of
 writing. Tests included.
 
 Delete-shaped: `internal/build` 11.1k,
-`internal/farm` 4.1k, `internal/attestation`
-2.3k, `internal/ghcr` 1.9k, `internal/ai`
-1.5k, `internal/provenance` (shrink, not
-wholesale delete), `internal/lint` 1.9k,
+`internal/farm` 4.1k, `internal/ghcr` 1.9k,
+`internal/ai` 1.5k, `internal/lint` 1.9k,
 plus `cmd/gale` build / create-recipe /
-audit / verify / migrate-from-old-provenance.
+audit / GHCR-verify. `internal/attestation`
+shrinks to a generalized verifier, not a
+delete. `internal/provenance` shrinks
+(`graph_digest` optional, `tree_digest`
+added).
 
 Shrink-shaped: `internal/installer` 10.8k,
 `internal/registry` 5.2k, `internal/recipe`
@@ -888,3 +1116,78 @@ generation core, direnv hook.
 gale-recipes: 10 workflows, ~11k lines of
 CI script, 193 ledgers. Almost all of that
 is the distro.
+
+## Appendix C — Review (2026-08-15)
+
+Three models reviewed the first draft:
+fable (claude-fable-5), opus 5, and sol
+(gpt-5.6). All three verdicts were **revise
+before treating as the plan.** None rejected
+the cut.
+
+Consensus, now folded into the body:
+
+1. **§7d was fail-open.** An index-declared
+   attestation is attacker-controlled. The
+   lock now pins the requirement; dropping
+   it is a refusal. Keep a verifier. Require
+   it for `gale` itself.
+2. **"Verify equals run" overclaimed.** The
+   archive hash is not the store tree. The
+   bind is a `tree_digest` computed at
+   extract. Activation still does not rehash
+   on `cd`.
+3. **The lock omitted layout.** `strip`,
+   `bin`, attestation, and `hash_source`
+   must live in the lock or sync rereads
+   the index.
+4. **Bare `<name>/<version>/` collides**
+   with old `resolveVersion` and cannot hold
+   two hashes of one version. Fetch
+   namespace required. Global scope has no
+   activation gate.
+5. **Bottle allowlist is the farm.** v1
+   size is zero. Admission is `otool -L`
+   system-only, not "relocatable enough."
+6. **91 is a candidate list.** First
+   catalog is Phase 1's ten, after a
+   mechanical gate. Filename scrape is not
+   a compatibility audit.
+7. **Lock is v2.** No v1 subset. Writers
+   record every platform. Schema reader
+   ships before any writer.
+8. **GC "at or above current" breaks
+   rollback.** Retain every generation we
+   keep, and every store dir it links.
+9. **Redirects and credentials.** Allowlist
+   includes CDN hops. No
+   `GALE_GITHUB_TOKEN` on artifact fetch.
+   Harden `ExtractZip`.
+10. **Hashes need an origin.** Prefer
+    upstream-signed checksum files. Name
+    the update bot. Index fetch errors are
+    errors.
+11. **Store is immutable after finalize.**
+    pip / gem / gcloud self-update are out
+    of the store or out of scope.
+12. **This supersedes `design.md`
+    principles.** Amend those docs when
+    Phase 2 lands. change-discipline still
+    applies; it is not distro overhead.
+
+Disagreements were of emphasis, not
+direction. Sol wanted the 91 reframed more
+aggressively and `darwin-amd64` called out
+(open question 4). Opus wanted a local
+artifact cache for durability (§7g). Fable
+wanted aqua cut entirely rather than
+"default off" — done.
+
+The through-line: the first draft correctly
+said today's Sigstore attests bytes we then
+mutate, then swung to a model where one
+TOML file is the whole trust root for new
+resolves and put the remaining second
+factor under that file's control. The
+revisions above are what make §7b's
+narrower claim hold.
