@@ -13,8 +13,17 @@ import (
 	"github.com/kelp/gale/internal/atomicfile"
 )
 
-// SchemaVersion is the lockfile schema this build models fully.
-const SchemaVersion = 1
+const (
+	// SchemaV1 is the enforced source-install lock schema.
+	SchemaV1 = 1
+	// SchemaV2 is the fetch lock schema. This build reads it
+	// through ReadV2; nothing writes it yet.
+	SchemaV2 = 2
+	// SchemaVersion is the schema this build writes. It stays
+	// SchemaV1 until a v2 writer exists. Bumping it would make
+	// WriteV1 emit version = 2 with a v1 body.
+	SchemaVersion = SchemaV1
+)
 
 var (
 	// ErrLegacySchema reports a lockfile with no version key: one
@@ -30,7 +39,7 @@ var (
 	// does not know, so a write-back would destroy them.
 	ErrUnknownVersion = errors.New("unknown lockfile schema version")
 
-	// ErrUnknownField reports a v1 lockfile carrying a field this
+	// ErrUnknownField reports a lockfile carrying a field this
 	// build does not model. The version check alone does not catch
 	// it: the file claims a version we understand, so the field
 	// would decode to nothing and the next write would drop it.
@@ -46,11 +55,11 @@ var (
 	// would be indistinguishable from a build or network failure.
 	ErrMalformed = errors.New("malformed lockfile")
 
-	// ErrDowngradeGuard reports a v1 lockfile whose reserved guard
-	// entry is absent or malformed. Such a file still claims version
-	// 1 but is destructible by an already-shipped gale, which is the
-	// exact hole the guard closes, so it is refused rather than
-	// repaired.
+	// ErrDowngradeGuard reports a lockfile whose reserved guard
+	// entry is absent or malformed. Such a file still claims a
+	// version this build understands but is destructible by an
+	// already-shipped gale, which is the exact hole the guard
+	// closes, so it is refused rather than repaired.
 	ErrDowngradeGuard = errors.New("malformed lockfile downgrade guard")
 )
 
@@ -110,23 +119,29 @@ type schemaProbe struct {
 	Version *int `toml:"version"`
 }
 
-// guardKey is the reserved [packages] entry that stops an
-// already-shipped gale from rewriting a v1 lockfile in the flat
-// schema. It cannot collide with a real node, which is always
-// name@version-revision. Its value is an integer where the legacy
-// LockedPackage.Version is a string, so the legacy decoder fails on
-// type and old gale stops instead of discarding an enforced lock.
-const guardKey = "!gale-lock-v1"
+const (
+	// guardKey is the reserved [packages] entry that stops an
+	// already-shipped gale from rewriting a v1 lockfile in the
+	// flat schema. It cannot collide with a real v1 node, which
+	// is always name@version-revision. Its value is an integer
+	// where the legacy LockedPackage.Version is a string, so the
+	// legacy decoder fails on type and old gale stops instead of
+	// discarding an enforced lock.
+	guardKey = "!gale-lock-v1"
+	// guardKeyV2 is the v2 counterpart. A real v2 node is
+	// name@version, which still cannot collide with this key.
+	guardKeyV2 = "!gale-lock-v2"
+)
 
-// wirePackage is the on-disk shape of a [packages.*] table when
+// wireNode is the on-disk shape of a [packages.*] table when
 // reading. Version is decoded permissively: a string there is
 // exactly what the legacy decoder accepts, so rejecting it must be
 // ours to do and must name the guard rather than surfacing a TOML
 // type mismatch. It is never encoded; outPackage is the writer's
 // shape.
-type wirePackage struct {
-	Version   any                 `toml:"version"`
-	Artifacts map[string]Artifact `toml:"artifacts"`
+type wireNode[A any] struct {
+	Version   any          `toml:"version"`
+	Artifacts map[string]A `toml:"artifacts"`
 }
 
 // wireV1 is the on-disk document, guard included. The guard is a
@@ -134,9 +149,9 @@ type wirePackage struct {
 // so plan construction never sees it as a node and never needs to
 // remember to skip one.
 type wireV1 struct {
-	Version  int                    `toml:"version"`
-	Targets  Targets                `toml:"targets"`
-	Packages map[string]wirePackage `toml:"packages"`
+	Version  int                           `toml:"version"`
+	Targets  Targets                       `toml:"targets"`
+	Packages map[string]wireNode[Artifact] `toml:"packages"`
 }
 
 // outPackage is the writer's shape. Version is a pointer so it is
@@ -153,34 +168,34 @@ type outV1 struct {
 	Packages map[string]outPackage `toml:"packages"`
 }
 
-// stripGuard validates the downgrade guard and returns the package
-// nodes without it. A file claiming version 1 without a well-formed
-// guard is still destructible by an old gale, so it is refused
-// rather than repaired.
-func stripGuard(w *wireV1) (map[string]Package, error) {
-	guard, ok := w.Packages[guardKey]
+// stripGuardNodes validates the downgrade guard and returns the
+// remaining package artifacts without it. A file claiming a version
+// this build understands without a well-formed guard is still
+// destructible by an old gale, so it is refused rather than repaired.
+func stripGuardNodes[A any](packages map[string]wireNode[A], key string, want int) (map[string]map[string]A, error) {
+	guard, ok := packages[key]
 	if !ok {
 		return nil, fmt.Errorf(
 			"%w: reserved entry [packages.%q] is missing",
-			ErrDowngradeGuard, guardKey,
+			ErrDowngradeGuard, key,
 		)
 	}
-	if v, isInt := guard.Version.(int64); !isInt || v != SchemaVersion {
+	if v, isInt := guard.Version.(int64); !isInt || int(v) != want {
 		return nil, fmt.Errorf(
 			"%w: [packages.%q] version must be the integer %d, found %v",
-			ErrDowngradeGuard, guardKey, SchemaVersion, guard.Version,
+			ErrDowngradeGuard, key, want, guard.Version,
 		)
 	}
 	if len(guard.Artifacts) > 0 {
 		return nil, fmt.Errorf(
 			"%w: [packages.%q] must carry no artifacts",
-			ErrDowngradeGuard, guardKey,
+			ErrDowngradeGuard, key,
 		)
 	}
 
-	pkgs := make(map[string]Package, len(w.Packages)-1)
-	for name, p := range w.Packages {
-		if name == guardKey {
+	pkgs := make(map[string]map[string]A, len(packages)-1)
+	for name, p := range packages {
+		if name == key {
 			continue
 		}
 		if p.Version != nil {
@@ -189,7 +204,21 @@ func stripGuard(w *wireV1) (map[string]Package, error) {
 				ErrDowngradeGuard, name,
 			)
 		}
-		pkgs[name] = Package{Artifacts: p.Artifacts}
+		pkgs[name] = p.Artifacts
+	}
+	return pkgs, nil
+}
+
+// stripGuard validates the v1 downgrade guard and returns the
+// package nodes without it.
+func stripGuard(w *wireV1) (map[string]Package, error) {
+	arts, err := stripGuardNodes(w.Packages, guardKey, SchemaV1)
+	if err != nil {
+		return nil, err
+	}
+	pkgs := make(map[string]Package, len(arts))
+	for name, a := range arts {
+		pkgs[name] = Package{Artifacts: a}
 	}
 	return pkgs, nil
 }
