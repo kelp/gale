@@ -1,9 +1,9 @@
 # Fetch, Don't Build
 
-Status: proposal (2026-08-15); revised the same day
-after reviews by fable, opus 5, and sol. Appendix C
-records the findings. The cut stands. Several
-security and schema claims were narrowed or closed.
+Status: proposal (2026-08-15); accepted as the
+plan the same day. Index lives in gale-recipes.
+Phase 1 starts in a later session after this
+merges. Appendix C is the review record.
 Scope: gale CLI + gale-recipes. A product cut, not a
 patch.
 Verdict: stop being a distro. Keep the environment
@@ -268,13 +268,17 @@ are compilers. They recreate the farm.
 
 The index replaces gale-recipes-as-a-build-farm.
 
-**Start curated.** The first catalog is Phase 1's
-ten packages, after the admission gate in §5.
-Appendix A's ~90 names are candidates, not a
-launch list. Do not import aqua-registry. Its
-first-fetch TOFU without a reviewed hash
-contradicts this section. If aqua returns, it is
-its own proposal.
+**Start curated, in gale-recipes.** The index
+stays a second repo so catalog edits are not
+CLI releases. After the cut it is TOML
+pointers only: no `[build]` steps, no GHCR
+ledgers, no promote CI. The first catalog is
+Phase 1's ten packages, after the admission
+gate in §5. Appendix A's ~90 names are
+candidates, not a launch list. Do not import
+aqua-registry. Its first-fetch TOFU without a
+reviewed hash contradicts this section. If
+aqua returns, it is its own proposal.
 
 **Hashes are required, and their origin is
 recorded.** Prefer an upstream-published checksum
@@ -705,6 +709,45 @@ v14 does not), `deadnix`, `statix`, `lua`,
 `picocom`, `mandoc`, `mtr`, `lsof`, `pigz`,
 `autossh`, `sqlite`. Do not `go install` them.
 
+### 8e. Want git? Use Homebrew. Do not wrap it.
+
+A newer `git` is the usual leftover people will
+not give up. Upstream does not publish a
+relocatable `darwin-arm64` tarball. A Homebrew
+bottle is not a Gale package: it links other
+kegs and is built for `/opt/homebrew`.
+
+So yes: `brew install git`. The same for a
+short, honest list that fails §5 admission —
+today that is `git`, and likely `tmux`,
+`htop`, `wget` if you want them. The OS copy
+is also fine (`xcode-select` git, macOS zsh).
+
+Rules, so this does not grow back into a
+wrapper:
+
+- Homebrew is for the leftovers only. Do not
+  `brew install jq` and also `gale install jq`.
+- `~/.gale/current/bin` stays ahead of
+  `/opt/homebrew/bin` on PATH. Gale wins on
+  name collision.
+- Do not run `brew` from gale. No `brew
+  bundle` frontend, no bottle fetch, no
+  Cellar symlink into a generation.
+- A project `gale.toml` does not mention
+  brew packages. If you need the leftover
+  documented, put it in a Brewfile or in
+  prose. Optional later: `git = "system"`
+  meaning "assume PATH; do not fetch." That
+  is a note, not an installer.
+- `brew upgrade` can still break those few
+  tools. That is the old Homebrew complaint,
+  confined to the set Gale refused.
+
+This is coexistence, not a second backend.
+The moment gale shells out to brew, the cut
+has failed.
+
 ### 8d. Runtimes that are awkward
 
 **`python` and `ruby` are out of the first
@@ -979,24 +1022,32 @@ Closed in this revision:
 - Phase 1 uses an experimental command or
   flag; mixed locks are refused.
 
-Still open:
+Closed after owner review:
 
-1. **Where the index lives.** A slim
-   gale-recipes, or `index/` inside gale.
-   Two repos still have a coordination cost.
-   One repo couples CLI releases to catalog
-   edits. Lean: keep a second repo, but it
-   is only TOML pointers.
-2. **Adopt command name.** Must not collide
+- The cut is the plan, including the
+  narrower product promise.
+- Index lives in **gale-recipes** (pointers
+  only).
+- Phase 1 starts in a later session, after
+  this document merges. Not in the same
+  change.
+- Leftovers you still want (`git`, …) are
+  Homebrew or the OS. Gale does not wrap
+  brew (§8e).
+
+Still open, and not merge-blocking:
+
+1. **Adopt command name.** Must not collide
    with documented `gale migrate`.
-3. **Exact fetch store path spelling.**
+2. **Exact fetch store path spelling.**
    Namespace vs hash-qualified. Must not be
    resolvable by old `resolveVersion`.
-4. **`darwin-amd64`.** Appendix A did not
+3. **`darwin-amd64`.** Appendix A did not
    survey it. Admit per package or drop the
    platform from the first catalog.
-5. **Who runs the index-update PR bot,**
-   and under which app token.
+4. **Who runs the index-update PR bot,**
+   and under which app token. Wait until
+   there is an index to update.
 
 ## Appendix A — Recipe audit (2026-08-15)
 
