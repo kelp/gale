@@ -28,9 +28,11 @@ main on its own.
       schema, new downgrade guard. No writer.
       Old gale must fail loud on a v2 file. Tests
       in `internal/lockfile`.
-- [ ] **Fetch store namespace.** Paths old
-      `resolveVersion` cannot hit as bare
-      `<version>`. Tests for the collision in
+- [ ] **Fetch store namespace.**
+      `pkg/fetch/<name>/<version>-<sha12>/`.
+      Old `resolveVersion` cannot hit it as
+      bare `<version>`. Two hashes of one
+      version do not collide. Tests in
       `internal/store`.
 - [ ] **Tree digest.** Sorted `path + mode +
       sha256`. Computed at **index admission**,

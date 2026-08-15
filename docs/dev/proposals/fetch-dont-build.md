@@ -597,9 +597,11 @@ identity. And two locks can pin the same
 upstream version to different hashes; one bare
 path cannot hold both.
 
-Use a fetch namespace or a hash-qualified
-internal path (`pkg/fetch/<name>/<version>-<sha12>/`
-or similar). User-facing commands still print
+The on-disk path is
+`pkg/fetch/<name>/<version>-<sha12>/`.
+The prefix stops old `resolveVersion`. The
+hash suffix holds two pins of one version.
+User-facing commands still print
 `just@1.56.0`.
 
 A re-tagged upstream that changes bytes fails
