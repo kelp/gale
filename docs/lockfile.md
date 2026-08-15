@@ -96,6 +96,26 @@ well-formed guard is refused, not repaired: accepting it
 would leave a nominally-enforced lock that an old build
 still destroys.
 
+## Schema v2 (readable, not written)
+
+`ReadV2` models the fetch schema. Nothing writes
+`version = 2` yet. `Load` and `ReadV1` still refuse a
+v2 file as an unknown schema (exit 4). That is what
+stops this gale from rewriting a v2 lock as v1.
+
+A v2 file carries its own guard:
+
+```toml
+[packages."!gale-lock-v2"]
+version = 2
+```
+
+Already-shipped gale fails loud on those bytes: a
+v1-enforcement build rejects top-level `version = 2`;
+a pre-enforcement build fails the integer guard the
+same way it fails the v1 guard. Package keys and
+target roots are `name@version`, with no revision.
+
 ## Enforcement model
 
 **Writers.** `gale install`, `gale update`, `gale

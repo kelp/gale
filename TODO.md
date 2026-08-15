@@ -22,14 +22,14 @@ session; this file is the queue.
 - [x] Fold second-pass fable / sol simplify cuts
 - [x] Fold third-pass sol reliability cuts
 - [x] Fold third-pass fable simplify cuts
-- [ ] Merge the proposal PR
+- [x] Merge the proposal PR
 
 ## Milestone 1 — Prerequisites
 
 No v2 lock is written. Each PR is mergeable to
 main on its own.
 
-- [ ] **Lock v2 types + fail-closed reader.** New
+- [x] **Lock v2 types + fail-closed reader.** New
       schema, new downgrade guard. No writer.
       Old gale must fail loud on a v2 file. Tests
       in `internal/lockfile`.
