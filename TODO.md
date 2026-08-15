@@ -3,8 +3,11 @@
 Active roadmap: fetch, don't build. Plan:
 [`docs/dev/proposals/fetch-dont-build.md`](docs/dev/proposals/fetch-dont-build.md).
 One checkbox is one PR. Do not start Milestone 3
-until 0–2 are done. Implementation is a later
-session; this file is the queue.
+until 0–2 are done. Do not make fetch the
+default until the first ten are in the index.
+A jq-only switch is a dual backend.
+Implementation is a later session; this file
+is the queue.
 
 ## Milestone 0 — Plan
 
@@ -13,6 +16,7 @@ session; this file is the queue.
 - [x] Owner: cut is the plan; index in gale-recipes;
       leftovers use brew; Phase 1 waits for merge
 - [x] Control-plane cuts (§15) and this milestone list
+- [x] Fold second-pass fable / sol simplify cuts
 - [ ] Merge the proposal PR
 
 ## Milestone 1 — Prerequisites
@@ -29,10 +33,12 @@ main on its own.
       `<version>`. Tests for the collision in
       `internal/store`.
 - [ ] **Tree digest.** Sorted `path + mode +
-      sha256`. Optional `graph_digest` on read.
-      Provenance field added, not yet required
-      of old records. Tests in
-      `internal/provenance`.
+      sha256`. Computed at **index admission**,
+      copied into the lock. Installer
+      recomputes and checks. Optional
+      `graph_digest` on read. Provenance
+      field added, not yet required of old
+      records. Tests in `internal/provenance`.
 - [ ] **Harden extract.** `ExtractZip` matches
       `extractTar` (symlink/hardlink rules).
       Mask setuid/setgid. Cap entry count and
@@ -47,8 +53,11 @@ main on its own.
       `internal/download` / `httpclient`.
 - [ ] **Index types + linter.** Version-keyed
       TOML, required `sha256`, `hash_source`,
-      host allowlist, immutable version blocks,
-      `bin` / `strip`. Lives in gale (library)
+      `tree_digest`, host allowlist,
+      immutable version blocks, `bin` /
+      `strip`. `latest` must name a version
+      block that exists (same rule in the
+      resolver). Lives in gale (library)
       and is what gale-recipes will call.
       Tests in `internal/index` (new).
 
@@ -56,6 +65,8 @@ main on its own.
 
 Do these before fetch is the default. Safe on
 main. Stops new host / pin / tool-versions work.
+Bin-collision-as-hard-error waits until
+Milestone 4 — 193 source recipes still collide.
 
 - [ ] **Freeze host sections.** Comment + test
       that `--host` / `[hosts.*]` gain no new
@@ -66,31 +77,61 @@ main. Stops new host / pin / tool-versions work.
       the fallback. `cmd/gale` tests that a
       `.tool-versions` project is not a gale
       project.
-- [ ] **Keep two generations.** Default keep
-      = current + one previous. Update gc
-      retention tests (gh#247 family) for the
-      new window. `generations` help: list +
-      rollback only.
+- [ ] **Keep two generations.** Retention is
+      the compiled constant 2 (current + one
+      previous). Delete `[generation] keep`
+      and the `keep = -1` sentinel from
+      `config.toml`. Update gc retention
+      tests (gh#247 family). `generations`
+      help: list + rollback only.
 - [ ] **Drop pin / unpin.** Remove `[pinned]`,
       `gale pin`, `gale unpin`. `gale update`
       updates named packages. Manifest + lock
       are the only version channels.
-- [ ] **Bin collision is a hard error.** Remove
-      `[bin]` overlays and per-host winners.
-      Two packages shipping the same basename
-      refuse the generation.
-- [ ] **Doctor: four checks only** (can land
-      after Milestone 4 if easier). PATH, lock
-      readable, generation matches lock roots,
-      tree digest matches. Delete farm /
-      deps-meta / legacy-lock novels when
-      those packages die.
+- [ ] **Freeze `config.toml`.** Compiled-in
+      index URL. `--index <dir>` is the only
+      override. No parallelism knob, no
+      `GALE_JOBS`. Add no keys. A config file
+      must not repoint resolution or disable
+      gc.
+- [ ] **Delete `internal/parallel` and
+      `internal/prewarm`.** Serial installer.
+      Deterministic order. Every error
+      surfaces.
+- [ ] **GC: keep-N only.** N=2. No
+      reachability walk, no resolver, no
+      network, no generation rebuild. The
+      structural rewrite is Milestone 5.
+- [ ] **Doctor is read-only.** Delete
+      `--repair` and `--force`. Four checks
+      can land after Milestone 4 if easier
+      (PATH, lock readable, generation
+      matches lock roots, tree digest
+      matches). Fail closed. The remedy it
+      prints is a command the user runs.
+- [ ] **Register before swap.** A project
+      generation does not swap `current`
+      until its canonical root is durably
+      registered. Registration failure
+      leaves `current` on the previous gen.
+      Read-only commands do not register.
+- [ ] **Bound `sync --if-needed`.** Fixed
+      deadline. Timeout records incomplete,
+      cancels work, leaves `current`
+      unchanged. Typed `gale sync` is
+      unbounded.
+- [ ] **Rollback is temporary.** It moves
+      `current` only. Any later sync returns
+      to the lock. Integration-test the
+      direnv-after-rollback sequence.
 
 ## Milestone 3 — Fetch installer
 
-One installer. Land `internal/fetch` unused,
-then one switch PR. No `backend = "fetch"`
-flag. macOS-first. Serial is fine.
+One installer. Land `internal/fetch` unused.
+Index all ten **before** the switch PR. No
+`backend = "fetch"` flag. A jq-only cutover
+is a dual backend. macOS-first. Serial is
+fine.
 
 - [ ] **Index client.** Fetch
       `name@version` from gale-recipes (raw
@@ -99,28 +140,30 @@ flag. macOS-first. Serial is fine.
       stale-on-error / negative 404 for
       resolve. Tests with a httptest index.
 - [ ] **Fetch to store.** Allowlisted URL,
-      hash, extract, tree digest, provenance.
-      Hash mismatch refuses. Occupied dir +
-      different digest refuses. Tests in
-      `internal/fetch`.
+      hash, extract, copied tree digest,
+      provenance. Hash mismatch refuses.
+      Occupied dir + different digest
+      refuses. Tests in `internal/fetch`.
 - [ ] **One finalize function.** Config +
       lock v2 + generation. Used by install,
       update, remove, lock. Tests in
       `cmd/gale` (`finalize_*`).
-- [ ] **Index: `jq`.** Admission recorded
-      (arch, codesign, `otool -L` system-only).
-      Upstream hash source noted.
-- [ ] **Switch: `gale install jq` fetches.**
-      Source path unreachable for that
-      package. Mixed source/fetch lock
+- [ ] **Index the first ten.** Admission
+      recorded (arch, codesign, `otool -L`
+      system-only, tree digest). Upstream
+      hash source noted. One PR per few
+      packages: `jq`, `ripgrep`, `fd`,
+      `just`, `gh`, `go`, `gofumpt`,
+      `golangci-lint`, `direnv`, `uv`.
+      Appendix A names are candidates, not
+      a launch list.
+- [ ] **Switch: fetch is the only
+      installer.** Source-build unreachable.
+      Not-in-index is an error, not a
+      build. Mixed source/fetch lock
       refused. `cmd/gale` + `integration/`:
       sync does not write the lock;
       activation gate still holds.
-- [ ] **Index the other nine.** One PR per
-      few packages, each with admission
-      notes: `ripgrep`, `fd`, `just`, `gh`,
-      `go`, `gofumpt`, `golangci-lint`,
-      `direnv`, `uv`.
 - [ ] **`gale verify`** = tree digest matches
       lock (+ locked attestation if any).
       Not GHCR.
@@ -140,11 +183,21 @@ flag. macOS-first. Serial is fine.
       `lint` (recipe), `search`, `switch`,
       `add`, `sbom`, `inspect`, `repo *`.
       Leave stubs that point at the plan or
-      delete.
-- [ ] **Global rebuilds only from the lock.**
-      `install` always writes a lock. Refuse
-      to rebuild a locked global generation
-      from the store alone.
+      delete. Mark leftover TODO items
+      below the fold as superseded.
+- [ ] **Bin collision is a hard error.**
+      Remove `[bin]` overlays and per-host
+      winners. Two packages shipping the
+      same basename refuse the generation.
+      Safe now: fetch is default and the
+      catalog is the first ten.
+- [ ] **Every scope rebuilds only from the
+      lock.** Global, project, `--host`.
+      `install` always writes a lock.
+      Refuse to rebuild a locked generation
+      from the store or manifest alone.
+- [ ] **Park the local artifact cache.**
+      Milestone 6, off by default, or never.
 - [ ] **Grow the catalog by admission.**
       Batches of index entries from appendix
       A candidates. No target count. Skip
@@ -170,7 +223,11 @@ flag. macOS-first. Serial is fine.
       batches.
 - [ ] **gc without farm / revisions.**
       Retention = the two kept generations'
-      exact targets, every registered scope.
+      exact targets, every registered
+      scope. Prefix-safe (fetch vs leftover
+      source store). Still no resolver and
+      no network. Fail closed if retention
+      is incomplete.
 
 ## Milestone 6 — Optional leftovers
 
@@ -198,6 +255,13 @@ signing. Content-addressed store paths.
 Parallel fetch as a reliability project.
 
 ---
+
+Items below this line are historical. The
+Code Standards Backlog still applies. Open
+product items that assume source-build,
+GHCR bottles, the farm, recipe CI, or
+SBOM/audit of our bottles are superseded
+by the fetch plan. Do not ticket them.
 
 ## Code Standards Backlog
 

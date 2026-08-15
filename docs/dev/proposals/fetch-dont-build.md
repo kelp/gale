@@ -194,6 +194,7 @@ latest = "1.56.0"
 [versions."1.56.0".artifacts."darwin/arm64"]
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-aarch64-apple-darwin.tar.gz"
 sha256 = "…"
+tree_digest = "…"
 hash_source = "upstream-sha256sums"  # or "computed"
 strip = 1
 bin = ["just"]
@@ -201,6 +202,7 @@ bin = ["just"]
 [versions."1.56.0".artifacts."linux/amd64"]
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-x86_64-unknown-linux-musl.tar.gz"
 sha256 = "…"
+tree_digest = "…"
 hash_source = "upstream-sha256sums"
 strip = 1
 bin = ["just"]
@@ -208,9 +210,13 @@ bin = ["just"]
 
 Version blocks are append-only. A published
 `[versions."1.56.0"]` is immutable under the linter.
-`gale update` appends a new block and moves `latest`.
-`gale install just@1.56.0` reads that block, not
-whatever the URL string happens to contain.
+`latest` is one pointer. It must name a version
+block that exists. The resolver and the index
+linter share that rule. A dangling `latest` is
+invalid. `gale update` appends a new block and
+moves `latest`. `gale install just@1.56.0` reads
+that block, not whatever the URL string happens
+to contain.
 
 Templates (`{{version}}`, `{{os}}`, `{{arch}}`) are
 authoring sugar only. The lock stores the resolved
@@ -232,9 +238,15 @@ that needs one is omitted.
 correct arch, darwin code signature valid if the
 file is Mach-O, and `otool -L` / `ldd` shows only
 system libraries (`/usr/lib`, `/System`, linux
-loader + libc). That is the gate for the whole
-catalog, not a one-off for §8b. Filename
-classification (appendix A) is a candidate list.
+loader + libc). Admission runs the canonical
+extractor and records the **tree digest** in
+the index entry. Lock writers copy it; the
+installer recomputes and checks it. That is
+how a lock can name every platform without
+extracting them on this machine.
+
+Filename classification (appendix A) is a
+candidate list.
 
 Official non-GitHub hosts use the same shape:
 
@@ -382,13 +394,18 @@ These are already paid for. Keep them.
    intervene. The claim is: the archive matched
    the lock, Gale performed no mutation, and a
    **tree digest** (sorted `path + mode +
-   sha256` of each regular file) computed at
-   extract time is what provenance, `verify`,
-   doctor, and staleness compare. That digest
-   occupies the slot `graph_digest` vacates.
-   Activation still reads provenance and the
-   lock; it does not rehash the tree on every
-   `cd`. `gale verify` and doctor do.
+   sha256` of each regular file) binds the
+   store to the lock. Admission computes it
+   once per platform and writes it on the
+   index entry. Lock writers copy it.
+   Installers recompute and check it. That is
+   how one lock names every platform without
+   extracting them here. Provenance, `verify`,
+   doctor, and staleness compare that digest.
+   It occupies the slot `graph_digest`
+   vacates. Activation still reads provenance
+   and the lock; it does not rehash the tree
+   on every `cd`. `gale verify` and doctor do.
 
 6. **Provenance is all-or-nothing.** Each store
    directory writes `.gale-provenance.toml` only
@@ -610,12 +627,14 @@ a fetched identity.
   keeps the artifact.** Deleting GHCR removes
   gale's only immutable copy. A deleted GitHub
   release is a permanent sync failure, with no
-  attacker. Accept that, as aqua and mise do.
-  Mitigate with a local
-  `~/.gale/cache/artifacts/<sha256>` of verified
-  archives. Long-term reproducibility is a
-  user-side mirror, not a return of our bottle
-  farm.
+  attacker.   Accept that, as aqua and mise do.
+  A local
+  `~/.gale/cache/artifacts/<sha256>` of
+  verified archives is Milestone 6 or never:
+  own proposal, off by default, keyed by
+  sha256, re-hash on read. Long-term
+  reproducibility is a user-side mirror, not
+  a return of our bottle farm.
 
 ## 8. Leftovers
 
@@ -892,10 +911,12 @@ present and matching), fetches, finalizes.
 `outdated` / `update` talk to the index, not to
 GHCR ledgers.
 
-`doctor` loses farm, deps-meta, and
-legacy-provenance migration checks. It keeps
-PATH, scope, lock readability, sync-state, and
-tree-digest drift.
+`doctor` is read-only. Delete `--repair` and
+`--force`. Four checks: PATH, lock readable,
+generation matches lock roots, tree digest
+matches. Farm, deps-meta, and legacy-lock
+novels go when those packages die. The remedy
+it prints is a command the user runs.
 
 Drop or mothball: `build`, `create-recipe`,
 `audit` (rebuild), `lint` (recipe), `recipes`,
@@ -963,28 +984,35 @@ cleanup.
 **Phase 1 — fetch installer, ten packages.**
 `jq`, `ripgrep`, `fd`, `just`, `gh`, `go`,
 `gofumpt`, `golangci-lint`, `direnv`, `uv`.
-Each passes the §5 admission gate. **One
-installer.** Build fetch on a branch or as
-dead `internal/fetch` until a single switch
-PR points `install` at it. Do not ship
+Each passes the §5 admission gate. **Index
+all ten first.** Then one switch PR. A
+jq-only switch is a dual backend: every
+other name still builds. Not-in-index is an
+error, not a build. **One installer.** Build
+fetch on a branch or as dead `internal/fetch`
+until that switch. Do not ship
 `backend = "fetch"` next to source install.
 Mixed source/fetch locks are refused. Tests
 at `cmd/gale` and `integration/`: hash
 mismatch refuses; sync does not write the
 lock; activation gate still holds; tree
-digest drift is doctor-visible.
+digest drift is doctor-visible; rollback
+then sync returns to the lock.
 
 Phase 1 is fetch + lock v2 + global/project.
-Host sections, `.tool-versions`, pins,
-`[bin]` overlays, and a dual backend are
-out of that session (§15).
+Host sections, `.tool-versions`, pins, and a
+dual backend are out of that session (§15).
+`[bin]` overlays stay until fetch is
+default. 193 source recipes still collide.
 
 **Phase 2 — default fetch, grow the catalog
 by admission, not by 91.** `gale install`
 fetches. Source build is unreachable from the
 CLI. Index linter: required hashes,
-`hash_source`, allowlisted hosts, `bin` /
-`strip`, version blocks immutable. Amend
+`hash_source`, `tree_digest`, allowlisted
+hosts, `bin` / `strip`, version blocks
+immutable, `latest` names an existing
+block. Amend
 `design.md`, `CLAUDE.md`, and the README in
 the same change.
 
@@ -1106,7 +1134,10 @@ stays.
 1. **One installer.** No `backend = "fetch"`
    flag beside source install. Fetch is
    unused code or a branch until the switch
-   PR. Mixed-method locks are refused.
+   PR. The switch is global, after the first
+   ten are in the index. A jq-only cutover
+   is a dual backend. Mixed-method locks
+   are refused.
 2. **Freeze host sections.** No new
    `[hosts.*]` or `--host` semantics. Cross-
    scope bugs are a named class. Chezmoi
@@ -1123,30 +1154,75 @@ stays.
 6. **No `--recipes` override.** `--index
    <dir>` pointing at a gale-recipes
    checkout is the only local escape.
+7. **Doctor never mutates.** Delete
+   `--repair` and `--force`. The store has
+   two writers: fetch-finalize and gc. The
+   remedy doctor prints is a command the
+   user runs.
+8. **Freeze `config.toml`.** Add no keys.
+   Port none to fetch. At the switch:
+   compiled-in index URL, `--index <dir>`
+   the only override, retention the
+   constant 2, no `[sync] parallelism`,
+   no `[generation] keep` / `-1` sentinel.
+   A config file must not repoint
+   resolution or disable gc.
+9. **Project publication is registered.**
+   A project generation does not swap
+   `current` until its canonical root is
+   durably registered. Registration
+   failure aborts the swap. Read-only
+   commands do not register.
+10. **Bound automatic sync.**
+    `sync --if-needed` has a fixed
+    deadline. Timeout records incomplete,
+    cancels work, leaves `current`
+    unchanged. Typed `gale sync` is
+    unbounded.
+11. **Rollback is temporary.** It moves
+    `current` only. The lock still names
+    the new roots; any sync returns to
+    them. Durable undo is reverting the
+    lock in git. Rollback prints this.
+    Integration-test the direnv-after-
+    rollback sequence.
+12. **Serial installer.** Delete
+    `internal/parallel`, `internal/prewarm`,
+    and `GALE_JOBS`. Deterministic order;
+    every error surfaces. Lands with the
+    `config.toml` freeze, before fetch is
+    default.
 
 **After fetch is default**
 
-7. **One finalize function** for install,
-   update, remove, and lock. One test
-   family. `context.go` is the smell.
-8. **Bin collisions are a hard error.**
-   No `[bin]` overlay, no per-host winner.
-   Fetched CLIs almost never share a
-   basename.
-9. **Doctor is four checks:** PATH, lock
-   readable, generation matches lock
-   roots, tree digest matches.
-10. **Index fetch errors are errors.**
+13. **One finalize function** for install,
+    update, remove, and lock. One test
+    family. `context.go` is the smell.
+14. **Bin collisions are a hard error.**
+    No `[bin]` overlay, no per-host winner.
+    Safe once fetch is default and the
+    catalog is the first ten. 193 source
+    recipes still collide.
+15. **Doctor is four checks:** PATH, lock
+    readable, generation matches lock
+    roots, tree digest matches.
+16. **Index fetch errors are errors.**
     Do not inherit stale-on-error or the
     one-hour negative 404 for resolve.
-11. **Global rebuilds only from the lock.**
-    `install` always writes a lock. A
-    global generation is not rebuilt from
-    the store when a lock exists and
-    cannot be read.
-12. **Mothball the long tail:** `sbom`,
+17. **Every scope rebuilds only from the
+    lock.** Global, project, and `--host`.
+    None rebuild from the manifest or
+    store alone when a lock is present.
+18. **Mothball the long tail:** `sbom`,
     `inspect`, `search`, `switch`, `add`,
     `repo *`.
+19. **GC does not repair.** No resolver,
+    network, generation rebuild, or
+    `--force`. Mark symlink targets of
+    the two kept generations; sweep the
+    rest. Fail closed if retention is
+    incomplete. Milestone 2 is keep=2
+    only. This rewrite is Milestone 5.
 
 **Do not do**
 
@@ -1159,6 +1235,9 @@ stays.
   Serial is fine for ten packages.
 - Linux as a Phase 1 admission platform.
   macOS-first until the ten are boring.
+- A local artifact cache (§7g) before
+  Milestone 6. Own proposal; keyed by
+  sha256; re-hash on read.
 
 PR-sized steps live in [`TODO.md`](../../../TODO.md).
 
@@ -1299,8 +1378,9 @@ Consensus, now folded into the body:
 2. **"Verify equals run" overclaimed.** The
    archive hash is not the store tree. The
    bind is a `tree_digest` computed at
-   extract. Activation still does not rehash
-   on `cd`.
+   index admission, copied into the lock,
+   and recomputed at extract. Activation
+   still does not rehash on `cd`.
 3. **The lock omitted layout.** `strip`,
    `bin`, attestation, and `hash_source`
    must live in the lock or sync rereads
@@ -1355,3 +1435,14 @@ resolves and put the remaining second
 factor under that file's control. The
 revisions above are what make §7b's
 narrower claim hold.
+
+A second pass (fable, sol) asked for more
+simplification. Consensus folded into
+§15 and `TODO.md`: doctor is read-only;
+`config.toml` loses behavioral knobs;
+`tree_digest` is computed at admission;
+the installer switch is global, not
+per-package; rollback vs sync is
+specified; gc is a sweeper, not a
+repairer; project registration is part
+of publication.
