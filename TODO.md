@@ -1,5 +1,204 @@
 # TODO
 
+Active roadmap: fetch, don't build. Plan:
+[`docs/dev/proposals/fetch-dont-build.md`](docs/dev/proposals/fetch-dont-build.md).
+One checkbox is one PR. Do not start Milestone 3
+until 0–2 are done. Implementation is a later
+session; this file is the queue.
+
+## Milestone 0 — Plan
+
+- [x] Write the fetch-don't-build proposal
+- [x] Fold fable / opus 5 / sol review into the plan
+- [x] Owner: cut is the plan; index in gale-recipes;
+      leftovers use brew; Phase 1 waits for merge
+- [x] Control-plane cuts (§15) and this milestone list
+- [ ] Merge the proposal PR
+
+## Milestone 1 — Prerequisites
+
+No v2 lock is written. Each PR is mergeable to
+main on its own.
+
+- [ ] **Lock v2 types + fail-closed reader.** New
+      schema, new downgrade guard. No writer.
+      Old gale must fail loud on a v2 file. Tests
+      in `internal/lockfile`.
+- [ ] **Fetch store namespace.** Paths old
+      `resolveVersion` cannot hit as bare
+      `<version>`. Tests for the collision in
+      `internal/store`.
+- [ ] **Tree digest.** Sorted `path + mode +
+      sha256`. Optional `graph_digest` on read.
+      Provenance field added, not yet required
+      of old records. Tests in
+      `internal/provenance`.
+- [ ] **Harden extract.** `ExtractZip` matches
+      `extractTar` (symlink/hardlink rules).
+      Mask setuid/setgid. Cap entry count and
+      decompressed size. Reject writes of
+      `.gale-*.toml`. Tests in
+      `internal/download`.
+- [ ] **HTTP fetch policy.** Per-host redirect
+      allowlist (GitHub →
+      `objects.githubusercontent.com`). No
+      `GALE_GITHUB_TOKEN` on artifact fetch.
+      Delete the GNU `mirrors` map. Tests in
+      `internal/download` / `httpclient`.
+- [ ] **Index types + linter.** Version-keyed
+      TOML, required `sha256`, `hash_source`,
+      host allowlist, immutable version blocks,
+      `bin` / `strip`. Lives in gale (library)
+      and is what gale-recipes will call.
+      Tests in `internal/index` (new).
+
+## Milestone 2 — Control plane
+
+Do these before fetch is the default. Safe on
+main. Stops new host / pin / tool-versions work.
+
+- [ ] **Freeze host sections.** Comment + test
+      that `--host` / `[hosts.*]` gain no new
+      semantics. Changelog note. No feature
+      delete yet.
+- [ ] **Drop `.tool-versions`.** Gale reads
+      `gale.toml` only. Delete the parser and
+      the fallback. `cmd/gale` tests that a
+      `.tool-versions` project is not a gale
+      project.
+- [ ] **Keep two generations.** Default keep
+      = current + one previous. Update gc
+      retention tests (gh#247 family) for the
+      new window. `generations` help: list +
+      rollback only.
+- [ ] **Drop pin / unpin.** Remove `[pinned]`,
+      `gale pin`, `gale unpin`. `gale update`
+      updates named packages. Manifest + lock
+      are the only version channels.
+- [ ] **Bin collision is a hard error.** Remove
+      `[bin]` overlays and per-host winners.
+      Two packages shipping the same basename
+      refuse the generation.
+- [ ] **Doctor: four checks only** (can land
+      after Milestone 4 if easier). PATH, lock
+      readable, generation matches lock roots,
+      tree digest matches. Delete farm /
+      deps-meta / legacy-lock novels when
+      those packages die.
+
+## Milestone 3 — Fetch installer
+
+One installer. Land `internal/fetch` unused,
+then one switch PR. No `backend = "fetch"`
+flag. macOS-first. Serial is fine.
+
+- [ ] **Index client.** Fetch
+      `name@version` from gale-recipes (raw
+      or `--index <dir>`). Hard-fail on
+      network error. Do not inherit
+      stale-on-error / negative 404 for
+      resolve. Tests with a httptest index.
+- [ ] **Fetch to store.** Allowlisted URL,
+      hash, extract, tree digest, provenance.
+      Hash mismatch refuses. Occupied dir +
+      different digest refuses. Tests in
+      `internal/fetch`.
+- [ ] **One finalize function.** Config +
+      lock v2 + generation. Used by install,
+      update, remove, lock. Tests in
+      `cmd/gale` (`finalize_*`).
+- [ ] **Index: `jq`.** Admission recorded
+      (arch, codesign, `otool -L` system-only).
+      Upstream hash source noted.
+- [ ] **Switch: `gale install jq` fetches.**
+      Source path unreachable for that
+      package. Mixed source/fetch lock
+      refused. `cmd/gale` + `integration/`:
+      sync does not write the lock;
+      activation gate still holds.
+- [ ] **Index the other nine.** One PR per
+      few packages, each with admission
+      notes: `ripgrep`, `fd`, `just`, `gh`,
+      `go`, `gofumpt`, `golangci-lint`,
+      `direnv`, `uv`.
+- [ ] **`gale verify`** = tree digest matches
+      lock (+ locked attestation if any).
+      Not GHCR.
+
+## Milestone 4 — Default fetch
+
+- [ ] **All install / sync / update / remove
+      go through fetch.** Source build
+      unreachable from the CLI. `--recipes`
+      gone; `--index <dir>` stays.
+- [ ] **Amend product docs** in the same PR:
+      `design.md` principles, `CLAUDE.md`,
+      README. Gale is not "everything from
+      source" and not a Homebrew replacement.
+- [ ] **Mothball the long tail.** `build`,
+      `create-recipe`, `audit` (rebuild),
+      `lint` (recipe), `search`, `switch`,
+      `add`, `sbom`, `inspect`, `repo *`.
+      Leave stubs that point at the plan or
+      delete.
+- [ ] **Global rebuilds only from the lock.**
+      `install` always writes a lock. Refuse
+      to rebuild a locked global generation
+      from the store alone.
+- [ ] **Grow the catalog by admission.**
+      Batches of index entries from appendix
+      A candidates. No target count. Skip
+      anything that fails `otool -L` /
+      codesign / arch.
+
+## Milestone 5 — Adopt and delete the distro
+
+- [ ] **`gale fetch-adopt`** (name TBD; not
+      `gale migrate`). Plan all roots, print
+      lock diff, require confirmation, refuse
+      when frozen / CI. All-or-nothing. Any
+      failure leaves the old lock and
+      generation. `cmd/gale` tests.
+- [ ] **Delete `internal/build` and farm.**
+      Including Darwin fixup and patchelf.
+- [ ] **Delete GHCR bottle wiring.** Keep a
+      generalized attestation verifier.
+- [ ] **gale-recipes: strip the farm.**
+      Remove promote / ledger / verify-build
+      CI. Recipes become index TOML. Convert
+      the Phase 1 ten first, then admitted
+      batches.
+- [ ] **gc without farm / revisions.**
+      Retention = the two kept generations'
+      exact targets, every registered scope.
+
+## Milestone 6 — Optional leftovers
+
+Each is its own proposal. None block 1–5.
+
+- [ ] **`git = "system"`** (note in
+      gale.toml, not an installer).
+- [ ] **python-build-standalone** — only
+      with declared attestations and store
+      immutability (no pip into the prefix).
+- [ ] **Delete frozen host sections** if
+      still unused.
+- [ ] **Index-update PR bot** — PR-only, no
+      write token on main, verifies upstream
+      checksums.
+- [ ] **Linux admission** for the ten, once
+      macOS is boring.
+
+## Out of scope (do not ticket)
+
+Brew wrapper or bottle backend. aqua-registry.
+`go install` / `cargo install`. Source fallback.
+Required attestations for every package. Index
+signing. Content-addressed store paths.
+Parallel fetch as a reliability project.
+
+---
+
 ## Code Standards Backlog
 
 The strict golangci-lint config (`.golangci.yml`, paired with the
