@@ -194,7 +194,7 @@ latest = "1.56.0"
 
 [versions."1.56.0".artifacts."darwin/arm64"]
 url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-aarch64-apple-darwin.tar.gz"
-format = "tar.gz"  # tar.gz | tar.zst | zip | bin
+format = "tar.gz"  # tar.gz | tar.xz | zip | binary
 sha256 = "…"
 tree_digest = "…"
 hash_source = "upstream-sha256sums"  # or "computed"
@@ -228,7 +228,10 @@ a fixed mode. A bare `jq-macos-arm64` becomes
 `bin/jq` because the entry says so. A
 `bin = ["just"]` list cannot describe that
 rename. The installer does not guess format
-from the URL.
+from the URL. Admitted formats are
+`tar.gz`, `tar.xz`, `zip`, and `binary`.
+`tar.zst` and `tar.bz2` die with the
+bottle and source-build paths.
 
 **Permitted transformations:** download, hash, safe
 extract, strip-components, place named bins. Nothing
@@ -240,12 +243,18 @@ that needs one is omitted.
 correct arch, darwin code signature valid if the
 file is Mach-O, and `otool -L` / `ldd` shows only
 system libraries (`/usr/lib`, `/System`, linux
-loader + libc). Admission runs the canonical
-extractor and records the **tree digest** in
-the index entry. Lock writers copy it; the
-installer recomputes and checks it. That is
-how a lock can name every platform without
-extracting them on this machine.
+loader + libc). The artifact contains no
+symlinks or hardlinks. Admission runs
+**gale's own extractor** — the same
+`internal/download` path and digest
+function the installer uses — and records
+the **tree digest**. That command is the
+only producer of `tree_digest`. The linter
+checks the field is present; it never
+computes one. Lock writers copy it; the
+installer recomputes and checks it. That
+is how a lock can name every platform
+without extracting them here.
 
 Filename classification (appendix A) is a
 candidate list.
@@ -342,12 +351,10 @@ locked version: sync reads the lock, not the index.
 
 **Index fetch errors are errors.** Do not inherit
 today's stale-on-error / one-hour negative-404
-cache for resolve. `install` and `update` hard-fail
-when the index cannot be fetched and no lock
-already names the package. A cached index body may
-serve `outdated` as a hint, labeled stale, never as
-a silent "nothing newer." The lock still wins for
-sync.
+cache. `install`, `update`, `lock`, and
+`outdated` hard-fail when the index cannot
+be fetched. No stale-serving path. The lock
+still wins for sync.
 
 ## 7. Security
 
@@ -396,22 +403,24 @@ These are already paid for. Keep them.
    intervene. The claim is: the archive matched
    the lock, Gale performed no mutation, and a
    **tree digest** binds the store to the
-   lock. Each entry is `path + type + mode`
-   plus `sha256` for a regular file or the
-   target for a symlink. A swapped
-   executable symlink must change the
-   digest. Gale metadata
-   (`.gale-provenance.toml`,
+   lock. Each entry is sorted `path + mode
+   + sha256` of a regular file. Gale
+   metadata (`.gale-provenance.toml`,
    `.gale-deps.toml`) is excluded so the
    record does not hash itself. Admission
-   computes the digest once per platform
-   and writes it on the index entry. Lock
-   writers copy it. Installers recompute
-   and check it. That is how one lock names
-   every platform without extracting them
-   here. Provenance, `verify`, doctor, and
-   staleness compare that digest. It
-   occupies the slot `graph_digest`
+   **refuses** artifacts that contain
+   symlinks or hardlinks. None of the
+   first ten need them. Bind link targets
+   only if a later package forces it.
+   Admission computes the digest once per
+   platform and writes it on the index
+   entry. Lock writers copy it. Installers
+   recompute and check it. That is how one
+   lock names every platform without
+   extracting them here. Provenance,
+   `verify`, doctor, and staleness compare
+   that digest. It occupies the slot
+   `graph_digest`
    vacates. Activation still reads
    provenance and the lock; it does not
    rehash the tree on every `cd`.
@@ -587,7 +596,7 @@ re-fetched URL. It never mutates.
 - Reject archive entries that would write Gale
   metadata (`.gale-provenance.toml`,
   `.gale-deps.toml`), device/FIFO nodes, or
-  escaping symlinks/hardlinks.
+  any symlink or hardlink.
 - Mask setuid/setgid (`07000`). Cap entry count,
   compressed download size, and decompressed
   size. Both caps are compiled constants.
@@ -935,7 +944,9 @@ Each is another finalize-adjacent path.
 
 `install` resolves one `index_commit` (or the
 lock, when present and matching), fetches,
-finalizes. `gale lock` writes the lock only.
+finalizes. `gale lock` writes the lock only. Delete
+`--refresh`. Unprovenanced refetch is
+`fetch-adopt`.
 
 `outdated` / `update` talk to the index, not to
 GHCR ledgers.
@@ -951,10 +962,6 @@ Delete: `build`, `create-recipe`, `audit`
 (rebuild), `lint` (recipe), `recipes`,
 `verify` as GHCR-attestation. Reuse `verify`
 only if it means "store matches lock."
-
-`gale import homebrew` is not a build-recipe
-importer. If it stays, it writes index pointers
-or a bottle-allowlist entry.
 
 ## 11. Migration
 
@@ -1244,8 +1251,9 @@ stays.
     publication. `gale lock` is not this
     function: one `index_commit`, write
     the lock, no fetch, no `current` swap.
-    One test family. `context.go` is the
-    smell.
+    Delete `--refresh`. Unprovenanced
+    refetch is `fetch-adopt`. One test
+    family. `context.go` is the smell.
 14. **Bin collisions are a hard error.**
     No `[bin]` overlay, no per-host winner.
     Safe once fetch is default and the
@@ -1498,15 +1506,26 @@ specified; gc is a sweeper, not a
 repairer; project registration is part
 of publication.
 
-A third pass (sol; fable still out)
-folded: Milestone 4 is the sole
-cutover and adopt ships unused before
-it; artifacts name `format` and a file
-map; the tree digest covers symlinks
-and excludes Gale metadata; fetch
-honors context and a compressed-size
-cap; one `index_commit` per operation;
+A third pass (sol, then fable)
+folded. Agreement: Milestone 4 is the
+sole cutover; artifacts name `format`
+and a file map; fetch honors context;
+one `index_commit` per operation;
 `gale lock` writes the lock only;
-publication is serialized per scope;
-GC marks and sweeps under the same
-lock; mothballed commands are deleted.
+publication is serialized; GC marks
+and sweeps under the same lock;
+commands are deleted, not stubbed.
+
+Fable overrode sol on the tree
+digest: admission **refuses**
+symlinks and hardlinks rather than
+hashing them. None of the first ten
+need in-tree links. Fable also added:
+gale's extractor is the only
+`tree_digest` producer; `outdated`
+hard-fails like resolve; M2 gc is
+the constant only; doctor `--repair`
+dies in M2 and the four-check rewrite
+waits for M4; staged-atomic extract
+is a named test; `--refresh` dies
+with `gale lock`.

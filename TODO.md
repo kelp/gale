@@ -21,6 +21,7 @@ session; this file is the queue.
 - [x] Control-plane cuts (§15) and this milestone list
 - [x] Fold second-pass fable / sol simplify cuts
 - [x] Fold third-pass sol reliability cuts
+- [x] Fold third-pass fable simplify cuts
 - [ ] Merge the proposal PR
 
 ## Milestone 1 — Prerequisites
@@ -39,40 +40,50 @@ main on its own.
       scopes retain the same `name@version`
       with different locked artifacts.
       Tests in `internal/store`.
-- [ ] **Tree digest.** Sorted `path + type
-      + mode`, plus `sha256` for a file or
-      the target for a symlink. Exclude
-      `.gale-*.toml`. Computed at **index
-      admission**, copied into the lock.
-      Installer recomputes and checks.
-      Optional `graph_digest` on read.
-      Tests in `internal/provenance`.
+- [ ] **Tree digest.** Sorted `path + mode
+      + sha256` of regular files. Exclude
+      `.gale-*.toml`. Admission **refuses**
+      artifacts with symlinks or
+      hardlinks. Computed at **index
+      admission** by gale's extractor,
+      copied into the lock. Installer
+      recomputes and checks. Tests in
+      `internal/provenance`.
 - [ ] **Harden extract.** `ExtractZip`
       matches `extractTar`. Mask
       setuid/setgid. Cap entry count,
       compressed download size, and
       decompressed size. Reject writes of
-      `.gale-*.toml`. Tests in
+      `.gale-*.toml`. Reject any symlink
+      or hardlink. Tests in
       `internal/download`.
 - [ ] **HTTP fetch policy.** Per-host
       redirect allowlist (GitHub →
       `objects.githubusercontent.com`). No
       `GALE_GITHUB_TOKEN` on artifact
-      fetch. Delete the GNU `mirrors` map.
-      Honor `context.Context` on index
-      HTTP, artifact HTTP, hashing, and
+      fetch. Reject `url` values with
+      credentials. Delete the GNU
+      `mirrors` map. Honor
+      `context.Context` on index HTTP,
+      artifact HTTP, hashing, and
       extract. Tests in
       `internal/download` / `httpclient`.
 - [ ] **Index types + linter.**
       Version-keyed TOML. Required
       `sha256`, `hash_source`,
-      `tree_digest`, `format`, `files`
-      (src → dest + mode). Host
-      allowlist. Immutable version
-      blocks. `latest` must name a
-      version block that exists. Lives
-      in gale (library). Tests in
-      `internal/index` (new).
+      `tree_digest`, `format` (`tar.gz` |
+      `tar.xz` | `zip` | `binary`),
+      `files` (src → dest + mode). Host
+      allowlist. No credentials in `url`.
+      Version / tag is `[A-Za-z0-9._+-]`
+      or the URL is fully written.
+      Immutable version blocks. `latest`
+      must name a version block that
+      exists. The linter checks
+      `tree_digest` is present; it never
+      computes one. Lives in gale
+      (library). Tests in `internal/index`
+      (new).
 
 ## Milestone 2 — Control plane
 
@@ -111,17 +122,15 @@ Milestone 4 — 193 source recipes still collide.
       `internal/prewarm`.** Serial installer.
       Deterministic order. Every error
       surfaces.
-- [ ] **GC: keep-N only.** N=2. No
-      reachability walk, no resolver, no
-      network, no generation rebuild. The
-      structural rewrite is Milestone 5.
-- [ ] **Doctor is read-only.** Delete
-      `--repair` and `--force`. Four checks
-      can land after Milestone 4 if easier
-      (PATH, lock readable, generation
-      matches lock roots, tree digest
-      matches). Fail closed. The remedy it
-      prints is a command the user runs.
+- [ ] **GC: keep=2 constant.** Delete
+      `[generation] keep` and the
+      `keep = -1` sentinel. Do not remove
+      the resolver, network, or generation
+      rebuild in this PR — that rewrite
+      is Milestone 5.
+- [ ] **Doctor: delete `--repair` and
+      `--force`.** Deletion only. The
+      four-check rewrite is Milestone 4.
 - [ ] **Register before swap.** A project
       generation does not swap `current`
       until its canonical root is durably
@@ -150,18 +159,22 @@ only installer. Index all ten. Ship
 fine.
 
 - [ ] **Index client.** Resolve a whole
-      install / update / lock run against
-      **one** `index_commit` (or `--index`
-      checkout HEAD). Hard-fail on
-      network error. Do not inherit
-      stale-on-error / negative 404.
-      Tests with a httptest index.
+      install / update / lock / outdated
+      run against **one** `index_commit`
+      (or `--index` checkout HEAD).
+      Hard-fail on network error. No
+      stale-serving path, including
+      `outdated`. Tests with a httptest
+      index.
 - [ ] **Fetch to store.** Allowlisted URL,
       declared `format`, file map, hash,
-      extract, copied tree digest,
-      provenance. Hash mismatch refuses.
-      Occupied dir + different digest
-      refuses. Tests in `internal/fetch`.
+      extract into a staging dir on the
+      same filesystem, rename into place,
+      provenance last. A crash leaves no
+      half-tree at the store path. Hash
+      mismatch refuses. Occupied dir +
+      different digest refuses. Tests in
+      `internal/fetch`.
 - [ ] **Publication order.** One mutation
       lock per scope. Stage store bytes,
       register, write the lock, swap
@@ -173,15 +186,24 @@ fine.
 - [ ] **`gale lock` is lock-only.** One
       `index_commit`. Write the lock. No
       fetch. No `current` swap. Never
-      writes `gale.toml`. Tests in
+      writes `gale.toml`. Delete
+      `--refresh`. Unprovenanced refetch
+      is `fetch-adopt`. Tests in
       `cmd/gale`.
+- [ ] **Admission command.** Gale's own
+      extractor (`internal/download` +
+      the installer digest function) is
+      the only producer of `tree_digest`.
+      Records arch, codesign, `otool -L`
+      system-only, format, file map.
+      Refuses symlinks and hardlinks.
+      Lands before any index entry.
 - [ ] **Index the first ten.** Admission
-      recorded (arch, codesign, `otool -L`
-      system-only, tree digest, format,
-      file map). One PR per few
-      packages: `jq`, `ripgrep`, `fd`,
-      `just`, `gh`, `go`, `gofumpt`,
-      `golangci-lint`, `direnv`, `uv`.
+      recorded by that command. One PR
+      per few packages: `jq`, `ripgrep`,
+      `fd`, `just`, `gh`, `go`,
+      `gofumpt`, `golangci-lint`,
+      `direnv`, `uv`.
 - [ ] **`gale fetch-adopt` unused.** Plan
       all roots, print lock diff, require
       confirmation, refuse when frozen /
@@ -222,6 +244,11 @@ Not-in-index is an error.
       Remove `[bin]` overlays and per-host
       winners. Two packages shipping the
       same basename refuse the generation.
+- [ ] **Doctor is four checks.** PATH, lock
+      readable, generation matches lock
+      roots, tree digest matches. Farm /
+      deps-meta / legacy-lock novels go
+      with those packages.
 - [ ] **Every scope rebuilds only from the
       lock.** Global, project, `--host`.
       `install` always writes a lock.
@@ -243,6 +270,10 @@ Adopt already shipped at the cutover.
       Including Darwin fixup and patchelf.
 - [ ] **Delete GHCR bottle wiring.** Keep a
       generalized attestation verifier.
+      Delete `tar.zst` create/extract and
+      `tar.bz2` with it. Admitted formats
+      are `tar.gz`, `tar.xz`, `zip`,
+      `binary`.
 - [ ] **gale-recipes: strip the farm.**
       Remove promote / ledger / verify-build
       CI. Recipes become index TOML.
