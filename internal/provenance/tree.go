@@ -233,7 +233,12 @@ func nlinkOf(fi os.FileInfo) (uint64, error) {
 	if !ok {
 		return 0, fmt.Errorf("%w: missing stat_t", ErrForbiddenEntry)
 	}
-	return uint64(st.Nlink), nil
+	// Nlink is uint64 on linux and uint16 on darwin.
+	return asUint64(st.Nlink), nil
+}
+
+func asUint64[T ~uint16 | ~uint64](n T) uint64 {
+	return uint64(n)
 }
 
 func isGaleSidecar(rel string) bool {
