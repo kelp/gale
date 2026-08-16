@@ -173,7 +173,7 @@ func writeWithProgress(reader io.Reader, total int64, destPath, name string) err
 		start: time.Now(),
 		name:  name,
 	}
-	if _, err := io.Copy(f, io.TeeReader(reader, pw)); err != nil {
+	if _, err := io.Copy(f, io.TeeReader(limitCompressed(reader), pw)); err != nil {
 		f.Close()
 		os.Remove(destPath)
 		return fmt.Errorf("write destination file: %w", err)
@@ -527,7 +527,7 @@ func fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut s
 		defer af.Close()
 		sinks = append(sinks, af)
 	}
-	teed := io.TeeReader(resp.Body, io.MultiWriter(sinks...))
+	teed := io.TeeReader(limitCompressed(resp.Body), io.MultiWriter(sinks...))
 
 	zr, err := zstd.NewReader(teed)
 	if err != nil {
@@ -536,8 +536,8 @@ func fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut s
 	}
 	defer zr.Close()
 
-	tr := tar.NewReader(zr)
-	if err := extractTar(tr, destDir); err != nil {
+	b := newBudget()
+	if err := extractTar(tar.NewReader(b.reader(zr)), destDir, b, classBuildInput); err != nil {
 		_ = os.RemoveAll(destDir)
 		return "", fmt.Errorf("extract: %w", err)
 	}

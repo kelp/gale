@@ -49,7 +49,7 @@ main on its own.
       copied into the lock. Installer
       recomputes and checks. Tests in
       `internal/provenance`.
-- [ ] **Harden extract.** `ExtractZip`
+- [x] **Harden extract.** `ExtractZip`
       matches `extractTar`. Mask
       setuid/setgid. Cap entry count,
       compressed download size, and

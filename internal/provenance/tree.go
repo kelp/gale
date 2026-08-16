@@ -35,9 +35,8 @@ var ErrForbiddenEntry = errors.New("forbidden tree entry")
 // does not follow symlinks inside the tree; those refuse. Input
 // must be quiescent — this is not a hostile same-UID walker.
 //
-// The digest binds on-disk Perm(). writeFile does not fchmod, so
-// admission and install can disagree across umasks until extract
-// hardening chmods. That PR is a prerequisite for any producer.
+// The digest binds on-disk Perm(). Extract fchmods after write so
+// umask cannot desync admission and install.
 //
 // ctx is honored during each file copy, not only between entries.
 func DigestTree(ctx context.Context, dir string) (string, error) {
@@ -241,6 +240,8 @@ func asUint64[T ~uint16 | ~uint64](n T) uint64 {
 	return uint64(n)
 }
 
+// isGaleSidecar matches download.isGaleSidecar. download stays a
+// leaf, so the two-line predicate is duplicated on purpose.
 func isGaleSidecar(rel string) bool {
 	base := path.Base(rel)
 	return strings.HasPrefix(base, ".gale-") && strings.HasSuffix(base, ".toml")

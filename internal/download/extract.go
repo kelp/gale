@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/bzip2"
 	"compress/gzip"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -16,132 +17,233 @@ import (
 	"github.com/ulikunitz/xz"
 )
 
+// Compiled extract caps. Tests swap the package-level copies.
+const (
+	defaultMaxArchiveEntries    = 1_000_000
+	defaultMaxDecompressedBytes = 8 << 30
+	defaultMaxCompressedBytes   = 2 << 30
+)
+
+var (
+	maxArchiveEntries    = defaultMaxArchiveEntries
+	maxDecompressedBytes = int64(defaultMaxDecompressedBytes)
+	maxCompressedBytes   = int64(defaultMaxCompressedBytes)
+)
+
+// ErrExtractLimit reports an archive or download that exceeded a
+// compiled size or entry cap.
+var ErrExtractLimit = errors.New("extract limit exceeded")
+
+// extractClass selects link and sidecar policy. Build inputs keep
+// today's contract; store artifacts refuse both.
+type extractClass int
+
+const (
+	classBuildInput extractClass = iota
+	classArtifact
+)
+
+type extractBudget struct {
+	entries int
+	remain  int64
+}
+
+func newBudget() *extractBudget {
+	return &extractBudget{remain: maxDecompressedBytes}
+}
+
+func (b *extractBudget) addEntry() error {
+	b.entries++
+	if b.entries > maxArchiveEntries {
+		return fmt.Errorf("%w: too many entries", ErrExtractLimit)
+	}
+	return nil
+}
+
+func (b *extractBudget) reader(r io.Reader) io.Reader {
+	return &capReader{r: r, remain: &b.remain, kind: "decompressed size"}
+}
+
+// capReader counts bytes against a shared remain. A read that
+// would pass the cap returns ErrExtractLimit instead of EOF.
+type capReader struct {
+	r      io.Reader
+	remain *int64
+	kind   string
+	hit    bool
+}
+
+func (c *capReader) Read(p []byte) (int, error) {
+	if c.hit {
+		return 0, fmt.Errorf("%w: %s", ErrExtractLimit, c.kind)
+	}
+	if *c.remain == 0 {
+		n, err := c.r.Read(p[:min(1, len(p))])
+		if n > 0 {
+			c.hit = true
+			return 0, fmt.Errorf("%w: %s", ErrExtractLimit, c.kind)
+		}
+		return 0, err
+	}
+	if int64(len(p)) > *c.remain {
+		p = p[:*c.remain]
+	}
+	n, err := c.r.Read(p)
+	*c.remain -= int64(n)
+	return n, err
+}
+
+func limitCompressed(r io.Reader) io.Reader {
+	remain := maxCompressedBytes
+	return &capReader{r: r, remain: &remain, kind: "compressed size"}
+}
+
 // ExtractTarGz extracts a tar.gz file to destDir, preserving
 // relative paths and creating directories as needed.
 func ExtractTarGz(archivePath, destDir string) error {
+	return extractTarFile(archivePath, destDir, classBuildInput, openGzip)
+}
+
+// ExtractTarZstd extracts a tar.zst file to destDir, preserving
+// relative paths and creating directories as needed.
+func ExtractTarZstd(archivePath, destDir string) error {
+	return extractTarFile(archivePath, destDir, classBuildInput, openZstd)
+}
+
+// ExtractTarXz extracts a tar.xz file to destDir, preserving
+// relative paths and creating directories as needed.
+func ExtractTarXz(archivePath, destDir string) error {
+	return extractTarFile(archivePath, destDir, classBuildInput, openXz)
+}
+
+// ExtractTarBz2 extracts a tar.bz2 file to destDir, preserving
+// relative paths and creating directories as needed.
+func ExtractTarBz2(archivePath, destDir string) error {
+	return extractTarFile(archivePath, destDir, classBuildInput, openBz2)
+}
+
+type decompressor func(io.Reader) (io.Reader, func(), error)
+
+func openGzip(r io.Reader) (io.Reader, func(), error) {
+	gr, err := gzip.NewReader(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create gzip reader: %w", err)
+	}
+	return gr, func() { gr.Close() }, nil
+}
+
+func openZstd(r io.Reader) (io.Reader, func(), error) {
+	zr, err := zstd.NewReader(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create zstd reader: %w", err)
+	}
+	return zr, zr.Close, nil
+}
+
+func openXz(r io.Reader) (io.Reader, func(), error) {
+	xr, err := xz.NewReader(r)
+	if err != nil {
+		return nil, nil, fmt.Errorf("create xz reader: %w", err)
+	}
+	return xr, func() {}, nil
+}
+
+func openBz2(r io.Reader) (io.Reader, func(), error) {
+	return bzip2.NewReader(r), func() {}, nil
+}
+
+func extractTarFile(archivePath, destDir string, class extractClass, open decompressor) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
 	}
 	defer f.Close()
 
-	gr, err := gzip.NewReader(f)
+	dr, closer, err := open(f)
 	if err != nil {
-		return fmt.Errorf("create gzip reader: %w", err)
-	}
-	defer gr.Close()
-
-	tr := tar.NewReader(gr)
-	if err := extractTar(tr, destDir); err != nil {
 		return err
 	}
+	defer closer()
 
-	return nil
+	b := newBudget()
+	return extractTar(tar.NewReader(b.reader(dr)), destDir, b, class)
 }
 
 // ExtractZip extracts a zip file to destDir, preserving
 // relative paths and creating directories as needed.
 func ExtractZip(archivePath, destDir string) error {
+	return extractZip(archivePath, destDir, classBuildInput)
+}
+
+func extractZip(archivePath, destDir string, class extractClass) error {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {
 		return fmt.Errorf("open zip archive: %w", err)
 	}
 	defer r.Close()
 
+	b := newBudget()
 	for _, zf := range r.File {
-		target := filepath.Join(destDir, zf.Name) //nolint:gosec // G305 — path validated below
-		cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
-
-		if !strings.HasPrefix(filepath.Clean(target), cleanDest) {
-			return fmt.Errorf("illegal path in archive: %s", zf.Name)
+		if err := b.addEntry(); err != nil {
+			return err
 		}
-
-		if zf.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return fmt.Errorf("create directory %s: %w",
-					zf.Name, err)
-			}
-			continue
+		if err := extractZipFile(destDir, zf, b, class); err != nil {
+			return err
 		}
-
-		if err := os.MkdirAll(
-			filepath.Dir(target), 0o755,
-		); err != nil {
-			return fmt.Errorf(
-				"create parent directory for %s: %w",
-				zf.Name, err,
-			)
-		}
-
-		rc, err := zf.Open()
-		if err != nil {
-			return fmt.Errorf("open zip entry %s: %w",
-				zf.Name, err)
-		}
-
-		if err := writeFile(target, rc, zf.Mode()); err != nil {
-			rc.Close()
-			return fmt.Errorf("extract %s: %w", zf.Name, err)
-		}
-		rc.Close()
 	}
-
 	return nil
 }
 
-// ExtractTarZstd extracts a tar.zst file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarZstd(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
+func extractZipFile(destDir string, zf *zip.File, b *extractBudget, class extractClass) error {
+	target, err := archiveTarget(destDir, zf.Name)
 	if err != nil {
-		return fmt.Errorf("open archive: %w", err)
-	}
-	defer f.Close()
-
-	zr, err := zstd.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("create zstd reader: %w", err)
-	}
-	defer zr.Close()
-
-	tr := tar.NewReader(zr)
-	if err := extractTar(tr, destDir); err != nil {
 		return err
 	}
+	if err := ensureNoSymlinkParent(destDir, target); err != nil {
+		return fmt.Errorf("%w: %s", err, zf.Name)
+	}
+	if class == classArtifact && isGaleSidecar(zf.Name) {
+		return forbiddenEntry(zf.Name, "gale sidecar")
+	}
 
+	mode := zf.Mode()
+	if mode&os.ModeSymlink != 0 || (!zf.FileInfo().IsDir() && !mode.IsRegular()) {
+		return fmt.Errorf("unsupported zip entry type for %s", zf.Name)
+	}
+	if zf.FileInfo().IsDir() {
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return fmt.Errorf("create directory %s: %w", zf.Name, err)
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create parent directory for %s: %w", zf.Name, err)
+	}
+	rc, err := zf.Open()
+	if err != nil {
+		return fmt.Errorf("open zip entry %s: %w", zf.Name, err)
+	}
+	defer rc.Close()
+	if err := writeFile(target, b.reader(rc), mode); err != nil {
+		return fmt.Errorf("extract %s: %w", zf.Name, err)
+	}
 	return nil
 }
 
-// ExtractTarXz extracts a tar.xz file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarXz(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return fmt.Errorf("open archive: %w", err)
+// ExtractArtifact extracts an admitted store artifact. It refuses
+// symlinks, hardlinks, and any .gale-*.toml sidecar. format is
+// tar.gz, tar.xz, or zip.
+func ExtractArtifact(archivePath, destDir, format string) error {
+	switch format {
+	case "tar.gz":
+		return extractTarFile(archivePath, destDir, classArtifact, openGzip)
+	case "tar.xz":
+		return extractTarFile(archivePath, destDir, classArtifact, openXz)
+	case "zip":
+		return extractZip(archivePath, destDir, classArtifact)
+	default:
+		return fmt.Errorf("unsupported artifact format: %s", format)
 	}
-	defer f.Close()
-
-	xr, err := xz.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("create xz reader: %w", err)
-	}
-
-	tr := tar.NewReader(xr)
-	return extractTar(tr, destDir)
-}
-
-// ExtractTarBz2 extracts a tar.bz2 file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarBz2(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return fmt.Errorf("open archive: %w", err)
-	}
-	defer f.Close()
-
-	br := bzip2.NewReader(f)
-	tr := tar.NewReader(br)
-	return extractTar(tr, destDir)
 }
 
 // ExtractSource extracts a source archive to destDir,
@@ -202,131 +304,136 @@ func ensureNoSymlinkParent(destDir, target string) error {
 	return nil
 }
 
+func archiveTarget(destDir, name string) (string, error) {
+	target := filepath.Join(destDir, name) //nolint:gosec // G305 — path validated below
+	cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
+	cleanTarget := filepath.Clean(target)
+	if cleanTarget != filepath.Clean(destDir) && !strings.HasPrefix(cleanTarget, cleanDest) {
+		return "", fmt.Errorf("illegal path in archive: %s", name)
+	}
+	return target, nil
+}
+
 // extractTar reads entries from a tar reader and extracts them
 // to destDir. Validates paths to prevent directory traversal.
-func extractTar(tr *tar.Reader, destDir string) error {
+func extractTar(tr *tar.Reader, destDir string, b *extractBudget, class extractClass) error {
 	cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
-
 	for {
 		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
+		if errors.Is(err, io.EOF) {
+			return nil
 		}
 		if err != nil {
 			return fmt.Errorf("read tar entry: %w", err)
 		}
-
-		target := filepath.Join(destDir, hdr.Name) //nolint:gosec // G305 — path validated below
-
-		cleanTarget := filepath.Clean(target)
-		if cleanTarget != filepath.Clean(destDir) && !strings.HasPrefix(cleanTarget, cleanDest) {
-			return fmt.Errorf("illegal path in archive: %s", hdr.Name)
+		if err := b.addEntry(); err != nil {
+			return err
 		}
-
-		// Guard every entry against traversal through a symlink
-		// planted earlier in the same archive. extractTar permits
-		// absolute symlink entries to be created verbatim (legitimate
-		// source tarballs ship them), so a later entry whose path
-		// crosses such a symlink could otherwise land outside destDir.
-		// Rejecting any path with a symlinked parent component closes
-		// that escape while leaving dangling symlinks intact.
-		if err := ensureNoSymlinkParent(destDir, target); err != nil {
-			return fmt.Errorf("%w: %s", err, hdr.Name)
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return fmt.Errorf("create directory %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755,
-			); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err,
-				)
-			}
-			if err := writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
-				return fmt.Errorf("extract %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeSymlink:
-			// For relative symlinks, validate that the resolved
-			// target stays within destDir to prevent traversal.
-			// Absolute symlinks pointing outside destDir are
-			// written as-is (potentially dangling). They cannot be
-			// used to escape because no later write follows a
-			// symlinked parent component (see ensureNoSymlinkParent)
-			// and file writes use O_NOFOLLOW.
-			if !filepath.IsAbs(hdr.Linkname) {
-				resolved := filepath.Join(filepath.Dir(target), hdr.Linkname) //nolint:gosec // G305 — validated below
-				resolved = filepath.Clean(resolved)
-				if !strings.HasPrefix(resolved, cleanDest) {
-					return fmt.Errorf("illegal symlink target in archive: %s -> %s",
-						hdr.Name, hdr.Linkname)
-				}
-			}
-
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755,
-			); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err,
-				)
-			}
-			os.Remove(target)
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return fmt.Errorf("create symlink %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeLink:
-			linkTarget := filepath.Join(destDir, hdr.Linkname) //nolint:gosec // G305 — path validated below
-			if !strings.HasPrefix(filepath.Clean(linkTarget), cleanDest) {
-				return fmt.Errorf("illegal hard link target in archive: %s", hdr.Linkname)
-			}
-			// Reject a hard-link source that reaches through a
-			// symlinked parent — os.Link would otherwise resolve it
-			// to a file outside destDir and pull it into the store.
-			if err := ensureNoSymlinkParent(destDir, linkTarget); err != nil {
-				return fmt.Errorf("%w: %s", err, hdr.Linkname)
-			}
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755,
-			); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err,
-				)
-			}
-			os.Remove(target)
-			if err := os.Link(linkTarget, target); err != nil {
-				return fmt.Errorf("create hard link %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeXGlobalHeader, tar.TypeXHeader:
-			// PAX headers — skip silently.
-			continue
-		default:
-			return fmt.Errorf("unsupported tar entry type %d for %s",
-				hdr.Typeflag, hdr.Name)
+		if err := extractTarHeader(tr, destDir, cleanDest, hdr, class); err != nil {
+			return err
 		}
 	}
+}
 
+func extractTarHeader(tr *tar.Reader, destDir, cleanDest string, hdr *tar.Header, class extractClass) error {
+	if hdr.Typeflag == tar.TypeXGlobalHeader || hdr.Typeflag == tar.TypeXHeader {
+		return nil
+	}
+	target, err := archiveTarget(destDir, hdr.Name)
+	if err != nil {
+		return err
+	}
+	if err := ensureNoSymlinkParent(destDir, target); err != nil {
+		return fmt.Errorf("%w: %s", err, hdr.Name)
+	}
+	if class == classArtifact && isGaleSidecar(hdr.Name) {
+		return forbiddenEntry(hdr.Name, "gale sidecar")
+	}
+	switch hdr.Typeflag {
+	case tar.TypeDir:
+		if err := os.MkdirAll(target, 0o755); err != nil {
+			return fmt.Errorf("create directory %s: %w", hdr.Name, err)
+		}
+		return nil
+	case tar.TypeReg:
+		return extractTarReg(tr, target, hdr)
+	case tar.TypeSymlink:
+		if class == classArtifact {
+			return forbiddenEntry(hdr.Name, "symlink")
+		}
+		return extractTarSymlink(cleanDest, target, hdr)
+	case tar.TypeLink:
+		if class == classArtifact {
+			return forbiddenEntry(hdr.Name, "hardlink")
+		}
+		return extractTarHardlink(destDir, cleanDest, target, hdr)
+	default:
+		return fmt.Errorf("unsupported tar entry type %d for %s",
+			hdr.Typeflag, hdr.Name)
+	}
+}
+
+func extractTarReg(tr *tar.Reader, target string, hdr *tar.Header) error {
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create parent directory for %s: %w", hdr.Name, err)
+	}
+	if err := writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
+		return fmt.Errorf("extract %s: %w", hdr.Name, err)
+	}
+	return nil
+}
+
+func extractTarSymlink(cleanDest, target string, hdr *tar.Header) error {
+	// Relative symlink targets must stay inside destDir.
+	// Absolute targets are written as-is (often dangling).
+	// Later writes cannot follow a symlinked parent
+	// (ensureNoSymlinkParent) and file writes use O_NOFOLLOW.
+	if !filepath.IsAbs(hdr.Linkname) {
+		resolved := filepath.Join(filepath.Dir(target), hdr.Linkname) //nolint:gosec // G305 — validated below
+		resolved = filepath.Clean(resolved)
+		if !strings.HasPrefix(resolved, cleanDest) {
+			return fmt.Errorf("illegal symlink target in archive: %s -> %s",
+				hdr.Name, hdr.Linkname)
+		}
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create parent directory for %s: %w", hdr.Name, err)
+	}
+	os.Remove(target)
+	if err := os.Symlink(hdr.Linkname, target); err != nil {
+		return fmt.Errorf("create symlink %s: %w", hdr.Name, err)
+	}
+	return nil
+}
+
+func extractTarHardlink(destDir, cleanDest, target string, hdr *tar.Header) error {
+	linkTarget := filepath.Join(destDir, hdr.Linkname) //nolint:gosec // G305 — path validated below
+	if !strings.HasPrefix(filepath.Clean(linkTarget), cleanDest) {
+		return fmt.Errorf("illegal hard link target in archive: %s", hdr.Linkname)
+	}
+	if err := ensureNoSymlinkParent(destDir, linkTarget); err != nil {
+		return fmt.Errorf("%w: %s", err, hdr.Linkname)
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+		return fmt.Errorf("create parent directory for %s: %w", hdr.Name, err)
+	}
+	os.Remove(target)
+	if err := os.Link(linkTarget, target); err != nil {
+		return fmt.Errorf("create hard link %s: %w", hdr.Name, err)
+	}
 	return nil
 }
 
 // writeFile creates a file at path, copies content from r,
-// and sets the given file mode.
+// and sets the given file mode. Special bits (setuid/setgid/
+// sticky) are dropped. fchmod makes Perm() umask-independent.
 func writeFile(path string, r io.Reader, mode os.FileMode) error {
+	perm := mode.Perm()
 	// O_NOFOLLOW rejects a final path component that is itself a
 	// symlink, so a regular-file entry sharing a name with a
 	// previously extracted symlink cannot follow it and clobber a
 	// target outside destDir.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, perm)
 	if err != nil {
 		return err
 	}
@@ -336,6 +443,21 @@ func writeFile(path string, r io.Reader, mode os.FileMode) error {
 		os.Remove(path)
 		return err
 	}
-
+	if err := f.Chmod(perm); err != nil {
+		f.Close()
+		os.Remove(path)
+		return err
+	}
 	return f.Close()
+}
+
+// isGaleSidecar matches provenance.isGaleSidecar. download stays
+// a leaf, so the two-line predicate is duplicated on purpose.
+func isGaleSidecar(rel string) bool {
+	base := filepath.Base(rel)
+	return strings.HasPrefix(base, ".gale-") && strings.HasSuffix(base, ".toml")
+}
+
+func forbiddenEntry(name, kind string) error {
+	return fmt.Errorf("extract %s: forbidden archive entry: %s", name, kind)
 }
