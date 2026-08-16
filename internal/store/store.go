@@ -50,6 +50,9 @@ func isTransientStoreEntry(name string) bool {
 // It is idempotent; calling it for an existing version succeeds.
 // Returns the full path to the version directory.
 func (s *Store) Create(name, version string) (string, error) {
+	if isReservedName(name) {
+		return "", fmt.Errorf("create store directory: %w", ErrReservedName)
+	}
 	dir := filepath.Join(s.Root, name, version)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("create store directory: %w", err)
@@ -90,6 +93,9 @@ func (s *Store) StorePath(name, version string) (string, bool) {
 // which raced with a concurrent `gale gc` removing a sibling
 // mid-chain (M2 in TODO.md).
 func (s *Store) resolveVersion(name, version string) (string, bool) {
+	if isReservedName(name) {
+		return "", false
+	}
 	nameDir := filepath.Join(s.Root, name)
 	entries, err := os.ReadDir(nameDir)
 	if err != nil {
@@ -106,6 +112,9 @@ func (s *Store) resolveVersion(name, version string) (string, bool) {
 // shared by internal/generation and cmd/gale — do not duplicate
 // the resolution rules elsewhere.
 func (s *Store) ResolveDir(name, version string) string {
+	if isReservedName(name) {
+		return ""
+	}
 	resolved, _ := s.resolveVersion(name, version)
 	return filepath.Join(s.Root, name, resolved)
 }
@@ -229,8 +238,9 @@ func HasNumericRevisionSuffix(version string) bool {
 var ErrNotCanonical = errors.New("identity is not canonical")
 
 // CheckIdentity rejects an identity that is not spelled
-// name@<version>-<revision>, and that does not address exactly one
-// store directory.
+// name@<version>-<revision>, that does not address exactly one
+// store directory, or that uses the reserved fetch namespace
+// as a package name.
 //
 // It lives here because that is what the rule is about: every caller
 // validating an identity is protecting a join onto the store root,
@@ -245,6 +255,9 @@ var ErrNotCanonical = errors.New("identity is not canonical")
 // named "../../outside" would otherwise resolve and be read from
 // anywhere the process can reach.
 func CheckIdentity(name, version string) error {
+	if isReservedName(name) {
+		return fmt.Errorf("%w: %q", ErrReservedName, name)
+	}
 	if strings.Contains(name, "@") {
 		return fmt.Errorf("%w: name %q contains @", ErrNotCanonical, name)
 	}
@@ -335,7 +348,10 @@ func (s *Store) List() ([]InstalledPackage, error) {
 
 	var pkgs []InstalledPackage
 	for _, nameEntry := range nameEntries {
-		if !nameEntry.IsDir() {
+		// fetch/ is a namespace, not a package. gc's
+		// removeUnreferencedVersions deletes every List
+		// entry that no config references.
+		if !nameEntry.IsDir() || isReservedName(nameEntry.Name()) {
 			continue
 		}
 		versionEntries, err := os.ReadDir(
@@ -382,7 +398,7 @@ func (s *Store) SweepTransient(maxAge time.Duration, dry bool) []string {
 	cutoff := time.Now().Add(-maxAge)
 	var swept []string
 	for _, nameEntry := range nameEntries {
-		if !nameEntry.IsDir() {
+		if !nameEntry.IsDir() || isReservedName(nameEntry.Name()) {
 			continue
 		}
 		nameDir := filepath.Join(s.Root, nameEntry.Name())
@@ -426,7 +442,7 @@ func (s *Store) AnyLockHeld() bool {
 		return false
 	}
 	for _, nameEntry := range nameEntries {
-		if !nameEntry.IsDir() {
+		if !nameEntry.IsDir() || isReservedName(nameEntry.Name()) {
 			continue
 		}
 		nameDir := filepath.Join(s.Root, nameEntry.Name())
@@ -507,6 +523,10 @@ func (s *Store) Remove(name, version string) error {
 func (s *Store) RemoveWithin(
 	name, version string, fn func(dir string, drop func() error) error,
 ) error {
+	if isReservedName(name) {
+		return fmt.Errorf("remove %s@%s: %w",
+			name, version, ErrNotInstalled)
+	}
 	dir := filepath.Join(s.Root, name, version)
 	if _, err := os.Stat(dir); err != nil {
 		resolved, ok := s.resolveVersion(name, version)
