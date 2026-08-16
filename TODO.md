@@ -40,7 +40,7 @@ main on its own.
       scopes retain the same `name@version`
       with different locked artifacts.
       Tests in `internal/store`.
-- [ ] **Tree digest.** Sorted `path + mode
+- [x] **Tree digest.** Sorted `path + mode
       + sha256` of regular files. Exclude
       `.gale-*.toml`. Admission **refuses**
       artifacts with symlinks or

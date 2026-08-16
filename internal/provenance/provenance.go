@@ -6,6 +6,8 @@
 // against, hash-free, and is exchanged between build and installer.
 // Provenance records what was verified at commit time, which needs
 // hashes, the install method, the platform, and the graph digest.
+// DigestTree is the fetch bind: a sorted regular-file digest of one
+// store directory, later copied into the lock.
 //
 // Provenance is all-or-nothing. The presence of the file means the
 // record is complete and trustworthy under its contract, so an
