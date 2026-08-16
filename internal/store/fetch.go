@@ -23,6 +23,12 @@ var ErrReservedName = errors.New("name is reserved")
 const (
 	sha256HexLen = 64
 	sha12Len     = 12
+	// reservedResolveSentinel is the extra path component
+	// ResolveDir appends for a reserved name. The literal
+	// <root>/fetch/<pkg> join exists (the namespace), so
+	// callers that Stat or filepath.Join the result need a
+	// joinable path that is not that directory.
+	reservedResolveSentinel = ".reserved"
 )
 
 func isReservedName(name string) bool {

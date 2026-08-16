@@ -108,12 +108,16 @@ func (s *Store) resolveVersion(name, version string) (string, bool) {
 // resolves to, applying the resolution order documented on
 // resolveVersion. When nothing on disk matches, the literal
 // <root>/<name>/<version> join is returned so callers can Stat
-// it and report the missing path. This is the canonical resolver
-// shared by internal/generation and cmd/gale — do not duplicate
-// the resolution rules elsewhere.
+// it and report the missing path. The result is always a
+// joinable path — never "" (gh#263). A reserved fetch name
+// cannot use the literal join: <root>/fetch/<pkg> exists as
+// the namespace, so the path is one that Stat reports missing.
+// This is the canonical resolver shared by internal/generation
+// and cmd/gale — do not duplicate the resolution rules
+// elsewhere.
 func (s *Store) ResolveDir(name, version string) string {
 	if isReservedName(name) {
-		return ""
+		return filepath.Join(s.Root, name, version, reservedResolveSentinel)
 	}
 	resolved, _ := s.resolveVersion(name, version)
 	return filepath.Join(s.Root, name, resolved)

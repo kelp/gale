@@ -269,8 +269,23 @@ func TestReservedNameRejectedOnSourceAPIs(t *testing.T) {
 	if path, ok := s.StorePath(FetchNamespace, "jq"); ok {
 		t.Errorf("StorePath(fetch, jq) = %q, true; want not found", path)
 	}
-	if got := s.ResolveDir(FetchNamespace, "jq"); got != "" {
-		t.Errorf("ResolveDir(fetch, jq) = %q, want empty", got)
+	got := s.ResolveDir(FetchNamespace, "jq")
+	if got == "" {
+		t.Fatal("ResolveDir returned empty string")
+	}
+	nsDir := filepath.Join(root, FetchNamespace, "jq")
+	if got == nsDir {
+		t.Errorf("ResolveDir returned the namespace package dir %q", got)
+	}
+	if _, err := os.Stat(got); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ResolveDir path %q exists: %v", got, err)
+	}
+	if bin := filepath.Join(got, "bin"); !filepath.IsAbs(bin) {
+		t.Errorf("Join(ResolveDir, bin) = %q is relative", bin)
+	}
+	rel, err := filepath.Rel(root, got)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		t.Errorf("ResolveDir = %q is not under store root %q", got, root)
 	}
 	if err := s.Remove(FetchNamespace, "jq"); !errors.Is(err, ErrNotInstalled) {
 		t.Errorf("Remove error = %v, want ErrNotInstalled", err)
