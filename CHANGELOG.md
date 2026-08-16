@@ -53,6 +53,17 @@
 
 ### Changed
 
+- **Extract hardens archive and download limits.** Setuid,
+  setgid, and sticky bits are masked; extracted file modes
+  survive umask via fchmod. Downloads refuse more than 2 GiB
+  compressed; extract refuses more than 1e6 entries or 8 GiB
+  decompressed (`ErrExtractLimit`). Zip entries that are not a
+  directory or regular file are refused, including symlink
+  entries that used to materialize as files. Source and bottle
+  extract still allow in-tree links and `.gale-deps.toml`.
+  `ExtractArtifact` is the unused store-artifact path that
+  refuses both.
+
 - **`gale gc` no longer sweeps the store versions that only the
   generations above `current` reference (#247).**
   `cleanOldGenerations` has always kept those generation
