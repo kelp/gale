@@ -57,7 +57,7 @@ main on its own.
       `.gale-*.toml`. Reject any symlink
       or hardlink. Tests in
       `internal/download`.
-- [ ] **HTTP fetch policy.** Per-host
+- [x] **HTTP fetch policy.** Per-host
       redirect allowlist (GitHub →
       `objects.githubusercontent.com`). No
       `GALE_GITHUB_TOKEN` on artifact

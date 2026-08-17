@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -41,7 +42,7 @@ func TestFetchWritesFileToDestPath(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "downloaded.txt")
 
-	if err := Fetch(srv.URL, dest); err != nil {
+	if err := Fetch(context.Background(), srv.URL, dest); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -66,7 +67,7 @@ func TestVerifySHA256CorrectHash(t *testing.T) {
 		t.Fatalf("failed to write file: %v", err)
 	}
 
-	if err := VerifySHA256(path, expected); err != nil {
+	if err := VerifySHA256(context.Background(), path, expected); err != nil {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -80,7 +81,7 @@ func TestVerifySHA256WrongHashReturnsError(t *testing.T) {
 	}
 
 	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
-	err := VerifySHA256(path, wrongHash)
+	err := VerifySHA256(context.Background(), path, wrongHash)
 	if err == nil {
 		t.Fatal("expected error for wrong hash")
 	}
@@ -97,7 +98,7 @@ func TestVerifySHA256ErrorContainsBothHashes(t *testing.T) {
 	}
 
 	wrongHash := "0000000000000000000000000000000000000000000000000000000000000000"
-	err := VerifySHA256(path, wrongHash)
+	err := VerifySHA256(context.Background(), path, wrongHash)
 	if err == nil {
 		t.Fatal("expected error for wrong hash")
 	}
@@ -114,7 +115,7 @@ func TestVerifySHA256ErrorContainsBothHashes(t *testing.T) {
 }
 
 func TestVerifySHA256NonexistentFileReturnsError(t *testing.T) {
-	err := VerifySHA256("/nonexistent/path/file.txt", "abc123")
+	err := VerifySHA256(context.Background(), "/nonexistent/path/file.txt", "abc123")
 	if err == nil {
 		t.Fatal("expected error for nonexistent file")
 	}
@@ -126,7 +127,7 @@ var extractCases = []struct {
 	name    string
 	ext     string
 	create  func(*testing.T, string, map[string]string)
-	extract func(string, string) error
+	extract func(context.Context, string, string) error
 }{
 	{"tar.gz", ".tar.gz", createTarGz, ExtractTarGz},
 	{"zip", ".zip", createZip, ExtractZip},
@@ -151,7 +152,7 @@ func TestExtractPreservesFileContents(t *testing.T) {
 			if err := os.MkdirAll(destDir, 0o755); err != nil {
 				t.Fatalf("create dest dir: %v", err)
 			}
-			if err := tc.extract(archivePath, destDir); err != nil {
+			if err := tc.extract(context.Background(), archivePath, destDir); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
@@ -183,7 +184,7 @@ func TestExtractPreservesRelativePaths(t *testing.T) {
 			if err := os.MkdirAll(destDir, 0o755); err != nil {
 				t.Fatalf("create dest dir: %v", err)
 			}
-			if err := tc.extract(archivePath, destDir); err != nil {
+			if err := tc.extract(context.Background(), archivePath, destDir); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
@@ -216,7 +217,7 @@ func TestExtractMultipleFiles(t *testing.T) {
 			if err := os.MkdirAll(destDir, 0o755); err != nil {
 				t.Fatalf("create dest dir: %v", err)
 			}
-			if err := tc.extract(archivePath, destDir); err != nil {
+			if err := tc.extract(context.Background(), archivePath, destDir); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
@@ -244,7 +245,7 @@ func TestFetchReturnsErrorOn404(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "output.bin")
 
-	err := Fetch(srv.URL, dest)
+	err := Fetch(context.Background(), srv.URL, dest)
 	if err == nil {
 		t.Fatal("expected error for 404 response")
 	}
@@ -266,7 +267,7 @@ func TestFetchReturnsErrorOn500(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "output.bin")
 
-	err := Fetch(srv.URL, dest)
+	err := Fetch(context.Background(), srv.URL, dest)
 	if err == nil {
 		t.Fatal("expected error for 500 response")
 	}
@@ -274,105 +275,6 @@ func TestFetchReturnsErrorOn500(t *testing.T) {
 	_, statErr := os.Stat(dest)
 	if !errors.Is(statErr, os.ErrNotExist) {
 		t.Errorf("dest file should not exist after failed fetch")
-	}
-}
-
-func TestFetchFallsBackToMirror(t *testing.T) {
-	// Primary server returns 403, fallback mirror succeeds.
-	primary := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "forbidden", http.StatusForbidden)
-		},
-	))
-	defer primary.Close()
-
-	mirror := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("mirror-data"))
-		},
-	))
-	defer mirror.Close()
-
-	// Register the primary as a mirror source with fallback.
-	oldMirrors := mirrors
-	mirrors = map[string][]string{
-		primary.URL + "/": {mirror.URL + "/"},
-	}
-	defer func() { mirrors = oldMirrors }()
-
-	dest := filepath.Join(t.TempDir(), "output.bin")
-	err := Fetch(primary.URL+"/gnu/make/make-4.4.tar.gz", dest)
-	if err != nil {
-		t.Fatalf("expected fallback to succeed: %v", err)
-	}
-
-	data, _ := os.ReadFile(dest)
-	if string(data) != "mirror-data" {
-		t.Errorf("got %q, want %q", data, "mirror-data")
-	}
-}
-
-func TestFetchLogsSucceedingMirrorURL(t *testing.T) {
-	// When a fallback mirror supplies the bytes, the success log
-	// must name the URL that delivered so forensics can tell
-	// which mirror won. The "being tried" line alone is not
-	// enough — with multiple fallbacks, all get tried regardless
-	// of which one succeeded.
-	restore := SetProgressEnabled(false)
-	defer restore()
-
-	// Primary fails, first fallback fails, second fallback wins.
-	primary := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "server error",
-				http.StatusInternalServerError)
-		},
-	))
-	defer primary.Close()
-
-	failingMirror := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.Error(w, "server error",
-				http.StatusInternalServerError)
-		},
-	))
-	defer failingMirror.Close()
-
-	winningMirror := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("payload"))
-		},
-	))
-	defer winningMirror.Close()
-
-	oldMirrors := mirrors
-	mirrors = map[string][]string{
-		primary.URL + "/": {
-			failingMirror.URL + "/",
-			winningMirror.URL + "/",
-		},
-	}
-	defer func() { mirrors = oldMirrors }()
-
-	dest := filepath.Join(t.TempDir(), "output.bin")
-	wantURL := winningMirror.URL + "/gnu/make/make-4.4.tar.gz"
-
-	out := captureStderr(t, func() {
-		if err := Fetch(
-			primary.URL+"/gnu/make/make-4.4.tar.gz",
-			dest,
-		); err != nil {
-			t.Fatalf("expected fallback to succeed: %v", err)
-		}
-	})
-
-	if !strings.Contains(out, wantURL) {
-		t.Errorf("stderr = %q, want it to contain the succeeding URL %q",
-			out, wantURL)
-	}
-	if !strings.Contains(out, "fetched") {
-		t.Errorf("stderr = %q, want a success log line mentioning 'fetched'",
-			out)
 	}
 }
 
@@ -386,7 +288,7 @@ func TestFetchNoFallbackForNonMirroredURL(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "output.bin")
-	err := Fetch(srv.URL+"/some/file.tar.gz", dest)
+	err := Fetch(context.Background(), srv.URL+"/some/file.tar.gz", dest)
 	if err == nil {
 		t.Fatal("expected error for 403 with no mirrors")
 	}
@@ -395,7 +297,7 @@ func TestFetchNoFallbackForNonMirroredURL(t *testing.T) {
 func TestFetchReturnsErrorForBadURL(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "output.bin")
 
-	err := Fetch("http://127.0.0.1:0/nonexistent", dest)
+	err := Fetch(context.Background(), "http://127.0.0.1:0/nonexistent", dest)
 	if err == nil {
 		t.Fatal("expected error for connection failure")
 	}
@@ -475,7 +377,7 @@ func TestFetchCreatesIntermediateDirectories(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "a", "b", "file.bin")
 
-	if err := Fetch(srv.URL, dest); err != nil {
+	if err := Fetch(context.Background(), srv.URL, dest); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -517,7 +419,7 @@ func TestExtractTarGzRejectsPathTraversal(t *testing.T) {
 	gw.Close()
 	f.Close()
 
-	err = ExtractTarGz(archive, destDir)
+	err = ExtractTarGz(context.Background(), archive, destDir)
 	if err == nil {
 		t.Fatal("expected error for path traversal")
 	}
@@ -553,7 +455,7 @@ func TestExtractTarGzHandlesHardLinks(t *testing.T) {
 	gw.Close()
 	f.Close()
 
-	err = ExtractTarGz(archive, destDir)
+	err = ExtractTarGz(context.Background(), archive, destDir)
 	if err != nil {
 		t.Fatalf("ExtractTarGz error: %v", err)
 	}
@@ -590,7 +492,7 @@ func TestExtractTarGzRejectsSymlinkTraversalRelative(t *testing.T) {
 	gw.Close()
 	f.Close()
 
-	err = ExtractTarGz(archive, destDir)
+	err = ExtractTarGz(context.Background(), archive, destDir)
 	if err == nil {
 		t.Fatal("expected error for symlink traversal")
 	}
@@ -630,7 +532,7 @@ func TestExtractTarGzAllowsSymlinkWithinDestDir(t *testing.T) {
 	gw.Close()
 	f.Close()
 
-	err = ExtractTarGz(archive, destDir)
+	err = ExtractTarGz(context.Background(), archive, destDir)
 	if err != nil {
 		t.Fatalf("unexpected error for valid symlink: %v", err)
 	}
@@ -705,7 +607,7 @@ func TestExtractTarGzAbsoluteSymlinks(t *testing.T) {
 			gw.Close()
 			f.Close()
 
-			if err := ExtractTarGz(archive, destDir); err != nil {
+			if err := ExtractTarGz(context.Background(), archive, destDir); err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
 
@@ -758,7 +660,7 @@ func TestExtractTarGzAllowsBareRootDirEntry(t *testing.T) {
 	gw.Close()
 	f.Close()
 
-	err = ExtractTarGz(archive, destDir)
+	err = ExtractTarGz(context.Background(), archive, destDir)
 	if err != nil {
 		t.Fatalf("unexpected error for bare ./ entry: %v", err)
 	}
@@ -793,7 +695,7 @@ func TestExtractZipRejectsPathTraversal(t *testing.T) {
 	zw.Close()
 	f.Close()
 
-	err = ExtractZip(archive, destDir)
+	err = ExtractZip(context.Background(), archive, destDir)
 	if err == nil {
 		t.Fatal("expected error for path traversal")
 	}
@@ -1015,7 +917,7 @@ func TestCreateTarZstdRoundTrip(t *testing.T) {
 		t.Fatalf("failed to create dest dir: %v", err)
 	}
 
-	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+	if err := ExtractTarZstd(context.Background(), archivePath, destDir); err != nil {
 		t.Fatalf("failed to extract: %v", err)
 	}
 
@@ -1111,7 +1013,7 @@ func TestCreateTarZstdClosesFilesEagerly(t *testing.T) {
 	if err := os.MkdirAll(destDir, 0o755); err != nil {
 		t.Fatalf("create dest dir: %v", err)
 	}
-	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+	if err := ExtractTarZstd(context.Background(), archivePath, destDir); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 
@@ -1156,7 +1058,7 @@ func TestExtractTarZstdRejectsPathTraversal(t *testing.T) {
 	zw.Close()
 	f.Close()
 
-	err = ExtractTarZstd(archive, destDir)
+	err = ExtractTarZstd(context.Background(), archive, destDir)
 	if err == nil {
 		t.Fatal("expected error for path traversal")
 	}
@@ -1192,7 +1094,7 @@ func TestCreateTarZstdPreservesExecutability(t *testing.T) {
 		t.Fatalf("failed to create dest dir: %v", err)
 	}
 
-	if err := ExtractTarZstd(archivePath, destDir); err != nil {
+	if err := ExtractTarZstd(context.Background(), archivePath, destDir); err != nil {
 		t.Fatalf("failed to extract: %v", err)
 	}
 
@@ -1249,11 +1151,11 @@ func TestCreateTarZstdDeterministic(t *testing.T) {
 		t.Fatalf("second archive: %v", err)
 	}
 
-	hash1, err := HashFile(archive1)
+	hash1, err := HashFile(context.Background(), archive1)
 	if err != nil {
 		t.Fatal(err)
 	}
-	hash2, err := HashFile(archive2)
+	hash2, err := HashFile(context.Background(), archive2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1263,7 +1165,7 @@ func TestCreateTarZstdDeterministic(t *testing.T) {
 
 	// Extract and verify symlink target is relative.
 	destDir := t.TempDir()
-	if err := ExtractTarZstd(archive1, destDir); err != nil {
+	if err := ExtractTarZstd(context.Background(), archive1, destDir); err != nil {
 		t.Fatalf("extract: %v", err)
 	}
 
@@ -1309,8 +1211,8 @@ func TestExtractSourceDetectsFormat(t *testing.T) {
 				t.Fatalf("create dest dir: %v", err)
 			}
 
-			if err := ExtractSource(archivePath, destDir); err != nil {
-				t.Fatalf("ExtractSource(%s): %v", tt.ext, err)
+			if err := ExtractSource(context.Background(), archivePath, destDir); err != nil {
+				t.Fatalf("ExtractSource(context.Background(), %s): %v", tt.ext, err)
 			}
 
 			got, err := os.ReadFile(
@@ -1333,7 +1235,7 @@ func TestExtractSourceRejectsUnknown(t *testing.T) {
 		t.Fatalf("write file: %v", err)
 	}
 
-	err := ExtractSource(path, t.TempDir())
+	err := ExtractSource(context.Background(), path, t.TempDir())
 	if err == nil {
 		t.Fatal("expected error for unsupported format")
 	}

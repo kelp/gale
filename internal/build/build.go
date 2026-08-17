@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -90,7 +91,7 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 	// Extract source.
 	out.Step("Extracting source...")
 	srcDir := filepath.Join(workspace, "src")
-	if err := download.ExtractSource(tarballPath, srcDir); err != nil {
+	if err := download.ExtractSource(context.Background(), tarballPath, srcDir); err != nil {
 		return nil, fmt.Errorf("extract source: %w", err)
 	}
 
@@ -234,7 +235,7 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		return nil, fmt.Errorf("create archive: %w", err)
 	}
 
-	hash, err := download.HashFile(archivePath)
+	hash, err := download.HashFile(context.Background(), archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("hash archive: %w", err)
 	}
@@ -1467,7 +1468,7 @@ func fetchSource(r *recipe.Recipe, tarballPath string) error {
 			out.Step(fmt.Sprintf("Using cached source (%s)",
 				r.Source.SHA256[:12]))
 			out.Step("Verifying SHA256...")
-			if download.VerifySHA256(tarballPath, r.Source.SHA256) == nil {
+			if download.VerifySHA256(context.Background(), tarballPath, r.Source.SHA256) == nil {
 				return nil
 			}
 			out.Step("Cached source is corrupt — " +
@@ -1476,12 +1477,12 @@ func fetchSource(r *recipe.Recipe, tarballPath string) error {
 		}
 	}
 
-	if err := download.Fetch(r.Source.URL, tarballPath); err != nil {
+	if err := download.Fetch(context.Background(), r.Source.URL, tarballPath); err != nil {
 		return fmt.Errorf("fetch source: %w", err)
 	}
 
 	out.Step("Verifying SHA256...")
-	if err := download.VerifySHA256(tarballPath, r.Source.SHA256); err != nil {
+	if err := download.VerifySHA256(context.Background(), tarballPath, r.Source.SHA256); err != nil {
 		return fmt.Errorf("verify source: %w", err)
 	}
 

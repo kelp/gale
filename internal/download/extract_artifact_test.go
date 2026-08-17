@@ -2,6 +2,7 @@ package download
 
 import (
 	"archive/tar"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -25,7 +26,7 @@ func TestExtractArtifactExtractsRegularTree(t *testing.T) {
 	}}, []string{"hello\n", "hi\n"})
 
 	dest := t.TempDir()
-	if err := ExtractArtifact(archive, dest, "tar.gz"); err != nil {
+	if err := ExtractArtifact(context.Background(), archive, dest, "tar.gz"); err != nil {
 		t.Fatalf("ExtractArtifact: %v", err)
 	}
 	if filePerm(t, filepath.Join(dest, "bin", "jq")).Perm() != 0o755 {
@@ -62,7 +63,7 @@ func TestExtractArtifactRefusesLinks(t *testing.T) {
 			}, tc.hdr}
 			writeTarGzHeaders(t, archive, headers, []string{"body", ""})
 
-			err := ExtractArtifact(archive, t.TempDir(), "tar.gz")
+			err := ExtractArtifact(context.Background(), archive, t.TempDir(), "tar.gz")
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -86,7 +87,7 @@ func TestExtractArtifactRefusesGaleSidecars(t *testing.T) {
 				Name: name,
 				Mode: 0o644,
 			}}, []string{"sidecar\n"})
-			err := ExtractArtifact(archive, t.TempDir(), "tar.gz")
+			err := ExtractArtifact(context.Background(), archive, t.TempDir(), "tar.gz")
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -100,7 +101,7 @@ func TestExtractArtifactRefusesGaleSidecars(t *testing.T) {
 func TestExtractArtifactZipRefusesSidecar(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "side.zip")
 	createZip(t, archive, map[string]string{".gale-deps.toml": "x"})
-	err := ExtractArtifact(archive, t.TempDir(), "zip")
+	err := ExtractArtifact(context.Background(), archive, t.TempDir(), "zip")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -110,7 +111,7 @@ func TestExtractArtifactZipRefusesSidecar(t *testing.T) {
 }
 
 func TestExtractArtifactRejectsUnknownFormat(t *testing.T) {
-	err := ExtractArtifact("x.tar.zst", t.TempDir(), "tar.zst")
+	err := ExtractArtifact(context.Background(), "x.tar.zst", t.TempDir(), "tar.zst")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -123,7 +124,7 @@ func TestExtractArtifactBuildInputStillAllowsSidecar(t *testing.T) {
 		Mode: 0o644,
 	}}, []string{"kept\n"})
 	dest := t.TempDir()
-	if err := ExtractTarGz(archive, dest); err != nil {
+	if err := ExtractTarGz(context.Background(), archive, dest); err != nil {
 		t.Fatalf("ExtractTarGz: %v", err)
 	}
 	got, err := os.ReadFile(filepath.Join(dest, ".gale-deps.toml"))

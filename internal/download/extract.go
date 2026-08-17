@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/bzip2"
 	"compress/gzip"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -16,6 +17,33 @@ import (
 	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 )
+
+// ctxReader returns ctx.Err() on the next Read after cancel.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
+}
+
+// ctxReaderAt honors ctx during zip.NewReader's central-directory
+// reads, which go through ReaderAt rather than a stream.
+type ctxReaderAt struct {
+	ctx context.Context
+	r   io.ReaderAt
+}
+
+func (c ctxReaderAt) ReadAt(p []byte, off int64) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.ReadAt(p, off)
+}
 
 // Compiled extract caps. Tests swap the package-level copies.
 const (
@@ -100,26 +128,26 @@ func limitCompressed(r io.Reader) io.Reader {
 
 // ExtractTarGz extracts a tar.gz file to destDir, preserving
 // relative paths and creating directories as needed.
-func ExtractTarGz(archivePath, destDir string) error {
-	return extractTarFile(archivePath, destDir, classBuildInput, openGzip)
+func ExtractTarGz(ctx context.Context, archivePath, destDir string) error {
+	return extractTarFile(ctx, archivePath, destDir, classBuildInput, openGzip)
 }
 
 // ExtractTarZstd extracts a tar.zst file to destDir, preserving
 // relative paths and creating directories as needed.
-func ExtractTarZstd(archivePath, destDir string) error {
-	return extractTarFile(archivePath, destDir, classBuildInput, openZstd)
+func ExtractTarZstd(ctx context.Context, archivePath, destDir string) error {
+	return extractTarFile(ctx, archivePath, destDir, classBuildInput, openZstd)
 }
 
 // ExtractTarXz extracts a tar.xz file to destDir, preserving
 // relative paths and creating directories as needed.
-func ExtractTarXz(archivePath, destDir string) error {
-	return extractTarFile(archivePath, destDir, classBuildInput, openXz)
+func ExtractTarXz(ctx context.Context, archivePath, destDir string) error {
+	return extractTarFile(ctx, archivePath, destDir, classBuildInput, openXz)
 }
 
 // ExtractTarBz2 extracts a tar.bz2 file to destDir, preserving
 // relative paths and creating directories as needed.
-func ExtractTarBz2(archivePath, destDir string) error {
-	return extractTarFile(archivePath, destDir, classBuildInput, openBz2)
+func ExtractTarBz2(ctx context.Context, archivePath, destDir string) error {
+	return extractTarFile(ctx, archivePath, destDir, classBuildInput, openBz2)
 }
 
 type decompressor func(io.Reader) (io.Reader, func(), error)
@@ -152,49 +180,60 @@ func openBz2(r io.Reader) (io.Reader, func(), error) {
 	return bzip2.NewReader(r), func() {}, nil
 }
 
-func extractTarFile(archivePath, destDir string, class extractClass, open decompressor) error {
+func extractTarFile(ctx context.Context, archivePath, destDir string, class extractClass, open decompressor) error {
 	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open archive: %w", err)
 	}
 	defer f.Close()
 
-	dr, closer, err := open(f)
+	dr, closer, err := open(ctxReader{ctx: ctx, r: f})
 	if err != nil {
 		return err
 	}
 	defer closer()
 
 	b := newBudget()
-	return extractTar(tar.NewReader(b.reader(dr)), destDir, b, class)
+	return extractTar(ctx, tar.NewReader(b.reader(dr)), destDir, b, class)
 }
 
 // ExtractZip extracts a zip file to destDir, preserving
 // relative paths and creating directories as needed.
-func ExtractZip(archivePath, destDir string) error {
-	return extractZip(archivePath, destDir, classBuildInput)
+func ExtractZip(ctx context.Context, archivePath, destDir string) error {
+	return extractZip(ctx, archivePath, destDir, classBuildInput)
 }
 
-func extractZip(archivePath, destDir string, class extractClass) error {
-	r, err := zip.OpenReader(archivePath)
+func extractZip(ctx context.Context, archivePath, destDir string, class extractClass) error {
+	f, err := os.Open(archivePath)
 	if err != nil {
 		return fmt.Errorf("open zip archive: %w", err)
 	}
-	defer r.Close()
+	defer f.Close()
+	st, err := f.Stat()
+	if err != nil {
+		return fmt.Errorf("stat zip archive: %w", err)
+	}
+	r, err := zip.NewReader(ctxReaderAt{ctx: ctx, r: f}, st.Size())
+	if err != nil {
+		return fmt.Errorf("open zip archive: %w", err)
+	}
 
 	b := newBudget()
 	for _, zf := range r.File {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := b.addEntry(); err != nil {
 			return err
 		}
-		if err := extractZipFile(destDir, zf, b, class); err != nil {
+		if err := extractZipFile(ctx, destDir, zf, b, class); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func extractZipFile(destDir string, zf *zip.File, b *extractBudget, class extractClass) error {
+func extractZipFile(ctx context.Context, destDir string, zf *zip.File, b *extractBudget, class extractClass) error {
 	target, err := archiveTarget(destDir, zf.Name)
 	if err != nil {
 		return err
@@ -224,7 +263,7 @@ func extractZipFile(destDir string, zf *zip.File, b *extractBudget, class extrac
 		return fmt.Errorf("open zip entry %s: %w", zf.Name, err)
 	}
 	defer rc.Close()
-	if err := writeFile(target, b.reader(rc), mode); err != nil {
+	if err := writeFile(target, ctxReader{ctx: ctx, r: b.reader(rc)}, mode); err != nil {
 		return fmt.Errorf("extract %s: %w", zf.Name, err)
 	}
 	return nil
@@ -233,14 +272,14 @@ func extractZipFile(destDir string, zf *zip.File, b *extractBudget, class extrac
 // ExtractArtifact extracts an admitted store artifact. It refuses
 // symlinks, hardlinks, and any .gale-*.toml sidecar. format is
 // tar.gz, tar.xz, or zip.
-func ExtractArtifact(archivePath, destDir, format string) error {
+func ExtractArtifact(ctx context.Context, archivePath, destDir, format string) error {
 	switch format {
 	case "tar.gz":
-		return extractTarFile(archivePath, destDir, classArtifact, openGzip)
+		return extractTarFile(ctx, archivePath, destDir, classArtifact, openGzip)
 	case "tar.xz":
-		return extractTarFile(archivePath, destDir, classArtifact, openXz)
+		return extractTarFile(ctx, archivePath, destDir, classArtifact, openXz)
 	case "zip":
-		return extractZip(archivePath, destDir, classArtifact)
+		return extractZip(ctx, archivePath, destDir, classArtifact)
 	default:
 		return fmt.Errorf("unsupported artifact format: %s", format)
 	}
@@ -248,19 +287,19 @@ func ExtractArtifact(archivePath, destDir, format string) error {
 
 // ExtractSource extracts a source archive to destDir,
 // detecting the format from the file extension.
-func ExtractSource(archivePath, destDir string) error {
+func ExtractSource(ctx context.Context, archivePath, destDir string) error {
 	switch {
 	case strings.HasSuffix(archivePath, ".tar.gz"),
 		strings.HasSuffix(archivePath, ".tgz"):
-		return ExtractTarGz(archivePath, destDir)
+		return ExtractTarGz(ctx, archivePath, destDir)
 	case strings.HasSuffix(archivePath, ".tar.xz"):
-		return ExtractTarXz(archivePath, destDir)
+		return ExtractTarXz(ctx, archivePath, destDir)
 	case strings.HasSuffix(archivePath, ".tar.bz2"):
-		return ExtractTarBz2(archivePath, destDir)
+		return ExtractTarBz2(ctx, archivePath, destDir)
 	case strings.HasSuffix(archivePath, ".tar.zst"):
-		return ExtractTarZstd(archivePath, destDir)
+		return ExtractTarZstd(ctx, archivePath, destDir)
 	case strings.HasSuffix(archivePath, ".zip"):
-		return ExtractZip(archivePath, destDir)
+		return ExtractZip(ctx, archivePath, destDir)
 	default:
 		return fmt.Errorf(
 			"unsupported archive format: %s", archivePath,
@@ -316,9 +355,12 @@ func archiveTarget(destDir, name string) (string, error) {
 
 // extractTar reads entries from a tar reader and extracts them
 // to destDir. Validates paths to prevent directory traversal.
-func extractTar(tr *tar.Reader, destDir string, b *extractBudget, class extractClass) error {
+func extractTar(ctx context.Context, tr *tar.Reader, destDir string, b *extractBudget, class extractClass) error {
 	cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
 	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		hdr, err := tr.Next()
 		if errors.Is(err, io.EOF) {
 			return nil
@@ -329,21 +371,25 @@ func extractTar(tr *tar.Reader, destDir string, b *extractBudget, class extractC
 		if err := b.addEntry(); err != nil {
 			return err
 		}
-		if err := extractTarHeader(tr, destDir, cleanDest, hdr, class); err != nil {
+		if err := extractTarHeader(ctx, tr, tarDest{dir: destDir, clean: cleanDest}, hdr, class); err != nil {
 			return err
 		}
 	}
 }
 
-func extractTarHeader(tr *tar.Reader, destDir, cleanDest string, hdr *tar.Header, class extractClass) error {
+type tarDest struct {
+	dir, clean string
+}
+
+func extractTarHeader(ctx context.Context, tr *tar.Reader, dest tarDest, hdr *tar.Header, class extractClass) error {
 	if hdr.Typeflag == tar.TypeXGlobalHeader || hdr.Typeflag == tar.TypeXHeader {
 		return nil
 	}
-	target, err := archiveTarget(destDir, hdr.Name)
+	target, err := archiveTarget(dest.dir, hdr.Name)
 	if err != nil {
 		return err
 	}
-	if err := ensureNoSymlinkParent(destDir, target); err != nil {
+	if err := ensureNoSymlinkParent(dest.dir, target); err != nil {
 		return fmt.Errorf("%w: %s", err, hdr.Name)
 	}
 	if class == classArtifact && isGaleSidecar(hdr.Name) {
@@ -356,28 +402,28 @@ func extractTarHeader(tr *tar.Reader, destDir, cleanDest string, hdr *tar.Header
 		}
 		return nil
 	case tar.TypeReg:
-		return extractTarReg(tr, target, hdr)
+		return extractTarReg(ctx, tr, target, hdr)
 	case tar.TypeSymlink:
 		if class == classArtifact {
 			return forbiddenEntry(hdr.Name, "symlink")
 		}
-		return extractTarSymlink(cleanDest, target, hdr)
+		return extractTarSymlink(dest.clean, target, hdr)
 	case tar.TypeLink:
 		if class == classArtifact {
 			return forbiddenEntry(hdr.Name, "hardlink")
 		}
-		return extractTarHardlink(destDir, cleanDest, target, hdr)
+		return extractTarHardlink(dest.dir, dest.clean, target, hdr)
 	default:
 		return fmt.Errorf("unsupported tar entry type %d for %s",
 			hdr.Typeflag, hdr.Name)
 	}
 }
 
-func extractTarReg(tr *tar.Reader, target string, hdr *tar.Header) error {
+func extractTarReg(ctx context.Context, tr *tar.Reader, target string, hdr *tar.Header) error {
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return fmt.Errorf("create parent directory for %s: %w", hdr.Name, err)
 	}
-	if err := writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
+	if err := writeFile(target, ctxReader{ctx: ctx, r: tr}, hdr.FileInfo().Mode()); err != nil {
 		return fmt.Errorf("extract %s: %w", hdr.Name, err)
 	}
 	return nil
