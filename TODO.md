@@ -68,7 +68,7 @@ main on its own.
       artifact HTTP, hashing, and
       extract. Tests in
       `internal/download` / `httpclient`.
-- [ ] **Index types + linter.**
+- [x] **Index types + linter.**
       Version-keyed TOML. Required
       `sha256`, `hash_source`,
       `tree_digest`, `format` (`tar.gz` |
