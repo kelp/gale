@@ -1108,7 +1108,10 @@ func (inst *Installer) installBinaryTo(
 		defer dl.Release()
 		streamDone := timing.Phase("binary-stream " + pkgID)
 		defer streamDone()
-		_, err := download.FetchAndExtractTarZstdWithArchive(bin.URL, stagingDir, bin.SHA256, token, archiveOut)
+		_, err := download.FetchAndExtractTarZstdWithArchive(context.Background(), download.FetchExtract{
+			URL: bin.URL, DestDir: stagingDir, ExpectedSHA256: bin.SHA256,
+			Token: token, ArchiveOut: archiveOut,
+		})
 		return err
 	}()
 	if fetchErr != nil {
@@ -1930,7 +1933,7 @@ func extractBuildTo(req extractRequest) error {
 		defer os.RemoveAll(workDir) // clean up on any exit path
 	}
 
-	if err := download.ExtractTarZstd(result.Archive, workDir); err != nil {
+	if err := download.ExtractTarZstd(context.Background(), result.Archive, workDir); err != nil {
 		return fmt.Errorf("extract build output: %w", err)
 	}
 	if err := build.RestorePrefixPlaceholderTo(workDir, finalStoreDir); err != nil {

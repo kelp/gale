@@ -14,15 +14,18 @@ import (
 // transport's dial and TLS handshake timeouts plus per-request
 // contexts, not a whole-transfer cap.
 func TestHTTPClientIsSharedNoTimeoutClient(t *testing.T) {
-	if httpClient.Timeout != 0 {
+	if httpBase.Timeout != 0 {
 		t.Fatalf(
-			"httpClient.Timeout = %v, want 0: a whole-transfer cap "+
+			"httpBase.Timeout = %v, want 0: a whole-transfer cap "+
 				"aborts large downloads mid-stream on slow links",
-			httpClient.Timeout,
+			httpBase.Timeout,
 		)
 	}
-	if httpClient != httpclient.Default() {
-		t.Error("httpClient should be the shared httpclient.Default() " +
+	if httpBase != httpclient.Default() {
+		t.Error("httpBase should be the shared httpclient.Default() " +
 			"so install-path traffic reuses one connection pool")
+	}
+	if unauthClient().Timeout != 0 {
+		t.Fatalf("unauthClient().Timeout = %v, want 0", unauthClient().Timeout)
 	}
 }

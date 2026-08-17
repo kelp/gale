@@ -179,8 +179,16 @@ func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, erro
 		req.Header.Set("If-None-Match", string(etag))
 	}
 
+	if err := ctx.Err(); err != nil {
+		return cacheResult{}, err
+	}
 	resp, err := httpclient.Default().Do(req)
 	if err != nil {
+		// Cancel is not a transport blip. A deadline around
+		// sync --if-needed must not become a stale-cache hit.
+		if ctx.Err() != nil {
+			return cacheResult{}, ctx.Err()
+		}
 		// Stale-on-error: transport-level failure. Serve the
 		// cached body if it exists, then fall back to the
 		// negative marker (any age — better than surfacing the

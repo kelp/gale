@@ -157,7 +157,7 @@ func downloadArchive(name, sha256 string) (string, error) {
 	}
 	f.Close()
 
-	if err := download.FetchWithAuth(blobURL, f.Name(), token); err != nil {
+	if err := download.FetchWithAuth(context.Background(), blobURL, f.Name(), token); err != nil {
 		os.Remove(f.Name())
 		return "", err
 	}
@@ -186,7 +186,7 @@ func verifyBlobURL(name, sha256 string) string {
 // verifyArchiveDigest checks that the file at path hashes to wantSHA
 // (hex-encoded SHA256), returning a localized error on mismatch.
 func verifyArchiveDigest(path, wantSHA string) error {
-	got, err := download.HashFile(path)
+	got, err := download.HashFile(context.Background(), path)
 	if err != nil {
 		return fmt.Errorf("hashing downloaded archive: %w", err)
 	}

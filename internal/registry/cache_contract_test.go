@@ -1,6 +1,8 @@
 package registry
 
 import (
+	"context"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -120,6 +122,39 @@ func TestOfflineWithoutCacheErrors(t *testing.T) {
 		!strings.Contains(err.Error(), "Offline") &&
 		!strings.Contains(err.Error(), "GALE_OFFLINE") {
 		t.Errorf("error message should mention offline mode: %v", err)
+	}
+}
+
+func TestCachedGetCanceledDoesNotServeStale(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&hits, 1)
+			t.Errorf("canceled cachedGet must not hit the network: %s",
+				r.URL.Path)
+		},
+	))
+	defer srv.Close()
+
+	cacheDir := t.TempDir()
+	rawURL := srv.URL + "/recipes/t/testpkg.toml"
+	entryDir := filepath.Join(cacheDir, "registry", cacheKey(rawURL))
+	if err := os.MkdirAll(entryDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(entryDir, "body"), []byte(validTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := &Registry{BaseURL: srv.URL, CacheDir: cacheDir}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := reg.cachedGet(ctx, rawURL)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cachedGet: %v, want context.Canceled", err)
+	}
+	if atomic.LoadInt32(&hits) != 0 {
+		t.Errorf("hits = %d, want 0", hits)
 	}
 }
 

@@ -6,6 +6,7 @@
 package support
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -62,7 +63,7 @@ func BuildPayloads(fixturesRoot, tmpRoot string) (*Payloads, error) {
 		if err := download.CreateTarZstd(src, dst); err != nil {
 			return nil, fmt.Errorf("build %s: %w", name, err)
 		}
-		sum, err := download.HashFile(dst)
+		sum, err := download.HashFile(context.Background(), dst)
 		if err != nil {
 			return nil, fmt.Errorf("hash %s: %w", name, err)
 		}

@@ -3,6 +3,7 @@ package download
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"net/http"
@@ -81,7 +82,7 @@ func TestFetchAndExtractTarZstdStreamsCorrectContents(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "pkg")
 
-	gotSHA, err := FetchAndExtractTarZstd(srv.URL, dest, correctSHA, "")
+	gotSHA, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, correctSHA, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -136,7 +137,7 @@ func TestFetchAndExtractTarZstdBadSHACleansUpDest(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := FetchAndExtractTarZstd(srv.URL, dest, wrongSHA, "")
+	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, wrongSHA, "")
 	if err == nil {
 		t.Fatal("expected error for SHA mismatch, got nil")
 	}
@@ -179,7 +180,7 @@ func TestFetchAndExtractTarZstdHTTP404ReturnsError(t *testing.T) {
 	}
 	anySHA := strings.Repeat("a", 64)
 
-	_, err := FetchAndExtractTarZstd(srv.URL, dest, anySHA, "")
+	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, anySHA, "")
 	if err == nil {
 		t.Fatal("expected error for HTTP 404, got nil")
 	}
@@ -220,7 +221,7 @@ func TestFetchAndExtractTarZstdSendsBearerTokenWhenProvided(t *testing.T) {
 	dest := filepath.Join(t.TempDir(), "pkg")
 	token := "super-secret-token-xyz"
 
-	_, err := FetchAndExtractTarZstd(srv.URL, dest, correctSHA, token)
+	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, correctSHA, token)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestFetchAndExtractTarZstdNoAuthHeaderWhenTokenEmpty(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "pkg")
 
-	_, err := FetchAndExtractTarZstd(srv.URL, dest, correctSHA, "")
+	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, correctSHA, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestFetchAndExtractTarZstdCreatesDestDirIfAbsent(t *testing.T) {
 		t.Fatalf("expected %s to not exist before the call", dest)
 	}
 
-	_, err := FetchAndExtractTarZstd(srv.URL, dest, correctSHA, "")
+	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, correctSHA, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -326,7 +327,7 @@ func TestFetchAndExtractTarZstdLeavesNoIntermediateTarZstFile(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "pkg")
 
-	_, err := FetchAndExtractTarZstd(srv.URL, dest, correctSHA, "")
+	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, correctSHA, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -376,7 +377,7 @@ func TestFetchAndExtractTarZstdReturnsSHA256OfArchiveBytes(t *testing.T) {
 
 	dest := filepath.Join(t.TempDir(), "pkg")
 
-	gotSHA, err := FetchAndExtractTarZstd(srv.URL, dest, expectedSHA, "")
+	gotSHA, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, expectedSHA, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -436,7 +437,7 @@ func TestFetchAndExtractTarZstdTruncatedStreamReturnsErrorAndCleansUp(t *testing
 
 	dest := filepath.Join(t.TempDir(), "pkg")
 
-	_, err := FetchAndExtractTarZstd(srv.URL, dest, correctSHA, "")
+	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, correctSHA, "")
 	if err == nil {
 		t.Fatal("expected error for truncated stream, got nil")
 	}
@@ -483,11 +484,11 @@ func TestFetchAndExtractTarZstdDistinctArchivesProduceDistinctSHAs(t *testing.T)
 	destA := filepath.Join(t.TempDir(), "pkgA")
 	destB := filepath.Join(t.TempDir(), "pkgB")
 
-	gotA, err := FetchAndExtractTarZstd(srvA.URL, destA, shaA, "")
+	gotA, err := FetchAndExtractTarZstd(context.Background(), srvA.URL, destA, shaA, "")
 	if err != nil {
 		t.Fatalf("archive A: unexpected error: %v", err)
 	}
-	gotB, err := FetchAndExtractTarZstd(srvB.URL, destB, shaB, "")
+	gotB, err := FetchAndExtractTarZstd(context.Background(), srvB.URL, destB, shaB, "")
 	if err != nil {
 		t.Fatalf("archive B: unexpected error: %v", err)
 	}

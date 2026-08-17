@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -225,7 +226,7 @@ func TestBuildStepRunsWithPREFIXAndJOBS(t *testing.T) {
 
 	// Extract the output archive and verify bin/hello exists.
 	extractDir := t.TempDir()
-	if err := download.ExtractTarZstd(result.Archive, extractDir); err != nil {
+	if err := download.ExtractTarZstd(context.Background(), result.Archive, extractDir); err != nil {
 		t.Fatalf("failed to extract result archive: %v", err)
 	}
 
@@ -277,7 +278,7 @@ func TestBuildStepMultipleStepsRunInOrder(t *testing.T) {
 
 	// Extract and verify the file was created by all steps.
 	extractDir := t.TempDir()
-	if err := download.ExtractTarZstd(result.Archive, extractDir); err != nil {
+	if err := download.ExtractTarZstd(context.Background(), result.Archive, extractDir); err != nil {
 		t.Fatalf("failed to extract result archive: %v", err)
 	}
 
@@ -555,7 +556,7 @@ func TestBuildCdIntoSingleTopLevelDirectory(t *testing.T) {
 
 	// Extract and verify.
 	extractDir := t.TempDir()
-	if err := download.ExtractTarZstd(result.Archive, extractDir); err != nil {
+	if err := download.ExtractTarZstd(context.Background(), result.Archive, extractDir); err != nil {
 		t.Fatalf("failed to extract result archive: %v", err)
 	}
 
@@ -602,7 +603,7 @@ func TestBuildOutputIsValidTarZstd(t *testing.T) {
 
 	// Verify the output is a valid tar.zst by extracting it.
 	extractDir := t.TempDir()
-	if err := download.ExtractTarZstd(result.Archive, extractDir); err != nil {
+	if err := download.ExtractTarZstd(context.Background(), result.Archive, extractDir); err != nil {
 		t.Fatalf("output is not valid tar.zst: %v", err)
 	}
 
@@ -647,7 +648,7 @@ func TestBuildOutputSHA256MatchesArchive(t *testing.T) {
 	}
 
 	// Independently hash the archive and compare.
-	if err := download.VerifySHA256(result.Archive, result.SHA256); err != nil {
+	if err := download.VerifySHA256(context.Background(), result.Archive, result.SHA256); err != nil {
 		t.Errorf("result SHA256 does not match archive: %v", err)
 	}
 }
@@ -824,6 +825,7 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 	// Extract and verify mytool was found.
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
+		context.Background(),
 		result.Archive, extractDir,
 	); err != nil {
 		t.Fatalf("extract: %v", err)
@@ -1065,7 +1067,7 @@ func TestBuildLocalSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 
 	// Verify the archive contains the built binary.
 	extractDir := t.TempDir()
-	if err := download.ExtractTarZstd(result.Archive, extractDir); err != nil {
+	if err := download.ExtractTarZstd(context.Background(), result.Archive, extractDir); err != nil {
 		t.Fatalf("failed to extract: %v", err)
 	}
 	helloPath := filepath.Join(extractDir, "bin", "hello")
@@ -1169,6 +1171,7 @@ func TestBuildLocalWithExtraPaths(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
+		context.Background(),
 		result.Archive, extractDir,
 	); err != nil {
 		t.Fatalf("extract: %v", err)
@@ -1242,6 +1245,7 @@ func TestBuildLocalEmitsDepsMetadataIntoArchive(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
+		context.Background(),
 		result.Archive, extractDir,
 	); err != nil {
 		t.Fatalf("extract: %v", err)
@@ -1297,6 +1301,7 @@ func TestBuildLocalSkipsDepsMetadataWhenNoDeps(t *testing.T) {
 
 	extractDir := t.TempDir()
 	if err := download.ExtractTarZstd(
+		context.Background(),
 		result.Archive, extractDir,
 	); err != nil {
 		t.Fatalf("extract: %v", err)

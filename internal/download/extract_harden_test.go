@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -116,7 +117,7 @@ func TestExtractMasksSpecialModeBits(t *testing.T) {
 			}}, []string{"hello"})
 
 			dest := t.TempDir()
-			if err := ExtractTarGz(archive, dest); err != nil {
+			if err := ExtractTarGz(context.Background(), archive, dest); err != nil {
 				t.Fatalf("ExtractTarGz: %v", err)
 			}
 			got := filePerm(t, filepath.Join(dest, "tool"))
@@ -150,7 +151,7 @@ func TestExtractPreservesModeAcrossUmask(t *testing.T) {
 			Mode: 0o755,
 		}}, []string{"x"})
 		dest := t.TempDir()
-		if err := ExtractTarGz(archive, dest); err != nil {
+		if err := ExtractTarGz(context.Background(), archive, dest); err != nil {
 			t.Fatalf("ExtractTarGz: %v", err)
 		}
 		got := filePerm(t, filepath.Join(dest, "bin", "tool")).Perm()
@@ -165,7 +166,7 @@ func TestExtractPreservesModeAcrossUmask(t *testing.T) {
 		hdr.SetMode(0o755)
 		writeZipFile(t, archive, hdr, "x")
 		dest := t.TempDir()
-		if err := ExtractZip(archive, dest); err != nil {
+		if err := ExtractZip(context.Background(), archive, dest); err != nil {
 			t.Fatalf("ExtractZip: %v", err)
 		}
 		got := filePerm(t, filepath.Join(dest, "bin", "tool")).Perm()
@@ -184,7 +185,7 @@ func TestExtractRefusesOverEntryCap(t *testing.T) {
 		"b.txt": "b",
 		"c.txt": "c",
 	})
-	err := ExtractTarGz(archive, t.TempDir())
+	err := ExtractTarGz(context.Background(), archive, t.TempDir())
 	if !errors.Is(err, ErrExtractLimit) {
 		t.Fatalf("error = %v, want ErrExtractLimit", err)
 	}
@@ -198,7 +199,7 @@ func TestExtractAllowsExactEntryCap(t *testing.T) {
 		"a.txt": "a",
 		"b.txt": "b",
 	})
-	if err := ExtractTarGz(archive, t.TempDir()); err != nil {
+	if err := ExtractTarGz(context.Background(), archive, t.TempDir()); err != nil {
 		t.Fatalf("ExtractTarGz: %v", err)
 	}
 }
@@ -209,7 +210,7 @@ func TestExtractRefusesOverDecompressedCap(t *testing.T) {
 
 	archive := filepath.Join(t.TempDir(), "big.tar.gz")
 	createTarGz(t, archive, map[string]string{"a.txt": "hello"})
-	err := ExtractTarGz(archive, t.TempDir())
+	err := ExtractTarGz(context.Background(), archive, t.TempDir())
 	if !errors.Is(err, ErrExtractLimit) {
 		t.Fatalf("error = %v, want ErrExtractLimit", err)
 	}
@@ -229,7 +230,7 @@ func TestExtractCountsCopiedBytesNotZipHeader(t *testing.T) {
 	hdr.SetMode(0o644)
 	writeZipFile(t, archive, hdr, "hello")
 
-	err := ExtractZip(archive, t.TempDir())
+	err := ExtractZip(context.Background(), archive, t.TempDir())
 	if !errors.Is(err, ErrExtractLimit) {
 		t.Fatalf("error = %v, want ErrExtractLimit (copied bytes, not header)", err)
 	}
@@ -242,7 +243,7 @@ func TestExtractZipRefusesNestedTraversal(t *testing.T) {
 	writeZipFile(t, archive, hdr, "owned")
 
 	dest := t.TempDir()
-	err := ExtractZip(archive, dest)
+	err := ExtractZip(context.Background(), archive, dest)
 	if err == nil {
 		t.Fatal("expected error for nested path traversal")
 	}
@@ -258,7 +259,7 @@ func TestExtractZipRefusesSymlinkEntry(t *testing.T) {
 	writeZipFile(t, archive, hdr, "target.txt")
 
 	dest := t.TempDir()
-	err := ExtractZip(archive, dest)
+	err := ExtractZip(context.Background(), archive, dest)
 	if err == nil {
 		t.Fatal("expected error for zip symlink entry")
 	}
@@ -290,7 +291,7 @@ func TestExtractRefusesWriteThroughExistingSymlinkParent(t *testing.T) {
 			Name: "escape/pwned",
 			Mode: 0o644,
 		}}, []string{"ESCAPED"})
-		_ = ExtractTarGz(archive, dest)
+		_ = ExtractTarGz(context.Background(), archive, dest)
 		if _, err := os.Stat(filepath.Join(outside, "pwned")); err == nil {
 			t.Fatal("wrote through symlink parent")
 		}
@@ -301,7 +302,7 @@ func TestExtractRefusesWriteThroughExistingSymlinkParent(t *testing.T) {
 		hdr := zip.FileHeader{Name: "escape/pwned", Method: zip.Store}
 		hdr.SetMode(0o644)
 		writeZipFile(t, archive, hdr, "ESCAPED")
-		_ = ExtractZip(archive, dest)
+		_ = ExtractZip(context.Background(), archive, dest)
 		if _, err := os.Stat(filepath.Join(outside, "pwned")); err == nil {
 			t.Fatal("wrote through symlink parent")
 		}
@@ -325,7 +326,7 @@ func TestExtractTarGzRefusesDeviceAndFIFO(t *testing.T) {
 				Typeflag: tc.typeflag,
 				Mode:     0o644,
 			}}, nil)
-			err := ExtractTarGz(archive, t.TempDir())
+			err := ExtractTarGz(context.Background(), archive, t.TempDir())
 			if err == nil {
 				t.Fatal("expected error for special node")
 			}
@@ -349,7 +350,7 @@ func TestFetchRefusesOverCompressedCap(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "out")
-	err := Fetch(srv.URL, dest)
+	err := Fetch(context.Background(), srv.URL, dest)
 	if !errors.Is(err, ErrExtractLimit) {
 		t.Fatalf("error = %v, want ErrExtractLimit", err)
 	}
@@ -373,7 +374,7 @@ func TestFetchAndExtractRefusesOverCompressedCap(t *testing.T) {
 	defer srv.Close()
 
 	dest := filepath.Join(t.TempDir(), "out")
-	_, err := FetchAndExtractTarZstd(srv.URL, dest, hexSHA256(archiveBytes), "")
+	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, hexSHA256(archiveBytes), "")
 	if !errors.Is(err, ErrExtractLimit) {
 		t.Fatalf("error = %v, want ErrExtractLimit", err)
 	}

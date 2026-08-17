@@ -19,79 +19,73 @@ import (
 	"github.com/kelp/gale/internal/httpclient"
 )
 
-// httpClient serves all download traffic. It is the process-wide
-// shared client from internal/httpclient, which deliberately has
-// no whole-transfer Timeout: a hard cap (formerly 5 minutes here)
-// aborts large GHCR blob and source tarball transfers mid-stream
-// on slow links (gh#61). Stalled connections are still bounded by
-// the transport's dial and TLS handshake timeouts; callers that
-// need a per-request deadline pass one via context.
-var httpClient = httpclient.Default()
+// httpBase is the client tests swap via SetHTTPClient. Production
+// uses httpclient.Default so registry/GHCR keep the shared pool.
+// Each fetch derives a policy client from this base: unauth gets
+// hop-validated CheckRedirect; auth gets userinfo + no
+// https→http. The hop map never rides Default itself.
+var httpBase = httpclient.Default()
 
-// mirrors maps URL prefixes to fallback mirror prefixes.
-// When a download fails with an HTTP error, the URL prefix
-// is replaced with each fallback in order until one succeeds.
-var mirrors = map[string][]string{
-	"https://ftpmirror.gnu.org/": {
-		"https://mirrors.kernel.org/gnu/",
-		"https://ftp.gnu.org/pub/gnu/",
-	},
-	"https://ftp.gnu.org/gnu/": {
-		"https://mirrors.kernel.org/gnu/",
-		"https://ftpmirror.gnu.org/",
-	},
+// SetHTTPClient replaces the base HTTP client.
+// Intended for tests that need a custom TLS configuration
+// (e.g., httptest.NewTLSServer). Policy CheckRedirect is
+// reapplied on every fetch so a swap cannot drop it.
+// Returns a function that restores the original client.
+func SetHTTPClient(c *http.Client) func() {
+	saved := httpBase
+	httpBase = c
+	return func() { httpBase = saved }
 }
 
-// SetHTTPClient replaces the package-level HTTP client.
-// Intended for tests that need a custom TLS configuration
-// (e.g., httptest.NewTLSServer). Returns a function that
-// restores the original client.
-func SetHTTPClient(c *http.Client) func() {
-	saved := httpClient
-	httpClient = c
-	return func() { httpClient = saved }
+func unauthClient() *http.Client {
+	return &http.Client{
+		Transport:     httpBase.Transport,
+		Timeout:       httpBase.Timeout,
+		CheckRedirect: httpclient.CheckRedirect,
+	}
+}
+
+func authClient() *http.Client {
+	return &http.Client{
+		Transport:     httpBase.Transport,
+		Timeout:       httpBase.Timeout,
+		CheckRedirect: httpclient.AuthCheckRedirect,
+	}
+}
+
+func rejectCredentials(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse URL: %w", err)
+	}
+	if u.User != nil {
+		return fmt.Errorf("url must not contain credentials")
+	}
+	return nil
 }
 
 // Fetch downloads a file from rawURL to destPath.
 // Intermediate directories are created as needed.
 // On HTTP error or failure, the destination file is removed.
-// If the primary URL fails, known mirror fallbacks are tried.
-func Fetch(rawURL, destPath string) error {
+// Fetch never reads GALE_GITHUB_TOKEN or GITHUB_TOKEN.
+func Fetch(ctx context.Context, rawURL, destPath string) error {
+	if err := rejectCredentials(rawURL); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
-
-	err := fetchOnce(rawURL, destPath)
-	if err == nil {
-		return nil
-	}
-
-	// Try mirror fallbacks.
-	for prefix, fallbacks := range mirrors {
-		if !strings.HasPrefix(rawURL, prefix) {
-			continue
-		}
-		suffix := rawURL[len(prefix):]
-		for _, fb := range fallbacks {
-			alt := fb + suffix
-			fmt.Fprintf(os.Stderr,
-				"  > Mirror fallback: %s\n", alt)
-			if ferr := fetchOnce(alt, destPath); ferr == nil {
-				fmt.Fprintf(os.Stderr,
-					"  > Mirror fetched from: %s\n", alt)
-				return nil
-			}
-		}
-	}
-
-	return err
+	return fetchOnce(ctx, rawURL, destPath, unauthClient(), "")
 }
 
 // FetchWithAuth downloads a file from rawURL to destPath with a
 // bearer token in the Authorization header. HTTPS is required so
-// the token is never sent in the clear. No mirror fallbacks: the
-// token is scoped to the primary host.
-func FetchWithAuth(rawURL, destPath, bearerToken string) error {
+// the token is never sent in the clear. The token is an explicit
+// argument; this function does not read the environment.
+func FetchWithAuth(ctx context.Context, rawURL, destPath, bearerToken string) error {
+	if err := rejectCredentials(rawURL); err != nil {
+		return err
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("parse URL: %w", err)
@@ -106,30 +100,20 @@ func FetchWithAuth(rawURL, destPath, bearerToken string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
-
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+bearerToken)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetch %s: %w", rawURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
-	}
-
-	name := filepath.Base(rawURL)
-	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
+	return fetchOnce(ctx, rawURL, destPath, authClient(), bearerToken)
 }
 
 // fetchOnce performs a single HTTP GET and writes to destPath.
-func fetchOnce(rawURL, destPath string) error {
-	resp, err := httpClient.Get(rawURL) //nolint:gosec // G107 — URL is caller-provided
+func fetchOnce(ctx context.Context, rawURL, destPath string, client *http.Client, token string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
@@ -140,7 +124,7 @@ func fetchOnce(rawURL, destPath string) error {
 	}
 
 	name := filepath.Base(rawURL)
-	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
+	return writeWithProgress(ctx, resp.Body, resp.ContentLength, destPath, name)
 }
 
 // ProgressPrefix is the colored prefix used for download
@@ -162,7 +146,7 @@ func SetProgressEnabled(enabled bool) func() {
 
 // writeWithProgress copies from reader to a file at destPath,
 // printing download progress to stderr.
-func writeWithProgress(reader io.Reader, total int64, destPath, name string) error {
+func writeWithProgress(ctx context.Context, reader io.Reader, total int64, destPath, name string) error {
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("create destination file: %w", err)
@@ -173,7 +157,8 @@ func writeWithProgress(reader io.Reader, total int64, destPath, name string) err
 		start: time.Now(),
 		name:  name,
 	}
-	if _, err := io.Copy(f, io.TeeReader(limitCompressed(reader), pw)); err != nil {
+	body := ctxReader{ctx: ctx, r: limitCompressed(reader)}
+	if _, err := io.Copy(f, io.TeeReader(body, pw)); err != nil {
 		f.Close()
 		os.Remove(destPath)
 		return fmt.Errorf("write destination file: %w", err)
@@ -277,7 +262,10 @@ func formatBytes(b int64) string {
 
 // HashFile returns the hex-encoded SHA256 hash of the
 // file at the given path.
-func HashFile(path string) (string, error) {
+func HashFile(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open file for hashing: %w", err)
@@ -285,7 +273,7 @@ func HashFile(path string) (string, error) {
 	defer f.Close()
 
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, ctxReader{ctx: ctx, r: f}); err != nil {
 		return "", fmt.Errorf("hash file: %w", err)
 	}
 
@@ -302,8 +290,8 @@ var ErrSHA256Mismatch = errors.New("sha256 mismatch")
 
 // VerifySHA256 checks that the file at path has the expected
 // SHA256 hash. The expected value must be hex-encoded.
-func VerifySHA256(path, expected string) error {
-	actual, err := HashFile(path)
+func VerifySHA256(ctx context.Context, path, expected string) error {
+	actual, err := HashFile(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -462,16 +450,33 @@ func copyFileToTar(tw *tar.Writer, path, rel string) error {
 // error. token is an optional Bearer authorization header value
 // (empty string = no Authorization header sent). Returns the
 // computed hex SHA-256 on success.
-func FetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token string) (string, error) {
-	return fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, "")
+func FetchAndExtractTarZstd(ctx context.Context, rawURL, destDir, expectedSHA256, token string) (string, error) {
+	return fetchAndExtractTarZstd(ctx, fetchExtract{
+		rawURL: rawURL, destDir: destDir, expectedSHA256: expectedSHA256, token: token,
+	})
+}
+
+// FetchExtract is the input for FetchAndExtractTarZstdWithArchive.
+type FetchExtract struct {
+	URL, DestDir, ExpectedSHA256, Token, ArchiveOut string
 }
 
 // FetchAndExtractTarZstdWithArchive is like FetchAndExtractTarZstd
-// but also writes the raw compressed archive bytes to archiveOut
+// but also writes the raw compressed archive bytes to ArchiveOut
 // (when non-empty) as they stream. The caller owns the file's
 // lifecycle (creation and deletion); this function only writes to it.
-func FetchAndExtractTarZstdWithArchive(rawURL, destDir, expectedSHA256, token, archiveOut string) (string, error) {
-	return fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut)
+func FetchAndExtractTarZstdWithArchive(ctx context.Context, in FetchExtract) (string, error) {
+	return fetchAndExtractTarZstd(ctx, fetchExtract{
+		rawURL:         in.URL,
+		destDir:        in.DestDir,
+		expectedSHA256: in.ExpectedSHA256,
+		token:          in.Token,
+		archiveOut:     in.ArchiveOut,
+	})
+}
+
+type fetchExtract struct {
+	rawURL, destDir, expectedSHA256, token, archiveOut string
 }
 
 // fetchAndExtractTarZstd is the shared implementation used by both
@@ -479,9 +484,12 @@ func FetchAndExtractTarZstdWithArchive(rawURL, destDir, expectedSHA256, token, a
 // When archiveOut is non-empty the raw (compressed) bytes are also
 // written to that file as they stream, enabling callers to verify
 // the archive digest (e.g. Sigstore attestation) after extraction.
-func fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut string) (string, error) {
-	if token != "" {
-		u, err := url.Parse(rawURL)
+func fetchAndExtractTarZstd(ctx context.Context, in fetchExtract) (string, error) {
+	if err := rejectCredentials(in.rawURL); err != nil {
+		return "", err
+	}
+	if in.token != "" {
+		u, err := url.Parse(in.rawURL)
 		if err != nil {
 			return "", fmt.Errorf("parse URL: %w", err)
 		}
@@ -493,35 +501,39 @@ func fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut s
 		}
 	}
 
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, in.rawURL, nil)
 	if err != nil {
 		return "", fmt.Errorf("create request: %w", err)
 	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if in.token != "" {
+		req.Header.Set("Authorization", "Bearer "+in.token)
 	}
 
-	resp, err := httpClient.Do(req)
+	client := unauthClient()
+	if in.token != "" {
+		client = authClient()
+	}
+	resp, err := client.Do(req)
 	if err != nil {
-		return "", fmt.Errorf("fetch %s: %w", rawURL, err)
+		return "", fmt.Errorf("fetch %s: %w", in.rawURL, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_ = os.RemoveAll(destDir)
-		return "", fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
+		_ = os.RemoveAll(in.destDir)
+		return "", fmt.Errorf("fetch %s: HTTP %d", in.rawURL, resp.StatusCode)
 	}
 
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
+	if err := os.MkdirAll(in.destDir, 0o755); err != nil {
 		return "", fmt.Errorf("create destination directory: %w", err)
 	}
 
 	hasher := sha256.New()
 	sinks := []io.Writer{hasher}
-	if archiveOut != "" {
-		af, err := os.Create(archiveOut)
+	if in.archiveOut != "" {
+		af, err := os.Create(in.archiveOut)
 		if err != nil {
-			_ = os.RemoveAll(destDir)
+			_ = os.RemoveAll(in.destDir)
 			return "", fmt.Errorf("create archive copy: %w", err)
 		}
 		defer af.Close()
@@ -531,22 +543,22 @@ func fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut s
 
 	zr, err := zstd.NewReader(teed)
 	if err != nil {
-		_ = os.RemoveAll(destDir)
+		_ = os.RemoveAll(in.destDir)
 		return "", fmt.Errorf("create zstd reader: %w", err)
 	}
 	defer zr.Close()
 
 	b := newBudget()
-	if err := extractTar(tar.NewReader(b.reader(zr)), destDir, b, classBuildInput); err != nil {
-		_ = os.RemoveAll(destDir)
+	if err := extractTar(ctx, tar.NewReader(b.reader(ctxReader{ctx: ctx, r: zr})), in.destDir, b, classBuildInput); err != nil {
+		_ = os.RemoveAll(in.destDir)
 		return "", fmt.Errorf("extract: %w", err)
 	}
 
 	computed := fmt.Sprintf("%x", hasher.Sum(nil))
-	if !strings.EqualFold(computed, expectedSHA256) {
-		_ = os.RemoveAll(destDir)
+	if !strings.EqualFold(computed, in.expectedSHA256) {
+		_ = os.RemoveAll(in.destDir)
 		return "", fmt.Errorf("%w: expected %s, got %s",
-			ErrSHA256Mismatch, expectedSHA256, computed)
+			ErrSHA256Mismatch, in.expectedSHA256, computed)
 	}
 
 	return computed, nil

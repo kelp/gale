@@ -1,6 +1,7 @@
 package ai
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -176,11 +177,11 @@ func downloadAndHashTool(tmpDir string) Tool {
 				return "", err
 			}
 
-			if err := download.Fetch(args.URL, destPath); err != nil {
+			if err := download.Fetch(context.Background(), args.URL, destPath); err != nil {
 				return "", fmt.Errorf("download: %w", err)
 			}
 
-			hash, err := download.HashFile(destPath)
+			hash, err := download.HashFile(context.Background(), destPath)
 			if err != nil {
 				return "", fmt.Errorf("hash: %w", err)
 			}
