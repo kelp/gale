@@ -116,11 +116,17 @@ var addCmd = &cobra.Command{
 }
 
 // resolveHostFlag turns a --host CLI value into a host name.
-// Empty string means shared [packages]. "current" expands to
-// the local hostname, and fails when that cannot be read: an
-// unresolved "current" would flatten to "", which every caller
-// reads as shared [packages] — writing host-scoped packages into
-// the set every machine shares (gh#254).
+// Empty string is returned unchanged; callers keep today's
+// location-preserving upsert, which is not "always write
+// shared". "current" expands to the local hostname, and fails
+// when that cannot be read: an unresolved "current" would
+// flatten to "", which every caller reads as shared [packages]
+// — writing host-scoped packages into the set every machine
+// shares (gh#254).
+//
+// Frozen: no new aliases. Any other string is a selector
+// written verbatim. See the Milestone 2 host-section freeze in
+// docs/dev/proposals/fetch-dont-build.md.
 func resolveHostFlag(v string) (string, error) {
 	if v == "current" {
 		return config.CurrentHost()

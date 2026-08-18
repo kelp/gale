@@ -92,7 +92,7 @@ main. Stops new host / pin / tool-versions work.
 Bin-collision-as-hard-error waits until
 Milestone 4 — 193 source recipes still collide.
 
-- [ ] **Freeze host sections.** Comment + test
+- [x] **Freeze host sections.** Comment + test
       that `--host` / `[hosts.*]` gain no new
       semantics. Changelog note. No feature
       delete yet.

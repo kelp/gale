@@ -53,6 +53,14 @@
 
 ### Changed
 
+- **Host sections and `--host` are frozen.**
+  `[hosts.<key>]` overlays stay `packages`, `pinned`,
+  and `bin`. `--host` stays on `add`, `install`,
+  `remove`, `lock`, `pin`, and `unpin`. Selector
+  grammar is unchanged. No feature delete; this
+  stops new host-section work before fetch is the
+  default.
+
 - **Extract hardens archive and download limits.** Setuid,
   setgid, and sticky bits are masked; extracted file modes
   survive umask via fchmod. Downloads refuse more than 2 GiB

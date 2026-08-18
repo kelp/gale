@@ -28,8 +28,12 @@ var ErrGaleConfigNotFound = errors.New(
 // not exist in the config.
 var ErrPackageNotFound = errors.New("package not found")
 
-// HostConfig represents a per-host packages/pinned/bin overlay
-// stored under [hosts.<name>] in gale.toml.
+// HostConfig is a per-host packages/pinned/bin overlay under
+// [hosts.<name>] in gale.toml.
+//
+// Frozen: these three tables are the overlay set. Add no keys
+// until fetch is the default (Milestone 2 in
+// docs/dev/proposals/fetch-dont-build.md).
 type HostConfig struct {
 	Packages map[string]string `toml:"packages,omitempty"`
 	Pinned   map[string]bool   `toml:"pinned,omitempty"`
@@ -108,9 +112,10 @@ func ParseGaleConfig(data string) (*GaleConfig, error) {
 // EffectivePackages returns the shared [packages] merged with
 // every [hosts.<key>.packages] section whose key matches host.
 // Host section keys may list multiple comma-separated patterns
-// and use glob wildcards (*, ?). Wildcard-bearing sections are
-// applied first; exact-name sections last, so exact entries
-// override globs. Does not mutate the receiver.
+// and use `*` globs. `*` is the only wildcard the format
+// promises; `?` and character classes are not. Wildcard-bearing
+// sections are applied first; exact-name sections last, so
+// exact entries override globs. Does not mutate the receiver.
 func (c *GaleConfig) EffectivePackages(host string) map[string]string {
 	out := make(map[string]string, len(c.Packages))
 	maps.Copy(out, c.Packages)

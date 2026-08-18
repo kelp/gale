@@ -170,11 +170,18 @@ one machine while sharing everything else:
   fzf = "0.60"          # laptop only — overrides the multi-host entry
 ```
 
-`gale install`, `add`, `remove`, `pin`, and `unpin`
-default to the shared `[packages]` section. Pass
-`--host <name>` (or `--host current` for the local
-machine) to write to a host section. The flag is
-opt-in: users with a single machine can ignore it.
+These overlays and `--host` are frozen. No new
+`[hosts.*]` keys or `--host` semantics until fetch
+is the default.
+
+`gale install`, `add`, `remove`, `lock`, `pin`, and
+`unpin` default to the shared `[packages]` section.
+Pass `--host <name>` (or `--host current` for the
+local machine) to write to a host section. `gale
+lock --host <selector>` regenerates that host's lock
+target from `[hosts.<selector>.packages]`. The flag
+is opt-in: users with a single machine can ignore
+it.
 
 ```sh
 gale install fzf --host current      # install + record under [hosts.<this-host>.packages]
