@@ -85,10 +85,13 @@ func checkELFSearchPaths(f *elf.File) error {
 
 func checkLinuxSearchPaths(vals []string) error {
 	for _, v := range vals {
+		if strings.TrimSpace(v) == "" {
+			return fmt.Errorf("non-system search path: empty")
+		}
 		for _, p := range strings.Split(v, ":") {
 			p = strings.TrimSpace(p)
 			if p == "" {
-				continue
+				return fmt.Errorf("non-system search path: empty")
 			}
 			if !linuxSearchPath(p) {
 				return fmt.Errorf("non-system search path: %s", p)

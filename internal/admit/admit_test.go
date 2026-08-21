@@ -145,6 +145,12 @@ func TestCheckLinuxSearchPaths(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "non-system search path") {
 		t.Fatalf("err = %v, want non-system search path", err)
 	}
+	for _, v := range []string{"/lib64:", ":/lib64", "/lib64::/usr/lib", ""} {
+		err := checkLinuxSearchPaths([]string{v})
+		if err == nil || !strings.Contains(err.Error(), "non-system search path") {
+			t.Fatalf("checkLinuxSearchPaths(%q) = %v, want empty-segment reject", v, err)
+		}
+	}
 }
 
 func TestNativeDynamicLibsParsesELF(t *testing.T) {
