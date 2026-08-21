@@ -11,6 +11,18 @@
 
 ### Changed
 
+- **A project generation does not swap `current`
+  until the canonical project root is in
+  `~/.gale/projects`.** Registration failure
+  leaves `current` on the previous generation.
+  Read-only commands (`gale env`, `gale doctor`,
+  and the other inventory commands) no longer
+  write the registry. A project that only ever
+  ran `gale env` enters the registry on the
+  next install/sync/update/remove that publishes
+  a generation. A moved project is unregistered
+  until that next publication.
+
 - **`gale sync` rebuilds when the shared farm drifted.**
   Package versions can already match. A locked sync
   walks the lock's roots, not gale.toml's bare pins,

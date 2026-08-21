@@ -342,10 +342,9 @@ func TestRegisterPruneConcurrent(t *testing.T) {
 
 // TestRegisterAlreadyRegisteredSkipsLock: Register of an
 // already-listed project must return without touching
-// projects.lock. Register runs on command hot paths (gale env
-// via direnv, sync, newCmdContext) and must not block behind a
-// long-held lock — e.g. a Prune stat'ing a project on a dead
-// network mount.
+// projects.lock. Register runs on the publication path and
+// must not block behind a long-held lock — e.g. a Prune
+// stat'ing a project on a dead network mount.
 func TestRegisterAlreadyRegisteredSkipsLock(t *testing.T) {
 	galeHome := filepath.Join(t.TempDir(), ".gale")
 	proj := t.TempDir()
@@ -375,9 +374,8 @@ func TestRegisterAlreadyRegisteredSkipsLock(t *testing.T) {
 
 // TestRegisterAlreadyRegisteredReadOnlyGaleHome: the
 // already-registered case must succeed silently on a read-only
-// gale home (best-effort contract: a read-only gale home must
-// never block install or sync, and gale env runs Register on
-// every direnv activation).
+// gale home: the already-registered fast path must not
+// take the lock or try to create files.
 func TestRegisterAlreadyRegisteredReadOnlyGaleHome(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file permissions")
