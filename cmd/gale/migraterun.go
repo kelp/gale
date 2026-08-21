@@ -15,7 +15,6 @@ import (
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
-	"github.com/kelp/gale/internal/store"
 )
 
 // runMigrate converges the whole machine on attestable store
@@ -351,18 +350,7 @@ func readPreRevisionHolds(ctx *cmdContext, galeHome string) preRevisionHolds {
 		return h
 	}
 	h.scopes = scopes
-	// gc's own entry point, with gc's own arguments. The project pass
-	// is the context's scope when it is not the global one, exactly as
-	// gc resolves it; every other project arrives through the registry
-	// walk inside.
-	projPath, projGaleDir := "", ""
-	if ctx.GaleDir != "" && !sameDir(ctx.GaleDir, galeHome) {
-		projPath, projGaleDir = ctx.GalePath, ctx.GaleDir
-	}
-	retained, _, retErr := collectGCRetention(
-		galeHome, projPath, projGaleDir, store.NewStore(ctx.StoreRoot),
-		ctx.Resolver, ctx.versionedRecipeResolver(),
-	)
+	retained, retErr := collectKeptRetentionKeys(galeHome, ctx.StoreRoot)
 	h.retained = retained
 	h.retentionUncertain = retErr != nil
 	return h

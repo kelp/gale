@@ -329,3 +329,130 @@ func TestSweepTransientDoesNotDeleteFetchTree(t *testing.T) {
 		t.Errorf("fetch tree missing after sweep: %v", err)
 	}
 }
+
+func TestListFetchExactIdentities(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	writeMarker(t, fixtureFetchDir(root, "jq", "1.7.1", fetchSHA256A))
+	writeMarker(t, fixtureFetchDir(root, "jq", "1.7.1", fetchSHA256B))
+	writeMarker(t, fixtureFetchDir(root, "fd", "10.0.0", fetchSHA256A))
+	// Prefix sibling and staging must not appear as identities.
+	writeMarker(t, filepath.Join(root, FetchNamespace, "jq", "1.7.1"))
+	if err := os.Mkdir(filepath.Join(root, FetchNamespace, ".tmp-live"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := s.ListFetch()
+	if err != nil {
+		t.Fatalf("ListFetch: %v", err)
+	}
+	want := []FetchIdentity{
+		{Name: "fd", Version: "10.0.0", SHA12: fetchSHA12(fetchSHA256A)},
+		{Name: "jq", Version: "1.7.1", SHA12: fetchSHA12(fetchSHA256A)},
+		{Name: "jq", Version: "1.7.1", SHA12: fetchSHA12(fetchSHA256B)},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("ListFetch = %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("ListFetch[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestListFetchParsesVersionWithHyphens(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	writeMarker(t, fixtureFetchDir(root, "just", "1.48.0-rc.1", fetchSHA256A))
+
+	got, err := s.ListFetch()
+	if err != nil {
+		t.Fatalf("ListFetch: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("ListFetch = %+v, want one identity", got)
+	}
+	if got[0].Version != "1.48.0-rc.1" || got[0].SHA12 != fetchSHA12(fetchSHA256A) {
+		t.Errorf("ListFetch = %+v, want version 1.48.0-rc.1 + sha12", got[0])
+	}
+}
+
+func TestRemoveFetchDeletesExactIdentity(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	keep := fixtureFetchDir(root, "jq", "1.7.1", fetchSHA256A)
+	drop := fixtureFetchDir(root, "jq", "1.7.1", fetchSHA256B)
+	writeMarker(t, keep)
+	writeMarker(t, drop)
+
+	if err := s.RemoveFetch("jq", "1.7.1", fetchSHA12(fetchSHA256B)); err != nil {
+		t.Fatalf("RemoveFetch: %v", err)
+	}
+	if _, err := os.Stat(drop); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("removed identity still present: %v", err)
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("sibling identity deleted: %v", err)
+	}
+}
+
+func TestRemoveFetchRefusesIncompleteAndReserved(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	keep := fixtureFetchDir(root, "jq", "1.7.1", fetchSHA256A)
+	writeMarker(t, keep)
+	prefix := filepath.Join(root, FetchNamespace, "jq", "1.7.1")
+	writeMarker(t, prefix)
+
+	cases := []struct {
+		name, version, sha string
+	}{
+		{FetchNamespace, "jq", fetchSHA12(fetchSHA256A)},
+		{"jq", "1.7.1", ""},
+		{"jq", "1.7.1", "aaaa"},
+		{"jq", "1.7.1", fetchSHA256A},
+		{"jq", "1.7.1-aaaaaaaaaaaa", ""},
+	}
+	for _, tc := range cases {
+		if err := s.RemoveFetch(tc.name, tc.version, tc.sha); err == nil {
+			t.Errorf("RemoveFetch(%q, %q, %q) = nil, want error",
+				tc.name, tc.version, tc.sha)
+		}
+	}
+	if _, err := os.Stat(keep); err != nil {
+		t.Errorf("refused RemoveFetch deleted the identity: %v", err)
+	}
+	if _, err := os.Stat(prefix); err != nil {
+		t.Errorf("refused RemoveFetch deleted the prefix sibling: %v", err)
+	}
+}
+
+func TestFetchStagingAlive(t *testing.T) {
+	root := t.TempDir()
+	s := NewStore(root)
+	writeMarker(t, fixtureFetchDir(root, "jq", "1.7.1", fetchSHA256A))
+
+	alive, paths, err := s.FetchStagingAlive()
+	if err != nil {
+		t.Fatalf("FetchStagingAlive empty: %v", err)
+	}
+	if alive || len(paths) != 0 {
+		t.Errorf("FetchStagingAlive = %v, %v; want false, none", alive, paths)
+	}
+
+	staging := filepath.Join(root, FetchNamespace, ".tmp-live")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alive, paths, err = s.FetchStagingAlive()
+	if err != nil {
+		t.Fatalf("FetchStagingAlive: %v", err)
+	}
+	if !alive {
+		t.Error("FetchStagingAlive = false, want true")
+	}
+	if len(paths) != 1 || paths[0] != staging {
+		t.Errorf("FetchStagingAlive paths = %v, want [%s]", paths, staging)
+	}
+}

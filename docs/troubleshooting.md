@@ -82,8 +82,10 @@ and the active one with `*`:
 Nothing reclaims them on its own until the next rebuild
 allocates above the highest number. Automatic retention
 then prunes history below the keep-2 cutoff.
-`gale gc` skips everything at or above `current`.
-`gale gc -n` reports how many are being retained.
+`gale gc` keeps current and at most one previous
+generation.
+Abandoned generations above current are swept.
+`gale gc -n` reports what would be removed.
 
 ### Build failures
 

@@ -178,12 +178,15 @@ func TestGCRetainsDepsFromInstalledMetadata(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	mkActiveGen(t, galeDir, 1, filepath.Join(curlDir, "bin", "curl"))
 
 	_ = gcCmd.RunE(gcCmd, nil)
 
-	if _, err := os.Stat(osslDir); err != nil {
-		t.Errorf("openssl/3.5.0-1 is recorded in curl's "+
-			".gale-deps.toml and must survive gc: %v", err)
+	if _, err := os.Stat(curlDir); err != nil {
+		t.Errorf("curl is linked by a kept gen: %v", err)
+	}
+	if _, err := os.Stat(osslDir); !os.IsNotExist(err) {
+		t.Errorf("openssl is only in deps-meta and must be swept, err=%v", err)
 	}
 }
 
@@ -201,9 +204,8 @@ func TestGCRetainsOtherHostPins(t *testing.T) {
 
 	_ = gcCmd.RunE(gcCmd, nil)
 
-	if _, err := os.Stat(jqDir); err != nil {
-		t.Errorf("jq/1.7-1 is pinned by another host's overlay "+
-			"and must survive gc: %v", err)
+	if _, err := os.Stat(jqDir); !os.IsNotExist(err) {
+		t.Errorf("host overlay pin with no kept-gen link must be swept, err=%v", err)
 	}
 }
 
@@ -263,6 +265,7 @@ func TestGCSweepsCrashLeftovers(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
 	writeGlobalConfig(t, galeDir, "[packages]\njq = \"1.8.1\"\n")
 	jqDir := mkStorePkg(t, storeRoot, "jq", "1.8.1-1")
+	mkActiveGen(t, galeDir, 1, filepath.Join(jqDir, "bin", "jq"))
 
 	leftovers := []string{
 		filepath.Join(storeRoot, "jq", ".build-abc123"),

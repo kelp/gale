@@ -39,10 +39,10 @@ import (
 // on the lock, waits for the simulated Build to finish,
 // then only reaps generations with n < curGen (gen/1).
 //
-// Expected outcome after the fix:
-//   - gen/3 still exists (in-flight gen was not deleted)
-//   - gen/1 is gone (genuine old gen was reaped)
-//   - current still points at gen/2 (no swap happened)
+// Expected outcome after mark-and-sweep: gc waits for the
+// lock, then treats the unswapped gen/4 as not kept (it is
+// neither current nor current-1) and reaps it. gen/1 goes;
+// gen/2 and gen/3 stay; current stays at 3.
 func TestAudit_GcVsBuildRace(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := filepath.Join(galeDir, "pkg")
@@ -116,11 +116,10 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 	gen2Gone := os.IsNotExist(errGen2)
 	curAfter, _ := generation.Current(galeDir)
 
-	if gen4Gone {
+	if !gen4Gone {
 		t.Errorf(
-			"CONFIRMED: cleanOldGenerations deleted in-flight "+
-				"gen/4 while Build held the generation lock "+
-				"(curGen=3, symlink not yet swapped). "+
+			"unswapped in-flight gen/4 is not a kept generation "+
+				"and must be reaped after generation.lock is released, "+
 				"stat err: %v", errGen4,
 		)
 	}

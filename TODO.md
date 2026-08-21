@@ -277,7 +277,7 @@ Adopt already shipped at the cutover.
 - [x] **gale-recipes: strip the farm.**
       Remove promote / ledger / verify-build
       CI. Recipes become index TOML.
-- [ ] **gc mark and sweep under the same
+- [x] **gc mark and sweep under the same
       lock as publication.** Retention =
       the two kept generations' exact
       targets, every registered scope.

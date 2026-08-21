@@ -105,67 +105,40 @@ to list both with section headers.
 .Dl $ gale list
 .Dl $ gale list --scope host
 .Dl $ gale list -a
-.It Cm gc Op Fl -force
+.It Cm gc
 Remove unused package versions from the store and
 old generations.
-Keeps versions referenced by any
-.Pa gale.toml ,
-by the active generation, and by every generation above
-the active one, in the global scope, the project scope,
-and every project recorded in
-.Pa ~/.gale/projects ,
-so a gc run from one directory cannot sweep versions
-another project still links.
+Keeps the exact store directories linked by the
+current generation and at most one previous
+generation, in the global scope and every project
+recorded in
+.Pa ~/.gale/projects .
+A config pin or host overlay that no kept generation
+links is swept.
+Abandoned generations above current after a rollback
+are swept with the versions only they linked.
 .Pp
-The generations above the current one are the branch a
-rollback abandoned.
-Their directories are never removed automatically, so the
-versions they link are never swept either: a generation
-whose packages are gone cannot be rolled onto.
-The next rebuild allocates above the highest number;
-keep-2 then prunes history below the new cutoff.
-Generations below the current one are removed, and the
-versions only they linked are reclaimed \(em that is how a
-superseded revision goes after
-.Cm update .
+Never deletes a live fetch staging directory
+.Pq Pa pkg/fetch/.tmp-* .
+If any such directory exists, the fetch-namespace
+sweep is refused; other store layout may still sweep.
+Unlinked fetch identities younger than one hour are
+kept.
+.Pp
+Refuses to sweep when a registered project's kept
+generations cannot be read.
+There is no
+.Fl -force .
+.Pp
 Registry entries whose project directory has vanished
 are pruned on each real run.
-Each build of a dirty tree installed with
-.Ic install Fl -path
-keeps its own store directory, so a development loop
-accumulates them.
-.Nm Cm gc
-is how they are reclaimed, once no generation links
-them.
 With
 .Fl -dry-run ,
 also lists the registered projects that contributed
 retention.
 .Pp
-Refuses to sweep, naming the project, when a registered
-project still exists but its config or its active
-generation cannot be read.
-An unreadable project is not proof that its packages are
-unreferenced; a down network mount is the usual cause.
-A project that is genuinely gone reads as absent and
-sweeps normally.
-Use
-.Fl -force
-to sweep anyway.
-.Pp
-When gc rebuilds a generation it takes the versions from
-that scope's lockfile, so the rebuild cannot put a version
-the lock does not name on PATH.
-A scope whose lockfile is present and cannot be read is
-refused, including under
-.Fl -force .
-Sweep
-.Fl -force
-is unchanged.
-.Pp
 .Dl $ gale gc --dry-run
 .Dl $ gale gc
-.Dl $ gale gc --force
 .El
 .Ss Inspection
 .Bl -tag -width Ds
@@ -246,8 +219,8 @@ gone; activating it would put broken entries on PATH.
 Rebuild from config with
 .Cm sync ,
 or rerun
-.Cm gc Fl -force
-after it falls below current.
+.Cm gc
+after it falls below the two kept generations.
 .Pp
 .Dl $ gale generations rollback
 .Dl $ gale generations rollback 3
@@ -620,8 +593,8 @@ to PATH.
 Machine-local project registry, one absolute path per
 line, recorded automatically on project-scoped use.
 .Cm gc
-retains every registered project's pins and active
-generation.
+retains every registered project's two kept
+generations.
 .It Pa gale.toml
 Project package declarations.
 .It Pa gale.lock

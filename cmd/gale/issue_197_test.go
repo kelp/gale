@@ -5,7 +5,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/generation"
@@ -15,15 +14,10 @@ import (
 	"github.com/kelp/gale/internal/store"
 )
 
-// gh#197: gc rebuilds a generation from the recipe and the store,
-// which after a revision bump or a withdrawn revision is a second
-// version selector. It can therefore activate a version the scope's
-// lock does not name, and at global scope design §12 runs no
-// activation gate, so nothing downstream ever notices.
+// gh#197 leftovers: gc no longer rebuilds a generation.
+// A withdrawn recipe revision is not a version selector for gc.
 //
 // One package at two revisions throughout: 1.48.0-1 and 1.48.0-2.
-// Which of the two the lock names differs per test: gc's rebuild
-// resolves the recipe and walks DOWN to a withdrawn revision.
 const (
 	issue197Pkg  = "just"
 	issue197Ver  = "1.48.0"
@@ -72,39 +66,10 @@ func justAtRevision(rev int) versionedRecipeResolver {
 	}
 }
 
-// writeJustRecipes writes the letter-bucketed local recipe tree gc
-// resolves through --recipes and returns its path. gc builds its own
-// resolver inside RunE, so a file is the only way to tell the command
-// which revision the recipe currently offers.
-func writeJustRecipes(t *testing.T, rev int) string {
-	t.Helper()
-	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, issue197Pkg[:1], issue197Pkg+".toml"),
-		strings.Join([]string{
-			`[package]`,
-			`name = "` + issue197Pkg + `"`,
-			`version = "` + issue197Ver + `"`,
-			fmt.Sprintf("revision = %d", rev),
-			``,
-			`[source]`,
-			`url = "https://example.invalid/just.tar.gz"`,
-			`sha256 = "deadbeef"`,
-		}, "\n"))
-	return dir
-}
-
-// runGC drives the real command against a local recipe tree that
-// offers revision 1 — the recipe after the bump was withdrawn — so the
-// resolver, the superseded-orphan gate and the rebuild are the
-// production ones.
 func runGC(t *testing.T) error {
 	t.Helper()
-	gcRecipes = writeJustRecipes(t, 1)
 	dryRun = false
-	t.Cleanup(func() {
-		gcRecipes = ""
-		dryRun = false
-	})
+	t.Cleanup(func() { dryRun = false })
 	return gcCmd.RunE(gcCmd, nil)
 }
 
@@ -193,8 +158,16 @@ func TestGCRebuildDoesNotActivateAnUnlockedRevision(t *testing.T) {
 		t.Fatalf("gc: %v", err)
 	}
 
-	assertGenerationMatchesLock(t, galeDir, storeRoot, lockPath, fetchDir,
-		map[string]string{issue197Pkg: issue197Ver})
+	active, err := generation.CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("reading the active generation: %v", err)
+	}
+	if active[issue197Pkg] != issue197Rev2 {
+		t.Errorf("gc must not rebuild; active = %v, want %s",
+			active, issue197Rev2)
+	}
+	_ = fetchDir
+	_ = lockPath
 }
 
 // TestGCRebuildHonorsAProjectLock is the same defect one scope over.
@@ -216,12 +189,27 @@ func TestGCRebuildHonorsAProjectLock(t *testing.T) {
 	}
 	fetchDir := writeIssue197V2(t, storeRoot, lockPath)
 
+	if err := os.WriteFile(
+		filepath.Join(os.Getenv("HOME"), ".gale", "projects"),
+		[]byte(proj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
 	if err := runGC(t); err != nil {
 		t.Fatalf("gc: %v", err)
 	}
 
-	assertGenerationMatchesLock(t, projGaleDir, storeRoot, lockPath, fetchDir,
-		map[string]string{issue197Pkg: issue197Ver})
+	active, err := generation.CurrentVersions(projGaleDir, storeRoot)
+	if err != nil {
+		t.Fatalf("reading the active generation: %v", err)
+	}
+	if active[issue197Pkg] != issue197Rev2 {
+		t.Errorf("gc must not rebuild; active = %v, want %s",
+			active, issue197Rev2)
+	}
+	_ = fetchDir
+	_ = lockPath
 }
 
 // issue197UnusableLockFixture is the shared setup for the refusal
@@ -250,48 +238,8 @@ func issue197UnusableLockFixture(t *testing.T) (string, string) {
 func TestGCRefusesRebuildOnAnUnusableLock(t *testing.T) {
 	galeDir, storeRoot := issue197UnusableLockFixture(t)
 
-	err := runGC(t)
-	if err == nil {
-		t.Fatal("gc must refuse to rebuild against a lock it cannot model")
-	}
-	if code := exitCodeFor(err); code != exitLockUnusable {
-		t.Errorf("exit code = %d, want %d (%v)", code, exitLockUnusable, err)
-	}
-	if !strings.Contains(err.Error(), "gale fetch-adopt") {
-		t.Errorf("the refusal must name fetch-adopt, got: %v", err)
-	}
-	if strings.Contains(err.Error(), "--force") {
-		t.Errorf("the refusal must not advertise --force rebuild, got: %v", err)
-	}
-	// The refusal is a refusal: the generation is left exactly as it
-	// was, not half-rebuilt.
-	active, cErr := generation.CurrentVersions(galeDir, storeRoot)
-	if cErr != nil {
-		t.Fatalf("reading the active generation: %v", cErr)
-	}
-	if active[issue197Pkg] != issue197Rev2 {
-		t.Errorf("active generation = %v, want %s untouched",
-			active, issue197Rev2)
-	}
-}
-
-// TestGCForceDoesNotRebuildPastUnusableLock: rebuild --force
-// cannot walk past a lock that is present and cannot be modeled.
-// Sweep --force is a different flag site.
-func TestGCForceDoesNotRebuildPastUnusableLock(t *testing.T) {
-	galeDir, storeRoot := issue197UnusableLockFixture(t)
-	gcForce = true
-	t.Cleanup(func() { gcForce = false })
-
-	err := runGC(t)
-	if err == nil {
-		t.Fatal("gc --force must not rebuild past a present unusable lock")
-	}
-	if code := exitCodeFor(err); code != exitLockUnusable {
-		t.Errorf("exit code = %d, want %d (%v)", code, exitLockUnusable, err)
-	}
-	if strings.Contains(err.Error(), "--force") {
-		t.Errorf("refusal must not advertise --force rebuild, got: %v", err)
+	if err := runGC(t); err != nil {
+		t.Fatalf("gc must not rebuild, so an unusable lock is not an error: %v", err)
 	}
 	active, cErr := generation.CurrentVersions(galeDir, storeRoot)
 	if cErr != nil {

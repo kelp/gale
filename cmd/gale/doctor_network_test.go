@@ -64,7 +64,7 @@ func TestDoctorHasNoRepairFlag(t *testing.T) {
 	}
 }
 
-// TestDoctorHasNoForceFlag pins the same deletion. gc --force stays;
+// TestDoctorHasNoForceFlag pins the same deletion. gc --force is gone;
 // doctor's --force was only the repair escape hatch.
 func TestDoctorHasNoForceFlag(t *testing.T) {
 	if f := doctorCmd.Flags().Lookup("force"); f != nil {

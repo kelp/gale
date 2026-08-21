@@ -11,6 +11,20 @@
 
 ### Changed
 
+- **gc mark and sweep.** `gale gc` retains the
+  exact store targets of current plus one
+  previous generation in every registered
+  scope. Abandoned generations above current
+  are sweepable. Config pins, host overlays,
+  deps-meta, and the recipe resolver are not
+  retention sources. `--force` and `--recipes`
+  are gone. Incomplete retention refuses with
+  no escape hatch. Live `pkg/fetch/.tmp-*`
+  staging is never deleted; its presence
+  refuses the fetch-namespace sweep. Young
+  unlinked fetch destinations survive a one
+  hour grace.
+
 - **gale-recipes: strip the farm.** Promote /
   ledger / verify-build CI, leftover source
   recipes, and `.binaries.toml` ledgers are
