@@ -1,9 +1,12 @@
 package gitutil
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -195,5 +198,148 @@ func TestRepoURLPassesThroughFullURL(t *testing.T) {
 	if got != url {
 		t.Errorf("RepoURL(%q) = %q, want passthrough",
 			url, got)
+	}
+}
+
+func setupWorkRepo(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	run(t, dir, "git", "init")
+	run(t, dir, "git", "config", "user.email", "test@test.com")
+	run(t, dir, "git", "config", "user.name", "Test")
+	run(t, dir, "git", "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "git", "add", "README")
+	run(t, dir, "git", "commit", "-m", "initial")
+	return dir
+}
+
+func fullHead(t *testing.T, dir string) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "HEAD")
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+func TestHeadReturnsFullHash(t *testing.T) {
+	dir := setupWorkRepo(t)
+	want := fullHead(t, dir)
+	got, err := Head(t.Context(), dir)
+	if err != nil {
+		t.Fatalf("Head: %v", err)
+	}
+	if got != want {
+		t.Errorf("Head = %q, want %q", got, want)
+	}
+	if len(got) != 40 {
+		t.Errorf("Head length %d, want 40: %q", len(got), got)
+	}
+	short, err := RemoteHead(dir, "")
+	if err != nil {
+		t.Fatalf("RemoteHead: %v", err)
+	}
+	if got == short {
+		t.Errorf("Head must not be RemoteHead's short hash %q", short)
+	}
+}
+
+func TestHeadCanceled(t *testing.T) {
+	dir := setupWorkRepo(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := Head(ctx, dir)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Head canceled: %v, want context.Canceled", err)
+	}
+}
+
+func TestShowReadsPinnedPath(t *testing.T) {
+	dir := setupWorkRepo(t)
+	path := filepath.Join("index", "j", "jq.toml")
+	if err := os.MkdirAll(filepath.Join(dir, "index", "j"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, path), []byte("committed\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	run(t, dir, "git", "add", path)
+	run(t, dir, "git", "commit", "-m", "index")
+	commit := fullHead(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, path), []byte("dirty\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := Show(t.Context(), dir, commit, path)
+	if err != nil {
+		t.Fatalf("Show: %v", err)
+	}
+	if string(got) != "committed\n" {
+		t.Errorf("Show = %q, want committed bytes", got)
+	}
+}
+
+func TestShowMissingIsErrNotExist(t *testing.T) {
+	dir := setupWorkRepo(t)
+	commit := fullHead(t, dir)
+	_, err := Show(t.Context(), dir, commit, "index/j/jq.toml")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Show missing: %v, want os.ErrNotExist", err)
+	}
+}
+
+func TestShowUnknownCommitIsNotErrNotExist(t *testing.T) {
+	dir := setupWorkRepo(t)
+	missing := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	_, err := Show(t.Context(), dir, missing, "README")
+	if err == nil {
+		t.Fatal("Show unknown commit: want error")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unknown commit must not look like a missing path: %v", err)
+	}
+}
+
+func TestShowCanceled(t *testing.T) {
+	dir := setupWorkRepo(t)
+	commit := fullHead(t, dir)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := Show(ctx, dir, commit, "README")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Show canceled: %v, want context.Canceled", err)
+	}
+}
+
+func TestRemoteTipReturnsFullHash(t *testing.T) {
+	bare := setupBareRepo(t)
+	got, err := RemoteTip(t.Context(), bare, "")
+	if err != nil {
+		t.Fatalf("RemoteTip: %v", err)
+	}
+	if len(got) != 40 {
+		t.Errorf("RemoteTip length %d, want 40: %q", len(got), got)
+	}
+	short, err := RemoteHead(bare, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(got, short) {
+		t.Errorf("RemoteTip %q should start with RemoteHead %q", got, short)
+	}
+}
+
+func TestRemoteTipCanceled(t *testing.T) {
+	bare := setupBareRepo(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err := RemoteTip(ctx, bare, "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("RemoteTip canceled: %v, want context.Canceled", err)
 	}
 }
