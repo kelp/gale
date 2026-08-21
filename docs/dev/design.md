@@ -312,6 +312,9 @@ No git clone needed for installation.
 Recipe TOML and `index.tsv` responses are cached under
 `~/.gale/cache/registry/<sha256(url)>/{body,etag,not_found}`.
 The cache is a documented optimization, not silent state.
+A fetch-archive cache at
+`~/.gale/cache/artifacts/<sha256>` is parked
+(Milestone 6, off by default, or never).
 Rules:
 
 - **First fetch** writes body + ETag. Subsequent fetches send

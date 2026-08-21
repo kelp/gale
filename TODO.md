@@ -254,7 +254,7 @@ Not-in-index is an error.
       `install` always writes a lock.
       Refuse to rebuild a locked generation
       from the store or manifest alone.
-- [ ] **Park the local artifact cache.**
+- [x] **Park the local artifact cache.**
       Milestone 6, off by default, or never.
 - [ ] **Grow the catalog by admission.**
       After the cutover is boring. Batches
