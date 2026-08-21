@@ -11,6 +11,14 @@
 
 ### Changed
 
+- **`gale gc` keeps the previous generation.**
+  Retention is the compiled constant 2 (current +
+  one previous, plus every gen at or above
+  current), the same cutoff auto-prune already
+  uses. Leftover `[generation] keep` cannot widen
+  or disable it. Resolver, network, and generation
+  rebuild stay until the Milestone 5 rewrite.
+
 - **Install, sync, outdated, and sbom run
   serially.** One package and one dependency at a
   time, in deterministic order. `internal/parallel`

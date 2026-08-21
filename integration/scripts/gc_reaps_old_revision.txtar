@@ -15,6 +15,11 @@ exec gale update hello --recipes=$WORK/recipes
 exists $HOME/.gale/pkg/hello/1.0-1
 exists $HOME/.gale/pkg/hello/1.0-2
 
+# A third generation moves gen/1 below the keep-2 window
+# so gc can reap hello@1.0-1 without hollowing the previous
+# generation.
+exec gale install hello-dep -g --recipes=$WORK/recipes
+
 exec gale gc --recipes=$WORK/recipes
 stderr 'Removed hello@1\.0-1'
 

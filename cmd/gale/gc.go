@@ -828,30 +828,31 @@ func addPackageRefs(
 	}
 }
 
-// cleanOldGenerations removes all generation directories
-// older than the current one. Returns the count of generations
-// removed (or flagged in dry-run mode).
+// cleanOldGenerations removes generation directories that
+// generation.RetainedNumbers does not name — the keep-2 window
+// plus the branch above current. Returns the count of
+// generations removed (or flagged in dry-run mode).
 //
 // The function holds the generation lock for its entire
 // execution so it serializes with generation.Build. Inside
-// the lock, curGen is read first so that an in-flight Build
-// that has created gen/N+1 but not yet swapped current is
-// never considered for deletion (n < curGen is the criterion,
-// not n != curGen).
-//
-// The generations it leaves alone — curGen and the branch above
-// it — are exactly the ones generation.RetainedNumbers reports,
-// so gc retains their store closures too. A directory kept
-// without the versions it links is a hollow generation (gh#247).
+// the lock, RetainedNumbers is the sole policy so an in-flight
+// Build that has created gen/N+1 but not yet swapped current
+// is retained (it is at or above the cutoff), and a directory
+// gc keeps cannot lose its store closure (gh#247).
 func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 	out := newOutput()
 	genRoot := filepath.Join(galeDir, "gen")
 	lockPath := genLockPath(storeRoot)
 	var removed int
 	_ = filelock.With(lockPath, func() error {
-		// Read curGen first (while holding the lock) so the
-		// snapshot is consistent with the directory listing.
-		curGen, _ := generation.Current(galeDir)
+		keep, err := generation.RetainedNumbers(galeDir)
+		if err != nil {
+			return nil //nolint:nilerr
+		}
+		keepSet := make(map[int]bool, len(keep))
+		for _, n := range keep {
+			keepSet[n] = true
+		}
 		entries, err := os.ReadDir(genRoot)
 		if err != nil {
 			return nil //nolint:nilerr
@@ -861,9 +862,7 @@ func cleanOldGenerations(galeDir, storeRoot string, dry bool) int {
 				continue
 			}
 			n, err := strconv.Atoi(e.Name())
-			if err != nil || n >= curGen {
-				// Skip non-numeric entries and anything at or
-				// above curGen (includes in-flight gen/N+1).
+			if err != nil || keepSet[n] {
 				continue
 			}
 			genPath := filepath.Join(genRoot, e.Name())
