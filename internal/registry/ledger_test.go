@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"fmt"
 	"net/http/httptest"
 	"runtime"
@@ -73,7 +74,7 @@ func TestFetchRecipeUsesLedger(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -108,7 +109,7 @@ func TestFetchRecipeFallsThroughWithoutLedger(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -158,7 +159,7 @@ linux-arm64 = { sha256 = "333333333333333333333333333333333333333333333333333333
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestFetchRecipeVersionLedgerHead(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.8.1-5")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.8.1-5")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -255,7 +256,7 @@ linux-amd64 = { sha256 = "999999999999999999999999999999999999999999999999999999
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -369,7 +370,7 @@ func TestFetchRecipeStaleRefTipDefersToVersions(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -479,7 +480,7 @@ func TestFetchRecipeVersionInlineRefTipDefersToVersions(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.8.1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.8.1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -509,7 +510,7 @@ func TestFetchRecipeVersionHistoricalUsesLedger(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -555,7 +556,7 @@ darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -630,7 +631,7 @@ func TestFetchRecipeVersionHistoricalCommitFetchesRecipe(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -675,7 +676,7 @@ darwin-arm64 = { sha256 = "13ee22e3d3a77d25d89cd1a8d7e4d4f8d37cbfa230313f0c1e865
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -721,7 +722,7 @@ func TestFetchRecipeVersionHistoricalCommitFallsBackToOverride(t *testing.T) {
 			defer srv.Close()
 
 			reg := testRegistry(srv.URL)
-			rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+			rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1-1")
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
 			}
@@ -780,7 +781,7 @@ linux-amd64 = { sha256 = "4a7ddc31de1c4b8330565d1dbf671bd8f60867dde02b40bd04f455
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.7.1-1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

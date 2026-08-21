@@ -89,7 +89,7 @@ func SetTokenEndpoint(u string) string {
 // environment variable is set, its value is returned
 // directly without making any HTTP request or touching
 // the cache.
-func Token(repository string) (string, error) {
+func Token(ctx context.Context, repository string) (string, error) {
 	if tok := os.Getenv("GALE_GITHUB_TOKEN"); tok != "" {
 		return tok, nil
 	}
@@ -122,7 +122,7 @@ func Token(repository string) (string, error) {
 	// Only the leader goroutine performs the HTTP fetch.
 	defer timing.Phase("ghcr-token " + repository)()
 
-	tok, expiresAt, fetchErr := fetchToken(repository)
+	tok, expiresAt, fetchErr := fetchToken(ctx, repository)
 
 	// Store result in the in-flight struct, then signal waiters.
 	globalCache.mu.Lock()
@@ -145,14 +145,14 @@ func Token(repository string) (string, error) {
 // fetchToken performs the HTTP call to the GHCR token endpoint
 // and returns the token string, its computed expiry, and any
 // error.
-func fetchToken(repository string) (string, time.Time, error) {
+func fetchToken(ctx context.Context, repository string) (string, time.Time, error) {
 	scope := fmt.Sprintf("repository:%s:pull", repository)
 	reqURL := fmt.Sprintf("%s?service=%s&scope=%s",
 		tokenEndpoint,
 		url.QueryEscape("ghcr.io"),
 		url.QueryEscape(scope))
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {

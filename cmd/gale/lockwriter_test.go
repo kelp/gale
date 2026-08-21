@@ -8,6 +8,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -339,7 +340,7 @@ func TestSyncWritesNoLockfile(t *testing.T) {
 	))
 	defer srv.Close()
 
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return &recipe.Recipe{
 			Package: recipe.Package{Name: name, Version: "1.0"},
 			Source:  recipe.Source{URL: srv.URL + "/source.tar.gz", SHA256: sum},
@@ -352,7 +353,7 @@ func TestSyncWritesNoLockfile(t *testing.T) {
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	out := runSyncOne(ctx, syncItem{name: "syncpkg", version: "1.0"}, false)
+	out := runSyncOne(context.Background(), ctx, syncItem{name: "syncpkg", version: "1.0"}, false)
 	if out.installErr != nil || out.result == nil {
 		t.Fatalf("install did not succeed: err=%v result=%v",
 			out.installErr, out.result)

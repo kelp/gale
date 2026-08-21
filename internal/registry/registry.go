@@ -186,20 +186,20 @@ func (r *Registry) warn(format string, args ...any) {
 // package has no usable .versions index, it falls back to the
 // legacy two-file fetch against the configured ref. Uses an
 // ETag-based HTTP cache under r.CacheDir when set.
-func (r *Registry) FetchRecipe(name string) (*recipe.Recipe, error) {
+func (r *Registry) FetchRecipe(ctx context.Context, name string) (*recipe.Recipe, error) {
 	// Ledger-first (gh#121): when the ref-tip .binaries.toml carries
 	// a [[history]] ledger, ref-tip is coherent by construction (CI
 	// appends to the ledger atomically), so resolve the latest from
 	// it and pull the binary by its immutable manifest digest. No
 	// commit pin is needed.
-	rec, ledgerOK, err := r.fetchLatestRefTip(name)
+	rec, ledgerOK, err := r.fetchLatestRefTip(ctx, name)
 	if err == nil && ledgerOK && len(rec.Binary) > 0 {
 		return rec, nil
 	}
 
 	// No ledger: the ref-tip may lag .versions (the mutable-main-ref
 	// race), so resolve via the .versions commit pin instead.
-	pinned, perr := r.fetchLatestPinned(name)
+	pinned, perr := r.fetchLatestPinned(ctx, name)
 	if perr == nil {
 		return pinned, nil
 	}
@@ -236,15 +236,15 @@ var errNoVersionIndex = errors.New("no version index")
 // An inline-binary recipe returns immediately without touching
 // .binaries.toml (ledgerOK=false). A fetch error (404, network) is
 // returned so FetchRecipe can fall back.
-func (r *Registry) fetchLatestRefTip(name string) (rec *recipe.Recipe, ledgerOK bool, err error) {
-	rec, err = r.fetchRecipe(name, false)
+func (r *Registry) fetchLatestRefTip(ctx context.Context, name string) (rec *recipe.Recipe, ledgerOK bool, err error) {
+	rec, err = r.fetchRecipe(ctx, name, false)
 	if err != nil {
 		return nil, false, err
 	}
 	if len(rec.Binary) > 0 {
 		return rec, false, nil
 	}
-	idx, ferr := r.fetchBinaries(name)
+	idx, ferr := r.fetchBinaries(ctx, name)
 	if ferr != nil || idx == nil {
 		// A missing or unparseable binary index is non-fatal: the
 		// recipe still resolves and the caller source-builds.
@@ -259,14 +259,14 @@ func (r *Registry) fetchLatestRefTip(name string) (rec *recipe.Recipe, ledgerOK 
 // .binaries.toml at that single commit — the atomic-resolution
 // path. Returns errNoVersionIndex when the index is absent,
 // unparseable, or empty so FetchRecipe can fall back.
-func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
+func (r *Registry) fetchLatestPinned(ctx context.Context, name string) (*recipe.Recipe, error) {
 	if err := ValidName(name); err != nil {
 		return nil, fmt.Errorf("fetch recipe: %w", err)
 	}
 
 	defer timing.Phase("recipe-fetch " + name)()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	idx, err := r.fetchVersionIndex(ctx, name)
@@ -316,7 +316,7 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 	// Once CI rewrites .versions to point at the binaries commit,
 	// the pinned fetch above matches and this never fires.
 	if len(rec.Binary) == 0 {
-		idx, ferr := r.fetchBinaries(name)
+		idx, ferr := r.fetchBinaries(ctx, name)
 		if ferr == nil && idx != nil {
 			recipe.MergeBinariesForRecipe(rec, idx, ghcrBaseFromURL(r.BaseURL))
 			if len(rec.Binary) > 0 {
@@ -334,7 +334,7 @@ func (r *Registry) fetchLatestPinned(name string) (*recipe.Recipe, error) {
 	// record the skew for a once-per-command summary (drained via
 	// TakeSkewed).
 	if len(rec.Binary) == 0 {
-		if tipRec, ferr := r.fetchRecipe(name, true); ferr == nil && len(tipRec.Binary) > 0 {
+		if tipRec, ferr := r.fetchRecipe(ctx, name, true); ferr == nil && len(tipRec.Binary) > 0 {
 			recordSkew(name)
 			return tipRec, nil
 		}
@@ -426,14 +426,14 @@ func mapKeys(idx map[string]string) []string {
 // binary distribution map. Saves one HTTP request per
 // invocation — significant for cache-cold runs against the
 // real registry. See audit/readonly/network-perf/0005.
-func (r *Registry) FetchRecipeMetadata(name string) (*recipe.Recipe, error) {
-	return r.fetchRecipe(name, false)
+func (r *Registry) FetchRecipeMetadata(ctx context.Context, name string) (*recipe.Recipe, error) {
+	return r.fetchRecipe(ctx, name, false)
 }
 
 // fetchRecipe is the shared implementation. When mergeBinaries
 // is true the legacy behavior is preserved (extra
 // .binaries.toml fetch when no inline binaries are declared).
-func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe, error) {
+func (r *Registry) fetchRecipe(ctx context.Context, name string, mergeBinaries bool) (*recipe.Recipe, error) {
 	if err := ValidName(name); err != nil {
 		return nil, fmt.Errorf("fetch recipe: %w", err)
 	}
@@ -444,7 +444,7 @@ func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe,
 	url := fmt.Sprintf("%s/recipes/%s/%s.toml",
 		r.BaseURL, bucket, name)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cr, err := r.cachedGet(ctx, url)
 	if err != nil {
@@ -459,7 +459,7 @@ func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe,
 	// If the recipe has no inline binary entries, try to
 	// fetch a separate .binaries.toml file.
 	if mergeBinaries && len(rec.Binary) == 0 {
-		idx, err := r.fetchBinaries(name)
+		idx, err := r.fetchBinaries(ctx, name)
 		if err != nil {
 			return nil, err
 		}
@@ -475,7 +475,7 @@ func (r *Registry) fetchRecipe(name string, mergeBinaries bool) (*recipe.Recipe,
 // FetchRecipeVersion fetches a recipe at a specific version
 // by looking up the commit hash in the .versions index, then
 // fetching the recipe at that commit.
-func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, error) {
+func (r *Registry) FetchRecipeVersion(ctx context.Context, name, version string) (*recipe.Recipe, error) {
 	if err := ValidName(name); err != nil {
 		return nil, err
 	}
@@ -484,11 +484,11 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 	// Ledger-first (gh#121, gh#130): resolve any @version pin from
 	// [[history]] when present; fall back to .versions only when
 	// the ledger has no matching entry.
-	if rec, ok := r.fetchVersionFromLedger(name, version); ok {
+	if rec, ok := r.fetchVersionFromLedger(ctx, name, version); ok {
 		return rec, nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	idx, err := r.fetchVersionIndex(ctx, name)
 	if err != nil {
@@ -519,8 +519,8 @@ func (r *Registry) FetchRecipeVersion(name, version string) (*recipe.Recipe, err
 // (gh#121); entries without a usable commit fall back to the
 // ref-tip recipe with version overridden from the ledger entry and
 // binaries merged from that entry (gh#130).
-func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recipe, bool) {
-	idx, err := r.fetchBinaries(name)
+func (r *Registry) fetchVersionFromLedger(ctx context.Context, name, requested string) (*recipe.Recipe, bool) {
+	idx, err := r.fetchBinaries(ctx, name)
 	if err != nil || idx == nil || len(idx.History) == 0 {
 		return nil, false
 	}
@@ -532,11 +532,11 @@ func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recip
 	head, headOK := idx.PickHistoryLatest()
 	isHead := headOK && entry.Version == head.Version
 	if !isHead {
-		if rec, ok := r.fetchHistoricalAtCommit(name, entry, ghcrBase); ok {
+		if rec, ok := r.fetchHistoricalAtCommit(ctx, name, entry, ghcrBase); ok {
 			return rec, true
 		}
 	}
-	rec, err := r.fetchRecipe(name, false)
+	rec, err := r.fetchRecipe(ctx, name, false)
 	if err != nil {
 		return nil, false
 	}
@@ -563,7 +563,7 @@ func (r *Registry) fetchVersionFromLedger(name, requested string) (*recipe.Recip
 // or the recipe at the commit does not match the entry's version;
 // the caller then falls back to the ref-tip override path (gh#130).
 func (r *Registry) fetchHistoricalAtCommit(
-	name string, entry recipe.BinaryHistoryEntry, ghcrBase string,
+	ctx context.Context, name string, entry recipe.BinaryHistoryEntry, ghcrBase string,
 ) (*recipe.Recipe, bool) {
 	if !validCommitHash.MatchString(entry.Commit) {
 		return nil, false
@@ -572,7 +572,7 @@ func (r *Registry) fetchHistoricalAtCommit(
 	recipeURL := fmt.Sprintf("%s/%s/recipes/%s/%s.toml",
 		r.repoBase(), entry.Commit, bucket, name)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	cr, err := r.cachedGet(ctx, recipeURL)
 	if err != nil {
@@ -595,12 +595,12 @@ func (r *Registry) fetchHistoricalAtCommit(
 // at the configured ref tip. Returns nil (not error) if the
 // file is not found or the network is unreachable — the caller
 // falls back to source build. Uses the ETag cache when enabled.
-func (r *Registry) fetchBinaries(name string) (*recipe.BinaryIndex, error) {
+func (r *Registry) fetchBinaries(ctx context.Context, name string) (*recipe.BinaryIndex, error) {
 	bucket := string(name[0])
 	url := fmt.Sprintf("%s/recipes/%s/%s.binaries.toml",
 		r.BaseURL, bucket, name)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	return r.fetchBinariesURL(ctx, name, url)
 }

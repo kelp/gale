@@ -9,6 +9,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"testing"
 
 	"github.com/kelp/gale/internal/output"
@@ -24,7 +25,7 @@ func TestCheckOutdatedGitHashNotReportedAsOutdated(t *testing.T) {
 	// The installed version is a bare git hash — non-semver.
 	// The invariant: a read-only report command must not flag a
 	// package as outdated solely because of version format mismatch.
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return &recipe.Recipe{
 			Package: recipe.Package{
 				Name:     name,
@@ -56,7 +57,7 @@ func TestCheckOutdatedGitHashNotReportedAsOutdated(t *testing.T) {
 // when both installed and latest are the same git hash, the package
 // is not reported as outdated.
 func TestCheckOutdatedGitHashSameAsLatestNotOutdated(t *testing.T) {
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		// Recipe version is also a git hash (edge case).
 		return &recipe.Recipe{
 			Package: recipe.Package{
@@ -87,7 +88,7 @@ func TestCheckOutdatedGitHashSameAsLatestNotOutdated(t *testing.T) {
 // TestCheckOutdatedSemverStillWorks verifies the normal (semver)
 // case is unaffected by the git-hash guard.
 func TestCheckOutdatedSemverStillWorks(t *testing.T) {
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return &recipe.Recipe{
 			Package: recipe.Package{
 				Name:     name,

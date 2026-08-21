@@ -10,6 +10,7 @@
 package build
 
 import (
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"net/http"
@@ -373,7 +374,7 @@ func TestBuildEvictsCorruptSourceCacheEntry(t *testing.T) {
 
 	// Pre-fix this fails permanently with "verify source:
 	// sha256 mismatch" without ever contacting the server.
-	if _, err := Build(r, t.TempDir(), false, nil); err != nil {
+	if _, err := Build(context.Background(), r, t.TempDir(), false, nil); err != nil {
 		t.Fatalf("Build with corrupt cache entry: %v", err)
 	}
 	if hits == 0 {

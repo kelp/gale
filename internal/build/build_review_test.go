@@ -6,6 +6,7 @@ package build
 // gale-project/TODO.md for the full findings text.
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -368,7 +369,7 @@ func TestBuildWithReleasedAtProducesIdenticalArchiveHash(t *testing.T) {
 	}
 
 	out1 := t.TempDir()
-	res1, err := Build(newRecipe(), out1, false, nil)
+	res1, err := Build(context.Background(), newRecipe(), out1, false, nil)
 	if err != nil {
 		t.Fatalf("build 1: %v", err)
 	}
@@ -378,7 +379,7 @@ func TestBuildWithReleasedAtProducesIdenticalArchiveHash(t *testing.T) {
 	// back to back; if any wall-clock creeps in, SHA256s
 	// still differ.
 	out2 := t.TempDir()
-	res2, err := Build(newRecipe(), out2, false, nil)
+	res2, err := Build(context.Background(), newRecipe(), out2, false, nil)
 	if err != nil {
 		t.Fatalf("build 2: %v", err)
 	}

@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -76,7 +77,7 @@ func newMigrateMachine(t *testing.T) *migrateMachine {
 	return m
 }
 
-func (m *migrateMachine) resolve(name string) (*recipe.Recipe, error) {
+func (m *migrateMachine) resolve(_ context.Context, name string) (*recipe.Recipe, error) {
 	r, ok := m.recipes[name]
 	if !ok {
 		return nil, fmt.Errorf("no recipe declared for %s", name)

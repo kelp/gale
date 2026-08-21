@@ -138,7 +138,7 @@ func TestSyncProjectFlagOutsideProjectErrors(t *testing.T) {
 	}
 	defer os.Chdir(orig) //nolint:errcheck
 
-	err = runSync("", false, false, true, "")
+	err = runSync(syncRun{Project: true})
 	if err == nil {
 		t.Error("sync --project outside any project must return error, got nil")
 	}

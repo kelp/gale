@@ -63,7 +63,7 @@ func TestInstallFromSourceCreatesBinary(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestInstallSkipsAlreadyInstalled(t *testing.T) {
 		Source:  recipe.Source{URL: "http://should-not-be-called", SHA256: "bad"},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -133,7 +133,7 @@ func TestInstallResultFields(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -173,7 +173,7 @@ func TestInstallUpgradeMovesSymlink(t *testing.T) {
 			},
 		},
 	}
-	_, err := inst.Install(r1)
+	_, err := inst.Install(context.Background(), r1)
 	if err != nil {
 		t.Fatalf("Install v1.0 error: %v", err)
 	}
@@ -190,7 +190,7 @@ func TestInstallUpgradeMovesSymlink(t *testing.T) {
 			},
 		},
 	}
-	result, err := inst.Install(r2)
+	result, err := inst.Install(context.Background(), r2)
 	if err != nil {
 		t.Fatalf("Install v2.0 error: %v", err)
 	}
@@ -250,7 +250,7 @@ func TestInstallBinaryFromURL(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -300,7 +300,7 @@ func TestInstallResolvesBuildDeps(t *testing.T) {
 	storeRoot := t.TempDir()
 	inst := &Installer{
 		Store: store.NewStore(storeRoot),
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name == "deptool" {
 				return &recipe.Recipe{
 					Package: recipe.Package{
@@ -343,7 +343,7 @@ func TestInstallResolvesBuildDeps(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -539,7 +539,7 @@ func TestInstallBinaryPreservesArchiveDepsMetadata(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Install(r); err != nil {
+	if _, err := inst.Install(context.Background(), r); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -601,7 +601,7 @@ func TestInstallBinaryWritesEmptyDepsForZeroDepRecipe(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Install(r); err != nil {
+	if _, err := inst.Install(context.Background(), r); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -644,7 +644,7 @@ func TestInstallCachedReturnsWithoutDownload(t *testing.T) {
 		Source:  recipe.Source{URL: "http://should-not-be-called", SHA256: "bad"},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -698,7 +698,7 @@ func TestInstallBinaryNonGHCR(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -775,7 +775,7 @@ func TestInstallBinaryFailureLoggedToFallbackWriter(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -857,7 +857,7 @@ func TestInstallBinaryBadHashFallsBackToSource(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -1049,7 +1049,7 @@ func TestInstallResultSHA256Populated(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -1101,7 +1101,7 @@ func TestInstallResultManifestDigestPopulated(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -1303,7 +1303,7 @@ func TestInstallSourceOnlySkipsBinary(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -1349,7 +1349,7 @@ func TestInstallNoBinarySectionBuildsSource(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -1382,7 +1382,7 @@ func TestInstallBuildDepsDeepCopiesMaps(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return &recipe.Recipe{
 				Package: recipe.Package{
 					Name:    name,
@@ -1415,7 +1415,7 @@ func TestInstallBuildDepsDeepCopiesMaps(t *testing.T) {
 		},
 	}
 
-	_, err := inst.InstallBuildDeps(r)
+	_, err := inst.InstallBuildDeps(context.Background(), r)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -1624,7 +1624,7 @@ func TestInstallBlocksOnStoreGenLock(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := inst.Install(r)
+		_, err := inst.Install(context.Background(), r)
 		done <- err
 	}()
 
@@ -1708,7 +1708,7 @@ func TestInstallReleasesStoreGenLock(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Install(r); err != nil {
+	if _, err := inst.Install(context.Background(), r); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -1945,7 +1945,7 @@ func TestReinstallRebuildsWhenCanonicalPopulated(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Reinstall(r)
+	result, err := inst.Reinstall(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Reinstall error: %v", err)
 	}
@@ -1995,7 +1995,7 @@ func TestReinstallPreservesExistingStoreOnBuildFailure(t *testing.T) {
 		Build: recipe.Build{Steps: []string{"exit 1"}},
 	}
 
-	_, err := inst.Reinstall(r)
+	_, err := inst.Reinstall(context.Background(), r)
 	if err == nil {
 		t.Fatal("expected Reinstall error")
 	}
@@ -2054,7 +2054,7 @@ func TestReinstallPreservesExistingStoreOnReplaceFailure(t *testing.T) {
 	}
 	defer func() { renameDir = origRename }()
 
-	_, err := inst.Reinstall(r)
+	_, err := inst.Reinstall(context.Background(), r)
 	if err == nil {
 		t.Fatal("expected Reinstall error")
 	}
@@ -2119,7 +2119,7 @@ func TestReinstallBlocksOnStoreGenLockBeforeReplace(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() {
-		_, err := inst.Reinstall(r)
+		_, err := inst.Reinstall(context.Background(), r)
 		done <- err
 	}()
 
@@ -2236,7 +2236,7 @@ func TestInstallBinaryNonGHCRDefaultTrustFails(t *testing.T) {
 	// — the fallback to source is acceptable (it's how the
 	// installer always handles a rejected binary) but the
 	// reason must surface in the fallback log.
-	_, err = inst.Install(r)
+	_, err = inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -2291,7 +2291,7 @@ func TestInstallBinaryNonGHCRSha256OnlyAccepted(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -2441,7 +2441,7 @@ func TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds(t *testing.T) {
 
 	inst := &Installer{
 		Store: store.NewStore(storeRoot),
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			switch name {
 			case "bdep":
 				return makeRec("bdep", bdepHash, "/bdep.tar.zst"), nil
@@ -2458,7 +2458,7 @@ func TestInstallSkipsBuildOnlyDepsWhenBinarySucceeds(t *testing.T) {
 		Runtime: []string{"rdep"},
 	}
 
-	result, err := inst.Install(victim)
+	result, err := inst.Install(context.Background(), victim)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -2557,7 +2557,7 @@ func TestInstallInstallsBuildOnlyDepsOnSourceFallback(t *testing.T) {
 		Store: store.NewStore(storeRoot),
 		// Silence the fallback warning in test output.
 		BinaryFallbackLog: io.Discard,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			switch name {
 			case "bdep":
 				return &recipe.Recipe{
@@ -2618,7 +2618,7 @@ func TestInstallInstallsBuildOnlyDepsOnSourceFallback(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(victim)
+	result, err := inst.Install(context.Background(), victim)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -2684,7 +2684,7 @@ func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
 	inst := &Installer{
 		Store:      s,
 		SourceOnly: true,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			resolvedMu.Lock()
 			resolved[name] = true
 			resolvedMu.Unlock()
@@ -2734,7 +2734,7 @@ func TestInstallInstallsAllDepsInSourceOnlyMode(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Install(victim); err != nil {
+	if _, err := inst.Install(context.Background(), victim); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -2812,7 +2812,7 @@ func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 
 	// bdep at revision 1 when victim is installed.
 	bdepRev := 1
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		if name == "bdep" {
 			return &recipe.Recipe{
 				Package: recipe.Package{
@@ -2852,7 +2852,7 @@ func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Install(victim); err != nil {
+	if _, err := inst.Install(context.Background(), victim); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 
@@ -2874,7 +2874,7 @@ func TestInstallSkipsBuildOnlyDepsPreservesStaleness(t *testing.T) {
 	// IsStale to compare. bdep is a build-only dep, so the
 	// bump must NOT mark victim stale (gh#157).
 	bdepRev = 2
-	stale, err := IsStale(storeDir, victim, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: storeDir, Recipe: victim, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("IsStale: %v", err)
 	}
@@ -2928,7 +2928,7 @@ func TestInstallWithFinalize_BlocksConcurrentStoreRemove(t *testing.T) {
 	var installDone time.Time
 	done := make(chan error, 1)
 	go func() {
-		_, err := inst.InstallWithFinalize(r, false, func(res *InstallResult) error {
+		_, err := inst.InstallWithFinalize(context.Background(), r, false, func(res *InstallResult) error {
 			close(finalizeStarted)
 			<-unblock // block until test says go
 			return nil
@@ -3019,7 +3019,7 @@ func TestInstallWithFinalize_PropagatesFinalizeError(t *testing.T) {
 
 	sentinel := fmt.Errorf("finalize sentinel error")
 
-	result, err := inst.InstallWithFinalize(r, false, func(res *InstallResult) error {
+	result, err := inst.InstallWithFinalize(context.Background(), r, false, func(res *InstallResult) error {
 		return sentinel
 	})
 
@@ -3062,7 +3062,7 @@ func TestInstallWithFinalize_NilFinalizeIsNoop(t *testing.T) {
 		Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
 	}
 
-	result, err := inst.InstallWithFinalize(r, false, nil)
+	result, err := inst.InstallWithFinalize(context.Background(), r, false, nil)
 	if err != nil {
 		t.Fatalf("InstallWithFinalize with nil finalize: %v", err)
 	}
@@ -3504,7 +3504,7 @@ func TestInstallBinaryVerifiesOCIReferrer(t *testing.T) {
 		},
 	}
 
-	result, err := fx.inst.Install(r)
+	result, err := fx.inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -3581,7 +3581,7 @@ func TestInstallBinaryFallsBackToFileWhenNoReferrer(t *testing.T) {
 		},
 	}
 
-	result, err := fx.inst.Install(r)
+	result, err := fx.inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -3648,7 +3648,7 @@ func TestInstallBinaryFailsClosedOnReferrerVerifyError(t *testing.T) {
 		},
 	}
 
-	result, err := fx.inst.Install(r)
+	result, err := fx.inst.Install(context.Background(), r)
 	if !fx.rv.calledOCI {
 		t.Fatal("VerifyOCI was never called; Verifier not wired into install path")
 	}
@@ -3732,7 +3732,7 @@ func TestInstallBinarySigstoreTrustUnavailableVerifierFails(t *testing.T) {
 	// hermetic. Install then surfaces a non-nil error.
 	r := sigstoreTestRecipe(fx, "http://127.0.0.1:1/nonexistent.tar.gz")
 
-	result, err := fx.inst.Install(r)
+	result, err := fx.inst.Install(context.Background(), r)
 	if err == nil && result != nil && result.Method == MethodBinary {
 		t.Fatalf("fail-open reproduced: sigstore-trust binary "+
 			"installed via %q with an unavailable verifier; "+
@@ -3776,7 +3776,7 @@ func TestInstallBinaryNilVerifierSkipsAttestation(t *testing.T) {
 
 	r := sigstoreTestRecipe(fx, "http://unused")
 
-	result, err := fx.inst.Install(r)
+	result, err := fx.inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install with nil Verifier must succeed, got: %v", err)
 	}
@@ -3819,7 +3819,7 @@ func TestInstallBinaryEmitsAttestationTimingPhase(t *testing.T) {
 		},
 	}
 
-	result, err := fx.inst.Install(r)
+	result, err := fx.inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}
@@ -3942,7 +3942,7 @@ func installSerialRuntimeDeps(
 	}
 	inst := &Installer{
 		Store: store.NewStore(storeRoot),
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			p, ok := byName[name]
 			if !ok {
 				return nil, fmt.Errorf("unknown dep: %s", name)
@@ -3952,7 +3952,7 @@ func installSerialRuntimeDeps(
 	}
 	rec := recipeFor(target)
 	rec.Dependencies = recipe.Dependencies{Runtime: names}
-	if _, err := inst.Install(rec); err != nil {
+	if _, err := inst.Install(context.Background(), rec); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
 	return got
@@ -3992,7 +3992,7 @@ func TestInstallDepsStopsAfterFirstError(t *testing.T) {
 	var resolved []string
 	inst := &Installer{
 		Store: store.NewStore(t.TempDir()),
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			resolved = append(resolved, name)
 			if name == "depa" {
 				return nil, errors.New("depa missing")
@@ -4017,12 +4017,57 @@ func TestInstallDepsStopsAfterFirstError(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Install(rec); err == nil {
+	if _, err := inst.Install(context.Background(), rec); err == nil {
 		t.Fatal("Install: want first-dep error")
 	} else if !strings.Contains(err.Error(), "depa") {
 		t.Fatalf("error = %v, want depa", err)
 	}
 	if !slices.Equal(resolved, []string{"depa"}) {
 		t.Fatalf("resolved = %v, want [depa]", resolved)
+	}
+}
+
+// A canceled parent must reach Fetch. An already-canceled
+// context is not enough to prove that: Install could return
+// ctx.Err() before any HTTP. Cancel after the handler starts
+// so the request context is the one that stops the download.
+func TestInstallCanceledContextStopsFetch(t *testing.T) {
+	started := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	}))
+	t.Cleanup(srv.Close)
+
+	inst := &Installer{Store: store.NewStore(t.TempDir())}
+	rec := &recipe.Recipe{
+		Package: recipe.Package{Name: "slowpkg", Version: "1.0"},
+		Source: recipe.Source{
+			URL:    srv.URL + "/source.tar.gz",
+			SHA256: strings.Repeat("ab", 32),
+		},
+		Build: recipe.Build{Steps: []string{"true"}},
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		<-started
+		cancel()
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := inst.Install(ctx, rec)
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Install: %v, want context.Canceled", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("Install ignored cancel; Fetch kept the parent context")
 	}
 }

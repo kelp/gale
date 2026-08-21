@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -1294,7 +1295,12 @@ func checkStaleInstalls(ctx *doctorContext) bool {
 			continue
 		}
 		isStale, err := installer.IsStale(
-			storeDir, r, runtime.GOOS, runtime.GOARCH, ctx.cmdCtx.Resolver,
+			context.Background(),
+			installer.StaleQuery{
+				StoreDir: storeDir, Recipe: r,
+				GOOS: runtime.GOOS, GOARCH: runtime.GOARCH,
+				Resolver: ctx.cmdCtx.Resolver,
+			},
 		)
 		if err != nil {
 			continue

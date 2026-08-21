@@ -13,6 +13,7 @@ package main
 // document, which is the half that belongs to the document.
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -321,7 +322,7 @@ func (m *minter) recipeFor(name string) (*recipe.Recipe, error) {
 	if r, ok := m.cache[name]; ok {
 		return r, nil
 	}
-	r, err := m.resolve(name)
+	r, err := m.resolve(context.Background(), name)
 	if err != nil {
 		return nil, fmt.Errorf("resolving a recipe for %s: %w", name, err)
 	}

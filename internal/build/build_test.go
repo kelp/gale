@@ -117,7 +117,7 @@ func TestBuildSuccessReturnsResultWithArchiveAndSHA256(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, nil)
+	result, err := Build(context.Background(), r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -175,7 +175,7 @@ func TestBuildEmitsSourceBuildTimingPhase(t *testing.T) {
 	defer timing.SetOutput(nil)
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, nil)
+	result, err := Build(context.Background(), r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -216,7 +216,7 @@ func TestBuildStepRunsWithPREFIXAndJOBS(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, nil)
+	result, err := Build(context.Background(), r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -268,7 +268,7 @@ func TestBuildStepMultipleStepsRunInOrder(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, nil)
+	result, err := Build(context.Background(), r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -328,7 +328,7 @@ func TestBuildToolsDirStableAcrossSteps(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	if _, err := Build(r, outputDir, false, nil); err != nil {
+	if _, err := Build(context.Background(), r, outputDir, false, nil); err != nil {
 		t.Fatalf("Build failed: %v", err)
 	}
 }
@@ -360,7 +360,7 @@ func TestBuildStepFailureReturnsError(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, false, nil)
+	_, err := Build(context.Background(), r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -392,7 +392,7 @@ func TestBuildStepFailureErrorContainsStep(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, false, nil)
+	_, err := Build(context.Background(), r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -429,7 +429,7 @@ func TestBuildStepFailureSecondStepStopsExecution(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, false, nil)
+	_, err := Build(context.Background(), r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}
@@ -463,7 +463,7 @@ func TestBuildSourceHashMismatchReturnsError(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, false, nil)
+	_, err := Build(context.Background(), r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for hash mismatch")
 	}
@@ -506,7 +506,7 @@ func TestBuildSourceHashMismatchDoesNotRunSteps(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, _ = Build(r, outputDir, false, nil)
+	_, _ = Build(context.Background(), r, outputDir, false, nil)
 
 	if _, err := os.Stat(markerPath); err == nil {
 		t.Error("build steps should not have run after hash mismatch")
@@ -546,7 +546,7 @@ func TestBuildCdIntoSingleTopLevelDirectory(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, nil)
+	result, err := Build(context.Background(), r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -593,7 +593,7 @@ func TestBuildOutputIsValidTarZstd(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, nil)
+	result, err := Build(context.Background(), r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -639,7 +639,7 @@ func TestBuildOutputSHA256MatchesArchive(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, nil)
+	result, err := Build(context.Background(), r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -812,7 +812,7 @@ func TestBuildWithExtraPathsMakesToolsAvailable(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, &BuildDeps{
+	result, err := Build(context.Background(), r, outputDir, false, &BuildDeps{
 		BinDirs: []string{toolDir},
 	})
 	if err != nil {
@@ -941,7 +941,7 @@ func TestBuildSurfacesDepM4ToFlexCustomCommand(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, false, &BuildDeps{
+	_, err := Build(context.Background(), r, outputDir, false, &BuildDeps{
 		BinDirs: []string{binDir},
 	})
 	if err != nil {
@@ -1011,7 +1011,7 @@ func TestBuildRecipeM4WinsOverDepM4(t *testing.T) {
 		},
 	}
 
-	if _, err := Build(r, t.TempDir(), false, &BuildDeps{
+	if _, err := Build(context.Background(), r, t.TempDir(), false, &BuildDeps{
 		BinDirs: []string{binDir},
 	}); err != nil {
 		t.Fatalf("Build error: %v", err)
@@ -2486,7 +2486,7 @@ func TestBuildSuccessWithTarXzSource(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	result, err := Build(r, outputDir, false, nil)
+	result, err := Build(context.Background(), r, outputDir, false, nil)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -3042,7 +3042,7 @@ func TestBuildStepErrorPreservesChain(t *testing.T) {
 	}
 
 	outputDir := t.TempDir()
-	_, err := Build(r, outputDir, false, nil)
+	_, err := Build(context.Background(), r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("expected error for failing build step")
 	}

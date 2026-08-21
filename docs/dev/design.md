@@ -221,6 +221,12 @@ user-typed `gale sync` ignores the stamp entirely — which
 the warning says, because it is the only place it is
 ever said.
 
+`--if-needed` itself is also bounded: a compiled 15s
+deadline is the parent of every index HTTP, artifact
+HTTP, hash, and extract on that path. Timeout stamps
+`incomplete`, cancels the work, and leaves `current`
+unchanged. A typed `gale sync` has no overall deadline.
+
 `gale shell` and `gale run` consult the same stamp. Their
 own gate asks whether the lock still describes the
 manifest, which a partial install failure leaves true.

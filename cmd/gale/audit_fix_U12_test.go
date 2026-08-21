@@ -17,6 +17,7 @@ package main
 // package).
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -109,14 +110,14 @@ func TestComposeResolversSurfacesCorruptTapRecipe(t *testing.T) {
 	tap := localRecipeResolver(recipesDir)
 	registryConsulted := false
 	registryStub := installer.RecipeResolver(
-		func(name string) (*recipe.Recipe, error) {
+		func(_ context.Context, name string) (*recipe.Recipe, error) {
 			registryConsulted = true
 			return recipe.Parse(jqRecipe("9.9.9"))
 		},
 	)
 
 	r := composeResolvers(tap, registryStub)
-	_, err := r("jq")
+	_, err := r(context.Background(), "jq")
 	if err == nil {
 		t.Fatal("corrupt tap recipe silently fell through to the registry")
 	}
@@ -153,7 +154,7 @@ func TestComposeResolversSurfacesUnreadableTapRecipe(t *testing.T) {
 		"jq": jqRecipe("9.9.9"),
 	})
 
-	_, err := composeResolvers(tap, registryStub)("jq")
+	_, err := composeResolvers(tap, registryStub)(context.Background(), "jq")
 	if err == nil {
 		t.Fatal("unreadable tap recipe silently fell through to the registry")
 	}
@@ -167,7 +168,7 @@ func TestComposeResolversTapMissStillFallsThrough(t *testing.T) {
 		"jq": jqRecipe("2.0.0"),
 	})
 
-	got, err := composeResolvers(tap, registryStub)("jq")
+	got, err := composeResolvers(tap, registryStub)(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("miss should fall through to registry, got: %v", err)
 	}

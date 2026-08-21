@@ -65,7 +65,7 @@ func checkPlatform(r *recipe.Recipe) error {
 // Build builds a recipe from source and packages the result.
 // outputDir is where the tar.zst will be written. Optional
 // extraPaths are prepended to the build environment PATH.
-func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*BuildResult, error) {
+func Build(ctx context.Context, r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*BuildResult, error) {
 	if err := checkPlatform(r); err != nil {
 		return nil, err
 	}
@@ -84,14 +84,14 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 	// Preserve the archive extension so ExtractSource
 	// can detect the correct format.
 	tarballPath := filepath.Join(workspace, "source"+sourceExtension(r.Source.URL))
-	if err := fetchSource(r, tarballPath); err != nil {
+	if err := fetchSource(ctx, r, tarballPath); err != nil {
 		return nil, err
 	}
 
 	// Extract source.
 	out.Step("Extracting source...")
 	srcDir := filepath.Join(workspace, "src")
-	if err := download.ExtractSource(context.Background(), tarballPath, srcDir); err != nil {
+	if err := download.ExtractSource(ctx, tarballPath, srcDir); err != nil {
 		return nil, fmt.Errorf("extract source: %w", err)
 	}
 
@@ -109,7 +109,7 @@ func Build(r *recipe.Recipe, outputDir string, debug bool, deps *BuildDeps) (*Bu
 		return nil, fmt.Errorf("detect source root: %w", err)
 	}
 
-	return buildFromDir(r, sourceRoot, workspace, outputDir, debug, deps)
+	return buildFromDir(ctx, fromDirReq{r, sourceRoot, workspace, outputDir, debug, deps})
 }
 
 // BuildLocal builds a recipe using a local source directory
@@ -130,12 +130,22 @@ func BuildLocal(r *recipe.Recipe, sourceDir, outputDir string, debug bool, deps 
 	}
 	defer os.RemoveAll(workspace)
 
-	return buildFromDir(r, sourceDir, workspace, outputDir, debug, deps)
+	return buildFromDir(context.Background(), fromDirReq{r, sourceDir, workspace, outputDir, debug, deps})
 }
 
 // buildFromDir runs build steps, fixes binaries, and packages
 // the result. Shared by Build and BuildLocal.
-func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debug bool, deps *BuildDeps) (*BuildResult, error) {
+type fromDirReq struct {
+	r         *recipe.Recipe
+	sourceDir string
+	workspace string
+	outputDir string
+	debug     bool
+	deps      *BuildDeps
+}
+
+func buildFromDir(ctx context.Context, req fromDirReq) (*BuildResult, error) {
+	r, sourceDir, workspace, outputDir, debug, deps := req.r, req.sourceDir, req.workspace, req.outputDir, req.debug, req.deps
 	defer timing.Phase("source-build " + r.Package.Name)()
 
 	prefixDir := filepath.Join(workspace, "prefix")
@@ -182,9 +192,20 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		}
 	}
 
+	if err := fixupBuiltPrefix(prefixDir, r, deps); err != nil {
+		return nil, err
+	}
+	return archivePrefix(ctx, prefixDir, outputDir, r)
+}
+
+// fixupBuiltPrefix rewrites the staged prefix so the archive is
+// relocatable: rpaths, pkg-config, shebangs, prefix placeholders,
+// and the runtime-deps sidecar. Split from buildFromDir so that
+// function stays under the funlen gate after ctx plumbing.
+func fixupBuiltPrefix(prefixDir string, r *recipe.Recipe, deps *BuildDeps) error {
 	out.Step("Fixing library paths...")
 	if err := FixupBinaries(prefixDir); err != nil {
-		return nil, fmt.Errorf("fixup binaries: %w", err)
+		return fmt.Errorf("fixup binaries: %w", err)
 	}
 
 	// Add rpath entries for dependency store dirs so
@@ -194,22 +215,22 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 		depStoreDirs = deps.StoreDirs
 	}
 	if err := AddDepRpaths(prefixDir, depStoreDirs); err != nil {
-		return nil, fmt.Errorf("add dep rpaths: %w", err)
+		return fmt.Errorf("add dep rpaths: %w", err)
 	}
 
 	if err := FixupPkgConfig(prefixDir); err != nil {
-		return nil, fmt.Errorf("fixup pkg-config: %w", err)
+		return fmt.Errorf("fixup pkg-config: %w", err)
 	}
 
 	if err := fixupShebangs(prefixDir); err != nil {
-		return nil, fmt.Errorf("fixup shebangs: %w", err)
+		return fmt.Errorf("fixup shebangs: %w", err)
 	}
 
 	// Replace hardcoded build prefix in text files with a
 	// placeholder. At install time, RestorePrefixPlaceholder
 	// replaces it with the actual store path.
 	if err := ReplacePrefixInTextFiles(prefixDir, PrefixPlaceholder); err != nil {
-		return nil, fmt.Errorf("fixup text prefix paths: %w", err)
+		return fmt.Errorf("fixup text prefix paths: %w", err)
 	}
 
 	// Record the exact dep version-revisions linked into this
@@ -225,17 +246,20 @@ func buildFromDir(r *recipe.Recipe, sourceDir, workspace, outputDir string, debu
 			Deps: runtimeDepsMetadata(r, deps),
 		}
 		if err := depsmeta.Write(prefixDir, md); err != nil {
-			return nil, fmt.Errorf("write deps metadata: %w", err)
+			return fmt.Errorf("write deps metadata: %w", err)
 		}
 	}
+	return nil
+}
 
+func archivePrefix(ctx context.Context, prefixDir, outputDir string, r *recipe.Recipe) (*BuildResult, error) {
 	archiveName := fmt.Sprintf("%s-%s.tar.zst", r.Package.Name, r.Package.Version)
 	archivePath := filepath.Join(outputDir, archiveName)
 	if err := download.CreateTarZstd(prefixDir, archivePath); err != nil {
 		return nil, fmt.Errorf("create archive: %w", err)
 	}
 
-	hash, err := download.HashFile(context.Background(), archivePath)
+	hash, err := download.HashFile(ctx, archivePath)
 	if err != nil {
 		return nil, fmt.Errorf("hash archive: %w", err)
 	}
@@ -1457,7 +1481,7 @@ func sourceCache() (string, error) {
 // interrupted copy) must never become a permanent build
 // failure. A fresh download is verified and then saved back to
 // the cache atomically.
-func fetchSource(r *recipe.Recipe, tarballPath string) error {
+func fetchSource(ctx context.Context, r *recipe.Recipe, tarballPath string) error {
 	cacheDir, err := sourceCache()
 	if err != nil {
 		return fmt.Errorf("source cache: %w", err)
@@ -1468,7 +1492,7 @@ func fetchSource(r *recipe.Recipe, tarballPath string) error {
 			out.Step(fmt.Sprintf("Using cached source (%s)",
 				r.Source.SHA256[:12]))
 			out.Step("Verifying SHA256...")
-			if download.VerifySHA256(context.Background(), tarballPath, r.Source.SHA256) == nil {
+			if download.VerifySHA256(ctx, tarballPath, r.Source.SHA256) == nil {
 				return nil
 			}
 			out.Step("Cached source is corrupt — " +
@@ -1477,12 +1501,12 @@ func fetchSource(r *recipe.Recipe, tarballPath string) error {
 		}
 	}
 
-	if err := download.Fetch(context.Background(), r.Source.URL, tarballPath); err != nil {
+	if err := download.Fetch(ctx, r.Source.URL, tarballPath); err != nil {
 		return fmt.Errorf("fetch source: %w", err)
 	}
 
 	out.Step("Verifying SHA256...")
-	if err := download.VerifySHA256(context.Background(), tarballPath, r.Source.SHA256); err != nil {
+	if err := download.VerifySHA256(ctx, tarballPath, r.Source.SHA256); err != nil {
 		return fmt.Errorf("verify source: %w", err)
 	}
 

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -133,7 +134,7 @@ func buildableCtx(t *testing.T, tmp, name string) *cmdContext {
 
 	return lockCtxResolver(t, tmp,
 		"[packages]\n  "+name+" = \"1.0\"\n",
-		func(pkg string) (*recipe.Recipe, error) {
+		func(_ context.Context, pkg string) (*recipe.Recipe, error) {
 			return &recipe.Recipe{
 				Package: recipe.Package{Name: pkg, Version: "1.0"},
 				Source: recipe.Source{
@@ -298,7 +299,7 @@ func TestRefreshRefusesAnUnprovenancedCandidate(t *testing.T) {
 	defer srv.Close()
 
 	ctx := lockCtxResolver(t, tmp, "[packages]\n  bareback = \"1.0\"\n",
-		func(pkg string) (*recipe.Recipe, error) {
+		func(_ context.Context, pkg string) (*recipe.Recipe, error) {
 			return &recipe.Recipe{
 				Package: recipe.Package{Name: pkg, Version: "1.0"},
 				Source: recipe.Source{
@@ -379,7 +380,7 @@ func TestRefreshReclassifiesADirChangedMidBuild(t *testing.T) {
 			plant := plantStep(t, tmp, victim, tc.record)
 			ctx := lockCtxResolver(t, tmp,
 				"[packages]\n  racepkg = \"1.0\"\n",
-				func(pkg string) (*recipe.Recipe, error) {
+				func(_ context.Context, pkg string) (*recipe.Recipe, error) {
 					return &recipe.Recipe{
 						Package: recipe.Package{Name: pkg, Version: "1.0"},
 						Source: recipe.Source{
@@ -560,7 +561,7 @@ func TestInstallWithMalformedStagedDepsPassesTheFarmGuard(t *testing.T) {
 				"revision = \"42\"\\n' > $PREFIX/" + depsmeta.File,
 		}},
 	}
-	if _, err := ctx.Installer.Reinstall(r); err != nil {
+	if _, err := ctx.Installer.Reinstall(context.Background(), r); err != nil {
 		t.Fatalf("the farm guard refused an install the provenance "+
 			"policy allows: %v", err)
 	}
@@ -723,7 +724,7 @@ func twoLevelCtx(t *testing.T, tmp, top, bottom string) *cmdContext {
 
 	return lockCtxResolver(t, tmp,
 		fmt.Sprintf("[packages]\n  %s = \"1.0\"\n  %s = \"1.0\"\n", top, bottom),
-		func(pkg string) (*recipe.Recipe, error) {
+		func(_ context.Context, pkg string) (*recipe.Recipe, error) {
 			r := &recipe.Recipe{
 				Package: recipe.Package{Name: pkg, Version: "1.0"},
 				Source: recipe.Source{
@@ -914,7 +915,7 @@ func TestRefreshRechecksDependentsInsideTheCommitLock(t *testing.T) {
 	zappDir := filepath.Join(tmp, ".gale", "pkg", "zapp", "1.0-1")
 	ctx := lockCtxResolver(t, tmp,
 		"[packages]\n  adep = \"1.0\"\n  zapp = \"1.0\"\n",
-		func(pkg string) (*recipe.Recipe, error) {
+		func(_ context.Context, pkg string) (*recipe.Recipe, error) {
 			r := &recipe.Recipe{
 				Package: recipe.Package{Name: pkg, Version: "1.0"},
 				Source: recipe.Source{

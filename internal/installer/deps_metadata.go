@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +29,18 @@ import (
 // go) and external system libraries are ignored, because
 // the shipped binary cannot link them, so a bump to one
 // must not force a re-download (gh#157).
-func IsStale(storeDir string, r *recipe.Recipe, goos, goarch string, resolver RecipeResolver) (bool, error) {
+// StaleQuery is IsStale's inputs. ctx stays a parameter so it is
+// never stored.
+type StaleQuery struct {
+	StoreDir string
+	Recipe   *recipe.Recipe
+	GOOS     string
+	GOARCH   string
+	Resolver RecipeResolver
+}
+
+func IsStale(ctx context.Context, q StaleQuery) (bool, error) {
+	storeDir, r, goos, goarch, resolver := q.StoreDir, q.Recipe, q.GOOS, q.GOARCH, q.Resolver
 	// Check whether the metadata file is present before reading it.
 	// A missing file means the package predates this metadata (soft
 	// migration → stale). A present file with zero deps is a valid
@@ -76,7 +88,7 @@ func IsStale(storeDir string, r *recipe.Recipe, goos, goarch string, resolver Re
 
 	// For each declared dep, resolve and compare.
 	for _, name := range declared {
-		resolved, err := resolver(name)
+		resolved, err := resolver(ctx, name)
 		if err != nil {
 			return false, fmt.Errorf("resolve %s: %w", name, err)
 		}

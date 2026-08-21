@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -958,7 +959,7 @@ func expandRuntimeDeps(
 		name := queue[0]
 		queue = queue[1:]
 
-		r, err := resolver(name)
+		r, err := resolver(context.Background(), name)
 		if err != nil || r == nil {
 			continue // missing recipe — can't expand; skip.
 		}
@@ -974,7 +975,7 @@ func expandRuntimeDeps(
 			// nothing to add. The recipe is the source of
 			// truth for the dep name but the store decides
 			// which revision.
-			depRecipe, rErr := resolver(dep)
+			depRecipe, rErr := resolver(context.Background(), dep)
 			version := ""
 			if rErr == nil && depRecipe != nil {
 				version = depRecipe.Package.Version

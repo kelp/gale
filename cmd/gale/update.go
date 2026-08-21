@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"sort"
 
@@ -173,7 +174,7 @@ var updateCmd = &cobra.Command{
 				newVersion = t.pinned
 			} else {
 				// No @version — check latest from registry.
-				r, err := ctx.Resolver(name)
+				r, err := ctx.Resolver(context.Background(), name)
 				if err != nil {
 					out.Warn(fmt.Sprintf(
 						"Skipping %s: %v", name, err,
@@ -248,7 +249,7 @@ var updateCmd = &cobra.Command{
 			out.Info(fmt.Sprintf("Updating %s %s → %s...",
 				name, t.current, r.Package.Full()))
 
-			result, err := ctx.Installer.InstallWithFinalize(r, false,
+			result, err := ctx.Installer.InstallWithFinalize(context.Background(), r, false,
 				func(_ *installer.InstallResult) error {
 					return ctx.WriteConfigForRecipe(r)
 				})
@@ -316,7 +317,7 @@ func finishUpdate(dryRun bool, failed int, updated int, rebuild func() error) er
 // updateFromGit checks if the remote HEAD changed, and
 // rebuilds from git if so.
 func updateFromGit(name string, ctx *cmdContext, out *output.Output) error {
-	r, err := ctx.Resolver(name)
+	r, err := ctx.Resolver(context.Background(), name)
 	if err != nil {
 		return fmt.Errorf("fetching recipe: %w", err)
 	}

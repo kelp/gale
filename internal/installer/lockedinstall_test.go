@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -156,7 +157,7 @@ func TestInstallLocked_MismatchLeavesStoreClean(t *testing.T) {
 		Store:             store.NewStore(unlockedRoot),
 		BinaryFallbackLog: io.Discard,
 	}
-	if _, err := unlocked.Install(newRecipe("unlocked")); err != nil {
+	if _, err := unlocked.Install(context.Background(), newRecipe("unlocked")); err != nil {
 		t.Fatalf("unlocked install must still fall back to source: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(witnessDir, "unlocked")); err != nil {
@@ -172,7 +173,7 @@ func TestInstallLocked_MismatchLeavesStoreClean(t *testing.T) {
 		BinaryFallbackLog: io.Discard,
 		Plan:              planOf(t, r, lockgraph.MethodBinary, hashFile(t, tarzst)),
 	}
-	_, err := inst.Install(r)
+	_, err := inst.Install(context.Background(), r)
 	if err == nil {
 		t.Fatal("locked install accepted an artifact the lock does not name")
 	}
@@ -229,7 +230,7 @@ func TestInstallLocked_CachedDirMustAttestTheLock(t *testing.T) {
 
 	// No provenance at all: the lock names bytes nothing on disk
 	// attests, which is a conflict, not a lesser state.
-	_, err := inst.Install(r)
+	_, err := inst.Install(context.Background(), r)
 	if !errors.Is(err, provenance.ErrInvalid) {
 		t.Fatalf("unprovenanced dir: err = %v, want provenance.ErrInvalid", err)
 	}
@@ -248,7 +249,7 @@ func TestInstallLocked_CachedDirMustAttestTheLock(t *testing.T) {
 	if err := provenance.Write(canonical, rec); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := inst.Install(r); !errors.Is(err, provenance.ErrInvalid) {
+	if _, err := inst.Install(context.Background(), r); !errors.Is(err, provenance.ErrInvalid) {
 		t.Fatalf("conflicting provenance: err = %v, want provenance.ErrInvalid", err)
 	}
 	if got, rerr := os.ReadFile(kept); rerr != nil || string(got) != "installed" {
@@ -263,7 +264,7 @@ func TestInstallLocked_CachedDirMustAttestTheLock(t *testing.T) {
 	if err := provenance.Write(canonical, rec); err != nil {
 		t.Fatal(err)
 	}
-	res, err := inst.Install(r)
+	res, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("agreeing provenance must be a cache hit: %v", err)
 	}
@@ -286,7 +287,7 @@ func TestInstallLocked_UnplannedPackageRefused(t *testing.T) {
 		Build:   recipe.Build{Steps: []string{"true"}},
 	}
 	inst := &Installer{Store: store.NewStore(storeRoot), Plan: plan}
-	_, err := inst.Install(other)
+	_, err := inst.Install(context.Background(), other)
 	if !errors.Is(err, ErrUnplanned) {
 		t.Fatalf("err = %v, want ErrUnplanned", err)
 	}
@@ -388,7 +389,7 @@ func TestInstallLocked_TransitiveVersionsComeFromThePlan(t *testing.T) {
 		// Answers only for "dep", and answers with a NEWER version.
 		// Anything else reaching the registry under a plan is itself
 		// the defect this test is about.
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name != "dep" {
 				return nil, fmt.Errorf(
 					"registry consulted for %q under a lock", name,
@@ -410,7 +411,7 @@ func TestInstallLocked_TransitiveVersionsComeFromThePlan(t *testing.T) {
 		}),
 	}
 
-	if _, err := inst.Install(rootRecipe); err != nil {
+	if _, err := inst.Install(context.Background(), rootRecipe); err != nil {
 		t.Fatalf("locked install: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(storeRoot, "dep", "1.0-1")); err != nil {
@@ -451,7 +452,7 @@ func TestInstallLocked_SourceSHAMismatchFails(t *testing.T) {
 		Plan:  planOf(t, r, lockgraph.MethodSource, sha64("not what this builds")),
 	}
 
-	_, err := inst.Install(r)
+	_, err := inst.Install(context.Background(), r)
 	if !errors.Is(err, provenance.ErrInvalid) {
 		t.Fatalf("err = %v, want provenance.ErrInvalid", err)
 	}
@@ -554,7 +555,7 @@ func TestInstallLocked_DefersFarmPopulation(t *testing.T) {
 	// per commit, exactly as today.
 	unlockedRoot := guardStoreRoot(t)
 	unlocked := &Installer{Store: store.NewStore(unlockedRoot)}
-	if _, err := unlocked.Install(r); err != nil {
+	if _, err := unlocked.Install(context.Background(), r); err != nil {
 		t.Fatalf("unlocked install: %v", err)
 	}
 	if _, err := os.Readlink(filepath.Join(
@@ -574,7 +575,7 @@ func TestInstallLocked_DefersFarmPopulation(t *testing.T) {
 			return nil
 		},
 	}
-	if _, err := inst.Install(r); err != nil {
+	if _, err := inst.Install(context.Background(), r); err != nil {
 		t.Fatalf("locked install: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(
@@ -667,7 +668,7 @@ func TestInstallLocked_LateMismatchLeavesTheFarmAtTheOldVersion(t *testing.T) {
 		}),
 	}
 
-	if _, err := inst.Install(rootRecipe); err == nil {
+	if _, err := inst.Install(context.Background(), rootRecipe); err == nil {
 		t.Fatal("the mismatching root must fail the operation")
 	}
 

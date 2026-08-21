@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -309,7 +310,7 @@ func lockRoot(ctx *cmdContext, r *recipe.Recipe) error {
 		// provenance the lock is written from. Without it `gale lock`
 		// could only describe what happened to be installed, and a
 		// package `gale add` just declared could never be locked at all.
-		if _, err := ctx.Installer.Install(r); err != nil {
+		if _, err := ctx.Installer.Install(context.Background(), r); err != nil {
 			return fmt.Errorf("installing %s@%s to lock it: %w", name, full, err)
 		}
 		return nil

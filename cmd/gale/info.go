@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -142,12 +143,12 @@ func fetchAndPrintRegistryInfo(
 	var r *recipe.Recipe
 	var err error
 	if version != "" {
-		r, err = reg.FetchRecipeVersion(name, version)
+		r, err = reg.FetchRecipeVersion(context.Background(), name, version)
 		if err != nil {
 			return fmt.Errorf("%s@%s: %w", name, version, err)
 		}
 	} else {
-		r, err = reg.FetchRecipeMetadata(name)
+		r, err = reg.FetchRecipeMetadata(context.Background(), name)
 		if err != nil {
 			return fmt.Errorf("%s: %w", name, err)
 		}

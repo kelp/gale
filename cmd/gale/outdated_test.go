@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"sort"
 	"strings"
 	"testing"
@@ -23,7 +24,7 @@ func TestOutdatedSortedOutput(t *testing.T) {
 
 	// Resolver returns a newer version for every package so all
 	// appear in result.Items.
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return &recipe.Recipe{
 			Package: recipe.Package{
 				Name:    name,

@@ -262,7 +262,7 @@ func downloadParityArchive(t *testing.T, c parityCoords) string {
 // parityToken exchanges an anonymous GHCR pull token for pkg.
 func parityToken(t *testing.T, pkg string) string {
 	t.Helper()
-	token, err := ghcr.Token(parityGHCRBase + "/" + pkg)
+	token, err := ghcr.Token(context.Background(), parityGHCRBase+"/"+pkg)
 	if err != nil {
 		t.Fatalf("fetch ghcr token for %s: %v", pkg, err)
 	}

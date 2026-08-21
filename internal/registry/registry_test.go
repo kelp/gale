@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -75,7 +76,7 @@ func TestFetchRecipeConstructsCorrectURL(t *testing.T) {
 			defer srv.Close()
 
 			reg := testRegistry(srv.URL)
-			_, _ = reg.FetchRecipe(tt.pkg)
+			_, _ = reg.FetchRecipe(context.Background(), tt.pkg)
 
 			mu.Lock()
 			defer mu.Unlock()
@@ -105,7 +106,7 @@ func TestFetchRecipeParsesValidTOML(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("testpkg")
+	rec, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -134,7 +135,7 @@ func TestFetchRecipeErrorsOn404(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	_, err := reg.FetchRecipe("nonexistent")
+	_, err := reg.FetchRecipe(context.Background(), "nonexistent")
 	if err == nil {
 		t.Fatal("expected error for 404 response")
 	}
@@ -152,7 +153,7 @@ func TestFetchRecipeErrorsOnMalformedTOML(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	_, err := reg.FetchRecipe("badpkg")
+	_, err := reg.FetchRecipe(context.Background(), "badpkg")
 	if err == nil {
 		t.Fatal("expected error for malformed TOML")
 	}
@@ -191,7 +192,7 @@ func TestFetchRecipeUsesCustomBaseURL(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("testpkg")
+	rec, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -329,7 +330,7 @@ func TestFetchRecipeVersion(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -359,7 +360,7 @@ func TestFetchRecipeVersionStripsTrailingRefFromBaseURL(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL + "/main")
-	rec, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -380,7 +381,7 @@ func TestFetchRecipeVersionNotFound(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	_, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1")
 	if err == nil {
 		t.Fatal("expected error for version not in index")
 	}
@@ -445,7 +446,7 @@ func TestFetchRecipeErrorsOnConnectionFailure(t *testing.T) {
 	srv.Close()
 
 	reg := testRegistry(addr)
-	_, err := reg.FetchRecipe("jq")
+	_, err := reg.FetchRecipe(context.Background(), "jq")
 	if err == nil {
 		t.Fatal("expected error for connection failure")
 	}
@@ -484,7 +485,7 @@ func TestFetchRecipeMergesBinariesToml(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -518,7 +519,7 @@ func TestFetchRecipeMergesManifestDigest(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -539,7 +540,7 @@ func TestFetchRecipeBinaries404NoError(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -565,7 +566,7 @@ func TestFetchBinariesNetworkErrorLogsWarning(t *testing.T) {
 		warnings = append(warnings,
 			fmt.Sprintf(format, args...))
 	}
-	idx, err := reg.fetchBinaries("jq")
+	idx, err := reg.fetchBinaries(context.Background(), "jq")
 	// Should return (nil, nil) for graceful fallback.
 	if err != nil {
 		t.Fatalf("expected nil error, got: %v", err)
@@ -612,7 +613,7 @@ sha256 = "inline123"
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -797,7 +798,7 @@ func TestFetchRecipeVersionBadIndex(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
+	_, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error for malformed version index")
 	}
@@ -823,7 +824,7 @@ func TestFetchRecipeVersionRecipeFetchFails(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	_, err := reg.FetchRecipeVersion("jq", "1.7.1")
+	_, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.7.1")
 	if err == nil {
 		t.Fatal("expected error when recipe at commit returns 404")
 	}
@@ -840,7 +841,7 @@ func TestFetchRecipeVersionIndex404(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
+	_, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error when .versions returns 404")
 	}
@@ -866,7 +867,7 @@ sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -904,7 +905,7 @@ sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -994,7 +995,7 @@ func TestFetchRecipeEmptyName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = reg.FetchRecipe("")
+	_, err = reg.FetchRecipe(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -1007,7 +1008,7 @@ func TestFetchRecipeVersionEmptyName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = reg.FetchRecipeVersion("", "1.0.0")
+	_, err = reg.FetchRecipeVersion(context.Background(), "", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error for empty name")
 	}
@@ -1060,7 +1061,7 @@ func TestFetchRecipeRejectsInjectionNames(t *testing.T) {
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
 			reg := testRegistry(srv.URL)
-			_, err := reg.FetchRecipe(name)
+			_, err := reg.FetchRecipe(context.Background(), name)
 			if err == nil {
 				t.Fatalf("expected validation error for %q", name)
 			}
@@ -1083,7 +1084,7 @@ func TestFetchRecipeVersionRejectsInjectionNames(t *testing.T) {
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
 			reg := testRegistry(srv.URL)
-			_, err := reg.FetchRecipeVersion(name, "1.0.0")
+			_, err := reg.FetchRecipeVersion(context.Background(), name, "1.0.0")
 			if err == nil {
 				t.Fatalf("expected validation error for %q", name)
 			}
@@ -1143,7 +1144,7 @@ func TestFetchRecipeMetadataSkipsBinariesFetch(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeMetadata("jq")
+	rec, err := reg.FetchRecipeMetadata(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1236,7 +1237,7 @@ func TestFetchRecipeVersionConnectionFailure(t *testing.T) {
 	srv.Close()
 
 	reg := &Registry{BaseURL: addr}
-	_, err := reg.FetchRecipeVersion("jq", "1.0.0")
+	_, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.0.0")
 	if err == nil {
 		t.Fatal("expected error for connection failure")
 	}
@@ -1497,7 +1498,7 @@ func TestFetchRecipeCommitPinned(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1525,7 +1526,7 @@ func TestFetchRecipeFallsBackWhenNoVersions(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1554,7 +1555,7 @@ func TestFetchRecipeVersionMergesBinaries(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion("jq", "1.8.1")
+	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.8.1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1620,7 +1621,7 @@ func TestFetchRecipeFallsBackToTipBinariesOnPinnedMismatch(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1662,7 +1663,7 @@ func TestFetchLatestPinnedRecordsMispinOnRefTipFallback(t *testing.T) {
 			fmt.Sprintf(format, args...))
 	}
 
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1696,7 +1697,7 @@ func TestFetchLatestPinnedNoMispinWhenPinnedHasBinary(t *testing.T) {
 	))
 	mispinReg := testRegistry(mispinSrv.URL)
 	mispinReg.warnf = func(string, ...any) {}
-	if _, err := mispinReg.FetchRecipe("jq"); err != nil {
+	if _, err := mispinReg.FetchRecipe(context.Background(), "jq"); err != nil {
 		mispinSrv.Close()
 		t.Fatalf("setup fetch failed: %v", err)
 	}
@@ -1723,7 +1724,7 @@ func TestFetchLatestPinnedNoMispinWhenPinnedHasBinary(t *testing.T) {
 			fmt.Sprintf(format, args...))
 	}
 
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -1799,7 +1800,7 @@ func TestFetchLatestPinnedSkewFallsBackToTipRecipe(t *testing.T) {
 	defer srv.Close()
 
 	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe("jq")
+	rec, err := reg.FetchRecipe(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

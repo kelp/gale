@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -132,7 +133,7 @@ func checkOutdated(
 			probes[i] = probe{skipped: true}
 			continue
 		}
-		r, err := resolver(q.name)
+		r, err := resolver(context.Background(), q.name)
 		if err != nil {
 			if isTransportError(err) {
 				stopped = true

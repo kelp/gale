@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
 	"path/filepath"
@@ -259,7 +260,7 @@ func TestRunSyncOneUnderAPlanResolvesNothing(t *testing.T) {
 	resolved := false
 	ctx := buildFakeCtx(t,
 		filepath.Join(tmp, "gale.toml"), galeDir, storeRoot,
-		func(string) (*recipe.Recipe, error) {
+		func(_ context.Context, _ string) (*recipe.Recipe, error) {
 			resolved = true
 			return nil, errors.New("the locked path must not resolve")
 		})
@@ -285,7 +286,7 @@ func TestRunSyncOneUnderAPlanResolvesNothing(t *testing.T) {
 	// Dry run: read-only, so the assertion is about which body ran and
 	// nothing else. The unlocked body resolves inside installedStale
 	// before its own dry-run return.
-	runSyncOne(ctx, syncItem{
+	runSyncOne(context.Background(), ctx, syncItem{
 		name: "jq", version: "1.7-1", planned: &node,
 	}, true)
 

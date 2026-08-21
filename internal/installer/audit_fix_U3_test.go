@@ -2,6 +2,7 @@ package installer
 
 import (
 	"archive/tar"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -166,7 +167,7 @@ func TestInstallBinaryToInPlace_FixupFailureNotInstalled(t *testing.T) {
 	}
 	inst := &Installer{}
 
-	err = inst.installBinaryTo(r, extractDir, extractDir, nil, true)
+	err = inst.installBinaryTo(context.Background(), r, extractDest{extractDir, extractDir, true}, nil)
 	if err == nil {
 		t.Fatal("expected fixup-pipeline failure")
 	}

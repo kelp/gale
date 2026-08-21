@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -33,7 +34,7 @@ func manifestBytes(layerDigest string) ([]byte, string) {
 func TestVerifyManifestDigestEmptyIsNoop(t *testing.T) {
 	// No digest declared (legacy recipe) → no network, no error.
 	bin := &recipe.Binary{URL: "https://ghcr.io/v2/x/y/blobs/sha256:abc", SHA256: "abc"}
-	if err := verifyManifestDigest(bin, ""); err != nil {
+	if err := verifyManifestDigest(context.Background(), bin, ""); err != nil {
 		t.Errorf("verifyManifestDigest = %v, want nil", err)
 	}
 }
@@ -58,7 +59,7 @@ func TestVerifyManifestDigestSucceeds(t *testing.T) {
 		SHA256:         layerSHA,
 		ManifestDigest: manifestDigest,
 	}
-	if err := verifyManifestDigest(bin, ""); err != nil {
+	if err := verifyManifestDigest(context.Background(), bin, ""); err != nil {
 		t.Errorf("verifyManifestDigest = %v, want nil", err)
 	}
 }
@@ -79,7 +80,7 @@ func TestVerifyManifestDigestRejectsLayerMismatch(t *testing.T) {
 		SHA256:         ledgerSHA,
 		ManifestDigest: manifestDigest,
 	}
-	if err := verifyManifestDigest(bin, ""); err == nil {
+	if err := verifyManifestDigest(context.Background(), bin, ""); err == nil {
 		t.Fatal("expected error on layer/ledger mismatch, got nil")
 	}
 }
@@ -93,7 +94,7 @@ func TestVerifyManifestDigestSkipsNonBlobURL(t *testing.T) {
 		SHA256:         "abc",
 		ManifestDigest: "sha256:" + strings.Repeat("a", 64),
 	}
-	if err := verifyManifestDigest(bin, ""); err != nil {
+	if err := verifyManifestDigest(context.Background(), bin, ""); err != nil {
 		t.Errorf("verifyManifestDigest = %v, want nil (skip)", err)
 	}
 }
@@ -140,7 +141,7 @@ func TestInstallBinaryWithManifestDigest(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install error: %v", err)
 	}

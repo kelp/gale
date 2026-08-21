@@ -272,7 +272,7 @@ func TestSyncProjectDirNoopDoesNotRegister(t *testing.T) {
 	proj := newTestProject(t)
 	t.Chdir(t.TempDir())
 
-	if err := runSync("", false, false, false, proj); err != nil {
+	if err := runSync(syncRun{ProjectDir: proj}); err != nil {
 		t.Fatalf("runSync: %v", err)
 	}
 

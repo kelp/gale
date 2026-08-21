@@ -24,6 +24,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
@@ -63,6 +64,22 @@ const (
 // its own and long enough that a broken recipe cannot turn every `cd`
 // into a source build. A user-typed `gale sync` ignores it entirely.
 const syncRetryInterval = 10 * time.Minute
+
+// ifNeededDeadline is the overall budget for `gale sync --if-needed`
+// (direnv, shell, run). A cache-hit no-op finishes first; a source
+// build does not stall the shell. Combined with syncRetryInterval,
+// a timed-out automatic sync stays incomplete until the interval
+// elapses or the user types `gale sync`. Not a config.toml key.
+const ifNeededDeadline = 15 * time.Second
+
+// ifNeededContext is the parent for an --if-needed run. Tests replace
+// it with an already-canceled context so the 15s wall clock never
+// enters a test.
+var ifNeededContext = defaultIfNeededContext
+
+func defaultIfNeededContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), ifNeededDeadline)
+}
 
 // syncState is the on-disk stamp.
 //
@@ -343,14 +360,14 @@ func failedPackageNames(outcomes []syncOutcome) []string {
 // cannot be computed there is nothing to gate or stamp against, so the
 // recorder is a no-op and the sync runs unconditionally — the
 // behaviour that predates the stamp.
-func beginSyncStamp(out *output.Output, galeDir, galePath, host string) (
+func beginSyncStamp(out *output.Output, galeDir, galePath, host string, ifNeeded bool) (
 	record func(complete bool, failed []string), withheld bool,
 ) {
 	fingerprint, err := syncFingerprint(galePath, host, currentPlatform())
 	if err != nil {
 		return func(bool, []string) {}, false
 	}
-	if syncWithheld(out, galeDir, fingerprint) {
+	if syncWithheld(out, galeDir, fingerprint, ifNeeded) {
 		return func(bool, []string) {}, true
 	}
 	return func(complete bool, failed []string) {
@@ -362,8 +379,8 @@ func beginSyncStamp(out *output.Output, galeDir, galePath, host string) (
 // no-op, printing the withheld-retry notice when it does. Without the
 // flag it is always false: a user-typed `gale sync` ignores the
 // completion stamp and the retry interval entirely.
-func syncWithheld(out *output.Output, galeDir, fingerprint string) bool {
-	if !syncOnlyIfNeeded {
+func syncWithheld(out *output.Output, galeDir, fingerprint string, ifNeeded bool) bool {
+	if !ifNeeded {
 		return false
 	}
 	check := syncNeeded(galeDir, fingerprint, time.Now())
