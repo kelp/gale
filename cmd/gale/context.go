@@ -991,36 +991,23 @@ func stripNumericRevision(version string) string {
 	return base
 }
 
-// addToConfig writes a package version to the given gale.toml
-// path. Returns the config path used. When host is non-empty,
-// writes to [hosts.<host>.packages]; otherwise writes to the
-// shared [packages] section, preserving an existing
-// host-scoped entry for the current machine.
+// resolveHostFlag turns a --host CLI value into a host name.
+// Empty string is returned unchanged; callers keep today's
+// location-preserving upsert, which is not "always write
+// shared". "current" expands to the local hostname, and fails
+// when that cannot be read: an unresolved "current" would
+// flatten to "", which every caller reads as shared [packages]
+// — writing host-scoped packages into the set every machine
+// shares (gh#254).
 //
-// configPath is pre-resolved by the caller (once per command
-// invocation) so scope is not re-derived on every package.
-func addToConfig(name, version, host, configPath string) (string, error) {
-	version = stripNumericRevision(version)
-	if host != "" {
-		if err := config.AddPackage(
-			configPath, host, name, version,
-		); err != nil {
-			return "", fmt.Errorf("adding %s to config: %w", name, err)
-		}
-		return configPath, nil
+// Frozen: no new aliases. Any other string is a selector
+// written verbatim. See the Milestone 2 host-section freeze in
+// docs/dev/proposals/fetch-dont-build.md.
+func resolveHostFlag(v string) (string, error) {
+	if v == "current" {
+		return config.CurrentHost()
 	}
-	host, err := config.CurrentHost()
-	if err != nil {
-		return "", err
-	}
-	// The written section is discarded: `gale add` is manifest-only
-	// and never touches the lock (design §11).
-	if _, err := config.UpsertPackage(
-		configPath, host, name, version,
-	); err != nil {
-		return "", fmt.Errorf("adding %s to config: %w", name, err)
-	}
-	return configPath, nil
+	return v, nil
 }
 
 // resolveVersionedRecipe fetches a recipe for a specific

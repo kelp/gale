@@ -166,9 +166,9 @@ commands, including `gale env`, do not register.
   `--recipes`. The checkout must be a git repo;
   `index.Open` reads `git show` of HEAD.
 - `--recipes <dir>` remains on leftover commands
-  (`build`, `add`, `lint` recipes). `gale build`
-  auto-detects a recipe sitting inside a recipes
-  repo and resolves deps locally without the flag.
+  (`outdated`, `gc`, `migrate`) until those
+  packages die. `gale lint` accepts index
+  documents only.
 - macOS `/var` is a symlink to `/private/var`. Tests
   comparing paths must `filepath.EvalSymlinks` both
   sides. `just check-darwin` cannot catch a violation —

@@ -8,7 +8,7 @@ import (
 )
 
 func TestHostFlagCommandsFrozen(t *testing.T) {
-	want := []string{"add", "install", "lock", "remove"}
+	want := []string{"install", "lock", "remove"}
 	got := commandsWithHostFlag(rootCmd)
 	if !slices.Equal(got, want) {
 		t.Fatalf("commands with --host = %v, want %v", got, want)

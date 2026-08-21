@@ -234,7 +234,7 @@ Not-in-index is an error.
       `design.md` principles, `CLAUDE.md`,
       README. Gale is not "everything from
       source" and not a Homebrew replacement.
-- [ ] **Delete the long tail.** `build`,
+- [x] **Delete the long tail.** `build`,
       `create-recipe`, `audit`, recipe
       `lint`, `search`, `switch`, `add`,
       `sbom`, `inspect`, `repo *`. No
@@ -587,9 +587,8 @@ paper-cut a new user is likely to hit.
 
 ### SBOM format
 
-- [ ] **CycloneDX or SPDX output** — current JSON is
-  custom. Add a standard format option when someone
-  needs compliance tooling.
+- [x] **CycloneDX or SPDX output** — superseded by
+  Delete the long tail (`gale sbom` is gone).
 
 ### Audit usefulness
 
@@ -742,16 +741,9 @@ Moved to gale-recipes TODO. Recipe format additions
   versions not referenced by any gale.toml. `--dry-run`
   previews what would be removed.
 
-- [ ] **`gale generations rollback` should rebuild the
-  farm.** `internal/generation/history.go:153` only swaps
-  the `current` symlink; the shared dylib farm at
-  `~/.gale/lib/` stays pointing at the post-Build state,
-  so binaries in the rolled-to gen may load dylibs from
-  revisions that gen never included. Fix requires
-  persisting the gen's package set (e.g. a small
-  per-gen manifest file) so rollback can pass the
-  active set to `farm.Rebuild`. Surfaced while fixing
-  the store-walking farm rebuild.
+- [x] **`gale generations rollback` should rebuild the
+  farm.** Superseded by Delete the long tail. The farm
+  dies in Milestone 5; this ticket is not live.
 
 - [x] **Collapse install-time farm replace output.**
   During a revision bump, `farm.Populate` prints one
@@ -885,9 +877,10 @@ pure `[binary.<platform>]` with no `[build]` block.
 
 # Testing
 
-- [ ] Integration testing suite that tests all flags
+- [x] Integration testing suite that tests all flags
   and functionality. Every CLI permutation, end to end.
   Tests many possible recipe builds of all types.
+  Superseded by Delete the long tail.
 
 # Build Infrastructure
 
@@ -898,8 +891,8 @@ pure `[binary.<platform>]` with no `[build]` block.
 - [x] pkg-config fixup — FixupPkgConfig rewrites .pc
   files to relative ${pcfiledir} paths on both source
   builds and binary installs
-- [ ] Rebuild all GHCR binaries with pkg-config fixup
-  so prebuilt packages have correct .pc files
+- [x] Rebuild all GHCR binaries with pkg-config fixup
+  — superseded by Delete the long tail / fetch plan.
 
 ## Performance & Distribution
 
@@ -997,9 +990,8 @@ closure at once is essentially free — yet a real `bat` install spends
 ~7×4s on it. That makes the highest-value perf work **gale-side
 attestation handling**, ahead of any distribution change:
 
-- [ ] **Cache attestation per store artifact.** Once a binary at a
-  given sha256 is verified, record it; shared deps and reinstalls
-  skip re-verification entirely.
+- [x] **Cache attestation per store artifact.** Superseded
+  by Delete the long tail / fetch plan (GHCR bottle path).
 - [x] **Verify a closure's artifacts concurrently.** Resolved as a
   side effect of in-process verification (gh#129): attestation now
   runs inline inside each package's `installBinaryTo`, which already
@@ -1008,11 +1000,9 @@ attestation handling**, ahead of any distribution change:
 - [x] **(Stretch) in-process Sigstore verification** (gh#129).
   sigstore-go verifies bundles in-process; the per-artifact `gh`
   subprocess spawn is gone.
-- [ ] **Drop the GitHub-API file-subject fallback in
-  `VerifyPrebuilt`.** Once gale-recipes confirms every
-  ledger-referenced artifact has an OCI referrer, remove the
-  `VerifyFile`/Attestations-API fallback path and require the
-  OCI-referrer path unconditionally.
+- [x] **Drop the GitHub-API file-subject fallback in
+  `VerifyPrebuilt`.** Superseded by Delete the long tail /
+  fetch plan.
 
 This corrects the earlier read that distribution infra (Tier 2/3)
 was the next lever — it isn't, until attestation is addressed. The
@@ -1025,26 +1015,14 @@ Today every recipe fetch is a separate HTTPS GET to
 `.versions` files help with version resolution but you still
 make one request per recipe.
 
-- [ ] **Bundled recipe index.** Periodically (CI) build a
-  single `index.tar.zst` of all recipes + a manifest mapping
-  name → contents. `gale sync`-style operations fetch the
-  bundle once, read locally. Per-recipe fetch path still
-  works as a fallback for cache misses or fresh recipes
-  between bundle rebuilds. Roughly the `apt update` model.
-  Repo: gale-recipes (build) + gale (consume).
+- [x] **Bundled recipe index.** Superseded by Delete the
+  long tail / fetch plan.
 
-- [ ] **HTTP compression on recipe fetches.**
-  `raw.githubusercontent.com` doesn't serve `Content-Encoding:
-  gzip` consistently. Recipes are small TOML — gzip is 5–10×.
-  Solved naturally if we move recipe distribution off raw.
-  githubusercontent.com (see Tier 3).
+- [x] **HTTP compression on recipe fetches.** Superseded
+  by Delete the long tail / fetch plan.
 
-- [ ] **Local "registry mirror" model.** `gale update`
-  (separate from `gale update <pkg>` — naming conflict to
-  resolve) fetches the bundled index and writes it to
-  `~/.gale/cache/registry/`. Subsequent commands consult the
-  local copy first. Apt-style. Cuts steady-state recipe
-  fetches to zero. Pair with TTL-based auto-refresh.
+- [x] **Local "registry mirror" model.** Superseded by
+  Delete the long tail / fetch plan.
 
 ### Tier 3 — Binary distribution infrastructure
 
@@ -1054,39 +1032,25 @@ become tractable once the security-side OIDC keyless work
 ships (Layer 6 Tier 2) — at that point the OCI registry
 isn't carrying signing semantics, just bytes.
 
-- [ ] **Cloudflare R2 (or similar) for binary hosting.** Zero
-  egress fees, CDN-backed, no token dance, HTTP/2 native.
-  At gale's scale ~$5/mo. Migrate gale-recipes CI to push to
-  R2 alongside GHCR initially (parallel), then cut GHCR over
-  after a soak period. Expected gain: 1.5–3× on binary
-  download depending on user geography. Repo: gale-recipes
-  (CI changes) + gale (alternate URL resolution).
+- [x] **Cloudflare R2 (or similar) for binary hosting.**
+  Superseded by Delete the long tail / fetch plan.
 
-- [ ] **Precompiled-recipe bundle on CDN.** Same R2 / CDN
-  endpoint as binaries. Bundle + binaries from the same
-  origin means one connection pool, one TLS handshake.
+- [x] **Precompiled-recipe bundle on CDN.** Superseded by
+  Delete the long tail / fetch plan.
 
-- [ ] **HTTP/2 multiplexing across the binary fetch.** If a
-  package ships as multiple layered blobs (current archives
-  are a single tar.zst, so this is mostly future-proofing
-  for if we move to OCI-layer-style distribution).
+- [x] **HTTP/2 multiplexing across the binary fetch.**
+  Superseded by Delete the long tail / fetch plan.
 
 ### Tier 4 — Speculative
 
-- [ ] **Async warmup on `gale install`.** Background-fetch
-  the dep closure's recipes while the user is downloading
-  the requested package's binary. Hides recipe latency on
-  the deps almost entirely.
+- [x] **Async warmup on `gale install`.** Superseded by
+  Delete the long tail / fetch plan.
 
-- [ ] **Binary deduplication via the shared dylib farm.**
-  Already exists for source-built dylibs. Investigate
-  whether binary-installed packages with shared deps could
-  hardlink-share dylibs at install time. Saves disk on
-  heavy projects.
+- [x] **Binary deduplication via the shared dylib farm.**
+  Superseded by Delete the long tail (farm dies in M5).
 
-- [ ] **Resume partial downloads.** GHCR / R2 both support
-  HTTP Range. On a flaky connection, resume rather than
-  restart. Cheap once a range-aware HTTP client exists.
+- [x] **Resume partial downloads.** Superseded by Delete
+  the long tail / fetch plan (GHCR / R2 bottle hosting).
 
 ### Comparison reference
 

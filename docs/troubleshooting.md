@@ -128,39 +128,13 @@ the digests above it unreproducible too. A closure
 containing a source build is portable exactly as far as
 that build reproduces. See [lockfile.md](lockfile.md).
 
-### Audit reports a mismatch
+### Verify reports a digest mismatch
 
-`gale audit <pkg>` rebuilds a package from source and
-compares the SHA256 against the installed binary. A
-mismatch is normal for most packages.
-
-A **match** confirms the build is reproducible — the
-installed binary is exactly what the source produces.
-
-A **mismatch** does not indicate tampering. These
-sources of non-determinism are not fixable without
-Nix-level build isolation:
-
-- **Mach-O LC_UUID.** macOS clang embeds a unique
-  UUID in every compiled binary.
-- **Libtool .la files.** Contain absolute paths to
-  the build temp directory.
-- **pkg-config .pc files.** Contain absolute paths
-  to the build prefix directory.
-- **ar/ranlib timestamps.** Embedded in `.a` static
-  archives. `ZERO_AR_DATE=1` helps but does not
-  fully solve it on macOS.
-
-These parts of the build output ARE deterministic:
-
-- Archive packaging (zstd compression, tar metadata,
-  symlink targets).
-- Text files, man pages, shell scripts.
-- File sizes and permissions.
-
-`gale audit` currently reads from the project
-lockfile. It does not yet support `-g` for auditing
-globally installed packages.
+`gale verify` recomputes the tree digest of each
+`pkg/fetch/` directory the v2 lock names. A mismatch
+means the store is not the locked artifact. Re-fetch
+or restore the store; do not treat this as a
+source-rebuild check. `gale audit` is gone.
 
 ### Direnv not activating
 

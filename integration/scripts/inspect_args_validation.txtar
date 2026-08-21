@@ -1,8 +1,0 @@
-# `gale inspect` requires either a package name or --all.
-# Neither is an error; both together is also an error.
-
-! exec gale inspect
-stderr 'specify a package name or pass --all'
-
-! exec gale inspect hello --all
-stderr '--all cannot be combined with a package name'

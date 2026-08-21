@@ -10,19 +10,15 @@ import (
 	"github.com/BurntSushi/toml"
 
 	"github.com/kelp/gale/internal/index"
-	"github.com/kelp/gale/internal/lint"
 	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
-var (
-	lintStrict bool
-	lintBase   string
-)
+var lintBase string
 
 var lintCmd = &cobra.Command{
 	Use:   "lint <file.toml> [file.toml...]",
-	Short: "Validate recipe or index files",
+	Short: "Validate index files",
 	Args:  cobra.MinimumNArgs(1),
 	RunE:  runLint,
 }
@@ -37,6 +33,7 @@ func runLint(cmd *cobra.Command, args []string) error {
 	}
 
 	failed := false
+	var first error
 	for _, path := range args {
 		if strings.HasSuffix(path, ".binaries.toml") ||
 			strings.HasSuffix(path, ".versions") {
@@ -47,30 +44,26 @@ func runLint(cmd *cobra.Command, args []string) error {
 		if err != nil {
 			return fmt.Errorf("reading %s: %w", path, err)
 		}
-		if looksLikeIndex(data) {
-			if err := lintOneIndex(out, path, data); err != nil {
-				failed = true
+		if !looksLikeIndex(data) {
+			err := fmt.Errorf("%s: not an index document", path)
+			out.Error(err.Error())
+			if first == nil {
+				first = err
 			}
+			failed = true
 			continue
 		}
-
-		issues := lint.Lint(string(data), path)
-		if len(issues) == 0 {
-			out.Success(fmt.Sprintf("%s: ok", path))
-			continue
-		}
-
-		// --strict fails on any issue. Warnings are the
-		// only reason a recipe CI step over a whole tree
-		// stays green while a rule fires (gale-recipes#189).
-		if emitLintIssues(out, path, issues) || lintStrict {
+		if err := lintOneIndex(out, path, data); err != nil {
+			if first == nil {
+				first = err
+			}
 			failed = true
 		}
 	}
 
 	if failed {
-		if lintStrict {
-			return errors.New("lint issues found")
+		if first != nil {
+			return first
 		}
 		return errors.New("lint errors found")
 	}
@@ -178,34 +171,8 @@ func emitIndexIssues(out *output.Output, path string, issues []index.Issue) {
 	}
 }
 
-// emitLintIssues writes each lint issue to out, mapping
-// severity → prefix consistently with the rest of gale:
-// errors use out.Error (red `xxx `), warnings use out.Warn
-// (yellow `!!! `). Returns true if at least one error-level
-// issue was emitted, so the caller can set a failing exit
-// status.
-func emitLintIssues(
-	out *output.Output, path string, issues []lint.Issue,
-) bool {
-	hasErrors := false
-	for _, issue := range issues {
-		msg := fmt.Sprintf("%s: %s", path, issue.Message)
-		switch issue.Level {
-		case "error":
-			out.Error(msg)
-			hasErrors = true
-		case "warning":
-			out.Warn(msg)
-		}
-	}
-	return hasErrors
-}
-
 func init() {
-	f := lintCmd.Flags()
-	f.BoolVar(&lintStrict, "strict", false,
-		"Fail on warnings as well as errors")
-	f.StringVar(&lintBase, "base", "",
+	lintCmd.Flags().StringVar(&lintBase, "base", "",
 		"Previous index document for LintDiff")
 	rootCmd.AddCommand(lintCmd)
 }

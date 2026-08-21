@@ -155,5 +155,4 @@ global one. Anyone who clones the repo runs
 
 - `gale list` shows packages in the current manifest.
 - `gale update` upgrades packages to the latest version.
-- `gale search <query>` finds available packages.
 - `man gale` has the full command reference.

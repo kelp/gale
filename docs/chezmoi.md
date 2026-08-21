@@ -139,7 +139,7 @@ export GALE_HOST=my-mac
 Add packages to a host section with `--host`:
 
 ```sh
-gale add fzf --host current
+gale install fzf --host current
 ```
 
 See [configuration](configuration.md) for the full
