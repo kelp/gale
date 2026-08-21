@@ -83,6 +83,47 @@ func TestAdmitTarGzEmitsLintCleanFragment(t *testing.T) {
 	assertAdmitHomeClean(t, home)
 }
 
+func TestAdmitDirectoryFileEmitsLintCleanFragment(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	fx := newAdmitFix(t)
+	archive := filepath.Join(t.TempDir(), "pkg.tar.gz")
+	writeAdmitTarGz(t, archive, []tar.Header{
+		{Name: "prefix/pkg/just", Mode: 0o755, Typeflag: tar.TypeReg},
+		{Name: "prefix/pkg/readme", Mode: 0o644, Typeflag: tar.TypeReg},
+	}, [][]byte{fx.elfBytes(), []byte("readme\n")})
+	out, err := executeAdmit(
+		t,
+		"--archive", archive,
+		"--name", "just",
+		"--version", "1.56.0",
+		"--os", "linux",
+		"--arch", runtime.GOARCH,
+		"--url", admitJustURL,
+		"--strip", "1",
+		"--file", "pkg:pkg:755",
+	)
+	if err != nil {
+		t.Fatalf("admit: %v", err)
+	}
+	if !strings.Contains(out, `src = "pkg"`) ||
+		!strings.Contains(out, `dest = "pkg"`) {
+		t.Fatalf("fragment missing directory map:\n%s", out)
+	}
+	doc := "[package]\nname = \"just\"\n" +
+		"description = \"x\"\nlicense = \"MIT\"\n" +
+		"homepage = \"https://github.com/casey/just\"\n" +
+		"repo = \"casey/just\"\nlatest = \"1.56.0\"\n\n" + out
+	f, err := index.Parse([]byte(doc))
+	if err != nil {
+		t.Fatalf("Parse: %v\n%s", err, doc)
+	}
+	if issues := index.Lint(f); len(issues) > 0 {
+		t.Fatalf("Lint: %v\n%s", issues, doc)
+	}
+	assertAdmitHomeClean(t, home)
+}
+
 func TestAdmitDifferentBodiesDifferentDigest(t *testing.T) {
 	a := newAdmitFix(t)
 	b := newAdmitFix(t)

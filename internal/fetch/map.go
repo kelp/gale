@@ -10,14 +10,17 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"syscall"
 
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/index"
 )
 
 // PlaceMapped extracts archive and copies art.Files into treeDir.
-// archive must sit in a fresh work directory: extract lands at
-// dirname(archive)/extract and is not cleared.
+// A directory src is copied when dest mode is 0755; empty
+// directories are refused. archive must sit in a fresh work
+// directory: extract lands at dirname(archive)/extract and
+// is not cleared.
 func PlaceMapped(ctx context.Context, archive, treeDir string, art index.Artifact) error {
 	return placeMapped(ctx, archive, treeDir, art)
 }
@@ -80,10 +83,10 @@ func resolveSrc(extractDir, src string, strip int) (string, error) {
 		if !ok || stripped != src {
 			return nil
 		}
-		if d.IsDir() {
-			return fmt.Errorf("%s is a directory", src)
-		}
 		matches = append(matches, p)
+		if d.IsDir() {
+			return fs.SkipDir
+		}
 		return nil
 	})
 	if err != nil {
@@ -111,6 +114,92 @@ func copyMapped(ctx context.Context, src, dest string, mode os.FileMode) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	fi, err := os.Lstat(src)
+	if err != nil {
+		return err
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("symlink")
+	}
+	if fi.IsDir() {
+		return copyMappedDir(ctx, src, dest, mode)
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("not a regular file")
+	}
+	if err := checkMappedFile(src, fi); err != nil {
+		return err
+	}
+	return copyMappedFile(ctx, src, dest, mode)
+}
+
+func copyMappedDir(ctx context.Context, src, dest string, mode os.FileMode) error {
+	if mode != 0o755 {
+		return fmt.Errorf("directory dest mode must be 0755")
+	}
+	var files int
+	err := filepath.WalkDir(src, func(p string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, p)
+		if err != nil {
+			return err
+		}
+		out := dest
+		if rel != "." {
+			out = filepath.Join(dest, rel)
+		}
+		if d.IsDir() {
+			return os.MkdirAll(out, 0o755)
+		}
+		if d.Type()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s: symlink", rel)
+		}
+		if !d.Type().IsRegular() {
+			return fmt.Errorf("%s: not a regular file", rel)
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if err := checkMappedFile(rel, info); err != nil {
+			return err
+		}
+		files++
+		return copyMappedFile(ctx, p, out, info.Mode().Perm())
+	})
+	if err != nil {
+		return err
+	}
+	if files == 0 {
+		return fmt.Errorf("directory has no regular files")
+	}
+	return nil
+}
+
+func checkMappedFile(rel string, fi os.FileInfo) error {
+	special := os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+	if fi.Mode()&special != 0 {
+		return fmt.Errorf("%s: setuid, setgid, or sticky", rel)
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	if !ok {
+		return fmt.Errorf("%s: missing stat_t", rel)
+	}
+	if mappedNlink(st.Nlink) != 1 {
+		return fmt.Errorf("%s: hardlink", rel)
+	}
+	return nil
+}
+
+func copyMappedFile(ctx context.Context, src, dest string, mode os.FileMode) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
 		return err
 	}
@@ -133,4 +222,8 @@ func copyMapped(ctx context.Context, src, dest string, mode os.FileMode) error {
 		return err
 	}
 	return os.Chmod(dest, mode)
+}
+
+func mappedNlink[T ~uint16 | ~uint64](n T) uint64 {
+	return uint64(n)
 }

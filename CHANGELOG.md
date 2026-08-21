@@ -9,7 +9,21 @@
   advances the related `golang.org/x/{mod,sys,crypto,net,sync,term,tools}`
   transitives.
 
+### Changed
+
+- **`gale admit` inspects executable files only.**
+  Non-executable objects (GOROOT testdata ELF/Mach-O)
+  are payload. A tree still needs one inspectable
+  binary.
+
 ### Added
+
+- **Directory file maps.** `PlaceMapped` copies a
+  directory `src` when dest mode is 0755. Nested
+  dest directories are 0755. Regular-file children
+  keep extractor modes. Empty directories (no
+  regular-file descendants) are refused. Copy
+  refuses symlink, hardlink, and non-regular nodes.
 
 - **`gale lint` index documents.** A TOML file with a
   top-level `versions` table is linted with

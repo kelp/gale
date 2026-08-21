@@ -19,7 +19,9 @@ type Inspector interface {
 var ErrNoBinary = errors.New("no inspectable binary")
 
 // InspectTree fail-closes on arch, object-format, codesign, and
-// non-system dynamic libraries. goos/goarch are the index platform.
+// non-system dynamic libraries for executable regular files.
+// Non-executable objects are payload. goos/goarch are the
+// index platform.
 func InspectTree(ctx context.Context, tree, goos, goarch string, insp Inspector) error {
 	if insp == nil {
 		insp = Native{}
@@ -33,6 +35,13 @@ func InspectTree(ctx context.Context, tree, goos, goarch string, insp Inspector)
 			return err
 		}
 		if d.IsDir() || !d.Type().IsRegular() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return err
+		}
+		if info.Mode()&0o111 == 0 {
 			return nil
 		}
 		return inspectFile(inspectArgs{
