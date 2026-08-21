@@ -22,17 +22,13 @@ type Repo struct {
 //
 // Frozen: these three tables are the key set. Add no keys.
 // [registry] url and [sync] parallelism are ignored leftovers;
-// they must not repoint resolution or change the limiter.
+// they must not repoint resolution or change install order.
 // Retention is the compiled DefaultGenerationKeep.
 type AppConfig struct {
 	Repos     []Repo      `toml:"repos"`
 	Build     BuildConfig `toml:"build"`
 	Anthropic AIConfig    `toml:"anthropic"`
 }
-
-// DefaultParallelism is the compiled download/sync limiter
-// size. config.toml and GALE_JOBS cannot change it.
-const DefaultParallelism = 8
 
 // BuildConfig holds build-related settings.
 type BuildConfig struct {

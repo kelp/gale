@@ -254,7 +254,7 @@ for home-relative paths.
 The recipe registry URL is compiled in. Leftover
 `[registry] url` and `[sync] parallelism` keys are
 ignored. `GALE_JOBS` is ignored. A config file cannot
-repoint resolution or change the download limiter.
+repoint resolution or change install order.
 
 ### `[[repos]]`
 

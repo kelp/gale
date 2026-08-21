@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/registry"
 )
 
@@ -36,10 +35,8 @@ func TestNewRegistryIgnoresConfigURL(t *testing.T) {
 	}
 }
 
-// TestNewCmdContextIgnoresJobsKnobs: GALE_JOBS and leftover
-// [sync] parallelism must not change the limiter. Retention
-// of parallel(8) stays until the next heading deletes the
-// packages.
+// TestNewCmdContextIgnoresJobsKnobs: leftover GALE_JOBS and
+// [sync] parallelism must not fail context construction.
 func TestNewCmdContextIgnoresJobsKnobs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -71,15 +68,7 @@ func TestNewCmdContextIgnoresJobsKnobs(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chdir(origDir) })
 
-	ctx, err := newCmdContext("", false, false)
-	if err != nil {
+	if _, err := newCmdContext("", false, false); err != nil {
 		t.Fatalf("newCmdContext: %v", err)
-	}
-	want := config.DefaultParallelism
-	if ctx.Parallelism != want {
-		t.Errorf("ctx.Parallelism = %d, want %d", ctx.Parallelism, want)
-	}
-	if got := ctx.Installer.Downloads.Cap(); got != want {
-		t.Errorf("Installer.Downloads cap = %d, want %d", got, want)
 	}
 }

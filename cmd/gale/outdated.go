@@ -1,17 +1,14 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
-	"sync/atomic"
 
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/registry"
 	ver "github.com/kelp/gale/internal/version"
 	"github.com/spf13/cobra"
@@ -98,19 +95,11 @@ var outdatedCmd = &cobra.Command{
 	},
 }
 
-// checkOutdated dispatches resolver calls in parallel under a
-// bounded worker pool. On the first transport-level resolver
-// error a shared atomic flag is raised; workers that have not
-// yet started skip their resolver call entirely and surface a
-// "skipped after earlier network error" entry. In-flight workers
-// run to completion (no goroutine kill) but the per-request
-// context timeout (in the registry layer) bounds the wait. The
-// net effect on a dead registry is roughly one worker-pool-cycle
-// of timeouts instead of N × 30s.
-//
-// Warnings and the result aggregation happen sequentially after
-// the worker barrier so output order matches sorted package
-// order, not goroutine completion order.
+// checkOutdated probes packages in sorted name order. On the
+// first transport-level resolver error later packages are
+// skipped and reported as "skipped after earlier network
+// error". A per-package error (recipe not found) does not
+// stop the rest.
 func checkOutdated(
 	pkgs map[string]string,
 	resolver installer.RecipeResolver,
@@ -136,24 +125,23 @@ func checkOutdated(
 		queries[i] = query{name: name, version: pkgs[name]}
 	}
 
-	var hardStop atomic.Bool
-	// 8 workers: per-package work is HTTP-bound (registry fetch);
-	// covers typical package list sizes without goroutine overhead.
-	// Errors slice is always nil — probe captures errors in its fields.
-	probes, _ := parallel.Map(context.Background(), queries, 8,
-		func(_ context.Context, q query) (probe, error) {
-			if hardStop.Load() {
-				return probe{skipped: true}, nil
+	probes := make([]probe, len(queries))
+	stopped := false
+	for i, q := range queries {
+		if stopped {
+			probes[i] = probe{skipped: true}
+			continue
+		}
+		r, err := resolver(q.name)
+		if err != nil {
+			if isTransportError(err) {
+				stopped = true
 			}
-			r, err := resolver(q.name)
-			if err != nil {
-				if isTransportError(err) {
-					hardStop.Store(true)
-				}
-				return probe{err: err}, nil
-			}
-			return probe{latest: r.Package.Full()}, nil
-		})
+			probes[i] = probe{err: err}
+			continue
+		}
+		probes[i] = probe{latest: r.Package.Full()}
+	}
 
 	var result outdatedResult
 	for i, q := range queries {

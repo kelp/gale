@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,7 +12,6 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
-	"github.com/kelp/gale/internal/parallel"
 	"github.com/spf13/cobra"
 )
 
@@ -208,11 +206,6 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 			packages = map[string]string{filter: ver}
 		}
 
-		// Snapshot the lockfile state per package and dispatch
-		// recipe resolution in parallel. The resolver is the only
-		// slow part (per-package HTTP); the surrounding work is
-		// pure data assembly. Worker pool of 8 matches the bound
-		// used by sync/outdated.
 		type item struct {
 			name, version string
 			locked        lockfile.Entry
@@ -230,45 +223,37 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 				locked: locked, hasLock: ok,
 			})
 		}
-		// 8 workers: per-item work is I/O-bound (store reads);
-		// covers typical package list sizes without goroutine overhead.
-		// Errors slice is always nil — sbomEntry captures errors in fields.
-		results, _ := parallel.Map(context.Background(), items, 8,
-			func(_ context.Context, p item) (sbomEntry, error) {
-				e := sbomEntry{
-					Name:    p.name,
-					Version: p.version,
-					Scope:   sc.scope,
-					Method:  "source",
-				}
-				if p.hasLock {
-					e.ArchiveSHA256 = p.locked.SHA256
-				}
-				if r, err := ctx.ResolveVersionedRecipe(p.name, p.version); err == nil {
-					e.SourceURL = r.Source.URL
-					e.SourceSHA256 = r.Source.SHA256
-					e.License = r.Package.License
-					e.Homepage = r.Package.Homepage
-					if bin := r.BinaryForPlatform(
-						runtime.GOOS, runtime.GOARCH,
-					); bin != nil {
-						if e.ArchiveSHA256 == bin.SHA256 {
-							e.Method = "binary"
-						}
+		sort.Slice(items, func(i, j int) bool {
+			return items[i].name < items[j].name
+		})
+		for _, p := range items {
+			e := sbomEntry{
+				Name:    p.name,
+				Version: p.version,
+				Scope:   sc.scope,
+				Method:  "source",
+			}
+			if p.hasLock {
+				e.ArchiveSHA256 = p.locked.SHA256
+			}
+			if r, err := ctx.ResolveVersionedRecipe(p.name, p.version); err == nil {
+				e.SourceURL = r.Source.URL
+				e.SourceSHA256 = r.Source.SHA256
+				e.License = r.Package.License
+				e.Homepage = r.Package.Homepage
+				if bin := r.BinaryForPlatform(
+					runtime.GOOS, runtime.GOARCH,
+				); bin != nil {
+					if e.ArchiveSHA256 == bin.SHA256 {
+						e.Method = "binary"
 					}
 				}
-				// The enforced schema records the method, and a
-				// recorded fact outranks the hash comparison above,
-				// which is a guess and becomes a wrong one as soon as
-				// the recipe moves: a locked binary would report as
-				// source, or the reverse. A legacy entry records no
-				// method, so the inference stands there.
-				if p.locked.Method != "" {
-					e.Method = p.locked.Method
-				}
-				return e, nil
-			})
-		entries = append(entries, results...)
+			}
+			if p.locked.Method != "" {
+				e.Method = p.locked.Method
+			}
+			entries = append(entries, e)
+		}
 	}
 	return entries, nil
 }

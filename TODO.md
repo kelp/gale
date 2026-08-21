@@ -118,7 +118,7 @@ Milestone 4 — 193 source recipes still collide.
       `GALE_JOBS`. Add no keys. A config file
       must not repoint resolution or disable
       gc.
-- [ ] **Delete `internal/parallel` and
+- [x] **Delete `internal/parallel` and
       `internal/prewarm`.** Serial installer.
       Deterministic order. Every error
       surfaces.

@@ -22,7 +22,6 @@ import (
 	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/lockwrite"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
@@ -40,11 +39,6 @@ type cmdContext struct {
 	Resolver  installer.RecipeResolver
 	Installer *installer.Installer
 	Registry  *registry.Registry // nil when --recipes
-
-	// Parallelism is the compiled download/sync concurrency
-	// (DefaultParallelism). It sizes both the Installer's
-	// Downloads limiter and sync's worker pool.
-	Parallelism int
 
 	// Host force-writes the package to
 	// [hosts.<Host>.packages] when finalize runs. Empty
@@ -143,24 +137,20 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		return nil, resolveErr
 	}
 
-	n := config.DefaultParallelism
-
 	inst := &installer.Installer{
-		Store:     store.NewStore(storeRoot),
-		Resolver:  resolver,
-		Verifier:  attestation.NewVerifier(),
-		Downloads: parallel.NewLimiter(n),
+		Store:    store.NewStore(storeRoot),
+		Resolver: resolver,
+		Verifier: attestation.NewVerifier(),
 	}
 	wireFarmGuards(inst, galeDir, storeRoot)
 
 	return &cmdContext{
-		GalePath:    galePath,
-		GaleDir:     galeDir,
-		StoreRoot:   storeRoot,
-		Resolver:    resolver,
-		Installer:   inst,
-		Registry:    reg,
-		Parallelism: n,
+		GalePath:  galePath,
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+		Resolver:  resolver,
+		Installer: inst,
+		Registry:  reg,
 	}, nil
 }
 

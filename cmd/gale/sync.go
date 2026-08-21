@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -16,7 +15,6 @@ import (
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/parallel"
 	"github.com/spf13/cobra"
 )
 
@@ -118,17 +116,10 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	if err != nil {
 		return err
 	}
-	// Per-package work is HTTP-bound (recipe fetch + binary
-	// download). The same resolved parallelism bounds the
-	// Installer's Downloads limiter, so package-level fan-out and
-	// per-package dep downloads share one configured ceiling.
-	// Errors slice is always nil — runSyncOne captures all errors in
-	// syncOutcome fields, never returns one.
-	outcomes, _ = parallel.Map(context.Background(), items, ctx.Parallelism,
-		func(_ context.Context, w syncItem) (syncOutcome, error) {
-			//nolint:contextcheck // runSyncOne takes no ctx by design; the fan-out ctx only bounds the leaf fetches
-			return runSyncOne(ctx, w, dryRun), nil
-		})
+	outcomes = make([]syncOutcome, 0, len(items))
+	for _, w := range items {
+		outcomes = append(outcomes, runSyncOne(ctx, w, dryRun))
+	}
 
 	installed, failures := reportSyncOutcomes(out, outcomes, dryRun)
 
@@ -251,9 +242,9 @@ func syncLockView(galePath string) (*lockfile.View, error) {
 
 // reportSyncOutcomes emits every per-package line and returns the
 // install count plus the failures themselves. Split out of runSync so
-// the outcome vocabulary lives in one place; the parallel workers
-// deliberately print nothing, so this is the only thing that decides
-// what a sync looks like.
+// the outcome vocabulary lives in one place; runSyncOne prints
+// nothing, so this is the only thing that decides what a sync
+// looks like.
 //
 // The errors are returned rather than counted because the exit code
 // depends on them: a count reaching finishSync makes every worker
@@ -518,8 +509,8 @@ type syncItem struct {
 
 // syncOutcome is the result of one runSyncOne call. It is
 // pure data — the caller emits all user-visible output after
-// the parallel worker barrier so lines are printed in a
-// deterministic order.
+// the serial loop so lines are printed in a deterministic
+// order.
 type syncOutcome struct {
 	name, version string
 	upToDate      bool
@@ -531,8 +522,7 @@ type syncOutcome struct {
 
 // sortedSyncItems converts cfg.Packages to a syncItem slice ordered by
 // name, each carrying its locked node when the sync is locked. Used by
-// runSync so per-package output is emitted in a stable order across
-// runs regardless of which worker finished first.
+// runSync so per-package output is emitted in a stable order.
 //
 // It no longer reads the lockfile directly. The per-package entry
 // lookup existed to feed the SHA-changed warning, and that warning is
@@ -572,10 +562,9 @@ func sortedSyncItems(
 	return items, nil
 }
 
-// runSyncOne is the per-package body of sync, extracted so the
-// outer loop can dispatch it under a parallel worker pool.
+// runSyncOne is the per-package body of sync.
 // Pure with respect to output (no fmt.Println / out.Info calls);
-// caller emits user-visible lines after the worker barrier.
+// caller emits user-visible lines after the serial loop.
 // installedStale reports whether an already-installed package must be
 // reinstalled. It evaluates staleness against the store dir a
 // reinstall writes — the recipe's canonical version-revision — not the
