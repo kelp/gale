@@ -183,7 +183,7 @@ fine.
       is fail-closed plus sync
       convergence. Tests in `cmd/gale`
       (`finalize_*`).
-- [ ] **`gale lock` is lock-only.** One
+- [x] **`gale lock` is lock-only.** One
       `index_commit`. Write the lock. No
       fetch. No `current` swap. Never
       writes `gale.toml`. Delete

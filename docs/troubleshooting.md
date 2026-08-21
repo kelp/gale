@@ -114,7 +114,7 @@ tampering.
 The remedy is to re-lock on the machine that failed:
 
 ```sh
-gale lock --refresh <pkg>
+gale lock
 ```
 
 Or pin a version with a prebuilt binary, so the closure

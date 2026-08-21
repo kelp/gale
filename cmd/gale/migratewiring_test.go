@@ -761,7 +761,7 @@ func TestRunMigrateReportsWhatItCannotConverge(t *testing.T) {
 	// assertion on the command alone would pass without the
 	// pre-revision half printing anything at all.
 	for _, want := range []string{
-		"canon@1.0-1", "gale lock --refresh",
+		"canon@1.0-1", "No per-scope command",
 		"legacy@1.0-1", "Nothing links or pins",
 	} {
 		if !strings.Contains(buf.String(), want) {
@@ -955,7 +955,7 @@ func TestRunMigrateNamesTheAttestationHandoff(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"no provenance record", "gale lock --refresh",
+		"no provenance record", "No per-scope command",
 	} {
 		if !strings.Contains(buf.String(), want) {
 			t.Errorf("the sync advice never mentions %q:\n%s", want, buf)
