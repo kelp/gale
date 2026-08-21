@@ -13,12 +13,12 @@ import (
 
 // rollbackTempProject is an isolated HOME + project with two
 // generations (jq 1.1 then 1.2) so rollback has somewhere to go.
-func rollbackTempProject(t *testing.T) (proj, galeDir, storeRoot, configPath string) {
+func rollbackTempProject(t *testing.T) (galeDir, storeRoot, configPath string) {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("GALE_OFFLINE", "1")
-	proj = t.TempDir()
+	proj := t.TempDir()
 	configPath = filepath.Join(proj, "gale.toml")
 	galeDir = filepath.Join(proj, ".gale")
 	storeRoot = filepath.Join(home, ".gale", "pkg")
@@ -48,7 +48,7 @@ func rollbackTempProject(t *testing.T) (proj, galeDir, storeRoot, configPath str
 		generationsProject = false
 		dryRun = false
 	})
-	return proj, galeDir, storeRoot, configPath
+	return galeDir, storeRoot, configPath
 }
 
 func TestRollbackPrintsTemporary(t *testing.T) {
@@ -80,7 +80,7 @@ func TestRollbackPrintsTemporary(t *testing.T) {
 }
 
 func TestRollbackDoesNotWriteLockOrManifest(t *testing.T) {
-	_, _, _, configPath := rollbackTempProject(t)
+	_, _, configPath := rollbackTempProject(t)
 	lockPath := filepath.Join(filepath.Dir(configPath), "gale.lock")
 	lockBytes := []byte("schema = 1\n# fixture lock\n")
 	if err := os.WriteFile(lockPath, lockBytes, 0o644); err != nil {
@@ -112,7 +112,7 @@ func TestRollbackDoesNotWriteLockOrManifest(t *testing.T) {
 }
 
 func TestRollbackInvalidatesSyncStamp(t *testing.T) {
-	_, galeDir, _, _ := rollbackTempProject(t)
+	galeDir, _, _ := rollbackTempProject(t)
 	if err := recordSyncOutcome(syncOutcomeRecord{
 		galeDir:     galeDir,
 		fingerprint: "sha256:test",
@@ -138,7 +138,7 @@ func TestRollbackInvalidatesSyncStamp(t *testing.T) {
 }
 
 func TestRollbackLeavesTheOtherScopeStamp(t *testing.T) {
-	_, projGale, _, _ := rollbackTempProject(t)
+	projGale, _, _ := rollbackTempProject(t)
 	globalGale := filepath.Join(os.Getenv("HOME"), ".gale")
 	if err := os.MkdirAll(globalGale, 0o755); err != nil {
 		t.Fatal(err)
@@ -166,7 +166,7 @@ func TestRollbackLeavesTheOtherScopeStamp(t *testing.T) {
 }
 
 func TestRollbackDryRunLeavesStamp(t *testing.T) {
-	_, galeDir, _, _ := rollbackTempProject(t)
+	galeDir, _, _ := rollbackTempProject(t)
 	if err := recordSyncOutcome(syncOutcomeRecord{
 		galeDir: galeDir, fingerprint: "sha256:test", complete: true, now: stampTime,
 	}); err != nil {
@@ -182,7 +182,7 @@ func TestRollbackDryRunLeavesStamp(t *testing.T) {
 }
 
 func TestIfNeededAfterRollbackReturnsToLock(t *testing.T) {
-	_, galeDir, storeRoot, configPath := rollbackTempProject(t)
+	galeDir, storeRoot, configPath := rollbackTempProject(t)
 	if err := recordSyncOutcome(syncOutcomeRecord{
 		galeDir: galeDir, fingerprint: "sha256:test", complete: true, now: stampTime,
 	}); err != nil {
