@@ -43,28 +43,23 @@ func writeU9File(t *testing.T, path, content string) {
 	}
 }
 
-// TestRemoveKeepsStoreWhenGlobalStillReferences captures
-// gh#67: a project-scoped remove must not delete the shared
-// store dir while the global gale.toml still references it —
-// the global generation's symlinks would dangle and binaries
-// on the global PATH would stop working without warning.
-func TestRemoveKeepsStoreWhenGlobalStillReferences(t *testing.T) {
+// runU9ProjectRemoveKeepsStore plants a project pin and a
+// global pin (globalTOML), runs project-scoped remove, and
+// asserts the project pin is gone while the store dir stays.
+func runU9ProjectRemoveKeepsStore(t *testing.T, globalTOML, surviveMsg string) {
+	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("GALE_HOST", "testhost")
 
-	// Global config references foo@1.0.
 	globalDir := filepath.Join(home, ".gale")
-	writeU9File(t, filepath.Join(globalDir, "gale.toml"),
-		"[packages]\n  foo = \"1.0\"\n")
+	writeU9File(t, filepath.Join(globalDir, "gale.toml"), globalTOML)
 
-	// Project config references the same foo@1.0.
 	projDir := filepath.Join(home, "proj")
 	writeU9File(t, filepath.Join(projDir, "gale.toml"),
 		"[packages]\n  foo = \"1.0\"\n")
 	setupU9Generation(t, filepath.Join(projDir, ".gale"))
 
-	// Shared store entry both scopes link against.
 	storeVerDir := filepath.Join(globalDir, "pkg", "foo", "1.0")
 	writeU9File(t,
 		filepath.Join(storeVerDir, "bin", "foo"), "#!/bin/sh\n")
@@ -82,7 +77,6 @@ func TestRemoveKeepsStoreWhenGlobalStillReferences(t *testing.T) {
 		t.Fatalf("remove command failed: %v", err)
 	}
 
-	// Project config must no longer list foo.
 	data, err := os.ReadFile(filepath.Join(projDir, "gale.toml"))
 	if err != nil {
 		t.Fatal(err)
@@ -94,13 +88,21 @@ func TestRemoveKeepsStoreWhenGlobalStillReferences(t *testing.T) {
 	if _, has := cfg.Packages["foo"]; has {
 		t.Errorf("foo still in project config: %q", string(data))
 	}
-
-	// Store entry must survive — the global config still
-	// references it.
 	if _, err := os.Stat(storeVerDir); err != nil {
-		t.Error("store entry foo@1.0 deleted while the global " +
-			"gale.toml still references it")
+		t.Error(surviveMsg)
 	}
+}
+
+// TestRemoveKeepsStoreWhenGlobalStillReferences captures
+// gh#67: a project-scoped remove must not delete the shared
+// store dir while the global gale.toml still references it —
+// the global generation's symlinks would dangle and binaries
+// on the global PATH would stop working without warning.
+func TestRemoveKeepsStoreWhenGlobalStillReferences(t *testing.T) {
+	runU9ProjectRemoveKeepsStore(t,
+		"[packages]\n  foo = \"1.0\"\n",
+		"store entry foo@1.0 deleted while the global "+
+			"gale.toml still references it")
 }
 
 // TestRemoveHostFlagRemovesForeignHostEntry captures gh#75:

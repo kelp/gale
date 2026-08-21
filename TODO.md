@@ -347,10 +347,11 @@ Refactors (need judgment):
   duplicates `:1155`; extract the shared block into a helper.
   (Stale: `internal/build` was deleted. Remaining dupl hits
   are tests and belong to the next heading.)
-- [ ] **dupl in tests (19 hits)** — duplicated setup across
-  `cmd/gale/*_test.go`, `internal/build`, `internal/download`,
-  `internal/recipe`. Replace with shared `t.Helper()` fixtures or
-  table-driven cases (dupl is enforced on tests by design).
+- [x] **dupl in tests (19 hits)** — duplicated setup across
+  `cmd/gale/*_test.go` and `internal/download`. Replace with
+  shared `t.Helper()` fixtures or table-driven cases (dupl is
+  enforced on tests by design). (Count was stale: 3 pairs.
+  `internal/build` and `internal/recipe` had no remaining hits.)
 - [ ] **revive (13)** — early-return / superfluous-else / naming.
 - [ ] **funlen (16)** — split functions over 80 lines / 50 statements.
 - [ ] **gocognit (13)** — reduce cognitive complexity below 30.
