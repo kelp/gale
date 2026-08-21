@@ -11,6 +11,20 @@
 
 ### Fixed
 
+- **funlen.** The backlog count was
+  stale (6 hits over 80 lines or
+  50 statements). Tests reuse
+  `mkStorePkg` / `mkActiveGen`;
+  production helpers split
+  `parseSectionHeader`,
+  `ScanInstalled`, and
+  `cachedGet`. Full-repo
+  `funlen` is 0. The `issues:`
+  block in `.golangci.yml`
+  stays until the rest of the
+  Code Standards Backlog is
+  gone.
+
 - **revive.** The backlog count was
   stale (6 hits: argument-limit and
   function-result-limit). Version
