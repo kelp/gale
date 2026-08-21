@@ -183,27 +183,24 @@ func TestResolveGenerationsGaleDirUnderGlobalHome(t *testing.T) {
 	}
 }
 
-// TestRepairDoctorUnderGlobalHomeNoNestedGaleDir pins the
-// worst gh#96 symptom: `gale doctor --repair` run from inside
-// ~/.gale treated the global config as a project config and
-// CREATED the bogus ~/.gale/.gale directory on disk.
-func TestRepairDoctorUnderGlobalHomeNoNestedGaleDir(t *testing.T) {
+// TestDoctorUnderGlobalHomeNoNestedGaleDir pins the worst
+// gh#96 symptom: doctor run from inside ~/.gale treated the
+// global config as a project config and invented the bogus
+// ~/.gale/.gale directory.
+func TestDoctorUnderGlobalHomeNoNestedGaleDir(t *testing.T) {
 	galeDir := globalHomeFixture(t, "[packages]\n")
 
 	var buf bytes.Buffer
-	ctx := &doctorContext{
-		galeDir:   galeDir,
-		storeRoot: filepath.Join(galeDir, "pkg"),
-		cwd:       galeDir,
-		out:       output.NewWithOptions(&buf, output.Options{}),
-	}
-	if err := repairDoctor(ctx); err != nil {
-		t.Fatalf("repairDoctor: %v", err)
-	}
+	_ = runDoctor(&doctorIO{
+		galeDir: galeDir,
+		cwd:     galeDir,
+		stdout:  &buf,
+		stderr:  &buf,
+	})
 
 	nested := filepath.Join(galeDir, ".gale")
 	if _, err := os.Stat(nested); err == nil {
-		t.Errorf("repairDoctor created bogus %s", nested)
+		t.Errorf("doctor created bogus %s", nested)
 	}
 }
 

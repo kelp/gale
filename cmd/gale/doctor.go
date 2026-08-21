@@ -15,7 +15,6 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/attestation"
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
@@ -27,26 +26,14 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var (
-	doctorRepair bool
-
-	// doctorForce lets --repair rebuild a scope whose lock is
-	// present and cannot be modeled. Repair refuses such a scope
-	// otherwise, since it cannot tell whether the generation it is
-	// about to publish matches the lock (gh#197) — but a machine
-	// with an unrepairable lock is exactly where repair is run, so
-	// the refusal needs a way past it.
-	doctorForce bool
-
-	// doctorCheckRegistry gates the network-touching checks
-	// (stale-installs deps resolution, orphan runtime-dep
-	// expansion) behind an explicit opt-in. Default is off so
-	// `gale doctor` is airplane-mode-clean: no HTTP requests,
-	// no cache writes under ~/.gale/cache/. Pins
-	// audit/readonly/read-only-invariant/0002 and
-	// network-perf/0004.
-	doctorCheckRegistry bool
-)
+// doctorCheckRegistry gates the network-touching checks
+// (stale-installs deps resolution, orphan runtime-dep
+// expansion) behind an explicit opt-in. Default is off so
+// `gale doctor` is airplane-mode-clean: no HTTP requests,
+// no cache writes under ~/.gale/cache/. Pins
+// audit/readonly/read-only-invariant/0002 and
+// network-perf/0004.
+var doctorCheckRegistry bool
 
 // cappedList builds a message body listing items, capped at
 // 5. header is the opening line. If len(items) > 5, an
@@ -126,9 +113,9 @@ func scopePkgs(ctx *doctorContext, s doctorScope) map[string]string {
 // always, plus the project the cwd resolves to when that is not the
 // global manifest reached from under ~/.gale (gh#96).
 //
-// One enumeration for the reports and for the repair. A check that
-// disagreed with repair about which scopes exist would report a state
-// --repair never touches, or stay silent about one it does.
+// One enumeration for every per-scope report. A check that
+// invented a second list would report a state no other check
+// sees, or stay silent about one the others cover.
 func doctorScopes(ctx *doctorContext) ([]doctorScope, error) {
 	scopes := []doctorScope{{
 		label:      scopeGlobal,
@@ -258,14 +245,6 @@ func runDoctor(d *doctorIO) error {
 		projPkgs:   map[string]string{},
 		out:        out,
 		cmdCtx:     cmdCtx,
-	}
-
-	if doctorRepair {
-		if err := repairDoctor(ctx); err != nil {
-			fmt.Fprintln(d.stdout,
-				"PROBLEMS: repair failed before checks ran")
-			return fmt.Errorf("repair doctor state: %w", err)
-		}
 	}
 
 	var failed int
@@ -438,9 +417,9 @@ func loadHostOverrides(configPath, host string) []string {
 // cannot use as a version selector — a legacy one above all, which
 // every gale before enforcement wrote.
 //
-// The state is not cosmetic. gc and `doctor --repair` refuse such a
-// scope's rebuild (#226), and a project's activation gate refuses its
-// PATH on the next cd, so a machine can be stuck with no command
+// The state is not cosmetic. gc refuses such a scope's rebuild
+// (#226), and a project's activation gate refuses its PATH on
+// the next cd, so a machine can be stuck with no command
 // saying why.
 //
 // The question goes to lockedRebuildPkgs, the function those rebuilds
@@ -477,8 +456,7 @@ func checkLegacyLockfile(ctx *doctorContext) bool {
 	ctx.out.Error(cappedList(
 		fmt.Sprintf("Unusable lockfile in %d scope(s):", len(unusable)),
 		unusable,
-		"Run: gale lock --refresh (or gale doctor --repair --force "+
-			"to rebuild without it)",
+		"Run: gale lock --refresh",
 	))
 	return false
 }
@@ -509,11 +487,11 @@ func checkStore(ctx *doctorContext) bool {
 // reinstall never rewrites it, because an install over an existing
 // store dir returns cached before it writes anything.
 //
-// The escape is a deletion, which is why it is reported here and
-// performed only under --repair. StateAbsent is deliberately not
-// reported: a missing record is a pre-metadata install, and offering
-// to delete every one of those would be the fail-open case in
-// reverse.
+// The escape is a deletion doctor no longer performs: it names
+// the full set so the user can remove it, then gale sync.
+// StateAbsent is deliberately not reported: a missing record is
+// a pre-metadata install, and offering to delete every one of
+// those would be the fail-open case in reverse.
 func checkDepsMetadata(ctx *doctorContext) bool {
 	scan, err := scanDepsMeta(doctorStore(ctx))
 	if err != nil {
@@ -526,14 +504,17 @@ func checkDepsMetadata(ctx *doctorContext) bool {
 		ctx.out.Success("Dependency metadata readable")
 		return true
 	}
+	// Name the full delete set, not only the corrupt dirs.
+	// Deleting C alone leaves A cached on the next sync
+	// (A → B → C) and the machine stays broken.
+	remove := scan.purgeSet()
 	ctx.out.Error(cappedList(
 		fmt.Sprintf(
-			"Unusable dependency metadata (%d store dir(s)):",
-			len(scan.unusable),
+			"Unusable dependency metadata (%d store dir(s) to remove):",
+			len(remove),
 		),
-		scan.unusable,
-		"Run: gale doctor --repair (deletes them and every package "+
-			"directory on a dependency path to them), then gale sync",
+		remove,
+		"Remove these directories, then run: gale sync",
 	))
 	return false
 }
@@ -541,13 +522,9 @@ func checkDepsMetadata(ctx *doctorContext) bool {
 // depsMetaScan is what one pass over the store can say about its
 // recorded dependency closures.
 type depsMetaScan struct {
-	// pkgOf maps a store dir to the package that owns it, so a
-	// deletion names the identity the store resolves rather than a
-	// path parsed back into one.
-	pkgOf map[string]store.InstalledPackage
 	// dependents maps a store dir to the dirs whose records name it.
-	// Reverse edges, because the repair walks up from the corruption
-	// to everything that would still depend on it.
+	// Reverse edges, because the report walks up from the corruption
+	// to everything the user must also remove.
 	dependents map[string][]string
 	// unusable lists the dirs whose record is present and cannot be
 	// read strictly, sorted.
@@ -556,7 +533,7 @@ type depsMetaScan struct {
 
 // scanDepsMeta reads every installed store dir's dependency record.
 //
-// ReadStrict, not Read: the answer authorizes a deletion, and the
+// ReadStrict, not Read: the answer names a deletion, and the
 // lenient reader collapses "no dependencies" into "I cannot tell" —
 // the one distinction a destructive decision rests on.
 func scanDepsMeta(s *store.Store) (*depsMetaScan, error) {
@@ -565,13 +542,13 @@ func scanDepsMeta(s *store.Store) (*depsMetaScan, error) {
 		return nil, fmt.Errorf("list store: %w", err)
 	}
 	scan := &depsMetaScan{
-		pkgOf:      make(map[string]store.InstalledPackage, len(installed)),
 		dependents: make(map[string][]string, len(installed)),
 	}
+	dirs := make(map[string]bool, len(installed))
 	for _, pkg := range installed {
-		scan.pkgOf[filepath.Join(s.Root, pkg.Name, pkg.Version)] = pkg
+		dirs[filepath.Join(s.Root, pkg.Name, pkg.Version)] = true
 	}
-	for dir := range scan.pkgOf {
+	for dir := range dirs {
 		deps, state := depsmeta.ReadStrict(dir)
 		switch state {
 		case depsmeta.StateUnusable:
@@ -592,14 +569,14 @@ func scanDepsMeta(s *store.Store) (*depsMetaScan, error) {
 	return scan, nil
 }
 
-// purgeSet returns the store dirs a repair must delete: every dir
+// purgeSet returns the store dirs the user must delete: every dir
 // whose record is unusable, plus every dir that reaches one of them
 // through a recorded dependency path.
 //
 // The dependents go because sync would not restore them otherwise.
 // It evaluates declared roots alone, and an install over an existing
 // dir returns cached before it installs any dep, so one surviving
-// directory anywhere on the chain stops the repair descending: for
+// directory anywhere on the chain stops a reinstall descending: for
 // A -> B -> C, deleting C alone leaves A cached and C never comes
 // back. Deleting the whole path — the declared package at the top of
 // it included — is what makes the reinstall walk all the way down.
@@ -627,42 +604,6 @@ func (scan *depsMetaScan) purgeSet() []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// purgeUnusableDepsMeta performs the deletion checkDepsMetadata
-// reports, and returns the store dirs it removed.
-//
-// It runs after the generations have been rebuilt, never before: the
-// rebuild refuses a scope whose lock cannot be modeled (#226), and a
-// refusal that has already destroyed store directories would leave
-// the machine worse than it found it. The caller rebuilds again once
-// anything is gone, so no generation is left linking a deleted dir.
-func purgeUnusableDepsMeta(ctx *doctorContext) ([]string, error) {
-	s := doctorStore(ctx)
-	scan, err := scanDepsMeta(s)
-	if err != nil {
-		return nil, err
-	}
-	if len(scan.unusable) == 0 {
-		return nil, nil
-	}
-	purged := scan.purgeSet()
-	for _, dir := range purged {
-		pkg := scan.pkgOf[dir]
-		if err := s.Remove(pkg.Name, pkg.Version); err != nil {
-			return nil, fmt.Errorf(
-				"remove %s@%s: %w", pkg.Name, pkg.Version, err,
-			)
-		}
-		ctx.out.Warn(fmt.Sprintf(
-			"Removed %s@%s (%s)", pkg.Name, pkg.Version, dir,
-		))
-	}
-	ctx.out.Success(fmt.Sprintf(
-		"Purged %d store dir(s) with unusable dependency metadata; "+
-			"run gale sync to reinstall them", len(purged),
-	))
-	return purged, nil
 }
 
 // checkPackagesInstalled verifies all declared packages are
@@ -844,9 +785,9 @@ func checkSymlinks(ctx *doctorContext) bool {
 // rebuild of each scope would refuse: two declared packages shipping
 // the same bin/ basename, with no [bin] winner naming one of them.
 //
-// Nothing clears this state by itself. gc and `doctor --repair`
-// rebuild the same generation from the same manifest and hit the same
-// refusal, so until the user edits [bin] every command that touches a
+// Nothing clears this state by itself. gc rebuilds the same
+// generation from the same manifest and hits the same refusal,
+// so until the user edits [bin] every command that touches a
 // generation fails on it — which is exactly when doctor is run.
 //
 // The verdict comes from generation.BinArbiter, the arbiter the
@@ -998,8 +939,8 @@ func reportScopeShadowedFiles(ctx *doctorContext, s doctorScope) {
 // store — the silent corruption case behind the gen/308
 // regression. validateGenerationSymlinks accepts these because
 // the stale targets still resolve; only this check surfaces
-// them. Repair: `gale doctor --repair`, which rebuilds the gen
-// from current config + store state.
+// them. Remedy: `gale sync`, which rebuilds the gen from the
+// lock and store.
 func checkRevisionDrift(ctx *doctorContext) bool {
 	if len(ctx.globalPkgs) == 0 {
 		ctx.out.Success("Revision drift (no global packages declared)")
@@ -1056,7 +997,7 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 			len(drift),
 		),
 		drift,
-		"Run: gale doctor --repair",
+		"Run: gale sync",
 	))
 	return false
 }
@@ -1069,7 +1010,7 @@ func checkRevisionDrift(ctx *doctorContext) bool {
 // separately — generation.Build populates each farm from
 // its per-scope package set, so validating the global farm
 // against merged global+project packages reported false
-// drift that `gale doctor --repair` could never fix (#50).
+// drift that no per-scope rebuild could ever fix (#50).
 // Older revisions still on disk (awaiting `gale gc`) are
 // out of scope — they aren't on PATH and aren't in the
 // farm by design.
@@ -1081,7 +1022,7 @@ func checkFarm(ctx *doctorContext) bool {
 		// home, FindGaleConfig resolves to the GLOBAL
 		// gale.toml; deriving a project dir from it would
 		// yield the bogus <galeDir>/.gale and report drift
-		// --repair can never fix (gh#96). The global farm
+		// no rebuild can fix (gh#96). The global farm
 		// was already checked above.
 		if _, dirErr := galeDirForConfig(projPath); dirErr == nil &&
 			!checkFarmScope(ctx, ctx.projPkgs) {
@@ -1123,7 +1064,7 @@ func checkFarmScope(
 	ctx.out.Error(cappedList(
 		fmt.Sprintf("Lib farm drift (%d issue(s))", len(issues)),
 		issues,
-		"Run: gale doctor --repair",
+		"Run: gale sync",
 	))
 	return false
 }
@@ -1136,7 +1077,7 @@ func checkFarmScope(
 //
 // Reported, never failed, and deliberately outside CheckDrift's
 // issue list: those render as an Error telling the user to run
-// `gale doctor --repair`, and no repair can clear a collision —
+// `gale sync`, and no rebuild can clear a collision —
 // the farm is already doing the only safe thing, and holding
 // both packages is supported. Failing here would be gh#50's
 // unfixable-drift shape all over again.
@@ -1187,9 +1128,9 @@ func reportContestedAliases(ctx *doctorContext, active []string) {
 // that recorded @rpath/libssl.dylib and carries only the farm rpath
 // still aborts at exec, and this names that concrete file.
 //
-// No --repair. Repair would have to reinstall, colliding with "the
-// installed binary equals the CI-built, hashed, attested artifact";
-// doctor's repair surface is generation, farm and re-sign only.
+// Doctor does not reinstall. That would collide with "the
+// installed binary equals the CI-built, hashed, attested artifact".
+// The printed remedy is `gale install --build`.
 func checkMachOLinkage(ctx *doctorContext) bool {
 	return checkMachOLinkageOn(ctx, runtime.GOOS)
 }
@@ -1583,97 +1524,7 @@ func newestModTime(dir string) time.Time {
 	return newest
 }
 
-// repairDoctor rebuilds every scope's generation from what is
-// declared and installed, clears the store directories whose
-// dependency metadata cannot be read, and re-signs what remains.
-//
-// The versions come from the scope's lock whenever it has a usable
-// one. Repair passes no pin resolver, so an unlocked rebuild takes
-// store.ResolveDir's bare→highest-revision answer — which after a
-// rolled-back install is an orphan the lock does not name, put on
-// PATH by the command a user runs to fix things (gh#197). Unlike gc,
-// repair rebuilds even when nothing about the version selection
-// changes: a generation linking the right versions through broken
-// symlinks, or over a stale farm, is exactly what it exists to fix.
-func repairDoctor(ctx *doctorContext) error {
-	if err := repairGenerations(ctx); err != nil {
-		return err
-	}
-	purged, err := purgeUnusableDepsMeta(ctx)
-	if err != nil {
-		return err
-	}
-	if len(purged) > 0 {
-		// A generation may link what was just deleted, and only a
-		// second rebuild can drop those entries. Rebuilding before
-		// the purge would not do: a scope whose lock cannot be
-		// modeled refuses its rebuild, and a refusal that had
-		// already destroyed store directories leaves the machine
-		// worse than it found it.
-		if err := repairGenerations(ctx); err != nil {
-			return err
-		}
-	}
-	return resignInstalled(ctx)
-}
-
-// repairGenerations rebuilds each scope's generation under that
-// scope's lock. Unchanged from what --repair has always done; it is
-// its own function so the deps-metadata purge can run between two
-// rebuilds.
-func repairGenerations(ctx *doctorContext) error {
-	scopes, err := doctorScopes(ctx)
-	if err != nil {
-		return err
-	}
-	opt := recoveryRebuild{force: doctorForce, out: ctx.out}
-	for _, s := range scopes {
-		if err := rebuildUnderLock(genRebuild{
-			galeDir:    s.galeDir,
-			storeRoot:  ctx.storeRoot,
-			configPath: s.configPath,
-		}, opt); err != nil {
-			return fmt.Errorf("rebuild %s generation: %w", s.label, err)
-		}
-	}
-	ctx.out.Success("Repaired Gale generations")
-	return nil
-}
-
-// resignInstalled re-signs Mach-Os in every installed package.
-// Pre-fix installs (before f00f2b7) may carry unsigned binaries that
-// SIGKILL on Apple Silicon. EnsureCodeSigned is a no-op on Linux and
-// on already-signed binaries, so this is safe to run unconditionally
-// on every package.
-func resignInstalled(ctx *doctorContext) error {
-	s := store.NewStore(ctx.storeRoot)
-	installed, err := s.List()
-	if err != nil {
-		return fmt.Errorf("list store: %w", err)
-	}
-	for _, pkg := range installed {
-		storeDir, ok := s.StorePath(pkg.Name, pkg.Version)
-		if !ok {
-			continue
-		}
-		if err := build.EnsureCodeSigned(storeDir); err != nil {
-			return fmt.Errorf(
-				"ensure code signed %s@%s: %w",
-				pkg.Name, pkg.Version, err,
-			)
-		}
-	}
-	ctx.out.Success(fmt.Sprintf(
-		"Re-signed Mach-Os in %d package(s)", len(installed),
-	))
-	return nil
-}
-
 func init() {
-	doctorCmd.Flags().BoolVar(&doctorRepair, "repair", false,
-		"Repair active generations from current config and store")
-	doctorCmd.Flags().BoolVar(&doctorForce, "force", false,
-		"With --repair, rebuild a scope whose lockfile cannot be used")
 	doctorCmd.Flags().BoolVar(&doctorCheckRegistry, "check-registry", false,
 		"Probe the recipe registry for stale-install and "+
 			"orphan-dep diagnosis (off by default — implies network access)")

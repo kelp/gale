@@ -248,7 +248,7 @@ for machine-readable output.
 .Pp
 .Dl $ gale inspect jq
 .Dl $ gale inspect --all --json
-.It Cm doctor Op Fl -repair Op Fl -force
+.It Cm doctor Op Fl -check-registry
 Check the gale installation for common problems:
 PATH configuration, store integrity, stale generations,
 host-overlay shadows, and lib farm drift.
@@ -280,25 +280,12 @@ Run
 .Cm gale sync
 to retry them at once; an automatic retry waits out the
 ten-minute interval.
-Use
-.Fl -repair
-to rebuild active generations and re-sign Mach-O binaries.
-Repair also deletes the store directories whose dependency
-metadata is unreadable, together with every package directory
-on a dependency path to one; run
-.Cm gale sync
-afterwards to reinstall them.
-A rebuilt generation takes its versions from the scope's
-lockfile, so repair cannot put a version the lock does not
-name on PATH.
-A scope whose lockfile is present and cannot be read is
-refused; use
-.Fl -force
-to rebuild it without the lock.
+Doctor does not rebuild generations, delete store directories,
+or re-sign binaries. The remedy it prints is a command the
+user runs.
 .Pp
 .Dl $ gale doctor
-.Dl $ gale doctor --repair
-.Dl $ gale doctor --repair --force
+.Dl $ gale doctor --check-registry
 .It Cm search Ar query
 Search for packages by name or description.
 .Pp

@@ -160,8 +160,8 @@ Global relies on enforcement at write time instead, and
 a locked global plan forbids carry-forward: a version
 carried into the generation that the lock does not name
 is exactly what no later check would catch. `gale gc`
-and `gale doctor --repair` take their versions from the
-scope's lock for the same reason.
+takes its versions from the scope's lock for the same
+reason.
 
 **The escape hatch is explicit.** `gale sync
 --no-frozen` ignores `gale.lock`, installs from recipes
@@ -198,9 +198,8 @@ to a host section)`.
 **The lock cannot be read at all** — legacy schema,
 unknown version, malformed TOML, unknown field, missing
 or malformed guard. Run `gale lock --refresh`. `gale
-doctor` reports this state in either scope, and `gale
-doctor --repair --force` rebuilds a scope whose lock is
-beyond repair.
+doctor` reports this state in either scope. `gale gc
+--force` rebuilds a scope whose lock is beyond repair.
 
 **A store directory attests nothing.** Every package
 installed before enforcement is unprovenanced, so the

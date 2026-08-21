@@ -17,47 +17,102 @@ import (
 	"github.com/kelp/gale/internal/store"
 )
 
-func TestRepairDoctorRebuildsGlobalGeneration(t *testing.T) {
-	home := t.TempDir()
-	galeDir := filepath.Join(home, ".gale")
-	storeRoot := filepath.Join(home, ".gale", "pkg")
-	configPath := filepath.Join(galeDir, "gale.toml")
+// executeDoctor runs `gale doctor` with argv through cobra so a
+// leftover --repair / --force is an unknown-flag parse error, not a
+// silent no-op of runDoctor.
+func executeDoctor(t *testing.T, argv ...string) error {
+	t.Helper()
+	oldArgs := rootCmd.Flags().Args()
+	oldOut := rootCmd.OutOrStdout()
+	oldErr := rootCmd.ErrOrStderr()
+	t.Cleanup(func() {
+		rootCmd.SetArgs(oldArgs)
+		rootCmd.SetOut(oldOut)
+		rootCmd.SetErr(oldErr)
+	})
+	var buf bytes.Buffer
+	rootCmd.SetOut(&buf)
+	rootCmd.SetErr(&buf)
+	rootCmd.SetArgs(append([]string{"doctor"}, argv...))
+	return executeRoot()
+}
 
+// TestDoctorRejectsRepairFlag is the red proof that --repair is gone:
+// cobra refuses the flag, and a missing current is not rebuilt.
+func TestDoctorRejectsRepairFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
 	if err := os.MkdirAll(galeDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  jq = \"1.8.1\"\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(galeDir, "gale.toml"),
+		[]byte("[packages]\njq = \"1.8.1\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
-	s := store.NewStore(storeRoot)
-	pkgDir, err := s.Create("jq", "1.8.1")
+	pkgDir, err := store.NewStore(storeRoot).Create("jq", "1.8.1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	binDir := filepath.Join(pkgDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(pkgDir, "bin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(binDir, "jq"),
+	if err := os.WriteFile(filepath.Join(pkgDir, "bin", "jq"),
 		[]byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	chdirTo(t, home)
 
-	ctx := &doctorContext{
-		galeDir:   galeDir,
-		storeRoot: storeRoot,
-		cwd:       home,
-		out:       output.NewWithOptions(&bytes.Buffer{}, output.Options{}),
+	err = executeDoctor(t, "--repair")
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("doctor --repair must be an unknown flag, got: %v", err)
 	}
-
-	if err := repairDoctor(ctx); err != nil {
-		t.Fatalf("repairDoctor: %v", err)
+	if _, statErr := os.Lstat(filepath.Join(galeDir, "current")); !os.IsNotExist(statErr) {
+		t.Fatalf("doctor --repair must not rebuild current, stat err=%v", statErr)
 	}
+}
 
-	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "jq")); err != nil {
-		t.Fatalf("jq symlink missing after repair: %v", err)
+// TestDoctorRejectsForceFlag is the same proof for --force.
+func TestDoctorRejectsForceFlag(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".gale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chdirTo(t, home)
+
+	err := executeDoctor(t, "--force")
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("doctor --force must be an unknown flag, got: %v", err)
+	}
+}
+
+// TestDoctorRejectsRepairDoesNotPurge pins that --repair cannot
+// delete store dirs. The fixture is the same jq + dependent fzf
+// graph TestCheckDepsMetadataReportsCorruptRecord uses.
+func TestDoctorRejectsRepairDoesNotPurge(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+	jqDir := mkStorePkg(t, storeRoot, "jq", "1.8.1-1")
+	fzfDir := mkStorePkg(t, storeRoot, "fzf", "0.60.0-1")
+	writeRawDepsMeta(t, jqDir, corruptDepsBody)
+	writeDepsMeta(t, storeRoot, "fzf", "0.60.0-1",
+		depsmeta.ResolvedDep{Name: "jq", Version: "1.8.1", Revision: 1})
+	writeFile(t, filepath.Join(galeDir, "gale.toml"),
+		"[packages]\njq = \"1.8.1\"\n")
+	chdirTo(t, t.TempDir())
+
+	err := executeDoctor(t, "--repair")
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("doctor --repair must be an unknown flag, got: %v", err)
+	}
+	for _, dir := range []string{jqDir, fzfDir} {
+		if _, statErr := os.Stat(dir); statErr != nil {
+			t.Errorf("%s must survive doctor --repair: %v", dir, statErr)
+		}
 	}
 }
 
@@ -436,8 +491,11 @@ func TestCheckRevisionDriftDetectsStaleSymlink(t *testing.T) {
 	if !strings.Contains(out, "glib") {
 		t.Errorf("expected glib named in drift message; got: %q", out)
 	}
-	if !strings.Contains(out, "gale doctor --repair") {
-		t.Errorf("expected actionable --repair hint; got: %q", out)
+	if strings.Contains(out, "gale doctor --repair") {
+		t.Errorf("doctor must not name deleted --repair; got: %q", out)
+	}
+	if !strings.Contains(out, "gale sync") {
+		t.Errorf("expected gale sync remedy; got: %q", out)
 	}
 }
 
@@ -526,58 +584,6 @@ func TestDoctorRunWritesSummaryToStdout(t *testing.T) {
 	if !strings.Contains(s, "OK") && !strings.Contains(s, "issue") {
 		t.Errorf("stdout should contain a summary line "+
 			"(OK or issues), got: %q", s)
-	}
-}
-
-func TestRepairDoctorIgnoresToolVersionsProjectGeneration(t *testing.T) {
-	home := t.TempDir()
-	galeDir := filepath.Join(home, ".gale")
-	storeRoot := filepath.Join(home, ".gale", "pkg")
-	globalConfig := filepath.Join(galeDir, "gale.toml")
-	projectDir := filepath.Join(home, "project")
-	projectGaleDir := filepath.Join(projectDir, ".gale")
-
-	if err := os.MkdirAll(galeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(globalConfig, []byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(projectDir, ".tool-versions"),
-		[]byte("golang 1.26.1\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	s := store.NewStore(storeRoot)
-	pkgDir, err := s.Create("go", "1.26.1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	binDir := filepath.Join(pkgDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(binDir, "go"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx := &doctorContext{
-		galeDir:   galeDir,
-		storeRoot: storeRoot,
-		cwd:       projectDir,
-		out:       output.NewWithOptions(&bytes.Buffer{}, output.Options{}),
-	}
-
-	if err := repairDoctor(ctx); err != nil {
-		t.Fatalf("repairDoctor: %v", err)
-	}
-
-	if _, err := os.Lstat(filepath.Join(projectGaleDir, "current", "bin", "go")); !os.IsNotExist(err) {
-		t.Fatalf("go symlink must not come from .tool-versions, err=%v", err)
 	}
 }
 
@@ -775,8 +781,8 @@ func doctorCtx(galeDir, storeRoot, cwd string, buf *bytes.Buffer) *doctorContext
 
 // TestCheckLegacyLockfileReportsBothScopes pins the first check. A
 // lockfile in the pre-enforcement schema names versions this build
-// cannot model, so gc and `doctor --repair` refuse that scope's
-// rebuild (#226) and a project's activation gate refuses its PATH.
+// cannot model, so gc refuses that scope's rebuild (#226) and a
+// project's activation gate refuses its PATH.
 // Nothing reported it, and both scopes can be in that state at once.
 func TestCheckLegacyLockfileReportsBothScopes(t *testing.T) {
 	proj := writeGateFixture(t, legacyLockBody)
@@ -801,6 +807,9 @@ func TestCheckLegacyLockfileReportsBothScopes(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the report must name %q, got: %q", want, msg)
 		}
+	}
+	if strings.Contains(msg, "doctor --repair") {
+		t.Errorf("legacy-lock remedy must not name deleted --repair; got: %q", msg)
 	}
 }
 
@@ -830,8 +839,8 @@ func TestCheckLegacyLockfilePassesOnAHostRootedLock(t *testing.T) {
 	}
 }
 
-// TestCheckDepsMetadataReportsCorruptRecord pins the second check and
-// its repair.
+// TestCheckDepsMetadataReportsCorruptRecord pins the second check
+// and the full delete set it names.
 //
 // A store directory whose .gale-deps.toml cannot be read strictly
 // fails the farm claim walk machine-wide, and the escape is a
@@ -863,33 +872,17 @@ func TestCheckDepsMetadataReportsCorruptRecord(t *testing.T) {
 	}
 	if msg := buf.String(); !strings.Contains(msg, jqDir) {
 		t.Errorf("the report must name %q, got: %q", jqDir, msg)
-	}
-
-	if err := repairDoctor(ctx); err != nil {
-		t.Fatalf("doctor --repair: %v", err)
-	}
-	for _, dir := range []string{jqDir, fzfDir} {
-		if _, err := os.Stat(dir); !os.IsNotExist(err) {
-			t.Errorf("%s survived the repair (stat err %v)", dir, err)
-		}
-	}
-	active, err := generation.CurrentVersions(galeDir, storeRoot)
-	if err != nil {
-		t.Fatalf("reading the active generation: %v", err)
-	}
-	if len(active) != 0 {
-		t.Errorf("active generation = %v, want nothing linked", active)
-	}
-	buf.Reset()
-	if !checkDepsMetadata(ctx) {
-		t.Errorf("the repair must clear the check, got: %q", buf.String())
+	} else if !strings.Contains(msg, fzfDir) {
+		t.Errorf("the report must name dependent %q, got: %q", fzfDir, msg)
+	} else if strings.Contains(msg, "doctor --repair") {
+		t.Errorf("deps-meta remedy must not name deleted --repair; got: %q", msg)
 	}
 }
 
 // TestCheckDepsMetadataAcceptsAbsentRecords pins the distinction the
-// strict reader draws and the repair rests on: a missing file is a
-// pre-metadata install, not corruption. Reporting it would offer to
-// delete every package installed before the revision system.
+// strict reader draws: a missing file is a pre-metadata install, not
+// corruption. Reporting it would offer to delete every package
+// installed before the revision system.
 func TestCheckDepsMetadataAcceptsAbsentRecords(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -940,6 +933,10 @@ func TestCheckShadowedProvidersMatchesTheArbiter(t *testing.T) {
 	if !strings.Contains(buf.String(), want.Error()) {
 		t.Errorf("doctor must report the arbiter's own text\n"+
 			" got: %q\nwant: %q", buf.String(), want.Error())
+	}
+	if strings.Contains(buf.String(), "doctor --repair") {
+		t.Errorf("collision report must not name deleted --repair; got: %q",
+			buf.String())
 	}
 }
 

@@ -504,7 +504,7 @@ type genRebuild struct {
 	pkgs map[string]string
 	// validate is design §6's revalidation callback, run inside the
 	// store-gen lock before any generation or farm mutation. nil for
-	// every unlocked caller, which is what keeps gc and doctor
+	// every unlocked caller, which is what keeps gc
 	// behaving exactly as before.
 	validate func() error
 }
@@ -1316,12 +1316,12 @@ type recoveryRebuild struct {
 // rebuildUnderLock rebuilds one scope's generation with that scope's
 // lock as the version selector.
 //
-// gc and doctor --repair are recovery commands, and both rebuild from
-// the recipe and the store. After a revision bump — or a withdrawn
-// one — that selection is a second version selector, so either can
-// publish a version the lock does not name. Design §12 runs no
-// activation gate at global scope, so nothing downstream would ever
-// notice; the writer has to enforce it (gh#197).
+// gc is a recovery command and rebuilds from the recipe and the
+// store. After a revision bump — or a withdrawn one — that
+// selection is a second version selector, so it can publish a
+// version the lock does not name. Design §12 runs no activation
+// gate at global scope, so nothing downstream would ever notice;
+// the writer has to enforce it (gh#197).
 //
 // Three lock states, three answers. Absent is unlocked mode and keeps
 // the caller's own selection. A usable v1 lock supplies the versions
@@ -1367,9 +1367,8 @@ func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
 // Roots only, and no plan. A generation links roots; the closure
 // behind them is what supports those roots, not what it links. Going
 // through lockplan would hash and validate that whole closure, which
-// is a demand gc and doctor --repair have no business making: they
-// are run precisely when the store is in a state nothing else
-// tolerates.
+// is a demand gc has no business making: it is run precisely
+// when the store is in a state nothing else tolerates.
 func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
 	v, err := lockfile.Load(lockPath)
 	if err != nil {
@@ -1413,8 +1412,8 @@ func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
 // Which needs the STRICT reader to be reachable at all (gh#210).
 // Read leniently, a generation the walk could not enumerate arrives
 // as an empty map, and against a lock rooting nothing an empty map
-// compares equal — so gc and `doctor --repair`, the two recovery
-// commands, skip the rebuild on exactly the machine that needs it.
+// compares equal — so gc skips the rebuild on exactly the
+// machine that needs it.
 func generationAlreadyLinks(galeDir, storeRoot string, pkgs map[string]string) bool {
 	active, err := generation.CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {

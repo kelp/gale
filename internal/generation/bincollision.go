@@ -27,8 +27,8 @@ type BinCollisionError struct {
 
 // Error names each collision and prints the [bin] stanza that
 // resolves it. The remedy is part of the message because no command
-// can clear this state: gc and `doctor --repair` rebuild the same
-// generation from the same config and hit the same refusal.
+// can clear this state: gc rebuilds the same generation from the
+// same config and hits the same refusal.
 func (e *BinCollisionError) Error() string {
 	var b strings.Builder
 	b.WriteString("executable name collision")
@@ -46,8 +46,8 @@ func (e *BinCollisionError) Error() string {
 	b.WriteString(strings.Join(parts, "; "))
 	b.WriteString(
 		"\nname the winner in gale.toml and run the command again " +
-			"(gale gc and gale doctor --repair rebuild the same " +
-			"generation, so neither clears this):\n\n  [bin]\n",
+			"(gale gc rebuilds the same generation, so it does " +
+			"not clear this):\n\n  [bin]\n",
 	)
 	for _, c := range e.Collisions {
 		if seenBin(e.Collisions, c) {

@@ -68,8 +68,15 @@ func TestCheckFarmDetectsMissingDepDylib(t *testing.T) {
 		t.Fatalf("checkFarm must detect a dep dylib missing from "+
 			"the farm; output: %q", buf.String())
 	}
-	if !strings.Contains(buf.String(), "missing farm entry") {
+	out := buf.String()
+	if !strings.Contains(out, "missing farm entry") {
 		t.Errorf("expected missing-farm-entry drift for the dep "+
-			"dylib; got: %q", buf.String())
+			"dylib; got: %q", out)
+	}
+	if strings.Contains(out, "doctor --repair") {
+		t.Errorf("farm drift must not name deleted --repair; got: %q", out)
+	}
+	if !strings.Contains(out, "gale sync") {
+		t.Errorf("farm drift must name gale sync; got: %q", out)
 	}
 }

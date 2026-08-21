@@ -224,7 +224,7 @@ func TestPopulateSkipsDanglingVersionedSymlink(t *testing.T) {
 // TestCheckDriftReportsMissingSonameAlias keeps CheckDrift
 // symmetric with Populate: a farm missing the versioned soname
 // alias (e.g. built by an older gale) must be flagged so
-// `gale doctor --repair` rebuilds it.
+// `gale sync` rebuilds it.
 func TestCheckDriftReportsMissingSonameAlias(t *testing.T) {
 	root := t.TempDir()
 	farmDir := filepath.Join(root, "lib")
@@ -548,8 +548,8 @@ func TestCheckDriftCleanFarmReportsNoIssues(t *testing.T) {
 // generation are not flagged as "missing farm entry". This
 // matches farm.Rebuild, which only populates the farm from
 // active-gen store dirs. Without this scoping, CheckDrift
-// flagged old revisions forever and `gale doctor --repair`
-// could never clear the drift.
+// flagged old revisions forever and no rebuild could
+// clear the drift.
 func TestCheckDriftIgnoresInactiveRevisions(t *testing.T) {
 	root := t.TempDir()
 	farmDir := filepath.Join(root, "lib")

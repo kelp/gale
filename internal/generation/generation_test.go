@@ -1171,6 +1171,9 @@ func TestPopulateGenerationFailsOnBinCollision(t *testing.T) {
 			t.Errorf("error %q omits %q", err, fragment)
 		}
 	}
+	if strings.Contains(err.Error(), "doctor --repair") {
+		t.Errorf("collision error must not name deleted doctor --repair: %q", err)
+	}
 }
 
 // TestPopulateGenerationHonorsBinOverride covers the escape hatch:

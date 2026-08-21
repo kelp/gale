@@ -128,7 +128,7 @@ Milestone 4 — 193 source recipes still collide.
       the resolver, network, or generation
       rebuild in this PR — that rewrite
       is Milestone 5.
-- [ ] **Doctor: delete `--repair` and
+- [x] **Doctor: delete `--repair` and
       `--force`.** Deletion only. The
       four-check rewrite is Milestone 4.
 - [ ] **Register before swap.** A project
