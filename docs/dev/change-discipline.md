@@ -60,9 +60,10 @@ helpers or reshaping interfaces.
 
 **Generation**
 
-- Active environment is a **function of gale.toml** (plus
+- Active environment is a **function of the lock** (plus
   store contents and farm closure), not a history of
-  imperative symlink edits.
+  imperative symlink edits. KindAbsent still rebuilds
+  from gale.toml.
 - `current` swap is atomic. Partial or broken PATH during
   rebuild is a bug.
 - Farm must reflect the **full closure** of the active

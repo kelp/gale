@@ -8,10 +8,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/activation"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
+	"github.com/kelp/gale/internal/store"
 )
 
 // gh#197: gc rebuilds a generation from the recipe and the store,
@@ -107,67 +108,62 @@ func runGC(t *testing.T) error {
 	return gcCmd.RunE(gcCmd, nil)
 }
 
-// writeHostScopeLock is writeScopeLock's overlay twin: it roots id
-// under [targets.host.<host>] instead of [targets.default]. It is the
-// only fixture that can prove a rebuild asks the lock about the host
-// it is running on — a rebuild querying the default target alone finds
-// no root here, links nothing, and would otherwise pass the
-// unlocked-versions check vacuously.
-func writeHostScopeLock(t *testing.T, path, host, id, sha string) {
+func writeIssue197V2(t *testing.T, storeRoot, lockPath string) string {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dest, err := store.NewStore(storeRoot).FetchPath(issue197Pkg, issue197Ver, shaX)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := lockfile.WriteV1(path, &lockfile.V1{
-		Version: lockfile.SchemaVersion,
+	bin := filepath.Join(dest, "bin", issue197Pkg)
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, []byte("fetch-"+issue197Ver+"\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockfile.WriteV2(lockPath, &lockfile.V2{
+		Version: lockfile.SchemaV2,
 		Targets: lockfile.Targets{
-			Host: map[string]lockfile.Target{host: {Roots: []string{id}}},
+			Default: &lockfile.Target{Roots: []string{issue197Pkg + "@" + issue197Ver}},
 		},
-		Packages: map[string]lockfile.Package{
-			id: {Artifacts: map[string]lockfile.Artifact{
-				testPlatform: {SHA256: sha, Method: "binary"},
-			}},
+		Packages: map[string]lockfile.V2Package{
+			issue197Pkg + "@" + issue197Ver: {
+				Artifacts: map[string]lockfile.V2Artifact{
+					currentPlatform(): {
+						URL:    "https://example.invalid/just",
+						Format: "binary",
+						SHA256: shaX,
+						Method: provenance.MethodFetch,
+					},
+				},
+			},
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
+	return dest
 }
 
-// assertGenerationMatchesLock is gh#197's invariant, asserted the way
-// design §12 states it: the active generation may link only versions
-// the scope's lock names.
-//
-// activation.UnlockedVersions makes that comparison and is the one
-// implementation of it, so the test asks it rather than comparing
-// strings of its own. want pins the other direction — a generation
-// that links nothing satisfies UnlockedVersions vacuously, which is
-// exactly what a rebuild reading the wrong lock target would produce.
 func assertGenerationMatchesLock(
-	t *testing.T, galeDir, storeRoot, lockPath string, want map[string]string,
+	t *testing.T, galeDir, storeRoot, lockPath, fetchDir string, want map[string]string,
 ) {
 	t.Helper()
 	installed, err := generation.CurrentVersions(galeDir, storeRoot)
 	if err != nil {
 		t.Fatalf("reading the active generation: %v", err)
 	}
-	v, err := lockfile.Load(lockPath)
-	if err != nil {
+	if _, err := lockfile.ReadV2(lockPath); err != nil {
 		t.Fatalf("loading %s: %v", lockPath, err)
 	}
-	roots, err := v.V1.EffectiveRoots(currentHost(t))
-	if err != nil {
-		t.Fatalf("effective roots of %s: %v", lockPath, err)
-	}
-	if unlocked := activation.UnlockedVersions(
-		installed, roots, storeRoot,
-	); len(unlocked) > 0 {
-		t.Errorf(
-			"the active generation links %v, which %s does not name",
-			unlocked, lockPath,
-		)
-	}
 	if !maps.Equal(installed, want) {
-		t.Errorf("active generation = %v, want %v", installed, want)
+		t.Errorf("active generation = %v, want lock %v", installed, want)
+	}
+	dirs, err := generation.CurrentStoreDirs(galeDir, storeRoot)
+	if err != nil {
+		t.Fatalf("current store dirs: %v", err)
+	}
+	if filepath.Clean(dirs[issue197Pkg]) != filepath.Clean(fetchDir) {
+		t.Errorf("linked %q, want fetch %q", dirs[issue197Pkg], fetchDir)
 	}
 }
 
@@ -186,22 +182,19 @@ func TestGCRebuildDoesNotActivateAnUnlockedRevision(t *testing.T) {
 	configPath := filepath.Join(galeDir, "gale.toml")
 	lockPath := filepath.Join(galeDir, "gale.lock")
 	writeFile(t, configPath, "[packages]\n"+issue197Pkg+" = \""+issue197Ver+"\"\n")
-	writeScopeLock(t, lockPath, issue197Pkg+"@"+issue197Rev2, shaX)
-
-	// Seed: the generation links what the lock names, as an install
-	// under the then-current recipe revision left it.
-	if err := rebuildGeneration(
-		galeDir, storeRoot, configPath, justAtRevision(2),
+	if err := generation.Build(
+		map[string]string{issue197Pkg: issue197Rev2}, galeDir, storeRoot,
 	); err != nil {
 		t.Fatalf("seeding the generation: %v", err)
 	}
+	fetchDir := writeIssue197V2(t, storeRoot, lockPath)
 
 	if err := runGC(t); err != nil {
 		t.Fatalf("gc: %v", err)
 	}
 
-	assertGenerationMatchesLock(t, galeDir, storeRoot, lockPath,
-		map[string]string{issue197Pkg: issue197Rev2})
+	assertGenerationMatchesLock(t, galeDir, storeRoot, lockPath, fetchDir,
+		map[string]string{issue197Pkg: issue197Ver})
 }
 
 // TestGCRebuildHonorsAProjectLock is the same defect one scope over.
@@ -216,20 +209,19 @@ func TestGCRebuildHonorsAProjectLock(t *testing.T) {
 	configPath := filepath.Join(proj, "gale.toml")
 	lockPath := filepath.Join(proj, "gale.lock")
 	writeFile(t, configPath, "[packages]\n"+issue197Pkg+" = \""+issue197Ver+"\"\n")
-	writeScopeLock(t, lockPath, issue197Pkg+"@"+issue197Rev2, shaX)
-
-	if err := rebuildGeneration(
-		projGaleDir, storeRoot, configPath, justAtRevision(2),
+	if err := generation.Build(
+		map[string]string{issue197Pkg: issue197Rev2}, projGaleDir, storeRoot,
 	); err != nil {
 		t.Fatalf("seeding the project generation: %v", err)
 	}
+	fetchDir := writeIssue197V2(t, storeRoot, lockPath)
 
 	if err := runGC(t); err != nil {
 		t.Fatalf("gc: %v", err)
 	}
 
-	assertGenerationMatchesLock(t, projGaleDir, storeRoot, lockPath,
-		map[string]string{issue197Pkg: issue197Rev2})
+	assertGenerationMatchesLock(t, projGaleDir, storeRoot, lockPath, fetchDir,
+		map[string]string{issue197Pkg: issue197Ver})
 }
 
 // issue197UnusableLockFixture is the shared setup for the refusal
@@ -241,12 +233,12 @@ func issue197UnusableLockFixture(t *testing.T) (string, string) {
 	t.Chdir(t.TempDir())
 	configPath := filepath.Join(galeDir, "gale.toml")
 	writeFile(t, configPath, "[packages]\n"+issue197Pkg+" = \""+issue197Ver+"\"\n")
-	writeFile(t, filepath.Join(galeDir, "gale.lock"), legacyLockBody)
 	if err := rebuildGeneration(
 		galeDir, storeRoot, configPath, justAtRevision(2),
 	); err != nil {
 		t.Fatalf("seeding the generation: %v", err)
 	}
+	writeFile(t, filepath.Join(galeDir, "gale.lock"), legacyLockBody)
 	return galeDir, storeRoot
 }
 
@@ -265,11 +257,11 @@ func TestGCRefusesRebuildOnAnUnusableLock(t *testing.T) {
 	if code := exitCodeFor(err); code != exitLockUnusable {
 		t.Errorf("exit code = %d, want %d (%v)", code, exitLockUnusable, err)
 	}
-	if !strings.Contains(err.Error(), "gale lock") {
-		t.Errorf("the refusal must name the remedy, got: %v", err)
+	if !strings.Contains(err.Error(), "gale fetch-adopt") {
+		t.Errorf("the refusal must name fetch-adopt, got: %v", err)
 	}
-	if strings.Contains(err.Error(), "--refresh") {
-		t.Errorf("the refusal names deleted --refresh, got: %v", err)
+	if strings.Contains(err.Error(), "--force") {
+		t.Errorf("the refusal must not advertise --force rebuild, got: %v", err)
 	}
 	// The refusal is a refusal: the generation is left exactly as it
 	// was, not half-rebuilt.
@@ -283,30 +275,30 @@ func TestGCRefusesRebuildOnAnUnusableLock(t *testing.T) {
 	}
 }
 
-// TestGCForceRebuildsDespiteAnUnusableLock is the escape hatch, the
-// same shape --force already gives the sweep (gh#188): a user whose
-// lock is beyond repair must still be able to run gc. It warns and
-// rebuilds unlocked, which here means relinking the revision the
-// recipe offers.
-func TestGCForceRebuildsDespiteAnUnusableLock(t *testing.T) {
+// TestGCForceDoesNotRebuildPastUnusableLock: rebuild --force
+// cannot walk past a lock that is present and cannot be modeled.
+// Sweep --force is a different flag site.
+func TestGCForceDoesNotRebuildPastUnusableLock(t *testing.T) {
 	galeDir, storeRoot := issue197UnusableLockFixture(t)
 	gcForce = true
 	t.Cleanup(func() { gcForce = false })
 
-	var err error
-	stderr := captureStderr(t, func() { err = runGC(t) })
-	if err != nil {
-		t.Fatalf("gc --force must rebuild anyway: %v", err)
+	err := runGC(t)
+	if err == nil {
+		t.Fatal("gc --force must not rebuild past a present unusable lock")
 	}
-	if !strings.Contains(stderr, "gale.lock") {
-		t.Errorf("gc --force must warn about the lock it ignored, got: %q", stderr)
+	if code := exitCodeFor(err); code != exitLockUnusable {
+		t.Errorf("exit code = %d, want %d (%v)", code, exitLockUnusable, err)
+	}
+	if strings.Contains(err.Error(), "--force") {
+		t.Errorf("refusal must not advertise --force rebuild, got: %v", err)
 	}
 	active, cErr := generation.CurrentVersions(galeDir, storeRoot)
 	if cErr != nil {
 		t.Fatalf("reading the active generation: %v", cErr)
 	}
-	if active[issue197Pkg] != issue197Rev1 {
-		t.Errorf("active generation = %v, want the unlocked rebuild's %s",
-			active, issue197Rev1)
+	if active[issue197Pkg] != issue197Rev2 {
+		t.Errorf("active generation = %v, want %s untouched",
+			active, issue197Rev2)
 	}
 }

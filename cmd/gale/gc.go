@@ -142,9 +142,7 @@ var gcCmd = &cobra.Command{
 					configPath: sc.configPath,
 					pinResolve: pinResolve,
 				}, recoveryRebuild{
-					force:         gcForce,
 					skipUnchanged: true,
-					out:           out,
 				}); err != nil {
 					out.Warn(fmt.Sprintf(
 						"rebuilding %s generation: %v", sc.kind, err,

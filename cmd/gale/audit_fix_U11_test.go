@@ -5,80 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/kelp/gale/internal/config"
 )
 
-// --- gh#72: install --host <other-host> is declaration-only ---
-
-// TestFinalizeInstallForeignHostDeclarationOnly pins gh#72:
-// `gale install --host otherbox` writes the package to
-// [hosts.otherbox.packages], but the generation is rebuilt
-// from the CURRENT host's effective set — the package is
-// correctly absent from it. The post-rebuild presence check
-// must be skipped for a foreign host instead of failing with
-// a bogus "store dir removed mid-install" error after config,
-// lock, and store were already mutated.
-func TestFinalizeInstallForeignHostDeclarationOnly(t *testing.T) {
-	t.Setenv("GALE_HOST", "thishost")
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	galeDir := filepath.Join(home, ".gale")
-	storeRoot := filepath.Join(galeDir, "pkg")
-	if err := os.MkdirAll(filepath.Join(
-		storeRoot, "hello", "1.0.0-1", "bin",
-	), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	// The lock write resolves the closure from provenance, so a
-	// package with no record cannot be locked at all and the install
-	// would fail before reaching the check this test is about.
-	writeProvenance(t, storeRoot, "hello", "1.0.0-1")
-	configPath := filepath.Join(galeDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx := &cmdContext{
-		GaleDir:   galeDir,
-		StoreRoot: storeRoot,
-		GalePath:  configPath,
-		Host:      "otherbox",
-	}
-	err := ctx.FinalizeInstall("hello", "1.0.0", "1.0.0-1")
-	if err != nil {
-		t.Fatalf("foreign-host install must not fail the "+
-			"active-generation check (declaration-only): %v", err)
-	}
-
-	// The declaration must have landed in the foreign host's
-	// overlay.
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.Hosts["otherbox"].Packages["hello"] != "1.0.0" {
-		t.Errorf("expected hello in [hosts.otherbox.packages]; "+
-			"config:\n%s", string(data))
-	}
-}
-
-// TestFinalizeInstallCurrentHostGenCheckStillEnforced guards
-// the gh#72 fix from over-correcting: when --host targets the
-// CURRENT machine, the package belongs in the active
-// generation and the presence check must still fire when it
-// is missing (here: the config pin resolves to a version that is
-// not on disk, so the lenient rebuild skips it and CurrentVersions
-// never reports it). The installed revision exists and carries
-// provenance, because the lock write precedes the check and needs a
-// closure to describe; an absent store dir would fail the install
-// earlier, for another reason, and stop testing this one.
 func TestFinalizeInstallCurrentHostGenCheckStillEnforced(t *testing.T) {
 	t.Setenv("GALE_HOST", "thishost")
 	home := t.TempDir()

@@ -157,9 +157,11 @@ When gc rebuilds a generation it takes the versions from
 that scope's lockfile, so the rebuild cannot put a version
 the lock does not name on PATH.
 A scope whose lockfile is present and cannot be read is
-refused;
+refused, including under
+.Fl -force .
+Sweep
 .Fl -force
-rebuilds it without the lock.
+is unchanged.
 .Pp
 .Dl $ gale gc --dry-run
 .Dl $ gale gc

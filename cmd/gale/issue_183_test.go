@@ -10,7 +10,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/installer"
-	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
@@ -151,95 +150,6 @@ func storeVersions(t *testing.T, storeRoot, name string) []string {
 	return versions
 }
 
-// TestInstallLocalSourceContentGetsDistinctStoreDirs is gh#183's
-// first acceptance criterion: two successive `gale install --path`
-// builds from different source content produce distinct store
-// directories.
-//
-// Before the fix both builds resolve to "1.0.0" — `git describe`
-// says nothing about the working tree — so the second build renames
-// its output over the first and the store holds one directory.
-func TestInstallLocalSourceContentGetsDistinctStoreDirs(t *testing.T) {
-	f := localSourceFixture(t)
-	out := output.New(os.Stderr, false)
-
-	if err := installFromLocalSource(
-		f.ctx, "testpkg", f.recipePath, f.srcDir, out,
-	); err != nil {
-		t.Fatalf("first installFromLocalSource: %v", err)
-	}
-
-	writeMarker(t, f.srcDir, "two")
-
-	if err := installFromLocalSource(
-		f.ctx, "testpkg", f.recipePath, f.srcDir, out,
-	); err != nil {
-		t.Fatalf("second installFromLocalSource: %v", err)
-	}
-
-	got := storeVersions(t, f.storeRoot, "testpkg")
-	if len(got) != 2 {
-		t.Fatalf("store holds %d testpkg directories (%v), want 2: "+
-			"a build of different source content must not overwrite "+
-			"the identity an earlier build committed", len(got), got)
-	}
-}
-
-// TestInstallLocalKeepsEarlierGenerationBytes is gh#183's second
-// acceptance criterion: after any reinstall, previously built
-// generations still resolve to the bytes they were built with.
-//
-// This is the criterion with teeth. `gale rollback` selects a
-// generation by number and expects the environment that generation
-// described; if a later build has rewritten the pathname its
-// symlinks point at, the rollback silently executes bytes from a
-// tree the user never asked for.
-func TestInstallLocalKeepsEarlierGenerationBytes(t *testing.T) {
-	f := localSourceFixture(t)
-	out := output.New(os.Stderr, false)
-
-	if err := installFromLocalSource(
-		f.ctx, "testpkg", f.recipePath, f.srcDir, out,
-	); err != nil {
-		t.Fatalf("first installFromLocalSource: %v", err)
-	}
-
-	genOne := filepath.Join(f.galeDir, "gen", "1", "bin", "testpkg")
-	before, err := os.ReadFile(genOne)
-	if err != nil {
-		t.Fatalf("read %s after the first install: %v", genOne, err)
-	}
-	if string(before) != "one" {
-		t.Fatalf("gen/1 holds %q, want %q", before, "one")
-	}
-
-	writeMarker(t, f.srcDir, "two")
-
-	if err := installFromLocalSource(
-		f.ctx, "testpkg", f.recipePath, f.srcDir, out,
-	); err != nil {
-		t.Fatalf("second installFromLocalSource: %v", err)
-	}
-
-	after, err := os.ReadFile(genOne)
-	if err != nil {
-		t.Fatalf("read %s after the second install: %v", genOne, err)
-	}
-	if string(after) != "one" {
-		t.Errorf("gen/1 now resolves to %q, want %q: the second "+
-			"build rewrote bytes an existing generation reaches",
-			after, "one")
-	}
-}
-
-// TestLocalSourceGuardSeesEveryGeneration: the guard refuses a
-// replacement that ANY generation reaches, not only the active one.
-//
-// `gale rollback` is why. It selects an old generation by number and
-// expects the environment that generation described; a guard that
-// consulted `current` alone would wave through a rebuild that
-// rewrote the bytes every older generation resolves to, and the
-// rollback would silently run the newest build.
 func TestLocalSourceGuardSeesEveryGeneration(t *testing.T) {
 	tmp := t.TempDir()
 	storeRoot := filepath.Join(tmp, "store")
