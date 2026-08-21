@@ -357,7 +357,10 @@ Refactors (need judgment):
   No early-return or superfluous-else remain.)
 - [x] **funlen (16)** — split functions over 80 lines / 50 statements.
   (Count was stale: 6 hits.)
-- [ ] **gocognit (13)** — reduce cognitive complexity below 30.
+- [x] **gocognit (13)** — reduce cognitive complexity below 30.
+  (Count was stale. Full-repo gocognit
+  is already 0; funlen split the last
+  flagged functions.)
 
 ## Done
 

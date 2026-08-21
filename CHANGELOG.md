@@ -11,6 +11,16 @@
 
 ### Fixed
 
+- **gocognit.** The backlog count
+  was stale. Full-repo `gocognit`
+  is already 0 on linux and
+  darwin; the funlen splits
+  cleared the last flagged
+  functions. The `issues:`
+  block in `.golangci.yml`
+  stays: unused and unparam
+  still fail a repo-wide lint.
+
 - **funlen.** The backlog count was
   stale (6 hits over 80 lines or
   50 statements). Tests reuse
