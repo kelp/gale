@@ -1003,6 +1003,34 @@ func TestParseGaleConfigIgnoresLeftoverBin(t *testing.T) {
 	}
 }
 
+// TestParseGaleConfigIgnoresTopLevelGitSystemNote: git =
+// "system" before the first table is a note (assume PATH),
+// not a package pin. Unknown top-level scalars are dropped.
+func TestParseGaleConfigIgnoresTopLevelGitSystemNote(t *testing.T) {
+	src := `
+git = "system"
+
+[packages]
+jq = "1.7.1"
+`
+	cfg, err := ParseGaleConfig(src)
+	if err != nil {
+		t.Fatalf("top-level git = %q must parse: %v", "system", err)
+	}
+	if got, ok := cfg.Packages["git"]; ok {
+		t.Errorf("Packages[git] = %q, want absent (note, not a pin)", got)
+	}
+	if cfg.Packages["jq"] != "1.7.1" {
+		t.Errorf("Packages[jq] = %q, want 1.7.1", cfg.Packages["jq"])
+	}
+	if got, ok := cfg.EffectivePackages("")["git"]; ok {
+		t.Errorf("EffectivePackages()[git] = %q, want absent", got)
+	}
+	if got, ok := cfg.EffectivePackages("any-host")["git"]; ok {
+		t.Errorf("EffectivePackages(host)[git] = %q, want absent", got)
+	}
+}
+
 func TestCurrentHostHonorsEnvVar(t *testing.T) {
 	t.Setenv("GALE_HOST", "test-host-xyz")
 	got, err := CurrentHost()

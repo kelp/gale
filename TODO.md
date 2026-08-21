@@ -290,7 +290,7 @@ Adopt already shipped at the cutover.
 
 Each is its own proposal. None block 1–5.
 
-- [ ] **`git = "system"`** (note in
+- [x] **`git = "system"`** (note in
       gale.toml, not an installer).
 - [ ] **python-build-standalone** — only
       with declared attestations and store
