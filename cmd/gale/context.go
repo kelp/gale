@@ -41,10 +41,9 @@ type cmdContext struct {
 	Installer *installer.Installer
 	Registry  *registry.Registry // nil when --recipes
 
-	// Parallelism is the resolved download/sync concurrency
-	// (GALE_JOBS > [sync] parallelism > default). It sizes both
-	// the Installer's Downloads limiter and sync's worker pool,
-	// so one configured number bounds total in-flight downloads.
+	// Parallelism is the compiled download/sync concurrency
+	// (DefaultParallelism). It sizes both the Installer's
+	// Downloads limiter and sync's worker pool.
 	Parallelism int
 
 	// Host force-writes the package to
@@ -144,11 +143,7 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		return nil, resolveErr
 	}
 
-	// Resolve download/sync concurrency once. A failure to read
-	// config.toml (e.g. absent on first run) is not fatal:
-	// ResolveParallelism falls back to GALE_JOBS or the default.
-	appCfg, _ := loadAppConfig()
-	n := config.ResolveParallelism(appCfg)
+	n := config.DefaultParallelism
 
 	inst := &installer.Installer{
 		Store:     store.NewStore(storeRoot),
@@ -700,21 +695,22 @@ func resolveBuildDebug(recipeDebug, cliDebug, cliRelease bool) bool {
 	return false
 }
 
-// newRegistry creates a Registry, using the URL from
-// ~/.gale/config.toml if configured. Wires the package-level
-// `dryRun` flag and the `GALE_OFFLINE` environment variable
-// (already honoured by registry.New) into the returned
-// Registry so the cache contract is uniform across commands.
+// injectedRegistry, when non-nil, is returned by newRegistry
+// after applying DryRun. Tests inject an httptest-backed
+// Registry; production leaves this nil. Not a product
+// override — leftover [registry] url is ignored.
+var injectedRegistry *registry.Registry
+
+// newRegistry returns a Registry at the compiled-in
+// DefaultURL. Wires the package-level `dryRun` flag and
+// the `GALE_OFFLINE` environment variable (already honoured
+// by registry.New) so the cache contract is uniform.
 func newRegistry() (*registry.Registry, error) {
-	var (
-		reg *registry.Registry
-		err error
-	)
-	if cfg, cfgErr := loadAppConfig(); cfgErr != nil {
-		reg, err = registry.New()
-	} else {
-		reg, err = registry.NewWithURL(cfg.Registry.URL)
+	if injectedRegistry != nil {
+		injectedRegistry.DryRun = dryRun
+		return injectedRegistry, nil
 	}
+	reg, err := registry.New()
 	if err != nil {
 		return nil, err
 	}

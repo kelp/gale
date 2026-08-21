@@ -112,7 +112,7 @@ Milestone 4 — 193 source recipes still collide.
       `gale pin`, `gale unpin`. `gale update`
       updates named packages. Manifest + lock
       are the only version channels.
-- [ ] **Freeze `config.toml`.** Compiled-in
+- [x] **Freeze `config.toml`.** Compiled-in
       index URL. `--index <dir>` is the only
       override. No parallelism knob, no
       `GALE_JOBS`. Add no keys. A config file

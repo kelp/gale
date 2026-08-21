@@ -151,7 +151,7 @@ func TestConfiguredRepoResolversNoReposEntry(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	galeDir := filepath.Join(home, ".gale")
-	writeAppConfig(t, galeDir, "[registry]\nurl = \"https://example.com\"\n")
+	writeAppConfig(t, galeDir, "[build]\ndebug = false\n")
 
 	resolvers, err := configuredRepoResolvers()
 	if err != nil {
@@ -366,7 +366,7 @@ func TestRefreshConfiguredTapsNoReposEntry(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	galeDir := filepath.Join(home, ".gale")
-	writeAppConfig(t, galeDir, "[registry]\nurl = \"https://example.com\"\n")
+	writeAppConfig(t, galeDir, "[build]\ndebug = false\n")
 
 	buf := &bytes.Buffer{}
 	out := output.New(buf, false)

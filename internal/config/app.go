@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/BurntSushi/toml"
 
@@ -20,39 +19,20 @@ type Repo struct {
 }
 
 // AppConfig represents ~/.gale/config.toml (app-level settings).
+//
+// Frozen: these three tables are the key set. Add no keys.
+// [registry] url and [sync] parallelism are ignored leftovers;
+// they must not repoint resolution or change the limiter.
+// Retention is the compiled DefaultGenerationKeep.
 type AppConfig struct {
-	Repos     []Repo         `toml:"repos"`
-	Build     BuildConfig    `toml:"build"`
-	Anthropic AIConfig       `toml:"anthropic"`
-	Registry  RegistryConfig `toml:"registry"`
-	Sync      SyncConfig     `toml:"sync"`
+	Repos     []Repo      `toml:"repos"`
+	Build     BuildConfig `toml:"build"`
+	Anthropic AIConfig    `toml:"anthropic"`
 }
 
-// SyncConfig controls sync/download behavior. Parallelism is the
-// number of concurrent downloads; default DefaultParallelism when
-// unset or non-positive.
-type SyncConfig struct {
-	Parallelism int `toml:"parallelism,omitempty"`
-}
-
-// DefaultParallelism is the fallback download parallelism when
-// nothing is configured via GALE_JOBS or [sync] parallelism.
+// DefaultParallelism is the compiled download/sync limiter
+// size. config.toml and GALE_JOBS cannot change it.
 const DefaultParallelism = 8
-
-// ResolveParallelism returns the effective download parallelism.
-// Precedence: GALE_JOBS env var, then [sync] parallelism, then
-// DefaultParallelism. The result is always >= 1.
-func ResolveParallelism(cfg *AppConfig) int {
-	if env := os.Getenv("GALE_JOBS"); env != "" {
-		if n, err := strconv.Atoi(env); err == nil && n >= 1 {
-			return n
-		}
-	}
-	if cfg != nil && cfg.Sync.Parallelism >= 1 {
-		return cfg.Sync.Parallelism
-	}
-	return DefaultParallelism
-}
 
 // BuildConfig holds build-related settings.
 type BuildConfig struct {
@@ -68,11 +48,6 @@ const DefaultGenerationKeep = 2
 type AIConfig struct {
 	APIKey     string `toml:"api_key"`
 	PromptFile string `toml:"prompt_file"`
-}
-
-// RegistryConfig holds registry settings.
-type RegistryConfig struct {
-	URL string `toml:"url"`
 }
 
 // ParseAppConfig parses a config.toml string.

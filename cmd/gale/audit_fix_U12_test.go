@@ -75,10 +75,9 @@ func TestInstallVersionedConsultsTapChain(t *testing.T) {
 	setupTapCache(t, galeDir, "mytap", map[string]string{
 		"jq": jqRecipe("1.0.0"),
 	})
-	// Registry dials fail fast: nothing listens on port 1.
+	t.Setenv("GALE_OFFLINE", "1")
 	writeAppConfig(t, galeDir,
-		"[registry]\nurl = \"http://127.0.0.1:1\"\n"+
-			"\n[[repos]]\nname = \"mytap\"\n"+
+		"[[repos]]\nname = \"mytap\"\n"+
 			"url = \"https://example.com/mytap.git\"\npriority = 1\n")
 
 	resetInstallFlags(t)
