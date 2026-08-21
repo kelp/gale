@@ -11,6 +11,12 @@
 
 ### Changed
 
+- **`git = "system"`.** A top-level note in
+  `gale.toml` (before `[packages]`): assume
+  `git` is on PATH. Not a package pin and not
+  an installer. No store entry, no lock hash.
+  Use the OS copy or `brew install git`.
+
 - **gc mark and sweep.** `gale gc` retains the
   exact store targets of current plus one
   previous generation in every registered

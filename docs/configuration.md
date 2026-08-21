@@ -22,6 +22,20 @@ variables. Lives at `~/.gale/gale.toml` (global) or
   GOFLAGS = "-mod=vendor"
 ```
 
+### `git = "system"`
+
+A top-level note, not a package pin. Write it
+before the first table header (`[packages]`).
+Gale ignores the key. It means assume `git` is
+on PATH; do not fetch it. No store entry, no
+lock hash.
+
+Do not put `git = "system"` under `[packages]`
+or `[hosts.<key>.packages]`. That is a pin named
+`git` at version `system`, and not-in-index
+refuses. Use the OS copy or `brew install git`.
+Gale does not run brew.
+
 ### `[packages]`
 
 Maps package names to pinned versions. `gale sync`

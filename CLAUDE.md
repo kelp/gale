@@ -149,6 +149,9 @@ commands, including `gale env`, do not register.
 
 ## Gotchas
 
+- `git = "system"` is a top-level note in
+  `gale.toml` (before `[packages]`): assume PATH,
+  do not fetch. Git is not a gale package.
 - Tar extraction handles PAX headers, hard links,
   symlinks, and validates paths against traversal.
   Shared `extractTar()` in `internal/download/`.

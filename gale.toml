@@ -1,3 +1,8 @@
+# Assume git from PATH. This is a note, not a package
+# pin. gale does not fetch git. macOS already ships it.
+# See docs/dev/proposals/fetch-dont-build.md §8c / §8e.
+git = "system"
+
 [packages]
   gale = "0.21.3"
   go = "1.26.1"
