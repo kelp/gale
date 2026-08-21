@@ -68,8 +68,12 @@ func TestLintIndexStemMismatchFails(t *testing.T) {
 func TestLintRecipeWithVersionsCommentStaysRecipe(t *testing.T) {
 	raw := lintCleanRecipe + "\n# index uses [versions.\"1.56.0\"] tables\n"
 	path := writeLintRecipe(t, "j/jq.toml", raw)
-	if err := runLintCmd(t, path, false); err != nil {
-		t.Fatalf("recipe with versions comment: %v", err)
+	err := runLintCmd(t, path, false)
+	if err == nil {
+		t.Fatal("source recipe: want not-an-index error, got nil")
+	}
+	if !strings.Contains(err.Error(), "not an index document") {
+		t.Fatalf("source recipe: %v, want not an index document", err)
 	}
 }
 
@@ -157,20 +161,12 @@ func runLintWithBase(t *testing.T, base, path string) error {
 
 func resetLintFlags(t *testing.T) {
 	t.Helper()
-	if flag := lintCmd.Flags().Lookup("strict"); flag != nil {
-		if err := lintCmd.Flags().Set("strict", "false"); err != nil {
-			t.Fatalf("reset --strict: %v", err)
-		}
-	}
 	if flag := lintCmd.Flags().Lookup("base"); flag != nil {
 		if err := lintCmd.Flags().Set("base", ""); err != nil {
 			t.Fatalf("reset --base: %v", err)
 		}
 	}
 	t.Cleanup(func() {
-		if flag := lintCmd.Flags().Lookup("strict"); flag != nil {
-			_ = lintCmd.Flags().Set("strict", "false")
-		}
 		if flag := lintCmd.Flags().Lookup("base"); flag != nil {
 			_ = lintCmd.Flags().Set("base", "")
 		}

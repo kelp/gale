@@ -53,14 +53,6 @@ Remove a package from the store and
 .Pa gale.toml .
 .Pp
 .Dl $ gale remove htop
-.It Cm add Ar pkg Ns Op @ Ns Ar ver ...
-Add one or more packages to
-.Pa gale.toml
-without installing.
-Useful for declaring dependencies before running
-.Cm sync .
-.Pp
-.Dl $ gale add ripgrep fd bat
 .It Cm sync
 Activate every package the v2 lock names.
 It fetches missing trees and rebuilds the generation.
@@ -94,20 +86,6 @@ to resolve against a local index checkout.
 .Pp
 .Dl $ gale update
 .Dl $ gale update jq@1.8.1
-.It Cm switch Ar pkg Ar version
-Switch a package already declared in
-.Pa gale.toml
-to a specific version.
-Works for downgrades as well as upgrades, and refuses to
-add packages that aren't already declared (use
-.Cm install
-for that).
-Accepts both two-arg and
-.Ar pkg@ver
-forms.
-.Pp
-.Dl $ gale switch gh 2.89.0
-.Dl $ gale switch gh@2.89.0
 .It Cm list Op Fl -scope Ar all|shared|host Op Fl g | Fl p | Fl a
 List packages declared in
 .Pa gale.toml
@@ -224,21 +202,6 @@ to skip the automatic tap refresh.
 .Pp
 .Dl $ gale outdated
 .Dl jq 1.7.1 -> 1.8.1
-.It Cm inspect Op Ar pkg | Fl -all
-Audit installed packages for linkage issues:
-unresolvable
-.Va @rpath
-references, stale rpath entries, and mismatches between
-binary references and the recipe's declared deps.
-Exits non-zero when issues are found, so CI can gate on it.
-Use
-.Fl -all
-to scan every installed package, or
-.Fl -json
-for machine-readable output.
-.Pp
-.Dl $ gale inspect jq
-.Dl $ gale inspect --all --json
 .It Cm doctor Op Fl -check-registry
 Check the gale installation for common problems:
 PATH configuration, store integrity, stale generations,
@@ -277,10 +240,6 @@ user runs.
 .Pp
 .Dl $ gale doctor
 .Dl $ gale doctor --check-registry
-.It Cm search Ar query
-Search for packages by name or description.
-.Pp
-.Dl $ gale search json
 .El
 .Ss Generation Management
 .Bl -tag -width Ds
@@ -356,36 +315,21 @@ shell function for
 .Pp
 .Dl $ gale hook direnv >> ~/.config/direnv/direnvrc
 .El
-.Ss Recipe Development
+.Ss Index
 .Bl -tag -width Ds
-.It Cm build Ar recipe.toml Op Fl -debug
-Build a package from a local recipe file.
-Produces a
-.Pa .tar.zst
-archive.
-Use
-.Fl -debug
-for unoptimized builds with debug symbols.
-.Pp
-.Dl $ gale build recipes/j/jq.toml
-.It Cm lint Ar file.toml ... Op Fl -strict Op Fl -base Ar old.toml
-Validate one or more recipe or index files.
+.It Cm lint Ar file.toml ... Op Fl -base Ar old.toml
+Validate one or more index files.
 A document with a top-level
 .Ic versions
 table is an index file.
 The filename stem must match
 .Ic package.name .
-Exit non-zero when a recipe has an error or an
-index file has any issue.
-Use
-.Fl -strict
-to exit non-zero on recipe warnings too.
+A source recipe is not an index document.
 .Fl -base
 compares one index file to a previous document
 and refuses append-only violations.
 .Pp
-.Dl $ gale lint recipes/j/jq.toml
-.Dl $ gale lint --strict recipes/j/jq.toml
+.Dl $ gale lint index/j/just.toml
 .Dl $ gale lint --base old.toml index/j/just.toml
 .It Cm admit
 Record an index artifact from a local archive.
@@ -396,44 +340,9 @@ Does not write the store, lock, or
 .Pa gale.toml .
 .Pp
 .Dl $ gale admit --archive just.tar.gz --name just --version 1.56.0 --os darwin --arch arm64 --url https://github.com/casey/just/releases/download/1.56.0/just.tar.gz --file just:bin/just:755
-.It Cm create-recipe Ar repo Op Fl o Ar dir
-Generate a recipe from a GitHub repository using AI.
-Accepts
-.Ar owner/repo ,
-.Ar github.com/owner/repo ,
-or a full URL.
-.Pp
-Automatically detects build systems, computes source
-SHA256, and validates with lint.
-Missing dependencies are created recursively (up to
-6 levels deep).
-.Pp
-When run inside a gale-recipes directory, writes
-recipes to
-.Pa recipes/<letter>/<name>.toml .
-Otherwise prints to stdout.
-Use
-.Fl o
-to specify an output directory.
-.Pp
-Requires an Anthropic API key in
-.Pa ~/.gale/config.toml .
-.Pp
-.Dl $ gale create-recipe jqlang/jq
-.Dl $ gale create-recipe -o recipes/ benhoyt/inih
 .El
 .Ss Supply Chain Security
 .Bl -tag -width Ds
-.It Cm audit Ar pkg Op Fl g | Fl p
-Rebuild a package from source and compare its SHA256
-against the installed binary.
-A match confirms the build is reproducible; most builds
-are not yet deterministic, so a mismatch does not
-indicate tampering.
-Scope flags select which lockfile to read the
-installed hash from.
-.Pp
-.Dl $ gale audit jq
 .It Cm verify Op Ar pkg Op Fl g | Fl p
 Recompute each locked fetch tree digest and
 compare it to the v2 lock.
@@ -442,36 +351,6 @@ A v1 lock has no tree_digest.
 Scope flags select which lockfile to read.
 .Pp
 .Dl $ gale verify jq
-.It Cm sbom Op Ar pkg Op Fl -json Op Fl g | Fl p | Fl a
-Show a software bill of materials for installed
-packages.
-Use
-.Fl -json
-for machine-readable output.
-With
-.Fl a ,
-emit entries from both the project and global
-gale.toml; each entry gets a
-.Ic scope
-field
-.Pq Sq project No or Sq global .
-.Pp
-.Dl $ gale sbom
-.Dl $ gale sbom jq --json
-.Dl $ gale sbom -a
-.El
-.Ss Repository Management
-.Bl -tag -width Ds
-.It Cm repo add Ar name Ar url
-Add a recipe repository with the given name and URL.
-.It Cm repo remove Ar name
-Remove a recipe repository.
-.It Cm repo list
-List configured recipe repositories.
-.It Cm repo init Ar name
-Create a new recipe repository scaffold.
-.It Cm repo update Op Ar name
-Update one or all recipe repositories.
 .El
 .Ss Shell Completion
 .Bl -tag -width Ds
@@ -628,8 +507,8 @@ Install packages and set up a project:
 $ gale install ripgrep bat fd
 $ cd myproject
 $ gale init
-$ gale add go@1.26.1 golangci-lint
-$ gale sync
+$ gale install go@1.26.1
+$ gale install golangci-lint
 .Ed
 .Pp
 Update every package in the manifest:
@@ -653,11 +532,9 @@ $ gale lint --base old.toml index/j/just.toml
 $ gale install just --index ../gale-recipes
 .Ed
 .Pp
-Audit supply chain integrity:
+Check store trees against the lock:
 .Bd -literal -offset indent
-$ gale audit jq
 $ gale verify jq
-$ gale sbom --json
 .Ed
 .Sh CONFIGURATION
 Application settings in
@@ -670,14 +547,7 @@ When true, all builds use debug flags.
 Default: false.
 .El
 .It Ic [anthropic]
-.Bl -tag -width "prompt_file" -compact
-.It Va api_key
-Anthropic API key for
-.Cm create-recipe .
-.It Va prompt_file
-Path to a file appended to the recipe creation
-system prompt.
-.El
+Leftover. Ignored.
 .El
 .Pp
 The recipe registry URL is compiled in.

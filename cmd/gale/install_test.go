@@ -340,7 +340,6 @@ func TestGitDevVersionDistinguishesDirtyTrees(t *testing.T) {
 
 func TestRecipesFlagReplacesLocal(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"add":      addCmd,
 		"outdated": outdatedCmd,
 	}
 
@@ -378,12 +377,8 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 // failed with `unknown command "."` (gh#114).
 func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"add":      addCmd,
 		"outdated": outdatedCmd,
 		"gc":       gcCmd,
-		"inspect":  inspectCmd,
-		"switch":   switchCmd,
-		"build":    buildCmd,
 	}
 
 	for name, cmd := range cmds {
@@ -434,12 +429,8 @@ func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
 // commit 4a54c9e).
 func TestRecipesFlagWordingIsAccurate(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"add":      addCmd,
 		"outdated": outdatedCmd,
 		"gc":       gcCmd,
-		"inspect":  inspectCmd,
-		"switch":   switchCmd,
-		"build":    buildCmd,
 	}
 
 	for name, cmd := range cmds {

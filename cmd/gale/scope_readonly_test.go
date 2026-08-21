@@ -37,8 +37,8 @@ func findSub(parent, name string) *cobra.Command {
 // and -p/--project.
 func TestReadonlyCommandsHaveScopeFlags(t *testing.T) {
 	cases := []string{
-		"list", "info", "sbom", "outdated", "env", "which",
-		"verify", "audit", "generations",
+		"list", "info", "outdated", "env", "which",
+		"verify", "generations",
 	}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -64,10 +64,10 @@ func TestReadonlyCommandsHaveScopeFlags(t *testing.T) {
 	}
 }
 
-// TestReadonlyInventoryCommandsHaveAllFlag verifies list and
-// sbom expose -a/--all for cross-scope inventory output.
+// TestReadonlyInventoryCommandsHaveAllFlag verifies list
+// exposes -a/--all for cross-scope inventory output.
 func TestReadonlyInventoryCommandsHaveAllFlag(t *testing.T) {
-	cases := []string{"list", "sbom"}
+	cases := []string{"list"}
 	for _, name := range cases {
 		t.Run(name, func(t *testing.T) {
 			c := findCmd(name)

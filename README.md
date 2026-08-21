@@ -120,7 +120,7 @@ machines with chezmoi or git — each machine runs
 `gale sync` and gets its own toolset.
 
 ```sh
-gale add fzf --host current   # write to this host's section
+gale sync                     # activate this machine's host section
 ssh server gale sync          # remote install — no special command needed
 ```
 
@@ -138,7 +138,6 @@ gale update [pkg...]      Update to latest
 gale list                 List packages in manifest
 gale info <pkg>           Show package metadata
 gale outdated             Show available updates
-gale search <query>       Search by name or description
 gale which <binary>       Find which package owns it
 gale doctor               Diagnose setup issues
 gale gc                   Clean unused versions + gens
@@ -147,13 +146,9 @@ gale init                 Set up a project
 gale env                  Print PATH and vars for shell
 gale shell                Open shell with project env
 gale run <cmd>            Run command in project env
-gale build <recipe>       Build from source
-gale lint <file>          Validate a recipe or index file
+gale lint <file>          Validate an index file
 gale admit                Record an index artifact from an archive
-gale create-recipe <repo> Generate recipe with AI
-gale audit <pkg>          Rebuild and compare hashes
 gale verify [pkg]         Check store tree digests against the lock
-gale sbom [pkg]           Software bill of materials
 gale completion <shell>   Generate shell completions
 ```
 
@@ -187,15 +182,9 @@ hash_source = "upstream-sha256sums"
 
 ## Optional Dependencies
 
-None. Sigstore attestation verification (binary
-installs, `gale verify`, `gale audit`) runs
-in-process — no `gh` CLI or other external tool
-required.
-
-**[Anthropic API key](https://console.anthropic.com/)** —
-used by `gale create-recipe` for AI-powered recipe
-generation. Configure in `~/.gale/config.toml` under
-`[anthropic]`. Not needed for any other functionality.
+None. Sigstore attestation verification and
+`gale verify` run in-process — no `gh` CLI or
+other external tool required.
 
 ## Development
 

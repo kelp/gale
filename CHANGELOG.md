@@ -11,6 +11,13 @@
 
 ### Changed
 
+- **Delete the long tail.** `build`,
+  `create-recipe`, `audit`, recipe `lint`,
+  `search`, `switch`, `add`, `sbom`,
+  `inspect`, and `repo *` are gone. No
+  stubs. `gale lint` validates index
+  documents only. `--strict` is gone.
+
 - **Switch: fetch is the only installer.** `install`,
   `sync`, `update`, and `remove` resolve the index and
   stage `pkg/fetch/`. `--recipes` is gone on those

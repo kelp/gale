@@ -36,18 +36,13 @@ version.
 Bad release? Switch back to a known-good version:
 
 ```sh
-gale switch gh 2.89.0
+gale update gh@2.89.0
 ```
 
-`switch` works for downgrades and upgrades alike. It updates
-`gale.toml` and `gale.lock`, installs the requested version
-(cache-hit if it's already in the store from a prior
-install), and rebuilds the generation. The package must
-already be in `gale.toml`; `switch` will not add new
-packages — use `gale install` for that.
-
-The `gale switch gh@2.89.0` form is accepted too, for
-consistency with `gale install`.
+`update pkg@ver` pins that version from the index,
+writes `gale.toml` and the v2 lock, and swaps
+`current`. Use `gale install` to add a package that
+is not already declared.
 
 ## Bump Pins Without Installing
 

@@ -94,59 +94,6 @@ func resolveScope(global, project bool, cwd string) bool {
 	return false // project config found → project scope
 }
 
-func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output) error {
-	// Shallow-copy ctx.Installer, then override Resolver when
-	// --recipe is set.
-	inst := *ctx.Installer
-	if recipePath != "" {
-		resolver, err := resolverForRecipe(recipePath)
-		if err != nil {
-			return err
-		}
-		inst.Resolver = resolver
-	}
-
-	// Resolve recipe.
-	var r *recipe.Recipe
-	if recipePath != "" {
-		parsed, err := loadRecipeFile(recipePath, true)
-		if err != nil {
-			return err
-		}
-		r = parsed
-	} else {
-		fetched, err := inst.Resolver(context.Background(), name)
-		if err != nil {
-			return fmt.Errorf("fetching recipe: %w", err)
-		}
-		r = fetched
-	}
-
-	if r.Source.Repo == "" {
-		return fmt.Errorf(
-			"recipe for %s has no source.repo — cannot build from git", name,
-		)
-	}
-
-	out.Info(fmt.Sprintf("Installing %s from git (%s)...",
-		r.Package.Name, r.Source.Repo))
-
-	result, err := (&inst).InstallGitWithFinalize(r, func(res *installer.InstallResult) error {
-		// Git installs produce a dev version derived from the
-		// repo state; sync it onto the recipe so Full() emits
-		// the matching <version>-<revision> string.
-		r.Package.Version = res.Version
-		return ctx.FinalizeRecipeInstall(r)
-	})
-	if err != nil {
-		return fmt.Errorf("install failed: %w", err)
-	}
-
-	reportResult(out, result, "Installed", "built from git")
-
-	return nil
-}
-
 func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string, out *output.Output) error {
 	// Resolve source directory to absolute path.
 	absSource, err := filepath.Abs(sourceDir)

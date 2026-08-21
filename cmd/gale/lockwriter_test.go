@@ -403,41 +403,6 @@ func TestUpdateRegeneratesTheSectionItRewrote(t *testing.T) {
 	}
 }
 
-// TestAddDoesNotTouchTheLock: `gale add` writes gale.toml without
-// installing, so it has verified nothing and locks nothing. The
-// resulting stale lock is deliberate, and its remedy is the message
-// add prints; writing a root for bytes no one fetched would be the
-// opposite of what the lock is for.
-func TestAddDoesNotTouchTheLock(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	projDir := t.TempDir()
-	configPath := filepath.Join(projDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	orig, _ := os.Getwd()
-	os.Chdir(projDir)
-	t.Cleanup(func() { os.Chdir(orig) })
-
-	addProject = true
-	t.Cleanup(func() { addProject = false })
-
-	// @version keeps the network resolver out of it.
-	if err := addCmd.RunE(addCmd, []string{"jq@1.8.1"}); err != nil {
-		t.Fatalf("add: %v", err)
-	}
-
-	lp := filepath.Join(projDir, "gale.lock")
-	if _, err := os.Lstat(lp); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(lp)
-		t.Errorf("add created %s:\n%s", lp, data)
-	}
-}
-
 // TestInstallRefusesALegacyLock: a lockfile with no version key was
 // written by a gale that recorded checksums without enforcing them,
 // so its entries are not evidence about anything. Replacing it as a

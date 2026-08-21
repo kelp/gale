@@ -176,7 +176,6 @@ it.
 
 ```sh
 gale install fzf --host current      # install + record under [hosts.<this-host>.packages]
-gale add fzf --host current
 gale remove htop --host my-server    # edit another machine's section
 ```
 
@@ -242,14 +241,8 @@ not CLI flags.
 
 ### `[anthropic]`
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `api_key` | (none) | Anthropic API key for `gale create-recipe` |
-| `prompt_file` | (none) | Path to a file appended to the recipe creation system prompt |
-
-The prompt file is read on every invocation. Changes
-take effect without rebuilding gale. Use `~/` prefix
-for home-relative paths.
+Leftover. `gale create-recipe` is gone. The keys
+are ignored.
 
 The recipe registry URL is compiled in. Leftover
 `[registry] url` and `[sync] parallelism` keys are
@@ -258,10 +251,9 @@ repoint resolution or change install order.
 
 ### `[[repos]]`
 
-Recipe repositories ("taps") consulted by the install
-resolver before falling back to the default registry.
-Managed via `gale repo add <name> <url>` /
-`gale repo list` / `gale repo remove <name>`.
+Leftover tap list. `gale repo *` is gone. Remaining
+commands that still resolve recipes (`outdated`,
+`gc`, `migrate`) may still read these entries.
 
 ```toml
 [[repos]]
@@ -278,7 +270,7 @@ priority = 5
 | Field | Default | Description |
 |-------|---------|-------------|
 | `name` | (required) | Local cache directory name under `~/.gale/repos/` |
-| `url` | (required) | Git URL cloned by `gale repo add` |
+| `url` | (required) | Git URL of a leftover tap |
 | `priority` | `0` | Lower number wins. Ties resolve by config order |
 
 `gale install <pkg>` walks repos in priority order

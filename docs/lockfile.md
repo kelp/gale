@@ -123,8 +123,7 @@ target roots are `name@version`, with no revision.
 remove` and `gale lock` write `gale.lock`. Each resolves
 its complete closure first, then replaces the file in
 one atomic write. A partial or failed resolution leaves
-the previous lockfile byte-identical. `gale add` writes
-the manifest only.
+the previous lockfile byte-identical.
 
 **`gale sync` never writes the lock.** It is a pure
 consumer: it installs the closure the lock names and
@@ -226,14 +225,9 @@ whether upstream moved legitimately or not.
 
 ## Source builds and portability
 
-A locked source build is enforced strictly, never
-warn-only. `gale audit` mismatches are normal for most
-packages — Mach-O `LC_UUID`, absolute paths baked into
-`.la` and `.pc` files, `ar` timestamps — and the same
-non-determinism means a locked source build may
-legitimately fail to reproduce on another machine. The
-remedy is to re-lock on that machine, or to use a binary
-artifact.
+A locked source build is leftover until Milestone 5
+strips the farm. Fetch artifacts are the live path.
+`gale verify` checks tree digests against the lock.
 
 The consequence for a committed lock follows from
 `graph_digest`: a source node's output hash feeds every
