@@ -5,7 +5,6 @@ go 1.26.5
 require (
 	github.com/BurntSushi/toml v1.6.0
 	github.com/fatih/color v1.19.0
-	github.com/klauspost/compress v1.18.6
 	github.com/mattn/go-isatty v0.0.20
 	github.com/rogpeppe/go-internal v1.14.1
 	github.com/secure-systems-lab/go-securesystemslib v0.11.0

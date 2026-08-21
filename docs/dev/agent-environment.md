@@ -21,7 +21,7 @@ just lint              # golangci-lint + go vet, 15s
 just fmt-check         # gofumpt, whole tree
 just check-darwin      # the darwin-only files Linux never compiles
 just test-symlinked-tmp  # the macOS /var path-spelling class; baseline is empty
-just integration       # hermetic Tier A, fake GHCR
+just integration       # hermetic Tier A, gale-fixture index
 ```
 
 Four things to internalize before your first command:
@@ -119,10 +119,10 @@ single most expensive thing to rediscover.
 
 ### Why `gale install` cannot work
 
-GHCR's token and manifest endpoints resolve, so gale finds the prebuilt
-binary — then the blob fetch 403s. gale falls back to a source build, and the
-source hosts are blocked too. A measured `gale install just` spent 3m11s
-compiling rustc before dying.
+Live install fetches index artifacts from GitHub Releases and
+upstream hosts. Those hosts are on the blocked list, so the
+command fails slowly rather than resolving a leftover GHCR
+bottle or compiling from source.
 
 A `PreToolUse` hook (`.claude/hooks/block-gale-install.sh`) blocks
 `gale install|build|sync` and `just install|bootstrap` for exactly this
@@ -144,9 +144,9 @@ What to use instead, generally:
 
 - `gale lint <recipe.toml>` — fully offline, and the real gate for recipe edits.
 - `go build -o ~/.local/bin/gale ./cmd/gale/` — rebuild gale from source.
-- `just integration` — exercises the whole install path against a hermetic
-  fake GHCR server, which is the closest thing to a real install you can run
-  here.
+- `just integration` — exercises the fetch path against a
+  hermetic `gale-fixture index` / `fetch-setup`, which is
+  the closest thing to a real install you can run here.
 
 ### GitHub API
 
@@ -401,7 +401,6 @@ CI-only, do not attempt locally:
   its vulnerability database at `vuln.go.dev` is blocked by the egress proxy,
   so it dies with `fetching vulnerabilities: ... Forbidden`. CI filters the
   one known-unfixable advisory, `GO-2026-5932`.
-- `attestation-parity.yml` — needs real GHCR and a gh token.
 - `release.yml`.
 - `just refresh-trusted-root` — fetches the Sigstore TUF CDN.
 

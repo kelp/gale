@@ -159,14 +159,12 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	// `gale lock` is the only writer that mints (§11), so the mints are
 	// attached here rather than inside WriteLock, which every writer
 	// shares.
-	ctx.lockMints, ctx.mintSkips = mintOtherPlatforms(ctx.Resolver, roots)
 	if err := ctx.WriteLock(); err != nil {
 		return err
 	}
 	// After the write, for the same reason warnUnlocked is: what these
 	// describe is what the new lockfile leaves out, and a failed write
 	// leaves the previous one intact, omitting nothing.
-	warnSkippedPlatforms(out, ctx.mintSkips)
 	return nil
 }
 
@@ -297,10 +295,10 @@ func lockRoot(ctx *cmdContext, r *recipe.Recipe) error {
 		// provenance the lock is written from. Without it `gale lock`
 		// could only describe what happened to be installed, and a
 		// package `gale add` just declared could never be locked at all.
-		if _, err := ctx.Installer.Install(context.Background(), r); err != nil {
-			return fmt.Errorf("installing %s@%s to lock it: %w", name, full, err)
-		}
-		return nil
+		return fmt.Errorf(
+			"locking %s@%s: store is empty; use gale fetch or gale fetch-adopt",
+			name, full,
+		)
 	}
 	rec, err := provenance.ReadUnverified(dir)
 	switch {
@@ -351,22 +349,10 @@ func checkRecipeBacks(r *recipe.Recipe, rec provenance.Record) error {
 		return nil
 	}
 	name, full := r.Package.Name, r.Package.Full()
-	b := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	if b == nil {
-		// Nothing declared is not the same as nothing to check: the
-		// installed bytes came from somewhere this recipe no longer
-		// names, so the recipe cannot back them either.
-		return recipeDisagrees(name, full, "sha256", rec.SHA256, "none")
-	}
-	if b.SHA256 != rec.SHA256 {
-		return recipeDisagrees(name, full, "sha256", rec.SHA256, b.SHA256)
-	}
-	if b.ManifestDigest != "" && b.ManifestDigest != rec.ManifestDigest {
-		return recipeDisagrees(
-			name, full, "manifest_digest", rec.ManifestDigest, b.ManifestDigest,
-		)
-	}
-	return nil
+	return fmt.Errorf(
+		"locking leftover bottle %s@%s: use gale fetch or gale fetch-adopt",
+		name, full,
+	)
 }
 
 // recipeDisagrees names both values, because which one is wrong is

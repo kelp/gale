@@ -13,8 +13,6 @@ import (
 	"github.com/kelp/gale/internal/registry"
 )
 
-const localGHCRBase = "kelp/gale-recipes"
-
 // loadRecipeFile reads and parses a recipe TOML file.
 // When local is true, uses ParseLocal (skips binary
 // section validation). Otherwise uses Parse.
@@ -106,38 +104,7 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 				fmt.Errorf("parsing recipe %s: %w", path, err),
 			}
 		}
-
-		// If recipe has no inline binaries, try the
-		// separate .binaries.toml file.
-		parts := [][]byte{data}
-		if len(rec.Binary) == 0 {
-			binPath := filepath.Join(
-				recipesDir, letter, name+".binaries.toml",
-			)
-			binData, readErr := os.ReadFile(binPath)
-			if readErr == nil {
-				// Fingerprint the sibling whenever it was
-				// read. MergeBinariesForRecipe returns true
-				// only for a ledger match so the registry
-				// can still fall back to .versions; a flat
-				// merge still produced these binaries
-				// (gh#265).
-				parts = append(parts, binData)
-				idx, parseErr := recipe.ParseBinaryIndex(
-					string(binData),
-				)
-				if parseErr == nil {
-					// Prefer the version-matching [[history]] ledger
-					// entry over the flat section, matching registry
-					// resolution (gh#121).
-					recipe.MergeBinariesForRecipe(
-						rec, idx, localGHCRBase,
-					)
-				}
-			}
-		}
-		rec.MarkWorkingTree(parts...)
-
+		rec.MarkWorkingTree(data)
 		return rec, nil
 	}
 }

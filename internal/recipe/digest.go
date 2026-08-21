@@ -6,8 +6,7 @@ import (
 )
 
 // Digest is SHA-256 of the concatenation of the byte slices
-// that produced a recipe: the TOML file, and a sibling
-// .binaries.toml when one was read.
+// that produced a recipe.
 func Digest(parts ...[]byte) string {
 	var n int
 	for _, p := range parts {

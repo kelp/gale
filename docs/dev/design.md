@@ -298,9 +298,10 @@ runtime instead of whatever happens to be on the host.
 ## Two-Repo Architecture
 
 - **gale** — the CLI tool. Go code, all packages.
-- **gale-recipes** — recipe TOML files. CI builds
-  each recipe on macOS arm64 and Linux amd64, pushes
-  tar.zst to GHCR, updates binary sections.
+- **gale-recipes** — index documents and leftover
+  recipe TOML. Fetch installs from the index.
+  There is no GHCR bottle push and no `tar.zst`
+  create.
 
 Recipes are fetched on demand from GitHub raw URLs.
 No git clone needed for installation.

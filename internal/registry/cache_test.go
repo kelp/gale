@@ -320,37 +320,6 @@ func TestCacheKeyDiffersForDifferentURLs(t *testing.T) {
 	}
 }
 
-// --- M7 Behavior 7: binaries fetch uses cache too ---
-
-func TestFetchBinariesUsesCache(t *testing.T) {
-	eh := newETagHandler(binariesToml)
-	ch := newCountingHandler(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case "/recipes/j/jq.toml":
-			fmt.Fprint(w, recipeNoBinaries)
-		case "/recipes/j/jq.binaries.toml":
-			eh.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
-	srv := httptest.NewServer(ch)
-	defer srv.Close()
-
-	reg := cachedTestRegistry(t, srv.URL)
-	if _, err := reg.FetchRecipe(context.Background(), "jq"); err != nil {
-		t.Fatalf("first: %v", err)
-	}
-	if _, err := reg.FetchRecipe(context.Background(), "jq"); err != nil {
-		t.Fatalf("second: %v", err)
-	}
-	// Both fetches happen (with If-None-Match the second time),
-	// but the cache must exist so we can check for the file.
-	if ch.lastIfNoneMatch("/recipes/j/jq.binaries.toml") == "" {
-		t.Errorf("expected If-None-Match on .binaries.toml refetch")
-	}
-}
-
 // --- M7 Behavior 8: empty CacheDir disables the cache ---
 
 func TestEmptyCacheDirSkipsCache(t *testing.T) {

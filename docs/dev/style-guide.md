@@ -267,13 +267,10 @@ or exported APIs.
 
 ### Recipe format
 
-Recipes are TOML. Required fields: `[package]` name
-and version, `[source]` url and sha256, `[build]`
-steps. Build steps reference `${PREFIX}`, `${VERSION}`,
-`${JOBS}`, `${OS}`, `${ARCH}`, `${PLATFORM}`.
-
-Binary metadata lives in separate `.binaries.toml`
-files, not in the recipe. Version history lives in
+Recipes are leftover TOML. Live install reads the
+index, not `[source]` / `[build]`. Leftover
+`[binary]` tables and sibling `.binaries.toml`
+files are ignored. Version history still lives in
 `.versions` files.
 
 ## LLM Guardrails

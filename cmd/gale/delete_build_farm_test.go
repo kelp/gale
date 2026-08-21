@@ -110,6 +110,41 @@ func TestMigrateRefuses(t *testing.T) {
 	}
 }
 
+func TestProductionHasNoGHCR(t *testing.T) {
+	root := findGoModRoot(t)
+	if _, err := os.Stat(filepath.Join(root, "internal", "ghcr")); err == nil {
+		t.Error("internal/ghcr still exists")
+	}
+	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() {
+			switch d.Name() {
+			case ".git", "vendor", "tmp":
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		imp := "github.com/kelp/gale/internal/" + "ghcr"
+		if strings.Contains(string(data), `"`+imp+`"`) {
+			rel, _ := filepath.Rel(root, path)
+			t.Errorf("%s still imports internal/ghcr", rel)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProductionHasNoBuildOrFarmImport(t *testing.T) {
 	root := findGoModRoot(t)
 	for _, pkg := range []string{"internal/build", "internal/farm"} {

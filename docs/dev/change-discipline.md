@@ -181,7 +181,7 @@ callers and string literals from hits.
 | Generation | `rebuildGeneration`, `generation.Build`, `Rollback` | sync, gc, generations, rollback | `generation/audit_fix_*`, `audit_fix_U2_*`, `rebuild_generation_test.go` |
 | GC / retention | `storeRetentionKey`, `generationLinksSuperseded`, `projects.Register` | gc, doctor | `audit_fix_U4_*`, `gc_test.go`, `projects_*_test.go` |
 | Registry / resolve | `resolveVersionedRecipe`, `FetchRecipe`, `pickVersion`, `composeResolvers` | install, update, outdated, search | `audit_fix_U12_*`, `registry/`, `recipes_test.go` |
-| Installer / store | `installer.Install`, `installBinaryTo`, `Store.Remove`, `filelock` | leftover bottle pour, remove | `installer/audit_fix_*`, `store/audit_fix_*` |
+| Installer / store | `installer.Install`, `Store.Remove`, `filelock` | leftover refuse, remove | `installer/source_refuse_test.go`, `store/` |
 | Scope / paths | `resolveScope`, `galeDirForConfig`, `registerProject`, `resolveConfigPath` | env, init, doctor, most mutating cmds | `audit_fix_U11_*` (gh#96), `scope_*_test.go` |
 | Remove correctness | `remove`, host entries | remove | `audit_fix_U9_*`, `remove_test.go` |
 

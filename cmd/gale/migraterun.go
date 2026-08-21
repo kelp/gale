@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
@@ -587,18 +586,10 @@ func canonicalAttests(storeRoot string, t migrateTarget) error {
 			name, full, t.dir, err, errCandidateUnprovenanced,
 		)
 	}
-	b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	if b == nil || rec.Method != lockgraph.MethodBinary {
+	if rec.Method != lockgraph.MethodBinary {
 		return fmt.Errorf(
-			"%w: %s@%s did not come from the declared binary, and the "+
-				"machine was cleared against that artifact alone",
+			"%w: leftover bottle %s@%s: use gale fetch or gale fetch-adopt",
 			errMigrateNotBinary, name, full,
-		)
-	}
-	if rec.SHA256 != b.SHA256 {
-		return fmt.Errorf(
-			"%w: %s@%s was cleared at %s and the store now records %s",
-			errMigrateHashMoved, name, full, b.SHA256, rec.SHA256,
 		)
 	}
 	return nil
@@ -768,17 +759,10 @@ func checkRelocateCommit(
 	if err := checkMigrateDependents(scopes, storeRoot, t); err != nil {
 		return err
 	}
-	b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	return checkReplaceable(replaceQuery{
-		galeHome: galeHome, storeRoot: storeRoot,
-		selfGaleDir: "",
-		name:        t.name, version: t.version,
-		// The bare directory, which is what this operation destroys.
-		targetDir:   t.dir,
-		wantSHA:     b.SHA256,
-		platform:    currentPlatform(),
-		machineWide: true,
-	})
+	return fmt.Errorf(
+		"%w: leftover bottle %s@%s: use gale fetch or gale fetch-adopt",
+		errMigrateNotBinary, t.name, t.version,
+	)
 }
 
 // checkNothingReaches refuses the removal while any scope's active

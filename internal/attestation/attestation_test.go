@@ -1,15 +1,12 @@
 package attestation
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
-
-	"github.com/kelp/gale/internal/ghcr"
 )
 
 // TestVerifyFileRejectsDirectory pins the file-subject guard:
@@ -43,166 +40,6 @@ func writeTempFile(t *testing.T, data []byte) string {
 		t.Fatal(err)
 	}
 	return f.Name()
-}
-
-// fakeVerifier records which Verifier methods VerifyPrebuilt
-// invokes so routing tests can assert the decision path without
-// real signature verification.
-type fakeVerifier struct {
-	ociCalled  bool
-	fileCalled bool
-	ociErr     error
-	fileErr    error
-}
-
-func (f *fakeVerifier) VerifyFile(filePath, repo string) error {
-	f.fileCalled = true
-	return f.fileErr
-}
-
-func (f *fakeVerifier) VerifyOCI(manifestDigest, repo string, bundles []byte) error {
-	f.ociCalled = true
-	return f.ociErr
-}
-
-// TestVerifyPrebuiltUsesReferrerWhenBundleFound asserts that a
-// successful FetchBundle routes to VerifyOCI and never touches
-// the file fallback.
-func TestVerifyPrebuiltUsesReferrerWhenBundleFound(t *testing.T) {
-	fv := &fakeVerifier{}
-	archiveCalled := false
-	err := VerifyPrebuilt(fv, PrebuiltParams{
-		Repo:           "owner/repo",
-		ManifestDigest: "sha256:abc",
-		FetchBundle:    func() ([]byte, error) { return []byte(`{"x":1}`), nil },
-		Archive: func() (string, func(), error) {
-			archiveCalled = true
-			return "", nil, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("VerifyPrebuilt: %v", err)
-	}
-	if !fv.ociCalled {
-		t.Error("expected VerifyOCI to be called")
-	}
-	if fv.fileCalled || archiveCalled {
-		t.Error("file fallback must not run when referrer bundle found")
-	}
-}
-
-// TestVerifyPrebuiltFallsBackOnNoReferrer asserts ErrNoReferrer
-// from FetchBundle routes to the file path.
-func TestVerifyPrebuiltFallsBackOnNoReferrer(t *testing.T) {
-	fv := &fakeVerifier{}
-	err := VerifyPrebuilt(fv, PrebuiltParams{
-		Repo:           "owner/repo",
-		ManifestDigest: "sha256:abc",
-		FetchBundle:    func() ([]byte, error) { return nil, ghcr.ErrNoReferrer },
-		Archive: func() (string, func(), error) {
-			return "/tmp/archive", nil, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("VerifyPrebuilt: %v", err)
-	}
-	if fv.ociCalled {
-		t.Error("VerifyOCI must not run after ErrNoReferrer")
-	}
-	if !fv.fileCalled {
-		t.Error("expected VerifyFile fallback")
-	}
-}
-
-// TestVerifyPrebuiltPropagatesFetchError asserts a non-ErrNoReferrer
-// fetch error fails closed: it propagates and never falls back.
-func TestVerifyPrebuiltPropagatesFetchError(t *testing.T) {
-	fv := &fakeVerifier{}
-	want := errors.New("network down")
-	err := VerifyPrebuilt(fv, PrebuiltParams{
-		Repo:           "owner/repo",
-		ManifestDigest: "sha256:abc",
-		FetchBundle:    func() ([]byte, error) { return nil, want },
-		Archive: func() (string, func(), error) {
-			return "/tmp/archive", nil, nil
-		},
-	})
-	if err == nil {
-		t.Fatal("expected error, got nil")
-	}
-	if !errors.Is(err, want) {
-		t.Errorf("error %v should wrap %v", err, want)
-	}
-	if fv.fileCalled {
-		t.Error("file fallback must not run after a non-ErrNoReferrer fetch error")
-	}
-}
-
-// TestVerifyPrebuiltFileWhenNoManifestDigest asserts an empty
-// ManifestDigest skips the referrer path entirely.
-func TestVerifyPrebuiltFileWhenNoManifestDigest(t *testing.T) {
-	fv := &fakeVerifier{}
-	fetchCalled := false
-	err := VerifyPrebuilt(fv, PrebuiltParams{
-		Repo: "owner/repo",
-		FetchBundle: func() ([]byte, error) {
-			fetchCalled = true
-			return []byte(`{"x":1}`), nil
-		},
-		Archive: func() (string, func(), error) {
-			return "/tmp/archive", nil, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("VerifyPrebuilt: %v", err)
-	}
-	if fetchCalled || fv.ociCalled {
-		t.Error("empty ManifestDigest must skip the referrer path")
-	}
-	if !fv.fileCalled {
-		t.Error("expected VerifyFile when ManifestDigest empty")
-	}
-}
-
-// TestVerifyPrebuiltReferrerErrorFailsClosed asserts that once a
-// referrer bundle is found, a VerifyOCI failure propagates without
-// any file fallback.
-func TestVerifyPrebuiltReferrerErrorFailsClosed(t *testing.T) {
-	want := errors.New("cert identity mismatch")
-	fv := &fakeVerifier{ociErr: want}
-	err := VerifyPrebuilt(fv, PrebuiltParams{
-		Repo:           "owner/repo",
-		ManifestDigest: "sha256:abc",
-		FetchBundle:    func() ([]byte, error) { return []byte(`{"x":1}`), nil },
-		Archive: func() (string, func(), error) {
-			return "/tmp/archive", nil, nil
-		},
-	})
-	if !errors.Is(err, want) {
-		t.Fatalf("expected %v, got %v", want, err)
-	}
-	if fv.fileCalled {
-		t.Error("file fallback must not run after a found referrer fails")
-	}
-}
-
-// TestVerifyPrebuiltRunsArchiveCleanup asserts the file fallback
-// invokes the cleanup returned by Archive.
-func TestVerifyPrebuiltRunsArchiveCleanup(t *testing.T) {
-	fv := &fakeVerifier{}
-	cleaned := false
-	err := VerifyPrebuilt(fv, PrebuiltParams{
-		Repo: "owner/repo",
-		Archive: func() (string, func(), error) {
-			return "/tmp/archive", func() { cleaned = true }, nil
-		},
-	})
-	if err != nil {
-		t.Fatalf("VerifyPrebuilt: %v", err)
-	}
-	if !cleaned {
-		t.Error("expected Archive cleanup to run")
-	}
 }
 
 func TestFetchBundle(t *testing.T) {

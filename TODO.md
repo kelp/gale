@@ -268,7 +268,7 @@ Adopt already shipped at the cutover.
 
 - [x] **Delete `internal/build` and farm.**
       Including Darwin fixup and patchelf.
-- [ ] **Delete GHCR bottle wiring.** Keep a
+- [x] **Delete GHCR bottle wiring.** Keep a
       generalized attestation verifier.
       Delete `tar.zst` create/extract and
       `tar.bz2` with it. Admitted formats

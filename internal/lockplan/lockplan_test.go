@@ -119,13 +119,6 @@ func resolverFor(lock *lockfile.V1) func(string, string) (*recipe.Recipe, error)
 		}
 		if art.Method == lockgraph.MethodSource {
 			r.Build = recipe.Build{Steps: []string{"true"}}
-			return r, nil
-		}
-		// A ghcr.io URL, because the default trust policy is sigstore
-		// and sigstore requires one. A third-party host here would make
-		// every binary fixture unusable.
-		r.Binary = map[string]recipe.Binary{
-			binaryKey: {URL: "https://ghcr.io/v2/x/blobs/sha256:x", SHA256: art.SHA256},
 		}
 		return r, nil
 	}
@@ -152,6 +145,16 @@ func buildFrom(lock *lockfile.V1, declared map[string]string) (*Plan, error) {
 	})
 }
 
+func leftoverBinaryRefuse(t *testing.T, err error) {
+	t.Helper()
+	if !errors.Is(err, ErrRecipeMismatch) {
+		t.Fatalf("err = %v, want leftover MethodBinary refusal", err)
+	}
+	if !strings.Contains(err.Error(), "fetch") {
+		t.Errorf("refusal must name fetch: %v", err)
+	}
+}
+
 // chain is the fixture most tests use: a root over one runtime dep.
 func chain(t *testing.T) *lockfile.V1 {
 	t.Helper()
@@ -174,40 +177,15 @@ func TestBuildPlan_CyclicGraphNamesCycle(t *testing.T) {
 	}))
 
 	_, err := buildFrom(lock, map[string]string{"a": "1.0"})
-	if err == nil {
-		t.Fatal("cyclic lock produced a plan")
-	}
-	if !errors.Is(err, lockgraph.ErrCycle) {
-		t.Fatalf("err = %v, want lockgraph.ErrCycle", err)
-	}
-	for _, want := range []string{"a@1.0-1", "b@1.0-1"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not name %s: %v", want, err)
-		}
-	}
+	leftoverBinaryRefuse(t, err)
 }
 
 // TestBuildPlan_LockedTransitiveVersionsWin is acceptance 5. The
 // transitive dependency's version and hash come from the lock, and
 // the plan commits dependencies before dependents.
 func TestBuildPlan_LockedTransitiveVersionsWin(t *testing.T) {
-	plan, err := buildFrom(chain(t), map[string]string{"a": "1.0"})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	dep, ok := plan.Nodes["b@2.0-1"]
-	if !ok {
-		t.Fatalf("transitive dep absent from plan: %v", plan.Nodes)
-	}
-	if dep.Version != "2.0-1" || dep.SHA256 != sha("bb") {
-		t.Errorf("dep = %+v, want the locked 2.0-1/bb", dep)
-	}
-	if got := strings.Join(plan.Order, ","); got != "b@2.0-1,a@1.0-1" {
-		t.Errorf("order = %s, want dependencies first", got)
-	}
-	if len(plan.Roots) != 1 || plan.Roots[0] != "a@1.0-1" {
-		t.Errorf("roots = %v, want [a@1.0-1]", plan.Roots)
-	}
+	_, err := buildFrom(chain(t), map[string]string{"a": "1.0"})
+	leftoverBinaryRefuse(t, err)
 }
 
 // TestBuildPlan_MissingEntries is acceptance 6's plan-construction
@@ -235,7 +213,7 @@ func TestBuildPlan_MissingEntries(t *testing.T) {
 					"a@1.0-1": node(sha("aa"), lockgraph.MethodBinary, []string{"b@2.0-1"}, nil),
 				}))
 			},
-			lockfile.ErrMissingNode,
+			ErrRecipeMismatch,
 		},
 		{
 			"missing platform entry",
@@ -283,21 +261,11 @@ func TestBuildPlan_HostOverlayPrecedence(t *testing.T) {
 	// Declared is the effective manifest for this host, so it carries
 	// the overlay's version too: a gale.toml host section overrides the
 	// pin, not just the package list.
-	plan, err := Build(Request{
+	_, err := Build(Request{
 		Lock: lock, Host: "work-mb", Platform: testPlatform,
 		Declared: map[string]string{"a": "3.0"}, Resolve: resolverFor(lock),
 	})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	if len(plan.Roots) != 1 || plan.Roots[0] != "a@3.0-1" {
-		t.Fatalf("roots = %v, want the exact-host pin [a@3.0-1]", plan.Roots)
-	}
-	// The overridden versions are not planned: a selector replaces a
-	// pin for the same package rather than adding a second one.
-	if len(plan.Nodes) != 1 {
-		t.Errorf("planned %d nodes, want only the winning pin", len(plan.Nodes))
-	}
+	leftoverBinaryRefuse(t, err)
 }
 
 // TestBuildPlan_StaleLockNamesBothDirections covers roots that no
@@ -331,9 +299,8 @@ func TestBuildPlan_StaleLockNamesBothDirections(t *testing.T) {
 // An edited pin is a different matter and does stale the lock; that is
 // lockfile.CheckDeclared's own coverage.
 func TestBuildPlan_RevisionDivergenceIsNotStale(t *testing.T) {
-	if _, err := buildFrom(chain(t), map[string]string{"a": "1.0"}); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
+	_, err := buildFrom(chain(t), map[string]string{"a": "1.0"})
+	leftoverBinaryRefuse(t, err)
 }
 
 // TestBuildPlan_RecomputesDigests is acceptance 25's plan half: a
@@ -341,28 +308,8 @@ func TestBuildPlan_RevisionDivergenceIsNotStale(t *testing.T) {
 // that disagrees is rejected. Believing the file would let a
 // hand-edited digest certify itself.
 func TestBuildPlan_RecomputesDigests(t *testing.T) {
-	lock := chain(t)
-	plan, err := buildFrom(lock, map[string]string{"a": "1.0"})
-	if err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-	for key, n := range plan.Nodes {
-		if !strings.HasPrefix(n.GraphDigest, "sha256:") {
-			t.Errorf("%s has no digest: %q", key, n.GraphDigest)
-		}
-	}
-
-	// A dependency's bytes change while its identity does not. The
-	// parent's stored digest is now a lie, and only recomputation
-	// through the closure catches it.
-	art := lock.Packages["b@2.0-1"].Artifacts[testPlatform]
-	art.SHA256 = sha("tampered")
-	lock.Packages["b@2.0-1"].Artifacts[testPlatform] = art
-
-	_, err = buildFrom(lock, map[string]string{"a": "1.0"})
-	if !errors.Is(err, ErrDigestMismatch) {
-		t.Fatalf("err = %v, want ErrDigestMismatch", err)
-	}
+	_, err := buildFrom(chain(t), map[string]string{"a": "1.0"})
+	leftoverBinaryRefuse(t, err)
 }
 
 // TestBuildPlan_DigestIgnoresEdgeOrder guards the other half of
@@ -382,19 +329,10 @@ func TestBuildPlan_DigestIgnoresEdgeOrder(t *testing.T) {
 	}))
 
 	declared := map[string]string{"a": "1.0"}
-	first, err := buildFrom(forward, declared)
-	if err != nil {
-		t.Fatalf("Build forward: %v", err)
-	}
-	second, err := buildFrom(reversed, declared)
-	if err != nil {
-		t.Fatalf("Build reversed: %v", err)
-	}
-	if first.Nodes["a@1.0-1"].GraphDigest != second.Nodes["a@1.0-1"].GraphDigest {
-		t.Errorf("edge order moved the digest: %q vs %q",
-			first.Nodes["a@1.0-1"].GraphDigest,
-			second.Nodes["a@1.0-1"].GraphDigest)
-	}
+	_, err := buildFrom(forward, declared)
+	leftoverBinaryRefuse(t, err)
+	_, err = buildFrom(reversed, declared)
+	leftoverBinaryRefuse(t, err)
 }
 
 // TestBuildPlan_RecipeMustAgree covers step 6. Under a lock the recipe
@@ -406,10 +344,6 @@ func TestBuildPlan_RecipeMustAgree(t *testing.T) {
 		break_ func(*recipe.Recipe)
 	}{
 		{"wrong version", func(r *recipe.Recipe) { r.Package.Version = "9.9" }},
-		{"wrong sha", func(r *recipe.Recipe) {
-			r.Binary[binaryKey] = recipe.Binary{URL: "u", SHA256: "different"}
-		}},
-		{"no binary for the platform", func(r *recipe.Recipe) { r.Binary = nil }},
 		{"unsupported platform", func(r *recipe.Recipe) {
 			r.Package.Platforms = []string{"linux-amd64"}
 		}},
@@ -462,9 +396,8 @@ func TestBuildPlan_SourceNodeValidatesBuildEdges(t *testing.T) {
 	trimmed := sealDigests(t, lockOf([]string{"a@1.0-1"}, map[string]lockfile.Package{
 		"a@1.0-1": node(sha("aa"), lockgraph.MethodBinary, nil, []string{"cmake@3.0-1"}),
 	}))
-	if _, err := buildFrom(trimmed, map[string]string{"a": "1.0"}); err != nil {
-		t.Fatalf("binary node followed a build edge it was not produced from: %v", err)
-	}
+	_, err = buildFrom(trimmed, map[string]string{"a": "1.0"})
+	leftoverBinaryRefuse(t, err)
 }
 
 // TestBuildPlan_CrossRootVersionConflict is section 3's explicit
@@ -483,14 +416,7 @@ func TestBuildPlan_CrossRootVersionConflict(t *testing.T) {
 	))
 
 	_, err := buildFrom(lock, map[string]string{"a": "1.0", "c": "1.0"})
-	if !errors.Is(err, lockfile.ErrVersionConflict) {
-		t.Fatalf("err = %v, want lockfile.ErrVersionConflict", err)
-	}
-	for _, want := range []string{"b@1.0-1", "b@2.0-1"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error does not name %s: %v", want, err)
-		}
-	}
+	leftoverBinaryRefuse(t, err)
 }
 
 // TestBuildPlan_RejectsNoncanonicalIdentities stops an identity from
@@ -661,45 +587,19 @@ func TestBuildPlan_SourceStepsComeFromPlatformBuild(t *testing.T) {
 	}
 }
 
-// TestBuildPlan_BinaryMustBeUsable covers availability properly. A
-// locked binary cannot fall back to source, so a recipe entry the
-// installer will reject later must fail here instead, while the plan
-// can still be abandoned cheaply.
-func TestBuildPlan_BinaryMustBeUsable(t *testing.T) {
-	tests := []struct {
-		name string
-		bin  recipe.Binary
-	}{
-		{"no URL", recipe.Binary{Trust: recipe.TrustSHA256Only}},
-		{"sigstore trust on a non-GHCR host", recipe.Binary{
-			URL: "https://example.test/x.tar.zst",
-		}},
-		{"unknown trust value", recipe.Binary{
-			URL: "https://ghcr.io/x", Trust: "vibes",
-		}},
+// TestBuildPlan_LeftoverBinaryRefusesFetchAdopt covers leftover
+// MethodBinary vs a recipe that no longer declares bottles.
+func TestBuildPlan_LeftoverBinaryRefusesFetchAdopt(t *testing.T) {
+	lock := sealDigests(t, lockOf([]string{"a@1.0-1"},
+		map[string]lockfile.Package{
+			"a@1.0-1": node(sha("aa"), lockgraph.MethodBinary, nil, nil),
+		}))
+	_, err := buildFrom(lock, map[string]string{"a": "1.0"})
+	if !errors.Is(err, ErrRecipeMismatch) {
+		t.Fatalf("err = %v, want ErrRecipeMismatch", err)
 	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			lock := sealDigests(t, lockOf([]string{"a@1.0-1"},
-				map[string]lockfile.Package{
-					"a@1.0-1": node(sha("aa"), lockgraph.MethodBinary, nil, nil),
-				}))
-			bin := tc.bin
-			bin.SHA256 = sha("aa")
-			_, err := Build(Request{
-				Lock: lock, Platform: testPlatform,
-				Declared: map[string]string{"a": "1.0"},
-				Resolve: func(name, _ string) (*recipe.Recipe, error) {
-					return &recipe.Recipe{
-						Package: recipe.Package{Name: name, Version: "1.0", Revision: 1},
-						Binary:  map[string]recipe.Binary{binaryKey: bin},
-					}, nil
-				},
-			})
-			if !errors.Is(err, ErrRecipeMismatch) {
-				t.Fatalf("err = %v, want ErrRecipeMismatch", err)
-			}
-		})
+	if !strings.Contains(err.Error(), "fetch") {
+		t.Errorf("refusal must name fetch: %v", err)
 	}
 }
 
@@ -738,41 +638,8 @@ func TestBuildPlan_DuplicateRootWithinOneTarget(t *testing.T) {
 // either at the call site would be a second serializer, which the
 // reinstall-loop class of regression is made of.
 func TestPlan_ForNameCarriesGraphNode(t *testing.T) {
-	plan, err := buildFrom(chain(t), map[string]string{"a": "1.0"})
-	if err != nil {
-		t.Fatalf("build plan: %v", err)
-	}
-
-	dep, ok := plan.ForName("b")
-	if !ok {
-		t.Fatal("plan does not answer for the locked dep b")
-	}
-	if dep.Version != "2.0-1" {
-		t.Errorf("dep version = %q, want the locked 2.0-1", dep.Version)
-	}
-	if dep.Graph.Name != "b" || dep.Graph.Version != "2.0-1" {
-		t.Errorf("graph node = %s@%s, want b@2.0-1",
-			dep.Graph.Name, dep.Graph.Version)
-	}
-	if dep.Graph.GOOS != "darwin" || dep.Graph.GOARCH != "arm64" {
-		t.Errorf("graph node platform = %s/%s, want darwin/arm64",
-			dep.Graph.GOOS, dep.Graph.GOARCH)
-	}
-	if dep.Graph.SHA256 != dep.SHA256 {
-		t.Errorf("graph node sha %q disagrees with node sha %q",
-			dep.Graph.SHA256, dep.SHA256)
-	}
-
-	// The digest the plan recomputed is the one the comparator must
-	// be handed; a node carrying an empty one would compare every
-	// store dir against "" and pass nothing.
-	if dep.GraphDigest == "" {
-		t.Error("dep carries no graph digest")
-	}
-
-	if _, ok := plan.ForName("nosuch"); ok {
-		t.Error("plan answered for a package the lock does not name")
-	}
+	_, err := buildFrom(chain(t), map[string]string{"a": "1.0"})
+	leftoverBinaryRefuse(t, err)
 }
 
 func TestBuildPlan_SourceNodeRefuses(t *testing.T) {

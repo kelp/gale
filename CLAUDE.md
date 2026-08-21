@@ -173,7 +173,7 @@ commands, including `gale env`, do not register.
 - Prefer static linking for CLI tools to avoid dylib
   path issues — `--disable-shared --enable-all-static`
   for autotools projects like jq.
-- gale-recipes CI pushes binary sections after builds.
+- gale-recipes CI publishes index documents.
   Expect push rejections; `git pull --rebase` first.
 - gosec G306 flags `os.WriteFile` with 0644. Use
   `//nolint:gosec` for world-readable files.

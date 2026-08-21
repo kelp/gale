@@ -436,240 +436,6 @@ func TestFuzzyScoreRanking(t *testing.T) {
 
 // --- Behavior 10: FetchRecipe errors on connection failure ---
 
-func TestFetchRecipeErrorsOnConnectionFailure(t *testing.T) {
-	// Start a server then immediately close it to get an
-	// address that refuses connections.
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {},
-	))
-	addr := srv.URL
-	srv.Close()
-
-	reg := testRegistry(addr)
-	_, err := reg.FetchRecipe(context.Background(), "jq")
-	if err == nil {
-		t.Fatal("expected error for connection failure")
-	}
-}
-
-// --- Behavior 11: FetchRecipe merges .binaries.toml ---
-
-const recipeNoBinaries = `[package]
-name = "jq"
-version = "1.8.1"
-description = "JSON processor"
-license = "MIT"
-homepage = "https://jqlang.github.io/jq"
-
-[source]
-url = "https://example.com/jq-1.8.1.tar.gz"
-sha256 = "abc123"
-`
-
-const binariesToml = `version = "1.8.1"
-
-[darwin-arm64]
-sha256 = "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e"
-
-[linux-amd64]
-sha256 = "a903b0ca428c174e611ad78ee6508fefeab7a8b2eb60e55b554280679b2c07c6"
-`
-
-func TestFetchRecipeMergesBinariesToml(t *testing.T) {
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.toml":          recipeNoBinaries,
-			"/recipes/j/jq.binaries.toml": binariesToml,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 2 {
-		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
-	}
-	b := rec.Binary["darwin-arm64"]
-	if b.SHA256 != "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e" {
-		t.Errorf("SHA256 = %q", b.SHA256)
-	}
-}
-
-const binariesTomlWithDigest = `version = "1.8.1"
-
-[darwin-arm64]
-sha256 = "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e"
-manifest_digest = "sha256:abababababababababababababababababababababababababababababababab"
-
-[linux-amd64]
-sha256 = "a903b0ca428c174e611ad78ee6508fefeab7a8b2eb60e55b554280679b2c07c6"
-manifest_digest = "sha256:cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
-`
-
-func TestFetchRecipeMergesManifestDigest(t *testing.T) {
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.toml":          recipeNoBinaries,
-			"/recipes/j/jq.binaries.toml": binariesTomlWithDigest,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	b := rec.Binary["darwin-arm64"]
-	want := "sha256:abababababababababababababababababababababababababababababababab"
-	if b.ManifestDigest != want {
-		t.Errorf("ManifestDigest = %q, want %q",
-			b.ManifestDigest, want)
-	}
-}
-
-func TestFetchRecipeBinaries404NoError(t *testing.T) {
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.toml": recipeNoBinaries,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 0 {
-		t.Errorf("Binary count = %d, want 0",
-			len(rec.Binary))
-	}
-}
-
-func TestFetchBinariesNetworkErrorLogsWarning(t *testing.T) {
-	// Start a server and close it to cause a connection
-	// error when fetching .binaries.toml.
-	binSrv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {},
-	))
-	brokenAddr := binSrv.URL
-	binSrv.Close()
-
-	// Capture the warning via the warnf hook.
-	var warnings []string
-	reg := &Registry{BaseURL: brokenAddr}
-	reg.warnf = func(format string, args ...any) {
-		warnings = append(warnings,
-			fmt.Sprintf(format, args...))
-	}
-	idx, err := reg.fetchBinaries(context.Background(), "jq")
-	// Should return (nil, nil) for graceful fallback.
-	if err != nil {
-		t.Fatalf("expected nil error, got: %v", err)
-	}
-	if idx != nil {
-		t.Fatal("expected nil index on network error")
-	}
-
-	// A warning must be emitted.
-	if len(warnings) == 0 {
-		t.Fatal("expected a warning for network error, got none")
-	}
-	found := false
-	for _, w := range warnings {
-		if strings.Contains(w, "binaries") {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("warning does not mention binaries: %v",
-			warnings)
-	}
-}
-
-func TestFetchRecipeInlineBinariesSkipsFetch(t *testing.T) {
-	var binariesFetched bool
-
-	inlineRecipe := validTOML + `
-[binary.darwin-arm64]
-url = "https://example.com/jq-darwin"
-sha256 = "inline123"
-`
-	inner := fileHandler(map[string]string{
-		"/recipes/j/jq.toml": inlineRecipe,
-	})
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/recipes/j/jq.binaries.toml" {
-				binariesFetched = true
-			}
-			inner.ServeHTTP(w, r)
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if binariesFetched {
-		t.Error(".binaries.toml fetched despite inline binaries")
-	}
-	if rec.Binary["darwin-arm64"].SHA256 != "inline123" {
-		t.Errorf("expected inline binary SHA256")
-	}
-}
-
-// --- Behavior 12: ghcrBaseFromURL parses owner/repo ---
-
-func TestGhcrBaseFromRawGitHubURL(t *testing.T) {
-	tests := []struct {
-		name string
-		url  string
-		want string
-	}{
-		{
-			"standard",
-			"https://raw.githubusercontent.com/kelp/gale-recipes/main",
-			"kelp/gale-recipes",
-		},
-		{
-			"with refs",
-			"https://raw.githubusercontent.com/org/repo/refs/heads/main",
-			"org/repo",
-		},
-		{
-			"trailing slash",
-			"https://raw.githubusercontent.com/kelp/gale-recipes/main/",
-			"kelp/gale-recipes",
-		},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ghcrBaseFromURL(tt.url)
-			if got != tt.want {
-				t.Errorf("ghcrBaseFromURL(%q) = %q, want %q",
-					tt.url, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestGhcrBaseFromNonGitHubURL(t *testing.T) {
-	got := ghcrBaseFromURL("https://example.com/recipes")
-	if got != defaultGHCRBase {
-		t.Errorf("ghcrBaseFromURL(non-github) = %q, want %q",
-			got, defaultGHCRBase)
-	}
-}
-
-// --- Behavior 13: Search happy path ---
-
 func TestSearchHappyPath(t *testing.T) {
 	index := "jq\tLightweight and flexible command-line JSON processor\n" +
 		"yq\tProcess YAML, JSON, XML, CSV and properties\n" +
@@ -831,91 +597,6 @@ func TestFetchRecipeVersionRecipeFetchFails(t *testing.T) {
 }
 
 // --- Behavior 19: FetchRecipeVersion index 404 ---
-
-func TestFetchRecipeVersionIndex404(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.NotFound(w, r)
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	_, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.0.0")
-	if err == nil {
-		t.Fatal("expected error when .versions returns 404")
-	}
-}
-
-// --- Behavior 20: Stale .binaries.toml version skips merge ---
-
-func TestFetchRecipeBinariesStaleVersion(t *testing.T) {
-	// Recipe is version 1.8.1; binaries.toml says 1.7.0.
-	// MergeBinaries should skip because versions differ.
-	const staleBinaries = `version = "1.7.0"
-
-[darwin-arm64]
-sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
-`
-
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.toml":          recipeNoBinaries,
-			"/recipes/j/jq.binaries.toml": staleBinaries,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 0 {
-		t.Errorf("Binary count = %d, want 0 (stale version "+
-			"should not merge)", len(rec.Binary))
-	}
-}
-
-func TestFetchRecipeBinariesStaleRevision(t *testing.T) {
-	const revisionedRecipe = `[package]
-name = "jq"
-version = "1.8.1"
-revision = 2
-description = "JSON processor"
-license = "MIT"
-homepage = "https://jqlang.github.io/jq"
-
-[source]
-url = "https://example.com/jq-1.8.1.tar.gz"
-sha256 = "abc123"
-`
-	const staleBinaries = `version = "1.8.1"
-
-[darwin-arm64]
-sha256 = "aaaaaaaabbbbbbbbccccccccddddddddeeeeeeeeffffffff0000000011111111"
-`
-
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.toml":          revisionedRecipe,
-			"/recipes/j/jq.binaries.toml": staleBinaries,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 0 {
-		t.Errorf("Binary count = %d, want 0 (bare index "+
-			"should not merge into revisioned recipe)", len(rec.Binary))
-	}
-}
-
-// --- Behavior 21: parseIndex edge cases ---
 
 func TestParseIndex(t *testing.T) {
 	tests := []struct {
@@ -1109,23 +790,6 @@ func TestValidNameAcceptsRealRecipeNames(t *testing.T) {
 	}
 }
 
-func TestValidNameRejectsBadNames(t *testing.T) {
-	bad := []string{
-		"", "..", "jq/x", "jq?x", "JQ", "-jq", ".jq",
-		"jq with space", "é", "jq@1.0", "jq+x",
-	}
-	for _, name := range bad {
-		if err := ValidName(name); err == nil {
-			t.Errorf("ValidName(%q) = nil, want error", name)
-		}
-	}
-}
-
-// --- Behavior 23b: FetchRecipeMetadata skips binaries roundtrip ---
-
-// TestFetchRecipeMetadataSkipsBinariesFetch confirms that a
-// metadata-only fetch (used by `gale info`) makes exactly one
-// HTTP request for the .toml and never probes .binaries.toml.
 func TestFetchRecipeMetadataSkipsBinariesFetch(t *testing.T) {
 	var mu sync.Mutex
 	paths := []string{}
@@ -1473,272 +1137,6 @@ func TestPickLatest(t *testing.T) {
 // the latest .versions entry — never from the mutable main
 // ref. The main-ref files are decoys with the WRONG version;
 // if FetchRecipe touched them the assertion would fail.
-func TestFetchRecipeCommitPinned(t *testing.T) {
-	const commit = "abc1234def5678901234567890abcdef12345678"
-	versionsBody := "1.7.0 0000000000000000000000000000000000000000\n" +
-		"1.8.1 " + commit + "\n"
-
-	// Decoys served at the mutable main ref: an older recipe
-	// and a stale binaries index. Commit-pinning must ignore
-	// these.
-	staleRecipe := strings.Replace(recipeNoBinaries,
-		`version = "1.8.1"`, `version = "1.7.0"`, 1)
-	staleBinaries := strings.Replace(binariesToml,
-		`version = "1.8.1"`, `version = "1.7.0"`, 1)
-
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.versions":                     versionsBody,
-			"/recipes/j/jq.toml":                         staleRecipe,
-			"/recipes/j/jq.binaries.toml":                staleBinaries,
-			"/" + commit + "/recipes/j/jq.toml":          recipeNoBinaries,
-			"/" + commit + "/recipes/j/jq.binaries.toml": binariesToml,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if rec.Package.Version != "1.8.1" {
-		t.Fatalf("Version = %q, want 1.8.1 (read the mutable main ref?)",
-			rec.Package.Version)
-	}
-	if len(rec.Binary) != 2 {
-		t.Fatalf("Binary count = %d, want 2 (binaries not pinned to commit)",
-			len(rec.Binary))
-	}
-}
-
-// TestFetchRecipeFallsBackWhenNoVersions verifies that a
-// recipe without a .versions index still resolves via the
-// legacy two-file main-ref fetch.
-func TestFetchRecipeFallsBackWhenNoVersions(t *testing.T) {
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			// No .versions served -> 404 -> fallback.
-			"/recipes/j/jq.toml":          recipeNoBinaries,
-			"/recipes/j/jq.binaries.toml": binariesToml,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if rec.Package.Version != "1.8.1" {
-		t.Errorf("Version = %q, want 1.8.1", rec.Package.Version)
-	}
-	if len(rec.Binary) != 2 {
-		t.Errorf("Binary count = %d, want 2", len(rec.Binary))
-	}
-}
-
-// TestFetchRecipeVersionMergesBinaries verifies that the
-// pinned-version path now also fetches .binaries.toml at the
-// resolved commit and populates the binary map.
-func TestFetchRecipeVersionMergesBinaries(t *testing.T) {
-	const commit = "abc1234def5678901234567890abcdef12345678"
-	versionsBody := "1.8.1 " + commit + "\n"
-
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.versions":                     versionsBody,
-			"/" + commit + "/recipes/j/jq.toml":          recipeNoBinaries,
-			"/" + commit + "/recipes/j/jq.binaries.toml": binariesToml,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.8.1")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 2 {
-		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
-	}
-}
-
-// recipeRev4 is a revisioned recipe whose Full() is "1.8.1-4".
-const recipeRev4 = `[package]
-name = "jq"
-version = "1.8.1"
-revision = 4
-description = "JSON processor"
-license = "MIT"
-homepage = "https://jqlang.github.io/jq"
-
-[source]
-url = "https://example.com/jq-1.8.1.tar.gz"
-sha256 = "abc123"
-`
-
-// staleBinaries1_8_1 is the index as it exists at the recipe-BUMP
-// commit: version still the bare "1.8.1", before CI re-committed
-// the "1.8.1-4" entry. This is the real-world gale-recipes shape
-// (binaries committed a commit or two after the recipe bump).
-const staleBinaries1_8_1 = `version = "1.8.1"
-
-[darwin-arm64]
-sha256 = "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e"
-`
-
-// tipBinaries1_8_1_4 is the up-to-date index at the ref tip,
-// matching the rev-4 recipe.
-const tipBinaries1_8_1_4 = `version = "1.8.1-4"
-
-[darwin-arm64]
-sha256 = "839a6fb89610eba4e06ba602773406625528ca55c30925cf4bada59d23b80b2e"
-
-[linux-amd64]
-sha256 = "a903b0ca428c174e611ad78ee6508fefeab7a8b2eb60e55b554280679b2c07c6"
-`
-
-// TestFetchRecipeFallsBackToTipBinariesOnPinnedMismatch pins the
-// real gale-recipes failure mode: .versions maps the revisioned
-// version to the recipe-bump commit, where .binaries.toml is still
-// the prior (bare) version. Pinning binaries to that commit would
-// mismatch and silently source-build. The resolver must fall back
-// to the ref-tip binaries (which DO match) rather than regress.
-func TestFetchRecipeFallsBackToTipBinariesOnPinnedMismatch(t *testing.T) {
-	const commit = "abc1234def5678901234567890abcdef12345678"
-	versionsBody := "1.8.1-4 " + commit + "\n"
-
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.versions":                     versionsBody,
-			"/" + commit + "/recipes/j/jq.toml":          recipeRev4,
-			"/" + commit + "/recipes/j/jq.binaries.toml": staleBinaries1_8_1,
-			// ref-tip binaries: up to date, matches rev 4.
-			"/recipes/j/jq.binaries.toml": tipBinaries1_8_1_4,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 2 {
-		t.Fatalf("Binary count = %d, want 2 (should fall back to ref-tip binaries, not source-build)",
-			len(rec.Binary))
-	}
-}
-
-// pinnedCommit is a valid 40-char lowercase hex commit SHA used by
-// the ref-tip-fallback warning tests. parseVersionIndex rejects
-// non-hex commits, so it must be real hex.
-const pinnedCommit = "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"
-
-// TestFetchLatestPinnedRecordsMispinOnRefTipFallback asserts that when
-// the pinned commit has no binary index and the ref-tip .binaries.toml
-// rescues a binary the pinned commit lacked, the registry records the
-// package as mispinned (drainable via TakeMispinned) instead of
-// emitting a per-package warning.
-func TestFetchLatestPinnedRecordsMispinOnRefTipFallback(t *testing.T) {
-	// Drain any state leaked by other tests before we start.
-	TakeMispinned()
-
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.versions":                  "1.8.1 " + pinnedCommit + "\n",
-			"/" + pinnedCommit + "/recipes/j/jq.toml": recipeNoBinaries,
-			// DELIBERATELY no pinned .binaries.toml → 404.
-			// Ref-tip binaries are the fallback source.
-			"/recipes/j/jq.binaries.toml": binariesToml,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	// The rescue must no longer emit a warning.
-	reg.warnf = func(format string, args ...any) {
-		t.Errorf("unexpected warning on ref-tip fallback: %s",
-			fmt.Sprintf(format, args...))
-	}
-
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 2 {
-		t.Fatalf("Binary count = %d, want 2 (ref-tip fallback should rescue binaries)",
-			len(rec.Binary))
-	}
-
-	names := TakeMispinned()
-	if len(names) != 1 || names[0] != "jq" {
-		t.Fatalf("TakeMispinned() = %v, want exactly [jq]", names)
-	}
-}
-
-// TestFetchLatestPinnedNoMispinWhenPinnedHasBinary asserts the happy
-// path records nothing: when the pinned commit already yields a binary,
-// no ref-tip fallback fires and no mispin is recorded.
-func TestFetchLatestPinnedNoMispinWhenPinnedHasBinary(t *testing.T) {
-	TakeMispinned()
-
-	// First, a fetch where the pinned commit lacks a binary and the
-	// ref-tip rescues it: this MUST record a mispin. Establishing that
-	// recording works here means the later empty drain is meaningful
-	// (not just a no-op stub returning nil).
-	mispinSrv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.versions":                  "1.8.1 " + pinnedCommit + "\n",
-			"/" + pinnedCommit + "/recipes/j/jq.toml": recipeNoBinaries,
-			"/recipes/j/jq.binaries.toml":             binariesToml,
-		},
-	))
-	mispinReg := testRegistry(mispinSrv.URL)
-	mispinReg.warnf = func(string, ...any) {}
-	if _, err := mispinReg.FetchRecipe(context.Background(), "jq"); err != nil {
-		mispinSrv.Close()
-		t.Fatalf("setup fetch failed: %v", err)
-	}
-	mispinSrv.Close()
-	if names := TakeMispinned(); len(names) != 1 || names[0] != "jq" {
-		t.Fatalf("setup: TakeMispinned() = %v, want [jq] (recording must work)", names)
-	}
-
-	// Now the happy path: pinned commit already has a binary, so no
-	// fallback fires and nothing new is recorded.
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			"/recipes/j/jq.versions":                           "1.8.1 " + pinnedCommit + "\n",
-			"/" + pinnedCommit + "/recipes/j/jq.toml":          recipeNoBinaries,
-			"/" + pinnedCommit + "/recipes/j/jq.binaries.toml": binariesToml,
-			"/recipes/j/jq.binaries.toml":                      binariesToml,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	reg.warnf = func(format string, args ...any) {
-		t.Errorf("unexpected warning on happy path: %s",
-			fmt.Sprintf(format, args...))
-	}
-
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(rec.Binary) != 2 {
-		t.Fatalf("Binary count = %d, want 2", len(rec.Binary))
-	}
-	if names := TakeMispinned(); len(names) != 0 {
-		t.Errorf("expected no mispins on happy path, got %v", names)
-	}
-}
-
-// TestMispinSummary verifies the one-line summary formatter: empty for
-// no names, and a single line naming the count, each package, and the
-// .versions source for any non-empty set.
 func TestMispinSummary(t *testing.T) {
 	if got := MispinSummary(nil); got != "" {
 		t.Errorf("MispinSummary(nil) = %q, want empty", got)
@@ -1769,66 +1167,6 @@ func TestMispinSummary(t *testing.T) {
 // source-build, a regression vs the old main-tip client. The resolver
 // must fall back to the legacy main-tip recipe (version 1.8.1, with its
 // matching binaries) and RECORD a skew — separate from mispin.
-func TestFetchLatestPinnedSkewFallsBackToTipRecipe(t *testing.T) {
-	// Drain leaked state before we start.
-	TakeSkewed()
-	TakeMispinned()
-
-	const tipCommit = "1111111111111111111111111111111111111111"
-	const newCommit = "2222222222222222222222222222222222222222"
-
-	// recipeNoBinaries is version 1.8.1; build a phantom-latest at
-	// 2.0.0 by substituting the version string.
-	if !strings.Contains(recipeNoBinaries, "1.8.1") {
-		t.Fatalf("recipeNoBinaries no longer contains 1.8.1; adjust test")
-	}
-	recipeV2 := strings.Replace(recipeNoBinaries, "1.8.1", "2.0.0", 1)
-
-	srv := httptest.NewServer(fileHandler(
-		map[string]string{
-			// pickLatest → 2.0.0 → newCommit.
-			"/recipes/j/jq.versions": "1.8.1 " + tipCommit +
-				"\n2.0.0 " + newCommit + "\n",
-			// Phantom-latest recipe at the pinned commit, version 2.0.0.
-			"/" + newCommit + "/recipes/j/jq.toml": recipeV2,
-			// DELIBERATELY no pinned .binaries.toml at newCommit → 404.
-			// Main tip: the shipped recipe + matching binaries (1.8.1).
-			"/recipes/j/jq.toml":          recipeNoBinaries,
-			"/recipes/j/jq.binaries.toml": binariesToml,
-		},
-	))
-	defer srv.Close()
-
-	reg := testRegistry(srv.URL)
-	rec, err := reg.FetchRecipe(context.Background(), "jq")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if rec.Package.Version != "1.8.1" {
-		t.Errorf("Version = %q, want 1.8.1 (should fall back to "+
-			"main-tip shipped version, not phantom 2.0.0)",
-			rec.Package.Version)
-	}
-	if len(rec.Binary) != 2 {
-		t.Errorf("Binary count = %d, want 2 (should get the tip binary)",
-			len(rec.Binary))
-	}
-
-	skewed := TakeSkewed()
-	if len(skewed) != 1 || skewed[0] != "jq" {
-		t.Errorf("TakeSkewed() = %v, want exactly [jq]", skewed)
-	}
-	// This is a skew, not a mispin: the ref-tip binary was a different
-	// version (1.8.1 vs phantom 2.0.0) and never rescued the pin.
-	if mis := TakeMispinned(); len(mis) != 0 {
-		t.Errorf("TakeMispinned() = %v, want empty (skew is not a mispin)",
-			mis)
-	}
-}
-
-// TestSkewSummary verifies the one-line skew summary formatter: empty
-// for no names, and a single line naming the count, each package, and
-// the "no binary" cause for any non-empty set.
 func TestSkewSummary(t *testing.T) {
 	if got := SkewSummary(nil); got != "" {
 		t.Errorf("SkewSummary(nil) = %q, want empty", got)
@@ -1845,5 +1183,58 @@ func TestSkewSummary(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("summary %q missing %q", got, want)
 		}
+	}
+}
+
+const recipeNoBinaries = `[package]
+name = "jq"
+version = "1.8.1"
+description = "JSON processor"
+license = "MIT"
+homepage = "https://jqlang.github.io/jq"
+
+[source]
+url = "https://example.com/jq-1.8.1.tar.gz"
+sha256 = "abc123"
+`
+
+func TestFetchRecipeErrorsOnConnectionFailure(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(http.ResponseWriter, *http.Request) {},
+	))
+	addr := srv.URL
+	srv.Close()
+
+	reg := testRegistry(addr)
+	_, err := reg.FetchRecipe(context.Background(), "jq")
+	if err == nil {
+		t.Fatal("expected error for connection failure")
+	}
+}
+
+func TestValidNameRejectsBadNames(t *testing.T) {
+	bad := []string{
+		"", "..", "jq/x", "jq?x", "JQ", "-jq", ".jq",
+		"jq with space", "é", "jq@1.0", "jq+x",
+	}
+	for _, name := range bad {
+		if err := ValidName(name); err == nil {
+			t.Errorf("ValidName(%q) = nil, want error", name)
+		}
+	}
+}
+
+func TestFetchRecipeVersionIndex404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.NotFound(w, r)
+		},
+	))
+	defer srv.Close()
+
+	reg := testRegistry(srv.URL)
+	_, err := reg.FetchRecipeVersion(context.Background(), "jq", "1.0.0")
+	if err == nil {
+		t.Fatal("expected error when .versions returns 404")
 	}
 }
