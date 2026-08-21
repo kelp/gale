@@ -151,7 +151,7 @@ gale env                  Print PATH and vars for shell
 gale shell                Open shell with project env
 gale run <cmd>            Run command in project env
 gale build <recipe>       Build from source
-gale lint <recipe>        Validate a recipe
+gale lint <file>          Validate a recipe or index file
 gale admit                Record an index artifact from an archive
 gale create-recipe <repo> Generate recipe with AI
 gale audit <pkg>          Rebuild and compare hashes
