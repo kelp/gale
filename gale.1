@@ -443,11 +443,12 @@ Scope flags select which lockfile to read the
 installed hash from.
 .Pp
 .Dl $ gale audit jq
-.It Cm verify Ar pkg Op Fl g | Fl p
-Check the Sigstore attestation for an installed
-package's prebuilt binary.
-Scope flags select which lockfile to read the
-installed version from.
+.It Cm verify Op Ar pkg Op Fl g | Fl p
+Recompute each locked fetch tree digest and
+compare it to the v2 lock.
+Does not talk to GHCR.
+A v1 lock has no tree_digest.
+Scope flags select which lockfile to read.
 .Pp
 .Dl $ gale verify jq
 .It Cm sbom Op Ar pkg Op Fl -json Op Fl g | Fl p | Fl a

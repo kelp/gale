@@ -11,6 +11,13 @@
 
 ### Changed
 
+- **`gale verify` checks tree digests.** It recomputes
+  `DigestTree` on each `pkg/fetch/` directory the v2 lock
+  names and compares it to `tree_digest`. It does not talk
+  to GHCR. A v1 lock, a locked attestation, or a missing
+  fetch tree refuses. The store, lock, and `current` are
+  not written.
+
 - **`gale admit` inspects executable files only.**
   Non-executable objects (GOROOT testdata ELF/Mach-O)
   are payload. A tree still needs one inspectable

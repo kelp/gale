@@ -211,7 +211,7 @@ fine.
       leaves the old lock and generation.
       `cmd/gale` tests. Not wired as the
       installer.
-- [ ] **`gale verify`** = tree digest
+- [x] **`gale verify`** = tree digest
       matches lock (+ locked attestation
       if any). Not GHCR.
 

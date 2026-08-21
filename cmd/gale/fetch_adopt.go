@@ -179,7 +179,7 @@ func runFetchAdopt(ctx context.Context, c *cmdContext, req adoptReq) error {
 		if req.Err == nil {
 			req.Err = os.Stderr
 		}
-		fmt.Fprint(req.Err, "Proceed? [y/N] Other commands will refuse the resulting v2 lock until fetch is the installer.\n")
+		fmt.Fprint(req.Err, "Proceed? [y/N] Install still uses recipes; live Load still rejects the v2 lock.\n")
 		ok, err := parseConfirm(req.In)
 		if err != nil {
 			return err

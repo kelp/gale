@@ -155,7 +155,7 @@ gale lint <file>          Validate a recipe or index file
 gale admit                Record an index artifact from an archive
 gale create-recipe <repo> Generate recipe with AI
 gale audit <pkg>          Rebuild and compare hashes
-gale verify <pkg>         Check binary attestation
+gale verify [pkg]         Check store tree digests against the lock
 gale sbom [pkg]           Software bill of materials
 gale completion <shell>   Generate shell completions
 ```
