@@ -7,6 +7,7 @@
 package inspect
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -18,6 +19,11 @@ import (
 
 	"github.com/kelp/gale/internal/recipe"
 )
+
+// ErrNotBinary reports a file that is not an inspectable
+// binary on this platform. readBinary returns it so
+// ScanInstalled can skip the file.
+var ErrNotBinary = errors.New("not an inspectable binary")
 
 // storeRe matches the trailing .gale/pkg/<name>/<version>
 // in a path. Works for any home prefix.
@@ -34,11 +40,11 @@ type binaryRefs struct {
 	deps []string
 }
 
-// readBinary returns binaryRefs for a single file, or nil
-// if the file isn't an inspectable binary on this platform.
-// Implementations live in binary_{darwin,linux}.go.
-// readBinary returns (nil, nil) for files the scanner
-// should skip silently.
+// readBinary returns binaryRefs for a single file, or
+// (nil, ErrNotBinary) if the file isn't an inspectable
+// binary on this platform. Implementations live in
+// binary_{darwin,linux}.go. ScanInstalled skips that
+// sentinel the same way it skips any readBinary error.
 
 // hasBinaryMagic reports whether path begins with one of the 4-byte
 // words this platform's binary parser accepts (binaryMagics, defined
