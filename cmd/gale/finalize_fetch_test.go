@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -81,7 +82,7 @@ func newFetchPubFixture(t *testing.T) *fetchPubFixture {
 		Packages: map[string]lockfile.V2Package{
 			fetchPubName + "@" + fetchPubVersion: {
 				Artifacts: map[string]lockfile.V2Artifact{
-					"darwin/arm64": {
+					currentPlatform(): {
 						URL:        art.URL,
 						Format:     art.Format,
 						SHA256:     art.SHA256,
@@ -161,12 +162,17 @@ func (fx *fetchPubFixture) destExists() bool {
 
 func mappedJustDigest(t *testing.T) string {
 	t.Helper()
+	return mappedBinDigest(t, fetchPubName, fetchPubBody)
+}
+
+func mappedBinDigest(t *testing.T, name, body string) string {
+	t.Helper()
 	dir := t.TempDir()
-	p := filepath.Join(dir, "bin", fetchPubName)
+	p := filepath.Join(dir, "bin", name)
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p, []byte(fetchPubBody), 0o755); err != nil {
+	if err := os.WriteFile(p, []byte(body), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(p, 0o755); err != nil {
@@ -513,18 +519,23 @@ func TestFinalizeFetchCanceledCtx(t *testing.T) {
 func TestFinalizeFetchStagesAllArtsBeforeRegister(t *testing.T) {
 	fx := newFetchPubFixture(t)
 	seedStore(t, fx.c.StoreRoot, "fd", "10.2.0")
-	second := fx.art
+	fdArt := fx.art
+	fdArt.URL = strings.TrimSuffix(fx.art.URL, fetchPubName) + "fd"
+	fdArt.TreeDigest = mappedBinDigest(t, "fd", fetchPubBody)
+	fdArt.Files = []index.FileEntry{{
+		Src: "fd", Dest: "bin/fd", Mode: 0o755,
+	}}
 	fx.lock.Targets.Default.Roots = []string{
 		fetchPubName + "@" + fetchPubVersion,
 		"fd@10.2.0",
 	}
 	fx.lock.Packages["fd@10.2.0"] = lockfile.V2Package{
 		Artifacts: map[string]lockfile.V2Artifact{
-			"darwin/arm64": {
-				URL:        second.URL,
-				Format:     second.Format,
-				SHA256:     second.SHA256,
-				TreeDigest: second.TreeDigest,
+			currentPlatform(): {
+				URL:        fdArt.URL,
+				Format:     fdArt.Format,
+				SHA256:     fdArt.SHA256,
+				TreeDigest: fdArt.TreeDigest,
 				Method:     "fetch",
 				Files: []lockfile.V2File{{
 					Src: "fd", Dest: "bin/fd", Mode: 0o755,
@@ -538,7 +549,7 @@ func TestFinalizeFetchStagesAllArtsBeforeRegister(t *testing.T) {
 	p := fetchPublish{
 		Arts: []fetchArt{
 			{Name: fetchPubName, Version: fetchPubVersion, Art: fx.art},
-			{Name: "fd", Version: "10.2.0", Art: second},
+			{Name: "fd", Version: "10.2.0", Art: fdArt},
 		},
 		Lock:    fx.lock,
 		ToStore: fx.toStore,
@@ -575,6 +586,12 @@ func TestFinalizeFetchStagesAllArtsBeforeRegister(t *testing.T) {
 	}
 	if currentGen(t, fx.c.GaleDir) <= fx.prev {
 		t.Errorf("current = %d, want > %d", currentGen(t, fx.c.GaleDir), fx.prev)
+	}
+	for _, name := range []string{fetchPubName, "fd"} {
+		bin := filepath.Join(fx.c.GaleDir, "current", "bin", name)
+		if _, err := os.Lstat(bin); err != nil {
+			t.Errorf("current/bin/%s: %v", name, err)
+		}
 	}
 }
 

@@ -359,7 +359,7 @@ func TestLivePathRefusesMixedLock(t *testing.T) {
 		Packages: map[string]lockfile.V2Package{
 			"just@1.56.0": {
 				Artifacts: map[string]lockfile.V2Artifact{
-					"darwin/arm64": {
+					currentPlatform(): {
 						SHA256: lockFetchSHA,
 						Method: "source",
 					},
