@@ -95,9 +95,10 @@ gale gc --dry-run
 ```
 
 Gale keeps a machine-local registry of projects at
-`~/.gale/projects`, filled in automatically whenever a
-project environment is used (direnv activation,
-`gale sync`, project-scoped installs). `gale gc`
+`~/.gale/projects`, filled in when a project generation
+is published (`gale sync`, project-scoped install,
+update, or remove). Read-only commands, including
+`gale env`, do not write it. `gale gc`
 retains every registered project's pins and active
 generation, so a gc run from your home directory or
 one project cannot sweep store versions another

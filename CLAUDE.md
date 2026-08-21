@@ -122,12 +122,11 @@ for `@version` support and `finalizeInstall` for the
 config + generation write. A new build mode delegates to
 `build.BuildLocal` once it has a source directory.
 
-`newCmdContext` also registers the resolved project in
-`internal/projects/` so gc retains every project's
-active generation (gh#115). Call `registerProject`
-directly only when a command re-points its config path
-after context resolution (sync's `projectDir` override)
-or resolves scope without a context (`gale env`).
+`rebuildGenerationWith` registers the project in
+`internal/projects/` immediately before the generation
+rebuild so gc retains every project's active generation
+(gh#115). Registration failure aborts the swap. Read-only
+commands, including `gale env`, do not register.
 
 ## Conventions
 

@@ -1,7 +1,6 @@
 // Package projects maintains the machine-local project
 // registry at <gale home>/projects: one absolute project path
-// per line, appended as a side effect of normal project-scoped
-// use (env activation, sync, install, ...).
+// per line, appended when a project generation is published.
 //
 // The registry exists for gc liveness (gh#115): without it, gc
 // can only see the global generation and the generation of the
@@ -16,7 +15,7 @@
 // let a later gc sweep that project's store versions, the exact
 // bug the registry exists to prevent (gh#115). The lock is held
 // only around the file writes, never across liveness stats:
-// Register runs on command hot paths (direnv's gale env, sync),
+// Register runs on the generation publication path,
 // so it dedup-checks lock-free and locks only to append, and
 // Prune stats liveness before locking — a stat on a dead
 // network mount must not wedge every concurrent gale command.
@@ -73,16 +72,16 @@ func canonical(path string) string {
 }
 
 // Register records projectPath in the registry if absent.
-// Creates the gale home and registry file as needed. Callers
-// on command hot paths should treat failures as best-effort —
-// a read-only gale home must never block install or sync.
+// Creates the gale home and registry file as needed. The
+// publication path treats a failure as fatal: a project
+// generation must not swap current until this returns nil.
 func Register(galeHome, projectPath string) error {
 	path := canonical(projectPath)
-	// Lock-free fast path: already registered. Keeps the common
-	// case (every direnv activation) off projects.lock — no
-	// blocking behind a slow Prune, no lock-file create on a
-	// read-only gale home. Safe vs a concurrent Prune: a project
-	// being registered exists, so Prune keeps its entry.
+	// Lock-free fast path: already registered. Keeps a repeat
+	// publication off projects.lock — no blocking behind a slow
+	// Prune, no lock-file create on a read-only gale home. Safe
+	// vs a concurrent Prune: a project being registered exists,
+	// so Prune keeps its entry.
 	existing, err := List(galeHome)
 	if err != nil {
 		return err
@@ -120,9 +119,12 @@ func Register(galeHome, projectPath string) error {
 	if err != nil {
 		return fmt.Errorf("opening project registry: %w", err)
 	}
-	defer f.Close()
 	if _, err := f.WriteString(path + "\n"); err != nil {
+		_ = f.Close()
 		return fmt.Errorf("appending to project registry: %w", err)
+	}
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing project registry: %w", err)
 	}
 	return nil
 }

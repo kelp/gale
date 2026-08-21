@@ -181,20 +181,16 @@ func finishAndReport(
 	return nil
 }
 
-// retargetSync points ctx at an explicit project directory, then
-// registers the project gc must retain.
+// retargetSync points ctx at an explicit project directory.
 //
 // The explicit directory takes precedence over scope flags; syncIfNeeded
-// supplies it when shell/run are invoked with --project. newCmdContext
-// already registered the auto-detected scope, but that override may
-// have re-pointed the context at a different project, so the effective
-// one is registered too (gh#115). Dedup makes the repeat a no-op.
+// supplies it when shell/run are invoked with --project. Registration
+// happens at publication (rebuildGenerationWith), not here.
 func retargetSync(ctx *cmdContext, projectDir string) {
 	if projectDir != "" {
 		ctx.GalePath = filepath.Join(projectDir, "gale.toml")
 		ctx.GaleDir = filepath.Join(projectDir, ".gale")
 	}
-	registerProject(ctx.GalePath)
 }
 
 // syncPlan builds the locked plan for this run, returning the plan

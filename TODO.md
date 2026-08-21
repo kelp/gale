@@ -131,7 +131,7 @@ Milestone 4 — 193 source recipes still collide.
 - [x] **Doctor: delete `--repair` and
       `--force`.** Deletion only. The
       four-check rewrite is Milestone 4.
-- [ ] **Register before swap.** A project
+- [x] **Register before swap.** A project
       generation does not swap `current`
       until its canonical root is durably
       registered. Registration failure

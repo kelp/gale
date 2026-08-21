@@ -125,11 +125,6 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		return nil, fmt.Errorf("resolving gale dir: %w", err)
 	}
 
-	// Record project-scoped use in the machine-local project
-	// registry so gc can retain this project's generation when
-	// run from anywhere else (gh#115).
-	registerProject(galePath)
-
 	// Set up resolver.
 	storeRoot := defaultStoreRoot()
 	resolver, reg, resolveErr := resolveRecipeResolver(recipesPath)
@@ -229,26 +224,25 @@ func wireFarmGuards(inst *installer.Installer, galeDir, storeRoot string) {
 // registerProject records the project owning configPath in the
 // machine-local registry (~/.gale/projects) so gc can union
 // this project's generation into its retention set (gh#115).
-// No-ops for global configs and dry runs. Best-effort by
-// design: a read-only gale home must never block the command
-// that triggered registration.
-func registerProject(configPath string) {
+//
+// Publication calls this immediately before a generation
+// rebuild. A project current swap must not happen until the
+// canonical root is in the registry; a failure is fatal and
+// leaves current on the previous gen. No-ops (nil) for dry
+// runs, empty paths, and global-layout configs (gale.toml
+// inside galeDir). Read-only commands do not call this.
+func registerProject(configPath, galeDir string) error {
 	if dryRun || configPath == "" {
-		return
+		return nil
+	}
+	if galeDir != "" && configInGaleDir(configPath, galeDir) {
+		return nil // this scope is global layout, not a project
 	}
 	globalDir, err := galeConfigDir()
 	if err != nil {
-		return
+		return err
 	}
-	if configInGaleDir(configPath, globalDir) {
-		return // the global config is not a project
-	}
-	if err := projects.Register(
-		globalDir, filepath.Dir(configPath),
-	); err != nil {
-		fmt.Fprintf(os.Stderr,
-			"warning: registering project for gc: %v\n", err)
-	}
+	return projects.Register(globalDir, filepath.Dir(configPath))
 }
 
 // readGaleConfig reads configPath and parses it as a
@@ -510,6 +504,9 @@ type genRebuild struct {
 }
 
 func rebuildGenerationWith(r genRebuild) error {
+	if err := registerProject(r.configPath, r.galeDir); err != nil {
+		return fmt.Errorf("registering project: %w", err)
+	}
 	pkgs, binOverrides, err := rebuildInputs(r)
 	if err != nil {
 		return err

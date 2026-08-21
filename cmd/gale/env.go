@@ -34,12 +34,6 @@ var envCmd = &cobra.Command{
 			return err
 		}
 
-		// `gale env` is the direnv activation path (`use gale`
-		// runs it), so this is where most projects first enter
-		// the gc retention registry (gh#115). No-op for the
-		// global scope.
-		registerProject(configPath)
-
 		// The activation gate. `gale env` emits a PATH that CI and
 		// scripts consume, which makes it an activation command, and
 		// an activation command that cannot fail is a hole in the

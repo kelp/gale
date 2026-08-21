@@ -20,8 +20,9 @@ func TestRemoveConfigBeforeStore(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: the read-only config dir is still writable")
 	}
-	// Isolate ~/.gale: the command path registers the project
-	// (gh#115) and this test also writes to defaultStoreRoot().
+	// Isolate ~/.gale: a project remove that rebuilds
+	// registers the project (gh#115) and this test also
+	// writes to defaultStoreRoot().
 	t.Setenv("HOME", t.TempDir())
 	projDir := t.TempDir()
 	configPath := filepath.Join(projDir, "gale.toml")
