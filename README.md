@@ -97,30 +97,14 @@ versions. Go 1.24 globally, Go 1.26.1 in the project
 
 ## Multiple Machines
 
-One `gale.toml` can describe more than one machine.
-Top-level `[packages]` applies everywhere; per-host
-sections add or override entries on a specific
-machine:
-
-```toml
-[packages]
-  jq = "1.8.1"
-  ripgrep = "14.1.1"
-
-[hosts.my-mac.packages]
-  fzf = "0.50"
-
-[hosts.my-server.packages]
-  htop = "3.0"
-```
-
-Gale picks the section that matches `hostname` (or
-`GALE_HOST` if set). Sync the same file across
-machines with chezmoi or git — each machine runs
-`gale sync` and gets its own toolset.
+One `gale.toml` is one machine. Leftover
+`[hosts.*]` tables refuse. There is no `--host`
+flag. A second machine uses a second file —
+chezmoi, git, or a copy — then `gale sync` on
+that machine.
 
 ```sh
-gale sync                     # activate this machine's host section
+gale sync                     # activate this file's [packages]
 ssh server gale sync          # remote install — no special command needed
 ```
 

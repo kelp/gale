@@ -93,13 +93,18 @@ func TestParsePackageArgRejectsBadInput(t *testing.T) {
 }
 
 func TestInstallHasHostFlag(t *testing.T) {
-	f := installCmd.Flags().Lookup("host")
-	if f == nil {
-		t.Fatal("install: --host flag not found")
+	if f := installCmd.Flags().Lookup("host"); f != nil {
+		t.Fatal("install: leftover --host flag")
 	}
-	if f.DefValue != "" {
-		t.Errorf("install: --host default = %q, want empty",
-			f.DefValue)
+	installCmd.SetArgs([]string{"--host", "current", "jq"})
+	t.Cleanup(func() { installCmd.SetArgs(nil) })
+	err := installCmd.ParseFlags([]string{"--host", "current", "jq"})
+	if err == nil {
+		t.Fatal("install --host: want unknown-flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") &&
+		!strings.Contains(err.Error(), "unknown shorthand") {
+		t.Fatalf("install --host: %v, want unknown flag", err)
 	}
 }
 

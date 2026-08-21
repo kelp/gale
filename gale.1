@@ -86,14 +86,22 @@ to resolve against a local index checkout.
 .Pp
 .Dl $ gale update
 .Dl $ gale update jq@1.8.1
-.It Cm list Op Fl -scope Ar all|shared|host Op Fl g | Fl p | Fl a
+.It Cm list Op Fl -scope Ar all|shared Op Fl g | Fl p | Fl a
 List packages declared in
 .Pa gale.toml
 with their versions.
 Use
 .Fl -scope
-to filter shared and host overlay entries
+to filter
+.Ic [packages]
+entries
 .Pq default Li all .
+.Li all
+and
+.Li shared
+are the same list.
+.Li host
+is invalid.
 Use
 .Fl g
 to list global packages from inside a project,
@@ -103,7 +111,7 @@ to force project scope, or
 to list both with section headers.
 .Pp
 .Dl $ gale list
-.Dl $ gale list --scope host
+.Dl $ gale list --scope shared
 .Dl $ gale list -a
 .It Cm gc
 Remove unused package versions from the store and
@@ -113,8 +121,9 @@ current generation and at most one previous
 generation, in the global scope and every project
 recorded in
 .Pa ~/.gale/projects .
-A config pin or host overlay that no kept generation
-links is swept.
+A leftover
+.Ic [hosts. Ns Ar * Ns Ic ]
+pin that no kept generation links is swept.
 Abandoned generations above current after a rollback
 are swept with the versions only they linked.
 .Pp
@@ -520,23 +529,17 @@ go = "1.26.1"
 
 [vars]
 GOPATH = "${HOME}/go"
-
-[hosts.my-mac.packages]
-fzf = "0.50"
-
-[hosts.my-server.packages]
-htop = "3.0"
 .Ed
 .Pp
-Top-level
 .Ic [packages]
-applies on every machine.
+is the only write path.
+Leftover
 .Ic [hosts. Ns Ar name Ns Ic .packages]
-sections add machine-specific packages when the local
-hostname matches
-.Ar name .
-Host entries override shared entries when both
-declare the same package.
+tables refuse.
+There is no
+.Fl -host
+flag.
+A second machine uses a second file.
 Leftover
 .Ic [bin]
 and
@@ -544,20 +547,6 @@ and
 keys are ignored.
 Two packages shipping the same basename refuse the
 generation. Remove one package.
-The active host is
-.Ev GALE_HOST
-if set, otherwise the value returned by
-.Xr hostname 1 .
-.Pp
-Use
-.Fl -host Ar name
-on
-.Cm add , install , remove ,
-and
-.Cm lock
-to target a host section.
-.Fl -host current
-expands to the current machine.
 .Sh ENVIRONMENT
 .Bl -tag -width Ds
 .It Ev NO_COLOR
@@ -568,12 +557,12 @@ Follows the
 convention.
 An empty value is ignored.
 .It Ev GALE_HOST
-Overrides the hostname used to select
+Leftover.
+Did select
 .Ic [hosts. Ns Ar X Ns Ic ]
-sections in
-.Pa gale.toml .
-Defaults to
-.Xr hostname 1 .
+sections.
+Those tables now refuse.
+Unset it.
 .El
 .Sh FILES
 .Bl -tag -width "~/.gale/config.toml" -compact

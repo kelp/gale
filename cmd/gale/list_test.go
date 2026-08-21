@@ -51,19 +51,14 @@ func TestListGroupsByScope(t *testing.T) {
 	if !strings.Contains(out, "Shared") {
 		t.Errorf("missing Shared header: %q", out)
 	}
-	if !strings.Contains(out, "Host (h1)") {
-		t.Errorf("missing Host (h1) header: %q", out)
+	if strings.Contains(out, "Host (") {
+		t.Errorf("leftover Host header: %q", out)
 	}
 	if !strings.Contains(out, "jq@1.8") {
 		t.Errorf("missing jq line: %q", out)
 	}
-	if !strings.Contains(out, "actionlint@1.7") {
-		t.Errorf("missing actionlint line: %q", out)
-	}
-	// Shared header should precede host header.
-	if i, j := strings.Index(out, "Shared"),
-		strings.Index(out, "Host"); j >= 0 && i > j {
-		t.Errorf("shared should appear before host: %q", out)
+	if strings.Contains(out, "actionlint") {
+		t.Errorf("list must not present leftover host overlay: %q", out)
 	}
 }
 
@@ -107,11 +102,11 @@ func TestListMarksOverriddenSharedEntry(t *testing.T) {
 	if !strings.Contains(out, "ripgrep@15.0") {
 		t.Errorf("missing shared ripgrep@15.0: %q", out)
 	}
-	if !strings.Contains(out, "overridden") {
-		t.Errorf("missing override marker: %q", out)
+	if strings.Contains(out, "overridden") {
+		t.Errorf("leftover override marker: %q", out)
 	}
-	if !strings.Contains(out, "ripgrep@14.0") {
-		t.Errorf("missing host ripgrep@14.0: %q", out)
+	if strings.Contains(out, "ripgrep@14.0") {
+		t.Errorf("list must not present leftover host overlay: %q", out)
 	}
 }
 
@@ -159,8 +154,8 @@ func TestListScopeSharedHidesHostOverlay(t *testing.T) {
 	}
 }
 
-// TestListScopeHostHidesShared verifies that --scope=host
-// lists only the current host's overlay.
+// TestListScopeHostHidesShared: leftover --scope=host is
+// invalid. Host overlays are refused, not listed.
 func TestListScopeHostHidesShared(t *testing.T) {
 	home := t.TempDir()
 	galeDir := filepath.Join(home, ".gale")
@@ -190,15 +185,12 @@ func TestListScopeHostHidesShared(t *testing.T) {
 	t.Cleanup(func() { listScope = "all" })
 
 	var buf, errBuf bytes.Buffer
-	if err := runList(&buf, &errBuf); err != nil {
-		t.Fatalf("runList: %v", err)
+	err := runList(&buf, &errBuf)
+	if err == nil {
+		t.Fatal("runList --scope host: want invalid-scope error")
 	}
-	out := buf.String()
-	if !strings.Contains(out, "actionlint@1.7") {
-		t.Errorf("missing actionlint line: %q", out)
-	}
-	if strings.Contains(out, "jq") {
-		t.Errorf("jq should be hidden under --scope=host: %q", out)
+	if !strings.Contains(err.Error(), "invalid --scope") {
+		t.Fatalf("runList --scope host: %v, want invalid --scope", err)
 	}
 }
 

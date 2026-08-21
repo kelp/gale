@@ -11,6 +11,15 @@
 
 ### Changed
 
+- **Delete frozen host sections.** Leftover
+  `[hosts.*]` and lock `Targets.Host` still
+  refuse. There is no `--host` flag. `list
+  --scope host` is invalid. Default list
+  prints `[packages]` only. Remedies name
+  moving leftover pins into `[packages]`,
+  then `gale lock`. Multi-machine setups use
+  a second file.
+
 - **python-build-standalone.** Proposal parked.
   Python is not in the catalog. Admission is a
   later PR and needs declared attestations,

@@ -235,7 +235,8 @@ We chose direnv over custom shell hooks because:
 
 `gale sync` lands any missing fetch trees and
 rebuilds the generation. It does not write the
-lock. `--host` overlays refuse. A v1 lock names
+lock. Leftover `[hosts.*]` overlays refuse.
+There is no `--host` flag. A v1 lock names
 `gale fetch-adopt`.
 
 ## Build Environment

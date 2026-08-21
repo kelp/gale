@@ -39,7 +39,6 @@ func resetInstallFlags(t *testing.T) {
 	savedPath := installPath
 	savedGit := installGit
 	savedBuild := installBuild
-	savedHost := installHost
 	savedDryRun := dryRun
 	t.Cleanup(func() {
 		installGlobal = savedGlobal
@@ -49,7 +48,6 @@ func resetInstallFlags(t *testing.T) {
 		installPath = savedPath
 		installGit = savedGit
 		installBuild = savedBuild
-		installHost = savedHost
 		dryRun = savedDryRun
 	})
 	installGlobal = false
@@ -59,7 +57,6 @@ func resetInstallFlags(t *testing.T) {
 	installPath = ""
 	installGit = false
 	installBuild = false
-	installHost = ""
 }
 
 // gh#70: a tap-only (or tap-overridden) package must be

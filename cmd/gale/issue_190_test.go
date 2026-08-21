@@ -211,8 +211,7 @@ func TestRemoveKeepsBinOverrideStillDeclaredElsewhere(t *testing.T) {
 			"[hosts.testhost.packages]\nbeta = \"1.0\"\n")
 
 	removeGlobal = true
-	removeHost = "testhost"
-	t.Cleanup(func() { removeGlobal = false; removeHost = "" })
+	t.Cleanup(func() { removeGlobal = false })
 	if err := removeCmd.RunE(removeCmd, []string{"beta"}); !errors.Is(err, errSwitchHosts) {
 		t.Fatalf("remove --host testhost: %v, want errSwitchHosts", err)
 	}

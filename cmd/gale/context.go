@@ -921,49 +921,16 @@ func warnUnlocked(roots []lockwrite.UnlockedRoot) {
 	}
 }
 
-// lockRemedy is the command that puts one unlocked root back into
-// the section it is declared in.
-//
-// A host target's selector is passed to --host verbatim, quoted:
-// AddPackage writes to [hosts.<selector>.packages] literally, so a
-// wildcard or comma-list selector addresses exactly the section that
-// declares the package, and the quoting is what keeps a `*` from
-// being expanded by the shell before gale ever sees it. Running it on
-// a machine the selector does not match is fine — `install --host`
-// for a foreign host is declaration-only and still locks that target.
-//
-// A selector containing a single quote cannot be spelled that way in
-// one line, so the section is named instead of emitting a command
-// that would not run. Such a selector is outside the documented
-// selector grammar, which gale.toml has always accepted anyway.
+// lockRemedy is the command that puts one unlocked root back
+// into [packages]. A leftover host target names moving the
+// pin into [packages], then gale install. It does not name
+// --host.
 func lockRemedy(r lockwrite.UnlockedRoot) string {
 	if r.Target == "" {
 		return "gale install " + r.Name
 	}
-	flag, ok := hostFlagArg(r.Target)
-	if !ok {
-		return fmt.Sprintf(
-			"gale install %s --host, with the selector spelled as in "+
-				"[hosts.%q.packages]",
-			r.Name, r.Target,
-		)
-	}
-	return fmt.Sprintf("gale install %s %s", r.Name, flag)
-}
-
-// hostFlagArg renders the --host argument addressing one host
-// target's manifest section, quoted so a wildcard or comma-list
-// selector reaches gale instead of being expanded by the shell first.
-//
-// ok is false for a selector containing a single quote, which cannot
-// be spelled this way in one line. Callers name the section instead
-// of emitting a command that would not run. Shared by every remedy
-// that offers a --host command, so the quoting rule has one home.
-func hostFlagArg(target string) (string, bool) {
-	if strings.Contains(target, "'") {
-		return "", false
-	}
-	return "--host '" + target + "'", true
+	return "move leftover [hosts.*] pins into [packages], then gale install " +
+		r.Name
 }
 
 // stripNumericRevision removes a Debian-style "-N" suffix from
@@ -973,25 +940,6 @@ func hostFlagArg(target string) (string, bool) {
 func stripNumericRevision(version string) string {
 	base, _ := store.SplitRevision(version)
 	return base
-}
-
-// resolveHostFlag turns a --host CLI value into a host name.
-// Empty string is returned unchanged; callers keep today's
-// location-preserving upsert, which is not "always write
-// shared". "current" expands to the local hostname, and fails
-// when that cannot be read: an unresolved "current" would
-// flatten to "", which every caller reads as shared [packages]
-// — writing host-scoped packages into the set every machine
-// shares (gh#254).
-//
-// Frozen: no new aliases. Any other string is a selector
-// written verbatim. See the Milestone 2 host-section freeze in
-// docs/dev/proposals/fetch-dont-build.md.
-func resolveHostFlag(v string) (string, error) {
-	if v == "current" {
-		return config.CurrentHost()
-	}
-	return v, nil
 }
 
 // resolveVersionedRecipe fetches a recipe for a specific
@@ -1080,13 +1028,10 @@ func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion string) 
 	if err := rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, nil); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
 	}
-	// --host targeting another machine is declaration-only:
-	// the generation just rebuilt comes from the CURRENT
-	// host's effective package set, so a package declared
-	// for a foreign host is correctly absent from it.
-	// Running the presence check anyway mis-reported every
-	// cross-host install as store corruption — after config,
-	// lock, and store were already mutated (gh#72).
+	// Leftover nonempty ctx.Host is already refused on
+	// live verbs. Keep the foreign-host skip so a leftover
+	// Host field cannot trigger a false store-corruption
+	// check after config, lock, and store mutated (gh#72).
 	if ctx.Host != "" {
 		current, err := config.CurrentHost()
 		if err != nil {

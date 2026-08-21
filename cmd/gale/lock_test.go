@@ -183,7 +183,7 @@ func writeRecipe(t *testing.T, recipesRoot, name, version string) {
 
 // runLockCmd runs the cobra command in projDir with the given flags,
 // resetting the package-level flag vars afterwards.
-func runLockCmd(t *testing.T, projDir, recipesRoot, host string) error {
+func runLockCmd(t *testing.T, projDir, recipesRoot, _ string) error {
 	t.Helper()
 	orig, err := os.Getwd()
 	if err != nil {
@@ -194,8 +194,7 @@ func runLockCmd(t *testing.T, projDir, recipesRoot, host string) error {
 	}
 	t.Cleanup(func() { os.Chdir(orig) }) //nolint:errcheck // best-effort restore
 	lockRecipes = recipesRoot
-	lockHost = host
-	t.Cleanup(func() { lockRecipes, lockHost = "", "" })
+	t.Cleanup(func() { lockRecipes = "" })
 	return lockCmd.RunE(lockCmd, nil)
 }
 
@@ -259,10 +258,12 @@ func TestLockRefusesATargetTheManifestDeclaresNothingFor(t *testing.T) {
 	if !errors.Is(err, errNoDeclarations) {
 		t.Fatalf("runLock error = %v, want errNoDeclarations", err)
 	}
-	for _, want := range []string{"ci-*", "testbox"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name the declared selector %q", err, want)
-		}
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("error %q names leftover --host", err)
+	}
+	if !strings.Contains(err.Error(), "[hosts.*]") ||
+		!strings.Contains(err.Error(), "gale lock") {
+		t.Errorf("error %q must name leftover [hosts.*] and gale lock", err)
 	}
 
 	lp, pathErr := lockfilePath(ctx.GalePath)
@@ -513,10 +514,9 @@ func TestLockNamesARunnableRemedyForEachDeclaredSection(t *testing.T) {
 			name: "only host overlays declare packages",
 			config: "[hosts.\"ci-*\".packages]\n  citool = \"3.0.0\"\n\n" +
 				"[hosts.testbox.packages]\n  hostpkg = \"2.0.0\"\n",
-			target: "",
-			wantIn: []string{
-				"gale lock --host 'ci-*'", "gale lock --host 'testbox'",
-			},
+			target:    "",
+			wantIn:    []string{"[hosts.*]", "gale lock"},
+			wantNotIn: []string{"--host"},
 		},
 	}
 	for _, tc := range cases {

@@ -47,10 +47,8 @@ func TestRemoveHostKeepsStoreWhenOtherHostStillReferences(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(orig) })
 
 	removeGlobal = true
-	removeHost = "testhost"
 	t.Cleanup(func() {
 		removeGlobal = false
-		removeHost = ""
 	})
 
 	if err := removeCmd.RunE(removeCmd, []string{"foo"}); !errors.Is(err, errSwitchHosts) {

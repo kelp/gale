@@ -22,7 +22,6 @@ import (
 var (
 	removeGlobal  bool
 	removeProject bool
-	removeHost    string
 )
 
 var removeCmd = &cobra.Command{
@@ -57,11 +56,6 @@ var removeCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		host, err := resolveHostFlag(removeHost)
-		if err != nil {
-			return err
-		}
-		c.Host = host
 		bg := cmd.Context()
 		if bg == nil {
 			bg = context.Background()
@@ -185,9 +179,6 @@ func init() {
 		false, "Remove from global config")
 	removeCmd.Flags().BoolVarP(&removeProject, "project", "p",
 		false, "Remove from project config")
-	removeCmd.Flags().StringVar(&removeHost, "host", "",
-		"Remove from [hosts.<host>.packages] "+
-			"(use 'current' for this machine)")
 	rootCmd.AddCommand(removeCmd)
 }
 

@@ -406,10 +406,8 @@ func TestRemoveRemedyNamesTheHostSection(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(orig) })
 
 	removeProject = true
-	removeHost = "otherbox"
 	t.Cleanup(func() {
 		removeProject = false
-		removeHost = ""
 	})
 
 	var runErr error
