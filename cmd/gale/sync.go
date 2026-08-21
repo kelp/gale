@@ -516,9 +516,6 @@ func generationDrifted(
 // rebuild survives unlocked, where losing the whole PATH to one broken
 // recipe is the worse trade.
 func finishSync(ctx context.Context, f syncFinish, rebuild func() error) error {
-	if err := ctx.Err(); err != nil {
-		return fmt.Errorf("sync --if-needed: %w", err)
-	}
 	if f.dryRun {
 		return nil
 	}
@@ -531,7 +528,13 @@ func finishSync(ctx context.Context, f syncFinish, rebuild func() error) error {
 		)
 	}
 	if f.installed == 0 && failed == 0 && !f.configChanged {
-		return nil // nothing changed — skip rebuild
+		// Genuine no-op: every package was already up to date.
+		// A deadline that expired after that classification must
+		// not stamp incomplete or withhold the next --if-needed.
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sync --if-needed: %w", err)
 	}
 	rebuildErr := rebuild()
 	if failed > 0 {
@@ -642,12 +645,20 @@ func sortedSyncItems(
 // When the recipe cannot be resolved (e.g. offline) it falls back to
 // the bare resolution and reports stale only for pre-revision installs
 // missing deps metadata, so installed packages still report up to date
-// rather than churn.
-func installedStale(ctx context.Context, cc *cmdContext, w syncItem) bool {
+// rather than churn. A canceled or deadline-exceeded resolve is not
+// offline: it returns the context error so the package is not marked
+// up to date.
+func installedStale(ctx context.Context, cc *cmdContext, w syncItem) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
 	r, err := resolveRecipeForPin(ctx, w.name, w.version, cc.Resolver, cc.Registry)
 	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
 		storeDir, ok := cc.Installer.Store.StorePath(w.name, w.version)
-		return ok && !depsmeta.Has(storeDir)
+		return ok && !depsmeta.Has(storeDir), nil
 	}
 
 	// Prefer the recipe's canonical dir; fall back to the bare
@@ -657,17 +668,23 @@ func installedStale(ctx context.Context, cc *cmdContext, w syncItem) bool {
 		storeDir, ok = cc.Installer.Store.StorePath(w.name, w.version)
 	}
 	if !ok {
-		return false
+		return false, nil
 	}
 	if !depsmeta.Has(storeDir) {
 		// Pre-revision install — soft migration: mark stale.
-		return true
+		return true, nil
 	}
 	stale, staleErr := installer.IsStale(ctx, installer.StaleQuery{
 		StoreDir: storeDir, Recipe: r,
 		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: cc.Resolver,
 	})
-	return staleErr == nil && stale
+	if staleErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		return false, nil
+	}
+	return stale, nil
 }
 
 // runSyncOneLocked is the per-package body under a plan.
@@ -714,8 +731,13 @@ func runSyncOneLocked(ctx context.Context, cc *cmdContext, w syncItem, dryRun bo
 
 func collectSyncOutcomes(ctx context.Context, cc *cmdContext, items []syncItem) []syncOutcome {
 	outcomes := make([]syncOutcome, 0, len(items))
-	for _, w := range items {
+	for i, w := range items {
 		if err := ctx.Err(); err != nil {
+			for _, rest := range items[i:] {
+				outcomes = append(outcomes, syncOutcome{
+					name: rest.name, version: rest.version, installErr: err,
+				})
+			}
 			break
 		}
 		outcomes = append(outcomes, runSyncOne(ctx, cc, w, dryRun))
@@ -732,7 +754,12 @@ func runSyncOne(ctx context.Context, cc *cmdContext, w syncItem, dryRun bool) sy
 
 	// Step a/b: check if already installed and whether stale.
 	if cc.Installer.Store.IsInstalled(w.name, w.version) {
-		outcome.stale = installedStale(ctx, cc, w)
+		stale, err := installedStale(ctx, cc, w)
+		if err != nil {
+			outcome.installErr = err
+			return outcome
+		}
+		outcome.stale = stale
 
 		// Step c: not stale — up to date, no install.
 		if !outcome.stale {

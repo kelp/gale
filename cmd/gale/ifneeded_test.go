@@ -121,6 +121,44 @@ func TestIfNeededTimeoutLeavesCurrent(t *testing.T) {
 	}
 }
 
+// A completed no-op must not become incomplete just because the
+// deadline expired after every package was already up to date.
+// Stamping incomplete would withhold the next --if-needed for
+// syncRetryInterval even though current is already correct.
+func TestFinishSyncNoOpIgnoresExpiredContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rebuilt := false
+	err := finishSync(ctx, syncFinish{}, func() error {
+		rebuilt = true
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("completed no-op: %v, want nil", err)
+	}
+	if rebuilt {
+		t.Error("no-op must not rebuild")
+	}
+}
+
+// Work that still needs a rebuild must not swap current after
+// the deadline. Return the context error so the stamp is incomplete.
+func TestFinishSyncExpiredContextSkipsRebuild(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rebuilt := false
+	err := finishSync(ctx, syncFinish{installed: 1}, func() error {
+		rebuilt = true
+		return nil
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("finishSync: %v, want context.Canceled", err)
+	}
+	if rebuilt {
+		t.Error("timeout must not rebuild (leave current unchanged)")
+	}
+}
+
 func TestSyncIfNeededInheritsBound(t *testing.T) {
 	useCanceledIfNeeded(t)
 	proj, galeDir := ifNeededProject(t, "[packages]\n  jq = \"1.7\"\n")

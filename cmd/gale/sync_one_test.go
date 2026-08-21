@@ -150,6 +150,68 @@ func TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate(t *testing.T) {
 	}
 }
 
+// A canceled parent must not be treated as "not stale". The
+// offline fallback would mark the package up to date and a
+// mid-check --if-needed timeout would then stamp complete.
+func TestRunSyncOneCancelIsNotUpToDate(t *testing.T) {
+	tmp := t.TempDir()
+	storeRoot := filepath.Join(tmp, "store")
+	galeDir := filepath.Join(tmp, ".gale")
+	galePath := filepath.Join(tmp, "gale.toml")
+	storeDir := seedStore(t, storeRoot, "mypkg", "2.0.0-1")
+	writeDepsMetadataFile(t, storeDir)
+	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
+		return minimalRecipe(name, "2.0.0"), nil
+	}
+	cc := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
+	w := syncItem{name: "mypkg", version: "2.0.0"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out := runSyncOne(ctx, cc, w, false)
+
+	if out.upToDate {
+		t.Error("canceled stale check must not mark the package up to date")
+	}
+	if !errors.Is(out.installErr, context.Canceled) {
+		t.Fatalf("installErr = %v, want context.Canceled", out.installErr)
+	}
+}
+
+func TestCollectSyncOutcomesCancelFailsRemaining(t *testing.T) {
+	tmp := t.TempDir()
+	cc := buildFakeCtx(t, filepath.Join(tmp, "gale.toml"),
+		filepath.Join(tmp, ".gale"), filepath.Join(tmp, "store"),
+		func(_ context.Context, name string) (*recipe.Recipe, error) {
+			return minimalRecipe(name, "1.0"), nil
+		})
+	items := []syncItem{
+		{name: "a", version: "1.0"},
+		{name: "b", version: "1.0"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := collectSyncOutcomes(ctx, cc, items)
+	if len(got) != 2 {
+		t.Fatalf("outcomes = %d, want 2 (remaining must be recorded)", len(got))
+	}
+	for _, o := range got {
+		if !errors.Is(o.installErr, context.Canceled) {
+			t.Errorf("%s: installErr = %v, want context.Canceled", o.name, o.installErr)
+		}
+		if o.upToDate {
+			t.Errorf("%s: canceled collect must not mark up to date", o.name)
+		}
+	}
+}
+
 // writeDepsWithFile writes a .gale-deps.toml into storeDir recording
 // the given resolved deps, so IsStale compares them against the
 // current recipe's resolved deps.
