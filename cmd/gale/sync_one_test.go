@@ -1,8 +1,6 @@
 package main
 
-// Tests for runSyncOne — the per-package body of sync,
-// extracted so it can be dispatched concurrently via
-// internal/parallel.Map.
+// Tests for runSyncOne — the per-package body of sync.
 //
 // All runSyncOne tests FAIL against the stub (runSyncOne returns
 // syncOutcome{} unconditionally).
@@ -15,11 +13,14 @@ package main
 // lockwriter_test.go pins that.
 
 import (
+	"bytes"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/depsmeta"
@@ -527,8 +528,7 @@ func TestRunSyncOneDryRunUpToDate(t *testing.T) {
 // with their names.
 //
 // This pins the sorted-emission contract for runSync: per-package
-// output lines are emitted in a deterministic order regardless of
-// which worker finished first.
+// output lines are emitted in name order.
 func TestSortedSyncItemsReturnsAlphabeticalOrder(t *testing.T) {
 	pkgs := map[string]string{"zeta": "1", "alpha": "2", "mu": "3"}
 	items, err := sortedSyncItems(
@@ -553,5 +553,83 @@ func TestSortedSyncItemsReturnsAlphabeticalOrder(t *testing.T) {
 			t.Errorf("items[%s].version = %q, want %q",
 				item.name, item.version, pkgs[item.name])
 		}
+	}
+}
+
+// TestSyncContinuesAfterPackageFailure pins the serial
+// dispatch: a failure on the first sorted package does not
+// hide later packages. runSync collects every outcome and
+// reportSyncOutcomes still lists them.
+func TestSyncContinuesAfterPackageFailure(t *testing.T) {
+	tmp := t.TempDir()
+	storeRoot := filepath.Join(tmp, "store")
+	galeDir := filepath.Join(tmp, ".gale")
+	galePath := filepath.Join(tmp, "gale.toml")
+
+	for _, name := range []string{"beta", "gamma"} {
+		dir := seedStore(t, storeRoot, name, "1.0.0-1")
+		writeDepsMetadataFile(t, dir)
+	}
+
+	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var visited []string
+	resolver := func(name string) (*recipe.Recipe, error) {
+		visited = append(visited, name)
+		if name == "alpha" {
+			return nil, errors.New("alpha missing")
+		}
+		return minimalRecipe(name, "1.0.0"), nil
+	}
+
+	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
+	pkgs := map[string]string{
+		"gamma": "1.0.0",
+		"alpha": "1.0.0",
+		"beta":  "1.0.0",
+	}
+	items, err := sortedSyncItems(pkgs, nil)
+	if err != nil {
+		t.Fatalf("sortedSyncItems: %v", err)
+	}
+
+	var outcomes []syncOutcome
+	for _, w := range items {
+		outcomes = append(outcomes, runSyncOne(ctx, w, false))
+	}
+
+	gotNames := make([]string, len(outcomes))
+	for i, o := range outcomes {
+		gotNames[i] = o.name
+	}
+	if !slices.Equal(gotNames, []string{"alpha", "beta", "gamma"}) {
+		t.Fatalf("outcome names = %v, want [alpha beta gamma]", gotNames)
+	}
+	if outcomes[0].resolveErr == nil {
+		t.Fatal("alpha resolveErr = nil, want failure")
+	}
+	if !outcomes[1].upToDate || !outcomes[2].upToDate {
+		t.Fatalf("later packages: beta upToDate=%v gamma upToDate=%v",
+			outcomes[1].upToDate, outcomes[2].upToDate)
+	}
+
+	var buf bytes.Buffer
+	_, failures := reportSyncOutcomes(newOutputForWriter(&buf), outcomes, false)
+	if len(failures) != 1 {
+		t.Fatalf("failures = %d, want 1", len(failures))
+	}
+	text := buf.String()
+	for _, name := range []string{"alpha", "beta", "gamma"} {
+		if !strings.Contains(text, name) {
+			t.Errorf("report missing %s:\n%s", name, text)
+		}
+	}
+	if !slices.Equal(visited, []string{"alpha", "beta", "gamma"}) {
+		t.Errorf("resolver visits = %v, want [alpha beta gamma]", visited)
 	}
 }

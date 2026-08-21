@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -27,7 +28,6 @@ import (
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 	"github.com/kelp/gale/internal/timing"
@@ -3837,75 +3837,41 @@ func TestInstallBinaryEmitsAttestationTimingPhase(t *testing.T) {
 	}
 }
 
-// TestInstallParallelDepClosureBounded proves the per-package
-// dependency closure downloads its dep binaries CONCURRENTLY,
-// bounded by the Installer's Downloads limiter.
-//
-// Today installDepsInner runs the dep loop serially, so the peak
-// number of in-flight binary fetches is 1. This test sets a
-// limiter of 4 and asserts the peak overlap is >= 2 (real
-// concurrency) and <= 4 (the limiter bound). Assertion (a) is the
-// one that fails RED: a serial loop never overlaps, so peak == 1.
-func TestInstallParallelDepClosureBounded(t *testing.T) {
-	platform := fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH)
+type binaryTarPkg struct {
+	name, hash, path string
+	data             []byte
+}
 
-	// Four prebuilt binaries: the target plus three runtime deps.
-	type pkg struct {
-		name string
-		hash string
-		data []byte
-		path string
+func makeBinaryTarPkg(t *testing.T, name string) binaryTarPkg {
+	t.Helper()
+	tarPath := createTestTarZstd(t, "bin/"+name,
+		"#!/bin/sh\necho "+name)
+	data, err := os.ReadFile(tarPath)
+	if err != nil {
+		t.Fatalf("read %s tar: %v", name, err)
 	}
-	mkPkg := func(name string) pkg {
-		tarPath := createTestTarZstd(t, "bin/"+name,
-			"#!/bin/sh\necho "+name)
-		data, err := os.ReadFile(tarPath)
-		if err != nil {
-			t.Fatalf("read %s tar: %v", name, err)
-		}
-		return pkg{
-			name: name,
-			hash: hashFile(t, tarPath),
-			data: data,
-			path: "/" + name + ".tar.zst",
-		}
+	return binaryTarPkg{
+		name: name,
+		hash: hashFile(t, tarPath),
+		data: data,
+		path: "/" + name + ".tar.zst",
 	}
+}
 
-	target := mkPkg("target")
-	depA := mkPkg("depa")
-	depB := mkPkg("depb")
-	depC := mkPkg("depc")
+type trackedDepFetches struct {
+	peak, hits int
+	order      []string
+}
 
-	byPath := map[string][]byte{
-		target.path: target.data,
-		depA.path:   depA.data,
-		depB.path:   depB.data,
-		depC.path:   depC.data,
-	}
-	// The dep tar paths whose concurrency we track. The target's
-	// own fetch happens after its deps, so tracking only the dep
-	// fetches isolates closure parallelism.
-	depPaths := map[string]bool{
-		depA.path: true,
-		depB.path: true,
-		depC.path: true,
-	}
-
-	var (
-		mu       sync.Mutex
-		inFlight int
-		peak     int
-	)
-	track := func(delta int) {
-		mu.Lock()
-		inFlight += delta
-		if inFlight > peak {
-			peak = inFlight
-		}
-		mu.Unlock()
-	}
-	var hits int32
-
+func serveTrackedDepTars(
+	t *testing.T,
+	byPath map[string][]byte,
+	depPaths map[string]bool,
+) (*httptest.Server, *trackedDepFetches) {
+	t.Helper()
+	got := &trackedDepFetches{}
+	var mu sync.Mutex
+	var inFlight int
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
 			data, ok := byPath[r.URL.Path]
@@ -3914,27 +3880,57 @@ func TestInstallParallelDepClosureBounded(t *testing.T) {
 				return
 			}
 			if depPaths[r.URL.Path] {
-				atomic.AddInt32(&hits, 1)
-				track(1)
-				// Artificial delay so concurrent dep fetches
-				// overlap in wall-clock and the peak is observable.
+				name := strings.TrimSuffix(
+					strings.TrimPrefix(r.URL.Path, "/"),
+					".tar.zst",
+				)
+				mu.Lock()
+				got.hits++
+				got.order = append(got.order, name)
+				inFlight++
+				if inFlight > got.peak {
+					got.peak = inFlight
+				}
+				mu.Unlock()
+				// Sleep long enough that a 3-wide Map would
+				// overlap. Serial must still peak at 1.
 				time.Sleep(40 * time.Millisecond)
-				defer track(-1)
+				mu.Lock()
+				inFlight--
+				mu.Unlock()
 			}
 			w.Write(data) //nolint:errcheck
 		},
 	))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv, got
+}
 
+func installSerialRuntimeDeps(
+	t *testing.T, storeRoot string, names []string,
+) *trackedDepFetches {
+	t.Helper()
+	platform := fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH)
+	target := makeBinaryTarPkg(t, "target")
+	byPath := map[string][]byte{target.path: target.data}
+	depPaths := map[string]bool{}
+	byName := map[string]binaryTarPkg{}
+	for _, name := range names {
+		p := makeBinaryTarPkg(t, name)
+		byPath[p.path] = p.data
+		depPaths[p.path] = true
+		byName[name] = p
+	}
+	srv, got := serveTrackedDepTars(t, byPath, depPaths)
 	restore := download.SetHTTPClient(srv.Client())
-	defer restore()
+	t.Cleanup(restore)
 
-	storeRoot := t.TempDir()
-
-	makeRec := func(p pkg) *recipe.Recipe {
+	recipeFor := func(p binaryTarPkg) *recipe.Recipe {
 		return &recipe.Recipe{
 			Package: recipe.Package{Name: p.name, Version: "1.0"},
-			Source:  recipe.Source{URL: "http://unused", SHA256: "unused"},
+			Source: recipe.Source{
+				URL: "http://unused", SHA256: "unused",
+			},
 			Binary: map[string]recipe.Binary{
 				platform: {
 					URL:    srv.URL + p.path,
@@ -3944,57 +3940,89 @@ func TestInstallParallelDepClosureBounded(t *testing.T) {
 			},
 		}
 	}
-
 	inst := &Installer{
-		Store:     store.NewStore(storeRoot),
-		Downloads: parallel.NewLimiter(4),
+		Store: store.NewStore(storeRoot),
 		Resolver: func(name string) (*recipe.Recipe, error) {
-			switch name {
-			case "depa":
-				return makeRec(depA), nil
-			case "depb":
-				return makeRec(depB), nil
-			case "depc":
-				return makeRec(depC), nil
+			p, ok := byName[name]
+			if !ok {
+				return nil, fmt.Errorf("unknown dep: %s", name)
 			}
-			return nil, fmt.Errorf("unknown dep: %s", name)
+			return recipeFor(p), nil
 		},
 	}
-
-	rec := makeRec(target)
-	rec.Dependencies = recipe.Dependencies{
-		Runtime: []string{"depa", "depb", "depc"},
-	}
-
+	rec := recipeFor(target)
+	rec.Dependencies = recipe.Dependencies{Runtime: names}
 	if _, err := inst.Install(rec); err != nil {
 		t.Fatalf("Install: %v", err)
 	}
+	return got
+}
 
-	if got := atomic.LoadInt32(&hits); got != 3 {
-		t.Fatalf("dep fetch count = %d, want 3", got)
+// TestInstallDepsSerial proves the per-package dependency
+// closure downloads dep binaries one at a time, in recipe
+// order.
+func TestInstallDepsSerial(t *testing.T) {
+	storeRoot := t.TempDir()
+	deps := []string{"depa", "depb", "depc"}
+	got := installSerialRuntimeDeps(t, storeRoot, deps)
+
+	if got.hits != 3 {
+		t.Fatalf("dep fetch count = %d, want 3", got.hits)
 	}
-
-	mu.Lock()
-	gotPeak := peak
-	mu.Unlock()
-
-	// (a) Real overlap: a parallel closure runs at least two dep
-	// fetches at once. A serial loop yields peak == 1 — RED.
-	if gotPeak < 2 {
-		t.Errorf("peak concurrent dep downloads = %d, want >= 2; "+
-			"the dep closure is running serially", gotPeak)
+	if got.peak != 1 {
+		t.Errorf("peak concurrent dep downloads = %d, want 1; "+
+			"the dep closure must run serially", got.peak)
 	}
-	// (b) Limiter bound: never more than 4 in flight.
-	if gotPeak > 4 {
-		t.Errorf("peak concurrent dep downloads = %d, want <= 4; "+
-			"limiter not enforced", gotPeak)
+	if !slices.Equal(got.order, deps) {
+		t.Errorf("dep fetch order = %v, want %v", got.order, deps)
 	}
-
-	// (c) Correctness: every dep present in the store.
-	for _, name := range []string{"depa", "depb", "depc"} {
+	for _, name := range deps {
 		bin := filepath.Join(storeRoot, name, "1.0-1", "bin", name)
 		if _, err := os.Stat(bin); err != nil {
 			t.Errorf("dep %s not installed: %v", name, err)
 		}
+	}
+}
+
+// TestInstallDepsStopsAfterFirstError proves a failed dep
+// aborts the closure: later siblings are not resolved.
+func TestInstallDepsStopsAfterFirstError(t *testing.T) {
+	platform := fmt.Sprintf("%s-%s", runtime.GOOS, runtime.GOARCH)
+
+	var resolved []string
+	inst := &Installer{
+		Store: store.NewStore(t.TempDir()),
+		Resolver: func(name string) (*recipe.Recipe, error) {
+			resolved = append(resolved, name)
+			if name == "depa" {
+				return nil, errors.New("depa missing")
+			}
+			return &recipe.Recipe{
+				Package: recipe.Package{Name: name, Version: "1.0"},
+			}, nil
+		},
+	}
+
+	rec := &recipe.Recipe{
+		Package: recipe.Package{Name: "target", Version: "1.0"},
+		Binary: map[string]recipe.Binary{
+			platform: {
+				URL:    "http://unused.invalid/target.tar.zst",
+				SHA256: "deadbeef",
+				Trust:  recipe.TrustSHA256Only,
+			},
+		},
+		Dependencies: recipe.Dependencies{
+			Runtime: []string{"depa", "depb", "depc"},
+		},
+	}
+
+	if _, err := inst.Install(rec); err == nil {
+		t.Fatal("Install: want first-dep error")
+	} else if !strings.Contains(err.Error(), "depa") {
+		t.Fatalf("error = %v, want depa", err)
+	}
+	if !slices.Equal(resolved, []string{"depa"}) {
+		t.Fatalf("resolved = %v, want [depa]", resolved)
 	}
 }

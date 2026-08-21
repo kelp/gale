@@ -11,7 +11,6 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/kelp/gale/internal/attestation"
@@ -23,7 +22,6 @@ import (
 	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/lockplan"
-	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
@@ -190,15 +188,8 @@ type Installer struct {
 	// is always reported because reaching this branch means a
 	// binary was advertised in the recipe and could not be
 	// fetched/verified. Tests inject a buffer to assert on
-	// the message. Because dep installs run in parallel, this
-	// writer may receive concurrent writes; callers injecting a
-	// non-os.Stderr writer must make it concurrency-safe.
+	// the message.
 	BinaryFallbackLog io.Writer
-
-	// Downloads bounds the number of concurrent binary network
-	// fetches across all installs sharing this Installer. A nil
-	// limiter (the zero value) is unbounded.
-	Downloads *parallel.Limiter
 }
 
 // InstallMethod represents how a package was installed.
@@ -273,11 +264,10 @@ func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
 // source is installed nondestructively, and building it is often
 // what produces the provenance the binary target needs.
 //
-// A copy rather than clearing the field in place: dependency
-// installs run concurrently against this instance, so mutating
-// shared state for the duration would be a data race. Every field is
-// a pointer or a value shared on purpose, so the copy behaves
-// identically in every other respect.
+// A copy rather than clearing the field in place: the caller
+// still holds the original installer. Every field is a pointer
+// or a value shared on purpose, so the copy behaves identically
+// in every other respect.
 func (inst *Installer) forDeps() *Installer {
 	if !inst.BinaryOnly {
 		return inst
@@ -1031,7 +1021,6 @@ func (inst *Installer) installBinaryTo(
 	name := r.Package.Name
 	version := r.Package.Version
 	v := inst.Verifier
-	dl := inst.Downloads
 
 	// Enforce the recipe's declared trust policy before
 	// fetching anything. A recipe that ships a non-GHCR
@@ -1088,8 +1077,7 @@ func (inst *Installer) installBinaryTo(
 	// path hashes the subject as a file, so we verify the teed
 	// copy of the downloaded archive (the exact bytes the
 	// attestation covers) and delete it after via defer. Binary
-	// installs run 8-way parallel, so the tempfile must be
-	// collision-free (os.CreateTemp guarantees this).
+	// os.CreateTemp guarantees a unique tempfile.
 	needAttest, archiveOut, err := setupAttestTempfile(bin, v)
 	if err != nil {
 		return err
@@ -1098,14 +1086,7 @@ func (inst *Installer) installBinaryTo(
 		defer os.Remove(archiveOut)
 	}
 
-	// Bound the number of concurrent network fetches. The slot is
-	// held ONLY around the leaf fetch and released before the
-	// attestation/commit steps, so no install ever holds a slot
-	// while waiting on a child dep — that would risk a deadlock.
-	// A nil limiter is unbounded.
 	fetchErr := func() error {
-		dl.Acquire()
-		defer dl.Release()
 		streamDone := timing.Phase("binary-stream " + pkgID)
 		defer streamDone()
 		_, err := download.FetchAndExtractTarZstdWithArchive(context.Background(), download.FetchExtract{
@@ -1488,7 +1469,7 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, err
 	)
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, implicit, seen)
 }
 
 // InstallRuntimeDeps installs only the runtime-tagged
@@ -1504,7 +1485,7 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 	deps.Build = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, nil, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, nil, seen)
 }
 
 // InstallBuildOnlyDeps installs only the build-tagged
@@ -1521,7 +1502,7 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 	deps.Runtime = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
+	return inst.forDeps().installDepsInner(rCopy, implicit, seen)
 }
 
 // ResolveDirectDeps returns the (name, version, revision)
@@ -1636,7 +1617,6 @@ func (inst *Installer) installDepsInner(
 	r *recipe.Recipe,
 	implicit map[string]bool,
 	seen map[string]bool,
-	seenMu *sync.Mutex,
 ) (*build.BuildDeps, error) {
 	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
 	allDeps := append([]string{}, deps.Build...)
@@ -1647,144 +1627,96 @@ func (inst *Installer) installDepsInner(
 	}
 
 	var result build.BuildDeps
-	// seenMu (shared across every recursion level) guards the seen
-	// map for cycle/diamond dedup; resMu guards every write into
-	// this level's result. The dep loop now fans out: each dep
-	// installs in its own goroutine so their leaf network fetches
-	// overlap, bounded by the Installer's Downloads limiter inside
-	// installBinaryTo. No limiter or store-gen lock is held across
-	// the wait on child goroutines, so the nested recursion cannot
-	// deadlock against the fan-out.
-	var resMu sync.Mutex
+	for _, dep := range allDeps {
+		if seen[dep] {
+			continue
+		}
+		seen[dep] = true
 
-	errs := parallel.ForEach(
-		context.Background(), allDeps, len(allDeps),
-		func(_ context.Context, dep string) error {
-			// Claim the dep before installing so two goroutines
-			// never both install the same shared (diamond) dep.
-			seenMu.Lock()
-			if seen[dep] {
-				seenMu.Unlock()
-				return nil
-			}
-			seen[dep] = true
-			seenMu.Unlock()
+		depRecipe, err := inst.resolveDep(dep)
+		if err != nil {
+			return nil, fmt.Errorf("resolve dep %q: %w", dep, err)
+		}
+		if depRecipe == nil {
+			return nil, fmt.Errorf(
+				"no recipe found for dependency %q", dep,
+			)
+		}
 
-			depRecipe, err := inst.resolveDep(dep)
-			if err != nil {
-				return fmt.Errorf("resolve dep %q: %w", dep, err)
-			}
-			if depRecipe == nil {
-				return fmt.Errorf(
-					"no recipe found for dependency %q", dep,
+		if expr, has := deps.Constraints[dep]; has && expr != "" {
+			c, cerr := recipe.ParseConstraint(expr)
+			if cerr != nil {
+				return nil, fmt.Errorf(
+					"dep %q: invalid version constraint %q: %w",
+					dep, expr, cerr,
 				)
 			}
-
-			// C4: enforce any version constraint the parent recipe
-			// declared on this dep. The constraint was parsed and
-			// stored at recipe load time but was previously only
-			// consulted by IsStale — the resolver silently accepted
-			// whatever version the registry said was latest. Now a
-			// constraint mismatch fails the install with a clear
-			// message naming the dep, required constraint, and
-			// resolved version. Bare-string deps have no entry in
-			// Constraints and skip this check, preserving today's
-			// "resolve to latest" behavior.
-			if expr, has := deps.Constraints[dep]; has && expr != "" {
-				c, cerr := recipe.ParseConstraint(expr)
-				if cerr != nil {
-					return fmt.Errorf(
-						"dep %q: invalid version constraint %q: %w",
-						dep, expr, cerr,
-					)
-				}
-				if !c.Satisfies(
-					depRecipe.Package.Version,
-					depRecipe.Package.Revision,
-				) {
-					return fmt.Errorf(
-						"dep %q: resolved version %s does not "+
-							"satisfy constraint %q (declared in %s)",
-						dep, depRecipe.Package.Full(), expr,
-						r.Package.Name,
-					)
-				}
+			if !c.Satisfies(
+				depRecipe.Package.Version,
+				depRecipe.Package.Revision,
+			) {
+				return nil, fmt.Errorf(
+					"dep %q: resolved version %s does not "+
+						"satisfy constraint %q (declared in %s)",
+					dep, depRecipe.Package.Full(), expr,
+					r.Package.Name,
+				)
 			}
+		}
 
-			// Install the dep (will be cached if already present).
-			if _, err := inst.Install(depRecipe); err != nil {
-				return fmt.Errorf("install dep %q: %w", dep, err)
-			}
+		if _, err := inst.Install(depRecipe); err != nil {
+			return nil, fmt.Errorf("install dep %q: %w", dep, err)
+		}
 
-			// Resolve the dep's actual store path. Install wrote
-			// to <name>/<version>-<revision>/, but Store.StorePath
-			// also falls back to a bare <version>/ dir for
-			// pre-revision installs.
-			storeDir, ok := inst.Store.StorePath(
+		storeDir, ok := inst.Store.StorePath(
+			dep, depRecipe.Package.Full(),
+		)
+		if !ok {
+			return nil, fmt.Errorf(
+				"dep %q at %s not in store after install",
 				dep, depRecipe.Package.Full(),
 			)
-			if !ok {
-				return fmt.Errorf(
-					"dep %q at %s not in store after install",
-					dep, depRecipe.Package.Full(),
-				)
-			}
+		}
 
-			binDir := filepath.Join(storeDir, "bin")
-			_, binErr := os.Stat(binDir)
+		binDir := filepath.Join(storeDir, "bin")
+		_, binErr := os.Stat(binDir)
 
-			// Recurse for transitive deps before recording this
-			// dep, so the merged result keeps the dep ahead of its
-			// own transitive closure as the serial loop did. nil
-			// implicit: transitive deps join the explicit BinDirs
-			// group (see installDepsInner doc).
-			//nolint:contextcheck // installDepsInner takes no ctx by design; the fan-out ctx only bounds the leaf fetches
-			transitive, err := inst.installDepsInner(depRecipe, nil, seen, seenMu)
-			if err != nil {
-				return fmt.Errorf("transitive deps of %q: %w",
-					dep, err)
-			}
-
-			resMu.Lock()
-			defer resMu.Unlock()
-			result.StoreDirs = append(result.StoreDirs, storeDir)
-			if result.NamedDirs == nil {
-				result.NamedDirs = make(map[string]string)
-			}
-			result.NamedDirs[dep] = storeDir
-			if binErr == nil {
-				if implicit[dep] {
-					result.SystemBinDirs = append(
-						result.SystemBinDirs, binDir,
-					)
-				} else {
-					result.BinDirs = append(result.BinDirs, binDir)
-				}
-			}
-			result.BinDirs = append(
-				result.BinDirs, transitive.BinDirs...,
-			)
-			result.SystemBinDirs = append(
-				result.SystemBinDirs, transitive.SystemBinDirs...,
-			)
-			result.StoreDirs = append(
-				result.StoreDirs, transitive.StoreDirs...,
-			)
-			for k, v := range transitive.NamedDirs {
-				if _, exists := result.NamedDirs[k]; !exists {
-					result.NamedDirs[k] = v
-				}
-			}
-			return nil
-		},
-	)
-	for _, err := range errs {
+		transitive, err := inst.installDepsInner(depRecipe, nil, seen)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("transitive deps of %q: %w",
+				dep, err)
+		}
+
+		result.StoreDirs = append(result.StoreDirs, storeDir)
+		if result.NamedDirs == nil {
+			result.NamedDirs = make(map[string]string)
+		}
+		result.NamedDirs[dep] = storeDir
+		if binErr == nil {
+			if implicit[dep] {
+				result.SystemBinDirs = append(
+					result.SystemBinDirs, binDir,
+				)
+			} else {
+				result.BinDirs = append(result.BinDirs, binDir)
+			}
+		}
+		result.BinDirs = append(
+			result.BinDirs, transitive.BinDirs...,
+		)
+		result.SystemBinDirs = append(
+			result.SystemBinDirs, transitive.SystemBinDirs...,
+		)
+		result.StoreDirs = append(
+			result.StoreDirs, transitive.StoreDirs...,
+		)
+		for k, v := range transitive.NamedDirs {
+			if _, exists := result.NamedDirs[k]; !exists {
+				result.NamedDirs[k] = v
+			}
 		}
 	}
-	// The fan-out above records deps in completion order; give
-	// the build deterministic inputs (gale-recipes#79).
+	// Give the build deterministic inputs (gale-recipes#79).
 	result.Canonicalize()
 	return &result, nil
 }

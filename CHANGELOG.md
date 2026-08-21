@@ -9,15 +9,21 @@
   advances the related `golang.org/x/{mod,sys,crypto,net,sync,term,tools}`
   transitives.
 
+### Changed
+
+- **Install, sync, outdated, and sbom run
+  serially.** One package and one dependency at a
+  time, in deterministic order. `internal/parallel`
+  is gone. Multi-package operations are slower. The
+  jobs knob already died in the config.toml freeze.
+
 ### Changed (breaking)
 
-- **`config.toml` cannot repoint the registry or
-  change download parallelism.** The index URL is
-  compiled in (`registry.DefaultURL`). Leftover
-  `[registry] url` and `[sync] parallelism` are
-  ignored. `GALE_JOBS` is ignored. The limiter stays
-  at 8 until the serial-installer heading. Retention
-  is still the compiled constant 2. `[build]`,
+- **`config.toml` cannot repoint the registry.** The
+  index URL is compiled in (`registry.DefaultURL`).
+  Leftover `[registry] url` and `[sync] parallelism`
+  are ignored. `GALE_JOBS` is ignored. Retention is
+  still the compiled constant 2. `[build]`,
   `[anthropic]`, and `[[repos]]` stay. `--recipes`
   remains the local-directory escape hatch.
 

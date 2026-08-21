@@ -204,8 +204,8 @@ func resolveScope(global, project bool, cwd string) bool {
 }
 
 func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output) error {
-	// Shallow-copy ctx.Installer so the Downloads limiter is
-	// inherited, then override Resolver when --recipe is set.
+	// Shallow-copy ctx.Installer, then override Resolver when
+	// --recipe is set.
 	inst := *ctx.Installer
 	if recipePath != "" {
 		resolver, err := resolverForRecipe(recipePath)
@@ -281,8 +281,8 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	}
 	r.Package.Version = version
 
-	// Shallow-copy ctx.Installer to inherit the Downloads
-	// limiter, then override Resolver for local recipe resolution.
+	// Shallow-copy ctx.Installer, then override Resolver for
+	// local recipe resolution.
 	inst := *ctx.Installer
 	resolver, err := resolverForRecipe(resolvedRecipe)
 	if err != nil {
@@ -622,8 +622,8 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 		return err
 	}
 
-	// Shallow-copy ctx.Installer to inherit the Downloads
-	// limiter, then override Resolver for local recipe resolution.
+	// Shallow-copy ctx.Installer, then override Resolver for
+	// local recipe resolution.
 	inst := *ctx.Installer
 	resolver, err := resolverForRecipe(recipePath)
 	if err != nil {
