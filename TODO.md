@@ -332,7 +332,7 @@ repo-wide. Re-measure anytime: remove the `issues:` block and run
 
 Mechanical (low-risk, do first):
 
-- [ ] **misspell (1)** — fix the flagged spelling.
+- [x] **misspell (1)** — fix the flagged spelling.
 - [ ] **predeclared (5)** — rename identifiers that shadow builtins.
 - [ ] **forcetypeassert (2)** — add comma-ok to bare type assertions.
 - [ ] **errorlint (2)** — match with `errors.Is`/`errors.As`, wrap

@@ -9,6 +9,13 @@
   advances the related `golang.org/x/{mod,sys,crypto,net,sync,term,tools}`
   transitives.
 
+### Fixed
+
+- **misspell.** Reword the U6 extract test
+  message so `hardlinked` is not flagged
+  as `hardline`. The check is still a
+  hard-link sandbox escape.
+
 ### Changed
 
 - **Linux admission.** Proposal parked.
