@@ -104,6 +104,8 @@ func TestSystemOnly(t *testing.T) {
 		{"linux", "./libc.so.6", false},
 		{"darwin", "/usr/lib/../opt/foo.dylib", false},
 		{"darwin", "usr/lib/libSystem.B.dylib", false},
+		{"darwin", "/System/Volumes/Data/opt/foo.dylib", false},
+		{"darwin", "/System/Library/../Volumes/Data/opt/foo.dylib", false},
 	}
 	for _, tc := range cases {
 		if got := SystemOnly(tc.goos, tc.lib); got != tc.want {

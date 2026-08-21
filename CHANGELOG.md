@@ -16,12 +16,14 @@
   prints an index artifact fragment. It checks arch,
   Darwin codesign, and system-only linkage from
   object headers (not `ldd` or `otool`), including
-  the ELF `PT_INTERP` loader. `DT_RPATH`/`DT_RUNPATH`
+  the ELF `PT_INTERP` loader. Darwin system dylibs
+  must live under `/usr/lib/` or `/System/Library/`
+  (not `/System/Volumes/`). `DT_RPATH`/`DT_RUNPATH`
   entries must clean to a system lib directory;
-  empty path segments are refused.
-  Linux system libraries must be a trusted bare
-  soname or an absolute path that cleans to a
-  system lib directory. It
+  empty path segments are refused. Linux system
+  libraries must be a trusted bare soname or an
+  absolute path that cleans to a system lib
+  directory. It
   refuses symlinks and hardlinks. It does not write
   the store, lock, or `gale.toml`, and it does not
   set `attestation`.
