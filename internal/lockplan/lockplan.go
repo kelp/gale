@@ -296,15 +296,7 @@ func validateRecipe(n Node, r *recipe.Recipe, platform string) error {
 			ErrRecipeMismatch, n.Name, platform,
 		)
 	}
-	if err := validateMethod(n, r, goos, goarch); err != nil {
-		return err
-	}
-	return validateEdges(n, r, goos, goarch)
-}
-
-// validateMethod refuses leftover bottle and source locks.
-// Live install is fetch / fetch-adopt.
-func validateMethod(n Node, _ *recipe.Recipe, _, _ string) error {
+	// Leftover bottle and source locks refuse. Live install is fetch.
 	return fmt.Errorf(
 		"%w: %s is locked to leftover %s; use gale fetch or gale fetch-adopt",
 		ErrRecipeMismatch, n.Name, n.Method,

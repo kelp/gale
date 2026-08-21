@@ -300,20 +300,8 @@ func (inst *Installer) installLocked(ctx context.Context, r *recipe.Recipe, forc
 	if cached != nil {
 		return cached, nil
 	}
-	if dest.staged {
-		defer os.RemoveAll(dest.storeDir)
-	}
-	if err := inst.populateStore(dest); err != nil {
-		return nil, err
-	}
-	return nil, fmt.Errorf("leftover install succeeded")
-}
-
-// populateStore used to pour a GHCR bottle or compile from
-// source. Both leftovers refuse. Live install is fetch.
-func (inst *Installer) populateStore(dest installDest) error {
 	os.RemoveAll(dest.storeDir)
-	return fmt.Errorf(
+	return nil, fmt.Errorf(
 		"%s: %w",
 		lockgraph.Key(dest.name, dest.storeVersion), ErrBottleGone,
 	)
