@@ -19,7 +19,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 )
 
@@ -131,9 +130,7 @@ var extractCases = []struct {
 }{
 	{"tar.gz", ".tar.gz", createTarGz, ExtractTarGz},
 	{"zip", ".zip", createZip, ExtractZip},
-	{"tar.zst", ".tar.zst", createTarZstd, ExtractTarZstd},
 	{"tar.xz", ".tar.xz", createTarXz, ExtractTarXz},
-	{"tar.bz2", ".tar.bz2", createTarBz2, ExtractTarBz2},
 }
 
 // --- Behaviors 3/4/7/9/10: extract across all formats ---
@@ -749,30 +746,6 @@ func createZip(t *testing.T, archivePath string, files map[string]string) {
 	}
 }
 
-// createTarZstd builds a tar.zst archive at archivePath containing
-// the given files map (relative path -> content). Directory
-// entries are emitted for any intermediate paths.
-func createTarZstd(t *testing.T, archivePath string, files map[string]string) {
-	t.Helper()
-
-	f, err := os.Create(archivePath)
-	if err != nil {
-		t.Fatalf("failed to create archive file: %v", err)
-	}
-	defer f.Close()
-
-	zw, err := zstd.NewWriter(f)
-	if err != nil {
-		t.Fatalf("failed to create zstd writer: %v", err)
-	}
-	defer zw.Close()
-
-	tw := tar.NewWriter(zw)
-	defer tw.Close()
-
-	writeTarEntries(t, tw, files)
-}
-
 // createTarXz builds a tar.xz archive at archivePath containing
 // the given files map (relative path -> content). Directory
 // entries are emitted for any intermediate paths.
@@ -876,312 +849,6 @@ func writeTarEntries(t *testing.T, tw *tar.Writer, files map[string]string) {
 	}
 }
 
-// --- Behavior 8: Create tar.zst ---
-
-func TestCreateTarZstdRoundTrip(t *testing.T) {
-	sourceDir := t.TempDir()
-
-	// Populate source directory with files.
-	files := map[string]string{
-		"root.txt":        "root content",
-		"sub/nested.txt":  "nested content",
-		"sub/another.txt": "another file",
-	}
-	for name, content := range files {
-		p := filepath.Join(sourceDir, name)
-		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
-			t.Fatalf("failed to create dir: %v", err)
-		}
-		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
-			t.Fatalf("failed to write file: %v", err)
-		}
-	}
-
-	archivePath := filepath.Join(t.TempDir(), "output.tar.zst")
-	if err := CreateTarZstd(sourceDir, archivePath); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Verify the archive exists.
-	info, err := os.Stat(archivePath)
-	if err != nil {
-		t.Fatalf("archive not created: %v", err)
-	}
-	if info.Size() == 0 {
-		t.Fatal("archive is empty")
-	}
-
-	// Extract and verify round-trip.
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarZstd(context.Background(), archivePath, destDir); err != nil {
-		t.Fatalf("failed to extract: %v", err)
-	}
-
-	for name, want := range files {
-		got, err := os.ReadFile(filepath.Join(destDir, name))
-		if err != nil {
-			t.Errorf("missing file %q: %v", name, err)
-			continue
-		}
-		if string(got) != want {
-			t.Errorf("file %q contents = %q, want %q",
-				name, string(got), want)
-		}
-	}
-}
-
-func TestCreateTarZstdNoWrapperDirectory(t *testing.T) {
-	sourceDir := t.TempDir()
-
-	if err := os.WriteFile(
-		filepath.Join(sourceDir, "file.txt"),
-		[]byte("data"), 0o644,
-	); err != nil {
-		t.Fatalf("failed to write file: %v", err)
-	}
-
-	archivePath := filepath.Join(t.TempDir(), "output.tar.zst")
-	if err := CreateTarZstd(sourceDir, archivePath); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Open the archive and check that entries are relative,
-	// with no wrapper directory matching the source dir name.
-	f, err := os.Open(archivePath)
-	if err != nil {
-		t.Fatalf("failed to open archive: %v", err)
-	}
-	defer f.Close()
-
-	zr, err := zstd.NewReader(f)
-	if err != nil {
-		t.Fatalf("failed to create zstd reader: %v", err)
-	}
-	defer zr.Close()
-
-	tr := tar.NewReader(zr)
-	sourceName := filepath.Base(sourceDir)
-	for {
-		hdr, err := tr.Next()
-		if err != nil {
-			break
-		}
-		if strings.HasPrefix(hdr.Name, sourceName+"/") {
-			t.Errorf("entry %q has wrapper directory %q",
-				hdr.Name, sourceName)
-		}
-		if strings.HasPrefix(hdr.Name, "/") {
-			t.Errorf("entry %q is absolute, want relative",
-				hdr.Name)
-		}
-	}
-}
-
-// --- Behavior: CreateTarZstd does not leak file descriptors ---
-
-func TestCreateTarZstdClosesFilesEagerly(t *testing.T) {
-	sourceDir := t.TempDir()
-
-	// Create many files. Without eager closing, file
-	// descriptors accumulate in the Walk callback's
-	// deferred closures until the outer function returns,
-	// which can exhaust the fd limit on systems with
-	// low soft limits.
-	const fileCount = 500
-	for i := 0; i < fileCount; i++ {
-		name := fmt.Sprintf("file_%04d.txt", i)
-		path := filepath.Join(sourceDir, name)
-		if err := os.WriteFile(
-			path, []byte("data"), 0o644,
-		); err != nil {
-			t.Fatalf("write file %d: %v", i, err)
-		}
-	}
-
-	archivePath := filepath.Join(t.TempDir(), "many.tar.zst")
-	if err := CreateTarZstd(sourceDir, archivePath); err != nil {
-		t.Fatalf("CreateTarZstd with %d files: %v",
-			fileCount, err)
-	}
-
-	// Verify round-trip: extract and check file count.
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("create dest dir: %v", err)
-	}
-	if err := ExtractTarZstd(context.Background(), archivePath, destDir); err != nil {
-		t.Fatalf("extract: %v", err)
-	}
-
-	entries, err := os.ReadDir(destDir)
-	if err != nil {
-		t.Fatalf("read dir: %v", err)
-	}
-	if len(entries) != fileCount {
-		t.Errorf("extracted %d files, want %d",
-			len(entries), fileCount)
-	}
-}
-
-// --- Security: tar.zst path traversal rejection ---
-
-func TestExtractTarZstdRejectsPathTraversal(t *testing.T) {
-	archive := filepath.Join(t.TempDir(), "evil.tar.zst")
-	destDir := t.TempDir()
-
-	// Build a tar.zst with a path-traversal entry.
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("failed to create archive: %v", err)
-	}
-	zw, err := zstd.NewWriter(f)
-	if err != nil {
-		t.Fatalf("failed to create zstd writer: %v", err)
-	}
-	tw := tar.NewWriter(zw)
-	hdr := &tar.Header{
-		Name: "../escape.txt",
-		Mode: 0o644,
-		Size: 5,
-	}
-	if err := tw.WriteHeader(hdr); err != nil {
-		t.Fatalf("failed to write header: %v", err)
-	}
-	if _, err := tw.Write([]byte("owned")); err != nil {
-		t.Fatalf("failed to write content: %v", err)
-	}
-	tw.Close()
-	zw.Close()
-	f.Close()
-
-	err = ExtractTarZstd(context.Background(), archive, destDir)
-	if err == nil {
-		t.Fatal("expected error for path traversal")
-	}
-}
-
-// --- Create tar.zst preserves executability ---
-
-func TestCreateTarZstdPreservesExecutability(t *testing.T) {
-	sourceDir := t.TempDir()
-
-	// Create a regular file and an executable file.
-	if err := os.WriteFile(
-		filepath.Join(sourceDir, "normal.txt"),
-		[]byte("data"), 0o644,
-	); err != nil {
-		t.Fatalf("failed to write file: %v", err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(sourceDir, "run.sh"),
-		[]byte("#!/bin/sh"), 0o755,
-	); err != nil {
-		t.Fatalf("failed to write file: %v", err)
-	}
-
-	archivePath := filepath.Join(t.TempDir(), "output.tar.zst")
-	if err := CreateTarZstd(sourceDir, archivePath); err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-
-	// Extract and verify permissions are preserved.
-	destDir := filepath.Join(t.TempDir(), "extracted")
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		t.Fatalf("failed to create dest dir: %v", err)
-	}
-
-	if err := ExtractTarZstd(context.Background(), archivePath, destDir); err != nil {
-		t.Fatalf("failed to extract: %v", err)
-	}
-
-	info, err := os.Stat(filepath.Join(destDir, "run.sh"))
-	if err != nil {
-		t.Fatalf("failed to stat run.sh: %v", err)
-	}
-	if info.Mode()&0o111 == 0 {
-		t.Errorf("run.sh should be executable, got mode %v",
-			info.Mode())
-	}
-
-	info, err = os.Stat(filepath.Join(destDir, "normal.txt"))
-	if err != nil {
-		t.Fatalf("failed to stat normal.txt: %v", err)
-	}
-	if info.Mode()&0o111 != 0 {
-		t.Errorf("normal.txt should not be executable, got mode %v",
-			info.Mode())
-	}
-}
-
-func TestCreateTarZstdDeterministic(t *testing.T) {
-	sourceDir := t.TempDir()
-
-	// Create files.
-	binDir := filepath.Join(sourceDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(binDir, "tool"),
-		[]byte("#!/bin/sh\necho hello"), 0o755,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a symlink with an absolute path within the tree.
-	// This simulates what make install does with ln -s -f.
-	absTarget := filepath.Join(binDir, "tool")
-	if err := os.Symlink(absTarget,
-		filepath.Join(binDir, "tool-alias")); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create two archives and compare hashes.
-	archive1 := filepath.Join(t.TempDir(), "a1.tar.zst")
-	archive2 := filepath.Join(t.TempDir(), "a2.tar.zst")
-
-	if err := CreateTarZstd(sourceDir, archive1); err != nil {
-		t.Fatalf("first archive: %v", err)
-	}
-	if err := CreateTarZstd(sourceDir, archive2); err != nil {
-		t.Fatalf("second archive: %v", err)
-	}
-
-	hash1, err := HashFile(context.Background(), archive1)
-	if err != nil {
-		t.Fatal(err)
-	}
-	hash2, err := HashFile(context.Background(), archive2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if hash1 != hash2 {
-		t.Errorf("archives differ: %s vs %s", hash1, hash2)
-	}
-
-	// Extract and verify symlink target is relative.
-	destDir := t.TempDir()
-	if err := ExtractTarZstd(context.Background(), archive1, destDir); err != nil {
-		t.Fatalf("extract: %v", err)
-	}
-
-	link := filepath.Join(destDir, "bin", "tool-alias")
-	target, err := os.Readlink(link)
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
-	}
-	if filepath.IsAbs(target) {
-		t.Errorf(
-			"symlink target should be relative, got %q",
-			target,
-		)
-	}
-}
-
 // --- Behavior 11: ExtractSource dispatcher ---
 
 func TestExtractSourceDetectsFormat(t *testing.T) {
@@ -1195,8 +862,6 @@ func TestExtractSourceDetectsFormat(t *testing.T) {
 		{"tar.gz", ".tar.gz", createTarGz},
 		{"tgz", ".tgz", createTarGz},
 		{"tar.xz", ".tar.xz", createTarXz},
-		{"tar.bz2", ".tar.bz2", createTarBz2},
-		{"tar.zst", ".tar.zst", createTarZstd},
 	}
 
 	for _, tt := range tests {
@@ -1224,6 +889,24 @@ func TestExtractSourceDetectsFormat(t *testing.T) {
 			if string(got) != "content" {
 				t.Errorf("contents = %q, want %q",
 					string(got), "content")
+			}
+		})
+	}
+}
+
+func TestExtractSourceRejectsZstdAndBz2(t *testing.T) {
+	for _, ext := range []string{".tar.zst", ".tar.bz2"} {
+		t.Run(ext, func(t *testing.T) {
+			archivePath := filepath.Join(t.TempDir(), "archive"+ext)
+			if err := os.WriteFile(archivePath, []byte("not-an-archive"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			err := ExtractSource(context.Background(), archivePath, t.TempDir())
+			if err == nil {
+				t.Fatal("ExtractSource accepted a deleted bottle format")
+			}
+			if !strings.Contains(err.Error(), "unsupported") {
+				t.Errorf("error = %q, want unsupported", err)
 			}
 		})
 	}

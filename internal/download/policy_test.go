@@ -60,10 +60,10 @@ func TestFetchWithAuthRejectsURLCredentials(t *testing.T) {
 }
 
 func TestFetchAndExtractRejectsURLCredentials(t *testing.T) {
-	_, err := FetchAndExtractTarZstd(context.Background(),
-		"https://user@example.com/x", t.TempDir(), "00", "")
+	err := Fetch(context.Background(),
+		"https://user@example.com/x", filepath.Join(t.TempDir(), "out"))
 	if err == nil {
-		t.Fatal("FetchAndExtractTarZstd: want credentials error")
+		t.Fatal("Fetch: want credentials error")
 	}
 }
 
@@ -173,13 +173,25 @@ func TestFetchWithAuthHonorsCancel(t *testing.T) {
 	}
 }
 
+func destIsEmpty(t *testing.T, destDir string) bool {
+	t.Helper()
+	entries, err := os.ReadDir(destDir)
+	if os.IsNotExist(err) {
+		return true
+	}
+	if err != nil {
+		t.Fatalf("ReadDir(%s): %v", destDir, err)
+	}
+	return len(entries) == 0
+}
+
 func TestFetchAndExtractHonorsCancel(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	dest := filepath.Join(t.TempDir(), "dest")
-	_, err := FetchAndExtractTarZstd(ctx, "http://127.0.0.1:1/x", dest, "00", "")
+	err := Fetch(ctx, "http://127.0.0.1:1/x", dest)
 	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("FetchAndExtract canceled: %v, want context.Canceled", err)
+		t.Fatalf("Fetch canceled: %v, want context.Canceled", err)
 	}
 	if !destIsEmpty(t, dest) {
 		t.Error("destDir should be empty after cancel")
@@ -323,10 +335,10 @@ func TestFetchAndExtractWithTokenRefusesHTTPSToHTTPRedirect(t *testing.T) {
 	restore := SetHTTPClient(primary.Client())
 	defer restore()
 
-	_, err := FetchAndExtractTarZstd(context.Background(),
-		primary.URL+"/x", t.TempDir(), "00", "secret")
+	err := FetchWithAuth(context.Background(),
+		primary.URL+"/x", filepath.Join(t.TempDir(), "out"), "secret")
 	if !errors.Is(err, httpclient.ErrRedirect) {
-		t.Fatalf("token-set FetchAndExtract https→http: %v, want ErrRedirect", err)
+		t.Fatalf("token-set FetchWithAuth https→http: %v, want ErrRedirect", err)
 	}
 }
 

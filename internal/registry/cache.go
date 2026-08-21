@@ -125,8 +125,7 @@ func defaultCacheDir() (string, error) {
 //     the cache.
 //
 // Non-200/304 responses return an error wrapping the status
-// code; the caller owns HTTP-specific handling like 404-is-not-
-// fatal for the .binaries.toml path (see fetchBinaries).
+// code; the caller owns HTTP-specific handling.
 func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, error) {
 	// No cache configured — plain fetch, unless offline.
 	if r.CacheDir == "" {

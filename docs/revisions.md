@@ -149,15 +149,11 @@ Farm invariants:
   `farm.Repopulate`). `gale sync` rebuilds when the farm
   is missing a dep dylib.
 
-### Pre-farm prebuilts are brittle
+### GHCR bottles are gone
 
-GHCR prebuilts produced before the farm-rpath feature landed
-**do not carry** `~/.gale/lib/` in their dyld search list.
-They rely only on per-version rpaths, so a dep revision bump
-that relocates a dep's store dir orphans them. Rebuilding
-that dependent from a v0.12.0+ recipe embeds the farm rpath
-and future upgrades work. There is no retrofit — only a
-rebuild embeds new rpaths into an existing binary.
+Leftover GHCR prebuilts and sibling `.binaries.toml`
+ledgers are not a live install path. `gale fetch` reads
+the index. Leftover `[binary]` TOML is ignored.
 
 ## Staleness and `.gale-deps.toml`
 
@@ -322,37 +318,12 @@ rebuild pass referenced in that repo's CHANGELOG), you may
 need to target a bare `foo@1.2.3` and let the resolver pick
 the highest revision it can find.
 
-## `.binaries.toml` resolved-closure index
+## Leftover `.binaries.toml`
 
-Alongside the `sha256` for each platform, CI also writes the
-resolved (name, version, revision) closure the prebuilt was
-linked against:
-
-```toml
-version = "2.53.0-2"
-
-[darwin-arm64]
-sha256 = "..."
-deps = [
-  { name = "curl", version = "8.11.0", revision = 1 },
-  { name = "openssl", version = "3.6.1", revision = 2 },
-]
-```
-
-This is informational only at install time — the archive's
-own `.gale-deps.toml` (written by `gale build` and preserved
-through the tarball) remains the authoritative record the
-installer consults for staleness. The registry-level `deps`
-block lets `gale info`, audit tooling, and reviewers
-inspect closures without fetching and extracting the
-archive. Older `.binaries.toml` files (pre-C4) carry no
-`deps` field; gale's parser returns an empty closure in
-that case.
-
-CI extracts `deps` from the archive's `.gale-deps.toml` in
-`gale-recipes/.github/workflows/build.yml` (the "Save
-build metadata" step), then emits the array-of-tables into
-`.binaries.toml` in the "Write .binaries.toml files" step.
+Sibling `<name>.binaries.toml` files are leftover bottle
+ledgers. The registry does not fetch or merge them.
+`gale lint` still skips them. Live metadata is the
+index document.
 
 ## Related reading
 

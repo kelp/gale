@@ -1,36 +1,26 @@
 // Package support holds the integration-test harness:
-// a fake GHCR blob server, a synthetic Sigstore fixture
-// for minting real attestation bundles, a fixture
-// tarball builder, and the testscript commands that
-// glue them into .txtar scripts.
+// a fixture tarball builder and the testscript commands
+// that glue them into .txtar scripts. Live scripts use
+// gale-fixture index / fetch-setup.
 package support
 
 import (
+	"archive/tar"
+	"compress/gzip"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"sync"
-	"testing"
 
-	"github.com/kelp/gale/internal/attestation/sigstoretest"
 	"github.com/kelp/gale/internal/download"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/rogpeppe/go-internal/testscript"
 )
 
-// Payload is a pre-built fixture tarball served by the
-// fake GHCR.
+// Payload is a pre-built fixture tarball.
 type Payload struct {
-	TarballPath string // absolute path to the .tar.zst on disk
+	TarballPath string // absolute path to the .tar.gz on disk
 	SHA256      string // hex sha256 of the tarball
 }
 
@@ -40,8 +30,8 @@ type Payloads struct {
 }
 
 // BuildPayloads walks fixturesRoot/payloads/ and builds
-// a tar.zst archive per subdir. Each archive is named
-// <name>.tar.zst under tmpRoot and is registered in the
+// a tar.gz archive per subdir. Each archive is named
+// <name>.tar.gz under tmpRoot and is registered in the
 // returned Payloads struct. Called once per test run.
 func BuildPayloads(fixturesRoot, tmpRoot string) (*Payloads, error) {
 	payloadsDir := filepath.Join(fixturesRoot, "payloads")
@@ -59,8 +49,8 @@ func BuildPayloads(fixturesRoot, tmpRoot string) (*Payloads, error) {
 		}
 		name := e.Name()
 		src := filepath.Join(payloadsDir, name)
-		dst := filepath.Join(tmpRoot, name+".tar.zst")
-		if err := download.CreateTarZstd(src, dst); err != nil {
+		dst := filepath.Join(tmpRoot, name+".tar.gz")
+		if err := createTarGz(src, dst); err != nil {
 			return nil, fmt.Errorf("build %s: %w", name, err)
 		}
 		sum, err := download.HashFile(context.Background(), dst)
@@ -75,234 +65,50 @@ func BuildPayloads(fixturesRoot, tmpRoot string) (*Payloads, error) {
 	return p, nil
 }
 
-// FakeGHCR serves fixture tarballs over HTTP so install
-// scenarios exercise the real download/extract path
-// without touching real GHCR.
-type FakeGHCR struct {
-	URL      string
-	server   *httptest.Server
-	payloads *Payloads
-
-	mu      sync.Mutex
-	serve   map[string]string // URL path → payload name
-	content map[string][]byte // URL path → raw bytes (for index.tsv etc.)
-}
-
-// StartFakeGHCR launches an httptest server. The server
-// serves every registered payload at the URL declared via
-// Register(path, name). By default every payload is
-// registered under /blobs/<name>/any.
-func StartFakeGHCR(t *testing.T, payloads *Payloads) *FakeGHCR {
-	t.Helper()
-	fg := &FakeGHCR{
-		payloads: payloads,
-		serve:    make(map[string]string),
-		content:  make(map[string][]byte),
-	}
-	fg.server = httptest.NewServer(http.HandlerFunc(fg.handle))
-	fg.URL = fg.server.URL
-	// Default routes:
-	//   /blobs/<name>/1.0-<rev>/<platform>  — prebuilt binary
-	//     archive (served as .tar.zst). Both rev=1 and rev=2
-	//     are wired so revision-bump scenarios don't have to
-	//     re-register.
-	//   /blobs/source/<name>  — source tarball (same .tar.zst
-	//     payload; ExtractSource accepts .tar.zst). Used by
-	//     build-from-source scenarios.
-	for name := range payloads.Map {
-		// Source URLs preserve the .tar.zst extension so
-		// build.sourceExtension picks the right decompressor.
-		fg.Register("/blobs/source/"+name+".tar.zst", name)
-		for _, rev := range []string{"1", "2"} {
-			for _, plat := range []string{
-				"darwin-arm64", "linux-amd64", "linux-arm64",
-			} {
-				fg.Register(
-					fmt.Sprintf("/blobs/%s/1.0-%s/%s", name, rev, plat),
-					name,
-				)
-			}
-		}
-	}
-	t.Cleanup(fg.Close)
-	return fg
-}
-
-func (fg *FakeGHCR) Close() {
-	fg.server.Close()
-}
-
-func (fg *FakeGHCR) Register(urlPath, payloadName string) {
-	fg.mu.Lock()
-	defer fg.mu.Unlock()
-	fg.serve[urlPath] = payloadName
-}
-
-// RegisterContent serves raw bytes at urlPath. Used for
-// non-tarball responses like index.tsv or .versions files.
-func (fg *FakeGHCR) RegisterContent(urlPath string, body []byte) {
-	fg.mu.Lock()
-	defer fg.mu.Unlock()
-	fg.content[urlPath] = body
-}
-
-func (fg *FakeGHCR) handle(w http.ResponseWriter, r *http.Request) {
-	fg.mu.Lock()
-	body, hasBody := fg.content[r.URL.Path]
-	name, ok := fg.serve[r.URL.Path]
-	fg.mu.Unlock()
-	if hasBody {
-		w.Header().Set("Content-Type", "text/plain")
-		_, _ = w.Write(body)
-		return
-	}
-	if !ok {
-		http.NotFound(w, r)
-		return
-	}
-	p := fg.payloads.Map[name]
-	if p == nil {
-		http.Error(w, "payload missing", http.StatusInternalServerError)
-		return
-	}
-	f, err := os.Open(p.TarballPath)
+func createTarGz(srcDir, dst string) error {
+	f, err := os.Create(dst)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return fmt.Errorf("create archive: %w", err)
 	}
 	defer f.Close()
-	w.Header().Set("Content-Type", "application/octet-stream")
-	_, _ = io.Copy(w, f)
-}
-
-// AttestReferrer registers an OCI referrers index, a referrer
-// manifest, and a Sigstore bundle blob for the package's image
-// manifest under the kelp/gale-recipes/<name> repository path. The
-// bundle is a REAL signed sigstoretest bundle: its subject digest
-// equals the returned image manifest digest, and its certificate
-// identity (SAN + SourceRepositoryURI) names identityRepo
-// ("owner/name"). Pass a repo other than the one gale verifies
-// against (kelp/gale-recipes) to mint a bundle that must fail
-// verification on identity mismatch.
-//
-// It returns the manifest digest the caller records in the lockfile
-// (so gale derives the same referrers URL and verifies the same
-// subject) plus the trusted_root.json bytes the bundle chains to,
-// for GALE_SIGSTORE_TRUSTED_ROOT.
-//
-// The OCI bytes are minimal but shaped exactly like what gale parses:
-//   - referrers index: {"manifests":[{digest, artifactType:
-//     "application/vnd.dev.sigstore.bundle.v0.3+json"}]}
-//   - referrer manifest: {"layers":[{digest: <bundle blob digest>}]}
-//   - bundle blob: the signed Sigstore bundle JSON.
-func (fg *FakeGHCR) AttestReferrer(name, identityRepo string) (string, []byte, error) {
-	repoPath := "kelp/gale-recipes/" + name
-	base := "/v2/" + repoPath
-
-	// The image manifest bytes are synthetic: gale only uses the
-	// digest to build the referrers URL and as the attestation
-	// subject, never re-fetching the image manifest on the verify
-	// path. Make them deterministic from the package name.
-	manifestBytes := []byte("image-manifest:" + name)
-	manifestDigest := "sha256:" + hexSHA(manifestBytes)
-
-	bundle, trustedRoot, err := mintBundle(manifestBytes, identityRepo)
-	if err != nil {
-		return "", nil, err
-	}
-	bundleDigest := "sha256:" + hexSHA(bundle)
-	fg.RegisterContent(base+"/blobs/"+bundleDigest, bundle)
-
-	refManifest, err := json.Marshal(map[string]any{
-		"layers": []map[string]string{{"digest": bundleDigest}},
-	})
-	if err != nil {
-		return "", nil, fmt.Errorf("marshal referrer manifest: %w", err)
-	}
-	refDigest := "sha256:" + hexSHA(refManifest)
-	fg.RegisterContent(base+"/manifests/"+refDigest, refManifest)
-
-	index, err := json.Marshal(map[string]any{
-		"manifests": []map[string]string{{
-			"digest":       refDigest,
-			"artifactType": "application/vnd.dev.sigstore.bundle.v0.3+json",
-			"mediaType":    "application/vnd.oci.image.manifest.v1+json",
-		}},
-	})
-	if err != nil {
-		return "", nil, fmt.Errorf("marshal referrers index: %w", err)
-	}
-	fg.RegisterContent(base+"/referrers/"+manifestDigest, index)
-
-	return manifestDigest, trustedRoot, nil
-}
-
-// mintBundle creates a fresh ephemeral Sigstore fixture and signs a
-// bundle over subject whose certificate identity names identityRepo.
-// It returns the bundle JSON plus the fixture's trusted_root.json. A
-// fresh fixture per call keeps parallel testscripts independent —
-// generation is in-memory and takes ~10ms.
-func mintBundle(subject []byte, identityRepo string) (bundleJSON, trustedRoot []byte, err error) {
-	fx, err := sigstoretest.New()
-	if err != nil {
-		return nil, nil, fmt.Errorf("sigstore fixture: %w", err)
-	}
-	trustedRoot, err = fx.TrustedRootJSON()
-	if err != nil {
-		return nil, nil, fmt.Errorf("trusted root json: %w", err)
-	}
-	opts := sigstoretest.GitHubOpts(subject)
-	opts.SourceRepositoryURI = "https://github.com/" + identityRepo
-	opts.SAN = opts.SourceRepositoryURI +
-		"/.github/workflows/build.yml@refs/heads/main"
-	bundleJSON, err = fx.SignedBundle(opts)
-	if err != nil {
-		return nil, nil, fmt.Errorf("mint signed bundle: %w", err)
-	}
-	return bundleJSON, trustedRoot, nil
-}
-
-func hexSHA(b []byte) string {
-	sum := sha256.Sum256(b)
-	return hex.EncodeToString(sum[:])
-}
-
-// setLockManifestDigest rewrites the lockfile so pkg's artifact for
-// this platform carries the given manifest_digest, leaving its other
-// fields untouched.
-//
-// The node is found by name because the script names a package, not
-// an identity: the version the install resolved to is the recipe
-// fixture's business, not the attestation harness's.
-func setLockManifestDigest(lockPath, pkg, manifestDigest string) error {
-	lf, err := lockfile.ReadV1(lockPath)
-	if err != nil {
-		return fmt.Errorf("read lockfile: %w", err)
-	}
-	platform := runtime.GOOS + "/" + runtime.GOARCH
-	for key, node := range lf.Packages {
-		name, _, err := lockfile.ParseIdentity(key)
+	gw := gzip.NewWriter(f)
+	defer gw.Close()
+	tw := tar.NewWriter(gw)
+	defer tw.Close()
+	return filepath.Walk(srcDir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
-			return fmt.Errorf("lockfile %s: %w", lockPath, err)
+			return err
 		}
-		if name != pkg {
-			continue
+		rel, err := filepath.Rel(srcDir, path)
+		if err != nil {
+			return err
 		}
-		artifact, ok := node.Artifacts[platform]
-		if !ok {
-			return fmt.Errorf(
-				"package %q in %s records nothing for %s",
-				pkg, lockPath, platform,
-			)
+		if rel == "." {
+			return nil
 		}
-		artifact.ManifestDigest = manifestDigest
-		node.Artifacts[platform] = artifact
-		if err := lockfile.WriteV1(lockPath, lf); err != nil {
-			return fmt.Errorf("write lockfile: %w", err)
+		hdr, err := tar.FileInfoHeader(info, "")
+		if err != nil {
+			return err
 		}
-		return nil
-	}
-	return fmt.Errorf("package %q not in lockfile %s", pkg, lockPath)
+		hdr.Name = filepath.ToSlash(rel)
+		if err := tw.WriteHeader(hdr); err != nil {
+			return err
+		}
+		if info.IsDir() {
+			return nil
+		}
+		// G122 — srcDir is a fixture tree BuildPayloads just listed.
+		rf, err := os.Open(path) //nolint:gosec
+		if err != nil {
+			return err
+		}
+		_, copyErr := io.Copy(tw, rf)
+		closeErr := rf.Close()
+		if copyErr != nil {
+			return copyErr
+		}
+		return closeErr
+	})
 }
 
 // --- testscript commands ---
@@ -313,21 +119,14 @@ func setLockManifestDigest(lockPath, pkg, manifestDigest string) error {
 //
 //	gale-fixture recipes <dst>
 //	    Copy fixtures/recipes/* to <dst>, expanding
-//	    placeholders (__GHCR_URL__, __<NAME>_PAYLOAD_SHA__,
-//	    etc.) against the current script environment.
+//	    leftover placeholders (__GHCR_URL__,
+//	    __<NAME>_PAYLOAD_SHA__, etc.) against the
+//	    current script environment.
 //
 //	gale-fixture render <template-rel-path> <dst>
 //	    Read a template from $FIXTURES/<template-rel-path>,
 //	    substitute placeholders, write to <dst> (strips
 //	    .tmpl suffix if present).
-//
-//	gale-fixture register-blob <url-path> <payload-name>
-//	    Ask the fake GHCR to serve <payload-name> at
-//	    <url-path>. Overrides the default route.
-//
-//	gale-fixture serve-file <url-path> <src-file>
-//	    Serve the contents of <src-file> at <url-path>
-//	    on the fake GHCR (raw bytes, not a tarball).
 //
 //	gale-fixture index <dst>
 //	    Write a git checkout of index/hello and
@@ -366,28 +165,6 @@ func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 		if err := renderFile(ts, src, dst, payloads); err != nil {
 			ts.Fatalf("gale-fixture render: %v", err)
 		}
-	case "register-blob":
-		if len(args) != 3 {
-			ts.Fatalf("gale-fixture register-blob: needs <url-path> <payload>")
-		}
-		ghcr, _ := ts.Value("ghcr").(*FakeGHCR)
-		if ghcr == nil {
-			ts.Fatalf("no ghcr in env")
-		}
-		ghcr.Register(args[1], args[2])
-	case "serve-file":
-		if len(args) != 3 {
-			ts.Fatalf("gale-fixture serve-file: needs <url-path> <src-file>")
-		}
-		ghcr, _ := ts.Value("ghcr").(*FakeGHCR)
-		if ghcr == nil {
-			ts.Fatalf("no ghcr in env")
-		}
-		body, err := os.ReadFile(ts.MkAbs(args[2])) //nolint:gosec
-		if err != nil {
-			ts.Fatalf("gale-fixture serve-file: %v", err)
-		}
-		ghcr.RegisterContent(args[1], body)
 	case "index":
 		if len(args) != 2 {
 			ts.Fatalf("gale-fixture index: needs <dst>")
@@ -401,49 +178,6 @@ func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 		}
 	default:
 		ts.Fatalf("gale-fixture: unknown subcommand %q", args[0])
-	}
-}
-
-// CmdAttestReferrer is the "gale-attest-referrer" script command.
-//
-// Usage:
-//
-//	gale-attest-referrer <package> <lockfile> <identity-repo>
-//
-// It wires the fake GHCR to serve an OCI referrers index, a referrer
-// manifest, and a real signed Sigstore bundle for <package> whose
-// certificate identity names <identity-repo> (pass anything other
-// than kelp/gale-recipes to mint a bundle that must fail
-// verification on identity mismatch). It rewrites <lockfile> so the
-// package carries the matching manifest_digest and writes the
-// fixture's trusted root to $WORK/trusted_root.json. Scripts then
-// point GALE_SIGSTORE_TRUSTED_ROOT at that file and set
-// GALE_SIGSTORE_TEST_NO_SCT=1 (synthetic fixtures cannot mint SCTs)
-// so `gale verify` runs native in-process verification entirely
-// against the fake registry — no real network, no GitHub token.
-func CmdAttestReferrer(ts *testscript.TestScript, neg bool, args []string) {
-	if neg {
-		ts.Fatalf("gale-attest-referrer does not support negation")
-	}
-	if len(args) != 3 {
-		ts.Fatalf("gale-attest-referrer: needs <package> <lockfile> <identity-repo>")
-	}
-	ghcr, _ := ts.Value("ghcr").(*FakeGHCR)
-	if ghcr == nil {
-		ts.Fatalf("gale-attest-referrer: no ghcr in env")
-	}
-	manifestDigest, trustedRoot, err := ghcr.AttestReferrer(args[0], args[2])
-	if err != nil {
-		ts.Fatalf("gale-attest-referrer: %v", err)
-	}
-	// G306 — a world-readable trust root fixture inside the
-	// script work dir; not sensitive material.
-	rootPath := ts.MkAbs("trusted_root.json")
-	if err := os.WriteFile(rootPath, trustedRoot, 0o644); err != nil { //nolint:gosec
-		ts.Fatalf("gale-attest-referrer: write trusted root: %v", err)
-	}
-	if err := setLockManifestDigest(ts.MkAbs(args[1]), args[0], manifestDigest); err != nil {
-		ts.Fatalf("gale-attest-referrer: %v", err)
 	}
 }
 

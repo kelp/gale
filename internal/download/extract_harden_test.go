@@ -355,27 +355,3 @@ func TestFetchRefusesOverCompressedCap(t *testing.T) {
 		t.Fatalf("error = %v, want ErrExtractLimit", err)
 	}
 }
-
-func TestFetchAndExtractRefusesOverCompressedCap(t *testing.T) {
-	restore := SetProgressEnabled(false)
-	defer restore()
-
-	archiveBytes := buildTarZstdBytes(t, map[string]string{"a.txt": "hello"})
-	if int64(len(archiveBytes)) < 2 {
-		t.Fatalf("archive too small to cap: %d", len(archiveBytes))
-	}
-	withExtractLimits(t, defaultMaxArchiveEntries, defaultMaxDecompressedBytes, int64(len(archiveBytes))-1)
-
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			_, _ = w.Write(archiveBytes)
-		},
-	))
-	defer srv.Close()
-
-	dest := filepath.Join(t.TempDir(), "out")
-	_, err := FetchAndExtractTarZstd(context.Background(), srv.URL, dest, hexSHA256(archiveBytes), "")
-	if !errors.Is(err, ErrExtractLimit) {
-		t.Fatalf("error = %v, want ErrExtractLimit", err)
-	}
-}

@@ -143,11 +143,9 @@ func classifyForMigrate(
 		name: p.Name, version: r.Package.Full(), dir: dir,
 		bare: p.Version != r.Package.Full(), recipe: r,
 	}
-	if r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH) == nil {
-		out.sourceOnly = append(out.sourceOnly, t)
-		return nil
-	}
-	out.candidates = append(out.candidates, t)
+	// Leftover GHCR bottles are gone. Nothing here is a
+	// migrate candidate; live repair is fetch / fetch-adopt.
+	out.sourceOnly = append(out.sourceOnly, t)
 	return nil
 }
 
@@ -347,45 +345,17 @@ func runtimeDepNames(r *recipe.Recipe) []string {
 func migratePreflight(
 	galeHome, storeRoot string, scan migrateScanResult,
 ) error {
-	scopes, err := projects.Scopes(galeHome)
-	if err != nil {
+	if _, err := projects.Scopes(galeHome); err != nil {
 		return err
 	}
-	platform := currentPlatform()
-	for _, t := range scan.candidates {
-		b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-		if b == nil {
-			// classifyForMigrate put it here because there was one, so
-			// its absence now means the recipe changed underneath.
-			return fmt.Errorf(
-				"%w: %s: the recipe no longer declares a binary for %s",
-				errMigrateUnreadable, t.dir, platform,
-			)
-		}
-		if err := checkReplaceable(replaceQuery{
-			galeHome:  galeHome,
-			storeRoot: storeRoot,
-			// No scope is exempt; see the doc comment.
-			selfGaleDir: "",
-			name:        t.name,
-			version:     t.version,
-			targetDir:   t.dir,
-			wantSHA:     b.SHA256,
-			platform:    platform,
-			// One proposed state for the whole machine, so a scope
-			// that merely references a candidate is a participant
-			// rather than a vetoer. See replaceQuery.machineWide: the
-			// per-scope rule refuses every upgrade-day store, which is
-			// the state migrate exists to end.
-			machineWide: true,
-		}); err != nil {
-			return err
-		}
-		if err := checkMigrateDependents(scopes, storeRoot, t); err != nil {
-			return err
-		}
+	_ = storeRoot
+	if len(scan.candidates) == 0 {
+		return nil
 	}
-	return nil
+	return fmt.Errorf(
+		"%w: leftover bottle %s: use gale fetch or gale fetch-adopt",
+		errMigrateUnreadable, scan.candidates[0].dir,
+	)
 }
 
 // errMigrateNotBinary reports a candidate whose refetch produced a
@@ -442,45 +412,12 @@ func checkMigrateCommit(
 			name, full, err, errCandidateUnprovenanced,
 		)
 	}
-	b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	if b == nil {
-		return fmt.Errorf(
-			"%w: %s@%s: the recipe stopped declaring one for %s",
-			errMigrateNotBinary, name, full, currentPlatform(),
-		)
-	}
-	if rep.Result.Method != installer.MethodBinary {
-		return fmt.Errorf(
-			"%w: %s@%s built from source instead; migrate replaces only "+
-				"binary-method directories, and the machine was cleared "+
-				"against the declared binary", errMigrateNotBinary, name, full,
-		)
-	}
-	if rep.Result.SHA256 != b.SHA256 {
-		return fmt.Errorf(
-			"%w: %s@%s was cleared at %s and the refetch produced %s",
-			errMigrateHashMoved, name, full, b.SHA256, rep.Result.SHA256,
-		)
-	}
-	scopes, err := projects.Scopes(galeHome)
-	if err != nil {
-		return err
-	}
-	if err := checkMigrateDependents(scopes, storeRoot, t); err != nil {
-		return err
-	}
-	return checkReplaceable(replaceQuery{
-		galeHome: galeHome, storeRoot: storeRoot,
-		// No scope is exempt: migrate writes no lock for anyone.
-		selfGaleDir: "",
-		name:        name, version: full,
-		targetDir: rep.CanonicalDir,
-		// The cleared hash, which the check above has just proved the
-		// committed artifact carries.
-		wantSHA:     b.SHA256,
-		platform:    currentPlatform(),
-		machineWide: true,
-	})
+	_ = galeHome
+	_ = storeRoot
+	return fmt.Errorf(
+		"%w: leftover bottle %s@%s: use gale fetch or gale fetch-adopt",
+		errMigrateNotBinary, name, full,
+	)
 }
 
 // checkMigrateDependents refuses a candidate whose replacement would

@@ -473,246 +473,32 @@ func TestParseMalformedTOMLNoPanic(t *testing.T) {
 	}
 }
 
-// --- Behavior 5: Binary sections ---
-
-const recipeWithBinaries = `
+// leftover [binary] TOML is ignored. Live fetch uses the index.
+func TestParseIgnoresLeftoverBinarySection(t *testing.T) {
+	const leftover = `
 [package]
 name = "jq"
 version = "1.7.1"
-description = "Command-line JSON processor"
-license = "MIT"
-homepage = "https://jqlang.github.io/jq"
 
 [source]
-url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
+url = "https://example.com/jq-1.7.1.tar.gz"
 sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
 
 [build]
 steps = ["make install"]
 
 [binary.darwin-arm64]
-url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64"
-sha256 = "abc123"
-
-[binary.linux-amd64]
-url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-linux-amd64"
-sha256 = "def456"
-
-[dependencies]
-build = ["autoconf"]
-`
-
-func TestParseBinarySection(t *testing.T) {
-	r, err := Parse(recipeWithBinaries)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Binary) != 2 {
-		t.Fatalf("Binary count = %d, want 2", len(r.Binary))
-	}
-}
-
-func TestParseBinaryDarwinArm64URL(t *testing.T) {
-	r, err := Parse(recipeWithBinaries)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	b, ok := r.Binary["darwin-arm64"]
-	if !ok {
-		t.Fatal("missing binary for darwin-arm64")
-	}
-	if b.URL != "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64" {
-		t.Errorf("URL = %q", b.URL)
-	}
-}
-
-func TestParseBinaryDarwinArm64SHA256(t *testing.T) {
-	r, err := Parse(recipeWithBinaries)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	b := r.Binary["darwin-arm64"]
-	if b.SHA256 != "abc123" {
-		t.Errorf("SHA256 = %q, want %q", b.SHA256, "abc123")
-	}
-}
-
-func TestParseNoBinarySectionIsValid(t *testing.T) {
-	r, err := Parse(validRecipe)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(r.Binary) != 0 {
-		t.Errorf("Binary should be nil or empty, got %d entries",
-			len(r.Binary))
-	}
-}
-
-func TestBinaryForPlatformFound(t *testing.T) {
-	r, err := Parse(recipeWithBinaries)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	b := r.BinaryForPlatform("darwin", "arm64")
-	if b == nil {
-		t.Fatal("expected non-nil binary for darwin-arm64")
-	}
-	if b.SHA256 != "abc123" {
-		t.Errorf("SHA256 = %q, want %q", b.SHA256, "abc123")
-	}
-}
-
-func TestBinaryForPlatformNotFound(t *testing.T) {
-	r, err := Parse(recipeWithBinaries)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	b := r.BinaryForPlatform("windows", "amd64")
-	if b != nil {
-		t.Error("expected nil binary for windows-amd64")
-	}
-}
-
-// --- Behavior 5b: Binary trust policy ---
-
-func TestParseBinaryDefaultTrustIsSigstore(t *testing.T) {
-	// A [binary.<platform>] without an explicit trust field
-	// must default to "sigstore". This is the fail-safe
-	// default: forgetting the field enforces attestation,
-	// not bypasses it.
-	r, err := Parse(recipeWithBinaries)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	b := r.BinaryForPlatform("darwin", "arm64")
-	if b == nil {
-		t.Fatal("expected non-nil binary for darwin-arm64")
-	}
-	if b.Trust != "sigstore" {
-		t.Errorf("Trust = %q, want %q (default)", b.Trust, "sigstore")
-	}
-}
-
-const recipeWithSha256OnlyTrust = `
-[package]
-name = "vendor-tool"
-version = "1.0"
-
-[source]
-url = "https://example.com/vendor-tool-1.0-src.tar.gz"
-sha256 = "0000000000000000000000000000000000000000000000000000000000000000"
-
-[build]
-steps = ["make install"]
-
-[binary.darwin-arm64]
-url = "https://example.com/releases/vendor-tool-1.0.tar.zst"
-sha256 = "abc123"
-trust = "sha256-only"
-`
-
-func TestParseBinaryExplicitSha256OnlyTrust(t *testing.T) {
-	r, err := Parse(recipeWithSha256OnlyTrust)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	b := r.BinaryForPlatform("darwin", "arm64")
-	if b == nil {
-		t.Fatal("expected non-nil binary for darwin-arm64")
-	}
-	if b.Trust != "sha256-only" {
-		t.Errorf("Trust = %q, want %q", b.Trust, "sha256-only")
-	}
-}
-
-const recipeWithExplicitSigstoreTrust = `
-[package]
-name = "jq"
-version = "1.7.1"
-
-[source]
-url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
-sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
-
-[build]
-steps = ["make install"]
-
-[binary.darwin-arm64]
-url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64"
-sha256 = "abc123"
-trust = "sigstore"
-`
-
-func TestParseBinaryExplicitSigstoreTrust(t *testing.T) {
-	r, err := Parse(recipeWithExplicitSigstoreTrust)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	b := r.BinaryForPlatform("darwin", "arm64")
-	if b == nil {
-		t.Fatal("expected non-nil binary for darwin-arm64")
-	}
-	if b.Trust != "sigstore" {
-		t.Errorf("Trust = %q, want %q", b.Trust, "sigstore")
-	}
-}
-
-const recipeWithInvalidTrust = `
-[package]
-name = "jq"
-version = "1.7.1"
-
-[source]
-url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
-sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
-
-[build]
-steps = ["make install"]
-
-[binary.darwin-arm64]
-url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64"
+url = "https://ghcr.io/v2/x/blobs/sha256:abc"
 sha256 = "abc123"
 trust = "pinky-promise"
-`
-
-func TestParseBinaryInvalidTrustErrors(t *testing.T) {
-	_, err := Parse(recipeWithInvalidTrust)
-	if err == nil {
-		t.Fatal("expected error for invalid trust value")
-	}
-	if !strings.Contains(err.Error(), "trust") {
-		t.Errorf("error = %q, want to mention %q", err.Error(), "trust")
-	}
-}
-
-const recipeWithUnknownBinaryField = `
-[package]
-name = "jq"
-version = "1.7.1"
-
-[source]
-url = "https://github.com/jqlang/jq/releases/download/jq-1.7.1/jq-1.7.1.tar.gz"
-sha256 = "478c9ca129fd2e3443fe27314b455e211e0d8c60bc8ff7df703f25571c92f12e"
-
-[build]
-steps = ["make install"]
-
-[binary.darwin-arm64]
-url = "ghcr.io/kelp/gale-recipes/jq:1.7.1-darwin-arm64"
-sha256 = "abc123"
 bogus_key = "typo"
 `
-
-func TestParseBinaryUnknownFieldErrors(t *testing.T) {
-	// Typos in [binary.<platform>] must fail closed like
-	// [package] and [source] do — the trust semantics make
-	// silent acceptance of unknown keys dangerous.
-	_, err := Parse(recipeWithUnknownBinaryField)
-	if err == nil {
-		t.Fatal("expected error for unknown field in [binary.<platform>]")
+	r, err := Parse(leftover)
+	if err != nil {
+		t.Fatalf("leftover [binary] must be ignored, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "bogus_key") {
-		t.Errorf("error = %q, want to mention %q", err.Error(), "bogus_key")
+	if r.Package.Name != "jq" {
+		t.Errorf("name = %q", r.Package.Name)
 	}
 }
 

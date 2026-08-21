@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ulikunitz/xz"
+
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/provenance"
@@ -361,6 +363,25 @@ func TestToStoreBinaryAndZip(t *testing.T) {
 		}
 		assertFetchSidecar(t, dest, "1.0.0", art)
 	})
+	t.Run("tar.xz", func(t *testing.T) {
+		archive := filepath.Join(t.TempDir(), "just.tar.xz")
+		writeTarXz(t, archive, []tar.Header{
+			{Name: "prefix/just", Mode: 0o755},
+			{Name: "prefix/README", Mode: 0o644},
+		}, []string{toolBody, extraBody})
+		fx := newRawFixture(t, "just.tar.xz", mustRead(t, archive))
+		want := mappedDigest(t, map[string]fileSpec{"bin/just": {toolBody, 0o755}})
+		art := fx.baseArt("tar.xz", 1, []index.FileEntry{{
+			Src: "just", Dest: "bin/just", Mode: 0o755,
+		}})
+		art.SHA256 = hashFile(t, archive)
+		art.TreeDigest = want
+		dest := mustToStore(t, fx, "1.0.0", art)
+		if _, err := os.Stat(filepath.Join(dest, "README")); !errors.Is(err, os.ErrNotExist) {
+			t.Error("tar.xz extra member was placed")
+		}
+		assertFetchSidecar(t, dest, "1.0.0", art)
+	})
 	t.Run("zip", func(t *testing.T) {
 		archive := filepath.Join(t.TempDir(), "just.zip")
 		writeZip(t, archive, map[string]string{
@@ -655,6 +676,42 @@ func filePerm(t *testing.T, path string) os.FileMode {
 		t.Fatal(err)
 	}
 	return fi.Mode().Perm()
+}
+
+func writeTarXz(t *testing.T, archivePath string, headers []tar.Header, bodies []string) {
+	t.Helper()
+	f, err := os.Create(archivePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xw, err := xz.NewWriter(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tw := tar.NewWriter(xw)
+	for i, h := range headers {
+		hdr := h
+		if i < len(bodies) && bodies[i] != "" {
+			hdr.Size = int64(len(bodies[i]))
+		}
+		if err := tw.WriteHeader(&hdr); err != nil {
+			t.Fatal(err)
+		}
+		if i < len(bodies) && bodies[i] != "" {
+			if _, err := tw.Write([]byte(bodies[i])); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := xw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func writeTarGz(t *testing.T, archivePath string, headers []tar.Header, bodies []string) {

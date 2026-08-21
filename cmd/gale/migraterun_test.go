@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -122,72 +121,6 @@ func seedRelocation(
 	}
 }
 
-func TestRemoveRelocatedDirKeepsAReferencedDir(t *testing.T) {
-	tests := []struct {
-		name string
-		// referenced puts the bare directory inside a scope's active
-		// closure, which is the state that must stop the removal.
-		referenced bool
-		// lockSHA registers a project whose lock names these bytes for
-		// the identity. Set to something other than the recipe's
-		// declared hash, it is a scope disagreeing about what the
-		// store should hold.
-		lockSHA  string
-		wantGone bool
-		wantErr  error
-	}{
-		{
-			name: "a referenced dir survives", referenced: true,
-			wantErr: errBareDirStillReferenced,
-		},
-		{name: "an unreferenced dir is removed", wantGone: true},
-		{
-			// The removal is its own destructive commit, so it
-			// re-establishes the whole relocation rather than trusting
-			// what was checked before the generations were rebuilt. A
-			// scope that re-locked in that window is exactly what the
-			// recheck exists to catch.
-			name: "a disagreeing scope survives", lockSHA: shaY,
-			wantErr: errScopeDisagrees,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			home := t.TempDir()
-			storeRoot := filepath.Join(home, "pkg")
-			bare, target := seedRelocation(
-				t, home, storeRoot, tt.referenced, tt.lockSHA,
-			)
-
-			err := removeRelocatedDir(storeRoot, home, target, discardOutput())
-			if tt.wantErr == nil && err != nil {
-				t.Fatalf("an unreferenced dir was not removed: %v", err)
-			}
-			if tt.wantErr != nil && !errors.Is(err, tt.wantErr) {
-				t.Fatalf("err = %v, want %v", err, tt.wantErr)
-			}
-
-			_, err = os.Lstat(bare)
-			if tt.wantGone && err == nil {
-				t.Error("an unreferenced pre-revision dir was left behind")
-			}
-			if !tt.wantGone && err != nil {
-				t.Errorf("a referenced pre-revision dir was destroyed: %v", err)
-			}
-		})
-	}
-}
-
-// A record that parses is not a record that attests the directory it
-// sits in.
-//
-// This predicate authorizes deleting the pre-revision bytes, so it
-// has to prove the canonical directory really holds the migrated
-// artifact. Method and SHA alone do not: a record copied from
-// another package carries the same declared hash whenever the
-// fixture's recipes share one, and would authorize the deletion on
-// the strength of a file somebody moved.
 func TestCanonicalAttestsRejectsARecordForAnotherIdentity(t *testing.T) {
 	home := t.TempDir()
 	storeRoot := filepath.Join(home, "pkg")

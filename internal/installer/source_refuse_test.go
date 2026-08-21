@@ -2,6 +2,8 @@ package installer
 
 import (
 	"context"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -39,6 +41,29 @@ func TestInstallLocalRefusesSource(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "fetch") {
 		t.Errorf("refusal must name fetch: %v", err)
+	}
+}
+
+func TestInstallRefusesBottle(t *testing.T) {
+	hits := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hits++
+	}))
+	t.Cleanup(srv.Close)
+
+	inst := &Installer{Store: store.NewStore(t.TempDir())}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "tool", Version: "1.0"},
+	}
+	got, err := inst.Install(context.Background(), r)
+	if err == nil {
+		t.Fatalf("Install poured a leftover bottle: %+v", got)
+	}
+	if !strings.Contains(err.Error(), "fetch") {
+		t.Errorf("refusal must name fetch: %v", err)
+	}
+	if hits != 0 {
+		t.Errorf("Install hit leftover bottle URL %d times", hits)
 	}
 }
 

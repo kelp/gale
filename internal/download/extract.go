@@ -3,7 +3,6 @@ package download
 import (
 	"archive/tar"
 	"archive/zip"
-	"compress/bzip2"
 	"compress/gzip"
 	"context"
 	"errors"
@@ -14,7 +13,6 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/klauspost/compress/zstd"
 	"github.com/ulikunitz/xz"
 )
 
@@ -132,22 +130,10 @@ func ExtractTarGz(ctx context.Context, archivePath, destDir string) error {
 	return extractTarFile(ctx, archivePath, destDir, classBuildInput, openGzip)
 }
 
-// ExtractTarZstd extracts a tar.zst file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarZstd(ctx context.Context, archivePath, destDir string) error {
-	return extractTarFile(ctx, archivePath, destDir, classBuildInput, openZstd)
-}
-
 // ExtractTarXz extracts a tar.xz file to destDir, preserving
 // relative paths and creating directories as needed.
 func ExtractTarXz(ctx context.Context, archivePath, destDir string) error {
 	return extractTarFile(ctx, archivePath, destDir, classBuildInput, openXz)
-}
-
-// ExtractTarBz2 extracts a tar.bz2 file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarBz2(ctx context.Context, archivePath, destDir string) error {
-	return extractTarFile(ctx, archivePath, destDir, classBuildInput, openBz2)
 }
 
 type decompressor func(io.Reader) (io.Reader, func(), error)
@@ -160,24 +146,12 @@ func openGzip(r io.Reader) (io.Reader, func(), error) {
 	return gr, func() { gr.Close() }, nil
 }
 
-func openZstd(r io.Reader) (io.Reader, func(), error) {
-	zr, err := zstd.NewReader(r)
-	if err != nil {
-		return nil, nil, fmt.Errorf("create zstd reader: %w", err)
-	}
-	return zr, zr.Close, nil
-}
-
 func openXz(r io.Reader) (io.Reader, func(), error) {
 	xr, err := xz.NewReader(r)
 	if err != nil {
 		return nil, nil, fmt.Errorf("create xz reader: %w", err)
 	}
 	return xr, func() {}, nil
-}
-
-func openBz2(r io.Reader) (io.Reader, func(), error) {
-	return bzip2.NewReader(r), func() {}, nil
 }
 
 func extractTarFile(ctx context.Context, archivePath, destDir string, class extractClass, open decompressor) error {
@@ -294,10 +268,6 @@ func ExtractSource(ctx context.Context, archivePath, destDir string) error {
 		return ExtractTarGz(ctx, archivePath, destDir)
 	case strings.HasSuffix(archivePath, ".tar.xz"):
 		return ExtractTarXz(ctx, archivePath, destDir)
-	case strings.HasSuffix(archivePath, ".tar.bz2"):
-		return ExtractTarBz2(ctx, archivePath, destDir)
-	case strings.HasSuffix(archivePath, ".tar.zst"):
-		return ExtractTarZstd(ctx, archivePath, destDir)
 	case strings.HasSuffix(archivePath, ".zip"):
 		return ExtractZip(ctx, archivePath, destDir)
 	default:

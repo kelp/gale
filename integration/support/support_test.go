@@ -8,7 +8,7 @@ import (
 func TestSubstituteDataPayloadSHA(t *testing.T) {
 	p := &Payloads{
 		Map: map[string]*Payload{
-			"hello": {TarballPath: "/fake/hello.tar.zst", SHA256: "abc123"},
+			"hello": {TarballPath: "/fake/hello.tar.gz", SHA256: "abc123"},
 		},
 	}
 	env := map[string]string{

@@ -11,6 +11,18 @@
 
 ### Changed
 
+- **Delete GHCR bottle wiring.** Leftover
+  `Installer.Install` refuses a bottle pour
+  and names fetch / `gale fetch-adopt`.
+  `tar.zst` create/extract and `tar.bz2`
+  extract are gone. Admitted formats are
+  `tar.gz`, `tar.xz`, `zip`, `binary`.
+  `internal/ghcr` is gone. Generalized
+  attestation (`VerifyFile`, `FetchBundle`,
+  `VerifyOCI`) stays. Leftover `[binary]`
+  TOML and `.binaries.toml` are ignored.
+  Release no longer runs attestation-parity.
+
 - **Delete `internal/build` and farm.**
   Source compile, Darwin fixup, patchelf,
   pkg-config rewrite, and the shared dylib
