@@ -131,8 +131,7 @@ Farm invariants:
   deliberate, so the versioned rule would turn it into a
   machine-wide outage. Dropping leaves the unversioned name
   exactly as unresolvable as it was before the farm carried
-  aliases at all. `gale doctor` warns about the drop but does
-  not fail — no repair can clear it. The collision is keyed on
+  aliases at all. The collision is keyed on
   the store dir, so two revisions of one package behind one
   alias are dropped too.
 - **A binary recording an unversioned name is therefore not
@@ -142,9 +141,8 @@ Farm invariants:
   (gh#198).
 - The farm is reconciled every time the generation is rebuilt
   (`internal/generation/generation.go:91-95` →
-  `farm.Repopulate`). `gale doctor` detects drift (broken
-  symlinks, missing entries) at `cmd/gale/doctor.go:250-280`
-  and `gale sync` triggers the rebuild path.
+  `farm.Repopulate`). `gale sync` rebuilds when the farm
+  is missing a dep dylib.
 
 ### Pre-farm prebuilts are brittle
 
@@ -206,7 +204,6 @@ constraint violation at resolve time stops the install
 before it starts.
 
 `gale sync` reinstalls stale packages automatically.
-`gale doctor` surfaces them with a hint to run sync.
 
 ### An absent file is not an empty closure
 

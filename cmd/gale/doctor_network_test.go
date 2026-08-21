@@ -5,7 +5,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -47,60 +46,18 @@ func doctorNetworkFixture(t *testing.T) *int32 {
 	return &hits
 }
 
-// TestDoctorDoesNotHitRegistryByDefault pins
-// audit/readonly/network-perf/0004 and
-// read-only-invariant/0002: the default `gale doctor` run must
-// not make any HTTP requests to the registry. The injected
-// server is the one doctor would reach if the gate leaked.
+// TestDoctorDoesNotHitRegistryByDefault: doctor is four local
+// checks. Nothing talks to the registry.
 func TestDoctorDoesNotHitRegistryByDefault(t *testing.T) {
 	hits := doctorNetworkFixture(t)
-
-	doctorCheckRegistry = false
 	_ = doctorCmd.RunE(doctorCmd, nil)
-
 	if got := atomic.LoadInt32(hits); got != 0 {
-		t.Errorf("default doctor hit the registry %d time(s); "+
-			"network probes must be opt-in via --check-registry",
-			got)
-	}
-}
-
-// TestDoctorCheckRegistryFlagEnablesNetwork verifies that the
-// opt-in flag wires back through to the resolver-using checks.
-func TestDoctorCheckRegistryFlagEnablesNetwork(t *testing.T) {
-	hits := doctorNetworkFixture(t)
-
-	doctorCheckRegistry = true
-	t.Cleanup(func() { doctorCheckRegistry = false })
-	_ = doctorCmd.RunE(doctorCmd, nil)
-
-	if atomic.LoadInt32(hits) == 0 {
-		t.Error("expected --check-registry to enable network probes, " +
-			"got 0 hits")
-	}
-}
-
-// TestDoctorHasCheckRegistryFlag pins the flag's existence so
-// it doesn't regress. The default must be off (so airplane-mode
-// is the contract, not the exception).
-func TestDoctorHasCheckRegistryFlag(t *testing.T) {
-	f := doctorCmd.Flags().Lookup("check-registry")
-	if f == nil {
-		t.Fatal("--check-registry flag missing from doctor")
-	}
-	if f.DefValue != "false" {
-		t.Errorf("--check-registry default = %q, want false",
-			f.DefValue)
-	}
-	if !strings.Contains(strings.ToLower(f.Usage), "registry") &&
-		!strings.Contains(strings.ToLower(f.Usage), "network") {
-		t.Errorf("--check-registry usage doesn't mention network/registry: %q",
-			f.Usage)
+		t.Errorf("doctor hit the registry %d time(s)", got)
 	}
 }
 
 // TestDoctorHasNoRepairFlag pins the Milestone 2 deletion: doctor
-// never mutates. --check-registry stays.
+// never mutates.
 func TestDoctorHasNoRepairFlag(t *testing.T) {
 	if f := doctorCmd.Flags().Lookup("repair"); f != nil {
 		t.Fatalf("doctor --repair must be gone, found usage %q", f.Usage)

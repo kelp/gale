@@ -244,7 +244,7 @@ Not-in-index is an error.
       Remove `[bin]` overlays and per-host
       winners. Two packages shipping the
       same basename refuse the generation.
-- [ ] **Doctor is four checks.** PATH, lock
+- [x] **Doctor is four checks.** PATH, lock
       readable, generation matches lock
       roots, tree digest matches. Farm /
       deps-meta / legacy-lock novels go

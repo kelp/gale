@@ -6,8 +6,9 @@
 gale doctor
 ```
 
-Doctor checks PATH configuration, config files, the
-package store, symlink integrity, and direnv setup.
+Doctor checks PATH, that the lock is readable, that
+the generation matches lock roots, and that tree
+digests match.
 Fix everything it reports before investigating further.
 
 ## Common Issues
@@ -176,8 +177,7 @@ Sigstore TUF CDN, caching it for a day under
 `~/.gale/cache/sigstore-tuf/`. If the network is
 unreachable, gale falls back to a trusted-root
 snapshot embedded in the binary and prints a
-one-time warning. `gale doctor` reports the cache
-state.
+one-time warning.
 
 For air-gapped verification, set
 `GALE_SIGSTORE_TRUSTED_ROOT` to a local

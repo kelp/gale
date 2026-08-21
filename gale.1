@@ -202,42 +202,23 @@ to skip the automatic tap refresh.
 .Pp
 .Dl $ gale outdated
 .Dl jq 1.7.1 -> 1.8.1
-.It Cm doctor Op Fl -check-registry
-Check the gale installation for common problems:
-PATH configuration, store integrity, stale generations,
-host-overlay shadows, and lib farm drift.
-It also reports the states that block a rebuild: a lockfile
-in a schema this build cannot use, a store directory whose
-.Pa .gale-deps.toml
-cannot be read, and two declared packages shipping the same
-executable name.
-It also reports, without failing, the man pages and root-level
-files more than one declared package provides.
-Those are not arbitrated: the first package in sorted order
-provides the file, and removing one provider is the only way to
-change which.
-On macOS it fails when an installed binary in the active
-generation's closure carries an
-.Pa @rpath
-dependency reference that none of its own rpath entries
-resolves.
-Such a binary aborts under
-.Xr dyld 1
-on the next exec; rebuild it with
-.Cm gale install --build Ar pkg .
-The check is skipped on other platforms.
-A scope whose last sync did not complete is reported the same
-way, naming the packages that failed.
-Run
-.Cm gale sync
-to retry them at once; an automatic retry waits out the
-ten-minute interval.
-Doctor does not rebuild generations, delete store directories,
-or re-sign binaries. The remedy it prints is a command the
+.It Cm doctor
+Four checks: PATH includes
+.Pa ~/.gale/current/bin ,
+the lock is a readable v2 file,
+the active generation matches the lock roots,
+and each locked fetch tree digest matches.
+A v1 lock names
+.Cm gale fetch-adopt .
+Generation drift names
+.Cm gale sync .
+A digest mismatch names
+.Cm gale verify .
+Doctor does not rebuild generations or delete store
+directories. The remedy it prints is a command the
 user runs.
 .Pp
 .Dl $ gale doctor
-.Dl $ gale doctor --check-registry
 .El
 .Ss Generation Management
 .Bl -tag -width Ds

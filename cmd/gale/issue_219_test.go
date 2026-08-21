@@ -1,20 +1,17 @@
 package main
 
 import (
-	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/generation"
 )
 
 // gh#219: a man page or a root-level file two packages both ship is
-// resolved by sort order and reported nowhere. doctor reports it. The
-// rebuild keeps accepting it — see
-// TestRebuildGenerationAcceptsManPageCollision below, which is the
-// half of this change that must never regress.
+// resolved by sort order. The rebuild keeps accepting it — see
+// TestRebuildGenerationAcceptsManPageCollision below. Doctor no
+// longer reports shadowed files.
 
 // addStoreFile writes one file at a gen-relative path inside an
 // existing store dir, making its parents.
@@ -41,35 +38,6 @@ func issue219Home(t *testing.T) (galeDir, storeRoot string) {
 	writeGlobalConfig(t, galeDir,
 		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n")
 	return galeDir, storeRoot
-}
-
-// TestDoctorReportsShadowedManPageWithoutFailing pins the report and
-// its advisory verdict together. Two packages shipping one man page is
-// an ordinary setup — a library and its CLI, a compat shim — so the
-// check names the shadowed path and still passes. Failing it would
-// make `gale doctor` red on installations that have always been
-// correct, which is how a check gets ignored.
-func TestDoctorReportsShadowedManPageWithoutFailing(t *testing.T) {
-	galeDir, storeRoot := issue219Home(t)
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	var buf bytes.Buffer
-	if !checkShadowedFiles(doctorCtx(galeDir, storeRoot, cwd, &buf)) {
-		t.Errorf("a shadowed man page must not fail the check, got: %q",
-			buf.String())
-	}
-	if msg := buf.String(); !strings.Contains(msg, "man/man1/foo.1") {
-		t.Errorf("the report must name the shadowed path, got: %q", msg)
-	}
-	for _, want := range []string{"alpha", "beta"} {
-		if !strings.Contains(buf.String(), want) {
-			t.Errorf("the report must name provider %q, got: %q",
-				want, buf.String())
-		}
-	}
 }
 
 // TestRebuildGenerationAcceptsManPageCollision guards against the

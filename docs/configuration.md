@@ -43,10 +43,9 @@ There is no table that names a winner.
 `[hosts.<key>.bin]` is leftover the same way.
 
 `bin/` is the only namespace gale arbitrates. Man
-pages and root-level files are **reported, not
-arbitrated**: `gale doctor` names each path more than
-one declared package provides, and the rebuild links
-the first package in sorted order, as it always has.
+pages and root-level files are **not arbitrated**:
+the rebuild links the first package in sorted
+order, as it always has.
 There is deliberately no `[man]` table. Two packages
 shipping `man/man1/foo.1` is an ordinary setup — a
 library and its CLI, a compat shim — and refusing it
@@ -152,8 +151,7 @@ When the same package appears in both shared
 `[packages]` and a matching host overlay, **the host
 overlay wins** — the shared value is dead config on
 that machine. `gale list` flags shared entries with
-`(overridden by host)` and `gale doctor` reports the
-shadow so you can clean up if it was unintentional.
+`(overridden by host)`.
 
 The active hostname comes from `hostname(1)`. Override
 with the `GALE_HOST` environment variable for cases
