@@ -343,8 +343,10 @@ Mechanical (low-risk, do first):
 
 Refactors (need judgment):
 
-- [ ] **dupl in `build.go` (1 pair)** — `internal/build/build.go:1107`
+- [x] **dupl in `build.go` (1 pair)** — `internal/build/build.go:1107`
   duplicates `:1155`; extract the shared block into a helper.
+  (Stale: `internal/build` was deleted. Remaining dupl hits
+  are tests and belong to the next heading.)
 - [ ] **dupl in tests (19 hits)** — duplicated setup across
   `cmd/gale/*_test.go`, `internal/build`, `internal/download`,
   `internal/recipe`. Replace with shared `t.Helper()` fixtures or

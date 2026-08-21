@@ -11,6 +11,14 @@
 
 ### Fixed
 
+- **dupl in `build.go`.** The named pair
+  died with `internal/build`. Remaining
+  `dupl` hits are tests and stay on the
+  next backlog heading. The `issues:`
+  block in `.golangci.yml` stays until
+  the rest of the Code Standards
+  Backlog is gone.
+
 - **contextcheck.** The backlog count
   was stale. Full-repo `contextcheck`
   is already 0 on linux and darwin;
