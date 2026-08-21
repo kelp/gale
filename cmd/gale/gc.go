@@ -232,8 +232,9 @@ var gcCmd = &cobra.Command{
 				countBranchGens(projGaleDir, storeRoot)
 			if branch > 0 {
 				out.Info(fmt.Sprintf(
-					"Retaining %d %s above current; discard one "+
-						"with `gale generations remove N`",
+					"Retaining %d %s above current; the next "+
+						"rebuild allocates past them, then keep-2 "+
+						"prunes history below the new cutoff",
 					branch, pluralGeneration(branch),
 				))
 			}

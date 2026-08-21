@@ -114,11 +114,12 @@ func TestRebuildGenerationOverManyPackagesSymlinksAll(t *testing.T) {
 // through inodes — the dev-host incident hit ~3M inodes for
 // 33 untouched gens before manual gc.
 //
-// Default retention is config.DefaultGenerationKeep (10), so
-// staging 15 pre-existing gens plus a fresh Build (which
-// makes #16) should result in gens 1..6 removed, gens 7..16
-// preserved.
+// Retention is the compiled constant 2 (current + one
+// previous), so staging 15 pre-existing gens plus a fresh
+// Build (which makes #16) should result in gens 1..14
+// removed, gens 15..16 preserved.
 func TestRebuildGenerationAutoPrunesOldGens(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
 	configPath := filepath.Join(galeDir, "gale.toml")
@@ -162,20 +163,102 @@ func TestRebuildGenerationAutoPrunesOldGens(t *testing.T) {
 	}
 
 	// Build advanced current to gen/16. Auto-gc keeps the last
-	// 10 (gens 7..16), prunes 1..6.
-	for i := 1; i <= 6; i++ {
+	// 2 (gens 15..16), prunes 1..14.
+	for i := 1; i <= 14; i++ {
 		if _, err := os.Stat(
 			filepath.Join(galeDir, "gen", strconv.Itoa(i)),
 		); !os.IsNotExist(err) {
 			t.Errorf("gen/%d should have been auto-pruned (err=%v)", i, err)
 		}
 	}
-	for i := 7; i <= 16; i++ {
+	for i := 15; i <= 16; i++ {
 		if _, err := os.Stat(
 			filepath.Join(galeDir, "gen", strconv.Itoa(i)),
 		); err != nil {
 			t.Errorf("gen/%d should be preserved: %v", i, err)
 		}
+	}
+}
+
+// TestRebuildGenerationIgnoresConfigKeep pins that
+// [generation] keep in config.toml cannot change or disable
+// auto-prune. keep = -1 used to skip prune; keep = 10 used
+// to retain a week of gens. Both must now prune to 2.
+func TestRebuildGenerationIgnoresConfigKeep(t *testing.T) {
+	for _, keep := range []string{"-1", "10"} {
+		t.Run("keep="+keep, func(t *testing.T) {
+			writeAppKeepConfig(t, keep)
+			galeDir, storeRoot, configPath := stageFifteenGenRebuild(t)
+			if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
+				t.Fatalf("rebuildGeneration: %v", err)
+			}
+			assertKeepTwoAfterRebuild(t, galeDir, keep)
+		})
+	}
+}
+
+func writeAppKeepConfig(t *testing.T, keep string) {
+	t.Helper()
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".gale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(home, ".gale", "config.toml"),
+		[]byte("[generation]\nkeep = "+keep+"\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func stageFifteenGenRebuild(t *testing.T) (galeDir, storeRoot, configPath string) {
+	t.Helper()
+	galeDir = t.TempDir()
+	storeRoot = t.TempDir()
+	configPath = filepath.Join(galeDir, "gale.toml")
+	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	binDir := filepath.Join(storeRoot, "jq", "1.0.0", "bin")
+	if err := os.MkdirAll(binDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "jq"),
+		[]byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath,
+		[]byte("[packages]\n  jq = \"1.0.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 15; i++ {
+		if err := os.MkdirAll(
+			filepath.Join(galeDir, "gen", strconv.Itoa(i), "bin"),
+			0o755,
+		); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink(filepath.Join("gen", "15"),
+		filepath.Join(galeDir, "current")); err != nil {
+		t.Fatal(err)
+	}
+	return galeDir, storeRoot, configPath
+}
+
+func assertKeepTwoAfterRebuild(t *testing.T, galeDir, keep string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(galeDir, "gen", "14")); !os.IsNotExist(err) {
+		t.Errorf("keep = %s must not disable or widen prune; "+
+			"gen/14 still exists (err=%v)", keep, err)
+	}
+	if _, err := os.Stat(filepath.Join(galeDir, "gen", "16")); err != nil {
+		t.Errorf("gen/16 (current) must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(galeDir, "gen", "15")); err != nil {
+		t.Errorf("gen/15 (previous) must survive: %v", err)
 	}
 }
 

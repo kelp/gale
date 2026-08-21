@@ -730,8 +730,9 @@ var skipTopLevelDirs = map[string]bool{
 // cleanOldGenerations already kept those DIRECTORIES through its
 // `n >= curGen` skip; nothing kept the store versions they link,
 // so roll back, gc, roll forward activated dangling PATH entries
-// (gh#247). `gale generations remove N` stays the only way to
-// reclaim that branch (gh#206).
+// (gh#247). A later rebuild allocates above the highest
+// number; keep-2 then prunes history below the new cutoff
+// (gh#206).
 //
 // Nothing below current is retained. Those generations are the
 // ones cleanOldGenerations deletes, and reclaiming a superseded
@@ -826,9 +827,8 @@ func RetainedVersionsStrict(
 		)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"reading retained generation %d: %w; discard it "+
-					"with `gale generations remove %d`, or rerun "+
-					"gc with --force", n, err, n,
+				"reading retained generation %d: %w; rerun "+
+					"gc with --force", n, err,
 			)
 		}
 		for name, version := range pkgs {
@@ -856,10 +856,10 @@ func RetainedVersionsStrict(
 // caller can report them. keep<=0 or no current symlink is a
 // no-op (returns nil).
 //
-// Intended as an auto-gc hook after Build: callers pass the
-// user-configured retention (default 10) so per-install gen
-// accumulation can't drown the filesystem in inodes (the dev-
-// host incident with ~3M gen/ inodes across 33 untouched gens).
+// Intended as an auto-gc hook after Build: production
+// passes keep 2 so per-install gen accumulation can't
+// drown the filesystem in inodes (the dev-host incident
+// with ~3M gen/ inodes across 33 untouched gens).
 func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 	if keep <= 0 {
 		return nil, nil

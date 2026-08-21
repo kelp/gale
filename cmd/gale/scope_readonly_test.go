@@ -86,9 +86,9 @@ func TestReadonlyInventoryCommandsHaveAllFlag(t *testing.T) {
 }
 
 // TestGenerationsSubcommandsHaveScopeFlags verifies the
-// generations subcommands (diff, rollback) define -g/-p.
+// generations rollback subcommand defines -g/-p.
 func TestGenerationsSubcommandsHaveScopeFlags(t *testing.T) {
-	subs := []string{"diff", "rollback"}
+	subs := []string{"rollback"}
 	for _, sub := range subs {
 		t.Run(sub, func(t *testing.T) {
 			s := findSub("generations", sub)

@@ -78,21 +78,11 @@ and the active one with `*`:
 + 7   13 packages
 ```
 
-Nothing reclaims them on its own. `gale gc` skips
-everything at or above `current`, and automatic
-retention only reaches them once `current` climbs back
-past its cutoff. `gale gc -n` reports how many are
-being retained.
-
-To discard a branch you abandoned on purpose, name it:
-
-```sh
-gale generations remove 6 7
-```
-
-The command refuses the current generation and removes
-nothing at all when any number in the batch is not a
-generation.
+Nothing reclaims them on its own until the next rebuild
+allocates above the highest number. Automatic retention
+then prunes history below the keep-2 cutoff.
+`gale gc` skips everything at or above `current`.
+`gale gc -n` reports how many are being retained.
 
 ### Build failures
 

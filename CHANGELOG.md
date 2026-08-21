@@ -11,6 +11,16 @@
 
 ### Changed (breaking)
 
+- **Generation retention is the compiled constant 2.**
+  Auto-prune after every rebuild keeps current plus one
+  previous generation. `[generation] keep` and
+  `keep = -1` in `config.toml` are ignored and no
+  longer disable gc. `gale generations` is list and
+  `rollback` only; `diff` and `remove` are gone. A
+  generation above current stays until a later rebuild
+  allocates past it. An unreadable retained generation
+  still names `gale gc --force`.
+
 - **`.tool-versions` is no longer a gale manifest.** Gale
   reads `gale.toml` only. A directory with only
   `.tool-versions` is not a gale project: `--project`

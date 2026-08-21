@@ -101,7 +101,7 @@ Milestone 4 — 193 source recipes still collide.
       the fallback. `cmd/gale` tests that a
       `.tool-versions` project is not a gale
       project.
-- [ ] **Keep two generations.** Retention is
+- [x] **Keep two generations.** Retention is
       the compiled constant 2 (current + one
       previous). Delete `[generation] keep`
       and the `keep = -1` sentinel from
