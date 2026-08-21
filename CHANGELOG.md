@@ -11,6 +11,12 @@
 
 ### Changed
 
+- **python-build-standalone.** Proposal parked.
+  Python is not in the catalog. Admission is a
+  later PR and needs declared attestations,
+  store immutability (no pip into the prefix),
+  and SSL / venv / relocatability tests.
+
 - **`git = "system"`.** A top-level note in
   `gale.toml` (before `[packages]`): assume
   `git` is on PATH. Not a package pin and not

@@ -292,7 +292,7 @@ Each is its own proposal. None block 1–5.
 
 - [x] **`git = "system"`** (note in
       gale.toml, not an installer).
-- [ ] **python-build-standalone** — only
+- [x] **python-build-standalone** — only
       with declared attestations and store
       immutability (no pip into the prefix).
 - [ ] **Delete frozen host sections** if

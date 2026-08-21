@@ -11,7 +11,9 @@ loads a project generation onto PATH.
 
 Gale is not a Homebrew replacement and not an
 everything-from-source build farm. A package that
-is not in the index is an error.
+is not in the index is an error. Python is not
+in the catalog. See
+[`python-build-standalone.md`](proposals/python-build-standalone.md).
 
 ## Principles
 
