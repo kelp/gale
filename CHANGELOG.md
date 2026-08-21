@@ -11,6 +11,15 @@
 
 ### Changed
 
+- **Grow the catalog by admission.**
+  gale-recipes landed a Darwin/arm64 wave of
+  eight appendix A names (`fzf`, `age`,
+  `shfmt`, `actionlint`, `yq`, `shellcheck`,
+  `starship`, `zoxide`). Fragments are
+  `gale admit` stdout. Further appendix A
+  names are un-ticketed catalog PRs and do
+  not block Milestone 5.
+
 - **Park the local artifact cache.**
   `~/.gale/cache/artifacts/<sha256>` of verified
   archives is Milestone 6, off by default, or never.
