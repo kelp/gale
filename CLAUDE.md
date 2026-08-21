@@ -203,7 +203,8 @@ Lessons paid for in past regressions.
   reinstall/rebuild loops that stall direnv (013b4a4,
   688ce7d, af4c3f6).
 - Any change to sync, gc, or remove must be exercised
-  across all three scopes (global, project, `--host`).
+  across global and project scopes. Leftover
+  `[hosts.*]` and `--host` are not a scope.
   Cross-scope deletion bugs recur (ad4e685, 289d13b).
 - In tests, never let a random port, map order, or
   temp-dir name feed a cache key or expected output; it

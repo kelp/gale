@@ -76,9 +76,10 @@ helpers or reshaping interfaces.
 
 **Scope**
 
-- Global vs project vs host-scoped `[hosts.*.packages]`
-  change which gale.toml is read and where entries are
-  written. A fix in one scope must not corrupt another.
+- Global vs project change which gale.toml is
+  read and where entries are written. A fix in
+  one scope must not corrupt another. Leftover
+  `[hosts.*.packages]` is refused, not writable.
 
 ## Pipelines
 

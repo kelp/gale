@@ -25,7 +25,6 @@ var (
 	lockProject bool
 	lockRecipes string
 	lockIndex   string
-	lockHost    string
 )
 
 var lockCmd = &cobra.Command{
@@ -46,11 +45,6 @@ var lockCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		host, err := resolveHostFlag(lockHost)
-		if err != nil {
-			return err
-		}
-		c.Host = host
 		ctx := cmd.Context()
 		if ctx == nil {
 			ctx = context.Background()
@@ -66,9 +60,6 @@ func init() {
 		false, "Lock the project config")
 	lockCmd.Flags().StringVar(&lockIndex, "index", "",
 		"Resolve against a local index checkout")
-	lockCmd.Flags().StringVar(&lockHost, "host", "",
-		"Lock [hosts.<host>.packages] instead of the shared section "+
-			"(use 'current' for this machine)")
 	rootCmd.AddCommand(lockCmd)
 }
 
@@ -412,12 +403,8 @@ func unprovenanced(u unprovenancedDir) error {
 }
 
 // noDeclarations reports a lock target whose section declares
-// nothing, naming the sections that do declare packages.
-//
-// The list is the whole point of the error. --host takes the
-// selector verbatim, so a user whose packages all live under
-// overlays needs to see which strings are spelled in the file rather
-// than guess at their own hostname.
+// nothing, naming the leftover sections that still declare
+// packages. Remedies do not name --host.
 func noDeclarations(cfg *config.GaleConfig, target, path string) error {
 	sections := declaredRemedies(cfg)
 	if len(sections) == 0 {
@@ -433,13 +420,10 @@ func noDeclarations(cfg *config.GaleConfig, target, path string) error {
 	)
 }
 
-// declaredRemedies names the command that locks each manifest section
-// that declares at least one package, in a stable order.
-//
-// Commands rather than section names, because the section a user must
-// pass and the flag they must pass it with are not the same string:
-// shared [packages] is locked by plain `gale lock`, and offering
-// --host for it sends the user back into the failure they just hit.
+// declaredRemedies names the command that locks each leftover
+// section that still declares packages. Shared [packages]
+// is `gale lock`. Leftover [hosts.*] names moving pins into
+// [packages], then gale lock.
 func declaredRemedies(cfg *config.GaleConfig) []string {
 	var out []string
 	if len(cfg.Packages) > 0 {
@@ -449,17 +433,9 @@ func declaredRemedies(cfg *config.GaleConfig) []string {
 		if len(cfg.Hosts[host].Packages) == 0 {
 			continue
 		}
-		flag, ok := hostFlagArg(host)
-		if !ok {
-			// Unspellable in one line, so the section is named and the
-			// user supplies the selector themselves.
-			out = append(out, fmt.Sprintf(
-				"gale lock --host, with the selector spelled as in %s",
-				lockwrite.ManifestSection(host),
-			))
-			continue
-		}
-		out = append(out, "gale lock "+flag)
+		out = append(out,
+			"move leftover [hosts.*] pins into [packages], then gale lock")
+		break
 	}
 	return out
 }

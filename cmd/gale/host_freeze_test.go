@@ -8,23 +8,9 @@ import (
 )
 
 func TestHostFlagCommandsFrozen(t *testing.T) {
-	want := []string{"install", "lock", "remove"}
 	got := commandsWithHostFlag(rootCmd)
-	if !slices.Equal(got, want) {
-		t.Fatalf("commands with --host = %v, want %v", got, want)
-	}
-	for _, name := range want {
-		cmd := findCmd(name)
-		if cmd == nil {
-			t.Fatalf("command %q missing", name)
-		}
-		f := cmd.Flags().Lookup("host")
-		if f == nil {
-			t.Fatalf("%s: --host flag not found", name)
-		}
-		if f.DefValue != "" {
-			t.Errorf("%s: --host default = %q, want empty", name, f.DefValue)
-		}
+	if len(got) != 0 {
+		t.Fatalf("commands with --host = %v, want none", got)
 	}
 }
 

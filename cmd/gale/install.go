@@ -24,7 +24,6 @@ var (
 	installGlobal  bool
 	installProject bool
 	installIndex   string
-	installHost    string
 	// Kept for tests that still assign the removed CLI flags.
 	installRecipes string
 	installRecipe  string
@@ -50,10 +49,6 @@ var installCmd = &cobra.Command{
 			return err
 		}
 		c.IndexDir = installIndex
-		c.Host, err = resolveHostFlag(installHost)
-		if err != nil {
-			return err
-		}
 		ctx := cmd.Context()
 		if ctx == nil {
 			ctx = context.Background()
@@ -69,9 +64,6 @@ func init() {
 		false, "Install to project config")
 	installCmd.Flags().StringVar(&installIndex, "index", "",
 		"Resolve against a local index checkout")
-	installCmd.Flags().StringVar(&installHost, "host", "",
-		"Write under [hosts.<host>.packages] "+
-			"(use 'current' for this machine)")
 	rootCmd.AddCommand(installCmd)
 }
 

@@ -150,13 +150,9 @@ func TestInstallHostCurrentWritesConcreteTarget(t *testing.T) {
 	ctx := installCtx(t, tmp, "[packages]\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
 	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
-	host, err := resolveHostFlag("current")
-	if err != nil {
-		t.Fatalf("resolveHostFlag: %v", err)
-	}
-	ctx.Host = host
+	ctx.Host = "testbox"
 
-	err = installFromRecipeFile(
+	err := installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
 	)
 	if !errors.Is(err, errSwitchV1) {

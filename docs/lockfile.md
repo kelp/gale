@@ -47,10 +47,10 @@ split is what makes staleness answerable: a lock is
 stale when its roots disagree with the manifest, and
 transitive entries never enter that comparison.
 
-Host targets are keyed by `gale.toml`'s selector string
-verbatim, wildcards and comma lists included. They are
-not resolved against the current machine, so one
-committed lock serves every host the manifest names.
+Leftover `[targets.host.*]` refuses live verbs.
+Move leftover `[hosts.*]` pins into `[packages]`,
+delete the host tables, then `gale lock`. There is
+no `--host` flag.
 
 Package nodes are keyed `name@version-revision`, so a
 lock can name several versions of one package across
@@ -186,14 +186,11 @@ and then names the fix:
 - For one it has: `'gale lock' to regenerate the
   affected target(s)`.
 
-When the package's pin comes from a host section, the
-`gale lock` in those sentences is spelled `gale lock
---host "<selector>"`, naming every target that has to be
-rewritten. Running one and not the others leaves the
-next sync failing on the rest. When gale cannot tell
-which section owns the pin, it says `'gale lock' (or
-'gale lock --host <selector>' when the package belongs
-to a host section)`.
+When the pin or lock target is leftover
+`[hosts.*]` / `[targets.host.*]`, gale names
+that leftover and the fix: move leftover
+`[hosts.*]` pins into `[packages]`, then
+`gale lock`. It does not name `--host`.
 
 **The lock cannot be read at all** — legacy schema,
 unknown version, malformed TOML, unknown field, missing
