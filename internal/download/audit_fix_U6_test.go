@@ -147,6 +147,6 @@ func TestExtractTarGzAbsoluteSymlinkHardlinkEscape(t *testing.T) {
 
 	captured := filepath.Join(destDir, "captured")
 	if _, err := os.Lstat(captured); err == nil {
-		t.Fatalf("sandbox escape: out-of-sandbox file hardlinked into store at %s", captured)
+		t.Fatalf("sandbox escape: out-of-sandbox file linked as a hard link into store at %s", captured)
 	}
 }
