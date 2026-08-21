@@ -14,6 +14,9 @@ everything-from-source build farm. A package that
 is not in the index is an error. Python is not
 in the catalog. See
 [`python-build-standalone.md`](proposals/python-build-standalone.md).
+Index version bumps are currently human
+PRs. The update bot is parked. See
+[`index-update-pr-bot.md`](proposals/index-update-pr-bot.md).
 
 ## Principles
 

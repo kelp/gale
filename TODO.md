@@ -297,7 +297,7 @@ Each is its own proposal. None block 1–5.
       immutability (no pip into the prefix).
 - [x] **Delete frozen host sections** if
       still unused.
-- [ ] **Index-update PR bot** — PR-only, no
+- [x] **Index-update PR bot** — PR-only, no
       write token on main, verifies upstream
       checksums.
 - [ ] **Linux admission** for the ten, once

@@ -11,6 +11,12 @@
 
 ### Changed
 
+- **Index-update PR bot.** Proposal parked.
+  Humans open index PRs today. A later bot
+  must be PR-only, have no write token on
+  `main`, verify upstream checksums, and
+  wait for a human-reviewed diff.
+
 - **Delete frozen host sections.** Leftover
   `[hosts.*]` and lock `Targets.Host` still
   refuse. There is no `--host` flag. `list
