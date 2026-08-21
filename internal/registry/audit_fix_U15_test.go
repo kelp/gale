@@ -29,7 +29,11 @@ func TestWriteCacheEntryReplacesDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat after first write: %v", err)
 	}
-	inode1 := info1.Sys().(*syscall.Stat_t).Ino
+	st1, ok := info1.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("Sys() = %T, want *syscall.Stat_t", info1.Sys())
+	}
+	inode1 := st1.Ino
 
 	// Second write with different content. If writeCacheEntry replaces
 	// the directory (RemoveAll + Rename), the inode changes. If it only
@@ -40,7 +44,11 @@ func TestWriteCacheEntryReplacesDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("stat after second write: %v", err)
 	}
-	inode2 := info2.Sys().(*syscall.Stat_t).Ino
+	st2, ok := info2.Sys().(*syscall.Stat_t)
+	if !ok {
+		t.Fatalf("Sys() = %T, want *syscall.Stat_t", info2.Sys())
+	}
+	inode2 := st2.Ino
 
 	if inode1 == inode2 {
 		t.Errorf("entryDir inode unchanged (%d) — writeCacheEntry updated "+
