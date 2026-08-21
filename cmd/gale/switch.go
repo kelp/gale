@@ -28,7 +28,6 @@ Accepts both the two-arg form (gale switch gh 2.89.0) and
 the @version form (gale switch gh@2.89.0).
 
 Unlike 'gale update', switch:
-  - bypasses [pinned] (an explicit switch is the user's choice)
   - works for downgrades as well as upgrades
   - refuses to add packages that are not already in gale.toml
     (use 'gale install' for that)`,

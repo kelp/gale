@@ -211,12 +211,6 @@ func printConfigInfo(w io.Writer, name, configPath, scope string) (bool, error) 
 	fmt.Fprintf(w, "Scope:   %s\n", scope)
 	fmt.Fprintf(w, "Config:  %s\n", configPath)
 
-	pinned := "no"
-	if cfg.Pinned[name] {
-		pinned = "yes"
-	}
-	fmt.Fprintf(w, "Pinned:  %s\n", pinned)
-
 	return true, nil
 }
 

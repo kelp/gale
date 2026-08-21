@@ -11,6 +11,14 @@
 
 ### Changed (breaking)
 
+- **`gale pin` / `gale unpin` and `[pinned]` are gone.**
+  Manifest versions and the lock are the only version
+  channels. `gale update` updates every named package,
+  or every `[packages]` entry when run bare. Leftover
+  `[pinned]` / `[hosts.*.pinned]` keys are ignored.
+  `gale info` no longer prints a `Pinned:` line.
+  `gale switch` is unchanged.
+
 - **Generation retention is the compiled constant 2.**
   Auto-prune after every rebuild keeps current plus one
   previous generation. `[generation] keep` and
@@ -79,12 +87,10 @@
 ### Changed
 
 - **Host sections and `--host` are frozen.**
-  `[hosts.<key>]` overlays stay `packages`, `pinned`,
-  and `bin`. `--host` stays on `add`, `install`,
-  `remove`, `lock`, `pin`, and `unpin`. Selector
-  grammar is unchanged. No feature delete; this
-  stops new host-section work before fetch is the
-  default.
+  `[hosts.<key>]` overlays stay `packages` and `bin`.
+  `--host` stays on `add`, `install`, `remove`, and
+  `lock`. Selector grammar is unchanged. This stops
+  new host-section work before fetch is the default.
 
 - **Extract hardens archive and download limits.** Setuid,
   setgid, and sticky bits are masked; extracted file modes
@@ -175,7 +181,7 @@
   still loads.
 
   `[hosts.<key>.bin]` overlays the table per machine, with the
-  same selector precedence `[packages]` and `[pinned]` use
+  same selector precedence `[packages]` uses
   (gh#219). Two machines can put different providers of one
   basename on PATH; a manifest-wide winner could not say that,
   since naming either package drops the basename on the other

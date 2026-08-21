@@ -260,3 +260,24 @@ testpkg = "1.0.0"
 	// Silence the unused import linter if config isn't used.
 	_ = config.CurrentHost
 }
+
+func TestInfoOmitsPinnedLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "gale.toml")
+	if err := os.WriteFile(path,
+		[]byte("[packages]\njq = \"1.7.0\"\n\n[pinned]\njq = true\n"),
+		0o644); err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	found, err := printConfigInfo(&buf, "jq", path, "project")
+	if err != nil {
+		t.Fatalf("printConfigInfo: %v", err)
+	}
+	if !found {
+		t.Fatal("expected jq in gale.toml")
+	}
+	if strings.Contains(buf.String(), "Pinned:") {
+		t.Errorf("info must not print Pinned:, got:\n%s", buf.String())
+	}
+}

@@ -17,9 +17,6 @@ variables. Lives at `~/.gale/gale.toml` (global) or
   jq = "1.8.1"
   just = "1.48.0"
 
-[pinned]
-  go = true
-
 [vars]
   CGO_ENABLED = "0"
   GOFLAGS = "-mod=vendor"
@@ -29,12 +26,6 @@ variables. Lives at `~/.gale/gale.toml` (global) or
 
 Maps package names to pinned versions. `gale sync`
 installs every listed package at the declared version.
-
-### `[pinned]`
-
-Packages listed here are skipped by `gale update`.
-Use `gale pin <pkg>` and `gale unpin <pkg>` to
-manage.
 
 ### `[vars]`
 
@@ -102,10 +93,10 @@ correct. A shadowed man page shows the wrong docs; a
 shadowed executable runs the wrong program. Remove one
 provider to change which copy wins.
 
-### `[hosts.<key>.packages]`, `[hosts.<key>.pinned]` and `[hosts.<key>.bin]`
+### `[hosts.<key>.packages]` and `[hosts.<key>.bin]`
 
-Per-machine overlays. Top-level `[packages]`,
-`[pinned]` and `[bin]` apply on every machine. Host
+Per-machine overlays. Top-level `[packages]` and
+`[bin]` apply on every machine. Host
 sections add or override entries when the local
 hostname matches `<key>`.
 
@@ -174,8 +165,8 @@ These overlays and `--host` are frozen. No new
 `[hosts.*]` keys or `--host` semantics until fetch
 is the default.
 
-`gale install`, `add`, `remove`, `lock`, `pin`, and
-`unpin` default to the shared `[packages]` section.
+`gale install`, `add`, `remove`, and `lock`
+default to the shared `[packages]` section.
 Pass `--host <name>` (or `--host current` for the
 local machine) to write to a host section. `gale
 lock --host <selector>` regenerates that host's lock

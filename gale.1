@@ -88,7 +88,6 @@ to build every package from source.
 Update packages to the latest version, or to a specific
 version with
 .Ar pkg@ver .
-Skips pinned packages unless explicitly named.
 .Pp
 Use
 .Fl -no-install
@@ -108,9 +107,7 @@ to skip the automatic tap refresh.
 Switch a package already declared in
 .Pa gale.toml
 to a specific version.
-Bypasses
-.Ic [pinned] ,
-works for downgrades as well as upgrades, and refuses to
+Works for downgrades as well as upgrades, and refuses to
 add packages that aren't already declared (use
 .Cm install
 for that).
@@ -198,25 +195,12 @@ rebuilds it without the lock.
 .Dl $ gale gc --dry-run
 .Dl $ gale gc
 .Dl $ gale gc --force
-.It Cm pin Ar pkg
-Pin a package to its current version.
-Pinned packages are skipped by
-.Cm update
-unless explicitly named.
-.Pp
-.Dl $ gale pin go
-.It Cm unpin Ar pkg
-Remove the pin on a package, allowing
-.Cm update
-to upgrade it again.
-.Pp
-.Dl $ gale unpin go
 .El
 .Ss Inspection
 .Bl -tag -width Ds
 .It Cm info Ar pkg Op Fl g | Fl p
 Show package metadata: version, store path, scope,
-config path, and pin status.
+and config path.
 For uninstalled packages, shows registry information.
 With
 .Fl g ,
@@ -659,11 +643,10 @@ $ gale add go@1.26.1 golangci-lint
 $ gale sync
 .Ed
 .Pp
-Update everything except pinned packages:
+Update every package in the manifest:
 .Bd -literal -offset indent
-$ gale pin go
 $ gale update
-$ gale unpin go
+$ gale update jq
 .Ed
 .Pp
 Use direnv for automatic project environments:
@@ -720,9 +703,6 @@ Package declarations in
 jq = "1.8.1"
 go = "1.26.1"
 
-[pinned]
-go = true
-
 [vars]
 GOPATH = "${HOME}/go"
 
@@ -745,12 +725,8 @@ hostname matches
 .Ar name .
 Host entries override shared entries when both
 declare the same package.
-.Ic [hosts. Ns Ar name Ns Ic .pinned]
-and
 .Ic [hosts. Ns Ar name Ns Ic .bin]
-mirror the shared
-.Ic [pinned]
-and
+mirrors the shared
 .Ic [bin]
 behavior per host.
 .Pp
@@ -784,9 +760,9 @@ if set, otherwise the value returned by
 Use
 .Fl -host Ar name
 on
-.Cm add , remove , pin ,
+.Cm add , install , remove ,
 and
-.Cm unpin
+.Cm lock
 to target a host section.
 .Fl -host current
 expands to the current machine.
