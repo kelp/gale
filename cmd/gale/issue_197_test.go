@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"maps"
 	"os"
 	"path/filepath"
 	"testing"
@@ -107,29 +106,6 @@ func writeIssue197V2(t *testing.T, storeRoot, lockPath string) string {
 		t.Fatal(err)
 	}
 	return dest
-}
-
-func assertGenerationMatchesLock(
-	t *testing.T, galeDir, storeRoot, lockPath, fetchDir string, want map[string]string,
-) {
-	t.Helper()
-	installed, err := generation.CurrentVersions(galeDir, storeRoot)
-	if err != nil {
-		t.Fatalf("reading the active generation: %v", err)
-	}
-	if _, err := lockfile.ReadV2(lockPath); err != nil {
-		t.Fatalf("loading %s: %v", lockPath, err)
-	}
-	if !maps.Equal(installed, want) {
-		t.Errorf("active generation = %v, want lock %v", installed, want)
-	}
-	dirs, err := generation.CurrentStoreDirs(galeDir, storeRoot)
-	if err != nil {
-		t.Fatalf("current store dirs: %v", err)
-	}
-	if filepath.Clean(dirs[issue197Pkg]) != filepath.Clean(fetchDir) {
-		t.Errorf("linked %q, want fetch %q", dirs[issue197Pkg], fetchDir)
-	}
 }
 
 // TestGCRebuildDoesNotActivateAnUnlockedRevision drives gh#197's gc

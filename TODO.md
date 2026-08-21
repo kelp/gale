@@ -352,7 +352,9 @@ Refactors (need judgment):
   shared `t.Helper()` fixtures or table-driven cases (dupl is
   enforced on tests by design). (Count was stale: 3 pairs.
   `internal/build` and `internal/recipe` had no remaining hits.)
-- [ ] **revive (13)** — early-return / superfluous-else / naming.
+- [x] **revive (13)** — early-return / superfluous-else / naming.
+  (Count was stale: 6 argument/result-limit hits.
+  No early-return or superfluous-else remain.)
 - [ ] **funlen (16)** — split functions over 80 lines / 50 statements.
 - [ ] **gocognit (13)** — reduce cognitive complexity below 30.
 

@@ -11,6 +11,19 @@
 
 ### Fixed
 
+- **revive.** The backlog count was
+  stale (6 hits: argument-limit and
+  function-result-limit). Version
+  tuples, `which` results, the remove
+  store plan, and registered-project
+  fixtures now group those
+  signatures. Unused
+  `assertGenerationMatchesLock` is
+  gone. Full-repo `revive` is 0. The
+  `issues:` block in `.golangci.yml`
+  stays until the rest of the Code
+  Standards Backlog is gone.
+
 - **dupl in tests.** The backlog count
   was stale (6 reports, 3 pairs).
   Shared `t.Helper()` fixtures cover
