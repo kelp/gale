@@ -52,6 +52,10 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if err := runPublishHook(p.afterLock); err != nil {
 			return err
 		}
+		pkgs, err := pkgsFromV2Lock(p.Lock)
+		if err != nil {
+			return err
+		}
 		if _, err := toStore(ctx, store.NewStore(c.StoreRoot), p.Name, p.Version, p.Art); err != nil {
 			return fmt.Errorf("staging store: %w", err)
 		}
@@ -77,10 +81,6 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if err := runPublishHook(p.beforeSwap); err != nil {
 			return err
 		}
-		pkgs, err := pkgsFromV2Lock(p.Lock)
-		if err != nil {
-			return err
-		}
 		if err := generation.BuildWithOptions(
 			pkgs, c.GaleDir, c.StoreRoot, generation.Options{},
 		); err != nil {
@@ -99,6 +99,12 @@ func pkgsFromV2Lock(lf *lockfile.V2) (map[string]string, error) {
 		name, version, err := lockfile.SplitV2Root(root)
 		if err != nil {
 			return nil, fmt.Errorf("lock root: %w", err)
+		}
+		if other, ok := pkgs[name]; ok && other != version {
+			return nil, fmt.Errorf(
+				"%w: one target roots both %s@%s and %s@%s",
+				lockfile.ErrVersionConflict, name, other, name, version,
+			)
 		}
 		pkgs[name] = version
 	}

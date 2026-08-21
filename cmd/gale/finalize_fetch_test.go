@@ -220,6 +220,22 @@ func TestFinalizeFetchHappyPathOrder(t *testing.T) {
 	}
 }
 
+func TestFinalizeFetchRejectsConflictingLockRoots(t *testing.T) {
+	fx := newFetchPubFixture(t)
+	fx.lock.Targets.Default.Roots = []string{
+		fetchPubName + "@" + fetchPubVersion,
+		fetchPubName + "@1.57.0",
+	}
+	err := finalizeFetch(context.Background(), fx.c, fx.publish())
+	if !errors.Is(err, lockfile.ErrVersionConflict) {
+		t.Fatalf("err = %v, want ErrVersionConflict", err)
+	}
+	if fx.storeCalls.Load() != 0 {
+		t.Error("ToStore ran for a lock that cannot activate")
+	}
+	assertUnchangedPublication(t, fx)
+}
+
 func TestFinalizeFetchMutationLockExclusive(t *testing.T) {
 	fx := newFetchPubFixture(t)
 	started := make(chan struct{})
