@@ -93,7 +93,7 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if err := runPublishHook(p.beforeSwap); err != nil {
 			return err
 		}
-		opts := fetchBuildOpts(c, p.Lock)
+		opts := fetchBuildOpts(p.Lock)
 		if err := generation.BuildWithOptions(
 			pkgs, c.GaleDir, c.StoreRoot, opts,
 		); err != nil {
@@ -104,16 +104,10 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 	})
 }
 
-func fetchBuildOpts(c *cmdContext, lf *lockfile.V2) generation.Options {
-	opts := generation.Options{
+func fetchBuildOpts(lf *lockfile.V2) generation.Options {
+	return generation.Options{
 		Fetch: fetchSHAMap(lf),
 	}
-	if c != nil && c.GalePath != "" {
-		if cfg, err := loadEffectiveConfig(c.GalePath); err == nil {
-			opts.BinOverrides = cfg.Bin
-		}
-	}
-	return opts
 }
 
 func fetchSHAMap(lf *lockfile.V2) map[string]string {

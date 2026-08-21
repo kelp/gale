@@ -784,12 +784,13 @@ func checkSymlinks(ctx *doctorContext) bool {
 
 // checkShadowedProviders reports the executable-name collisions a
 // rebuild of each scope would refuse: two declared packages shipping
-// the same bin/ basename, with no [bin] winner naming one of them.
+// the same bin/ basename.
 //
 // Nothing clears this state by itself. gc rebuilds the same
 // generation from the same manifest and hits the same refusal,
-// so until the user edits [bin] every command that touches a
-// generation fails on it — which is exactly when doctor is run.
+// so until the user removes one package every command that
+// touches a generation fails on it — which is exactly when
+// doctor is run.
 //
 // The verdict comes from generation.BinArbiter, the arbiter the
 // rebuild itself decides by. gh#190 exported it for this: a doctor
@@ -825,9 +826,7 @@ func checkScopeShadowedProviders(
 		// unreadable manifest.
 		return true
 	}
-	if err := shadowedProviders(
-		cfg.Packages, cfg.Bin, ctx.storeRoot,
-	); err != nil {
+	if err := shadowedProviders(cfg.Packages, ctx.storeRoot); err != nil {
 		ctx.out.Error(fmt.Sprintf("%s scope: %v", s.label, err))
 		return false
 	}
@@ -852,10 +851,10 @@ func checkScopeShadowedProviders(
 // nothing: a rebuild skips it with a warning rather than failing
 // (gh#68), and doctor's own checks report the missing install.
 func shadowedProviders(
-	pkgs, overrides map[string]string, storeRoot string,
+	pkgs map[string]string, storeRoot string,
 ) error {
 	s := store.NewStore(storeRoot)
-	bins := generation.NewBinArbiter(overrides)
+	bins := generation.NewBinArbiter()
 	for _, name := range slices.Sorted(maps.Keys(pkgs)) {
 		binDir := filepath.Join(s.ResolveDir(name, pkgs[name]), "bin")
 		entries, err := os.ReadDir(binDir)

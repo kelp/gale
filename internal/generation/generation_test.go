@@ -1166,7 +1166,7 @@ func TestPopulateGenerationFailsOnBinCollision(t *testing.T) {
 		t.Errorf("collisions = %+v, want %+v", collErr.Collisions, want)
 	}
 	for _, fragment := range []string{
-		"tool", "cut", "alpha", "beta", "gamma", "[bin]",
+		"tool", "cut", "alpha", "beta", "gamma", "remove",
 	} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Errorf("error %q omits %q", err, fragment)
@@ -1177,10 +1177,9 @@ func TestPopulateGenerationFailsOnBinCollision(t *testing.T) {
 	}
 }
 
-// TestPopulateGenerationHonorsBinOverride covers the escape hatch:
-// the named package wins, the other provider's entry is left out,
-// and no collision is reported.
-func TestPopulateGenerationHonorsBinOverride(t *testing.T) {
+// TestPopulateGenerationLeftoverBinDoesNotWin: leftover
+// [bin] is gone. Two packages shipping one basename refuse.
+func TestPopulateGenerationLeftoverBinDoesNotWin(t *testing.T) {
 	storeRoot := t.TempDir()
 	genDir := newGenDir(t)
 
@@ -1188,19 +1187,15 @@ func TestPopulateGenerationHonorsBinOverride(t *testing.T) {
 	createStoreEntry(t, storeRoot, "beta", "1.0", []string{"tool"})
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
-	overrides := map[string]string{"tool": "beta"}
-
-	if err := populateGeneration(genDir, pkgs, storeRoot, Options{BinOverrides: overrides}); err != nil {
-		t.Fatalf("populateGeneration error: %v", err)
+	err := populateGeneration(genDir, pkgs, storeRoot, Options{})
+	if err == nil {
+		t.Fatal("want bin collision, leftover [bin] must not win")
 	}
-
-	target, err := os.Readlink(filepath.Join(genDir, "bin", "tool"))
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
+	if !strings.Contains(err.Error(), "tool") {
+		t.Errorf("error %q must name tool", err)
 	}
-	if !strings.Contains(target, string(filepath.Separator)+"beta"+
-		string(filepath.Separator)) {
-		t.Errorf("bin/tool -> %s, want beta's copy", target)
+	if strings.Contains(err.Error(), "[bin]") {
+		t.Errorf("error still advertises [bin]: %q", err)
 	}
 }
 

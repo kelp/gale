@@ -7,9 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
-	"github.com/kelp/gale/internal/projects"
 )
 
 // addStoreBin adds extra executables to an existing store dir.
@@ -90,44 +88,9 @@ func TestRebuildGenerationFailsOnBinCollisionBeforeCurrentMoves(t *testing.T) {
 	}
 }
 
-// TestRebuildGenerationHonorsBinOverride covers gh#190's escape
-// hatch: [bin] names the winning package for a basename, and every
-// other provider's entry is left out of the generation.
-func TestRebuildGenerationHonorsBinOverride(t *testing.T) {
-	galeDir, storeRoot := setupGCHome(t)
-	configPath := filepath.Join(galeDir, "gale.toml")
-
-	alphaDir := mkStorePkg(t, storeRoot, "alpha", "1.0")
-	betaDir := mkStorePkg(t, storeRoot, "beta", "1.0")
-	addStoreBin(t, alphaDir, "foo")
-	addStoreBin(t, betaDir, "foo")
-
-	writeGlobalConfig(t, galeDir,
-		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
-			"[bin]\nfoo = \"beta\"\n")
-
-	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
-		t.Fatalf("rebuildGeneration with [bin] override: %v", err)
-	}
-
-	got := evalPath(t, filepath.Join(galeDir, "current", "bin", "foo"))
-	want := evalPath(t, filepath.Join(betaDir, "bin", "foo"))
-	if got != want {
-		t.Errorf("bin/foo resolves to %q, want %q — [bin] names the "+
-			"winner, not sort order", got, want)
-	}
-
-	// The loser keeps its own uncontested binaries.
-	if _, err := os.Stat(
-		filepath.Join(galeDir, "current", "bin", "alpha"),
-	); err != nil {
-		t.Errorf("alpha's own binary fell off PATH: %v", err)
-	}
-}
-
-// TestRebuildGenerationRejectsUnknownBinOverride keeps the override
-// honest: a winner that is not a declared package is a typo, and
-// silently ignoring it would restore the silent-shadowing bug.
+// TestRebuildGenerationRejectsUnknownBinOverride: leftover
+// [bin] naming an undeclared winner still loads. The
+// collision is refused.
 func TestRebuildGenerationRejectsUnknownBinOverride(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
 	configPath := filepath.Join(galeDir, "gale.toml")
@@ -141,13 +104,10 @@ func TestRebuildGenerationRejectsUnknownBinOverride(t *testing.T) {
 		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
 			"[bin]\nfoo = \"gamma\"\n")
 
-	err := rebuildGeneration(galeDir, storeRoot, configPath, nil)
-	if err == nil {
-		t.Fatal("rebuildGeneration accepted an undeclared [bin] winner")
+	if _, err := loadEffectiveConfig(configPath); err != nil {
+		t.Fatalf("leftover [bin] must still load: %v", err)
 	}
-	if !strings.Contains(err.Error(), "gamma") {
-		t.Errorf("error %q does not name the undeclared winner", err)
-	}
+	assertBinCollision(t, rebuildGeneration(galeDir, storeRoot, configPath, nil))
 }
 
 // TestRebuildGenerationDetectsCollisionFromCarriedForwardVersion
@@ -200,52 +160,9 @@ func evalPath(t *testing.T, path string) string {
 	return resolved
 }
 
-// TestRegenerateScopeHonorsBinOverride covers migrate's interaction
-// with gh#190. A generation built before the fix can hold a shadowed
-// executable, and migrate rebuilds a scope from that active package
-// set — so it must read the scope's [bin] table. Without it the
-// override would fix every other command and leave migrate stuck on
-// a collision the user has already resolved.
-func TestRegenerateScopeHonorsBinOverride(t *testing.T) {
-	galeDir, storeRoot := setupGCHome(t)
-
-	alphaDir := mkStorePkg(t, storeRoot, "alpha", "1.0")
-	betaDir := mkStorePkg(t, storeRoot, "beta", "1.0")
-	addStoreBin(t, alphaDir, "foo")
-	addStoreBin(t, betaDir, "foo")
-
-	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
-	if err := generation.BuildWithOptions(
-		pkgs, galeDir, storeRoot,
-		generation.Options{BinOverrides: map[string]string{"foo": "beta"}},
-	); err != nil {
-		t.Fatalf("seed generation: %v", err)
-	}
-
-	scope := projects.Scope{Label: "the global scope", GaleDir: galeDir}
-
-	// No manifest yet: the collision is in the active set, so the
-	// rebuild refuses it.
-	err := regenerateScope(scope, storeRoot, discardOutput())
-	var collErr *generation.BinCollisionError
-	if !errors.As(err, &collErr) {
-		t.Fatalf("error = %v (%T), want *generation.BinCollisionError",
-			err, err)
-	}
-
-	writeGlobalConfig(t, galeDir,
-		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
-			"[bin]\nfoo = \"beta\"\n")
-
-	if err := regenerateScope(scope, storeRoot, discardOutput()); err != nil {
-		t.Fatalf("regenerateScope with [bin] override: %v", err)
-	}
-	if got := linkTarget(t, galeDir, "foo"); !strings.Contains(
-		got, filepath.Join("beta", "1.0"),
-	) {
-		t.Errorf("bin/foo -> %s, want beta's copy", got)
-	}
-}
+// TestRegenerateScopeHonorsBinOverride is gone: leftover
+// [bin] cannot settle a migrate rebuild. Covered by
+// TestLockedRebuildLeftoverBinDoesNotSettle.
 
 // TestRemovePrunesBinOverrideNamingRemovedPackage closes the trap
 // this PR would otherwise ship: `gale remove beta` while [bin] names
@@ -266,9 +183,6 @@ func TestRemovePrunesBinOverrideNamingRemovedPackage(t *testing.T) {
 	writeGlobalConfig(t, galeDir,
 		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
 			"[bin]\nfoo = \"beta\"\n")
-	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
-		t.Fatalf("seed rebuild: %v", err)
-	}
 
 	removeGlobal = true
 	t.Cleanup(func() { removeGlobal = false })
@@ -276,20 +190,6 @@ func TestRemovePrunesBinOverrideNamingRemovedPackage(t *testing.T) {
 		t.Fatalf("remove beta: %v", err)
 	}
 
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatalf("parse config: %v", err)
-	}
-	if winner, has := cfg.Bin["foo"]; has {
-		t.Errorf("[bin] foo = %q survived the removal of its winner:\n%s",
-			winner, data)
-	}
-
-	// The manifest must load — that is the whole point.
 	if _, err := loadEffectiveConfig(configPath); err != nil {
 		t.Errorf("config no longer loads after remove: %v", err)
 	}
@@ -341,12 +241,7 @@ func TestRemoveKeepsBinOverrideWhenLoserGoes(t *testing.T) {
 		t.Fatalf("remove alpha: %v", err)
 	}
 
-	cfg, err := loadEffectiveConfig(configPath)
-	if err != nil {
-		t.Fatalf("config no longer loads: %v", err)
-	}
-	if cfg.Bin["foo"] != "beta" {
-		t.Errorf("[bin] foo = %q, want beta — the winner is still declared",
-			cfg.Bin["foo"])
+	if _, err := loadEffectiveConfig(configPath); err != nil {
+		t.Fatalf("leftover [bin] must still load: %v", err)
 	}
 }

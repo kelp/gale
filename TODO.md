@@ -240,7 +240,7 @@ Not-in-index is an error.
       `sbom`, `inspect`, `repo *`. No
       stubs. Mark leftover TODO items
       below the fold as superseded.
-- [ ] **Bin collision is a hard error.**
+- [x] **Bin collision is a hard error.**
       Remove `[bin]` overlays and per-host
       winners. Two packages shipping the
       same basename refuse the generation.

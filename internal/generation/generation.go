@@ -616,8 +616,8 @@ var galeReadme []byte
 // generations are retained for history and rollback.
 //
 // Two packages shipping the same bin/ basename are refused, before
-// the current symlink moves, unless Options.BinOverrides names a
-// winner (gh#190).
+// the current symlink moves. There is no overlay that names a
+// winner.
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	return BuildWithOptions(pkgs, galeDir, storeRoot, Options{})
 }
@@ -628,11 +628,6 @@ type Options struct {
 	// Validate is design section 6's revalidation callback. See
 	// BuildWithValidate.
 	Validate func() error
-	// BinOverrides resolves executable-name collisions: basename →
-	// the package whose copy goes into the generation. Read from
-	// gale.toml's [bin] table. Without an entry, a contested
-	// basename refuses the build (gh#190).
-	BinOverrides map[string]string
 	// Fetch maps a package name to the artifact SHA256 used
 	// with store.FetchPath. When set, Build links that fetch
 	// tree and never a source ResolveDir for the same name.
@@ -1124,8 +1119,8 @@ func Remove(galeDir, storeRoot string, targets []int) ([]int, error) {
 // with a warning (see Build).
 //
 // Two packages shipping the same bin/ basename fail the whole
-// generation, naming both providers, unless binOverrides (gale.toml's
-// [bin] table) names a winner. Sort order used to decide it silently,
+// generation, naming both providers. Leftover [bin] tables do
+// not settle a collision. Sort order used to decide it silently,
 // which put a binary on PATH nobody chose (gh#190). Every collision
 // is collected before the error returns, so one edit fixes them all.
 // Only bin/ is arbitrated: nothing else decides what runs from PATH,
@@ -1140,7 +1135,7 @@ func populateGeneration(
 	}
 	sort.Strings(names)
 
-	bins := NewBinArbiter(opts.BinOverrides)
+	bins := NewBinArbiter()
 	for _, name := range names {
 		version := pkgs[name]
 		pkgDir := resolvePkgDir(storeRoot, name, version, opts.Fetch)
