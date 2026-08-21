@@ -6,7 +6,6 @@ import (
 	"maps"
 	"slices"
 
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
@@ -435,8 +434,7 @@ func v1SHA(lf *lockfile.V1, id, platform string) (string, bool, error) {
 
 // canonicalStoreDir resolves a store directory's spelling without
 // touching its version, matching what the generation and closure
-// readers return. It delegates to farm.CanonicalDir, which is the
-// one spelling those readers use.
+// readers return. It delegates to generation.CanonicalDir.
 func canonicalStoreDir(dir string) string {
-	return farm.CanonicalDir(dir)
+	return generation.CanonicalDir(dir)
 }

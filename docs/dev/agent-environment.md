@@ -34,8 +34,8 @@ Four things to internalize before your first command:
    fail slowly. See [Blocked egress](#blocked-egress).
 3. **You are root.** Tests that assert a permission error skip themselves
    rather than fail. See [Running as root](#running-as-root).
-4. **Green locally is not green on CI.** Half of `internal/build` and all of
-   the Mach-O code is `//go:build darwin` and is never compiled here. See
+4. **Green locally is not green on CI.** Darwin-only files
+   (`//go:build darwin`) never compile here. See
    [Darwin code is invisible on Linux](#darwin-code-is-invisible-on-linux).
    `just preflight` closes that gap and the other CI-only gates.
 
@@ -64,14 +64,6 @@ What it installs, and where the pin comes from:
 | `govulncheck` | `go install golang.org/x/vuln/...@latest` | latest, as CI does |
 | `actionlint` | `go install github.com/rhysd/actionlint/...@latest` | latest |
 | `just` | GitHub release tarball | `gale.toml` |
-| `patchelf` | GitHub release tarball, Linux only | literal in the script |
-
-`patchelf` is a test dependency, not a dev tool: six rpath tests in
-`internal/build/fixup_linux_test.go` call `exec.LookPath("patchelf")` and skip
-without it, which quietly strips Linux coverage from the most
-regression-prone file in the repo. Its pin lives in the script rather than
-`gale.toml` because `gale.toml` drives a real dev machine's direnv toolchain,
-and gale is macOS-first, where patchelf means nothing.
 
 It also warms the Go module cache, unshallows the clone (see
 [new-from-merge-base](#golangci-lint)), and points `core.hooksPath` at
@@ -166,16 +158,14 @@ scoped to `kelp/gale` and `kelp/gale-recipes`.
 
 gale is macOS-first, but this container is Linux. Every `//go:build darwin`
 file is therefore excluded from the build: it is not compiled, not
-typechecked, not vetted, and not linted. Six files, found with
-`grep -rl '^//go:build darwin' --include='*.go' .` — `fixup_darwin.go`,
-`fixup_uuid.go` and `binary_darwin.go` plus their tests, the Mach-O rpath,
-codesign and UUID paths that CLAUDE.md names as the most regression-prone
-code in the repo — get **zero** local signal.
+typechecked, not vetted, and not linted. Remaining darwin-only
+code lives under `internal/inspect/binary_darwin.go` and gets
+**zero** local signal here.
 
 The failure mode is silent. Append `func x() { doesNotExist() }` to
-`fixup_darwin.go` and `go build ./...`, `go vet ./...`, `golangci-lint run`,
-`go test ./...` and the pre-commit hook all stay green; CI's `macos-26` job is
-the first thing that notices.
+a `//go:build darwin` file and `go build ./...`, `go vet ./...`,
+`golangci-lint run`, `go test ./...` and the pre-commit hook all
+stay green; CI's `macos-26` job is the first thing that notices.
 
 The remedy:
 
@@ -288,7 +278,7 @@ if os.Geteuid() == 0 {
 }
 ```
 
-22 tests skip this way, across `cmd/gale`, `internal/build`,
+22 tests skip this way, across `cmd/gale`,
 `internal/generation`, `internal/installer`, `internal/lockfile`,
 `internal/projects`, `internal/provenance` and `internal/atomicfile`. They
 still run, and still pass, as an unprivileged user on CI. `go test ./... -v`
@@ -311,17 +301,13 @@ different tests, so run both:
 
 | Run | Gains | Loses |
 | --- | --- | --- |
-| `just test` (root) | the 10 tests that shell out to `patchelf`, `cc` or `go build` | 22 permission tests |
-| `just test-unprivileged` | those 22 | the 10 — `~/.local/bin` and the Go toolchain live under root's 0700 `$HOME`, so `exec.LookPath("patchelf")` and a nested `go build` fail for uid 65534 and those tests skip themselves |
+| `just test` (root) | tests that shell out to `cc` or `go build` | 22 permission tests |
+| `just test-unprivileged` | those 22 | tests that need the root-owned toolchain under `$HOME` |
 
-Known failure: `TestBuildEnvHomeIsBuildScoped` fails under it once any root
-`go test` has run in the container. That test sets `HOME=/host/home/value`,
-and `build.TmpDir()` does `MkdirAll($HOME/.gale/tmp)` — which root happily
-creates at the filesystem root, leaving a root-owned `/host/home/value/.gale/`
-behind. Unprivileged runs then find that directory present but unwritable
-instead of absent, so `TmpDir()` returns it rather than falling back to
-`/tmp`. Removing `/host/home` clears it. The real fix belongs in the test: a
-`t.TempDir()`, not a literal path outside the test's own tree.
+Known failure: a leftover `TmpDir` test that plants `HOME` at a
+literal host path can leave a root-owned `/.gale` after a root
+`go test`. Use `t.TempDir()` instead. `store.TmpDir()` still
+creates `$HOME/.gale/tmp`.
 
 ### chmod 000 does not work as root
 

@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/depsmeta"
-	"github.com/kelp/gale/internal/farm"
 )
 
 // This file is a CHARACTERISATION net, not a repro. Every
@@ -20,14 +19,12 @@ import (
 // The axes are the ones the walk actually branches on:
 //
 //   - how the root directory is presented: committed, staged
-//     elsewhere, presented as a farm.At-style placement whose bytes
-//     are already canonical, or absent entirely;
+//     elsewhere, or absent entirely;
 //   - what its dependency metadata says: recorded, absent, unusable;
 //   - which interpretation is asking: the migration veto's
-//     authoritative walk, its replacing-a-dir variant, the farm
-//     populate claim, or the removal claim.
+//     authoritative walk, or its replacing-a-dir variant.
 //
-// The tolerance differences between the four are the whole subject.
+// The tolerance differences between the two are the whole subject.
 // They are deliberate and each one is load-bearing, so they are
 // pinned cell by cell rather than described in prose.
 
@@ -40,10 +37,6 @@ const (
 	// dirStaged: canonical path empty, bytes in a staging directory
 	// the caller substitutes.
 	dirStaged
-	// dirAtStyle: bytes at the canonical path AND named by a
-	// placement whose ScanDir equals its FinalDir, which is what
-	// farm.At builds. Must be indistinguishable from dirCommitted.
-	dirAtStyle
 	// dirAbsent: no bytes anywhere.
 	dirAbsent
 )
@@ -54,8 +47,6 @@ func (k dirKind) String() string {
 		return "committed"
 	case dirStaged:
 		return "staged"
-	case dirAtStyle:
-		return "at-style"
 	case dirAbsent:
 		return "absent"
 	default:
@@ -116,11 +107,11 @@ func newMatrixFixture(t *testing.T, dk dirKind, mk metaKind) matrixFixture {
 	rootPath := filepath.Join(storeRoot, "root", "1.0-1")
 
 	switch dk {
-	case dirCommitted, dirAtStyle:
+	case dirCommitted:
 		f.root = seedPkg(t, storeRoot, "root", "1.0-1")
 		writeMeta(t, f.root, mk)
 	case dirStaged:
-		f.root = canonicalDir(rootPath) // absent: raw spelling
+		f.root = CanonicalDir(rootPath) // absent: raw spelling
 		f.staging = filepath.Join(t.TempDir(), ".build-matrix")
 		if err := os.MkdirAll(f.staging, 0o755); err != nil {
 			t.Fatal(err)
@@ -129,7 +120,7 @@ func newMatrixFixture(t *testing.T, dk dirKind, mk metaKind) matrixFixture {
 	case dirAbsent:
 		// Nothing on disk under either spelling; metadata is moot,
 		// which every dirAbsent row records by answering alike.
-		f.root = canonicalDir(rootPath)
+		f.root = CanonicalDir(rootPath)
 	}
 	return f
 }
@@ -160,33 +151,6 @@ func writeMeta(t *testing.T, dir string, mk metaKind) {
 	}
 }
 
-// placement is the fixture's root as the caller would present it.
-func (f matrixFixture) placement() farm.Placement {
-	scan := f.staging
-	if scan == "" {
-		scan = f.root
-	}
-	return farm.Placement{ScanDir: scan, FinalDir: f.root}
-}
-
-// stagedView is the proposed-store view ProposedClosure takes.
-// dirCommitted and dirAbsent pass none; dirAtStyle passes a
-// placement whose bytes are already canonical, which the walk must
-// treat as no substitution at all.
-func (f matrixFixture) stagedView(t *testing.T, dk dirKind) *farm.ProposedStore {
-	t.Helper()
-	switch dk {
-	case dirStaged, dirAtStyle:
-		v, err := farm.NewProposedStore([]farm.Placement{f.placement()}, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return v
-	default:
-		return nil
-	}
-}
-
 // symbolic renames the walk's absolute dirs to the fixture's names,
 // sorted, so a table can state expectations literally.
 func (f matrixFixture) symbolic(dirs map[string]bool) []string {
@@ -212,8 +176,6 @@ type matrixCase struct {
 	mk   metaKind
 	auth result // AuthoritativeClosure
 	ref  result // ReferenceClosure, replacing the root itself
-	prop result // ProposedClosure(require=false)
-	req  result // ProposedClosure(require=true)
 }
 
 // closureMatrixCases is the whole cross product, one group per
@@ -221,7 +183,7 @@ type matrixCase struct {
 func closureMatrixCases() []matrixCase {
 	var out []matrixCase
 	for _, group := range [][]matrixCase{
-		committedCases(), stagedCases(), atStyleCases(), absentCases(),
+		committedCases(), stagedCases(), absentCases(),
 	} {
 		out = append(out, group...)
 	}
@@ -232,26 +194,19 @@ func closureMatrixCases() []matrixCase {
 func committedCases() []matrixCase {
 	return []matrixCase{
 		// A committed root with a readable record is the ordinary
-		// case: every interpretation descends, except the reference
-		// walk, which stops at the directory it is replacing.
+		// case: the authoritative walk descends; the reference
+		// walk stops at the directory it is replacing.
 		{
 			dk: dirCommitted, mk: metaRecorded,
 			auth: result{[]string{"dep", "root"}, true},
 			ref:  result{[]string{"root"}, true},
-			prop: result{[]string{"dep", "root"}, true},
-			req:  result{[]string{"dep", "root"}, true},
 		},
-		// No record on a COMMITTED directory splits the four. The
-		// veto reads absence as an unknown closure and refuses; the
-		// farm claim reads it as the leaf every pre-metadata package
-		// is, because calling it unknown would refuse every
-		// operation on a machine that has one.
+		// No record on a COMMITTED directory: the veto reads
+		// absence as an unknown closure and refuses.
 		{
 			dk: dirCommitted, mk: metaAbsent,
 			auth: result{[]string{"root"}, false},
 			ref:  result{[]string{"root"}, true},
-			prop: result{[]string{"root"}, true},
-			req:  result{[]string{"root"}, true},
 		},
 		// An undecodable record is unknown to everyone who reads it.
 		// The reference walk still tolerates it, because it never
@@ -260,8 +215,6 @@ func committedCases() []matrixCase {
 			dk: dirCommitted, mk: metaUnusable,
 			auth: result{[]string{"root"}, false},
 			ref:  result{[]string{"root"}, true},
-			prop: result{[]string{"root"}, false},
-			req:  result{[]string{"root"}, false},
 		},
 	}
 }
@@ -270,65 +223,22 @@ func committedCases() []matrixCase {
 func stagedCases() []matrixCase {
 	return []matrixCase{
 		// Staged bytes stand in for a canonical path that does not
-		// exist yet. The two walks that take no substitution map see
+		// exist yet. The walks that take no substitution map see
 		// only the absence.
 		{
 			dk: dirStaged, mk: metaRecorded,
 			auth: result{nil, true},
 			ref:  result{nil, true},
-			prop: result{[]string{"dep", "root"}, true},
-			req:  result{[]string{"dep", "root"}, true},
 		},
-		// A staged artifact with no record is one the installer
-		// commits anyway (design §7). The populate claim must not be
-		// stricter than the commit it guards; the removal claim
-		// must, because there bytes go away.
 		{
 			dk: dirStaged, mk: metaAbsent,
 			auth: result{nil, true},
 			ref:  result{nil, true},
-			prop: result{[]string{"root"}, true},
-			req:  result{[]string{"root"}, false},
 		},
 		{
 			dk: dirStaged, mk: metaUnusable,
 			auth: result{nil, true},
 			ref:  result{nil, true},
-			prop: result{[]string{"root"}, true},
-			req:  result{[]string{"root"}, false},
-		},
-	}
-}
-
-// atStyleCases: a farm.At-style placement, whose bytes are already
-// canonical. Every row must equal its committedCases twin.
-func atStyleCases() []matrixCase {
-	return []matrixCase{
-		// A placement whose bytes are already canonical is an
-		// ordinary committed directory. Every row below must match
-		// its dirCommitted twin exactly — a substitution map entry
-		// that made one look staged would apply the staged tolerance
-		// to every package installed before metadata existed.
-		{
-			dk: dirAtStyle, mk: metaRecorded,
-			auth: result{[]string{"dep", "root"}, true},
-			ref:  result{[]string{"root"}, true},
-			prop: result{[]string{"dep", "root"}, true},
-			req:  result{[]string{"dep", "root"}, true},
-		},
-		{
-			dk: dirAtStyle, mk: metaAbsent,
-			auth: result{[]string{"root"}, false},
-			ref:  result{[]string{"root"}, true},
-			prop: result{[]string{"root"}, true},
-			req:  result{[]string{"root"}, true},
-		},
-		{
-			dk: dirAtStyle, mk: metaUnusable,
-			auth: result{[]string{"root"}, false},
-			ref:  result{[]string{"root"}, true},
-			prop: result{[]string{"root"}, false},
-			req:  result{[]string{"root"}, false},
 		},
 	}
 }
@@ -336,29 +246,20 @@ func atStyleCases() []matrixCase {
 // absentCases: no bytes anywhere.
 func absentCases() []matrixCase {
 	return []matrixCase{
-		// An absent directory is nothing to protect for three of the
-		// four, and an unsatisfiable claim for the removal walk.
-		// Metadata cannot change that: all three rows agree.
 		{
 			dk: dirAbsent, mk: metaRecorded,
 			auth: result{nil, true},
 			ref:  result{nil, true},
-			prop: result{nil, true},
-			req:  result{nil, false},
 		},
 		{
 			dk: dirAbsent, mk: metaAbsent,
 			auth: result{nil, true},
 			ref:  result{nil, true},
-			prop: result{nil, true},
-			req:  result{nil, false},
 		},
 		{
 			dk: dirAbsent, mk: metaUnusable,
 			auth: result{nil, true},
 			ref:  result{nil, true},
-			prop: result{nil, true},
-			req:  result{nil, false},
 		},
 	}
 }
@@ -370,7 +271,6 @@ func TestClosureInterpretationMatrix(t *testing.T) {
 		t.Run(tc.dk.String()+"/"+tc.mk.String(), func(t *testing.T) {
 			f := newMatrixFixture(t, tc.dk, tc.mk)
 			roots := []string{f.root}
-			staged := f.stagedView(t, tc.dk)
 
 			for _, in := range []struct {
 				name string
@@ -382,12 +282,6 @@ func TestClosureInterpretationMatrix(t *testing.T) {
 				}},
 				{"ReferenceClosure", tc.ref, func() (map[string]bool, bool) {
 					return ReferenceClosure(roots, f.storeRoot, f.root)
-				}},
-				{"ProposedClosure(require=false)", tc.prop, func() (map[string]bool, bool) {
-					return ProposedClosure(roots, f.storeRoot, staged, false)
-				}},
-				{"ProposedClosure(require=true)", tc.req, func() (map[string]bool, bool) {
-					return ProposedClosure(roots, f.storeRoot, staged, true)
 				}},
 			} {
 				dirs, complete := in.run()

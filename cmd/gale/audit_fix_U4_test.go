@@ -10,7 +10,6 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/kelp/gale/internal/depsmeta"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/store"
 )
@@ -290,7 +289,7 @@ func TestGCSweepsCrashLeftovers(t *testing.T) {
 	// The farm rebuild's equivalent (gh#184): an image staged beside
 	// ~/.gale/lib by a process killed before it could publish. Same
 	// class, same grace period, and a directory rather than a link.
-	staleFarm := filepath.Join(galeDir, farm.StagingPrefix+"99999")
+	staleFarm := filepath.Join(galeDir, "lib.staging."+"99999")
 	if err := os.MkdirAll(staleFarm, 0o755); err != nil {
 		t.Fatal(err)
 	}

@@ -440,21 +440,25 @@ func TestBuildPlan_RecipeMustAgree(t *testing.T) {
 	}
 }
 
-// TestBuildPlan_SourceNodeValidatesBuildEdges pins the classification
-// rule. A source node was produced from its build deps, so those edges
-// are validated; the same edges beside a binary node describe what
-// would build it, not what produced the bytes being fetched.
+// TestBuildPlan_SourceNodeValidatesBuildEdges pins that a source
+// node is refused before any source work. Fetch replaced source
+// install; a lock that still names MethodSource cannot plan.
 func TestBuildPlan_SourceNodeValidatesBuildEdges(t *testing.T) {
 	lock := sealDigests(t, lockOf([]string{"a@1.0-1"}, map[string]lockfile.Package{
 		"a@1.0-1":     node(sha("aa"), lockgraph.MethodSource, nil, []string{"cmake@3.0-1"}),
 		"cmake@3.0-1": node(sha("cc"), lockgraph.MethodBinary, nil, nil),
 	}))
-	if _, err := buildFrom(lock, map[string]string{"a": "1.0"}); err != nil {
-		t.Fatalf("Build: %v", err)
+	_, err := buildFrom(lock, map[string]string{"a": "1.0"})
+	if err == nil {
+		t.Fatal("source lock node must refuse")
+	}
+	if !strings.Contains(err.Error(), "source") && !strings.Contains(err.Error(), "fetch") {
+		t.Errorf("refusal must name source or fetch: %v", err)
 	}
 
-	// The build tool is part of a source node's closure, so dropping
-	// its entry is a missing node rather than an ignorable edge.
+	// A binary node may still carry leftover build edges; those
+	// describe what would build it, not what produced the bytes
+	// being fetched, and they do not make the plan a source plan.
 	trimmed := sealDigests(t, lockOf([]string{"a@1.0-1"}, map[string]lockfile.Package{
 		"a@1.0-1": node(sha("aa"), lockgraph.MethodBinary, nil, []string{"cmake@3.0-1"}),
 	}))
@@ -614,11 +618,9 @@ func TestBuildPlan_RejectsMalformedPlatform(t *testing.T) {
 	}
 }
 
-// TestBuildPlan_SourceStepsComeFromPlatformBuild pins which build
-// configuration decides whether a source node is buildable. Builds run
-// BuildForPlatform, so reading the default steps rejects a recipe whose
-// steps live only in the target-platform override, and accepts one
-// whose override removes them.
+// TestBuildPlan_SourceStepsComeFromPlatformBuild pins that a
+// source node is refused regardless of which build steps a recipe
+// would have used. Fetch replaced source install.
 func TestBuildPlan_SourceStepsComeFromPlatformBuild(t *testing.T) {
 	lock := sealDigests(t, lockOf([]string{"a@1.0-1"}, map[string]lockfile.Package{
 		"a@1.0-1": node(sha("aa"), lockgraph.MethodSource, nil, nil),
@@ -642,11 +644,20 @@ func TestBuildPlan_SourceStepsComeFromPlatformBuild(t *testing.T) {
 		return err
 	}
 
-	if err := plan(nil, []string{"make"}); err != nil {
-		t.Errorf("rejected steps that exist only in the platform override: %v", err)
-	}
-	if err := plan([]string{"make"}, []string{}); !errors.Is(err, ErrRecipeMismatch) {
-		t.Errorf("err = %v, want ErrRecipeMismatch for an override with no steps", err)
+	for _, tc := range []struct {
+		steps, override []string
+	}{
+		{nil, []string{"make"}},
+		{[]string{"make"}, []string{}},
+	} {
+		err := plan(tc.steps, tc.override)
+		if err == nil {
+			t.Error("source lock node must refuse")
+			continue
+		}
+		if !strings.Contains(err.Error(), "source") && !strings.Contains(err.Error(), "fetch") {
+			t.Errorf("refusal must name source or fetch: %v", err)
+		}
 	}
 }
 
@@ -761,5 +772,18 @@ func TestPlan_ForNameCarriesGraphNode(t *testing.T) {
 
 	if _, ok := plan.ForName("nosuch"); ok {
 		t.Error("plan answered for a package the lock does not name")
+	}
+}
+
+func TestBuildPlan_SourceNodeRefuses(t *testing.T) {
+	lock := sealDigests(t, lockOf([]string{"a@1.0-1"}, map[string]lockfile.Package{
+		"a@1.0-1": node(sha("aa"), lockgraph.MethodSource, nil, nil),
+	}))
+	_, err := buildFrom(lock, map[string]string{"a": "1.0"})
+	if err == nil {
+		t.Fatal("source lock node must refuse before source work")
+	}
+	if !strings.Contains(err.Error(), "source") && !strings.Contains(err.Error(), "fetch") {
+		t.Errorf("refusal must name source or fetch: %v", err)
 	}
 }

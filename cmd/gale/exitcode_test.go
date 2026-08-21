@@ -12,7 +12,6 @@ import (
 
 	"github.com/kelp/gale/internal/activation"
 	"github.com/kelp/gale/internal/download"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/lockplan"
@@ -73,25 +72,6 @@ func exitCodeLockCases() []exitCodeCase {
 			name: "malformed downgrade guard",
 			err:  fmt.Errorf("sync: %w", lockfile.ErrDowngradeGuard),
 			want: exitLockUnusable,
-		},
-		{
-			name: "cross-project farm conflict",
-			err:  fmt.Errorf("sync: %w", farm.ErrClaimConflict),
-			want: exitLockIntegrity,
-		},
-		{
-			// The guard fails closed on a claimant whose lock is
-			// unusable, wrapping that lock's sentinel. The refusal
-			// is still the farm guard's: regenerating the
-			// INITIATING scope's lock cannot fix another scope's
-			// file, so the pipeline-actionable class 4 would
-			// mislead. Class 3 (a human decides) wins.
-			name: "farm conflict over an unreadable claimant",
-			err: fmt.Errorf("sync: %w",
-				fmt.Errorf("%w: cannot read the closure of project "+
-					"/b: %w", farm.ErrClaimConflict,
-					lockfile.ErrMalformed)),
-			want: exitLockIntegrity,
 		},
 		{
 			name: "unserializable locked closure",

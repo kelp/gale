@@ -13,8 +13,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -26,7 +24,6 @@ import (
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/provenance"
-	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -310,64 +307,6 @@ func sourceTarball(t *testing.T, name string) (string, string) {
 		t.Fatal(err)
 	}
 	return path, fmt.Sprintf("%x", sha256.Sum256(data))
-}
-
-// TestSyncWritesNoLockfile pins section 11's first line: sync never
-// writes gale.lock. It is a pure consumer of one — the lock says
-// what to install — so a sync that also wrote it would ratify
-// whatever it happened to install and leave nothing to enforce.
-//
-// The install is real rather than cached, because the write this
-// test denies only ever happened after a successful install.
-func TestSyncWritesNoLockfile(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	storeRoot := filepath.Join(tmp, "store")
-	galeDir := filepath.Join(tmp, ".gale")
-	galePath := filepath.Join(tmp, "gale.toml")
-	if err := os.MkdirAll(galeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(galePath,
-		[]byte("[packages]\n  syncpkg = \"1.0\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	tarball, sum := sourceTarball(t, "syncpkg")
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, tarball)
-		},
-	))
-	defer srv.Close()
-
-	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
-		return &recipe.Recipe{
-			Package: recipe.Package{Name: name, Version: "1.0"},
-			Source:  recipe.Source{URL: srv.URL + "/source.tar.gz", SHA256: sum},
-			Build: recipe.Build{Steps: []string{
-				"mkdir -p $PREFIX/bin",
-				"echo '#!/bin/sh' > $PREFIX/bin/syncpkg",
-				"chmod +x $PREFIX/bin/syncpkg",
-			}},
-		}, nil
-	}
-
-	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	out := runSyncOne(context.Background(), ctx, syncItem{name: "syncpkg", version: "1.0"}, false)
-	if out.installErr != nil || out.result == nil {
-		t.Fatalf("install did not succeed: err=%v result=%v",
-			out.installErr, out.result)
-	}
-
-	lp, err := lockfilePath(galePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(lp); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(lp)
-		t.Errorf("sync created %s:\n%s", lp, data)
-	}
 }
 
 // TestUpdateRegeneratesTheSectionItRewrote: `update` rewrites the

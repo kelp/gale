@@ -14,9 +14,7 @@ import (
 
 	"github.com/BurntSushi/toml"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
@@ -492,7 +490,7 @@ func addRetainedGenerationRefs(
 // walks that metadata for the dylib farm; reuse it per retained
 // package and key the resulting store dirs back into the set.
 //
-// Strict, not the lenient FarmStoreDirs the farm rebuild uses
+// Strict, not a best-effort walk a rebuild could tolerate
 // (gh#210): an unreadable .gale-deps.toml drops its whole subtree
 // from the closure, and a subtree missing from retention is a
 // subtree the sweep deletes. Keys are walked in sorted order so a
@@ -994,7 +992,7 @@ func expandRuntimeDeps(
 const gcSweepGrace = time.Hour
 
 // gcScratchPrefixes are the ~/.gale/tmp entry name prefixes
-// gale's build paths create (see internal/build and
+// gale's scratch paths create (see store.TmpDir and
 // internal/installer). Only entries matching one of these are
 // swept — anything else in tmp is not provably gale-owned.
 var gcScratchPrefixes = []string{
@@ -1009,7 +1007,7 @@ var gcScratchPrefixes = []string{
 // Both are inert — nothing resolves through either — so they are
 // swept on age alone, like every other crash leftover.
 var gcSwapDebrisPrefixes = []string{
-	"current-new.", farm.StagingPrefix,
+	"current-new.", "lib.staging.",
 }
 
 // sweepCrashLeftovers reclaims artifacts a crashed or killed
@@ -1098,13 +1096,13 @@ func hasSwapDebrisPrefix(name string) bool {
 // scratch of any age here, and there is no way to map a
 // scratch dir back to the package that owns it.
 //
-// The build.TmpDir error is returned rather than absorbed into a
+// The store.TmpDir error is returned rather than absorbed into a
 // zero count. gc's job is to report what it reclaimed, and "0
 // swept" for an unreachable scratch dir is indistinguishable
 // from "0 swept because there was nothing there" — the same
 // silent-degradation shape gh#235 removed from TmpDir itself.
 func sweepBuildScratch(s *store.Store, dry bool) (int, error) {
-	tmpDir, err := build.TmpDir()
+	tmpDir, err := store.TmpDir()
 	if err != nil {
 		return 0, fmt.Errorf("build temp dir: %w", err)
 	}

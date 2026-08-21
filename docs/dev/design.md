@@ -277,11 +277,9 @@ interface), graphics frameworks (Cocoa, GTK, libGL),
 and OS-level services (PAM, NSS). You can't
 statically link the window system.
 
-**Gale's policy:** static by default. The generation
-model supports `lib/` and `include/` symlinks, and
-`FixupBinaries` rewrites dylib paths with
-`install_name_tool` (macOS) or `patchelf` (Linux)
-for packages that need dynamic linking. But for
+**Gale's policy:** static by default. Fetch installs
+index artifacts as shipped. There is no runtime
+`install_name_tool` / `patchelf` rewrite. For
 developer CLI tools, static is simpler and more
 portable.
 

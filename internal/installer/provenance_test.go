@@ -7,11 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/provenance"
@@ -358,177 +356,6 @@ func TestInstallBinary_UnparsableArchiveDepsCommitsWithoutProvenance(t *testing.
 	}
 }
 
-// TestExtractBuild_RecordsSourceBuildDeps covers the source commit
-// path. A source artifact was produced from its build dependencies on
-// this machine, so those edges are part of what it attests — and
-// unlike the binary path they must survive into the record.
-func TestExtractBuild_RecordsSourceBuildDeps(t *testing.T) {
-	storeRoot := filepath.Join(t.TempDir(), "pkg")
-	libfoo := provenanceDep(t, storeRoot, "libfoo", "1.0-1")
-	cmake := provenanceDep(t, storeRoot, "cmake", "3.0-1")
-
-	archive := createU3TarZstd(t, []u3TarEntry{
-		{name: "bin/tool", content: "#!/bin/sh\n", mode: 0o755},
-		{
-			name:    depsmeta.File,
-			content: "[[deps]]\nname = \"libfoo\"\nversion = \"1.0\"\nrevision = 1\n",
-			mode:    0o644,
-		},
-	})
-	storeDir := filepath.Join(storeRoot, "srcpkg", "2.0-1")
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		t.Fatalf("create store dir: %v", err)
-	}
-	a := sourceOf("srcpkg", "2.0-1")
-	a.BuildDeps = []depsmeta.ResolvedDep{
-		{Name: "cmake", Version: "3.0", Revision: 1},
-	}
-	err := (&Installer{}).extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
-		storeDir, nil, a)
-	if err != nil {
-		t.Fatalf("extractBuild: %v", err)
-	}
-
-	got, err := provenance.ReadUnverified(storeDir)
-	if err != nil {
-		t.Fatalf("read source provenance: %v", err)
-	}
-	if got.Method != lockgraph.MethodSource {
-		t.Errorf("method = %q, want source", got.Method)
-	}
-	if len(got.BuildDeps) != 1 || got.BuildDeps[0] != "cmake@3.0-1" {
-		t.Errorf("build_deps = %v, want [cmake@3.0-1]", got.BuildDeps)
-	}
-	if len(got.RuntimeDeps) != 1 || got.RuntimeDeps[0] != "libfoo@1.0-1" {
-		t.Errorf("runtime_deps = %v, want [libfoo@1.0-1]", got.RuntimeDeps)
-	}
-	n := leafNode("srcpkg", "2.0-1")
-	n.Method = lockgraph.MethodSource
-	n.SHA256 = fakeSHA
-	n.Edges = []lockgraph.Edge{
-		{Kind: lockgraph.KindRuntime, Name: "libfoo", Version: "1.0-1"},
-		{Kind: lockgraph.KindBuild, Name: "cmake", Version: "3.0-1"},
-	}
-	want, err := lockgraph.Digest(n, map[string]string{
-		"libfoo@1.0-1": libfoo.GraphDigest,
-		"cmake@3.0-1":  cmake.GraphDigest,
-	})
-	if err != nil {
-		t.Fatalf("expected digest: %v", err)
-	}
-	if got.GraphDigest != want {
-		t.Errorf("graph_digest = %q, want %q", got.GraphDigest, want)
-	}
-}
-
-// TestExtractBuild_UnprovenancedBuildDepBlocksRecord pins the half of
-// the serialization rule the binary path cannot reach. A build edge
-// counts for a source artifact, so a build tool with no provenance
-// leaves the package unattested — where the same tool beside a
-// prebuilt binary would be irrelevant.
-func TestExtractBuild_UnprovenancedBuildDepBlocksRecord(t *testing.T) {
-	storeRoot := filepath.Join(t.TempDir(), "pkg")
-	if err := os.MkdirAll(filepath.Join(storeRoot, "cmake", "3.0-1"), 0o755); err != nil {
-		t.Fatalf("create legacy build dep: %v", err)
-	}
-
-	archive := createU3TarZstd(t, []u3TarEntry{
-		{name: "bin/tool", content: "#!/bin/sh\n", mode: 0o755},
-	})
-	storeDir := filepath.Join(storeRoot, "srcpkg", "2.0-1")
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		t.Fatalf("create store dir: %v", err)
-	}
-	a := sourceOf("srcpkg", "2.0-1")
-	a.BuildDeps = []depsmeta.ResolvedDep{
-		{Name: "cmake", Version: "3.0", Revision: 1},
-	}
-	err := (&Installer{}).extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
-		storeDir, nil, a)
-	if err != nil {
-		t.Fatalf("extractBuild: %v", err)
-	}
-
-	if _, err := os.Stat(filepath.Join(storeDir, provenance.File)); !os.IsNotExist(err) {
-		t.Errorf("record written over an unprovenanced build dep: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(storeDir, "bin", "tool")); err != nil {
-		t.Errorf("install did not commit its payload: %v", err)
-	}
-}
-
-// TestBuildEdgeDeps_DirectOnlyPlusImplicitTools pins which build
-// dependencies a source record attests. NamedDirs carries the whole
-// build environment transitively; recording it would attest a set the
-// recipe never named. Implicit system tools are the exception: they
-// really did produce the bytes even though no line of the recipe
-// lists them.
-func TestBuildEdgeDeps_DirectOnlyPlusImplicitTools(t *testing.T) {
-	r := &recipe.Recipe{
-		Package:      recipe.Package{Name: "srcpkg", Version: "2.0"},
-		Dependencies: recipe.Dependencies{Build: []string{"ninja"}},
-		Build:        recipe.Build{System: "cmake"},
-	}
-	deps := &build.BuildDeps{NamedDirs: map[string]string{
-		"ninja":       "/store/ninja/1.11-1",
-		"cmake":       "/store/cmake/3.0-1",
-		"transitive":  "/store/transitive/1.0-1",
-		"libfoo":      "/store/libfoo/1.0-1",
-		"placeholder": "",
-	}}
-
-	resolved, ok := buildEdgeDeps(r, deps)
-	if !ok {
-		t.Fatal("complete build environment reported unusable")
-	}
-	var got []string
-	for _, d := range resolved {
-		got = append(got, d.Name)
-	}
-	want := []string{"cmake", "ninja"}
-	if !slices.Equal(got, want) {
-		t.Errorf("build deps = %v, want %v", got, want)
-	}
-}
-
-// TestBuildEdgeDeps_UnresolvedDeclaredDepIsUnusable is the difference
-// between attesting less and attesting nothing. FromNamedDirsFiltered
-// drops a name it cannot resolve, so without the count check a source
-// record would claim a narrower build closure than the recipe declared
-// while looking every bit as complete.
-func TestBuildEdgeDeps_UnresolvedDeclaredDepIsUnusable(t *testing.T) {
-	r := &recipe.Recipe{
-		Package:      recipe.Package{Name: "srcpkg", Version: "2.0"},
-		Dependencies: recipe.Dependencies{Build: []string{"ninja", "cmake"}},
-	}
-	deps := &build.BuildDeps{NamedDirs: map[string]string{
-		"ninja": "/store/ninja/1.11-1",
-	}}
-
-	if resolved, ok := buildEdgeDeps(r, deps); ok {
-		t.Errorf("unresolved cmake reported usable as %v", resolved)
-	}
-}
-
-// TestBuildEdgeDeps_DuplicateDeclarationResolves guards the count
-// check itself: a recipe may name a build dep twice, and the resolver
-// returns one entry per name, so comparing raw lengths would call a
-// perfectly complete environment unusable.
-func TestBuildEdgeDeps_DuplicateDeclarationResolves(t *testing.T) {
-	r := &recipe.Recipe{
-		Package:      recipe.Package{Name: "srcpkg", Version: "2.0"},
-		Dependencies: recipe.Dependencies{Build: []string{"ninja", "ninja"}},
-	}
-	deps := &build.BuildDeps{NamedDirs: map[string]string{
-		"ninja": "/store/ninja/1.11-1",
-	}}
-
-	resolved, ok := buildEdgeDeps(r, deps)
-	if !ok || len(resolved) != 1 || resolved[0].Name != "ninja" {
-		t.Errorf("resolved = %v, ok = %v; want one ninja, usable", resolved, ok)
-	}
-}
-
 // TestRecordProvenance_ScrubsArchiveSuppliedRecord is the forgery
 // case. An archive can ship .gale-provenance.toml. Every branch that
 // declines to write a record leaves the staging dir alone, so a
@@ -628,37 +455,6 @@ func TestInstallBinary_DanglingDepsSymlinkStaysInsideStaging(t *testing.T) {
 	}
 }
 
-// TestExtractBuild_DanglingDepsSymlinkStaysInsideStaging is the same
-// boundary on the source path, which synthesizes metadata from the
-// build environment through the identical Has/Write pair.
-func TestExtractBuild_DanglingDepsSymlinkStaysInsideStaging(t *testing.T) {
-	storeRoot := filepath.Join(t.TempDir(), "pkg")
-	victim := filepath.Join(t.TempDir(), "victim.toml")
-	archive := createU3TarZstd(t, []u3TarEntry{
-		{name: "bin/tool", content: "#!/bin/sh\n", mode: 0o755},
-		{name: depsmeta.File, link: victim},
-	})
-	storeDir := filepath.Join(storeRoot, "srcpkg", "2.0-1")
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		t.Fatalf("create store dir: %v", err)
-	}
-	deps := &build.BuildDeps{NamedDirs: map[string]string{
-		"libfoo": filepath.Join(storeRoot, "libfoo", "1.0-1"),
-	}}
-	err := (&Installer{}).extractBuild(&build.BuildResult{Archive: archive, SHA256: fakeSHA},
-		storeDir, deps, sourceOf("srcpkg", "2.0-1"))
-	if err != nil {
-		t.Fatalf("extractBuild: %v", err)
-	}
-
-	if _, err := os.Lstat(victim); !os.IsNotExist(err) {
-		t.Errorf("wrote metadata outside the store: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(storeDir, provenance.File)); !os.IsNotExist(err) {
-		t.Errorf("record written over symlinked metadata: %v", err)
-	}
-}
-
 // TestStrictDeps rejects everything a record must not be built from.
 // depsmeta.Read accepts most of these, correctly: the farm and gc
 // tolerate a partial answer, while a record is a claim about one exact
@@ -734,37 +530,6 @@ func TestStrictDeps_SymlinkIsUnusable(t *testing.T) {
 
 	if deps, ok := strictDeps(dir); ok {
 		t.Errorf("symlinked metadata reported usable as %v", deps)
-	}
-}
-
-// TestExtractBuild_ProvenanceHashComesFromBuildResult pins the single
-// source of truth for what was produced. extractRequest used to carry
-// the hash twice, and nothing compared them.
-func TestExtractBuild_ProvenanceHashComesFromBuildResult(t *testing.T) {
-	storeRoot := filepath.Join(t.TempDir(), "pkg")
-	archive := createU3TarZstd(t, []u3TarEntry{
-		{name: "bin/tool", content: "#!/bin/sh\n", mode: 0o755},
-	})
-	storeDir := filepath.Join(storeRoot, "srcpkg", "2.0-1")
-	if err := os.MkdirAll(storeDir, 0o755); err != nil {
-		t.Fatalf("create store dir: %v", err)
-	}
-	hash := hashFile(t, archive)
-
-	a := sourceOf("srcpkg", "2.0-1")
-	a.SHA256 = fakeSHA // must be ignored
-	err := (&Installer{}).extractBuild(&build.BuildResult{Archive: archive, SHA256: hash},
-		storeDir, nil, a)
-	if err != nil {
-		t.Fatalf("extractBuild: %v", err)
-	}
-
-	got, err := provenance.ReadUnverified(storeDir)
-	if err != nil {
-		t.Fatalf("read provenance: %v", err)
-	}
-	if got.SHA256 != hash {
-		t.Errorf("sha256 = %q, want the build result's %q", got.SHA256, hash)
 	}
 }
 

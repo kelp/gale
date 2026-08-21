@@ -266,7 +266,7 @@ Not-in-index is an error.
 
 Adopt already shipped at the cutover.
 
-- [ ] **Delete `internal/build` and farm.**
+- [x] **Delete `internal/build` and farm.**
       Including Darwin fixup and patchelf.
 - [ ] **Delete GHCR bottle wiring.** Keep a
       generalized attestation verifier.

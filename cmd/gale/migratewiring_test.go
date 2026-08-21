@@ -17,7 +17,6 @@ import (
 
 	"github.com/klauspost/compress/zstd"
 
-	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/projects"
@@ -346,81 +345,6 @@ func TestMigrateOneRefusesToDemoteARelocationToSource(t *testing.T) {
 		"a refused relocation destroyed the pre-revision directory")
 }
 
-// Every candidate is cleared with every scope BEFORE the first
-// replacement.
-//
-// Design §13's second qualifying property, and the reason the pass is
-// one machine-wide unit: a run that replaced half the store and then
-// met a disagreement would leave the machine in a state neither the
-// old nor the new description covers.
-//
-// The per-commit guard is not a substitute, and this fixture is shaped
-// to show why. It returns the same errScopeDisagrees, so the error
-// alone cannot tell the two apart — but it fires per candidate, so the
-// undisputed one has already been replaced by the time the disputed
-// one is examined. The surviving marker is the property; the error is
-// only the entry condition.
-func TestRunMigrateClearsEveryCandidateBeforeReplacingAny(t *testing.T) {
-	m := newMigrateMachine(t)
-	proj := t.TempDir()
-	if err := projects.Register(m.galeHome, proj); err != nil {
-		t.Fatal(err)
-	}
-	// The project disputes one candidate and says nothing about the
-	// other. The scan sorts by name, so the undisputed one is reached
-	// first and is what a per-commit-only check would destroy.
-	writeScopeLock(t, filepath.Join(proj, "gale.lock"),
-		"zdisputed@1.0-1", shaY)
-
-	marker := legacyMarker(t, seedStore(t, m.storeRoot, "aagreed", "1.0-1"))
-	seedStore(t, m.storeRoot, "zdisputed", "1.0-1")
-	m.binaryPkg("aagreed")
-	m.binaryPkg("zdisputed")
-
-	err := runMigrate(m.ctx, discardOutput())
-	if !errors.Is(err, errScopeDisagrees) {
-		t.Fatalf("err = %v, want errScopeDisagrees", err)
-	}
-	assertMarkerKept(t, marker,
-		"an undisputed candidate was replaced before the pass had "+
-			"cleared every candidate with every scope")
-}
-
-// A candidate another candidate depends on is replaced first.
-//
-// Design §5 and §7 make the order load-bearing: provenance is
-// all-or-nothing, so refetching a dependent while its dependency is
-// still unprovenanced commits an artifact with no record at all.
-// Alphabetical order decides whether the machine converges, and "app"
-// sorts before the "zdep" it links.
-//
-// Driven through runMigrate, because orderCandidates' own tests pass
-// with the call replaced by the scan's output. The printed sequence is
-// the observable: it is written before each replacement, so it reports
-// the order the pass actually took rather than an order recomputed
-// afterwards.
-func TestRunMigrateReplacesADependencyBeforeItsDependent(t *testing.T) {
-	m := newMigrateMachine(t)
-	seedStore(t, m.storeRoot, "app", "1.0-1")
-	seedStore(t, m.storeRoot, "zdep", "1.0-1")
-	m.binaryPkg("zdep")
-	m.binaryPkg("app", "zdep")
-
-	out, buf := recordedOutput()
-	if err := runMigrate(m.ctx, out); err != nil {
-		t.Fatalf("runMigrate: %v", err)
-	}
-
-	dep := strings.Index(buf.String(), "zdep@1.0-1")
-	dependent := strings.Index(buf.String(), "app@1.0-1")
-	if dep < 0 || dependent < 0 {
-		t.Fatalf("the pass did not migrate both candidates:\n%s", buf)
-	}
-	if dep > dependent {
-		t.Errorf("app was migrated before the zdep it links:\n%s", buf)
-	}
-}
-
 // A scope running a pre-revision generation is moved off the bare
 // directory before that directory is deleted.
 //
@@ -524,61 +448,6 @@ func TestMigrateOneResumesAnInterruptedRelocation(t *testing.T) {
 	// against the machine first.
 	if _, statErr := os.Lstat(bare); statErr != nil {
 		t.Errorf("the resume destroyed the pre-revision dir: %v", statErr)
-	}
-}
-
-// The pre-revision directory is removed after the WHOLE pass, not
-// during it.
-//
-// Ordering and finishing each have their own tests; their composition
-// has none, and it is the composition design §13 argues for. A bare
-// directory is reached by whatever was built against it, those
-// dependents are candidates too, and one processed later in the pass
-// drops its reference when it is refetched. Finishing inside the loop
-// would decide a directory's fate while a candidate that speaks about
-// it has not had its turn.
-//
-// So the fixture is a bare DEPENDENCY plus a later dependent whose old
-// dependency metadata still names it, and the assertion is the
-// sequence: the removal is printed after the dependent's replacement,
-// never before it.
-//
-// Stated exactly, because it is easy to claim more: finishing inside
-// the loop does not fail this fixture outright. Store resolution
-// floats a bare dependency reference onto the canonical sibling as
-// soon as that sibling exists, so the mid-loop removal check finds
-// nothing reaching the old directory and proceeds. What is lost is the
-// ordering itself — the destructive step stops being the last thing
-// the pass does — and that is what this test refuses to let go.
-func TestRunMigrateRemovesABareDirOnlyAfterThePassIsDone(t *testing.T) {
-	m := newMigrateMachine(t)
-	bare := seedStore(t, m.storeRoot, "adep", "1.0")
-	writeDepsMeta(t, m.storeRoot, "adep", "1.0")
-	seedStore(t, m.storeRoot, "zapp", "1.0-1")
-	writeDepsMeta(t, m.storeRoot, "zapp", "1.0-1",
-		depsmeta.ResolvedDep{Name: "adep", Version: "1.0", Revision: 1})
-	if err := generation.Build(map[string]string{"zapp": "1.0-1"},
-		m.galeHome, m.storeRoot); err != nil {
-		t.Fatal(err)
-	}
-	m.binaryPkg("adep")
-	m.binaryPkg("zapp")
-
-	out, buf := recordedOutput()
-	if err := runMigrate(m.ctx, out); err != nil {
-		t.Fatalf("runMigrate: %v\n%s", err, buf)
-	}
-	if _, err := os.Lstat(bare); !os.IsNotExist(err) {
-		t.Errorf("the pre-revision dir survived the pass (%v)\n%s", err, buf)
-	}
-	replaced := strings.Index(buf.String(), "Migrating unprovenanced zapp")
-	removed := strings.Index(buf.String(), "removed "+bare)
-	if replaced < 0 || removed < 0 {
-		t.Fatalf("the pass did not both replace and remove:\n%s", buf)
-	}
-	if removed < replaced {
-		t.Errorf("the bare dir was removed before the dependent was "+
-			"replaced:\n%s", buf)
 	}
 }
 
@@ -724,57 +593,6 @@ func (m *migrateMachine) sourceOnlyPkg(name string) {
 	}
 }
 
-// What migrate cannot converge, it says, and says differently
-// depending on where the bytes sit.
-//
-// Reporting is migrate's whole obligation toward a source-built
-// directory: design §13 rejected stamping one with an "unverified"
-// marker, so the command may not replace it and may not claim it.
-// Dropping the report would leave a run that exits zero having
-// silently abandoned half of upgrade day.
-//
-// Both halves are asserted because their remedies differ. A canonical
-// source directory is what `lock --refresh` was built to replace. A
-// pre-revision one is not, since refresh checks the canonical path
-// alone; this fixture leaves it unreached and unpinned, which is the
-// state `gale gc` clears. Which remedy each pre-revision state gets is
-// TestRunMigrateNamesTheConvergencePathItFound's subject; what this
-// test holds is that the two HALVES stay split at all.
-//
-// Nothing is destroyed either. A source directory is not migrate's to
-// touch under any classification, and the surviving bytes are what
-// separates "reported it" from "reported it and replaced it anyway".
-func TestRunMigrateReportsWhatItCannotConverge(t *testing.T) {
-	m := newMigrateMachine(t)
-	m.sourceOnlyPkg("canon")
-	m.sourceOnlyPkg("legacy")
-	canonical := seedStore(t, m.storeRoot, "canon", "1.0-1")
-	bare := seedStore(t, m.storeRoot, "legacy", "1.0")
-
-	out, buf := recordedOutput()
-	if err := runMigrate(m.ctx, out); err != nil {
-		t.Fatalf("runMigrate: %v", err)
-	}
-
-	// "Nothing links or pins" rather than "gale gc": the canonical
-	// half names gc too, for the directory no scope declares, so an
-	// assertion on the command alone would pass without the
-	// pre-revision half printing anything at all.
-	for _, want := range []string{
-		"canon@1.0-1", "No per-scope command",
-		"legacy@1.0-1", "Nothing links or pins",
-	} {
-		if !strings.Contains(buf.String(), want) {
-			t.Errorf("the report never mentions %q:\n%s", want, buf)
-		}
-	}
-	for _, dir := range []string{canonical, bare} {
-		if _, err := os.Lstat(dir); err != nil {
-			t.Errorf("a source-built directory was destroyed: %v", err)
-		}
-	}
-}
-
 // preRevisionScope is one machine state a bare directory can be in,
 // expressed as the things that hold it: a scope's active generation,
 // a scope's manifest, and the lock that scope carries.
@@ -826,139 +644,6 @@ func seedPreRevisionScope(
 			map[string]string{pkg: "1.0"}, galeDir, m.storeRoot,
 		); err != nil {
 			t.Fatal(err)
-		}
-	}
-}
-
-// Migrate names the command that converges each pre-revision
-// directory, and says plainly when there is none (gh#200).
-//
-// One report line used to cover every bare source directory: "No gale
-// command converges them today". That was true of only one of the
-// three states such a directory can be in, and the other two have
-// working escapes the report was hiding.
-//
-//   - Nothing links or pins it: it is an orphan, and `gale gc` sweeps
-//     it. The predicate has to be GC'S, not the closure walk migrate
-//     already owns — gc additionally retains config pins across every
-//     project and host, so a pinned-but-unlinked directory would be
-//     promised a sweep gc declines to perform.
-//   - One scope reaches it and declares it: unlocked sync reinstalls a
-//     directory with no dependency metadata into the canonical path,
-//     additively. The escape is `gale sync`, and `gale sync
-//     --no-frozen` where that scope carries a legacy lock, since a
-//     locked sync fails closed on one it cannot honor.
-//   - More than one scope reaches it, or none declares it: there is no
-//     per-scope sequence that converges it, and saying so is the whole
-//     obligation. Naming one that converges nothing would be worse.
-//
-// Driven through runMigrate rather than through reportUnresolved,
-// because the classification reads the machine — scopes, generations,
-// manifests, locks — and a unit test on the reporter would assert the
-// wording while nothing supplied it the facts.
-func TestRunMigrateNamesTheConvergencePathItFound(t *testing.T) {
-	tests := []struct {
-		name   string
-		scopes []preRevisionScope
-		want   []string
-		reject []string
-	}{
-		{
-			name: "an orphan is swept by gc",
-			want: []string{"Nothing links or pins", "gale gc"},
-			// The two escapes belong to states this directory is not
-			// in, and offering one costs the user a command that
-			// cannot help.
-			reject: []string{"gale sync", "no safe sequence"},
-		},
-		{
-			name:   "a reached declared root converges through sync",
-			scopes: []preRevisionScope{{links: true, declares: true}},
-			want:   []string{"gale sync"},
-			reject: []string{"--no-frozen", "gale gc"},
-		},
-		{
-			name: "a legacy-locked scope needs --no-frozen",
-			scopes: []preRevisionScope{
-				{links: true, declares: true, legacyLock: true},
-			},
-			want: []string{"gale sync --no-frozen"},
-		},
-		{
-			name: "two scopes reaching it have no safe sequence",
-			scopes: []preRevisionScope{
-				{links: true, declares: true},
-				{dir: "project", links: true},
-			},
-			want:   []string{"no safe sequence", "gh#200"},
-			reject: []string{"gale sync", "gale gc"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			m := newMigrateMachine(t)
-			m.sourceOnlyPkg("legacy")
-			bare := seedStore(t, m.storeRoot, "legacy", "1.0")
-			writeDepsMeta(t, m.storeRoot, "legacy", "1.0")
-			for _, s := range tt.scopes {
-				if s.dir != "" {
-					s.dir = filepath.Join(t.TempDir(), s.dir)
-				}
-				seedPreRevisionScope(t, m, "legacy", s)
-			}
-
-			out, buf := recordedOutput()
-			if err := runMigrate(m.ctx, out); err != nil {
-				t.Fatalf("runMigrate: %v", err)
-			}
-
-			for _, want := range tt.want {
-				if !strings.Contains(buf.String(), want) {
-					t.Errorf("the report never mentions %q:\n%s", want, buf)
-				}
-			}
-			for _, no := range tt.reject {
-				if strings.Contains(buf.String(), no) {
-					t.Errorf("the report offers %q for a directory that "+
-						"state does not describe:\n%s", no, buf)
-				}
-			}
-			if _, err := os.Lstat(bare); err != nil {
-				t.Errorf("a source-built directory was destroyed: %v", err)
-			}
-		})
-	}
-}
-
-// A reinstall that lands canonically without a provenance record is
-// the next step, and the report says so.
-//
-// recordProvenance is all-or-nothing: an unattestable closure commits
-// the directory with NO record at all. Since a pre-revision leftover
-// is most often a dependency, the common shape is a root whose own
-// rebuild lands in the canonical path and still records nothing,
-// because something below it is unattested. Left unsaid, a user who
-// followed the sync advice and then met `gale lock`'s unprovenanced
-// error would read the whole sequence as having failed.
-func TestRunMigrateNamesTheAttestationHandoff(t *testing.T) {
-	m := newMigrateMachine(t)
-	m.sourceOnlyPkg("legacy")
-	seedStore(t, m.storeRoot, "legacy", "1.0")
-	writeDepsMeta(t, m.storeRoot, "legacy", "1.0")
-	seedPreRevisionScope(t, m, "legacy",
-		preRevisionScope{links: true, declares: true})
-
-	out, buf := recordedOutput()
-	if err := runMigrate(m.ctx, out); err != nil {
-		t.Fatalf("runMigrate: %v", err)
-	}
-
-	for _, want := range []string{
-		"no provenance record", "No per-scope command",
-	} {
-		if !strings.Contains(buf.String(), want) {
-			t.Errorf("the sync advice never mentions %q:\n%s", want, buf)
 		}
 	}
 }

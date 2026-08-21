@@ -31,7 +31,7 @@ gale.toml (first install).
 
 **current** (`~/.gale/current`): symlink to the active
 gen. Users put `~/.gale/current/bin` on PATH, so one
-symlink swap updates bin, lib, and man together.
+symlink swap updates bin and man together.
 
 **Registry**: recipes fetched on demand from GitHub raw
 URLs, letter-bucketed (`recipes/j/jq.toml`). No clone.
@@ -40,9 +40,7 @@ URLs, letter-bucketed (`recipes/j/jq.toml`). No clone.
 default 1. Store identity is
 `<name>/<version>-<revision>/`; the user-facing form is
 bare when revision = 1, and a bare `@version` resolves
-to the highest revision known. A shared dylib farm at
-`~/.gale/lib/` lets binaries absorb SONAME-compatible
-dep upgrades without rebuilding.
+to the highest revision known.
 [`docs/revisions.md`](docs/revisions.md).
 
 ## Agent Sandbox
@@ -91,7 +89,7 @@ what you create.
 ## Where to Look
 
 - Editing version identity, the finalize path,
-  generation/farm, or gc/sync staleness →
+  generation rebuild, or gc/sync staleness →
   [`docs/dev/change-discipline.md`](docs/dev/change-discipline.md)
   first. These are tier 2–3: trace the pipeline and grep
   callers before editing, don't patch from memory.
@@ -117,11 +115,9 @@ adding a command — it holds every shared CLI helper
 (config resolution, registry, resolver, generation
 rebuild, result reporting, install finalization).
 
-The usual shape is `newCmdContext` → `ctx.Resolver` →
-`ctx.Installer.Install`, with `resolveVersionedRecipe`
-for `@version` support and `finalizeInstall` for the
-config + generation write. A new build mode delegates to
-`build.BuildLocal` once it has a source directory.
+The usual shape is `newCmdContext` → fetch helpers in
+`cmd/gale`, with `finalizeFetch` for the lock +
+generation write. Source compile is gone.
 
 `rebuildGenerationWith` registers the project in
 `internal/projects/` immediately before the generation
@@ -153,10 +149,6 @@ commands, including `gale env`, do not register.
 
 ## Gotchas
 
-- Build PATH isolates individual tools via symlinks into
-  a temp dir, keeping nix vibeutils (ls, mv) from
-  leaking in and breaking autotools. See `buildPath()`
-  in `internal/build/build.go`.
 - Tar extraction handles PAX headers, hard links,
   symlinks, and validates paths against traversal.
   Shared `extractTar()` in `internal/download/`.
@@ -207,12 +199,6 @@ Lessons paid for in past regressions.
   cases. Getting this wrong causes infinite
   reinstall/rebuild loops that stall direnv (013b4a4,
   688ce7d, af4c3f6).
-- `internal/build/build.go` and the darwin fixup path
-  are the most regression-prone code in the repo. Gate
-  patchelf on `DT_NEEDED` — running `--set-rpath` on a
-  static Go ELF corrupts it (75440bb). Skip `.dSYM` and
-  `.o` files. Always re-sign after any Mach-O mutation,
-  preserving entitlements.
 - Any change to sync, gc, or remove must be exercised
   across all three scopes (global, project, `--host`).
   Cross-scope deletion bugs recur (ad4e685, 289d13b).

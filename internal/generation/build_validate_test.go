@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 )
 
@@ -100,12 +99,11 @@ func TestBuildWithValidate_CallbackErrorMutatesNothing(t *testing.T) {
 		t.Errorf("current symlink should not exist after a callback error, err=%v", err)
 	}
 
-	// No farm mutation: farm.Rebuild is only reached after the
-	// generation swap, so the farm dir must never even be created.
+	// No leftover farm lib: generation rebuild does not create one.
 	if _, err := os.Stat(
-		farm.DirFromStoreRoot(storeRoot),
+		filepath.Join(filepath.Dir(storeRoot), "lib"),
 	); !os.IsNotExist(err) {
-		t.Errorf("farm dir should not exist after a callback error, err=%v", err)
+		t.Errorf("lib dir should not exist after a callback error, err=%v", err)
 	}
 
 	// The lock must be released once BuildWithValidate returns, so
