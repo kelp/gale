@@ -56,7 +56,7 @@ var shadowReportDirs = []string{
 // rebuild, which skips it with a warning rather than failing (gh#68).
 // Results are sorted by path.
 func ShadowedFiles(pkgs map[string]string, storeRoot string) []FileCollision {
-	files := NewBinArbiter(nil)
+	files := NewBinArbiter()
 	for _, name := range slices.Sorted(maps.Keys(pkgs)) {
 		pkgDir := resolveStoreDir(storeRoot, name, pkgs[name])
 		claimRootFiles(files, name, pkgDir)

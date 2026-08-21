@@ -59,9 +59,9 @@ var whichCmd = &cobra.Command{
 // The answer comes from the store, not the generation: a shadowed
 // provider's entry was never linked, so the generation is exactly
 // where it cannot be seen. A collision now refuses the rebuild
-// (gh#190), which leaves one way to reach this state — a [bin]
-// override naming the winner — and that is the case worth reporting,
-// since the losing package is installed and its binary unreachable.
+// (gh#190). The remaining way to reach this state is a pre-upgrade
+// generation that already linked one copy while another declared
+// package still ships the same basename.
 //
 // Best effort: an unreadable generation costs the extra line, never
 // the answer `which` was asked for.

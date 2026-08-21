@@ -11,6 +11,12 @@
 
 ### Changed
 
+- **Bin collision is a hard error.** Leftover
+  `[bin]` and `[hosts.*.bin]` are ignored. Two
+  packages shipping the same basename refuse
+  the generation. Remove one package. There
+  is no overlay that names a winner.
+
 - **Delete the long tail.** `build`,
   `create-recipe`, `audit`, recipe `lint`,
   `search`, `switch`, `add`, `sbom`,

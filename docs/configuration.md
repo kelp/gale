@@ -36,49 +36,11 @@ prints only variables, not PATH.
 
 ### `[bin]`
 
-Resolves executable-name collisions. Maps a binary's
-basename to the package whose copy belongs on PATH:
+Leftover. Ignored. Two packages shipping the same
+basename refuse the generation. Remove one package.
+There is no table that names a winner.
 
-```toml
-[bin]
-  npx = "corepack"
-```
-
-Two packages shipping the same basename refuse the
-generation rebuild, naming both providers, until one
-of them wins here. The other package stays installed;
-only that one basename is left out of the generation,
-and `gale which <name>` reports it as another
-provider.
-
-The winning package must be declared somewhere in the
-same file — `[packages]` or any `[hosts.<key>.packages]`
-overlay, whether or not that overlay applies to this
-machine. A winner declared nowhere is an error;
-honoring it would keep the binary off PATH for every
-provider.
-
-`[hosts.<key>.bin]` overrides the shared table on the
-machines `<key>` matches, using the same precedence as
-the other overlays. Two machines can therefore put
-different providers of one basename on PATH:
-
-```toml
-[bin]
-  npx = "node"
-
-[hosts.laptop.bin]
-  npx = "corepack"
-```
-
-`gale remove` deletes a `[bin]` entry whose winner it
-removes, in the same write, so the manifest still
-loads. It prunes the host tables as well — an entry
-left under a selector fails to load on exactly the
-machines that selector reaches. Removing the losing
-package leaves the entry alone: it still names a
-declared package, and it records the choice for the
-next time that package is installed.
+`[hosts.<key>.bin]` is leftover the same way.
 
 `bin/` is the only namespace gale arbitrates. Man
 pages and root-level files are **reported, not
@@ -93,10 +55,10 @@ correct. A shadowed man page shows the wrong docs; a
 shadowed executable runs the wrong program. Remove one
 provider to change which copy wins.
 
-### `[hosts.<key>.packages]` and `[hosts.<key>.bin]`
+### `[hosts.<key>.packages]`
 
-Per-machine overlays. Top-level `[packages]` and
-`[bin]` apply on every machine. Host
+Per-machine overlays. Top-level `[packages]`
+applies on every machine. Host
 sections add or override entries when the local
 hostname matches `<key>`.
 

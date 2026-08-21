@@ -209,9 +209,11 @@ func TestResolveWhich(t *testing.T) {
 	})
 }
 
-// TestOtherProvidersReportsShadowedPackage covers gh#190's reporting
-// half: a [bin] override leaves the losing package installed with its
-// binary unreachable, and `which` is where a user asks why.
+// TestOtherProvidersReportsShadowedPackage covers a pre-upgrade
+// generation: two packages both ship foo, only beta's copy is
+// on PATH, and `which` reports the loser. A successful rebuild
+// cannot produce this state — leftover [bin] no longer settles
+// a collision — so the generation is assembled by hand.
 func TestOtherProvidersReportsShadowedPackage(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
 
@@ -219,16 +221,15 @@ func TestOtherProvidersReportsShadowedPackage(t *testing.T) {
 	betaDir := mkStorePkg(t, storeRoot, "beta", "1.0")
 	addStoreBin(t, alphaDir, "foo")
 	addStoreBin(t, betaDir, "foo")
-	mkStorePkg(t, storeRoot, "gamma", "1.0")
+	gammaDir := mkStorePkg(t, storeRoot, "gamma", "1.0")
 
-	writeGlobalConfig(t, galeDir,
-		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\ngamma = \"1.0\"\n\n"+
-			"[bin]\nfoo = \"beta\"\n")
-	if err := rebuildGeneration(
-		galeDir, storeRoot, filepath.Join(galeDir, "gale.toml"), nil,
-	); err != nil {
-		t.Fatalf("rebuildGeneration: %v", err)
-	}
+	mkActiveGen(
+		t, galeDir, 1,
+		filepath.Join(alphaDir, "bin", "alpha"),
+		filepath.Join(betaDir, "bin", "beta"),
+		filepath.Join(betaDir, "bin", "foo"),
+		filepath.Join(gammaDir, "bin", "gamma"),
+	)
 
 	name, _, _, err := resolveWhich("foo", galeDir, storeRoot)
 	if err != nil {

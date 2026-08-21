@@ -920,7 +920,7 @@ func TestCheckShadowedProvidersMatchesTheArbiter(t *testing.T) {
 		t.Fatal("two packages shipping bin/npx must fail the check")
 	}
 
-	arbiter := generation.NewBinArbiter(nil)
+	arbiter := generation.NewBinArbiter()
 	arbiter.Claim("node", contestedBin)
 	arbiter.Claim("npm", contestedBin)
 	want := arbiter.Err()
@@ -938,11 +938,9 @@ func TestCheckShadowedProvidersMatchesTheArbiter(t *testing.T) {
 	}
 }
 
-// TestCheckShadowedProvidersHonorsABinOverride pins the other half of
-// the same rule. A [bin] winner settles the name for the rebuild, so
-// a check that reported it anyway would send the user to a fix they
-// had already applied.
-func TestCheckShadowedProvidersHonorsABinOverride(t *testing.T) {
+// TestCheckShadowedProvidersLeftoverBinDoesNotClear: leftover
+// [bin] does not settle a collision.
+func TestCheckShadowedProvidersLeftoverBinDoesNotClear(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	galeDir := filepath.Join(home, ".gale")
@@ -956,8 +954,9 @@ func TestCheckShadowedProvidersHonorsABinOverride(t *testing.T) {
 	chdirTo(t, cwd)
 
 	var buf bytes.Buffer
-	if !checkShadowedProviders(doctorCtx(galeDir, storeRoot, cwd, &buf)) {
-		t.Fatalf("a [bin] winner must clear the check, got: %q", buf.String())
+	if checkShadowedProviders(doctorCtx(galeDir, storeRoot, cwd, &buf)) {
+		t.Fatalf("leftover [bin] must not clear the check, got: %q",
+			buf.String())
 	}
 }
 

@@ -9,8 +9,8 @@ import (
 
 func TestHostConfigFrozenFields(t *testing.T) {
 	typ := reflect.TypeOf(HostConfig{})
-	if typ.NumField() != 2 {
-		t.Fatalf("HostConfig fields = %d, want 2", typ.NumField())
+	if typ.NumField() != 1 {
+		t.Fatalf("HostConfig fields = %d, want 1", typ.NumField())
 	}
 	var got []string
 	for i := 0; i < typ.NumField(); i++ {
@@ -25,7 +25,7 @@ func TestHostConfigFrozenFields(t *testing.T) {
 		got = append(got, name)
 	}
 	slices.Sort(got)
-	want := []string{"bin", "packages"}
+	want := []string{"packages"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("HostConfig toml names = %v, want %v", got, want)
 	}

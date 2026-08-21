@@ -509,15 +509,14 @@ func rebuildGenerationWith(r genRebuild) error {
 	if err := registerProject(r.configPath, r.galeDir); err != nil {
 		return fmt.Errorf("registering project: %w", err)
 	}
-	pkgs, binOverrides, err := rebuildInputs(r)
+	pkgs, err := rebuildInputs(r)
 	if err != nil {
 		return err
 	}
 	if err := generation.BuildWithOptions(
 		pkgs, r.galeDir, r.storeRoot, generation.Options{
-			Validate:     r.validate,
-			BinOverrides: binOverrides,
-			Fetch:        r.fetch,
+			Validate: r.validate,
+			Fetch:    r.fetch,
 		},
 	); err != nil {
 		return err
@@ -526,31 +525,25 @@ func rebuildGenerationWith(r genRebuild) error {
 	return nil
 }
 
-// rebuildInputs resolves the package set the generation is built from
-// and the [bin] overrides that settle executable-name collisions in
-// it (gh#190).
-//
+// rebuildInputs resolves the package set the generation is built from.
 // A locked rebuild brings its own package set — the lock is the
-// version selector — but still reads [bin], because the override is
-// the only way out of a collision refusal and a sync that could not
-// see it would be a convergence trap. It reads nothing when no config
-// path came with the package set.
-func rebuildInputs(r genRebuild) (pkgs, binOverrides map[string]string, err error) {
+// version selector. Leftover [bin] does not settle a collision.
+func rebuildInputs(r genRebuild) (pkgs map[string]string, err error) {
 	if r.pkgs != nil && r.configPath == "" {
-		return r.pkgs, nil, nil
+		return r.pkgs, nil
 	}
 	cfg, err := loadEffectiveConfig(r.configPath)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 	if r.pkgs != nil {
-		return r.pkgs, cfg.Bin, nil
+		return r.pkgs, nil
 	}
 	declared := cfg.Packages
 	if declared == nil {
 		declared = map[string]string{}
 	}
-	return canonicalizeForBuild(declared, r.pinResolve), cfg.Bin, nil
+	return canonicalizeForBuild(declared, r.pinResolve), nil
 }
 
 // autoPruneGenerations is the post-Build hook that bounds gen
@@ -633,13 +626,6 @@ func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
 		return nil, err
 	}
 	cfg.Packages = cfg.EffectivePackages(host)
-	cfg.Bin = cfg.EffectiveBin(host)
-	// After the host merge, so a [bin] winner declared only under
-	// [hosts.<selector>.packages] validates on the host it applies to,
-	// and so a [hosts.<selector>.bin] entry is validated at all.
-	if err := cfg.ValidateBin(); err != nil {
-		return nil, fmt.Errorf("%s: %w", configPath, err)
-	}
 	return cfg, nil
 }
 
@@ -1271,9 +1257,6 @@ func (ctx *cmdContext) RebuildGenerationLocked() error {
 	if err != nil {
 		return err
 	}
-	// configPath rides along for [bin] alone: the versions come from
-	// the plan, but a locked sync must still be able to resolve an
-	// executable-name collision (gh#190).
 	return rebuildGenerationWith(genRebuild{
 		galeDir:    ctx.GaleDir,
 		storeRoot:  ctx.StoreRoot,

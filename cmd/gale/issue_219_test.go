@@ -95,18 +95,10 @@ func TestRebuildGenerationAcceptsManPageCollision(t *testing.T) {
 	}
 }
 
-// TestRebuildGenerationHonorsHostScopedBinOverride carries gh#190's
-// escape hatch across the host boundary (gh#219). [packages]
-// takes a [hosts.<selector>.*] overlay; [bin] shipped
-// without one, so the only way out of a collision was a single
-// manifest-wide winner. Two machines that each need a different
-// provider on PATH had no answer at all.
-//
-// The assertion is the pipeline one on purpose: the merge belongs to
-// loadEffectiveConfig, and rebuildInputs reads what that returns, so
-// driving the rebuild proves the overlay reaches the generation
-// rather than merely the struct.
-func TestRebuildGenerationHonorsHostScopedBinOverride(t *testing.T) {
+// TestRebuildGenerationLeftoverHostBinDoesNotSettle: leftover
+// [hosts.<this-host>.bin] does not settle a collision. The
+// generation refuses; there is no per-host winner.
+func TestRebuildGenerationLeftoverHostBinDoesNotSettle(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
 	t.Setenv("GALE_HOST", "testhost")
 	configPath := filepath.Join(galeDir, "gale.toml")
@@ -121,24 +113,13 @@ func TestRebuildGenerationHonorsHostScopedBinOverride(t *testing.T) {
 			"[bin]\nfoo = \"alpha\"\n\n"+
 			"[hosts.testhost.bin]\nfoo = \"beta\"\n")
 
-	if err := rebuildGeneration(galeDir, storeRoot, configPath, nil); err != nil {
-		t.Fatalf("rebuildGeneration with a host-scoped [bin]: %v", err)
-	}
-
-	if got := linkTarget(t, galeDir, "foo"); !strings.Contains(
-		got, filepath.Join("beta", "1.0"),
-	) {
-		t.Errorf("bin/foo -> %s, want beta's copy — [hosts.testhost.bin] "+
-			"outranks the shared [bin] winner on testhost", got)
-	}
+	assertBinCollision(t, rebuildGeneration(galeDir, storeRoot, configPath, nil))
 }
 
-// TestHostScopedBinWinnerNeedsNoSharedDeclaration keeps the overlay
-// usable on its own. A winner declared only under
-// [hosts.<selector>.packages], named only by that selector's [bin],
-// is the whole point of the feature — the manifest has to load, and
-// the override has to survive the merge into cfg.Bin.
-func TestHostScopedBinWinnerNeedsNoSharedDeclaration(t *testing.T) {
+// TestLeftoverHostBinStillLoads: leftover [hosts.<this-host>.bin]
+// naming a host-only package still loads. Host [packages]
+// stay; the leftover table does not fail the parse.
+func TestLeftoverHostBinStillLoads(t *testing.T) {
 	galeDir, _ := setupGCHome(t)
 	t.Setenv("GALE_HOST", "testhost")
 	configPath := filepath.Join(galeDir, "gale.toml")
@@ -150,10 +131,9 @@ func TestHostScopedBinWinnerNeedsNoSharedDeclaration(t *testing.T) {
 
 	cfg, err := loadEffectiveConfig(configPath)
 	if err != nil {
-		t.Fatalf("loadEffectiveConfig: %v", err)
+		t.Fatalf("leftover host [bin] must still load: %v", err)
 	}
-	if got := cfg.Bin["foo"]; got != "beta" {
-		t.Errorf("cfg.Bin[foo] = %q, want beta — the overlay's winner "+
-			"must reach the rebuild's [bin] inputs", got)
+	if got := cfg.Packages["beta"]; got != "1.0" {
+		t.Errorf("Packages[beta] = %q, want 1.0 — host packages stay", got)
 	}
 }

@@ -25,10 +25,8 @@ type BinCollisionError struct {
 	Collisions []BinCollision
 }
 
-// Error names each collision and prints the [bin] stanza that
-// resolves it. The remedy is part of the message because no command
-// can clear this state: gc rebuilds the same generation from the
-// same config and hits the same refusal.
+// Error names each collision and tells the user to remove one
+// package. Leftover [bin] overlays do not settle a collision.
 func (e *BinCollisionError) Error() string {
 	var b strings.Builder
 	b.WriteString("executable name collision")
@@ -44,33 +42,8 @@ func (e *BinCollisionError) Error() string {
 		))
 	}
 	b.WriteString(strings.Join(parts, "; "))
-	b.WriteString(
-		"\nname the winner in gale.toml and run the command again " +
-			"(gale gc rebuilds the same generation, so it does " +
-			"not clear this):\n\n  [bin]\n",
-	)
-	for _, c := range e.Collisions {
-		if seenBin(e.Collisions, c) {
-			continue
-		}
-		fmt.Fprintf(&b, "  %s = %q\n", c.Bin, c.Existing)
-	}
+	b.WriteString("; remove one of those packages")
 	return b.String()
-}
-
-// seenBin reports whether an earlier collision already covers c's
-// basename, so a name contested by three packages prints one
-// suggested stanza line rather than one per loser.
-func seenBin(all []BinCollision, c BinCollision) bool {
-	for _, other := range all {
-		if other == c {
-			return false
-		}
-		if other.Bin == c.Bin {
-			return true
-		}
-	}
-	return false
 }
 
 // BinArbiter decides which package owns each bin/ basename in a
@@ -81,33 +54,26 @@ func seenBin(all []BinCollision, c BinCollision) bool {
 // two would drift: a doctor that disagrees with the rebuild reports
 // collisions gale accepts, or misses ones it refuses.
 type BinArbiter struct {
-	overrides  map[string]string
 	owner      map[string]string
 	collisions []BinCollision
 }
 
-// NewBinArbiter returns an arbiter honoring overrides, a map of
-// basename → winning package read from gale.toml's [bin] table. A nil
-// map means no overrides.
-func NewBinArbiter(overrides map[string]string) *BinArbiter {
+// NewBinArbiter returns an arbiter. A second package that ships the
+// same basename is a collision. There is no overlay that names a
+// winner.
+func NewBinArbiter() *BinArbiter {
 	return &BinArbiter{
-		overrides: overrides,
-		owner:     make(map[string]string, len(overrides)),
+		owner: make(map[string]string),
 	}
 }
 
 // Claim reports whether pkg's bin/<name> belongs in the generation.
 //
-// An override settles the name outright: the package it names links,
-// every other one is skipped, and nothing is recorded. Without one,
-// the first claimant links and a second claim records a collision —
+// The first claimant links. A second claim records a collision —
 // the caller surfaces it through Err once every package has been
 // offered its entries, so a user with three collisions fixes them in
 // one pass instead of three rebuilds.
 func (a *BinArbiter) Claim(pkg, name string) bool {
-	if winner, ok := a.overrides[name]; ok {
-		return winner == pkg
-	}
 	if prev, ok := a.owner[name]; ok {
 		a.collisions = append(a.collisions, BinCollision{
 			Bin:      name,
