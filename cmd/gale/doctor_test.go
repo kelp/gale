@@ -144,7 +144,7 @@ func TestDoctorRunWritesSummaryToStdout(t *testing.T) {
 // unreadable generation fails the roots check; PATH still runs.
 func TestDoctorReportsUnreadableGenerationWithoutAborting(t *testing.T) {
 	h := newDoctorFourHome(t)
-	plantDoctorFourFetch(t, h, doctorFourSHA, true)
+	plantDoctorFourFetch(t, h)
 	breakGenerationWalk(t, h.galeDir)
 	setGalePATH(t, h.galeDir)
 

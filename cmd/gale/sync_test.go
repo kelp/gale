@@ -545,15 +545,13 @@ func versionedDylibName(t *testing.T) string {
 	}
 }
 
-func fakelibStore(t *testing.T, storeRoot, dylib string) string {
+func fakelibStore(t *testing.T, storeRoot, dylib string) {
 	t.Helper()
 	libDir := filepath.Join(storeRoot, "fakelib", "1.0.0-1", "lib")
 	if err := os.MkdirAll(libDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	target := filepath.Join(libDir, dylib)
-	if err := os.WriteFile(target, []byte("not really elf"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(libDir, dylib), []byte("not really elf"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	return target
 }

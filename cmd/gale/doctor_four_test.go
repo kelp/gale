@@ -85,7 +85,7 @@ func TestDoctorLockReadable(t *testing.T) {
 	})
 	t.Run("v2", func(t *testing.T) {
 		h := newDoctorFourHome(t)
-		plantDoctorFourFetch(t, h, doctorFourSHA, true)
+		plantDoctorFourFetch(t, h)
 		linkDoctorFourGen(t, h, doctorFourSHA)
 		setGalePATH(t, h.galeDir)
 		_, stderr := runDoctorHome(t, h)
@@ -95,107 +95,109 @@ func TestDoctorLockReadable(t *testing.T) {
 	})
 }
 
-func TestDoctorGenerationMatchesLockRoots(t *testing.T) {
-	t.Run("fetch path matches", func(t *testing.T) {
-		h := newDoctorFourHome(t)
-		plantDoctorFourFetch(t, h, doctorFourSHA, true)
-		linkDoctorFourGen(t, h, doctorFourSHA)
-		setGalePATH(t, h.galeDir)
-		_, stderr := runDoctorHome(t, h)
-		if line := checkLine(t, stderr, "generation matches lock roots"); !strings.HasPrefix(line, "==> ") {
-			t.Errorf("matching fetch gen must pass, got %q", line)
-		}
-	})
-	t.Run("resolve dir same version", func(t *testing.T) {
-		h := newDoctorFourHome(t)
-		plantDoctorFourFetch(t, h, doctorFourSHA, true)
-		src := filepath.Join(h.storeRoot, "just", "1.56.0", "bin", "just")
-		if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(src, []byte("source-just\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		mkActiveGen(t, h.galeDir, 1, src)
-		setGalePATH(t, h.galeDir)
-		_, stderr := runDoctorHome(t, h)
-		if line := checkLine(t, stderr, "generation matches lock roots"); !strings.HasPrefix(line, "xxx ") {
-			t.Errorf("ResolveDir link must fail roots, got %q", line)
-		}
-		if !strings.Contains(stderr, "gale sync") {
-			t.Errorf("roots drift must name gale sync, stderr=%q", stderr)
-		}
-	})
-	t.Run("wrong sha12", func(t *testing.T) {
-		h := newDoctorFourHome(t)
-		plantDoctorFourFetch(t, h, doctorFourSHA, true)
-		plantDoctorFourTree(t, h, doctorFourSHA2)
-		linkDoctorFourGen(t, h, doctorFourSHA2)
-		setGalePATH(t, h.galeDir)
-		_, stderr := runDoctorHome(t, h)
-		if line := checkLine(t, stderr, "generation matches lock roots"); !strings.HasPrefix(line, "xxx ") {
-			t.Errorf("wrong sha12 must fail roots, got %q", line)
-		}
-	})
-	t.Run("dangling current", func(t *testing.T) {
-		h := newDoctorFourHome(t)
-		plantDoctorFourFetch(t, h, doctorFourSHA, true)
-		mkActiveGen(t, h.galeDir, 1)
-		if err := os.RemoveAll(filepath.Join(h.galeDir, "gen", "1")); err != nil {
-			t.Fatal(err)
-		}
-		setGalePATH(t, h.galeDir)
-		_, stderr := runDoctorHome(t, h)
-		if line := checkLine(t, stderr, "generation matches lock roots"); !strings.HasPrefix(line, "xxx ") {
-			t.Errorf("dangling current must fail roots, got %q", line)
-		}
-	})
-	t.Run("project scope", func(t *testing.T) {
-		h := newDoctorFourHome(t)
-		plantDoctorFourFetch(t, h, doctorFourSHA, true)
-		linkDoctorFourGen(t, h, doctorFourSHA)
-		setGalePATH(t, h.galeDir)
+func TestDoctorGenerationMatchesFetchPath(t *testing.T) {
+	h := newDoctorFourHome(t)
+	plantDoctorFourFetch(t, h)
+	linkDoctorFourGen(t, h, doctorFourSHA)
+	setGalePATH(t, h.galeDir)
+	_, stderr := runDoctorHome(t, h)
+	if line := checkLine(t, stderr, "generation matches lock roots"); !strings.HasPrefix(line, "==> ") {
+		t.Errorf("matching fetch gen must pass, got %q", line)
+	}
+}
 
-		proj := filepath.Join(h.home, "proj")
-		if err := os.MkdirAll(filepath.Join(proj, ".gale"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(proj, "gale.toml"),
-			[]byte("[packages]\njust = \"1.56.0\"\n"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		if err := lockfile.WriteV2(filepath.Join(proj, "gale.lock"), &lockfile.V2{
-			Version: lockfile.SchemaV2,
-			Targets: lockfile.Targets{
-				Default: &lockfile.Target{Roots: []string{"just@1.56.0"}},
-			},
-			Packages: map[string]lockfile.V2Package{
-				"just@1.56.0": {Artifacts: map[string]lockfile.V2Artifact{
-					currentPlatform(): {
-						URL:        "https://github.com/kelp/just/releases/download/1.56.0/just",
-						Format:     "binary",
-						SHA256:     doctorFourSHA,
-						TreeDigest: "sha256:dead",
-						Method:     provenance.MethodFetch,
-					},
-				}},
-			},
-		}); err != nil {
-			t.Fatal(err)
-		}
-		stdout, stderr := runDoctorAt(t, h.galeDir, proj)
-		if !strings.Contains(stderr, "project") &&
-			!strings.Contains(stdout, "issue") {
-			t.Fatalf("project lock without a matching gen must be visible, stderr=%q stdout=%q",
-				stderr, stdout)
-		}
-	})
+func TestDoctorGenerationRefusesResolveDir(t *testing.T) {
+	h := newDoctorFourHome(t)
+	plantDoctorFourFetch(t, h)
+	src := filepath.Join(h.storeRoot, "just", "1.56.0", "bin", "just")
+	if err := os.MkdirAll(filepath.Dir(src), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(src, []byte("source-just\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mkActiveGen(t, h.galeDir, 1, src)
+	setGalePATH(t, h.galeDir)
+	_, stderr := runDoctorHome(t, h)
+	if line := checkLine(t, stderr, "generation matches lock roots"); !strings.HasPrefix(line, "xxx ") {
+		t.Errorf("ResolveDir link must fail roots, got %q", line)
+	}
+	if !strings.Contains(stderr, "gale sync") {
+		t.Errorf("roots drift must name gale sync, stderr=%q", stderr)
+	}
+}
+
+func TestDoctorGenerationRefusesWrongSHA(t *testing.T) {
+	h := newDoctorFourHome(t)
+	plantDoctorFourFetch(t, h)
+	plantDoctorFourTree(t, h, doctorFourSHA2)
+	linkDoctorFourGen(t, h, doctorFourSHA2)
+	setGalePATH(t, h.galeDir)
+	_, stderr := runDoctorHome(t, h)
+	if line := checkLine(t, stderr, "generation matches lock roots"); !strings.HasPrefix(line, "xxx ") {
+		t.Errorf("wrong sha12 must fail roots, got %q", line)
+	}
+}
+
+func TestDoctorGenerationRefusesDanglingCurrent(t *testing.T) {
+	h := newDoctorFourHome(t)
+	plantDoctorFourFetch(t, h)
+	mkActiveGen(t, h.galeDir, 1)
+	if err := os.RemoveAll(filepath.Join(h.galeDir, "gen", "1")); err != nil {
+		t.Fatal(err)
+	}
+	setGalePATH(t, h.galeDir)
+	_, stderr := runDoctorHome(t, h)
+	if line := checkLine(t, stderr, "generation matches lock roots"); !strings.HasPrefix(line, "xxx ") {
+		t.Errorf("dangling current must fail roots, got %q", line)
+	}
+}
+
+func TestDoctorGenerationReadsProjectScope(t *testing.T) {
+	h := newDoctorFourHome(t)
+	plantDoctorFourFetch(t, h)
+	linkDoctorFourGen(t, h, doctorFourSHA)
+	setGalePATH(t, h.galeDir)
+
+	proj := filepath.Join(h.home, "proj")
+	if err := os.MkdirAll(filepath.Join(proj, ".gale"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(proj, "gale.toml"),
+		[]byte("[packages]\njust = \"1.56.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := lockfile.WriteV2(filepath.Join(proj, "gale.lock"), &lockfile.V2{
+		Version: lockfile.SchemaV2,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"just@1.56.0"}},
+		},
+		Packages: map[string]lockfile.V2Package{
+			"just@1.56.0": {Artifacts: map[string]lockfile.V2Artifact{
+				currentPlatform(): {
+					URL:        "https://github.com/kelp/just/releases/download/1.56.0/just",
+					Format:     "binary",
+					SHA256:     doctorFourSHA,
+					TreeDigest: "sha256:dead",
+					Method:     provenance.MethodFetch,
+				},
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stdout, stderr := runDoctorAt(t, h.galeDir, proj)
+	if !strings.Contains(stderr, "project") &&
+		!strings.Contains(stdout, "issue") {
+		t.Fatalf("project lock without a matching gen must be visible, stderr=%q stdout=%q",
+			stderr, stdout)
+	}
 }
 
 func TestDoctorTreeDigestMatches(t *testing.T) {
 	t.Run("match", func(t *testing.T) {
 		h := newDoctorFourHome(t)
-		plantDoctorFourFetch(t, h, doctorFourSHA, true)
+		plantDoctorFourFetch(t, h)
 		linkDoctorFourGen(t, h, doctorFourSHA)
 		setGalePATH(t, h.galeDir)
 		_, stderr := runDoctorHome(t, h)
@@ -205,7 +207,7 @@ func TestDoctorTreeDigestMatches(t *testing.T) {
 	})
 	t.Run("mutated", func(t *testing.T) {
 		h := newDoctorFourHome(t)
-		plantDoctorFourFetch(t, h, doctorFourSHA, true)
+		plantDoctorFourFetch(t, h)
 		dest, err := store.NewStore(h.storeRoot).FetchPath("just", "1.56.0", doctorFourSHA)
 		if err != nil {
 			t.Fatal(err)
@@ -318,22 +320,19 @@ func assertNoSecondLockRed(t *testing.T, stderr, stdout string) {
 	}
 }
 
-func plantDoctorFourFetch(t *testing.T, h doctorFourHome, sha string, writeLock bool) string {
+func plantDoctorFourFetch(t *testing.T, h doctorFourHome) {
 	t.Helper()
-	digest := plantDoctorFourTree(t, h, sha)
+	digest := plantDoctorFourTree(t, h, doctorFourSHA)
 	if err := provenance.WriteFetch(
-		mustFetchPath(t, h.storeRoot, sha),
+		mustFetchPath(t, h.storeRoot, doctorFourSHA),
 		provenance.FetchRecord{
-			Name: "just", Version: "1.56.0", SHA256: sha,
+			Name: "just", Version: "1.56.0", SHA256: doctorFourSHA,
 			TreeDigest: digest, Method: provenance.MethodFetch,
 		},
 	); err != nil {
 		t.Fatal(err)
 	}
-	if writeLock {
-		writeDoctorFourLock(t, h, sha, digest, false)
-	}
-	return digest
+	writeDoctorFourLock(t, h, doctorFourSHA, digest, false)
 }
 
 func plantDoctorFourTree(t *testing.T, h doctorFourHome, sha string) string {
