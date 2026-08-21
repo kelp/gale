@@ -198,7 +198,7 @@ fine.
       system-only, format, file map.
       Refuses symlinks and hardlinks.
       Lands before any index entry.
-- [ ] **Index the first ten.** Admission
+- [x] **Index the first ten.** Admission
       recorded by that command. One PR
       per few packages: `jq`, `ripgrep`,
       `fd`, `just`, `gh`, `go`,
