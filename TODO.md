@@ -256,7 +256,7 @@ Not-in-index is an error.
       from the store or manifest alone.
 - [x] **Park the local artifact cache.**
       Milestone 6, off by default, or never.
-- [ ] **Grow the catalog by admission.**
+- [x] **Grow the catalog by admission.**
       After the cutover is boring. Batches
       from appendix A candidates. Skip
       anything that fails `otool -L` /
