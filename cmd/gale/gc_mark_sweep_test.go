@@ -143,7 +143,13 @@ func TestGCKeepsRegisteredProjectGenTargets(t *testing.T) {
 	_, storeRoot := setupGCHome(t)
 	jqDir := mkStorePkg(t, storeRoot, "jq", "1.7")
 	fdDir := mkStorePkg(t, storeRoot, "fd", "9.0")
-	proj := makeRegisteredProject(t, storeRoot, "[packages]\njq = \"1.7\"\n", "jq", "1.7", "jq")
+	proj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.7",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(os.Getenv("HOME"), ".gale", "projects"),
 		[]byte(proj+"\n"), 0o644,

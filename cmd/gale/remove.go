@@ -138,7 +138,7 @@ func (w removeWork) unlocked(ctx context.Context) error {
 	var dropStoreDir string
 	if st.IsInstalled(w.name, w.version) {
 		var planErr error
-		dropStoreDir, planErr = storeRemovalPlan(ctx, w.c, st, w.name, w.version, w.out)
+		dropStoreDir, planErr = w.storeRemovalPlan(ctx, st)
 		if planErr != nil {
 			return w.undo(planErr)
 		}
@@ -272,18 +272,17 @@ var beforeGuardedRemoval func()
 // This is the early guard call: it decides, and it runs before the
 // generation swap so a refusal lands before anything moves. The
 // authoritative one is dropFromStore's, beside the deletion.
-func storeRemovalPlan(
-	parent context.Context, ctx *cmdContext, st *store.Store, name, version string,
-	out *output.Output,
+func (w removeWork) storeRemovalPlan(
+	parent context.Context, st *store.Store,
 ) (string, error) {
-	storeDir := st.ResolveDir(name, version)
+	storeDir := st.ResolveDir(w.name, w.version)
 	if otherScopeReferences(
-		st, name, storeDir, versionedRecipeResolverWith(ctx, parent), out,
+		st, w.name, storeDir, versionedRecipeResolverWith(w.c, parent), w.out,
 	) {
-		out.Info(fmt.Sprintf(
+		w.out.Info(fmt.Sprintf(
 			"%s@%s still referenced by another "+
 				"gale.toml — keeping store entry",
-			name, version,
+			w.name, w.version,
 		))
 		return "", nil
 	}

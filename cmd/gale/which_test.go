@@ -41,23 +41,23 @@ func TestResolveWhich(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		name, version, resolved, err := resolveWhich(
+		got, err := resolveWhich(
 			"jq", galeDir, storeRoot,
 		)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if name != "jq" {
-			t.Errorf("name = %q, want %q", name, "jq")
+		if got.name != "jq" {
+			t.Errorf("name = %q, want %q", got.name, "jq")
 		}
-		if version != "1.8.1" {
-			t.Errorf("version = %q, want %q", version, "1.8.1")
+		if got.version != "1.8.1" {
+			t.Errorf("version = %q, want %q", got.version, "1.8.1")
 		}
 		// EvalSymlinks to handle macOS /var → /private/var.
 		wantPath, _ := filepath.EvalSymlinks(binPath)
-		if resolved != wantPath {
+		if got.path != wantPath {
 			t.Errorf("resolved = %q, want %q",
-				resolved, wantPath)
+				got.path, wantPath)
 		}
 	})
 
@@ -78,7 +78,7 @@ func TestResolveWhich(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, _, _, err := resolveWhich(
+		_, err := resolveWhich(
 			"nonexistent", galeDir, storeRoot,
 		)
 		if err == nil {
@@ -107,7 +107,7 @@ func TestResolveWhich(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, _, _, err := resolveWhich(
+		_, err := resolveWhich(
 			"broken", galeDir, storeRoot,
 		)
 		if err == nil {
@@ -151,7 +151,7 @@ func TestResolveWhich(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		_, _, _, err := resolveWhich(
+		_, err := resolveWhich(
 			"jq", galeDir, storeRoot,
 		)
 		if err == nil {
@@ -193,18 +193,18 @@ func TestResolveWhich(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		name, version, _, err := resolveWhich(
+		got, err := resolveWhich(
 			"gale", galeDir, storeRoot,
 		)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if name != "gale" {
-			t.Errorf("name = %q, want %q", name, "gale")
+		if got.name != "gale" {
+			t.Errorf("name = %q, want %q", got.name, "gale")
 		}
-		if version != "d871cf2" {
+		if got.version != "d871cf2" {
 			t.Errorf("version = %q, want %q",
-				version, "d871cf2")
+				got.version, "d871cf2")
 		}
 	})
 }
@@ -231,15 +231,15 @@ func TestOtherProvidersReportsShadowedPackage(t *testing.T) {
 		filepath.Join(gammaDir, "bin", "gamma"),
 	)
 
-	name, _, _, err := resolveWhich("foo", galeDir, storeRoot)
+	winner, err := resolveWhich("foo", galeDir, storeRoot)
 	if err != nil {
 		t.Fatalf("resolveWhich: %v", err)
 	}
-	if name != "beta" {
-		t.Fatalf("winner = %q, want beta", name)
+	if winner.name != "beta" {
+		t.Fatalf("winner = %q, want beta", winner.name)
 	}
 
-	got := otherProviders("foo", name, galeDir, storeRoot)
+	got := otherProviders("foo", winner.name, galeDir, storeRoot)
 	want := []string{"alpha"}
 	if !slices.Equal(got, want) {
 		t.Errorf("otherProviders = %v, want %v — gamma ships no foo, "+

@@ -35,17 +35,17 @@ var whichCmd = &cobra.Command{
 
 		storeRoot := defaultStoreRoot()
 
-		name, version, resolved, err := resolveWhich(
+		got, err := resolveWhich(
 			args[0], galeDir, storeRoot,
 		)
 		if err != nil {
 			return err
 		}
 
-		fmt.Printf("%s@%s\n", name, version)
-		fmt.Println(resolved)
+		fmt.Printf("%s@%s\n", got.name, got.version)
+		fmt.Println(got.path)
 		if others := otherProviders(
-			args[0], name, galeDir, storeRoot,
+			args[0], got.name, galeDir, storeRoot,
 		); len(others) > 0 {
 			fmt.Printf("also provided by: %s\n", strings.Join(others, ", "))
 		}
@@ -95,18 +95,23 @@ func resolveReadOnlyGaleDirForWhich(global, project bool) (string, error) {
 	return galeDir, err
 }
 
+// whichResult is the package that provides a binary.
+type whichResult struct {
+	name, version, path string
+}
+
 // resolveWhich finds which package provides a binary by
 // following symlinks from the current generation back to
 // the store. Returns the package name, version, and
 // resolved binary path.
-func resolveWhich(binary, galeDir, storeRoot string) (string, string, string, error) {
+func resolveWhich(binary, galeDir, storeRoot string) (whichResult, error) {
 	binPath := filepath.Join(
 		galeDir, "current", "bin", binary,
 	)
 
 	// Check the binary exists in the generation.
 	if _, err := os.Lstat(binPath); err != nil {
-		return "", "", "", fmt.Errorf(
+		return whichResult{}, fmt.Errorf(
 			"%s not found in gale", binary,
 		)
 	}
@@ -114,7 +119,7 @@ func resolveWhich(binary, galeDir, storeRoot string) (string, string, string, er
 	// Resolve the full symlink chain to the store.
 	resolved, err := filepath.EvalSymlinks(binPath)
 	if err != nil {
-		return "", "", "", fmt.Errorf(
+		return whichResult{}, fmt.Errorf(
 			"resolving %s: %w", binary, err,
 		)
 	}
@@ -131,7 +136,7 @@ func resolveWhich(binary, galeDir, storeRoot string) (string, string, string, er
 
 	rel, err := filepath.Rel(cleanStore, cleanResolved)
 	if err != nil || strings.HasPrefix(rel, "..") {
-		return "", "", "", fmt.Errorf(
+		return whichResult{}, fmt.Errorf(
 			"%s is not in the gale store", binary,
 		)
 	}
@@ -140,12 +145,12 @@ func resolveWhich(binary, galeDir, storeRoot string) (string, string, string, er
 	sep := string(os.PathSeparator)
 	parts := strings.SplitN(rel, sep, 4)
 	if len(parts) < 4 || parts[2] != "bin" {
-		return "", "", "", fmt.Errorf(
+		return whichResult{}, fmt.Errorf(
 			"unexpected store path for %s", binary,
 		)
 	}
 
-	return parts[0], parts[1], resolved, nil
+	return whichResult{parts[0], parts[1], resolved}, nil
 }
 
 func init() {

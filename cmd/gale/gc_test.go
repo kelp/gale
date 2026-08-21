@@ -845,18 +845,26 @@ func TestRemoveUnreferencedVersionsReturnsFailureCount(t *testing.T) {
 	}
 }
 
+// registeredProject is the string fields for
+// makeRegisteredProject after t.
+type registeredProject struct {
+	storeRoot  string
+	configToml string
+	pkg        string
+	ver        string
+	binName    string
+}
+
 // makeRegisteredProject creates a project dir with a gale.toml
 // and an active generation (gen/1) whose bin/<binName> symlink
 // points into storeRoot/<pkg>/<ver>/bin/<binName>. Returns the
 // project path. Helper for the gh#115 registry retention tests.
-func makeRegisteredProject(
-	t *testing.T, storeRoot, configToml, pkg, ver, binName string,
-) string {
+func makeRegisteredProject(t *testing.T, in registeredProject) string {
 	t.Helper()
 	proj := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(proj, "gale.toml"),
-		[]byte(configToml), 0o644,
+		[]byte(in.configToml), 0o644,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -865,8 +873,8 @@ func makeRegisteredProject(
 		t.Fatal(err)
 	}
 	if err := os.Symlink(
-		filepath.Join(storeRoot, pkg, ver, "bin", binName),
-		filepath.Join(binDir, binName),
+		filepath.Join(in.storeRoot, in.pkg, in.ver, "bin", in.binName),
+		filepath.Join(binDir, in.binName),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -900,10 +908,13 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 	}
 
 	globalDir := t.TempDir()
-	otherProj := makeRegisteredProject(
-		t, storeRoot, "[packages]\njq = \"1.7\"\n",
-		"jq", "1.6", "jq",
-	)
+	otherProj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.6",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(globalDir, "projects"),
 		[]byte(otherProj+"\n"), 0o644,
@@ -973,10 +984,13 @@ func TestGCDryRunListsContributingProjects(t *testing.T) {
 		}
 	}
 
-	otherProj := makeRegisteredProject(
-		t, storeRoot, "[packages]\njq = \"1.7\"\n",
-		"jq", "1.7", "jq",
-	)
+	otherProj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.7",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(home, ".gale", "projects"),
 		[]byte(otherProj+"\n"), 0o644,
@@ -1093,10 +1107,13 @@ func TestGCRealRunPreservesRegisteredProjectStoreDirs(t *testing.T) {
 		}
 	}
 
-	otherProj := makeRegisteredProject(
-		t, storeRoot, "[packages]\njq = \"1.7\"\n",
-		"jq", "1.7", "jq",
-	)
+	otherProj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.7",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(home, ".gale", "projects"),
 		[]byte(otherProj+"\n"), 0o644,
@@ -1309,10 +1326,13 @@ func gcUnreadableProjectFixture(t *testing.T) (string, string) {
 		}
 	}
 
-	proj := makeRegisteredProject(
-		t, storeRoot, "[packages]\njq = \"1.7\"\n",
-		"jq", "1.6", "jq",
-	)
+	proj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.6",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(home, ".gale", "projects"),
 		[]byte(proj+"\n"), 0o644,
