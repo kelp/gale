@@ -335,7 +335,7 @@ Mechanical (low-risk, do first):
 - [x] **misspell (1)** — fix the flagged spelling.
 - [x] **predeclared (5)** — rename identifiers that shadow builtins.
 - [x] **forcetypeassert (2)** — add comma-ok to bare type assertions.
-- [ ] **errorlint (2)** — match with `errors.Is`/`errors.As`, wrap
+- [x] **errorlint (2)** — match with `errors.Is`/`errors.As`, wrap
   with `%w`.
 - [ ] **nilnil (3)** — return a sentinel error instead of `(nil, nil)`.
 - [ ] **contextcheck (4)** — thread `context.Context` instead of
