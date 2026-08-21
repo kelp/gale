@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -82,8 +83,9 @@ func installBinary(t *testing.T, s stagedInstall) string {
 	canonical := filepath.Join(s.storeRoot, s.name, s.version)
 	inst := &Installer{}
 	if err := inst.installBinaryTo(
+		context.Background(),
 		binaryRecipe(s.name, strings.TrimSuffix(s.version, "-1"), s.fixture),
-		staging, canonical, s.deps, false,
+		extractDest{staging, canonical, false}, s.deps,
 	); err != nil {
 		t.Fatalf("install %s: %v", s.name, err)
 	}

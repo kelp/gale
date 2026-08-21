@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -632,7 +633,7 @@ func makeTestRecipe(name, version string, revision int,
 func recipeResolverFromMap(
 	m map[string]*recipe.Recipe,
 ) installer.RecipeResolver {
-	return func(name string) (*recipe.Recipe, error) {
+	return func(_ context.Context, name string) (*recipe.Recipe, error) {
 		r, ok := m[name]
 		if !ok {
 			return nil, fmt.Errorf("no recipe for %s", name)

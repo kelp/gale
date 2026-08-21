@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -256,7 +257,7 @@ func TestMigrateOneRelocatingDefersTheFarm(t *testing.T) {
 
 	r := dylibBinaryRecipe(t, "libfoo")
 	ctx := buildFakeCtx(t, filepath.Join(galeDir, "gale.toml"),
-		galeDir, storeRoot, func(string) (*recipe.Recipe, error) {
+		galeDir, storeRoot, func(_ context.Context, _ string) (*recipe.Recipe, error) {
 			return r, nil
 		})
 	wireFarmGuards(ctx.Installer, ctx.GaleDir, ctx.StoreRoot)

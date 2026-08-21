@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,7 +104,7 @@ func TestRecipeFileResolverNeverReturnsNil(t *testing.T) {
 	if resolver == nil {
 		t.Fatal("recipeFileResolver returned nil")
 	}
-	_, err := resolver("jq")
+	_, err := resolver(context.Background(), "jq")
 	if err == nil {
 		t.Error("expected error from resolver with invalid path")
 	}
@@ -111,7 +112,7 @@ func TestRecipeFileResolverNeverReturnsNil(t *testing.T) {
 
 func TestLocalRecipeResolverEmptyName(t *testing.T) {
 	resolver := localRecipeResolver(t.TempDir())
-	_, err := resolver("")
+	_, err := resolver(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty package name")
 	}
@@ -154,7 +155,7 @@ linux-arm64 = { sha256 = "ledgerarm", manifest_digest = "sha256:` +
 		t.Fatal(err)
 	}
 
-	rec, err := localRecipeResolver(dir)("jq")
+	rec, err := localRecipeResolver(dir)(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("resolver error: %v", err)
 	}
@@ -206,7 +207,7 @@ sha256 = "abc"
 sha256 = "firstsha"
 `)
 
-	first, err := localRecipeResolver(dir)("jq")
+	first, err := localRecipeResolver(dir)(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("resolver error: %v", err)
 	}
@@ -222,7 +223,7 @@ sha256 = "firstsha"
 [darwin-arm64]
 sha256 = "secondsha"
 `)
-	second, err := localRecipeResolver(dir)("jq")
+	second, err := localRecipeResolver(dir)(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("resolver after binaries edit: %v", err)
 	}

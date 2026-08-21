@@ -11,6 +11,14 @@
 
 ### Changed
 
+- **`gale sync --if-needed` is bounded.** Automatic
+  sync (direnv, `gale shell`, `gale run`) uses a
+  compiled 15s deadline, parented through index HTTP,
+  artifact HTTP, hashing, and extract. Timeout stamps
+  `incomplete`, cancels in-flight work, and leaves
+  `current` unchanged. A typed `gale sync` stays
+  unbounded. The 10-minute retry interval is unchanged.
+
 - **A project generation does not swap `current`
   until the canonical project root is in
   `~/.gale/projects`.** Registration failure

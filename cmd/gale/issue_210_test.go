@@ -136,7 +136,7 @@ func TestSyncRebuildsWhenTheActiveGenerationCannotBeRead(t *testing.T) {
 	}
 	emptyGenerationTree(t, galeDir)
 
-	if err := runSync("", false, false, false, proj); err != nil {
+	if err := runSync(syncRun{ProjectDir: proj}); err != nil {
 		t.Fatalf("sync must repair a broken generation, not refuse "+
 			"to run in it: %v", err)
 	}

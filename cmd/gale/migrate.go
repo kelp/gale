@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -288,7 +289,7 @@ func candidateEdges(
 			}
 			id, ok := resolved[dep]
 			if !ok {
-				r, err := resolve(dep)
+				r, err := resolve(context.Background(), dep)
 				if err != nil {
 					return nil, fmt.Errorf(
 						"%w: ordering %s@%s: resolving its dependency %s: %w",

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -477,7 +478,7 @@ func TestMigrateOrderingRefusesARealCycle(t *testing.T) {
 		},
 	}
 
-	_, err := orderCandidates(candidates, func(name string) (*recipe.Recipe, error) {
+	_, err := orderCandidates(candidates, func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return runtimeDepRecipe(name, "1.0"), nil
 	})
 	if !errors.Is(err, errMigrateCycle) {
@@ -488,8 +489,8 @@ func TestMigrateOrderingRefusesARealCycle(t *testing.T) {
 // byNameResolver answers every name with version "1.0" except one,
 // which is how a fixture says "this is the version a refetch would
 // actually link".
-func byNameResolver(name, version string) func(string) (*recipe.Recipe, error) {
-	return func(want string) (*recipe.Recipe, error) {
+func byNameResolver(name, version string) installer.RecipeResolver {
+	return func(_ context.Context, want string) (*recipe.Recipe, error) {
 		if want == name {
 			return runtimeDepRecipe(want, version), nil
 		}

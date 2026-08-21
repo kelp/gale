@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -105,7 +106,7 @@ func TestFetchRecipePopulatesCacheOnFirstFetch(t *testing.T) {
 	defer srv.Close()
 
 	reg := cachedTestRegistry(t, srv.URL)
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 
@@ -150,13 +151,13 @@ func TestFetchRecipeHonorsIfNoneMatchOn304(t *testing.T) {
 
 	reg := cachedTestRegistry(t, srv.URL)
 	// First fetch populates the cache.
-	rec1, err := reg.FetchRecipe("testpkg")
+	rec1, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
 	// Second fetch must send If-None-Match and still return the
 	// same recipe content.
-	rec2, err := reg.FetchRecipe("testpkg")
+	rec2, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestFetchRecipeRefreshesCacheOnChangedContent(t *testing.T) {
 	defer srv.Close()
 
 	reg := cachedTestRegistry(t, srv.URL)
-	rec1, err := reg.FetchRecipe("testpkg")
+	rec1, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
@@ -198,7 +199,7 @@ func TestFetchRecipeRefreshesCacheOnChangedContent(t *testing.T) {
 		`version = "1.0.0"`, `version = "2.0.0"`, 1)
 	eh.setBody(updated)
 
-	rec2, err := reg.FetchRecipe("testpkg")
+	rec2, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
@@ -229,10 +230,10 @@ func TestFetchRecipeWithoutETagStillWorks(t *testing.T) {
 	defer srv.Close()
 
 	reg := cachedTestRegistry(t, srv.URL)
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("second fetch: %v", err)
 	}
 	// Two calls, no cacheable validator → both go to the wire.
@@ -253,7 +254,7 @@ func TestFetchRecipe304ReturnsExactCachedBody(t *testing.T) {
 	defer srv.Close()
 
 	reg := cachedTestRegistry(t, srv.URL)
-	rec, err := reg.FetchRecipe("testpkg")
+	rec, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("first fetch: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestFetchRecipe304ReturnsExactCachedBody(t *testing.T) {
 		t.Fatal("no cached body found")
 	}
 
-	_, err = reg.FetchRecipe("testpkg")
+	_, err = reg.FetchRecipe(context.Background(), "testpkg")
 	if err == nil {
 		t.Fatal("expected parse error from corrupted cache, got nil — 304 path must return cached bytes verbatim")
 	}
@@ -337,10 +338,10 @@ func TestFetchBinariesUsesCache(t *testing.T) {
 	defer srv.Close()
 
 	reg := cachedTestRegistry(t, srv.URL)
-	if _, err := reg.FetchRecipe("jq"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "jq"); err != nil {
 		t.Fatalf("first: %v", err)
 	}
-	if _, err := reg.FetchRecipe("jq"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "jq"); err != nil {
 		t.Fatalf("second: %v", err)
 	}
 	// Both fetches happen (with If-None-Match the second time),
@@ -361,10 +362,10 @@ func TestEmptyCacheDirSkipsCache(t *testing.T) {
 	// No CacheDir set — nothing should be written, every call
 	// should go to the network.
 	reg := &Registry{BaseURL: srv.URL}
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 	if got := ch.lastIfNoneMatch("/recipes/t/testpkg.toml"); got != "" {

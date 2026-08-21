@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -381,7 +382,7 @@ func buildRecipeChecker(outputDir string) (func(string) bool, error) {
 		return nil, err
 	}
 	return func(name string) bool {
-		_, err := reg.FetchRecipe(name)
+		_, err := reg.FetchRecipe(context.Background(), name)
 		return err == nil
 	}, nil
 }

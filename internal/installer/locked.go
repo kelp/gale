@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"fmt"
 
 	"github.com/kelp/gale/internal/lockgraph"
@@ -49,9 +50,9 @@ func (inst *Installer) plannedNode(
 // node's recipe declares exactly the locked edges
 // (lockplan.validateEdges), so an unknown name here means the recipe
 // on disk has moved out from under the lock.
-func (inst *Installer) resolveDep(name string) (*recipe.Recipe, error) {
+func (inst *Installer) resolveDep(ctx context.Context, name string) (*recipe.Recipe, error) {
 	if inst.Plan == nil {
-		return inst.Resolver(name)
+		return inst.Resolver(ctx, name)
 	}
 	n, ok := inst.Plan.ForName(name)
 	if !ok {

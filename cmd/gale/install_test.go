@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -586,7 +587,7 @@ func TestResolverForRecipeInBucketedRepo(t *testing.T) {
 	}
 
 	// The resolver should be able to find jq.toml by name.
-	r, err := resolver("jq")
+	r, err := resolver(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("resolver failed for jq: %v", err)
 	}
@@ -639,7 +640,7 @@ func TestInstallFromGitResolverFallback(t *testing.T) {
 	// With the old recipeFileResolver, navigating up 3 dirs
 	// from /tmp/xxx/custom.toml would compute a wrong path.
 	// The fallback should return a working resolver.
-	_, err = resolver("nonexistent-pkg-xyz")
+	_, err = resolver(context.Background(), "nonexistent-pkg-xyz")
 	if err == nil {
 		t.Fatal("expected error for nonexistent package")
 	}

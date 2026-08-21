@@ -6,6 +6,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"runtime"
 	"strings"
 	"testing"
@@ -86,7 +87,7 @@ func mintResolver(
 	t *testing.T, recipes map[string]*recipe.Recipe,
 ) installer.RecipeResolver {
 	t.Helper()
-	return func(name string) (*recipe.Recipe, error) {
+	return func(_ context.Context, name string) (*recipe.Recipe, error) {
 		r, ok := recipes[name]
 		if !ok {
 			t.Fatalf("resolver asked for an unexpected package %q", name)

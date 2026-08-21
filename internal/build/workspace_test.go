@@ -1,6 +1,7 @@
 package build
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -93,7 +94,7 @@ func TestBuildSurvivesUnusableGaleDir(t *testing.T) {
 		Build:   recipe.Build{Steps: []string{"true"}},
 	}
 
-	_, err := Build(r, t.TempDir(), false, nil)
+	_, err := Build(context.Background(), r, t.TempDir(), false, nil)
 	if err == nil {
 		t.Fatal("Build unexpectedly succeeded against an unroutable source")
 	}
@@ -119,7 +120,7 @@ func TestBuildErrorsWhenNoScratchDirAvailable(t *testing.T) {
 		Build:   recipe.Build{Steps: []string{"true"}},
 	}
 
-	_, err := Build(r, outputDir, false, nil)
+	_, err := Build(context.Background(), r, outputDir, false, nil)
 	if err == nil {
 		t.Fatal("Build returned nil error with no usable scratch dir")
 	}

@@ -82,7 +82,7 @@ var verifyCmd = &cobra.Command{
 					context.Background(), 30*time.Second,
 				)
 				defer cancel()
-				token, terr := ghcr.Token(repoPath)
+				token, terr := ghcr.Token(context.Background(), repoPath)
 				if terr != nil {
 					return nil, fmt.Errorf("fetch ghcr token: %w", terr)
 				}
@@ -145,7 +145,7 @@ func downloadArchive(name, sha256 string) (string, error) {
 		return "", fmt.Errorf("build temp dir: %w", err)
 	}
 
-	token, err := ghcr.Token(localGHCRBase + "/" + name)
+	token, err := ghcr.Token(context.Background(), localGHCRBase+"/"+name)
 	if err != nil {
 		return "", fmt.Errorf("fetch ghcr token: %w", err)
 	}

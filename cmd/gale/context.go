@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -298,13 +299,17 @@ func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
 type versionedRecipeResolver func(name, version string) (*recipe.Recipe, error)
 
 func (ctx *cmdContext) versionedRecipeResolver() versionedRecipeResolver {
-	if ctx == nil || ctx.Resolver == nil {
+	return versionedRecipeResolverWith(ctx, context.Background())
+}
+
+func versionedRecipeResolverWith(cc *cmdContext, parent context.Context) versionedRecipeResolver {
+	if cc == nil || cc.Resolver == nil {
 		return nil
 	}
-	resolve := ctx.Resolver
-	reg := ctx.Registry
+	resolve := cc.Resolver
+	reg := cc.Registry
 	return func(name, version string) (*recipe.Recipe, error) {
-		return resolveRecipeForPin(name, version, resolve, reg)
+		return resolveRecipeForPin(parent, name, version, resolve, reg)
 	}
 }
 
@@ -312,18 +317,18 @@ func (ctx *cmdContext) versionedRecipeResolver() versionedRecipeResolver {
 // Shared by sync staleness, generation rebuild, and gc
 // retention so they all agree on the canonical revision.
 func resolveRecipeForPin(
-	name, version string,
+	ctx context.Context, name, version string,
 	resolve installer.RecipeResolver,
 	reg *registry.Registry,
 ) (*recipe.Recipe, error) {
-	r, err := resolve(name)
+	r, err := resolve(ctx, name)
 	if err == nil &&
 		(r.Package.Version == version || r.Package.Full() == version) {
 		return r, nil
 	}
 	if reg != nil {
 		var pinned *recipe.Recipe
-		pinned, vErr := reg.FetchRecipeVersion(name, version)
+		pinned, vErr := reg.FetchRecipeVersion(ctx, name, version)
 		if vErr == nil {
 			return pinned, nil
 		}
@@ -1027,7 +1032,7 @@ func addToConfig(name, version, host, configPath string) (string, error) {
 // found.
 func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Recipe, error) {
 	return resolveRecipeForPin(
-		name, version, ctx.Resolver, ctx.Registry,
+		context.Background(), name, version, ctx.Resolver, ctx.Registry,
 	)
 }
 

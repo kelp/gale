@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -72,7 +73,7 @@ tampering.`,
 
 		// Install dependencies (build, runtime, and implicit
 		// system deps).
-		deps, err := ctx.Installer.InstallBuildDeps(r)
+		deps, err := ctx.Installer.InstallBuildDeps(context.Background(), r)
 		if err != nil {
 			return fmt.Errorf("installing build deps: %w", err)
 		}
@@ -85,7 +86,7 @@ tampering.`,
 		if err != nil {
 			return fmt.Errorf("build temp dir: %w", err)
 		}
-		result, err := build.Build(r, tmpDir, r.Build.Debug, deps)
+		result, err := build.Build(context.Background(), r, tmpDir, r.Build.Debug, deps)
 		if err != nil {
 			return fmt.Errorf("build failed: %w", err)
 		}

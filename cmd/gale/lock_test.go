@@ -5,6 +5,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"io/fs"
@@ -69,7 +70,7 @@ func lockCtx(
 ) *cmdContext {
 	t.Helper()
 	return lockCtxResolver(t, tmp, configBody,
-		func(name string) (*recipe.Recipe, error) {
+		func(_ context.Context, name string) (*recipe.Recipe, error) {
 			v, ok := versions[name]
 			if !ok {
 				t.Fatalf("resolver asked for an unexpected package %q", name)
@@ -374,7 +375,7 @@ func TestLockFetchesWhenNothingIsInstalled(t *testing.T) {
 	defer srv.Close()
 
 	ctx := lockCtxResolver(t, tmp, "[packages]\n  freshpkg = \"1.0\"\n",
-		func(name string) (*recipe.Recipe, error) {
+		func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return &recipe.Recipe{
 				Package: recipe.Package{Name: name, Version: "1.0"},
 				Source: recipe.Source{
@@ -448,7 +449,7 @@ func TestLockChecksInstalledBinaryProvenanceAgainstTheRecipe(t *testing.T) {
 			t.Setenv("HOME", tmp)
 
 			ctx := lockCtxResolver(t, tmp, "[packages]\n  binpkg = \"1.0.0\"\n",
-				func(name string) (*recipe.Recipe, error) {
+				func(_ context.Context, name string) (*recipe.Recipe, error) {
 					r := minimalRecipe(name, "1.0.0")
 					r.Binary = map[string]recipe.Binary{
 						runtime.GOOS + "-" + runtime.GOARCH: {

@@ -27,7 +27,7 @@ func TestDryRunSuppressesCacheWrites(t *testing.T) {
 		CacheDir: t.TempDir(),
 		DryRun:   true,
 	}
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
 
@@ -68,7 +68,7 @@ func TestOfflineSkipsNetworkAndReturnsCachedBody(t *testing.T) {
 	cacheDir := t.TempDir()
 	// Populate the cache (online).
 	reg := &Registry{BaseURL: srv.URL, CacheDir: cacheDir}
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
 	hitsBefore := atomic.LoadInt32(&hits)
@@ -83,7 +83,7 @@ func TestOfflineSkipsNetworkAndReturnsCachedBody(t *testing.T) {
 		CacheDir: cacheDir,
 		Offline:  true,
 	}
-	rec, err := regOff.FetchRecipe("testpkg")
+	rec, err := regOff.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("offline fetch with warm cache: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestOfflineWithoutCacheErrors(t *testing.T) {
 		CacheDir: t.TempDir(),
 		Offline:  true,
 	}
-	_, err := reg.FetchRecipe("testpkg")
+	_, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err == nil {
 		t.Fatal("expected error when offline and no cache entry")
 	}
@@ -168,14 +168,14 @@ func TestStaleOnErrorServesCachedBody(t *testing.T) {
 	cacheDir := t.TempDir()
 	// Populate cache against working server.
 	reg := &Registry{BaseURL: srv.URL, CacheDir: cacheDir}
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
 
 	// Kill the server. Subsequent fetch must use the cache.
 	srv.Close()
 
-	rec, err := reg.FetchRecipe("testpkg")
+	rec, err := reg.FetchRecipe(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("expected stale-on-error to serve cached body, got: %v",
 			err)
@@ -195,7 +195,7 @@ func TestStaleOnErrorDoesNotWriteCache(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	reg := &Registry{BaseURL: srv.URL, CacheDir: cacheDir}
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("populate: %v", err)
 	}
 
@@ -217,7 +217,7 @@ func TestStaleOnErrorDoesNotWriteCache(t *testing.T) {
 	}
 
 	srv.Close()
-	if _, err := reg.FetchRecipe("testpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "testpkg"); err != nil {
 		t.Fatalf("stale-on-error: %v", err)
 	}
 
@@ -322,7 +322,7 @@ func TestNegativeCachePersists404(t *testing.T) {
 	// network hits — the .versions probe (404 → fall back to the
 	// ref-tip path) and the recipe .toml — both 404, both
 	// negatively cached.
-	_, err := reg.FetchRecipe("ghost")
+	_, err := reg.FetchRecipe(context.Background(), "ghost")
 	if err == nil {
 		t.Fatal("expected error for 404 response")
 	}
@@ -340,7 +340,7 @@ func TestNegativeCachePersists404(t *testing.T) {
 
 	// Subsequent calls within TTL must NOT hit the network.
 	for i := 0; i < 3; i++ {
-		_, err := reg.FetchRecipe("ghost")
+		_, err := reg.FetchRecipe(context.Background(), "ghost")
 		if err == nil {
 			t.Fatalf("call %d: expected error, got nil", i)
 		}
@@ -363,7 +363,7 @@ func TestNegativeCacheExpiresAfterTTL(t *testing.T) {
 
 	reg := cachedTestRegistry(t, srv.URL)
 
-	if _, err := reg.FetchRecipe("ghost"); err == nil {
+	if _, err := reg.FetchRecipe(context.Background(), "ghost"); err == nil {
 		t.Fatal("expected 404 error")
 	}
 	// Two hits: the .versions probe and the recipe .toml.
@@ -383,7 +383,7 @@ func TestNegativeCacheExpiresAfterTTL(t *testing.T) {
 	// Only the .toml marker was backdated; the .versions marker
 	// is still fresh and served from the negative cache. So the
 	// re-check adds exactly one .toml network hit (2 → 3).
-	if _, err := reg.FetchRecipe("ghost"); err == nil {
+	if _, err := reg.FetchRecipe(context.Background(), "ghost"); err == nil {
 		t.Fatal("expected 404 error after TTL expiry")
 	}
 	if h.count() != 3 {
@@ -419,7 +419,7 @@ func TestDryRunSuppressesNegativeCacheWrite(t *testing.T) {
 		CacheDir: t.TempDir(),
 		DryRun:   true,
 	}
-	if _, err := reg.FetchRecipe("ghost"); err == nil {
+	if _, err := reg.FetchRecipe(context.Background(), "ghost"); err == nil {
 		t.Fatal("expected 404 error")
 	}
 
@@ -445,7 +445,7 @@ func TestOfflineServesFreshNegativeCache(t *testing.T) {
 
 	// Populate negative cache online.
 	reg := &Registry{BaseURL: srv.URL, CacheDir: cacheDir}
-	if _, err := reg.FetchRecipe("ghost"); err == nil {
+	if _, err := reg.FetchRecipe(context.Background(), "ghost"); err == nil {
 		t.Fatal("expected 404 error")
 	}
 	hitsBefore := h.count()
@@ -456,7 +456,7 @@ func TestOfflineServesFreshNegativeCache(t *testing.T) {
 		CacheDir: cacheDir,
 		Offline:  true,
 	}
-	_, err := regOff.FetchRecipe("ghost")
+	_, err := regOff.FetchRecipe(context.Background(), "ghost")
 	if err == nil {
 		t.Fatal("expected error from cached 404 in offline mode")
 	}
@@ -481,7 +481,7 @@ func TestOfflineWithStaleNegativeCacheErrors(t *testing.T) {
 	cacheDir := t.TempDir()
 
 	reg := &Registry{BaseURL: srv.URL, CacheDir: cacheDir}
-	if _, err := reg.FetchRecipe("ghost"); err == nil {
+	if _, err := reg.FetchRecipe(context.Background(), "ghost"); err == nil {
 		t.Fatal("expected 404 error")
 	}
 
@@ -499,7 +499,7 @@ func TestOfflineWithStaleNegativeCacheErrors(t *testing.T) {
 		CacheDir: cacheDir,
 		Offline:  true,
 	}
-	_, err := regOff.FetchRecipe("ghost")
+	_, err := regOff.FetchRecipe(context.Background(), "ghost")
 	if err == nil {
 		t.Fatal("expected offline error for stale negative cache")
 	}
@@ -519,14 +519,14 @@ func TestStaleOnErrorServesCachedNegative(t *testing.T) {
 
 	cacheDir := t.TempDir()
 	reg := &Registry{BaseURL: srv.URL, CacheDir: cacheDir}
-	if _, err := reg.FetchRecipe("ghost"); err == nil {
+	if _, err := reg.FetchRecipe(context.Background(), "ghost"); err == nil {
 		t.Fatal("expected 404 error")
 	}
 
 	// Kill the server. Next fetch must serve cached 404.
 	srv.Close()
 
-	_, err := reg.FetchRecipe("ghost")
+	_, err := reg.FetchRecipe(context.Background(), "ghost")
 	if err == nil {
 		t.Fatal("expected error from stale-on-error negative cache")
 	}

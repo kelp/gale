@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -125,7 +126,7 @@ var installCmd = &cobra.Command{
 					name, version, err)
 			}
 		default:
-			r, err = ctx.Resolver(name)
+			r, err = ctx.Resolver(context.Background(), name)
 			if err != nil {
 				return fmt.Errorf("fetching recipe: %w", err)
 			}
@@ -144,7 +145,7 @@ var installCmd = &cobra.Command{
 		out.Info(fmt.Sprintf("Installing %s@%s...",
 			r.Package.Name, r.Package.Version))
 
-		result, err := ctx.Installer.InstallWithFinalize(r, false,
+		result, err := ctx.Installer.InstallWithFinalize(context.Background(), r, false,
 			func(_ *installer.InstallResult) error {
 				return ctx.FinalizeRecipeInstall(r)
 			})
@@ -224,7 +225,7 @@ func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output
 		}
 		r = parsed
 	} else {
-		fetched, err := inst.Resolver(name)
+		fetched, err := inst.Resolver(context.Background(), name)
 		if err != nil {
 			return fmt.Errorf("fetching recipe: %w", err)
 		}
@@ -639,7 +640,7 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 	// just-installed package before it lands in gale.toml
 	// (gh#69 — the --recipe path missed the race-0004 fix the
 	// registry, --path, and --git paths already received).
-	result, err := (&inst).InstallWithFinalize(r, false,
+	result, err := (&inst).InstallWithFinalize(context.Background(), r, false,
 		func(_ *installer.InstallResult) error {
 			return ctx.FinalizeRecipeInstall(r)
 		})

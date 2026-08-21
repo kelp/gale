@@ -2,6 +2,7 @@ package installer
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -95,7 +96,7 @@ func TestReinstallFarmGuardRefusalKeepsFarmAndStore(t *testing.T) {
 		}},
 	}
 
-	_, err := inst.Reinstall(r)
+	_, err := inst.Reinstall(context.Background(), r)
 	if !errors.Is(err, farm.ErrClaimConflict) {
 		t.Fatalf("refused reinstall must surface the guard error, "+
 			"got: %v", err)
@@ -172,7 +173,7 @@ func TestDeferFarmCommitsWithoutTouchingTheFarm(t *testing.T) {
 
 	// Reinstall, because that is the path migrate takes: it forces a
 	// refetch of a directory the store already counts as installed.
-	if _, err := inst.Reinstall(r); err != nil {
+	if _, err := inst.Reinstall(context.Background(), r); err != nil {
 		t.Fatalf("a deferred install must not consult the guard: %v", err)
 	}
 	canonical := filepath.Join(storeRoot, "deferpkg", "1.0-1")
@@ -227,7 +228,7 @@ func TestReplaceRemovesStaleFarmLinks(t *testing.T) {
 		Store:             store.NewStore(storeRoot),
 		BinaryFallbackLog: &bytes.Buffer{},
 	}
-	if _, err := inst.Reinstall(r); err != nil {
+	if _, err := inst.Reinstall(context.Background(), r); err != nil {
 		t.Fatalf("Reinstall: %v", err)
 	}
 
@@ -274,7 +275,7 @@ func TestReplaceRefusesToDropAClaimedSoname(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Reinstall(r); !errors.Is(err, farm.ErrClaimConflict) {
+	if _, err := inst.Reinstall(context.Background(), r); !errors.Is(err, farm.ErrClaimConflict) {
 		t.Fatalf("err = %v, want the removal guard's refusal", err)
 	}
 	if len(sawStale) != 1 || sawStale[0] != guardSoname() {
@@ -335,7 +336,7 @@ func TestInstallBinaryFarmGuardRefusalDoesNotFallBack(t *testing.T) {
 		},
 	}
 
-	_, err = inst.Install(r)
+	_, err = inst.Install(context.Background(), r)
 	if !errors.Is(err, farm.ErrClaimConflict) {
 		t.Fatalf("guard refusal must abort the install (no source "+
 			"fallback), got: %v", err)
@@ -391,7 +392,7 @@ func TestInstallFarmGuardReceivesCanonicalDir(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Install(r); err != nil {
+	if _, err := inst.Install(context.Background(), r); err != nil {
 		t.Fatalf("agreeing guard must not disturb the install: %v", err)
 	}
 	canonical := filepath.Join(storeRoot, "testpkg", "1.0-1")

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -36,35 +37,60 @@ var syncCmd = &cobra.Command{
 		if err := validateScopeFlags(syncGlobal, syncProject); err != nil {
 			return err
 		}
-		return runSync(syncRecipes, syncBuild, syncGlobal,
-			syncProject, "")
+		return runSync(syncRun{
+			RecipesPath: syncRecipes,
+			BuildOnly:   syncBuild,
+			Global:      syncGlobal,
+			Project:     syncProject,
+			IfNeeded:    syncOnlyIfNeeded,
+		})
 	},
+}
+
+// syncRun is runSync's inputs. runSync already sat at the
+// argument limit; IfNeeded cannot be a sixth bool without
+// revive, and mutating the cobra syncOnlyIfNeeded global
+// from shell/run would leak the flag across commands.
+type syncRun struct {
+	RecipesPath string
+	BuildOnly   bool
+	Global      bool
+	Project     bool
+	ProjectDir  string
+	IfNeeded    bool
 }
 
 // runSync performs the sync operation: resolves recipes,
 // installs missing packages, and rebuilds the generation.
-// When projectDir is non-empty, sync targets that specific
+// When ProjectDir is non-empty, sync targets that specific
 // project directory regardless of cwd or scope flags.
 //
 // Every exit records a completion stamp (gh#186). The result is a
 // named one so the deferred writer records the command's own verdict
 // rather than a separately maintained belief about it.
-func runSync(recipesPath string, buildOnly, global, project bool, projectDir string) (err error) {
+func runSync(s syncRun) (err error) {
 	out := newOutput()
 
-	ctx, err := newCmdContext(recipesPath, global, project)
+	cc, err := newCmdContext(s.RecipesPath, s.Global, s.Project)
 	if err != nil {
 		return err
 	}
 
-	retargetSync(ctx, projectDir)
+	retargetSync(cc, s.ProjectDir)
 
 	host, err := config.CurrentHost()
 	if err != nil {
 		return err
 	}
 
-	record, withheld := beginSyncStamp(out, ctx.GaleDir, ctx.GalePath, host)
+	ctx := context.Background()
+	if s.IfNeeded {
+		var cancel context.CancelFunc
+		ctx, cancel = ifNeededContext()
+		defer cancel()
+	}
+
+	record, withheld := beginSyncStamp(out, cc.GaleDir, cc.GalePath, host, s.IfNeeded)
 	if withheld {
 		return nil
 	}
@@ -73,13 +99,24 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 	var outcomes []syncOutcome
 	defer func() { record(err == nil, failedPackageNames(outcomes)) }()
 
-	if buildOnly {
-		ctx.Installer.SourceOnly = true
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sync --if-needed: %w", err)
 	}
 
-	cfg, err := ctx.LoadConfig()
+	outcomes, err = executeSync(ctx, cc, s, out, host)
+	return err
+}
+
+func executeSync(
+	ctx context.Context, cc *cmdContext, s syncRun, out *output.Output, host string,
+) ([]syncOutcome, error) {
+	if s.BuildOnly {
+		cc.Installer.SourceOnly = true
+	}
+
+	cfg, err := cc.LoadConfig()
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	if len(cfg.Packages) == 0 {
@@ -92,53 +129,50 @@ func runSync(recipesPath string, buildOnly, global, project bool, projectDir str
 		out.Info("No packages to sync.")
 	}
 
-	lv, err := syncLockView(ctx.GalePath)
+	lv, err := syncLockView(cc.GalePath)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	plan, warn, err := syncPlan(ctx, cfg, lv, host)
+	plan, warn, err := syncPlan(ctx, cc, cfg, lv, host)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if warn != "" {
 		out.Warn(warn)
 	}
-	if buildOnly {
+	if s.BuildOnly {
 		if err := rejectSourceOnly(plan); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// Under a plan the installer stops resolving anything: versions,
 	// artifacts, methods and dependency edges all come from the lock.
-	ctx.Installer.Plan = plan
+	cc.Installer.Plan = plan
 
 	items, err := sortedSyncItems(cfg.Packages, plan)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	outcomes = make([]syncOutcome, 0, len(items))
-	for _, w := range items {
-		outcomes = append(outcomes, runSyncOne(ctx, w, dryRun))
-	}
+	outcomes := collectSyncOutcomes(ctx, cc, items)
 
 	installed, failures := reportSyncOutcomes(out, outcomes, dryRun)
 
 	configChanged := syncDrifted(driftQuery{
-		galeDir:    ctx.GaleDir,
-		storeRoot:  ctx.StoreRoot,
+		galeDir:    cc.GaleDir,
+		storeRoot:  cc.StoreRoot,
 		declared:   cfg.Packages,
 		plan:       plan,
-		pinResolve: ctx.versionedRecipeResolver(),
+		pinResolve: versionedRecipeResolverWith(cc, ctx),
 	})
 
-	return finishAndReport(out, syncFinish{
+	return outcomes, finishAndReport(ctx, out, syncFinish{
 		dryRun:        dryRun,
 		failures:      failures,
 		installed:     installed,
 		configChanged: configChanged,
 		locked:        plan != nil,
-	}, rebuildForSync(ctx, plan), len(cfg.Packages)-installed)
+	}, rebuildForSync(cc, plan), len(cfg.Packages)-installed)
 }
 
 // rebuildForSync picks the generation rebuild this sync must use.
@@ -162,9 +196,9 @@ func rebuildForSync(ctx *cmdContext, plan *lockplan.Plan) func() error {
 // what the user must act on, so they propagate unwrapped and the
 // warning only counts them.
 func finishAndReport(
-	out *output.Output, f syncFinish, rebuild func() error, upToDate int,
+	ctx context.Context, out *output.Output, f syncFinish, rebuild func() error, upToDate int,
 ) error {
-	if err := finishSync(f, rebuild); err != nil {
+	if err := finishSync(ctx, f, rebuild); err != nil {
 		if len(f.failures) > 0 {
 			out.Warn(fmt.Sprintf(
 				"Sync finished with %d error(s)", len(f.failures),
@@ -202,7 +236,7 @@ func retargetSync(ctx *cmdContext, projectDir string) {
 // free, having touched neither the store nor the generation
 // (design §4).
 func syncPlan(
-	ctx *cmdContext, cfg *config.GaleConfig, lv *lockfile.View, host string,
+	ctx context.Context, cc *cmdContext, cfg *config.GaleConfig, lv *lockfile.View, host string,
 ) (*lockplan.Plan, string, error) {
 	return lockedSyncPlan(lv, lockplan.Request{
 		Host:     host,
@@ -212,7 +246,7 @@ func syncPlan(
 		// supplies each disagreeing pin, which for a host overlay is
 		// not the target the lock roots it in.
 		DeclaredOrigin: cfg.PackageOrigins(host),
-		Resolve:        ctx.ResolveVersionedRecipe,
+		Resolve:        versionedRecipeResolverWith(cc, ctx),
 	}, syncNoFrozen)
 }
 
@@ -481,7 +515,7 @@ func generationDrifted(
 // publishes a generation the lock never describes. Issue #20's partial
 // rebuild survives unlocked, where losing the whole PATH to one broken
 // recipe is the worse trade.
-func finishSync(f syncFinish, rebuild func() error) error {
+func finishSync(ctx context.Context, f syncFinish, rebuild func() error) error {
 	if f.dryRun {
 		return nil
 	}
@@ -494,7 +528,13 @@ func finishSync(f syncFinish, rebuild func() error) error {
 		)
 	}
 	if f.installed == 0 && failed == 0 && !f.configChanged {
-		return nil // nothing changed — skip rebuild
+		// Genuine no-op: every package was already up to date.
+		// A deadline that expired after that classification must
+		// not stamp incomplete or withhold the next --if-needed.
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("sync --if-needed: %w", err)
 	}
 	rebuildErr := rebuild()
 	if failed > 0 {
@@ -605,29 +645,46 @@ func sortedSyncItems(
 // When the recipe cannot be resolved (e.g. offline) it falls back to
 // the bare resolution and reports stale only for pre-revision installs
 // missing deps metadata, so installed packages still report up to date
-// rather than churn.
-func installedStale(ctx *cmdContext, w syncItem) bool {
-	r, err := ctx.ResolveVersionedRecipe(w.name, w.version)
+// rather than churn. A canceled or deadline-exceeded resolve is not
+// offline: it returns the context error so the package is not marked
+// up to date.
+func installedStale(ctx context.Context, cc *cmdContext, w syncItem) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	r, err := resolveRecipeForPin(ctx, w.name, w.version, cc.Resolver, cc.Registry)
 	if err != nil {
-		storeDir, ok := ctx.Installer.Store.StorePath(w.name, w.version)
-		return ok && !depsmeta.Has(storeDir)
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		storeDir, ok := cc.Installer.Store.StorePath(w.name, w.version)
+		return ok && !depsmeta.Has(storeDir), nil
 	}
 
 	// Prefer the recipe's canonical dir; fall back to the bare
 	// resolution when that revision is not yet on disk.
-	storeDir, ok := ctx.Installer.Store.StorePath(w.name, r.Package.Full())
+	storeDir, ok := cc.Installer.Store.StorePath(w.name, r.Package.Full())
 	if !ok {
-		storeDir, ok = ctx.Installer.Store.StorePath(w.name, w.version)
+		storeDir, ok = cc.Installer.Store.StorePath(w.name, w.version)
 	}
 	if !ok {
-		return false
+		return false, nil
 	}
 	if !depsmeta.Has(storeDir) {
 		// Pre-revision install — soft migration: mark stale.
-		return true
+		return true, nil
 	}
-	stale, staleErr := installer.IsStale(storeDir, r, runtime.GOOS, runtime.GOARCH, ctx.Resolver)
-	return staleErr == nil && stale
+	stale, staleErr := installer.IsStale(ctx, installer.StaleQuery{
+		StoreDir: storeDir, Recipe: r,
+		GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: cc.Resolver,
+	})
+	if staleErr != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return false, ctxErr
+		}
+		return false, nil
+	}
+	return stale, nil
 }
 
 // runSyncOneLocked is the per-package body under a plan.
@@ -642,7 +699,7 @@ func installedStale(ctx *cmdContext, w syncItem) bool {
 // for. Reinstall is gone: §4 permits committing only ABSENT canonical
 // directories, so an occupied one either attests the lock or is a
 // conflict, and replacing it in-plan is prohibited.
-func runSyncOneLocked(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
+func runSyncOneLocked(ctx context.Context, cc *cmdContext, w syncItem, dryRun bool) syncOutcome {
 	outcome := syncOutcome{name: w.name, version: w.version}
 
 	if dryRun {
@@ -650,7 +707,7 @@ func runSyncOneLocked(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
 		// would: a dry run that reports "up to date" for a directory
 		// the sync would reject with an integrity error is worse than
 		// no dry run at all.
-		hit, err := ctx.Installer.VerifyPlanned(w.name)
+		hit, err := cc.Installer.VerifyPlanned(w.name)
 		if err != nil {
 			outcome.installErr = err
 			return outcome
@@ -659,7 +716,7 @@ func runSyncOneLocked(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
 		return outcome
 	}
 
-	result, err := ctx.Installer.Install(w.planned.Recipe)
+	result, err := cc.Installer.Install(ctx, w.planned.Recipe)
 	if err != nil {
 		outcome.installErr = err
 		return outcome
@@ -672,16 +729,37 @@ func runSyncOneLocked(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
 	return outcome
 }
 
-func runSyncOne(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
+func collectSyncOutcomes(ctx context.Context, cc *cmdContext, items []syncItem) []syncOutcome {
+	outcomes := make([]syncOutcome, 0, len(items))
+	for i, w := range items {
+		if err := ctx.Err(); err != nil {
+			for _, rest := range items[i:] {
+				outcomes = append(outcomes, syncOutcome{
+					name: rest.name, version: rest.version, installErr: err,
+				})
+			}
+			break
+		}
+		outcomes = append(outcomes, runSyncOne(ctx, cc, w, dryRun))
+	}
+	return outcomes
+}
+
+func runSyncOne(ctx context.Context, cc *cmdContext, w syncItem, dryRun bool) syncOutcome {
 	if w.planned != nil {
-		return runSyncOneLocked(ctx, w, dryRun)
+		return runSyncOneLocked(ctx, cc, w, dryRun)
 	}
 
 	outcome := syncOutcome{name: w.name, version: w.version}
 
 	// Step a/b: check if already installed and whether stale.
-	if ctx.Installer.Store.IsInstalled(w.name, w.version) {
-		outcome.stale = installedStale(ctx, w)
+	if cc.Installer.Store.IsInstalled(w.name, w.version) {
+		stale, err := installedStale(ctx, cc, w)
+		if err != nil {
+			outcome.installErr = err
+			return outcome
+		}
+		outcome.stale = stale
 
 		// Step c: not stale — up to date, no install.
 		if !outcome.stale {
@@ -696,7 +774,7 @@ func runSyncOne(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
 	}
 
 	// Step e: resolve recipe.
-	r, err := ctx.ResolveVersionedRecipe(w.name, w.version)
+	r, err := resolveRecipeForPin(ctx, w.name, w.version, cc.Resolver, cc.Registry)
 	if err != nil {
 		outcome.resolveErr = err
 		return outcome
@@ -705,9 +783,9 @@ func runSyncOne(ctx *cmdContext, w syncItem, dryRun bool) syncOutcome {
 	// Step f: install or reinstall.
 	var result *installer.InstallResult
 	if outcome.stale {
-		result, err = ctx.Installer.Reinstall(r)
+		result, err = cc.Installer.Reinstall(ctx, r)
 	} else {
-		result, err = ctx.Installer.Install(r)
+		result, err = cc.Installer.Install(ctx, r)
 	}
 	if err != nil {
 		outcome.installErr = err

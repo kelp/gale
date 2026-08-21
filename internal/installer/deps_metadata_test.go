@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"fmt"
 	"runtime"
 	"strings"
@@ -13,7 +14,7 @@ import (
 // resolverFor returns a RecipeResolver backed by the provided map.
 // Missing names produce a "recipe not found" error.
 func resolverFor(m map[string]*recipe.Recipe) RecipeResolver {
-	return func(name string) (*recipe.Recipe, error) {
+	return func(_ context.Context, name string) (*recipe.Recipe, error) {
 		r, ok := m[name]
 		if !ok {
 			return nil, fmt.Errorf("recipe not found: %s", name)
@@ -34,10 +35,10 @@ func TestIsStaleReturnsTrueWhenMetadataMissing(t *testing.T) {
 	dir := t.TempDir()
 	// No metadata file present.
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return curlRecipe("8.19.0", 1), nil
 	}
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -60,12 +61,12 @@ func TestIsStaleReturnsFalseWhenDepsMatch(t *testing.T) {
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
 
 	resolverCallCount := 0
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		resolverCallCount++
 		return curlRecipe("8.19.0", 1), nil
 	}
 
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestIsStaleReturnsTrueWhenRevisionBumped(t *testing.T) {
 		"curl": curlRecipe("8.19.0", 2),
 	})
 
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestIsStaleReturnsTrueWhenVersionBumped(t *testing.T) {
 		"curl": curlRecipe("8.20.0", 1),
 	})
 
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -139,11 +140,11 @@ func TestIsStaleReturnsResolverError(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return nil, fmt.Errorf("recipe not found: %s", name)
 	}
 
-	_, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	_, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err == nil {
 		t.Fatal("IsStale must return a non-nil error when the resolver fails")
 	}
@@ -166,12 +167,12 @@ func TestIsStaleReturnsFalseForZeroDepPackage(t *testing.T) {
 	r := makeRecipe("mypkg", "1.0.0", nil, nil)
 
 	// Resolver should never be called — there are no deps to resolve.
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		t.Errorf("resolver called unexpectedly for dep %q on a zero-dep package", name)
 		return nil, fmt.Errorf("unexpected resolver call for %s", name)
 	}
 
-	stale, err := IsStale(storeDir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: storeDir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -197,7 +198,7 @@ func TestIsStaleIgnoresUndeclaredDepsInMetadata(t *testing.T) {
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
 
 	resolverCallNames := []string{}
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		resolverCallNames = append(resolverCallNames, name)
 		if name == "curl" {
 			return curlRecipe("8.19.0", 1), nil
@@ -205,7 +206,7 @@ func TestIsStaleIgnoresUndeclaredDepsInMetadata(t *testing.T) {
 		return nil, fmt.Errorf("recipe not found: %s", name)
 	}
 
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("unexpected error (openssl must not be resolved): %v", err)
 	}
@@ -259,7 +260,7 @@ func TestIsStaleWithPlatformScopedConstraintViolated(t *testing.T) {
 		},
 	}
 
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return &recipe.Recipe{
 			Package: recipe.Package{Name: name, Version: "2.7.6", Revision: 1},
 		}, nil
@@ -269,7 +270,7 @@ func TestIsStaleWithPlatformScopedConstraintViolated(t *testing.T) {
 	// the platform-scoped constraint (>=2.7.5-2). Without calling
 	// DependenciesForPlatform, IsStale would see no constraint and no
 	// declared dep, and return false — a silent miss.
-	stale, err := IsStale(dir, r, "linux", "amd64", resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: "linux", GOARCH: "amd64", Resolver: resolver})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -293,11 +294,11 @@ func TestIsStaleNilResolverReturn(t *testing.T) {
 	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
 	// Resolver returns nil recipe with no error — the contract described
 	// in installer.go:30 ("Returns nil if the package has no recipe").
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return nil, nil //nolint:nilnil // deliberate: exercises the (nil, nil) resolver contract
 	}
 
-	_, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	_, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err == nil {
 		t.Fatal("IsStale must return a non-nil error when resolver returns (nil, nil)")
 	}

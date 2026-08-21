@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -45,7 +46,7 @@ var addCmd = &cobra.Command{
 			return resolveErr
 		}
 		resolver := func(name string) (string, error) {
-			r, err := recipeRes(name)
+			r, err := recipeRes(context.Background(), name)
 			if err != nil {
 				return "", err
 			}

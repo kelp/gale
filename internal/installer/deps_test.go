@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -46,7 +47,7 @@ func TestInstallBuildDepsRuntimeDep(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name == "libfoo" {
 				return makeRecipe("libfoo", "1.0", nil, nil), nil
 			}
@@ -55,7 +56,7 @@ func TestInstallBuildDepsRuntimeDep(t *testing.T) {
 	}
 
 	r := makeRecipe("mypkg", "2.0", nil, []string{"libfoo"})
-	deps, err := inst.InstallBuildDeps(r)
+	deps, err := inst.InstallBuildDeps(context.Background(), r)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -85,7 +86,7 @@ func TestInstallBuildDepsTransitive(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if r, ok := recipes[name]; ok {
 				return r, nil
 			}
@@ -94,7 +95,7 @@ func TestInstallBuildDepsTransitive(t *testing.T) {
 	}
 
 	a := makeRecipe("a", "1.0", []string{"b"}, nil)
-	deps, err := inst.InstallBuildDeps(a)
+	deps, err := inst.InstallBuildDeps(context.Background(), a)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -125,7 +126,7 @@ func TestInstallBuildDepsCycleDetection(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if r, ok := recipes[name]; ok {
 				return r, nil
 			}
@@ -135,7 +136,7 @@ func TestInstallBuildDepsCycleDetection(t *testing.T) {
 
 	// Should not infinite loop.
 	r := makeRecipe("root", "1.0", []string{"a"}, nil)
-	deps, err := inst.InstallBuildDeps(r)
+	deps, err := inst.InstallBuildDeps(context.Background(), r)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -167,7 +168,7 @@ func TestInstallBuildDepsDiamond(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if r, ok := recipes[name]; ok {
 				return r, nil
 			}
@@ -176,7 +177,7 @@ func TestInstallBuildDepsDiamond(t *testing.T) {
 	}
 
 	a := makeRecipe("a", "1.0", []string{"b", "c"}, nil)
-	deps, err := inst.InstallBuildDeps(a)
+	deps, err := inst.InstallBuildDeps(context.Background(), a)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -207,13 +208,13 @@ func TestInstallBuildDepsEmpty(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return nil, fmt.Errorf("should not be called")
 		},
 	}
 
 	r := makeRecipe("mypkg", "1.0", nil, nil)
-	deps, err := inst.InstallBuildDeps(r)
+	deps, err := inst.InstallBuildDeps(context.Background(), r)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -246,7 +247,7 @@ func TestInstallBuildDepsClassifiesImplicitSystemDep(t *testing.T) {
 	}
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if r, ok := recipes[name]; ok {
 				return r, nil
 			}
@@ -257,7 +258,7 @@ func TestInstallBuildDepsClassifiesImplicitSystemDep(t *testing.T) {
 	r := makeRecipe("zmx", "0.6.0", []string{"zig15"}, nil)
 	r.Build.System = "zig"
 
-	deps, err := inst.InstallBuildDeps(r)
+	deps, err := inst.InstallBuildDeps(context.Background(), r)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -296,7 +297,7 @@ func TestInstallBuildDepsTransitiveNamedDirs(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if r, ok := recipes[name]; ok {
 				return r, nil
 			}
@@ -305,7 +306,7 @@ func TestInstallBuildDepsTransitiveNamedDirs(t *testing.T) {
 	}
 
 	a := makeRecipe("a", "1.0", []string{"b"}, nil)
-	deps, err := inst.InstallBuildDeps(a)
+	deps, err := inst.InstallBuildDeps(context.Background(), a)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestInstallBuildDepsUsesPlatformOverride(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name == "llvm" {
 				return makeRecipe("llvm", "1.0", nil, nil), nil
 			}
@@ -347,7 +348,7 @@ func TestInstallBuildDepsUsesPlatformOverride(t *testing.T) {
 		Build: []string{"llvm"},
 	}
 
-	deps, err := inst.InstallBuildDeps(r)
+	deps, err := inst.InstallBuildDeps(context.Background(), r)
 	if err != nil {
 		t.Fatalf("InstallBuildDeps: %v", err)
 	}
@@ -382,7 +383,7 @@ func TestInstallBuildDepsConstraintSatisfied(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name == "openssl" {
 				return &recipe.Recipe{
 					Package: recipe.Package{
@@ -401,7 +402,7 @@ func TestInstallBuildDepsConstraintSatisfied(t *testing.T) {
 		"openssl": ">=3.5.0",
 	}
 
-	if _, err := inst.InstallBuildDeps(r); err != nil {
+	if _, err := inst.InstallBuildDeps(context.Background(), r); err != nil {
 		t.Fatalf("InstallBuildDeps: unexpected error: %v", err)
 	}
 }
@@ -416,7 +417,7 @@ func TestInstallBuildDepsConstraintViolated(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name == "openssl" {
 				return &recipe.Recipe{
 					Package: recipe.Package{
@@ -435,7 +436,7 @@ func TestInstallBuildDepsConstraintViolated(t *testing.T) {
 		"openssl": ">=3.5.0",
 	}
 
-	_, err := inst.InstallBuildDeps(r)
+	_, err := inst.InstallBuildDeps(context.Background(), r)
 	if err == nil {
 		t.Fatal("expected error for unsatisfied constraint, got nil")
 	}
@@ -456,7 +457,7 @@ func TestInstallBuildDepsInvalidConstraintExpression(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name == "openssl" {
 				return &recipe.Recipe{
 					Package: recipe.Package{
@@ -475,7 +476,7 @@ func TestInstallBuildDepsInvalidConstraintExpression(t *testing.T) {
 		"openssl": "not-a-version",
 	}
 
-	_, err := inst.InstallBuildDeps(r)
+	_, err := inst.InstallBuildDeps(context.Background(), r)
 	if err == nil {
 		t.Fatal("expected error for invalid constraint, got nil")
 	}
@@ -495,7 +496,7 @@ func TestInstallBuildDepsBareDepSkipsConstraintCheck(t *testing.T) {
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name == "openssl" {
 				return &recipe.Recipe{
 					Package: recipe.Package{
@@ -512,7 +513,7 @@ func TestInstallBuildDepsBareDepSkipsConstraintCheck(t *testing.T) {
 	// No Constraints map set.
 	r := makeRecipe("git", "2.53.0", nil, []string{"openssl"})
 
-	if _, err := inst.InstallBuildDeps(r); err != nil {
+	if _, err := inst.InstallBuildDeps(context.Background(), r); err != nil {
 		t.Fatalf("bare dep should not be constraint-checked: %v", err)
 	}
 }
@@ -533,7 +534,7 @@ func TestInstallBuildDepsPlatformScopedConstraintViolated(t *testing.T) {
 	// Resolver returns expat at 2.7.4, below the platform-scoped >=2.7.5-2.
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			if name == "expat" {
 				return &recipe.Recipe{
 					Package: recipe.Package{
@@ -560,7 +561,7 @@ func TestInstallBuildDepsPlatformScopedConstraintViolated(t *testing.T) {
 		},
 	}
 
-	_, err := inst.InstallBuildDeps(r)
+	_, err := inst.InstallBuildDeps(context.Background(), r)
 	if err == nil {
 		t.Fatal("expected error for platform-scoped constraint violation, got nil")
 	}
@@ -586,7 +587,7 @@ func TestInstallBuildDepsPlatformScopedConstraintViolated(t *testing.T) {
 // transitive platform-scoped constraint and the violating leaf installs
 // silently.
 //
-// mid is pre-installed so inst.Install(mid) short-circuits to the cached
+// mid is pre-installed so inst.Install(context.Background(), mid) short-circuits to the cached
 // path without validating mid's own deps — making the outer recursion the
 // sole validator of leaf's constraint and isolating the buggy lookup.
 func TestInstallBuildDepsTransitivePlatformScopedConstraintViolated(t *testing.T) {
@@ -601,7 +602,7 @@ func TestInstallBuildDepsTransitivePlatformScopedConstraintViolated(t *testing.T
 
 	inst := &Installer{
 		Store: s,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			switch name {
 			case "mid":
 				// mid declares a platform-scoped constraint on leaf.
@@ -633,7 +634,7 @@ func TestInstallBuildDepsTransitivePlatformScopedConstraintViolated(t *testing.T
 	// Top-level recipe depends on mid (no constraint at this level).
 	r := makeRecipe("git", "2.53.0", nil, []string{"mid"})
 
-	_, err := inst.InstallBuildDeps(r)
+	_, err := inst.InstallBuildDeps(context.Background(), r)
 	if err == nil {
 		t.Fatal("expected error for transitive platform-scoped constraint violation, got nil")
 	}

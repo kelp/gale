@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -364,7 +365,7 @@ func TestResolveVersionedRecipeMatchesFullVersion(t *testing.T) {
 		},
 	}
 	ctx := &cmdContext{
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return want, nil
 		},
 	}
@@ -399,7 +400,7 @@ func TestResolveVersionedRecipeWrapsRegistryError(t *testing.T) {
 		t.Fatalf("registry.NewWithURL: %v", err)
 	}
 	ctx := &cmdContext{
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return want, nil
 		},
 		Registry: reg,

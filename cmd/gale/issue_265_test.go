@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -61,11 +62,11 @@ func TestInstallFromRecipesDirRebuildsWhenRecipeEdited(t *testing.T) {
 	fx.ctx.Installer.Resolver = resolver
 	fx.ctx.Resolver = resolver
 
-	r, err := resolver("testpkg")
+	r, err := resolver(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if _, err := fx.ctx.Installer.InstallWithFinalize(r, false,
+	if _, err := fx.ctx.Installer.InstallWithFinalize(context.Background(), r, false,
 		func(_ *installer.InstallResult) error {
 			return fx.ctx.FinalizeRecipeInstall(r)
 		}); err != nil {
@@ -74,11 +75,11 @@ func TestInstallFromRecipesDirRebuildsWhenRecipeEdited(t *testing.T) {
 	assertStoreMarker(t, fx.storeBin(), "one")
 
 	fx.writeRecipe(fx.twoURL, fx.twoHash)
-	r2, err := resolver("testpkg")
+	r2, err := resolver(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("resolve after edit: %v", err)
 	}
-	result, err := fx.ctx.Installer.InstallWithFinalize(r2, false,
+	result, err := fx.ctx.Installer.InstallWithFinalize(context.Background(), r2, false,
 		func(_ *installer.InstallResult) error {
 			return fx.ctx.FinalizeRecipeInstall(r2)
 		})
@@ -98,17 +99,17 @@ func TestRunSyncOneRebuildsWhenLocalRecipeEdited(t *testing.T) {
 	fx.ctx.Installer.Resolver = resolver
 	fx.ctx.Resolver = resolver
 
-	r, err := resolver("testpkg")
+	r, err := resolver(context.Background(), "testpkg")
 	if err != nil {
 		t.Fatalf("resolve: %v", err)
 	}
-	if _, err := fx.ctx.Installer.Install(r); err != nil {
+	if _, err := fx.ctx.Installer.Install(context.Background(), r); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	assertStoreMarker(t, fx.storeBin(), "one")
 
 	fx.writeRecipe(fx.twoURL, fx.twoHash)
-	out := runSyncOne(fx.ctx, syncItem{name: "testpkg", version: "1.0.0"}, false)
+	out := runSyncOne(context.Background(), fx.ctx, syncItem{name: "testpkg", version: "1.0.0"}, false)
 	if out.installErr != nil {
 		t.Fatalf("sync after recipe edit: %v", out.installErr)
 	}

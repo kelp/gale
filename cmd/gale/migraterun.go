@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -592,7 +593,7 @@ func migrateOne(
 		ctx.Installer.DeferFarm = prevFarm
 	}()
 
-	if _, err := ctx.Installer.Reinstall(t.recipe); err != nil {
+	if _, err := ctx.Installer.Reinstall(context.Background(), t.recipe); err != nil {
 		return false, fmt.Errorf("migrating %s@%s: %w", name, full, err)
 	}
 	if !relocating {

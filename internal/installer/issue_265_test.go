@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -46,7 +47,7 @@ func TestInstallWorkingTreeRecipeEditRebuilds(t *testing.T) {
 	first := workingTreeBinaryRecipe(t, wtBinary{
 		url: srv.URL + "/one.tar.zst", hash: oneHash, body: []byte("recipe-one"),
 	})
-	if _, err := inst.Install(first); err != nil {
+	if _, err := inst.Install(context.Background(), first); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	assertInstalledMarker(t, storeRoot, "tool", "1.0-1", "one")
@@ -54,7 +55,7 @@ func TestInstallWorkingTreeRecipeEditRebuilds(t *testing.T) {
 	second := workingTreeBinaryRecipe(t, wtBinary{
 		url: srv.URL + "/two.tar.zst", hash: twoHash, body: []byte("recipe-two"),
 	})
-	result, err := inst.Install(second)
+	result, err := inst.Install(context.Background(), second)
 	if err != nil {
 		t.Fatalf("second install after recipe edit: %v", err)
 	}
@@ -82,7 +83,7 @@ func TestInstallWorkingTreeUnchangedCaches(t *testing.T) {
 	r := workingTreeBinaryRecipe(t, wtBinary{
 		url: srv.URL + "/tool.tar.zst", hash: hash, body: body,
 	})
-	if _, err := inst.Install(r); err != nil {
+	if _, err := inst.Install(context.Background(), r); err != nil {
 		t.Fatalf("first install: %v", err)
 	}
 	afterFirst := hits
@@ -90,7 +91,7 @@ func TestInstallWorkingTreeUnchangedCaches(t *testing.T) {
 	again := workingTreeBinaryRecipe(t, wtBinary{
 		url: srv.URL + "/tool.tar.zst", hash: hash, body: body,
 	})
-	result, err := inst.Install(again)
+	result, err := inst.Install(context.Background(), again)
 	if err != nil {
 		t.Fatalf("second install: %v", err)
 	}
@@ -124,7 +125,7 @@ func TestInstallRegistryIgnoresRecipeDigest(t *testing.T) {
 		Source:  recipe.Source{URL: "http://should-not-be-called", SHA256: "bad"},
 		Digest:  "different-from-anything-on-disk",
 	}
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -161,7 +162,7 @@ func TestInstallWorkingTreeMissingSidecarRebuilds(t *testing.T) {
 	r := workingTreeBinaryRecipe(t, wtBinary{
 		url: srv.URL + "/tool.tar.zst", hash: hash, body: []byte("recipe"),
 	})
-	result, err := inst.Install(r)
+	result, err := inst.Install(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Install: %v", err)
 	}
@@ -185,7 +186,7 @@ func TestIsStaleWorkingTreeDigestMismatch(t *testing.T) {
 		FromWorkingTree: true,
 		Digest:          "new",
 	}
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolverFor(nil))
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolverFor(nil)})
 	if err != nil {
 		t.Fatalf("IsStale: %v", err)
 	}
@@ -207,7 +208,7 @@ func TestIsStaleWorkingTreeMatchingDigestNotStale(t *testing.T) {
 		FromWorkingTree: true,
 		Digest:          "same",
 	}
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolverFor(nil))
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolverFor(nil)})
 	if err != nil {
 		t.Fatalf("IsStale: %v", err)
 	}

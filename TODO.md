@@ -137,7 +137,7 @@ Milestone 4 — 193 source recipes still collide.
       registered. Registration failure
       leaves `current` on the previous gen.
       Read-only commands do not register.
-- [ ] **Bound `sync --if-needed`.** Fixed
+- [x] **Bound `sync --if-needed`.** Fixed
       deadline, propagated as
       `context.Context` through index
       HTTP, artifact HTTP, hashing, and

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -51,7 +52,7 @@ func TestOutdatedNoRefreshSkipsRecipeFetch(t *testing.T) {
 	// Warm the cache against the live server.
 	cacheDir := t.TempDir()
 	reg := &registry.Registry{BaseURL: srv.URL, CacheDir: cacheDir}
-	if _, err := reg.FetchRecipe("outpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "outpkg"); err != nil {
 		t.Fatalf("warm cache: %v", err)
 	}
 	hitsAfterWarm := atomic.LoadInt32(&hits)
@@ -68,7 +69,7 @@ func TestOutdatedNoRefreshSkipsRecipeFetch(t *testing.T) {
 		t.Fatal("applyOutdatedNoRefresh did not set Offline=true")
 	}
 
-	if _, err := reg.FetchRecipe("outpkg"); err != nil {
+	if _, err := reg.FetchRecipe(context.Background(), "outpkg"); err != nil {
 		t.Fatalf("offline resolve with warm cache: %v", err)
 	}
 	if got := atomic.LoadInt32(&hits); got != hitsAfterWarm {
@@ -96,7 +97,7 @@ func TestOutdatedNoRefreshWithoutCacheSurfacesError(t *testing.T) {
 	}
 	applyOutdatedNoRefresh(reg, true)
 
-	_, err := reg.FetchRecipe("outpkg")
+	_, err := reg.FetchRecipe(context.Background(), "outpkg")
 	if err == nil {
 		t.Fatal("expected error from --no-refresh with cold cache")
 	}

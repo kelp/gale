@@ -1,6 +1,7 @@
 package ghcr
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -27,7 +28,7 @@ func TestTokenReturnsTokenFromEndpoint(t *testing.T) {
 	tokenEndpoint = srv.URL
 	defer func() { tokenEndpoint = old }()
 
-	got, err := Token("kelp/gale-recipes/jq")
+	got, err := Token(context.Background(), "kelp/gale-recipes/jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -57,7 +58,7 @@ func TestTokenParsesTokenField(t *testing.T) {
 	tokenEndpoint = srv.URL
 	defer func() { tokenEndpoint = old }()
 
-	got, err := Token("kelp/gale-recipes/jq")
+	got, err := Token(context.Background(), "kelp/gale-recipes/jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -93,7 +94,7 @@ func TestTokenErrorsOnNon200(t *testing.T) {
 			tokenEndpoint = srv.URL
 			defer func() { tokenEndpoint = old }()
 
-			_, err := Token("kelp/gale-recipes/jq")
+			_, err := Token(context.Background(), "kelp/gale-recipes/jq")
 			if err == nil {
 				t.Fatalf("expected error for status %d",
 					tt.status)
@@ -118,7 +119,7 @@ func TestTokenErrorsOnMalformedJSON(t *testing.T) {
 	tokenEndpoint = srv.URL
 	defer func() { tokenEndpoint = old }()
 
-	_, err := Token("kelp/gale-recipes/jq")
+	_, err := Token(context.Background(), "kelp/gale-recipes/jq")
 	if err == nil {
 		t.Fatal("expected error for malformed JSON")
 	}
@@ -140,7 +141,7 @@ func TestTokenErrorsOnMissingTokenField(t *testing.T) {
 	tokenEndpoint = srv.URL
 	defer func() { tokenEndpoint = old }()
 
-	_, err := Token("kelp/gale-recipes/jq")
+	_, err := Token(context.Background(), "kelp/gale-recipes/jq")
 	if err == nil {
 		t.Fatal("expected error when token field missing")
 	}
@@ -168,7 +169,7 @@ func TestTokenUsesEnvVarWhenSet(t *testing.T) {
 
 	t.Setenv("GALE_GITHUB_TOKEN", "my-personal-token")
 
-	got, err := Token("kelp/gale-recipes/jq")
+	got, err := Token(context.Background(), "kelp/gale-recipes/jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -200,7 +201,7 @@ func TestTokenIgnoresEmptyEnvVar(t *testing.T) {
 
 	t.Setenv("GALE_GITHUB_TOKEN", "")
 
-	got, err := Token("kelp/gale-recipes/jq")
+	got, err := Token(context.Background(), "kelp/gale-recipes/jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -239,7 +240,7 @@ func TestTokenSendsCorrectRequest(t *testing.T) {
 	tokenEndpoint = srv.URL
 	defer func() { tokenEndpoint = old }()
 
-	_, err := Token("kelp/gale-recipes/jq")
+	_, err := Token(context.Background(), "kelp/gale-recipes/jq")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

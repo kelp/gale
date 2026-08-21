@@ -2,6 +2,7 @@ package installer
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/http"
@@ -102,7 +103,7 @@ func TestReplaceGuardLeavesAPreRevisionDirAlone(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Reinstall(r); err != nil {
+	if _, err := inst.Reinstall(context.Background(), r); err != nil {
 		t.Fatalf("Reinstall: %v", err)
 	}
 	if calls != 0 {
@@ -144,7 +145,7 @@ func TestReplaceGuardRefusalKeepsTheCanonicalDir(t *testing.T) {
 		},
 	}
 
-	if _, err := inst.Reinstall(r); !errors.Is(err, errTestVeto) {
+	if _, err := inst.Reinstall(context.Background(), r); !errors.Is(err, errTestVeto) {
 		t.Fatalf("err = %v, want the guard's refusal", err)
 	}
 	kept, err := os.ReadFile(marker)
@@ -190,7 +191,7 @@ func TestReplaceGuardSeesTheCommittedArtifact(t *testing.T) {
 		},
 	}
 
-	result, err := inst.Reinstall(r)
+	result, err := inst.Reinstall(context.Background(), r)
 	if err != nil {
 		t.Fatalf("Reinstall: %v", err)
 	}
@@ -253,7 +254,7 @@ func TestBinaryOnlyDoesNotFallBackToSource(t *testing.T) {
 		BinaryFallbackLog: &bytes.Buffer{},
 		BinaryOnly:        true,
 	}
-	if _, err := inst.Install(r); err == nil {
+	if _, err := inst.Install(context.Background(), r); err == nil {
 		t.Fatal("a failed binary fetch fell back to a source build")
 	}
 	// Nothing half-installed: the directory a source build would have
@@ -293,7 +294,7 @@ func TestBinaryOnlyDoesNotConstrainDependencies(t *testing.T) {
 		Store:             store.NewStore(storeRoot),
 		BinaryFallbackLog: &bytes.Buffer{},
 		BinaryOnly:        true,
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			// Source-only: no binary is declared for any platform.
 			return &recipe.Recipe{
 				Package: recipe.Package{Name: name, Version: "1.0"},
@@ -312,7 +313,7 @@ func TestBinaryOnlyDoesNotConstrainDependencies(t *testing.T) {
 	// The top package's own binary 404s, so the install fails either
 	// way. What matters is WHICH refusal: inheriting the flag rejects
 	// the dependency before the top package is ever attempted.
-	_, err := inst.Install(top)
+	_, err := inst.Install(context.Background(), top)
 	if errors.Is(err, errNoBinaryDeclared) {
 		t.Fatalf("BinaryOnly rejected a source-only dependency: %v", err)
 	}

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -79,7 +80,7 @@ func TestCheckOutdatedStopsAfterFirstTransportError(t *testing.T) {
 		mu    sync.Mutex
 		calls []string
 	)
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		mu.Lock()
 		calls = append(calls, name)
 		mu.Unlock()
@@ -114,7 +115,7 @@ func TestCheckOutdatedContinuesPastPerPackageErrors(t *testing.T) {
 		mu    sync.Mutex
 		calls []string
 	)
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		mu.Lock()
 		calls = append(calls, name)
 		mu.Unlock()

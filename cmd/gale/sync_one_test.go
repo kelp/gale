@@ -14,6 +14,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -116,7 +117,7 @@ func TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate(t *testing.T) {
 
 	// Resolver returns a recipe whose version matches what's
 	// in the store so IsStale has no dep changes to report.
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return minimalRecipe(name, "2.0.0"), nil
 	}
 
@@ -130,7 +131,7 @@ func TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate(t *testing.T) {
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
 	w := syncItem{name: "mypkg", version: "2.0.0"}
 
-	out := runSyncOne(ctx, w, false)
+	out := runSyncOne(context.Background(), ctx, w, false)
 
 	if !out.upToDate {
 		t.Errorf("upToDate = false, want true for installed non-stale package")
@@ -146,6 +147,68 @@ func TestRunSyncOneAlreadyInstalledNonStaleReturnsUpToDate(t *testing.T) {
 	}
 	if out.resolveErr != nil {
 		t.Errorf("resolveErr = %v, want nil", out.resolveErr)
+	}
+}
+
+// A canceled parent must not be treated as "not stale". The
+// offline fallback would mark the package up to date and a
+// mid-check --if-needed timeout would then stamp complete.
+func TestRunSyncOneCancelIsNotUpToDate(t *testing.T) {
+	tmp := t.TempDir()
+	storeRoot := filepath.Join(tmp, "store")
+	galeDir := filepath.Join(tmp, ".gale")
+	galePath := filepath.Join(tmp, "gale.toml")
+	storeDir := seedStore(t, storeRoot, "mypkg", "2.0.0-1")
+	writeDepsMetadataFile(t, storeDir)
+	if err := os.WriteFile(galePath, []byte("[packages]\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(galeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
+		return minimalRecipe(name, "2.0.0"), nil
+	}
+	cc := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
+	w := syncItem{name: "mypkg", version: "2.0.0"}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out := runSyncOne(ctx, cc, w, false)
+
+	if out.upToDate {
+		t.Error("canceled stale check must not mark the package up to date")
+	}
+	if !errors.Is(out.installErr, context.Canceled) {
+		t.Fatalf("installErr = %v, want context.Canceled", out.installErr)
+	}
+}
+
+func TestCollectSyncOutcomesCancelFailsRemaining(t *testing.T) {
+	tmp := t.TempDir()
+	cc := buildFakeCtx(t, filepath.Join(tmp, "gale.toml"),
+		filepath.Join(tmp, ".gale"), filepath.Join(tmp, "store"),
+		func(_ context.Context, name string) (*recipe.Recipe, error) {
+			return minimalRecipe(name, "1.0"), nil
+		})
+	items := []syncItem{
+		{name: "a", version: "1.0"},
+		{name: "b", version: "1.0"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := collectSyncOutcomes(ctx, cc, items)
+	if len(got) != 2 {
+		t.Fatalf("outcomes = %d, want 2 (remaining must be recorded)", len(got))
+	}
+	for _, o := range got {
+		if !errors.Is(o.installErr, context.Canceled) {
+			t.Errorf("%s: installErr = %v, want context.Canceled", o.name, o.installErr)
+		}
+		if o.upToDate {
+			t.Errorf("%s: canceled collect must not mark up to date", o.name)
+		}
 	}
 }
 
@@ -192,7 +255,7 @@ func TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild(t *testing.T) {
 		Name: "foo", Version: "1.0.0", Revision: 1,
 	})
 
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		switch name {
 		case "mypkg":
 			r := minimalRecipe(name, "1.0.0")
@@ -218,7 +281,7 @@ func TestRunSyncOneOrphanHigherRevisionDoesNotTriggerRebuild(t *testing.T) {
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
 	w := syncItem{name: "mypkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, w, false)
+	out := runSyncOne(context.Background(), ctx, w, false)
 
 	if out.stale {
 		t.Error("stale = true, want false: the recipe's canonical " +
@@ -276,7 +339,7 @@ func TestRunSyncOneMissingFromStoreTriggersInstallAttempt(t *testing.T) {
 	addr := srv.URL
 	srv.Close()
 
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return &recipe.Recipe{
 			Package: recipe.Package{
 				Name:    name,
@@ -295,7 +358,7 @@ func TestRunSyncOneMissingFromStoreTriggersInstallAttempt(t *testing.T) {
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
 	w := syncItem{name: "newpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, w, false)
+	out := runSyncOne(context.Background(), ctx, w, false)
 
 	// The install was attempted (result may be nil because it
 	// failed, but installErr must be set OR result is non-nil).
@@ -347,7 +410,7 @@ func TestRunSyncOneInstalledButStaleTriggersReinstall(t *testing.T) {
 	addr := srv.URL
 	srv.Close()
 
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return &recipe.Recipe{
 			Package: recipe.Package{
 				Name:    name,
@@ -366,7 +429,7 @@ func TestRunSyncOneInstalledButStaleTriggersReinstall(t *testing.T) {
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
 	w := syncItem{name: "stalep", version: "3.0.0"}
 
-	out := runSyncOne(ctx, w, false)
+	out := runSyncOne(context.Background(), ctx, w, false)
 
 	if !out.stale {
 		t.Error("stale = false, want true: package missing .gale-deps.toml")
@@ -399,14 +462,14 @@ func TestRunSyncOneResolverFailurePopulatesResolveErr(t *testing.T) {
 	}
 
 	resolveErr := errors.New("resolver fail: no such package")
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return nil, resolveErr
 	}
 
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
 	w := syncItem{name: "ghostpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, w, false)
+	out := runSyncOne(context.Background(), ctx, w, false)
 
 	if out.resolveErr == nil {
 		t.Error("resolveErr = nil, want non-nil resolver error")
@@ -446,7 +509,7 @@ func TestRunSyncOneInstallFailurePopulatesInstallErr(t *testing.T) {
 	addr := srv.URL
 	srv.Close()
 
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return &recipe.Recipe{
 			Package: recipe.Package{
 				Name:    name,
@@ -465,7 +528,7 @@ func TestRunSyncOneInstallFailurePopulatesInstallErr(t *testing.T) {
 	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
 	w := syncItem{name: "failpkg", version: "1.0.0"}
 
-	out := runSyncOne(ctx, w, false)
+	out := runSyncOne(context.Background(), ctx, w, false)
 
 	if out.installErr == nil {
 		t.Error("installErr = nil, want non-nil: install used a closed server")
@@ -488,7 +551,7 @@ func TestRunSyncOneDryRunUpToDate(t *testing.T) {
 	storeDir := seedStore(t, storeRoot, "drypkg", "4.0.0-1")
 	writeDepsMetadataFile(t, storeDir)
 
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return minimalRecipe(name, "4.0.0"), nil
 	}
 
@@ -505,7 +568,7 @@ func TestRunSyncOneDryRunUpToDate(t *testing.T) {
 	storePathBefore, _ := store.NewStore(storeRoot).StorePath("drypkg", "4.0.0")
 	entriesBefore, _ := os.ReadDir(storePathBefore)
 
-	out := runSyncOne(ctx, w, true /* dryRun */)
+	out := runSyncOne(context.Background(), ctx, w, true /* dryRun */)
 
 	if !out.upToDate {
 		t.Error("upToDate = false, want true: package is installed and non-stale")
@@ -579,7 +642,7 @@ func TestSyncContinuesAfterPackageFailure(t *testing.T) {
 	}
 
 	var visited []string
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		visited = append(visited, name)
 		if name == "alpha" {
 			return nil, errors.New("alpha missing")
@@ -600,7 +663,7 @@ func TestSyncContinuesAfterPackageFailure(t *testing.T) {
 
 	var outcomes []syncOutcome
 	for _, w := range items {
-		outcomes = append(outcomes, runSyncOne(ctx, w, false))
+		outcomes = append(outcomes, runSyncOne(context.Background(), ctx, w, false))
 	}
 
 	gotNames := make([]string, len(outcomes))

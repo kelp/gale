@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -253,7 +254,7 @@ func replaceUnprovenanced(
 	}
 	defer func() { ctx.Installer.ReplaceGuard = prev }()
 
-	if _, err := ctx.Installer.Reinstall(r); err != nil {
+	if _, err := ctx.Installer.Reinstall(context.Background(), r); err != nil {
 		return fmt.Errorf("refreshing %s@%s: %w", name, full, err)
 	}
 	return nil

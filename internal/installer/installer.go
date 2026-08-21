@@ -56,7 +56,7 @@ var ErrUnlockedSource = errors.New(
 
 // RecipeResolver finds and parses a recipe by package name.
 // Returns nil if the package has no recipe.
-type RecipeResolver func(name string) (*recipe.Recipe, error)
+type RecipeResolver func(ctx context.Context, name string) (*recipe.Recipe, error)
 
 // Installer installs packages into the store.
 type Installer struct {
@@ -251,8 +251,8 @@ func refusalLabel(locked bool) string {
 }
 
 // Install installs a recipe into the store and links binaries.
-func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
-	return inst.install(r, false)
+func (inst *Installer) Install(ctx context.Context, r *recipe.Recipe) (*InstallResult, error) {
+	return inst.install(ctx, r, false)
 }
 
 // forDeps returns a copy of the installer that installs dependencies
@@ -281,53 +281,61 @@ func (inst *Installer) forDeps() *Installer {
 // callers can force a fresh install even when the store already
 // satisfies the request. Used by sync's stale-reinstall path to
 // migrate pre-revision bare-dir installs into the canonical layout.
-func (inst *Installer) Reinstall(r *recipe.Recipe) (*InstallResult, error) {
-	return inst.install(r, true)
+func (inst *Installer) Reinstall(ctx context.Context, r *recipe.Recipe) (*InstallResult, error) {
+	return inst.install(ctx, r, true)
 }
 
-func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, error) {
+func (inst *Installer) install(ctx context.Context, r *recipe.Recipe, force bool) (*InstallResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
 	if err != nil {
 		return nil, fmt.Errorf("lock package: %w", err)
 	}
 	defer unlock()
-	return inst.installLocked(r, force)
+	return inst.installLocked(ctx, r, force)
 }
 
-// installLocked is the body of install assuming the per-package
-// lock is held by the caller. Used by install() and by
-// InstallWithFinalize (added in a follow-up commit).
-func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResult, error) {
-	name := r.Package.Name
-	version := r.Package.Version
-	// Store paths use the full <version>-<revision> form so
-	// multiple revisions of the same version can coexist.
-	// The Store layer falls back from "<v>-1" to bare "<v>"
-	// for back-compat with pre-revision installs.
-	storeVersion := r.Package.Full()
+// installDest is the store path installLocked will write into.
+// staged means a sibling rebuild dir; the caller defers cleanup
+// so a failed reinstall cannot leave the tmp behind and so
+// commitStaged still sees the dir.
+type installDest struct {
+	name         string
+	version      string
+	storeVersion string
+	canonicalDir string
+	storeDir     string
+	staged       bool
+	locked       bool
+	planned      lockplan.Node
+}
 
-	canonicalDir := filepath.Join(inst.Store.Root, name, storeVersion)
-	var storeDir string
-	staged := false
-
-	planned, locked, perr := inst.plannedNode(name, storeVersion)
-	if perr != nil {
-		return nil, perr
+// prepareInstallDest picks the dest dir and answers the cache
+// question. A non-nil cached result means the store already
+// satisfies the request and installLocked must return it.
+func (inst *Installer) prepareInstallDest(r *recipe.Recipe, force bool) (installDest, *InstallResult, error) {
+	d := installDest{
+		name:         r.Package.Name,
+		version:      r.Package.Version,
+		storeVersion: r.Package.Full(),
 	}
+	d.canonicalDir = filepath.Join(inst.Store.Root, d.name, d.storeVersion)
+
+	planned, locked, err := inst.plannedNode(d.name, d.storeVersion)
+	if err != nil {
+		return d, nil, err
+	}
+	d.planned = planned
+	d.locked = locked
 	if locked {
-		// Under a lock the cache check is an attestation check, and
-		// it is also the whole of the "already installed" question:
-		// design §4 permits committing only ABSENT canonical dirs,
-		// so an occupied one either attests the locked bytes or is a
-		// conflict. force is deliberately not consulted — the staged
-		// replacement path it selects is in-plan replaceStoreDir,
-		// which §4 prohibits outright.
-		cached, hit, cerr := inst.lockedCacheHit(planned, name, version)
+		cached, hit, cerr := inst.lockedCacheHit(planned, d.name, d.version)
 		if cerr != nil {
-			return nil, cerr
+			return d, nil, cerr
 		}
 		if hit {
-			return &cached, nil
+			return d, &cached, nil
 		}
 		force = false
 	}
@@ -348,15 +356,15 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	// rebuild rather than falling through into Store.Create on
 	// the live dir — binary-fallback's os.RemoveAll would
 	// otherwise delete the canonical package.
-	if !locked && !force && inst.Store.IsInstalled(name, storeVersion) {
-		occupied := canonicalDir
-		if dir, ok := inst.Store.StorePath(name, storeVersion); ok {
+	if !locked && !force && inst.Store.IsInstalled(d.name, d.storeVersion) {
+		occupied := d.canonicalDir
+		if dir, ok := inst.Store.StorePath(d.name, d.storeVersion); ok {
 			occupied = dir
 		}
 		if !workingTreeRecipeStale(occupied, r) {
-			return &InstallResult{
-				Name:    name,
-				Version: version,
+			return d, &InstallResult{
+				Name:    d.name,
+				Version: d.version,
 				Method:  MethodCached,
 			}, nil
 		}
@@ -364,30 +372,66 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	}
 
 	if force {
-		pkgDir := filepath.Join(inst.Store.Root, name)
+		pkgDir := filepath.Join(inst.Store.Root, d.name)
 		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
-			return nil, fmt.Errorf("create package dir: %w", err)
+			return d, nil, fmt.Errorf("create package dir: %w", err)
 		}
 		buildDir, err := os.MkdirTemp(pkgDir, ".build-")
 		if err != nil {
-			return nil, fmt.Errorf("create reinstall staging dir: %w", err)
+			return d, nil, fmt.Errorf("create reinstall staging dir: %w", err)
 		}
-		storeDir = buildDir
-		staged = true
-		defer os.RemoveAll(buildDir)
-	} else {
-		// Create store directory.
-		var err error
-		storeDir, err = inst.Store.Create(name, storeVersion)
-		if err != nil {
-			return nil, fmt.Errorf("create store dir: %w", err)
+		d.storeDir = buildDir
+		d.staged = true
+		return d, nil, nil
+	}
+	storeDir, err := inst.Store.Create(d.name, d.storeVersion)
+	if err != nil {
+		return d, nil, fmt.Errorf("create store dir: %w", err)
+	}
+	d.storeDir = storeDir
+	return d, nil, nil
+}
+
+// installLocked is the body of install assuming the per-package
+// lock is held by the caller. Used by install() and by
+// InstallWithFinalize (added in a follow-up commit).
+func (inst *Installer) installLocked(ctx context.Context, r *recipe.Recipe, force bool) (*InstallResult, error) {
+	dest, cached, err := inst.prepareInstallDest(r, force)
+	if err != nil {
+		return nil, err
+	}
+	if cached != nil {
+		return cached, nil
+	}
+	if dest.staged {
+		defer os.RemoveAll(dest.storeDir)
+	}
+	got, err := inst.populateStore(ctx, dest, r)
+	if err != nil {
+		return nil, err
+	}
+	if dest.staged {
+		// The result is built before the commit rather than after,
+		// because the guard inside commitStaged decides on these
+		// exact values and a refusal must be able to name them.
+		rep := Replacement{
+			CanonicalDir: dest.canonicalDir,
+			StagingDir:   dest.storeDir,
+			Result:       got,
+		}
+		if err := inst.commitStaged(
+			inst.Store.Root, dest.storeDir, rep,
+		); err != nil {
+			return nil, fmt.Errorf("install staged output: %w", err)
 		}
 	}
+	return &got, nil
+}
 
-	method := MethodSource
-	var sha256 string
-	var manifestDigest string
-
+// populateStore writes the package into dest.storeDir (binary
+// first when that path is viable, source otherwise). The
+// caller commits a staged dest after this returns.
+func (inst *Installer) populateStore(ctx context.Context, dest installDest, r *recipe.Recipe) (InstallResult, error) {
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	binaryViable := bin != nil && !inst.SourceOnly
 	// The locked method is binding in both directions. Plan
@@ -395,17 +439,17 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	// (lockplan.validateMethod), so this selects rather than
 	// checks: SourceOnly, which is a caller preference, cannot
 	// override a locked binary node either.
-	if locked {
-		binaryViable = planned.Method == lockgraph.MethodBinary
+	if dest.locked {
+		binaryViable = dest.planned.Method == lockgraph.MethodBinary
 	}
 	if inst.BinaryOnly && !binaryViable {
 		// Stated rather than silently source-built. BinaryOnly is a
 		// promise that nothing but the declared binary may land, so a
 		// recipe that cannot serve one for this platform is a refusal,
 		// not an invitation to build.
-		return nil, fmt.Errorf(
+		return InstallResult{}, fmt.Errorf(
 			"binary install of %s: %w",
-			lockgraph.Key(name, storeVersion), errNoBinaryDeclared,
+			lockgraph.Key(dest.name, dest.storeVersion), errNoBinaryDeclared,
 		)
 	}
 
@@ -423,141 +467,43 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	var depPaths *build.BuildDeps
 	var err error
 	if binaryViable {
-		depPaths, err = inst.InstallRuntimeDeps(r)
+		depPaths, err = inst.InstallRuntimeDeps(ctx, r)
 	} else {
-		depPaths, err = inst.InstallBuildDeps(r)
+		depPaths, err = inst.InstallBuildDeps(ctx, r)
 	}
 	if err != nil {
-		os.RemoveAll(storeDir)
-		return nil, fmt.Errorf("install deps: %w", err)
+		os.RemoveAll(dest.storeDir)
+		return InstallResult{}, fmt.Errorf("install deps: %w", err)
 	}
 
-	// Try binary first (unless source-only mode).
+	method := MethodSource
+	var sha256, manifestDigest string
 	if binaryViable {
-		// Resolve the declared runtime closure so metadata
-		// records the deps the shipped binary can link.
-		// Build-only tools are deliberately excluded
-		// (gh#157): recording them would pin those tools in
-		// the store for gc/farm even though the binary never
-		// links them.
-		fallback, ferr := inst.ResolveDirectDeps(r)
-		if ferr != nil {
-			os.RemoveAll(storeDir)
-			return nil, fmt.Errorf(
-				"resolve deps for metadata: %w", ferr,
-			)
+		got, berr := inst.tryBinaryInstall(ctx, binaryAttempt{
+			r: r, storeDir: dest.storeDir, canonicalDir: dest.canonicalDir,
+			staged: dest.staged, locked: dest.locked, storeVersion: dest.storeVersion,
+			bin: bin, depPaths: depPaths,
+		})
+		if berr != nil {
+			return InstallResult{}, berr
 		}
-		berr := inst.installBinaryTo(r, storeDir, canonicalDir, fallback, !staged)
-		switch {
-		case berr == nil:
-			method = MethodBinary
-			sha256 = bin.SHA256
-			manifestDigest = bin.ManifestDigest
-		case locked || inst.BinaryOnly:
-			// A locked binary node never demotes to a source build
-			// (acceptance 8): the method is a locked field, so a
-			// source build would install bytes the lock never named
-			// and fail its own hash check minutes later. Leave
-			// nothing behind — the mismatching artifact must be
-			// absent from the store (acceptance 1).
-			os.RemoveAll(storeDir)
-			// A hash disagreement is an integrity violation, and design
-			// §8 puts it in the class that stops a pipeline for a human.
-			// Every other reason a fetch can fail — a 404, a refused
-			// connection, a corrupt archive — stays ordinary, because
-			// acceptance 11 turns on exactly that distinction: an
-			// ordinary failure under a lock must not read as tampering.
-			if errors.Is(berr, download.ErrSHA256Mismatch) {
-				return nil, fmt.Errorf(
-					"%s of %s: %w: %w", refusalLabel(locked),
-					lockgraph.Key(name, storeVersion),
-					provenance.ErrInvalid, berr,
-				)
-			}
-			return nil, fmt.Errorf(
-				"%s of %s: %w", refusalLabel(locked),
-				lockgraph.Key(name, storeVersion), berr,
-			)
-		case errors.Is(berr, farm.ErrClaimConflict):
-			// A farm-guard refusal is a cross-project conflict,
-			// not a defect of the artifact: a source build of the
-			// same version claims the same sonames and would only
-			// hit the same refusal at the generation rebuild,
-			// after minutes of wasted work. Abort instead of
-			// demoting to source.
-			return nil, berr
-		default:
-			// Binary install failed — fall back to source build.
-			// Reaching here means the recipe advertised a binary
-			// for this platform and the fetch/verify pipeline
-			// rejected it. Surface the reason so a silent source
-			// build doesn't hide network errors, missing GHCR
-			// artifacts, hash mismatches, or attestation failures.
-			w := inst.BinaryFallbackLog
-			if w == nil {
-				w = os.Stderr
-			}
-			fmt.Fprintf(w,
-				"warning: binary install for %s@%s failed: %v;"+
-					" falling back to source build\n",
-				name, version, berr)
-			if err := os.RemoveAll(storeDir); err != nil {
-				return nil, fmt.Errorf(
-					"clean store dir for source fallback: %w", err,
-				)
-			}
-			if err := os.MkdirAll(storeDir, 0o755); err != nil {
-				return nil, fmt.Errorf(
-					"recreate store dir for source fallback: %w", err,
-				)
-			}
-			// Top up with the build-only deps we skipped.
-			buildOnly, derr := inst.InstallBuildOnlyDeps(r)
-			if derr != nil {
-				os.RemoveAll(storeDir)
-				return nil, fmt.Errorf(
-					"install build deps for source fallback: %w", derr,
-				)
-			}
-			depPaths = mergeBuildDeps(depPaths, buildOnly)
-		}
+		method = got.method
+		sha256 = got.sha
+		manifestDigest = got.digest
+		depPaths = got.depPaths
 	}
 
 	if method != MethodBinary {
-		hash, buildErr := inst.installFromSourceTo(r, storeDir, canonicalDir, depPaths, !staged)
+		hash, buildErr := inst.installFromSourceTo(ctx, r, extractDest{dest.storeDir, dest.canonicalDir, !dest.staged}, depPaths)
 		if buildErr != nil {
-			// Clean up failed install.
-			os.RemoveAll(storeDir)
-			return nil, fmt.Errorf("build from source: %w", buildErr)
+			os.RemoveAll(dest.storeDir)
+			return InstallResult{}, fmt.Errorf("build from source: %w", buildErr)
 		}
 		sha256 = hash
 	}
-
-	if staged {
-		// The result is built before the commit rather than after,
-		// because the guard inside commitStaged decides on these
-		// exact values and a refusal must be able to name them.
-		rep := Replacement{
-			CanonicalDir: canonicalDir,
-			StagingDir:   storeDir,
-			Result: InstallResult{
-				Name:           name,
-				Version:        version,
-				Method:         method,
-				SHA256:         sha256,
-				ManifestDigest: manifestDigest,
-			},
-		}
-		if err := inst.commitStaged(
-			inst.Store.Root, storeDir, rep,
-		); err != nil {
-			return nil, fmt.Errorf("install staged output: %w", err)
-		}
-	}
-
-	return &InstallResult{
-		Name:           name,
-		Version:        version,
+	return InstallResult{
+		Name:           dest.name,
+		Version:        dest.version,
 		Method:         method,
 		SHA256:         sha256,
 		ManifestDigest: manifestDigest,
@@ -620,7 +566,7 @@ func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*
 	defer os.RemoveAll(buildDir) // clean up on any exit path
 
 	// Resolve and install build deps.
-	depPaths, err := inst.InstallBuildDeps(r)
+	depPaths, err := inst.InstallBuildDeps(context.Background(), r)
 	if err != nil {
 		return nil, fmt.Errorf("install build deps: %w", err)
 	}
@@ -728,7 +674,7 @@ func (inst *Installer) installGitPrepare(r *recipe.Recipe) (*build.BuildResult, 
 	noop := func() {}
 
 	// Resolve and install build deps.
-	depPaths, err := inst.InstallBuildDeps(r)
+	depPaths, err := inst.InstallBuildDeps(context.Background(), r)
 	if err != nil {
 		return nil, "", nil, noop, fmt.Errorf("install build deps: %w", err)
 	}
@@ -1011,11 +957,131 @@ func replaceStoreDir(storeDir, buildDir string) error {
 // renamed into extractDir inside the store-gen lock so a
 // concurrent generation.Build sees either the pre-install
 // or the completed install — never an intermediate.
+type binaryAttempt struct {
+	r            *recipe.Recipe
+	storeDir     string
+	canonicalDir string
+	staged       bool
+	locked       bool
+	storeVersion string
+	bin          *recipe.Binary
+	depPaths     *build.BuildDeps
+}
+
+type binaryResult struct {
+	method   InstallMethod
+	sha      string
+	digest   string
+	depPaths *build.BuildDeps
+}
+
+func (inst *Installer) tryBinaryInstall(ctx context.Context, a binaryAttempt) (binaryResult, error) {
+	// Resolve the declared runtime closure so metadata
+	// records the deps the shipped binary can link.
+	// Build-only tools are deliberately excluded
+	// (gh#157): recording them would pin those tools in
+	// the store for gc/farm even though the binary never
+	// links them.
+	fallback, ferr := inst.ResolveDirectDeps(ctx, a.r)
+	if ferr != nil {
+		os.RemoveAll(a.storeDir)
+		return binaryResult{}, fmt.Errorf(
+			"resolve deps for metadata: %w", ferr,
+		)
+	}
+	berr := inst.installBinaryTo(ctx, a.r, extractDest{a.storeDir, a.canonicalDir, !a.staged}, fallback)
+	switch {
+	case berr == nil:
+		return binaryResult{
+			method:   MethodBinary,
+			sha:      a.bin.SHA256,
+			digest:   a.bin.ManifestDigest,
+			depPaths: a.depPaths,
+		}, nil
+	case a.locked || inst.BinaryOnly:
+		// A locked binary node never demotes to a source build
+		// (acceptance 8): the method is a locked field, so a
+		// source build would install bytes the lock never named
+		// and fail its own hash check minutes later. Leave
+		// nothing behind — the mismatching artifact must be
+		// absent from the store (acceptance 1).
+		os.RemoveAll(a.storeDir)
+		// A hash disagreement is an integrity violation, and design
+		// §8 puts it in the class that stops a pipeline for a human.
+		// Every other reason a fetch can fail — a 404, a refused
+		// connection, a corrupt archive — stays ordinary, because
+		// acceptance 11 turns on exactly that distinction: an
+		// ordinary failure under a lock must not read as tampering.
+		if errors.Is(berr, download.ErrSHA256Mismatch) {
+			return binaryResult{}, fmt.Errorf(
+				"%s of %s: %w: %w", refusalLabel(a.locked),
+				lockgraph.Key(a.r.Package.Name, a.storeVersion),
+				provenance.ErrInvalid, berr,
+			)
+		}
+		return binaryResult{}, fmt.Errorf(
+			"%s of %s: %w", refusalLabel(a.locked),
+			lockgraph.Key(a.r.Package.Name, a.storeVersion), berr,
+		)
+	case errors.Is(berr, farm.ErrClaimConflict):
+		// A farm-guard refusal is a cross-project conflict,
+		// not a defect of the artifact: a source build of the
+		// same version claims the same sonames and would only
+		// hit the same refusal at the generation rebuild,
+		// after minutes of wasted work. Abort instead of
+		// demoting to source.
+		return binaryResult{}, berr
+	default:
+		// Binary install failed — fall back to source build.
+		// Reaching here means the recipe advertised a binary
+		// for this platform and the fetch/verify pipeline
+		// rejected it. Surface the reason so a silent source
+		// build doesn't hide network errors, missing GHCR
+		// artifacts, hash mismatches, or attestation failures.
+		w := inst.BinaryFallbackLog
+		if w == nil {
+			w = os.Stderr
+		}
+		fmt.Fprintf(w,
+			"warning: binary install for %s@%s failed: %v;"+
+				" falling back to source build\n",
+			a.r.Package.Name, a.r.Package.Version, berr)
+		if err := os.RemoveAll(a.storeDir); err != nil {
+			return binaryResult{}, fmt.Errorf(
+				"clean store dir for source fallback: %w", err,
+			)
+		}
+		if err := os.MkdirAll(a.storeDir, 0o755); err != nil {
+			return binaryResult{}, fmt.Errorf(
+				"recreate store dir for source fallback: %w", err,
+			)
+		}
+		// Top up with the build-only deps we skipped.
+		buildOnly, derr := inst.InstallBuildOnlyDeps(ctx, a.r)
+		if derr != nil {
+			os.RemoveAll(a.storeDir)
+			return binaryResult{}, fmt.Errorf(
+				"install build deps for source fallback: %w", derr,
+			)
+		}
+		return binaryResult{
+			method:   MethodSource,
+			depPaths: mergeBuildDeps(a.depPaths, buildOnly),
+		}, nil
+	}
+}
+
+// extractDest is the on-disk target of a binary or source extract.
+type extractDest struct {
+	dir, canonical string
+	inPlace        bool
+}
+
 func (inst *Installer) installBinaryTo(
+	ctx context.Context,
 	r *recipe.Recipe,
-	extractDir, finalStoreDir string,
+	dest extractDest,
 	depsFallback []depsmeta.ResolvedDep,
-	inPlace bool,
 ) error {
 	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
 	name := r.Package.Name
@@ -1040,7 +1106,7 @@ func (inst *Installer) installBinaryTo(
 	if recipe.IsGHCR(bin.URL) {
 		repo := repoFromURL(bin.URL)
 		var err error
-		token, err = ghcr.Token(repo)
+		token, err = ghcr.Token(ctx, repo)
 		if err != nil {
 			return fmt.Errorf("ghcr auth: %w", err)
 		}
@@ -1052,7 +1118,7 @@ func (inst *Installer) installBinaryTo(
 	// before pulling it. Fail-closed — any failure aborts the
 	// binary install so the caller falls back to a source build
 	// rather than trusting an unverifiable artifact.
-	if err := verifyManifestDigest(bin, token); err != nil {
+	if err := verifyManifestDigest(ctx, bin, token); err != nil {
 		return fmt.Errorf("verify manifest digest: %w", err)
 	}
 
@@ -1060,6 +1126,7 @@ func (inst *Installer) installBinaryTo(
 	// pass into a sibling staging directory. The network
 	// fetch stays outside the store-gen lock so a slow
 	// download does not block concurrent sync operations.
+	extractDir, finalStoreDir, inPlace := dest.dir, dest.canonical, dest.inPlace
 	stagingDir := extractDir + ".stream"
 	defer os.RemoveAll(stagingDir) // clean up on any exit path
 
@@ -1089,7 +1156,7 @@ func (inst *Installer) installBinaryTo(
 	fetchErr := func() error {
 		streamDone := timing.Phase("binary-stream " + pkgID)
 		defer streamDone()
-		_, err := download.FetchAndExtractTarZstdWithArchive(context.Background(), download.FetchExtract{
+		_, err := download.FetchAndExtractTarZstdWithArchive(ctx, download.FetchExtract{
 			URL: bin.URL, DestDir: stagingDir, ExpectedSHA256: bin.SHA256,
 			Token: token, ArchiveOut: archiveOut,
 		})
@@ -1112,7 +1179,7 @@ func (inst *Installer) installBinaryTo(
 	// by definition means GHCR).
 	if needAttest {
 		attestDone := timing.Phase("attestation " + pkgID)
-		err := verifyPrebuiltAttestation(bin, archiveOut, token, v)
+		err := verifyPrebuiltAttestation(ctx, bin, archiveOut, token, v)
 		attestDone()
 		if err != nil {
 			return fmt.Errorf("attestation: %w", err)
@@ -1378,7 +1445,7 @@ type commitRequest struct {
 // nil when no digest is declared (legacy recipes fetch the blob
 // directly). All failures propagate so the binary install aborts
 // to a source-build fallback.
-func verifyManifestDigest(bin *recipe.Binary, token string) error {
+func verifyManifestDigest(ctx context.Context, bin *recipe.Binary, token string) error {
 	if bin.ManifestDigest == "" {
 		return nil
 	}
@@ -1392,7 +1459,7 @@ func verifyManifestDigest(bin *recipe.Binary, token string) error {
 		// directly. Nothing to check.
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	layerDigest, err := ghcr.FetchManifestLayer(ctx, manifestURL, bin.ManifestDigest, token)
 	if err != nil {
@@ -1434,14 +1501,12 @@ var fetchReferrerBundle = ghcr.FetchReferrerBundle
 // path first, falling back to the teed archive file only when no
 // referrer exists. archiveOut is the teed copy of the downloaded
 // archive bytes the file path verifies.
-func verifyPrebuiltAttestation(bin *recipe.Binary, archiveOut, token string, v attestation.Verifier) error {
+func verifyPrebuiltAttestation(ctx context.Context, bin *recipe.Binary, archiveOut, token string, v attestation.Verifier) error {
 	return attestation.VerifyPrebuilt(v, attestation.PrebuiltParams{
 		Repo:           attestation.DefaultRepo,
 		ManifestDigest: bin.ManifestDigest,
 		FetchBundle: func() ([]byte, error) {
-			ctx, cancel := context.WithTimeout(
-				context.Background(), 30*time.Second,
-			)
+			ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 			defer cancel()
 			return fetchReferrerBundle(
 				ctx, bin.URL, bin.ManifestDigest, token,
@@ -1462,14 +1527,14 @@ func verifyPrebuiltAttestation(bin *recipe.Binary, archiveOut, token string, v a
 // The binary-first install path uses InstallRuntimeDeps and
 // InstallBuildOnlyDeps instead so build-only deps can be
 // skipped when a prebuilt binary install succeeds.
-func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
+func (inst *Installer) InstallBuildDeps(ctx context.Context, r *recipe.Recipe) (*build.BuildDeps, error) {
 	deps, implicit := build.EffectiveDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
 		r.Build.System,
 	)
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, implicit, seen)
+	return inst.forDeps().installDepsInner(ctx, rCopy, implicit, seen)
 }
 
 // InstallRuntimeDeps installs only the runtime-tagged
@@ -1480,12 +1545,12 @@ func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, err
 //
 // Called by the binary-first install path so a prebuilt
 // binary install doesn't drag in autoconf et al.
-func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
+func (inst *Installer) InstallRuntimeDeps(ctx context.Context, r *recipe.Recipe) (*build.BuildDeps, error) {
 	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
 	deps.Build = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, nil, seen)
+	return inst.forDeps().installDepsInner(ctx, rCopy, nil, seen)
 }
 
 // InstallBuildOnlyDeps installs only the build-tagged
@@ -1494,7 +1559,7 @@ func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, e
 // InstallRuntimeDeps has already installed the runtime
 // deps: now we top up with the build-only pieces before
 // running the source build.
-func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
+func (inst *Installer) InstallBuildOnlyDeps(ctx context.Context, r *recipe.Recipe) (*build.BuildDeps, error) {
 	deps, implicit := build.EffectiveDeps(
 		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
 		r.Build.System,
@@ -1502,7 +1567,7 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 	deps.Runtime = nil
 	rCopy := copyRecipeForDeps(r, deps)
 	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, implicit, seen)
+	return inst.forDeps().installDepsInner(ctx, rCopy, implicit, seen)
 }
 
 // ResolveDirectDeps returns the (name, version, revision)
@@ -1513,7 +1578,7 @@ func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps,
 // Build-only deps are excluded (gh#157): recording them
 // would pin build tools in the store for gc/farm even though
 // the binary never links them, and IsStale ignores them.
-func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedDep, error) {
+func (inst *Installer) ResolveDirectDeps(ctx context.Context, r *recipe.Recipe) ([]depsmeta.ResolvedDep, error) {
 	if !inst.canResolve() {
 		return nil, nil
 	}
@@ -1528,7 +1593,7 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedD
 	}
 	resolved := make([]depsmeta.ResolvedDep, 0, len(names))
 	for _, name := range names {
-		dr, err := inst.resolveDep(name)
+		dr, err := inst.resolveDep(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"resolve dep %q: %w", name, err,
@@ -1614,6 +1679,7 @@ func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recip
 // with a sibling top-level pin for the same slot, so this keeps
 // the split simple and deterministic.
 func (inst *Installer) installDepsInner(
+	ctx context.Context,
 	r *recipe.Recipe,
 	implicit map[string]bool,
 	seen map[string]bool,
@@ -1633,7 +1699,7 @@ func (inst *Installer) installDepsInner(
 		}
 		seen[dep] = true
 
-		depRecipe, err := inst.resolveDep(dep)
+		depRecipe, err := inst.resolveDep(ctx, dep)
 		if err != nil {
 			return nil, fmt.Errorf("resolve dep %q: %w", dep, err)
 		}
@@ -1664,7 +1730,7 @@ func (inst *Installer) installDepsInner(
 			}
 		}
 
-		if _, err := inst.Install(depRecipe); err != nil {
+		if _, err := inst.Install(ctx, depRecipe); err != nil {
 			return nil, fmt.Errorf("install dep %q: %w", dep, err)
 		}
 
@@ -1681,7 +1747,7 @@ func (inst *Installer) installDepsInner(
 		binDir := filepath.Join(storeDir, "bin")
 		_, binErr := os.Stat(binDir)
 
-		transitive, err := inst.installDepsInner(depRecipe, nil, seen)
+		transitive, err := inst.installDepsInner(ctx, depRecipe, nil, seen)
 		if err != nil {
 			return nil, fmt.Errorf("transitive deps of %q: %w",
 				dep, err)
@@ -1745,7 +1811,7 @@ func (inst *Installer) installFromLocalSource(r *recipe.Recipe, sourceDir, store
 // true means extractDir is the live canonical dir; false
 // means the caller is staging. A method so the in-place commit
 // inherits the installer's farm guard.
-func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) (string, error) {
+func (inst *Installer) installFromSourceTo(ctx context.Context, r *recipe.Recipe, dest extractDest, deps *build.BuildDeps) (string, error) {
 	scratch, err := build.TmpDir()
 	if err != nil {
 		return "", fmt.Errorf("build temp dir: %w", err)
@@ -1756,7 +1822,7 @@ func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalSt
 	}
 	defer os.RemoveAll(tmpDir)
 
-	result, err := build.Build(r, tmpDir, r.Build.Debug, deps)
+	result, err := build.Build(ctx, r, tmpDir, r.Build.Debug, deps)
 	if err != nil {
 		return "", fmt.Errorf("building from source: %w", err)
 	}
@@ -1768,13 +1834,13 @@ func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalSt
 	); err != nil {
 		return "", err
 	}
-	return result.SHA256, extractBuildTo(extractRequest{
+	return result.SHA256, extractBuildTo(ctx, extractRequest{
 		Result:        result,
-		ExtractDir:    extractDir,
-		FinalStoreDir: finalStoreDir,
+		ExtractDir:    dest.dir,
+		FinalStoreDir: dest.canonical,
 		Deps:          deps,
 		Artifact:      sourceArtifact(r, r.Package.Full(), deps),
-		InPlace:       inPlace,
+		InPlace:       dest.inPlace,
 		RecipeDigest:  r.Digest,
 		FarmGuard:     inst.FarmGuard,
 		DeferFarm:     inst.deferFarm(),
@@ -1795,7 +1861,7 @@ func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalSt
 // A method so the in-place commit inherits the installer's farm
 // guard.
 func (inst *Installer) extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps, a commitArtifact) error {
-	return extractBuildTo(extractRequest{
+	return extractBuildTo(context.Background(), extractRequest{
 		Result:        result,
 		ExtractDir:    storeDir,
 		FinalStoreDir: storeDir,
@@ -1837,7 +1903,7 @@ type extractRequest struct {
 // that is promoted into extractDir under the store-gen lock
 // (with farm wiring); otherwise extractDir is the caller's own
 // staging dir and the caller commits both (commitStaged).
-func extractBuildTo(req extractRequest) error {
+func extractBuildTo(ctx context.Context, req extractRequest) error {
 	result, deps := req.Result, req.Deps
 	extractDir, finalStoreDir, inPlace := req.ExtractDir, req.FinalStoreDir, req.InPlace
 	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
@@ -1865,7 +1931,7 @@ func extractBuildTo(req extractRequest) error {
 		defer os.RemoveAll(workDir) // clean up on any exit path
 	}
 
-	if err := download.ExtractTarZstd(context.Background(), result.Archive, workDir); err != nil {
+	if err := download.ExtractTarZstd(ctx, result.Archive, workDir); err != nil {
 		return fmt.Errorf("extract build output: %w", err)
 	}
 	if err := build.RestorePrefixPlaceholderTo(workDir, finalStoreDir); err != nil {
@@ -1968,14 +2034,14 @@ func withStoreGenLock(storeRoot string, fn func() error) error {
 // then invokes finalize() while still holding the lock, then releases.
 // finalize == nil is a no-op. finalize errors are returned alongside
 // the InstallResult so the caller sees partial state.
-func (inst *Installer) InstallWithFinalize(r *recipe.Recipe, force bool, finalize func(*InstallResult) error) (*InstallResult, error) {
+func (inst *Installer) InstallWithFinalize(ctx context.Context, r *recipe.Recipe, force bool, finalize func(*InstallResult) error) (*InstallResult, error) {
 	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
 	if err != nil {
 		return nil, fmt.Errorf("lock package: %w", err)
 	}
 	defer unlock()
 
-	result, err := inst.installLocked(r, force)
+	result, err := inst.installLocked(ctx, r, force)
 	if err != nil {
 		return nil, err
 	}

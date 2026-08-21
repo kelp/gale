@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -36,10 +37,10 @@ func (e *recipeResolveError) Unwrap() error { return e.err }
 // *fallback* resolver (typically the registry) carries the most
 // informative error for a true cache-miss.
 func composeResolvers(resolvers ...installer.RecipeResolver) installer.RecipeResolver {
-	return func(name string) (*recipe.Recipe, error) {
+	return func(ctx context.Context, name string) (*recipe.Recipe, error) {
 		var lastErr error
 		for _, r := range resolvers {
-			rec, err := r(name)
+			rec, err := r(ctx, name)
 			if err == nil {
 				return rec, nil
 			}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"runtime"
@@ -89,7 +90,7 @@ Unlike 'gale update', switch:
 			ctx.Installer.SourceOnly = true
 		}
 
-		result, err := ctx.Installer.InstallWithFinalize(r, false,
+		result, err := ctx.Installer.InstallWithFinalize(context.Background(), r, false,
 			func(_ *installer.InstallResult) error {
 				return ctx.FinalizeRecipeInstall(r)
 			})

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -75,7 +76,7 @@ func resolveRecipeResolver(recipesFlag string) (installer.RecipeResolver, *regis
 // recipes from a local recipes directory using letter-bucketed
 // layout: <recipesDir>/<letter>/<name>.toml.
 func localRecipeResolver(recipesDir string) installer.RecipeResolver {
-	return func(name string) (*recipe.Recipe, error) {
+	return func(_ context.Context, name string) (*recipe.Recipe, error) {
 		if name == "" {
 			return nil, fmt.Errorf("empty package name")
 		}
@@ -209,7 +210,7 @@ func detectRecipesRepo(recipePath string) string {
 func recipeFileResolver(recipePath string) installer.RecipeResolver {
 	absPath, err := filepath.Abs(recipePath)
 	if err != nil {
-		return func(_ string) (*recipe.Recipe, error) {
+		return func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return nil, fmt.Errorf("resolving recipe path: %w", err)
 		}
 	}

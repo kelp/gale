@@ -1,6 +1,7 @@
 package ghcr
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -73,7 +74,7 @@ func TestCacheHitReturnsSameTokenWithoutReissuingHTTP(t *testing.T) {
 		})
 	})
 
-	tok1, err := Token("foo/bar")
+	tok1, err := Token(context.Background(), "foo/bar")
 	if err != nil {
 		t.Fatalf("first Token() call failed: %v", err)
 	}
@@ -81,7 +82,7 @@ func TestCacheHitReturnsSameTokenWithoutReissuingHTTP(t *testing.T) {
 		t.Fatal("first Token() returned empty string")
 	}
 
-	tok2, err := Token("foo/bar")
+	tok2, err := Token(context.Background(), "foo/bar")
 	if err != nil {
 		t.Fatalf("second Token() call failed: %v", err)
 	}
@@ -110,7 +111,7 @@ func TestDifferentRepositoriesCacheIndependently(t *testing.T) {
 		})
 	})
 
-	tokAB1, err := Token("a/b")
+	tokAB1, err := Token(context.Background(), "a/b")
 	if err != nil {
 		t.Fatalf("Token(a/b) first call failed: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestDifferentRepositoriesCacheIndependently(t *testing.T) {
 		t.Fatal("Token(a/b) returned empty string")
 	}
 
-	tokCD, err := Token("c/d")
+	tokCD, err := Token(context.Background(), "c/d")
 	if err != nil {
 		t.Fatalf("Token(c/d) failed: %v", err)
 	}
@@ -126,7 +127,7 @@ func TestDifferentRepositoriesCacheIndependently(t *testing.T) {
 		t.Fatal("Token(c/d) returned empty string")
 	}
 
-	tokAB2, err := Token("a/b")
+	tokAB2, err := Token(context.Background(), "a/b")
 	if err != nil {
 		t.Fatalf("Token(a/b) second call failed: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestExpiresInHonouredForCacheTTL(t *testing.T) {
 	})
 
 	// t=0: first call — must hit HTTP
-	tok1, err := Token("expire/test")
+	tok1, err := Token(context.Background(), "expire/test")
 	if err != nil {
 		t.Fatalf("Token() at t=0 failed: %v", err)
 	}
@@ -173,7 +174,7 @@ func TestExpiresInHonouredForCacheTTL(t *testing.T) {
 
 	// t=9s: still within 10s TTL — must return cached token (no new HTTP)
 	advance(9 * time.Second)
-	tok2, err := Token("expire/test")
+	tok2, err := Token(context.Background(), "expire/test")
 	if err != nil {
 		t.Fatalf("Token() at t=9s failed: %v", err)
 	}
@@ -186,7 +187,7 @@ func TestExpiresInHonouredForCacheTTL(t *testing.T) {
 
 	// t=12s total: past the 10s TTL — must re-fetch
 	advance(3 * time.Second) // now at 12s from base
-	tok3, err := Token("expire/test")
+	tok3, err := Token(context.Background(), "expire/test")
 	if err != nil {
 		t.Fatalf("Token() at t=12s failed: %v", err)
 	}
@@ -212,7 +213,7 @@ func TestDefaultTTLFiveMinutesWhenExpiresInAbsent(t *testing.T) {
 	})
 
 	// t=0: first call
-	tok1, err := Token("default/ttl")
+	tok1, err := Token(context.Background(), "default/ttl")
 	if err != nil {
 		t.Fatalf("Token() at t=0 failed: %v", err)
 	}
@@ -225,7 +226,7 @@ func TestDefaultTTLFiveMinutesWhenExpiresInAbsent(t *testing.T) {
 
 	// t=4m59s: just inside 5-minute default TTL — cache hit
 	advance(DefaultTokenTTL - time.Second)
-	tok2, err := Token("default/ttl")
+	tok2, err := Token(context.Background(), "default/ttl")
 	if err != nil {
 		t.Fatalf("Token() at t=4m59s failed: %v", err)
 	}
@@ -238,7 +239,7 @@ func TestDefaultTTLFiveMinutesWhenExpiresInAbsent(t *testing.T) {
 
 	// t=5m1s: past 5-minute default TTL — must re-fetch
 	advance(2 * time.Second) // now at 5m1s from base
-	tok3, err := Token("default/ttl")
+	tok3, err := Token(context.Background(), "default/ttl")
 	if err != nil {
 		t.Fatalf("Token() at t=5m1s failed: %v", err)
 	}
@@ -278,7 +279,7 @@ func TestEnvTokenBypassesCacheAndHTTP(t *testing.T) {
 	})
 
 	// Phase 1: warm the cache via a normal HTTP call.
-	tok1, err := Token("env/bypass")
+	tok1, err := Token(context.Background(), "env/bypass")
 	if err != nil {
 		t.Fatalf("warm-up Token() failed: %v", err)
 	}
@@ -295,7 +296,7 @@ func TestEnvTokenBypassesCacheAndHTTP(t *testing.T) {
 
 	const callCount = 3
 	for i := range callCount {
-		got, err := Token("env/bypass")
+		got, err := Token(context.Background(), "env/bypass")
 		if err != nil {
 			t.Fatalf("Token() call %d (with env) failed: %v", i+1, err)
 		}
@@ -317,7 +318,7 @@ func TestEnvTokenBypassesCacheAndHTTP(t *testing.T) {
 	// in phase 2 still restores the original value on test teardown.
 	os.Unsetenv("GALE_GITHUB_TOKEN") //nolint:errcheck
 
-	tok2, err := Token("env/bypass")
+	tok2, err := Token(context.Background(), "env/bypass")
 	if err != nil {
 		t.Fatalf("Token() after clearing env failed: %v", err)
 	}
@@ -373,7 +374,7 @@ func TestConcurrentTokenCallsCoalesceIntoOneHTTPRequest(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start // wait for all goroutines to be ready
-			tokens[i], errs[i] = Token("foo/bar")
+			tokens[i], errs[i] = Token(context.Background(), "foo/bar")
 		}()
 	}
 
@@ -446,7 +447,7 @@ func TestConcurrentTokenCallsPropagateErrorToWaiters(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			_, errs[i] = Token("foo/error")
+			_, errs[i] = Token(context.Background(), "foo/error")
 		}()
 	}
 

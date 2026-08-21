@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -54,7 +55,7 @@ var buildCmd = &cobra.Command{
 			Verifier: attestation.NewVerifier(),
 		}
 
-		deps, err := inst.InstallBuildDeps(r)
+		deps, err := inst.InstallBuildDeps(context.Background(), r)
 		if err != nil {
 			return fmt.Errorf("installing build deps: %w", err)
 		}
@@ -84,7 +85,7 @@ var buildCmd = &cobra.Command{
 		out.Info(fmt.Sprintf("Building %s@%s from source...",
 			r.Package.Name, r.Package.Version))
 
-		result, err := build.Build(r, outputDir, debug, deps)
+		result, err := build.Build(context.Background(), r, outputDir, debug, deps)
 		if err != nil {
 			return fmt.Errorf("build failed: %w", err)
 		}
