@@ -740,8 +740,8 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 	//
 	// Either class is repairable from here. A rebuild repopulates
 	// the shared farm from the guarded union of every claimant, so
-	// `gale doctor --repair` run in any scope restores another
-	// scope's entry as long as its store bytes are still present.
+	// `gale sync` in any scope restores another scope's entry
+	// as long as its store bytes are still present.
 	claimed := claimedSonames(activeStoreDirs)
 	for _, e := range entries {
 		scope := "shared farm entry outside this scope's closure"
@@ -780,7 +780,7 @@ func CheckDrift(activeStoreDirs []string, farmDir string) ([]string, error) {
 		// holding only openssl computes "libssl.dylib should be
 		// here" for a union that legitimately dropped it. Drift
 		// renders as an Error telling the user to run
-		// `gale doctor --repair`, and no repair can clear that —
+		// `gale sync`, and no rebuild can clear that —
 		// gh#50 again. Contested aliases are reported separately,
 		// as a warning, by the doctor.
 		//

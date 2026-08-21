@@ -158,11 +158,10 @@ func TestSyncRebuildsWhenTheActiveGenerationCannotBeRead(t *testing.T) {
 // The recovery rebuild's skip takes the same tolerant posture.
 //
 // generationAlreadyLinks answers "is a rebuild unnecessary", and gc
-// and `doctor --repair` skip on true. An unreadable generation
-// compared against a lock that roots nothing compares EQUAL today,
-// so the two recovery commands skip the rebuild on exactly the
-// machine that needs it. False is the safe direction and is what the
-// caller was about to do anyway.
+// skips on true. An unreadable generation compared against a lock
+// that roots nothing compares EQUAL today, so gc would skip the
+// rebuild on exactly the machine that needs it. False is the safe
+// direction and is what the caller was about to do anyway.
 func TestGenerationAlreadyLinksIsFalseWhenTheGenerationIsUnreadable(t *testing.T) {
 	tmp := t.TempDir()
 	galeDir := filepath.Join(tmp, ".gale")
@@ -178,7 +177,7 @@ func TestGenerationAlreadyLinksIsFalseWhenTheGenerationIsUnreadable(t *testing.T
 
 	if generationAlreadyLinks(galeDir, storeRoot, map[string]string{}) {
 		t.Error("an unreadable generation was reported as already " +
-			"linking the target set; gc and doctor --repair skip the " +
+			"linking the target set; gc would skip the " +
 			"rebuild that would repair it")
 	}
 }

@@ -144,7 +144,7 @@ Farm invariants:
   (`internal/generation/generation.go:91-95` →
   `farm.Repopulate`). `gale doctor` detects drift (broken
   symlinks, missing entries) at `cmd/gale/doctor.go:250-280`
-  and `--repair` triggers the rebuild path.
+  and `gale sync` triggers the rebuild path.
 
 ### Pre-farm prebuilts are brittle
 

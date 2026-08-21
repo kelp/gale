@@ -62,8 +62,8 @@ func projectWithFakelib(t *testing.T, home string) string {
 // issue #50: checkFarm validated the farm against the MERGED
 // global+project package set. A project-only package shipping a
 // versioned dylib then produced permanent "missing farm entry"
-// drift on the global scope — drift that `gale doctor --repair`
-// (which rebuilds from global config only) can never fix.
+// drift on the global scope — drift that a global-only rebuild
+// can never fix.
 //
 // Design revision 6 retired the per-project farm, so there is now
 // one shared farm and both scopes read it. That makes the scoping
@@ -108,7 +108,7 @@ func TestCheckFarmScopesGlobalFarmToGlobalPackages(t *testing.T) {
 // global gale home, config.FindGaleConfig resolves to the
 // GLOBAL gale.toml. Deriving the project gale dir from it
 // yields the bogus <galeDir>/.gale, and checkFarm then
-// reports drift that `gale doctor --repair` can never fix.
+// reports drift that no rebuild can fix.
 // The project-scope check must be skipped when the found
 // config is the global one — the global farm was already
 // checked.

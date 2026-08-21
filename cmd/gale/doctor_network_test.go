@@ -98,3 +98,19 @@ func TestDoctorHasCheckRegistryFlag(t *testing.T) {
 			f.Usage)
 	}
 }
+
+// TestDoctorHasNoRepairFlag pins the Milestone 2 deletion: doctor
+// never mutates. --check-registry stays.
+func TestDoctorHasNoRepairFlag(t *testing.T) {
+	if f := doctorCmd.Flags().Lookup("repair"); f != nil {
+		t.Fatalf("doctor --repair must be gone, found usage %q", f.Usage)
+	}
+}
+
+// TestDoctorHasNoForceFlag pins the same deletion. gc --force stays;
+// doctor's --force was only the repair escape hatch.
+func TestDoctorHasNoForceFlag(t *testing.T) {
+	if f := doctorCmd.Flags().Lookup("force"); f != nil {
+		t.Fatalf("doctor --force must be gone, found usage %q", f.Usage)
+	}
+}

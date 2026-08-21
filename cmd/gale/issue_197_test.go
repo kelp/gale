@@ -11,21 +11,18 @@ import (
 	"github.com/kelp/gale/internal/activation"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
-	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
 )
 
-// gh#197: gc and doctor --repair rebuild a generation from the recipe
-// and the store, which after a revision bump or a withdrawn revision
-// is a second version selector. Either can therefore activate a
-// version the scope's lock does not name, and at global scope design
-// §12 runs no activation gate, so nothing downstream ever notices.
+// gh#197: gc rebuilds a generation from the recipe and the store,
+// which after a revision bump or a withdrawn revision is a second
+// version selector. It can therefore activate a version the scope's
+// lock does not name, and at global scope design §12 runs no
+// activation gate, so nothing downstream ever notices.
 //
 // One package at two revisions throughout: 1.48.0-1 and 1.48.0-2.
-// Which of the two the lock names differs per test, because the two
-// commands drift in opposite directions — gc's rebuild resolves the
-// recipe and walks DOWN to a withdrawn revision, doctor's passes no
-// resolver at all and walks UP to the highest revision on disk.
+// Which of the two the lock names differs per test: gc's rebuild
+// resolves the recipe and walks DOWN to a withdrawn revision.
 const (
 	issue197Pkg  = "just"
 	issue197Ver  = "1.48.0"
@@ -235,76 +232,6 @@ func TestGCRebuildHonorsAProjectLock(t *testing.T) {
 		map[string]string{issue197Pkg: issue197Rev2})
 }
 
-// TestDoctorRepairDoesNotActivateAnUnlockedRevision drives gh#197's
-// doctor half. repairDoctor passes no pin resolver, so the bare pin in
-// gale.toml goes through store.ResolveDir's bare→highest-revision
-// rule: 1.48.0 resolves to 1.48.0-2 while the lock names 1.48.0-1.
-// The higher revision is an orphan — installed for another scope, or
-// left by a rolled-back install — and repair puts it on PATH.
-func TestDoctorRepairDoesNotActivateAnUnlockedRevision(t *testing.T) {
-	galeDir, storeRoot := issue197Home(t)
-	cwd := t.TempDir()
-	t.Chdir(cwd)
-	configPath := filepath.Join(galeDir, "gale.toml")
-	lockPath := filepath.Join(galeDir, "gale.lock")
-	writeFile(t, configPath, "[packages]\n"+issue197Pkg+" = \""+issue197Ver+"\"\n")
-	writeScopeLock(t, lockPath, issue197Pkg+"@"+issue197Rev1, shaX)
-
-	if err := rebuildGeneration(
-		galeDir, storeRoot, configPath, justAtRevision(1),
-	); err != nil {
-		t.Fatalf("seeding the generation: %v", err)
-	}
-
-	if err := repairDoctor(&doctorContext{
-		galeDir:   galeDir,
-		storeRoot: storeRoot,
-		cwd:       cwd,
-		out:       output.New(os.Stderr, false),
-	}); err != nil {
-		t.Fatalf("doctor --repair: %v", err)
-	}
-
-	assertGenerationMatchesLock(t, galeDir, storeRoot, lockPath,
-		map[string]string{issue197Pkg: issue197Rev1})
-}
-
-// TestDoctorRepairHonorsAHostLockedRoot covers the third scope. The
-// package is declared under [hosts.<host>.packages] and rooted under
-// the lock's matching host target, so a repair that asked the lock
-// about the wrong host would find no root, link nothing, and drop the
-// package off PATH.
-func TestDoctorRepairHonorsAHostLockedRoot(t *testing.T) {
-	const host = "issue197-host"
-	t.Setenv("GALE_HOST", host)
-	galeDir, storeRoot := issue197Home(t)
-	cwd := t.TempDir()
-	t.Chdir(cwd)
-	configPath := filepath.Join(galeDir, "gale.toml")
-	lockPath := filepath.Join(galeDir, "gale.lock")
-	writeFile(t, configPath, "[hosts."+host+".packages]\n"+
-		issue197Pkg+" = \""+issue197Ver+"\"\n")
-	writeHostScopeLock(t, lockPath, host, issue197Pkg+"@"+issue197Rev1, shaX)
-
-	if err := rebuildGeneration(
-		galeDir, storeRoot, configPath, justAtRevision(1),
-	); err != nil {
-		t.Fatalf("seeding the generation: %v", err)
-	}
-
-	if err := repairDoctor(&doctorContext{
-		galeDir:   galeDir,
-		storeRoot: storeRoot,
-		cwd:       cwd,
-		out:       output.New(os.Stderr, false),
-	}); err != nil {
-		t.Fatalf("doctor --repair: %v", err)
-	}
-
-	assertGenerationMatchesLock(t, galeDir, storeRoot, lockPath,
-		map[string]string{issue197Pkg: issue197Rev1})
-}
-
 // issue197UnusableLockFixture is the shared setup for the refusal
 // tests: the gc rebuild fires, and the scope's lock is present in a
 // schema this build cannot model. Returns the gale dir and store root.
@@ -378,65 +305,5 @@ func TestGCForceRebuildsDespiteAnUnusableLock(t *testing.T) {
 	if active[issue197Pkg] != issue197Rev1 {
 		t.Errorf("active generation = %v, want the unlocked rebuild's %s",
 			active, issue197Rev1)
-	}
-}
-
-// issue197RepairContext is a doctor context over the fixture home, cwd
-// taken from the fixture's own chdir.
-func issue197RepairContext(t *testing.T, galeDir, storeRoot string) *doctorContext {
-	t.Helper()
-	cwd, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	return &doctorContext{
-		galeDir:   galeDir,
-		storeRoot: storeRoot,
-		cwd:       cwd,
-		out:       output.New(os.Stderr, false),
-	}
-}
-
-// TestDoctorRepairRefusesOnAnUnusableLock is doctor's half of the same
-// rule. Repair rebuilds unconditionally — it has no superseded-orphan
-// gate — so the refusal is what stops it publishing a version nothing
-// can check.
-func TestDoctorRepairRefusesOnAnUnusableLock(t *testing.T) {
-	galeDir, storeRoot := issue197UnusableLockFixture(t)
-
-	err := repairDoctor(issue197RepairContext(t, galeDir, storeRoot))
-	if err == nil {
-		t.Fatal("doctor --repair must refuse a lock it cannot model")
-	}
-	if code := exitCodeFor(err); code != exitLockUnusable {
-		t.Errorf("exit code = %d, want %d (%v)", code, exitLockUnusable, err)
-	}
-	if !strings.Contains(err.Error(), "gale lock --refresh") {
-		t.Errorf("the refusal must name the remedy, got: %v", err)
-	}
-}
-
-// TestDoctorRepairForceRebuildsDespiteAnUnusableLock is repair's
-// escape hatch, `gale doctor --repair --force`. Repair is the command
-// a user reaches for when the machine is broken, so the refusal above
-// must not be the end of the road.
-func TestDoctorRepairForceRebuildsDespiteAnUnusableLock(t *testing.T) {
-	galeDir, storeRoot := issue197UnusableLockFixture(t)
-	doctorForce = true
-	t.Cleanup(func() { doctorForce = false })
-
-	if err := repairDoctor(
-		issue197RepairContext(t, galeDir, storeRoot),
-	); err != nil {
-		t.Fatalf("doctor --repair --force must repair anyway: %v", err)
-	}
-	active, err := generation.CurrentVersions(galeDir, storeRoot)
-	if err != nil {
-		t.Fatalf("reading the active generation: %v", err)
-	}
-	// Repair passes no pin resolver, so the unlocked rebuild takes
-	// store.ResolveDir's bare→highest-revision answer.
-	if active[issue197Pkg] != issue197Rev2 {
-		t.Errorf("active generation = %v, want %s", active, issue197Rev2)
 	}
 }

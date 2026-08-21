@@ -7,6 +7,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kelp/gale/internal/depsmeta"
+	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
 )
@@ -406,6 +409,119 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 	}
 	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "keep")); err != nil {
 		t.Fatalf("keep symlink must remain: %v", err)
+	}
+}
+
+// TestSyncDriftedTrueWhenFarmIsMissingADepDylib pins that gale sync
+// rebuilds when the generation already matches and only the shared
+// farm is wrong. finishSync skips rebuild when installed == 0 and
+// configChanged is false; configChanged used to mean generation
+// package drift only. Farm drift is exactly the case doctor --repair
+// used to fix, and "Run: gale sync" is a no-op without this.
+func TestSyncDriftedTrueWhenFarmIsMissingADepDylib(t *testing.T) {
+	dylib := versionedDylibName(t)
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	fakelibStore(t, storeRoot, dylib)
+	appDir := filepath.Join(storeRoot, "app", "1.0.0-1")
+	if err := os.MkdirAll(appDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := depsmeta.Write(appDir, depsmeta.Metadata{Deps: []depsmeta.ResolvedDep{
+		{Name: "fakelib", Version: "1.0.0", Revision: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	pkgs := map[string]string{"app": "1.0.0"}
+	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatal(err)
+	}
+	if generationDrifted(galeDir, storeRoot, pkgs, nil) {
+		t.Fatal("generation must match so only the farm is wrong")
+	}
+
+	farmDir := filepath.Join(home, ".gale", "lib")
+	if entries, err := os.ReadDir(farmDir); err != nil {
+		t.Fatalf("farm after Build: %v", err)
+	} else if len(entries) == 0 {
+		t.Fatal("Build must have populated the farm so wiping it is drift")
+	}
+	if err := os.RemoveAll(farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	if !syncDrifted(driftQuery{
+		galeDir:   galeDir,
+		storeRoot: storeRoot,
+		declared:  pkgs,
+	}) {
+		t.Fatal("syncDrifted must be true when the farm is missing a dep dylib")
+	}
+}
+
+// TestSyncDriftedTrueWhenLockedFarmDiffersFromHighestRevision pins
+// that a locked sync checks farm closure against the lock, not
+// gale.toml's bare pins. FarmStoreDirs floats a bare pin to the
+// highest on-disk revision. An orphan higher revision whose
+// closure needs no farm entries would hide farm drift for the
+// locked generation, and finishSync would skip the rebuild that
+// replaced doctor --repair.
+func TestSyncDriftedTrueWhenLockedFarmDiffersFromHighestRevision(t *testing.T) {
+	dylib := versionedDylibName(t)
+	home := t.TempDir()
+	galeDir := filepath.Join(home, ".gale")
+	storeRoot := filepath.Join(galeDir, "pkg")
+
+	fakelibStore(t, storeRoot, dylib)
+	lockedDir := filepath.Join(storeRoot, "app", "1.0.0-1")
+	if err := os.MkdirAll(lockedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := depsmeta.Write(lockedDir, depsmeta.Metadata{Deps: []depsmeta.ResolvedDep{
+		{Name: "fakelib", Version: "1.0.0", Revision: 1},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Populated leaf: empty in-flight dirs are skipped (gh#76),
+	// so a bare pin would otherwise still resolve to 1.0.0-1.
+	orphan := seedStore(t, storeRoot, "app", "1.0.0-2")
+	if err := depsmeta.Write(orphan, depsmeta.Metadata{}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := generation.Build(
+		map[string]string{"app": "1.0.0-1"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	farmDir := filepath.Join(home, ".gale", "lib")
+	if err := os.RemoveAll(farmDir); err != nil {
+		t.Fatal(err)
+	}
+
+	plan := &lockplan.Plan{
+		Nodes: map[string]lockplan.Node{
+			"app@1.0.0-1": {Name: "app", Version: "1.0.0-1"},
+		},
+		Order: []string{"app@1.0.0-1"},
+		Roots: []string{"app@1.0.0-1"},
+	}
+	if lockedGenerationDrifted(galeDir, storeRoot, plan) {
+		t.Fatal("generation must match the lock so only the farm is wrong")
+	}
+
+	if !syncDrifted(driftQuery{
+		galeDir:   galeDir,
+		storeRoot: storeRoot,
+		declared:  map[string]string{"app": "1.0.0"},
+		plan:      plan,
+	}) {
+		t.Fatal("syncDrifted must be true when the locked generation's farm is missing, even if a higher orphan revision needs no farm entries")
 	}
 }
 

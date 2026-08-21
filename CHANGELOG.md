@@ -11,6 +11,14 @@
 
 ### Changed
 
+- **`gale sync` rebuilds when the shared farm drifted.**
+  Package versions can already match. A locked sync
+  walks the lock's roots, not gale.toml's bare pins,
+  so an orphan higher revision cannot hide farm drift
+  for the locked generation. Without this, the doctor
+  farm-drift remedy (`gale sync`) was a no-op after
+  `--repair` went away.
+
 - **`gale gc` keeps the previous generation.**
   Retention is the compiled constant 2 (current +
   one previous, plus every gen at or above
@@ -26,6 +34,14 @@
   jobs knob already died in the config.toml freeze.
 
 ### Changed (breaking)
+
+- **`gale doctor --repair` and `--force` are gone.**
+  Doctor reports; it does not rebuild a generation,
+  delete a store directory, or re-sign a binary.
+  Remedies name `gale sync`, `gale lock --refresh`,
+  or `gale gc`. `gale gc --force` stays. Doctor still
+  runs its existing checks; the four-check rewrite is
+  a later cut.
 
 - **`config.toml` cannot repoint the registry.** The
   index URL is compiled in (`registry.DefaultURL`).
@@ -100,13 +116,12 @@
   the exit-code table for pipelines is in
   [`docs/ci-cd.md`](docs/ci-cd.md).
 
-- `gale gc` and `gale doctor --repair` take their versions from
-  the scope's lockfile, and refuse the rebuild outright when
-  that lockfile is present and cannot be read (gh#197). Both
-  previously selected versions from the recipe and the store
-  alone. `--force` rebuilds without the lock. Unlocked scopes
-  are unchanged. The defect this closes is under **Fixed**
-  below.
+- `gale gc` takes its versions from the scope's lockfile, and
+  refuses the rebuild outright when that lockfile is present
+  and cannot be read (gh#197). It previously selected versions
+  from the recipe and the store alone. `--force` rebuilds
+  without the lock. Unlocked scopes are unchanged. The defect
+  this closes is under **Fixed** below.
 
 ### Changed
 
@@ -247,11 +262,6 @@
   generation cannot be read. The escape hatch for the refusal
   below, for a mount that is gone for good.
 
-- `gale doctor --repair --force`: repair a scope whose lockfile
-  is present and cannot be read. Repair refuses such a scope
-  otherwise, and a machine with an unrepairable lock is exactly
-  where repair gets run.
-
 - `gale doctor` reports three states that block a rebuild and
   had no diagnosis. A lockfile in a schema this build cannot
   use, in either scope, with `gale lock --refresh` as the
@@ -262,13 +272,12 @@
   generation build decides by, so doctor and the rebuild cannot
   disagree about which names collide.
 
-- `gale doctor --repair` clears an unreadable `.gale-deps.toml`
-  by deleting that store directory and every package directory
-  on a dependency path to it, then rebuilding the generations.
-  Nothing less works: deleting the metadata file alone shrinks
-  the closure silently, and an install over a surviving
-  directory returns cached without descending. Run `gale sync`
-  afterwards to reinstall what was removed.
+- `gale doctor` reports an unreadable `.gale-deps.toml` by
+  naming that store directory and every package directory on a
+  dependency path to it. Remove those directories, then run
+  `gale sync`. Deleting the metadata file alone shrinks the
+  closure silently, and an install over a surviving directory
+  returns cached without descending.
 
 ### Fixed
 
@@ -335,18 +344,17 @@
   PATH is unchanged. Only `bin/` is arbitrated; `lib/`, `man/`
   and `share/` merge across packages as they always have.
 
-- gc and `gale doctor --repair` no longer activate a version the
-  scope's lockfile does not name (gh#197). Both rebuilt the
-  generation from the recipe and the store, which after a
-  revision bump — or a withdrawn one — is a second version
-  selector: gc relinked whatever revision the recipe now offers,
-  and repair, which resolves no recipe at all, took the highest
-  revision on disk. Global scope runs no activation gate, so the
-  substitution was invisible there. A scope with a usable v1
-  lockfile now takes its versions from that lock's roots, and a
-  scope whose lockfile is present and cannot be read is refused
-  rather than rebuilt on a guess — `--force` rebuilds it without
-  the lock. Unlocked scopes are unchanged.
+- gc no longer activates a version the scope's lockfile does
+  not name (gh#197). It rebuilt the generation from the recipe
+  and the store, which after a revision bump — or a withdrawn
+  one — is a second version selector: gc relinked whatever
+  revision the recipe now offers. Global scope runs no
+  activation gate, so the substitution was invisible there. A
+  scope with a usable v1 lockfile now takes its versions from
+  that lock's roots, and a scope whose lockfile is present and
+  cannot be read is refused rather than rebuilt on a guess —
+  `--force` rebuilds it without the lock. Unlocked scopes are
+  unchanged.
 
 - gc no longer deletes store versions belonging to a live but
   unreadable project (gh#188). Project liveness counts any
