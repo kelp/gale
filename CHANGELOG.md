@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Security
+
+- Bump `golang.org/x/text` to v0.39.0, clearing
+  GO-2026-5970 (CVE-2026-56852). `go mod tidy` also
+  advances the related `golang.org/x/{mod,sys,crypto,net,sync,term,tools}`
+  transitives.
+
 ### Changed (breaking)
 
 - **`.tool-versions` is no longer a gale manifest.** Gale
