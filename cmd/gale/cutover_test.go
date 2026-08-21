@@ -90,6 +90,26 @@ func stageTestFetch(_ context.Context, st *store.Store, name, version string, a 
 	return dest, nil
 }
 
+func TestInstallEmptyPinUsesLatest(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	installToStore = stageTestFetch
+	t.Cleanup(func() { installToStore = nil })
+	if err := os.Remove(fx.c.GalePath); err != nil {
+		t.Fatal(err)
+	}
+	if err := runInstallFetch(context.Background(), fx.c, "just", "", fx.src); err != nil {
+		t.Fatalf("install latest: %v", err)
+	}
+	got, err := lockfile.ReadV2(fx.lockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := got.Packages["just@1.56.0"]; !ok {
+		t.Errorf("packages = %v, want just@1.56.0 from latest", got.Packages)
+	}
+}
+
 func TestInstallFetchesAndWritesV2(t *testing.T) {
 	clearAdoptCI(t)
 	fx := newLockFetchFix(t)

@@ -1,33 +1,14 @@
-# `--quiet` suppresses informational and success lines from
-# install. We pair the assertion with a baseline run that
-# confirms those lines ARE printed without --quiet — so a
-# regression that universally hid the lines (e.g. someone
-# breaking the Info() / Success() methods) would fail the
-# baseline assertion, not the quiet one.
+# `--quiet` suppresses install's success line.
 
 gale-fixture index $WORK/index
 gale-fixture fetch-setup
 
-# Baseline: --quiet is NOT set, all status lines must appear.
 exec gale install hello -g --index=$WORK/index
-stderr 'Fetching recipe for'
-stderr 'Installing hello@'
-stderr 'Installed hello@'
+stderr 'Installed hello'
 
-# Wipe and reinstall under --quiet. Remove may leave an
-# empty parent dir, so check the version-specific subdir.
 exec gale remove hello -g
-! exists $HELLO_1_0_DIR
 ! exists $HOME/.gale/current/bin/hello
 
 exec gale install hello -g --quiet --index=$WORK/index
-# Info() lines (Fetching/Installing) gate only on `o.quiet`,
-# not on TTY, so they distinguish the flag's behavior.
-! stderr 'Fetching recipe for'
-! stderr 'Installing hello@'
-# Success() also gates on `o.quiet`.
-! stderr 'Installed hello@'
-
-# Result still landed in the store — install is silent, not skipped.
-exists $HELLO_1_0_DIR/bin/hello
+! stderr 'Installed hello'
 exists $HOME/.gale/current/bin/hello

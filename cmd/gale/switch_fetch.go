@@ -190,6 +190,7 @@ func v2ToIndexArt(a lockfile.V2Artifact) index.Artifact {
 
 func landFetchArt(
 	ctx context.Context, st *store.Store, a fetchArt,
+	toStore func(context.Context, *store.Store, string, string, index.Artifact) (string, error),
 ) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -203,7 +204,7 @@ func landFetchArt(
 		return err
 	}
 	if ok {
-		if installToStore != nil {
+		if toStore != nil {
 			return nil
 		}
 		got, derr := provenance.DigestTree(ctx, dest)
@@ -216,16 +217,23 @@ func landFetchArt(
 		}
 		return nil
 	}
-	if _, err := liveToStore()(ctx, st, a.Name, a.Version, a.Art); err != nil {
+	fn := toStore
+	if fn == nil {
+		fn = liveToStore()
+	}
+	if _, err := fn(ctx, st, a.Name, a.Version, a.Art); err != nil {
 		return fmt.Errorf("staging store: %w", err)
 	}
 	return nil
 }
 
-func landFetchArts(ctx context.Context, storeRoot string, arts []fetchArt) error {
+func landFetchArts(
+	ctx context.Context, storeRoot string, arts []fetchArt,
+	toStore func(context.Context, *store.Store, string, string, index.Artifact) (string, error),
+) error {
 	st := store.NewStore(storeRoot)
 	for _, a := range arts {
-		if err := landFetchArt(ctx, st, a); err != nil {
+		if err := landFetchArt(ctx, st, a, toStore); err != nil {
 			return err
 		}
 	}

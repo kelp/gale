@@ -157,7 +157,7 @@ func runSyncFetch(
 			return nil
 		}
 	}
-	if err := landFetchArts(ctx, cc.StoreRoot, arts); err != nil {
+	if err := landFetchArts(ctx, cc.StoreRoot, arts, installToStore); err != nil {
 		return err
 	}
 	if err := rebuildFromV2(cc, lf); err != nil {

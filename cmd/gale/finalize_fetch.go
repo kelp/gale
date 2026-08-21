@@ -68,14 +68,8 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if len(arts) == 0 {
 			arts = []fetchArt{{Name: p.Name, Version: p.Version, Art: p.Art}}
 		}
-		prev := installToStore
-		if toStore != nil {
-			installToStore = toStore
-		}
-		stageErr := landFetchArts(ctx, c.StoreRoot, arts)
-		installToStore = prev
-		if stageErr != nil {
-			return stageErr
+		if err := landFetchArts(ctx, c.StoreRoot, arts, toStore); err != nil {
+			return err
 		}
 		if err := runPublishHook(p.afterStage); err != nil {
 			return err

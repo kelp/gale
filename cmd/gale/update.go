@@ -49,6 +49,7 @@ var updateCmd = &cobra.Command{
 func runUpdateFetch(
 	ctx context.Context, c *cmdContext, args []string, src index.Source,
 ) error {
+	leftoverUpdateHelpers()
 	if err := refuseSwitchHosts(c.Host, c.GalePath); err != nil {
 		return err
 	}

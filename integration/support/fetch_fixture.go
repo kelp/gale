@@ -188,7 +188,7 @@ func runGit(dir string, args ...string) error {
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
-		return fmt.Errorf("git %s: %v\n%s", strings.Join(args, " "), err, out)
+		return fmt.Errorf("git %s: %w\n%s", strings.Join(args, " "), err, out)
 	}
 	return nil
 }

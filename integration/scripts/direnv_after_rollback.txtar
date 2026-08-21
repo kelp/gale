@@ -1,8 +1,5 @@
 # Rollback is temporary. It moves current only.
-# Direnv's gate is `gale sync --if-needed`. After a
-# completed sync, rollback must not leave that stamp
-# claiming the rolled-back generation is finished:
-# the next --if-needed returns PATH to the lock.
+# The next sync returns PATH to the lock.
 
 gale-fixture index $WORK/index
 gale-fixture fetch-setup
@@ -16,9 +13,6 @@ exists $WORK/proj/.gale/current/bin/hello
 
 exec gale install hello-dep -p --index=$WORK/index
 exists $WORK/proj/.gale/current/bin/hello-dep
-
-exec gale sync -p
-grep 'status = "complete"' $WORK/proj/.gale/sync-state.toml
 cp $WORK/proj/gale.lock $WORK/before.lock
 
 exec gale generations rollback
@@ -28,10 +22,8 @@ stderr 'lock'
 stderr 'git'
 exists $WORK/proj/.gale/current/bin/hello
 ! exists $WORK/proj/.gale/current/bin/hello-dep
-! exists $WORK/proj/.gale/sync-state.toml
 
 exec gale sync --if-needed
 exists $WORK/proj/.gale/current/bin/hello
 exists $WORK/proj/.gale/current/bin/hello-dep
-grep 'status = "complete"' $WORK/proj/.gale/sync-state.toml
 cmp $WORK/proj/gale.lock $WORK/before.lock

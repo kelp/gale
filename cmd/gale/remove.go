@@ -104,36 +104,11 @@ func runRemoveFetch(
 	if err != nil {
 		return fmt.Errorf("removing from config: %w", err)
 	}
+	w := removeWork{c: c, name: name, version: version, out: out, prior: prior, wrote: wrote}
 	switch view.Kind {
 	case lockfile.KindAbsent:
-		st := store.NewStore(c.StoreRoot)
-		var dropStoreDir string
-		if st.IsInstalled(name, version) {
-			var planErr error
-			dropStoreDir, planErr = storeRemovalPlan(c, st, name, version, out)
-			if planErr != nil {
-				return errors.Join(
-					planErr,
-					config.RestoreUnderLock(c.GalePath, prior, wrote),
-				)
-			}
-		} else {
-			out.Warn(fmt.Sprintf("%s@%s not found in store", name, version))
-		}
-		if err := rebuildGeneration(c.GaleDir, c.StoreRoot, c.GalePath, nil); err != nil {
-			return errors.Join(
-				fmt.Errorf("rebuild generation: %w", err),
-				config.RestoreUnderLock(c.GalePath, prior, wrote),
-			)
-		}
-		if dropStoreDir != "" {
-			if err := dropFromStore(c, name, version, out); err != nil {
-				return errors.Join(
-					err,
-					config.RestoreUnderLock(c.GalePath, prior, wrote),
-					c.RebuildGeneration(),
-				)
-			}
+		if err := w.unlocked(ctx); err != nil {
+			return err
 		}
 	case lockfile.KindLegacy, lockfile.KindV1:
 		return errors.Join(
@@ -141,24 +116,8 @@ func runRemoveFetch(
 			config.RestoreUnderLock(c.GalePath, prior, wrote),
 		)
 	case lockfile.KindV2:
-		if len(view.V2.Targets.Host) > 0 {
-			return errors.Join(
-				errSwitchHosts,
-				config.RestoreUnderLock(c.GalePath, prior, wrote),
-			)
-		}
-		if err := refuseMixedV2(view.V2); err != nil {
-			return errors.Join(err, config.RestoreUnderLock(c.GalePath, prior, wrote))
-		}
-		draft := dropV2Root(view.V2, name)
-		if err := writeV2Only(c, draft); err != nil {
-			return errors.Join(
-				fmt.Errorf("writing lock: %w", err),
-				config.RestoreUnderLock(c.GalePath, prior, wrote),
-			)
-		}
-		if err := rebuildFromV2(c, draft); err != nil {
-			return fmt.Errorf("rebuild generation: %w", err)
+		if err := w.v2(view.V2); err != nil {
+			return err
 		}
 	default:
 		return errors.Join(
@@ -168,6 +127,58 @@ func runRemoveFetch(
 	}
 	out.Info(fmt.Sprintf("Removed %s from %s", name, c.GalePath))
 	_ = ctx
+	return nil
+}
+
+type removeWork struct {
+	c             *cmdContext
+	name, version string
+	out           *output.Output
+	prior, wrote  config.FileState
+}
+
+func (w removeWork) undo(err error) error {
+	return errors.Join(err, config.RestoreUnderLock(w.c.GalePath, w.prior, w.wrote))
+}
+
+func (w removeWork) unlocked(ctx context.Context) error {
+	st := store.NewStore(w.c.StoreRoot)
+	var dropStoreDir string
+	if st.IsInstalled(w.name, w.version) {
+		var planErr error
+		dropStoreDir, planErr = storeRemovalPlan(ctx, w.c, st, w.name, w.version, w.out)
+		if planErr != nil {
+			return w.undo(planErr)
+		}
+	} else {
+		w.out.Warn(fmt.Sprintf("%s@%s not found in store", w.name, w.version))
+	}
+	if err := rebuildGeneration(w.c.GaleDir, w.c.StoreRoot, w.c.GalePath, nil); err != nil {
+		return w.undo(fmt.Errorf("rebuild generation: %w", err))
+	}
+	if dropStoreDir == "" {
+		return nil
+	}
+	if err := dropFromStore(w.c, w.name, w.version, w.out); err != nil {
+		return errors.Join(w.undo(err), w.c.RebuildGeneration())
+	}
+	return nil
+}
+
+func (w removeWork) v2(lf *lockfile.V2) error {
+	if len(lf.Targets.Host) > 0 {
+		return w.undo(errSwitchHosts)
+	}
+	if err := refuseMixedV2(lf); err != nil {
+		return w.undo(err)
+	}
+	draft := dropV2Root(lf, w.name)
+	if err := writeV2Only(w.c, draft); err != nil {
+		return w.undo(fmt.Errorf("writing lock: %w", err))
+	}
+	if err := rebuildFromV2(w.c, draft); err != nil {
+		return fmt.Errorf("rebuild generation: %w", err)
+	}
 	return nil
 }
 
@@ -306,12 +317,12 @@ var beforeGuardedRemoval func()
 // generation swap so a refusal lands before anything moves. The
 // authoritative one is dropFromStore's, beside the deletion.
 func storeRemovalPlan(
-	ctx *cmdContext, st *store.Store, name, version string,
+	parent context.Context, ctx *cmdContext, st *store.Store, name, version string,
 	out *output.Output,
 ) (string, error) {
 	storeDir := st.ResolveDir(name, version)
 	if otherScopeReferences(
-		st, name, storeDir, ctx.versionedRecipeResolver(), out,
+		st, name, storeDir, versionedRecipeResolverWith(ctx, parent), out,
 	) {
 		out.Info(fmt.Sprintf(
 			"%s@%s still referenced by another "+

@@ -121,54 +121,9 @@ func checkV2(req Request, lf *lockfile.V2) error {
 	roots := map[string]string{}
 	if lf.Targets.Default != nil {
 		for _, root := range lf.Targets.Default.Roots {
-			name, ver, err := lockfile.SplitV2Root(root)
+			name, ver, err := checkV2Root(req, s, lf, root)
 			if err != nil {
 				return err
-			}
-			pkg, ok := lf.Packages[root]
-			if !ok {
-				return fmt.Errorf("%w: %s", lockfile.ErrMissingNode, root)
-			}
-			art, ok := pkg.Artifacts[req.Platform]
-			if !ok {
-				return fmt.Errorf(
-					"%w: %s has no artifact for %s",
-					lockfile.ErrMissingArtifact, root, req.Platform,
-				)
-			}
-			if art.Method != provenance.MethodFetch {
-				return fmt.Errorf(
-					"%s: %s method %q is not fetch",
-					req.LockPath, root, art.Method,
-				)
-			}
-			want, err := s.FetchPath(name, ver, art.SHA256)
-			if err != nil {
-				return err
-			}
-			got := req.Linked[name]
-			if got == "" {
-				return fmt.Errorf(
-					"%w: it does not link %s, which %s names as a root; run gale sync",
-					ErrDrift, root, req.LockPath,
-				)
-			}
-			if filepath.Clean(got) != filepath.Clean(want) {
-				return fmt.Errorf(
-					"%w: %s links %s, want %s; run gale sync",
-					ErrDrift, name, got, want,
-				)
-			}
-			rec, err := provenance.ReadFetch(want)
-			if err != nil {
-				return err
-			}
-			if rec.Name != name || rec.Version != ver ||
-				rec.SHA256 != art.SHA256 || rec.Method != provenance.MethodFetch {
-				return fmt.Errorf(
-					"%s: %s fetch provenance does not match the lock",
-					req.LockPath, root,
-				)
 			}
 			roots[name] = ver
 		}
@@ -182,6 +137,61 @@ func checkV2(req Request, lf *lockfile.V2) error {
 		}
 	}
 	return nil
+}
+
+func checkV2Root(
+	req Request, s *store.Store, lf *lockfile.V2, root string,
+) (string, string, error) {
+	name, ver, err := lockfile.SplitV2Root(root)
+	if err != nil {
+		return "", "", err
+	}
+	pkg, ok := lf.Packages[root]
+	if !ok {
+		return "", "", fmt.Errorf("%w: %s", lockfile.ErrMissingNode, root)
+	}
+	art, ok := pkg.Artifacts[req.Platform]
+	if !ok {
+		return "", "", fmt.Errorf(
+			"%w: %s has no artifact for %s",
+			lockfile.ErrMissingArtifact, root, req.Platform,
+		)
+	}
+	if art.Method != provenance.MethodFetch {
+		return "", "", fmt.Errorf(
+			"%s: %s method %q is not fetch",
+			req.LockPath, root, art.Method,
+		)
+	}
+	want, err := s.FetchPath(name, ver, art.SHA256)
+	if err != nil {
+		return "", "", err
+	}
+	got := req.Linked[name]
+	if got == "" {
+		return "", "", fmt.Errorf(
+			"%w: it does not link %s, which %s names as a root; run gale sync",
+			ErrDrift, root, req.LockPath,
+		)
+	}
+	if filepath.Clean(got) != filepath.Clean(want) {
+		return "", "", fmt.Errorf(
+			"%w: %s links %s, want %s; run gale sync",
+			ErrDrift, name, got, want,
+		)
+	}
+	rec, err := provenance.ReadFetch(want)
+	if err != nil {
+		return "", "", err
+	}
+	if rec.Name != name || rec.Version != ver ||
+		rec.SHA256 != art.SHA256 || rec.Method != provenance.MethodFetch {
+		return "", "", fmt.Errorf(
+			"%s: %s fetch provenance does not match the lock",
+			req.LockPath, root,
+		)
+	}
+	return name, ver, nil
 }
 
 func checkV1(req Request, lf *lockfile.V1) error {

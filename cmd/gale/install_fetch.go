@@ -23,6 +23,9 @@ func refuseSwitchHosts(host string, galePath string) error {
 	}
 	cfg, err := rawGaleConfig(galePath)
 	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
 		return err
 	}
 	if err := refuseHostOverlays(cfg); err != nil {
@@ -47,9 +50,6 @@ func runInstallFetch(
 	existing, err := readExistingV2(lp)
 	if err != nil {
 		return err
-	}
-	if pin == "" {
-		pin = "latest"
 	}
 	if dryRun {
 		out := newOutput()
@@ -106,10 +106,6 @@ func readExistingV2(lp string) (*lockfile.V2, error) {
 		}
 	}
 	return nil, err
-}
-
-func mergeV2Lock(existing, incoming *lockfile.V2, name string) *lockfile.V2 {
-	return mergeV2LockNames(existing, incoming, []string{name})
 }
 
 func pinForManifest(lf *lockfile.V2, name string) string {

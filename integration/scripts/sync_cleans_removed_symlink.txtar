@@ -14,7 +14,7 @@ exec sh -c 'grep -v hello-dep $HOME/.gale/gale.toml > $WORK/new.toml && mv $WORK
 
 exec sh -c 'gale sync -g; echo status=$?'
 stdout 'status=4'
-stderr 'gale.toml no longer declares|stale'
+stderr 'orphaned hello-dep|stale|gale lock'
 
 exec gale lock -g --index=$WORK/index
 ! grep 'hello-dep' $HOME/.gale/gale.lock
