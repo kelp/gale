@@ -11,6 +11,13 @@
 
 ### Added
 
+- **Unused fetch publication order.** `finalizeFetch`
+  takes one mutation lock per scope, stages store
+  bytes, registers the project, writes a v2 lock, and
+  swaps `current` last. Failure at each boundary is
+  fail-closed. A retry converges. Install still uses
+  recipes. No command is wired yet.
+
 - **Unused fetch-to-store.** `internal/fetch` can download
   an allowlisted artifact, hash it, extract the declared
   format, place the file map, and rename a complete tree

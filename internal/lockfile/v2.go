@@ -3,6 +3,7 @@ package lockfile
 import (
 	"fmt"
 	"io/fs"
+	"strings"
 
 	"github.com/BurntSushi/toml"
 )
@@ -46,8 +47,8 @@ type V2Package struct {
 	Artifacts map[string]V2Artifact `toml:"artifacts"`
 }
 
-// V2 is the fetch lockfile schema. This build can read it;
-// nothing writes it yet. Package keys and target roots are
+// V2 is the fetch lockfile schema. WriteV2 writes it; Load
+// still refuses version 2. Package keys and target roots are
 // name@version with no revision and must not be passed to
 // ParseIdentity.
 type V2 struct {
@@ -68,7 +69,7 @@ type wireV2 struct {
 // ReadV2 reads a v2 lockfile. A missing file wraps fs.ErrNotExist
 // so callers can distinguish "no lock" from a lock that is
 // present but unusable. Load still rejects version 2 as
-// ErrUnknownVersion; this reader is unused until a writer exists.
+// ErrUnknownVersion.
 func ReadV2(path string) (*V2, error) {
 	data, absent, err := readLockFile(path)
 	if err != nil {
@@ -115,4 +116,32 @@ func decodeV2(path string, data []byte) (*V2, error) {
 		pkgs[name] = V2Package{Artifacts: a}
 	}
 	return &V2{Version: w.Version, Targets: w.Targets, Packages: pkgs}, nil
+}
+
+// WriteV2 writes a v2 lockfile atomically. It refuses any version
+// other than SchemaV2, so a v1 document is never rewritten as
+// version 2 from an incomplete struct.
+func WriteV2(path string, lf *V2) error {
+	if lf.Version != SchemaV2 {
+		return fmt.Errorf(
+			"%w: refusing to write version %d, this writer models %d",
+			ErrUnknownVersion, lf.Version, SchemaV2,
+		)
+	}
+	arts := make(map[string]map[string]V2Artifact, len(lf.Packages))
+	for name, p := range lf.Packages {
+		arts[name] = p.Artifacts
+	}
+	return writeGuarded(path, lf.Version, lf.Targets, arts, guardKeyV2)
+}
+
+// SplitV2Root splits a v2 lock root of the form name@version.
+// It does not accept a revision suffix as a third field and
+// must not be replaced with ParseIdentity.
+func SplitV2Root(root string) (name, version string, err error) {
+	name, version, ok := strings.Cut(root, "@")
+	if !ok || name == "" || version == "" || strings.Contains(version, "@") {
+		return "", "", fmt.Errorf("invalid v2 root %q", root)
+	}
+	return name, version, nil
 }

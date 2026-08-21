@@ -175,7 +175,7 @@ fine.
       mismatch refuses. Occupied dir +
       different digest refuses. Tests in
       `internal/fetch`.
-- [ ] **Publication order.** One mutation
+- [x] **Publication order.** One mutation
       lock per scope. Stage store bytes,
       register, write the lock, swap
       `current` last. Failure injection
