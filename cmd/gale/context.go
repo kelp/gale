@@ -266,31 +266,17 @@ func registerProject(configPath string) {
 	}
 }
 
-// readConfigOrToolVersions reads configPath and parses it
-// as a GaleConfig. If gale.toml is absent, falls back to
-// .tool-versions in the same directory. If that is also
-// absent, returns an empty GaleConfig. Callers apply
-// host-specific flattening after this returns.
-func readConfigOrToolVersions(configPath string) (*config.GaleConfig, error) {
+// readGaleConfig reads configPath and parses it as a
+// GaleConfig. If gale.toml is absent, returns an empty
+// GaleConfig. Callers apply host-specific flattening
+// after this returns.
+func readGaleConfig(configPath string) (*config.GaleConfig, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("reading %s: %w", configPath, err)
+		if errors.Is(err, os.ErrNotExist) {
+			return &config.GaleConfig{Packages: map[string]string{}}, nil
 		}
-		// Fallback: .tool-versions in the same directory.
-		tvPath := filepath.Join(filepath.Dir(configPath), ".tool-versions")
-		tvData, tvErr := os.ReadFile(tvPath)
-		if tvErr != nil {
-			if errors.Is(tvErr, os.ErrNotExist) {
-				return &config.GaleConfig{Packages: map[string]string{}}, nil
-			}
-			return nil, fmt.Errorf("reading .tool-versions: %w", tvErr)
-		}
-		pkgs, pkgErr := config.ParseToolVersions(string(tvData))
-		if pkgErr != nil {
-			return nil, fmt.Errorf("parsing .tool-versions: %w", pkgErr)
-		}
-		return &config.GaleConfig{Packages: pkgs}, nil
+		return nil, fmt.Errorf("reading %s: %w", configPath, err)
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
@@ -299,31 +285,23 @@ func readConfigOrToolVersions(configPath string) (*config.GaleConfig, error) {
 	return cfg, nil
 }
 
-// configOrToolVersionsExists reports whether the resolved
-// config path has anything to read: the gale.toml itself, or
-// the project's .tool-versions sibling that
-// readConfigOrToolVersions falls back to when gale.toml is
-// absent (projectConfigPath returns the would-be gale.toml
-// path for .tool-versions-only trees). Used by the sbom and
-// list --all project legs.
-func configOrToolVersionsExists(path string) (bool, error) {
+// galeConfigExists reports whether the resolved gale.toml
+// path is present. Used by the sbom and list --all project
+// legs.
+func galeConfigExists(path string) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
 		return true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("stat %s: %w", path, err)
 	}
-	tv := filepath.Join(filepath.Dir(path), ".tool-versions")
-	if _, err := os.Stat(tv); err == nil {
-		return true, nil
-	}
 	return false, nil
 }
 
 // LoadConfig reads and parses the gale.toml that this
-// context points to. If gale.toml doesn't exist, falls
-// back to reading .tool-versions in the same directory.
+// context points to. If gale.toml doesn't exist, returns
+// an empty config.
 func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
-	cfg, err := readConfigOrToolVersions(ctx.GalePath)
+	cfg, err := readGaleConfig(ctx.GalePath)
 	if err != nil {
 		return nil, err
 	}
@@ -681,7 +659,7 @@ func readConfigPackages(configPath string) (map[string]string, error) {
 }
 
 func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
-	cfg, err := readConfigOrToolVersions(configPath)
+	cfg, err := readGaleConfig(configPath)
 	if err != nil {
 		return nil, err
 	}
@@ -702,13 +680,7 @@ func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
 }
 
 func projectConfigPath(cwd string) (string, error) {
-	if path, err := config.FindGaleConfig(cwd); err == nil {
-		return path, nil
-	}
-	if tv := config.FindToolVersions(cwd); tv != "" {
-		return filepath.Join(filepath.Dir(tv), "gale.toml"), nil
-	}
-	return "", config.ErrGaleConfigNotFound
+	return config.FindGaleConfig(cwd)
 }
 
 // loadAppConfig reads and parses ~/.gale/config.toml.

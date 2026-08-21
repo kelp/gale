@@ -116,9 +116,8 @@ func init() {
 }
 
 // resolveGaleDir returns the .gale directory for the
-// current scope. If a project gale.toml (or .tool-versions)
-// exists, returns the project's .gale/ dir. Otherwise
-// returns ~/.gale/.
+// current scope. If a project gale.toml exists, returns
+// the project's .gale/ dir. Otherwise returns ~/.gale/.
 func resolveGaleDir() (string, error) {
 	galeDir, _, err := resolveScopedPaths(false, false)
 	return galeDir, err

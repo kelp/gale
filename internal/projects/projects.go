@@ -152,12 +152,11 @@ func List(galeHome string) ([]string, error) {
 }
 
 // Prune rewrites the registry dropping only provably vanished
-// projects: paths whose gale.toml AND .tool-versions (gale's
-// config fallback) stat as fs.ErrNotExist. A vanished project
-// needs no gc retention, so gc calls this before computing
-// liveness. Entries whose liveness stat fails any other way
-// (see Lives) stay registered — keeping them is safe, dropping
-// them is not.
+// projects: paths whose gale.toml stats as fs.ErrNotExist. A
+// vanished project needs no gc retention, so gc calls this
+// before computing liveness. Entries whose liveness stat
+// fails any other way (see Lives) stay registered — keeping
+// them is safe, dropping them is not.
 func Prune(galeHome string) error {
 	// Scan liveness OUTSIDE the lock: Lives() stats every
 	// registered path, and a dead network mount can hang a stat
@@ -215,9 +214,8 @@ func Prune(galeHome string) error {
 }
 
 // Lives reports whether path still looks like a gale project:
-// a gale.toml, or the .tool-versions fallback gale's config
-// loading honors. Prune keeps live paths; gc retains live
-// projects' generations.
+// a gale.toml is present. Prune keeps live paths; gc retains
+// live projects' generations.
 //
 // Dead means provably absent: every stat fails with
 // fs.ErrNotExist. Any other stat error (EACCES, EIO, a flaky
@@ -236,10 +234,6 @@ func Prune(galeHome string) error {
 // keys an unreadable project would contribute, so it errors and
 // gc refuses to sweep at all.
 func Lives(path string) bool {
-	for _, name := range []string{"gale.toml", ".tool-versions"} {
-		if _, err := os.Stat(filepath.Join(path, name)); !errors.Is(err, fs.ErrNotExist) {
-			return true
-		}
-	}
-	return false
+	_, err := os.Stat(filepath.Join(path, "gale.toml"))
+	return !errors.Is(err, fs.ErrNotExist)
 }

@@ -96,7 +96,7 @@ Milestone 4 — 193 source recipes still collide.
       that `--host` / `[hosts.*]` gain no new
       semantics. Changelog note. No feature
       delete yet.
-- [ ] **Drop `.tool-versions`.** Gale reads
+- [x] **Drop `.tool-versions`.** Gale reads
       `gale.toml` only. Delete the parser and
       the fallback. `cmd/gale` tests that a
       `.tool-versions` project is not a gale

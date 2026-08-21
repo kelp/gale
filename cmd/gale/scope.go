@@ -8,9 +8,9 @@ import (
 )
 
 // errNoProject is the canonical message returned when
-// --project is forced but no project gale.toml (or
-// .tool-versions) exists in the directory tree. One
-// definition site so all commands agree on the wording.
+// --project is forced but no project gale.toml exists
+// in the directory tree. One definition site so all
+// commands agree on the wording.
 const errNoProject = "no project found — run 'gale init' first"
 
 // validateScopeFlags returns an error if both --global and
@@ -33,8 +33,7 @@ func validateScopeFlags(global, project bool) error {
 //
 // Uses galeDirForConfig for every gale-dir derivation so the
 // gh#96 guard (cwd inside ~/.gale/) is always applied. Uses
-// projectConfigPath (not config.FindGaleConfig directly) so
-// .tool-versions projects count in every command.
+// projectConfigPath so the gh#96 guard is always applied.
 func resolveScopedPaths(
 	global, project bool,
 ) (galeDir, configPath string, err error) {
@@ -88,7 +87,7 @@ func resolveScopedPaths(
 
 // resolveReadOnlyConfigPath returns the gale.toml path for
 // a read-only command. Routes through resolveScopedPaths so
-// the gh#96 guard and .tool-versions support apply uniformly.
+// the gh#96 guard applies uniformly.
 func resolveReadOnlyConfigPath(global, project bool) (string, error) {
 	_, configPath, err := resolveScopedPaths(global, project)
 	return configPath, err

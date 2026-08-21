@@ -84,8 +84,8 @@ var gcCmd = &cobra.Command{
 
 		// Drop registry entries whose project vanished before
 		// computing liveness — vanished means provably absent:
-		// gale.toml and .tool-versions both stat as not-exist
-		// (gh#115). Any other stat error keeps the entry; when
+		// gale.toml stats as not-exist (gh#115). Any other
+		// stat error keeps the entry; when
 		// in doubt, keep. Skipped in dry-run mode: -n must not
 		// mutate state.
 		if !dryRun && globalDir != "" {
@@ -340,14 +340,13 @@ func collectGCRetention(
 
 // addRegisteredProjectRefs unions in the retention of every
 // project in the machine-local registry (gh#115): each live
-// registered project contributes its config pins — from
-// gale.toml (all hosts) or, when the project lives only via
-// .tool-versions, from that file — and everything its active
-// generation links. Returns the project paths that
-// contributed. Vanished projects (gale.toml and .tool-versions
-// provably absent — see projects.Lives) contribute nothing —
-// Prune removes them on non-dry runs. Projects already covered
-// by the direct global/cwd-project passes are skipped.
+// registered project contributes its gale.toml pins (all
+// hosts) and everything its active generation links.
+// Returns the project paths that contributed. Vanished
+// projects (gale.toml provably absent — see projects.Lives)
+// contribute nothing — Prune removes them on non-dry runs.
+// Projects already covered by the direct global/cwd-project
+// passes are skipped.
 //
 // A project whose liveness stat fails any other way counts as
 // live, and reading its references is then strict: an
@@ -408,18 +407,15 @@ func projectRefError(proj string, err error) error {
 	)
 }
 
-// addProjectPinRefs adds the config pins of the project owning
-// cfgPath: from gale.toml when it is there, and from the
-// sibling .tool-versions when it is not. Pin retention must not
-// depend on the config flavor — a version the active generation
-// doesn't link (pin edited, sync not yet run) survives only
-// through its pin.
+// addProjectPinRefs adds the gale.toml pins of the project
+// owning cfgPath. A version the active generation doesn't
+// link (pin edited, sync not yet run) survives only through
+// its pin.
 //
-// The stat splits missing from unreadable. Missing means the
-// project lives via .tool-versions, which Lives already
-// confirmed. Any other stat error is an unreadable gale.toml —
-// reading .tool-versions instead would silently substitute a
-// smaller pin set for the real one.
+// The stat splits missing from unreadable. Missing gale.toml
+// contributes no pins (the project is vanished or not yet
+// initialized). Any other stat error is an unreadable
+// gale.toml and refuses the sweep.
 func addProjectPinRefs(
 	cfgPath string,
 	s *store.Store,
@@ -433,10 +429,7 @@ func addProjectPinRefs(
 			cfgPath, s, referenced, pinResolve,
 		)
 	case errors.Is(err, fs.ErrNotExist):
-		return mergeToolVersions(
-			filepath.Join(filepath.Dir(cfgPath), ".tool-versions"),
-			s, referenced, pinResolve,
-		)
+		return nil
 	default:
 		// *fs.PathError: already names the op and the path.
 		return err
@@ -752,33 +745,6 @@ func mergeConfigAllHosts(
 	}
 	addPackageRefs(s, cfg.Packages, referenced, pinResolve)
 	addAllHostPackageRefs(string(data), s, referenced, pinResolve)
-	return nil
-}
-
-// mergeToolVersions reads a .tool-versions file and adds its
-// pins to the referenced set, resolving through addPackageRefs
-// so versions canonicalize via store.StorePath like every other
-// pin source. ParseToolVersions maps tool names to gale recipe
-// names (golang → go). Skips a missing file and returns every
-// other read or parse failure, mirroring mergeConfig.
-func mergeToolVersions(
-	path string,
-	s *store.Store,
-	referenced map[string]bool,
-	pinResolve versionedRecipeResolver,
-) error {
-	data, err := readReferenceSource(path)
-	if err != nil {
-		return err
-	}
-	if data == nil {
-		return nil // missing file is fine
-	}
-	pkgs, err := config.ParseToolVersions(string(data))
-	if err != nil {
-		return fmt.Errorf("parsing %s: %w", path, err)
-	}
-	addPackageRefs(s, pkgs, referenced, pinResolve)
 	return nil
 }
 

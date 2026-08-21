@@ -6,16 +6,16 @@ import (
 	"testing"
 )
 
-// TestReadConfigOrToolVersionsGaleToml verifies the happy path:
-// a valid gale.toml is read and parsed.
-func TestReadConfigOrToolVersionsGaleToml(t *testing.T) {
+// TestReadGaleConfig verifies the happy path: a valid
+// gale.toml is read and parsed.
+func TestReadGaleConfig(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "gale.toml")
 	if err := os.WriteFile(cfgPath,
 		[]byte("[packages]\n  jq = \"1.7\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := readConfigOrToolVersions(cfgPath)
+	cfg, err := readGaleConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -24,9 +24,10 @@ func TestReadConfigOrToolVersionsGaleToml(t *testing.T) {
 	}
 }
 
-// TestReadConfigOrToolVersionsFallback verifies the fallback:
-// when gale.toml is absent, .tool-versions is read.
-func TestReadConfigOrToolVersionsFallback(t *testing.T) {
+// TestReadGaleConfigIgnoresToolVersions verifies that a
+// missing gale.toml with a sibling .tool-versions yields
+// an empty package map. Gale reads gale.toml only.
+func TestReadGaleConfigIgnoresToolVersions(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "gale.toml")
 	tvPath := filepath.Join(tmp, ".tool-versions")
@@ -34,21 +35,24 @@ func TestReadConfigOrToolVersionsFallback(t *testing.T) {
 		[]byte("golang 1.26.1\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg, err := readConfigOrToolVersions(cfgPath)
+	cfg, err := readGaleConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if v := cfg.Packages["go"]; v != "1.26.1" {
-		t.Errorf("go = %q, want %q", v, "1.26.1")
+	if v := cfg.Packages["go"]; v != "" {
+		t.Errorf("go = %q, want empty (ignored .tool-versions)", v)
+	}
+	if len(cfg.Packages) != 0 {
+		t.Errorf("packages = %v, want empty", cfg.Packages)
 	}
 }
 
-// TestReadConfigOrToolVersionsEmpty verifies that absent both
-// gale.toml and .tool-versions returns an empty config.
-func TestReadConfigOrToolVersionsEmpty(t *testing.T) {
+// TestReadGaleConfigEmpty verifies that a missing gale.toml
+// returns an empty config.
+func TestReadGaleConfigEmpty(t *testing.T) {
 	tmp := t.TempDir()
 	cfgPath := filepath.Join(tmp, "gale.toml")
-	cfg, err := readConfigOrToolVersions(cfgPath)
+	cfg, err := readGaleConfig(cfgPath)
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

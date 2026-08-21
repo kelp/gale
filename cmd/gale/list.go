@@ -83,7 +83,7 @@ func runListAll(stdout, stderr io.Writer) error {
 
 	wrote := false
 	if projErr == nil {
-		ok, existsErr := configOrToolVersionsExists(projectPath)
+		ok, existsErr := galeConfigExists(projectPath)
 		if existsErr != nil {
 			return existsErr
 		}
@@ -119,11 +119,9 @@ func runListAll(stdout, stderr io.Writer) error {
 // gale.toml. Headers and entries go to stdout indented with
 // prefix; the empty-state notice goes to stderr.
 func printConfigList(stdout, stderr io.Writer, configPath, prefix string) error {
-	// readConfigOrToolVersions gives .tool-versions projects the
-	// same fallback sync, env, and sbom get (gh#169); when both
-	// files are absent it returns an empty config, which flows to
-	// the empty-state notice below.
-	cfg, err := readConfigOrToolVersions(configPath)
+	// A missing gale.toml returns an empty config, which
+	// flows to the empty-state notice below.
+	cfg, err := readGaleConfig(configPath)
 	if err != nil {
 		return err
 	}

@@ -4,6 +4,14 @@
 
 ### Changed (breaking)
 
+- **`.tool-versions` is no longer a gale manifest.** Gale
+  reads `gale.toml` only. A directory with only
+  `.tool-versions` is not a gale project: `--project`
+  errors with `no project found — run 'gale init' first`,
+  auto scope is global, and gc does not retain pins or
+  generations from that tree. Teams migrating from asdf
+  or mise need a `gale.toml`.
+
 - **`gale.lock` is now enforced, and a lockfile written by an
   earlier gale is refused (#182).** Every project and global
   scope carrying a pre-enforcement `gale.lock` fails on the
