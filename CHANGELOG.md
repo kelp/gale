@@ -11,6 +11,11 @@
 
 ### Fixed
 
+- **predeclared.** Rename `real` and `min`
+  locals that shadowed builtins. Four hits
+  remain in the tree; the fifth was in
+  deleted `internal/build`.
+
 - **misspell.** Reword the U6 extract test
   message so `hardlinked` is not flagged
   as `hardline`. The check is still a

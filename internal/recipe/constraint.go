@@ -44,20 +44,21 @@ func parseVersion(s string) (major, minor, patch, revision int, ok bool) {
 		return 0, 0, 0, 0, false
 	}
 
-	maj, err := strconv.Atoi(parts[0])
+	var err error
+	major, err = strconv.Atoi(parts[0])
 	if err != nil {
 		return 0, 0, 0, 0, false
 	}
-	min, err := strconv.Atoi(parts[1])
+	minor, err = strconv.Atoi(parts[1])
 	if err != nil {
 		return 0, 0, 0, 0, false
 	}
-	pat, err := strconv.Atoi(parts[2])
+	patch, err = strconv.Atoi(parts[2])
 	if err != nil {
 		return 0, 0, 0, 0, false
 	}
 
-	return maj, min, pat, revision, true
+	return major, minor, patch, revision, true
 }
 
 // ParseConstraint parses an expression into a Constraint.
@@ -86,17 +87,17 @@ func ParseConstraint(expr string) (Constraint, error) {
 		op = "="
 	}
 
-	maj, min, pat, rev, ok := parseVersion(rest)
+	major, minor, patch, revision, ok := parseVersion(rest)
 	if !ok {
 		return Constraint{}, fmt.Errorf("invalid version %q in constraint %q", rest, expr)
 	}
 
 	return Constraint{
 		Op:       op,
-		Major:    maj,
-		Minor:    min,
-		Patch:    pat,
-		Revision: rev,
+		Major:    major,
+		Minor:    minor,
+		Patch:    patch,
+		Revision: revision,
 	}, nil
 }
 
