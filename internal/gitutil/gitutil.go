@@ -94,8 +94,12 @@ func Head(ctx context.Context, dir string) (string, error) {
 }
 
 // Show returns the bytes of path at commit in dir.
-// A missing path wraps os.ErrNotExist.
+// A missing path wraps os.ErrNotExist. A pin that is not in
+// the repo is a hard error, not ErrNotExist.
 func Show(ctx context.Context, dir, commit, path string) ([]byte, error) {
+	if err := objectExists(ctx, dir, commit); err != nil {
+		return nil, err
+	}
 	spec := commit + ":" + path
 	cmd := exec.CommandContext(ctx, "git", "-C", dir, "show", spec)
 	var stderr bytes.Buffer
@@ -109,6 +113,18 @@ func Show(ctx context.Context, dir, commit, path string) ([]byte, error) {
 		return nil, fmt.Errorf("git show %s: %s: %w", spec, msg, commandErr(ctx, err))
 	}
 	return out, nil
+}
+
+func objectExists(ctx context.Context, dir, commit string) error {
+	spec := commit + "^{commit}"
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "cat-file", "-e", spec)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		return fmt.Errorf("git cat-file %s: %s: %w", spec, msg, commandErr(ctx, err))
+	}
+	return nil
 }
 
 // RemoteTip returns the full 40-character SHA of the remote
@@ -142,9 +158,7 @@ func commandErr(ctx context.Context, err error) error {
 }
 
 func isGitMissingPath(stderr string) bool {
-	return strings.Contains(stderr, "does not exist") ||
-		strings.Contains(stderr, "exists on disk, but not in") ||
-		strings.Contains(stderr, "bad object") ||
-		strings.Contains(stderr, "invalid object") ||
-		strings.Contains(stderr, "path not in")
+	return strings.Contains(stderr, "exists on disk, but not in") ||
+		strings.Contains(stderr, "path not in") ||
+		(strings.Contains(stderr, "path") && strings.Contains(stderr, "does not exist"))
 }

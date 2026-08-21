@@ -293,6 +293,18 @@ func TestShowMissingIsErrNotExist(t *testing.T) {
 	}
 }
 
+func TestShowUnknownCommitIsNotErrNotExist(t *testing.T) {
+	dir := setupWorkRepo(t)
+	missing := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	_, err := Show(t.Context(), dir, missing, "README")
+	if err == nil {
+		t.Fatal("Show unknown commit: want error")
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("unknown commit must not look like a missing path: %v", err)
+	}
+}
+
 func TestShowCanceled(t *testing.T) {
 	dir := setupWorkRepo(t)
 	commit := fullHead(t, dir)

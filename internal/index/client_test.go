@@ -421,3 +421,48 @@ func TestLocalDirPinsGitShow(t *testing.T) {
 		t.Errorf("dirty tree leaked: %+v", f.Package)
 	}
 }
+
+func TestLocalGetUnknownCommitIsNotErrNotFound(t *testing.T) {
+	dir := t.TempDir()
+	cmd := exec.Command("git", "init")
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("git init: %s: %v", out, err)
+	}
+	for _, args := range [][]string{
+		{"config", "user.email", "test@test.com"},
+		{"config", "user.name", "Test"},
+		{"config", "commit.gpgsign", "false"},
+	} {
+		c := exec.Command("git", args...)
+		c.Dir = dir
+		if out, err := c.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %s: %v", args, out, err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	add := exec.Command("git", "add", "README")
+	add.Dir = dir
+	if out, err := add.CombinedOutput(); err != nil {
+		t.Fatalf("git add: %s: %v", out, err)
+	}
+	commit := exec.Command("git", "commit", "-m", "init")
+	commit.Dir = dir
+	if out, err := commit.CombinedOutput(); err != nil {
+		t.Fatalf("git commit: %s: %v", out, err)
+	}
+
+	sess, err := Open(t.Context(), Source{Dir: dir, Commit: pinA})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	_, err = sess.Get(t.Context(), "just")
+	if err == nil {
+		t.Fatal("unknown pin must error")
+	}
+	if errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown pin must not look like a missing package: %v", err)
+	}
+}
