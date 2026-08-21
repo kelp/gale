@@ -298,10 +298,10 @@ runtime instead of whatever happens to be on the host.
 ## Two-Repo Architecture
 
 - **gale** — the CLI tool. Go code, all packages.
-- **gale-recipes** — index documents and leftover
-  recipe TOML. Fetch installs from the index.
-  There is no GHCR bottle push and no `tar.zst`
-  create.
+- **gale-recipes** — index documents. Fetch
+  installs from the index. There is no farm
+  CI, leftover `[build]` recipe, GHCR bottle
+  push, or `tar.zst` create.
 
 Recipes are fetched on demand from GitHub raw URLs.
 No git clone needed for installation.

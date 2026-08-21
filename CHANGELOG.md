@@ -11,6 +11,14 @@
 
 ### Changed
 
+- **gale-recipes: strip the farm.** Promote /
+  ledger / verify-build CI, leftover source
+  recipes, and `.binaries.toml` ledgers are
+  gone (kelp/gale-recipes#296). The catalog
+  is `index/`. Leftover `gale info` /
+  `gale outdated` still fetch
+  `recipes/<letter>/<name>.toml` and 404.
+
 - **Delete GHCR bottle wiring.** Leftover
   `Installer.Install` refuses a bottle pour
   and names fetch / `gale fetch-adopt`.

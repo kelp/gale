@@ -274,7 +274,7 @@ Adopt already shipped at the cutover.
       `tar.bz2` with it. Admitted formats
       are `tar.gz`, `tar.xz`, `zip`,
       `binary`.
-- [ ] **gale-recipes: strip the farm.**
+- [x] **gale-recipes: strip the farm.**
       Remove promote / ledger / verify-build
       CI. Recipes become index TOML.
 - [ ] **gc mark and sweep under the same

@@ -7,8 +7,8 @@ activates them through generation snapshots. Design
 rationale: [`docs/dev/design.md`](docs/dev/design.md).
 
 Two repos: **gale** (this one — the CLI) and
-**gale-recipes** (`../gale-recipes` — index documents
-and leftover recipe TOML). `gale install jq` resolves
+**gale-recipes** (`../gale-recipes` — index
+documents). `gale install jq` resolves
 the index, stages `pkg/fetch/`, writes the lock, and
 swaps `current` last. Not-in-index is an error. A v1
 lock migrates with `gale fetch-adopt`.
