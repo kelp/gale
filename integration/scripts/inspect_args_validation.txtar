@@ -4,8 +4,9 @@
 ! exec gale inspect
 stderr 'specify a package name or pass --all'
 
-gale-fixture recipes $WORK/recipes
-exec gale install hello -g --recipes=$WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
+exec gale install hello -g --index=$WORK/index
 
-! exec gale inspect hello --all --recipes=$WORK/recipes
+! exec gale inspect hello --all
 stderr '--all cannot be combined with a package name'

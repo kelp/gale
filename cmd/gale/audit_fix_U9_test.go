@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -195,22 +196,7 @@ func TestRemoveHostFlagRemovesForeignHostEntry(t *testing.T) {
 		removeHost = ""
 	})
 
-	if err := removeCmd.RunE(removeCmd, []string{"foo"}); err != nil {
-		t.Fatalf("remove --host otherbox failed: %v", err)
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h, ok := cfg.Hosts["otherbox"]; ok {
-		if _, has := h.Packages["foo"]; has {
-			t.Errorf("foo still in [hosts.otherbox.packages]: %q",
-				string(data))
-		}
+	if err := removeCmd.RunE(removeCmd, []string{"foo"}); !errors.Is(err, errSwitchHosts) {
+		t.Fatalf("remove --host otherbox: %v, want errSwitchHosts", err)
 	}
 }

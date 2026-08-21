@@ -4,9 +4,10 @@
 # pin for the "revision-suffix-keyed orphan false
 # positives" commit from the research).
 
-gale-fixture recipes $WORK/recipes
-exec gale install hello -g --recipes=$WORK/recipes
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
+exec gale install hello -g --index=$WORK/index
+exists $HELLO_1_0_DIR/bin/hello
 exists $HOME/.gale/current/bin/hello
 
 # Doctor exits 1 if PATH doesn't include current/bin,

@@ -1,10 +1,11 @@
 # `gale sbom <pkg>` filters output to that one package even
 # when multiple are installed.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
-exec gale install hello-dep -g --recipes=$WORK/recipes
+exec gale install hello -g --index=$WORK/index
+exec gale install hello-dep -g --index=$WORK/index
 
 # Filter for hello-dep so the substring match doesn't
 # accidentally pass on the hello row. The output is column-

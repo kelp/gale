@@ -1,9 +1,10 @@
 # `gale which <binary>` prints the store path for a
 # binary that the current generation resolves.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
+exec gale install hello -g --index=$WORK/index
 
 exec gale which hello
 stdout 'hello/1\.0-1/bin/hello'

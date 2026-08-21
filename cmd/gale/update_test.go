@@ -292,15 +292,8 @@ func TestTapsOfflineMode(t *testing.T) {
 // directory", not "Rebuild from a local source directory".
 // The description must match install --path for consistency.
 func TestUpdatePathFlagDescriptionDoesNotSayRebuild(t *testing.T) {
-	f := updateCmd.Flags().Lookup("path")
-	if f == nil {
-		t.Fatal("updateCmd has no --path flag")
-	}
-	if strings.Contains(f.Usage, "Rebuild") {
-		t.Errorf("updateCmd --path Usage %q must not contain "+
-			"\"Rebuild\" — use \"Build from a local source "+
-			"directory\" to match install --path wording",
-			f.Usage)
+	if updateCmd.Flags().Lookup("path") != nil {
+		t.Fatal("update --path must be gone")
 	}
 }
 
@@ -443,7 +436,7 @@ func TestUpdatePathRespectsDryRun(t *testing.T) {
 	tmp := t.TempDir()
 	if err := os.WriteFile(
 		tmp+"/gale.toml",
-		[]byte("[packages]\n"),
+		[]byte("[packages]\ntestpkg = \"1.0\"\n"),
 		0o644,
 	); err != nil {
 		t.Fatal(err)

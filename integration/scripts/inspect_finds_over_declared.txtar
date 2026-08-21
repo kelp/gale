@@ -3,10 +3,11 @@
 # hello but its binary never references hello — a classic
 # over-declared-dep case.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello-dep -g --recipes=$WORK/recipes
+exec gale install hello-dep -g --index=$WORK/index
 
-! exec gale inspect hello-dep --recipes=$WORK/recipes
+! exec gale inspect hello-dep
 stderr 'over-declared-dep'
 stderr 'hello'

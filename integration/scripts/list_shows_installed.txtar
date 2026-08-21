@@ -1,13 +1,14 @@
 # `gale list` reports packages from gale.toml.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
 # Empty case.
 exec gale list
 ! stdout 'hello'
 
-exec gale install hello -g --recipes=$WORK/recipes
-exec gale install hello-dep -g --recipes=$WORK/recipes
+exec gale install hello -g --index=$WORK/index
+exec gale install hello-dep -g --index=$WORK/index
 
 exec gale list
 stdout 'hello'

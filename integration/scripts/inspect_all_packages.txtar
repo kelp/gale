@@ -2,9 +2,10 @@
 # single clean install, inspect uses the single-result path
 # and reports the package@version followed by "no issues".
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
+exec gale install hello -g --index=$WORK/index
 
-exec gale inspect --all --recipes=$WORK/recipes
+exec gale inspect --all
 stderr 'hello@1\.0-1: no issues'

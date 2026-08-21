@@ -1,17 +1,17 @@
 # CLAUDE.md
 
 Gale is a macOS-first package manager for developer CLI
-tools. Written in Go. Goal: replace Homebrew, Nix, and
-home-manager with one tool that handles global packages
-and per-project environments. Design rationale:
-[`docs/dev/design.md`](docs/dev/design.md).
+tools. Written in Go. It fetches verified artifacts from
+the gale-recipes index, pins them in a v2 lock, and
+activates them through generation snapshots. Design
+rationale: [`docs/dev/design.md`](docs/dev/design.md).
 
 Two repos: **gale** (this one — the CLI) and
-**gale-recipes** (`../gale-recipes` — recipe TOML files,
-plus CI that builds them and pushes binaries to GHCR).
-`gale install jq` fetches the recipe from the registry,
-pulls a prebuilt binary from GHCR if one exists, and
-falls back to building from source.
+**gale-recipes** (`../gale-recipes` — index documents
+and leftover recipe TOML). `gale install jq` resolves
+the index, stages `pkg/fetch/`, writes the lock, and
+swaps `current` last. Not-in-index is an error. A v1
+lock migrates with `gale fetch-adopt`.
 
 `just` runs test + lint + fmt-check; `just --list` has
 the rest.
@@ -19,7 +19,8 @@ the rest.
 ## Vocabulary
 
 **Store** (`~/.gale/pkg/`): immutable package storage.
-One directory per package per version. Append-only.
+Fetch trees live under `pkg/fetch/<name>/<version>-<sha12>/`.
+Append-only.
 
 **Generation** (`~/.gale/gen/<N>/`): a snapshot of
 symlinks into the store. Rebuilt declaratively from
@@ -56,10 +57,9 @@ install one. Full reference:
   blocks until the in-flight run finishes.
   `just agent-status` shows what landed.
 - **`gale install`, `gale build` and `gale sync` cannot
-  work here.** The egress proxy blocks GHCR's blob host,
-  and the source-build fallback's upstream hosts are
-  blocked too — they burn minutes, then fail. A
-  PreToolUse hook blocks them. `gale lint` is
+  work here against the real index.** The egress proxy
+  blocks artifact hosts, and those commands fail slowly.
+  A PreToolUse hook blocks them. `gale lint` is
   offline-clean and unaffected.
 - **`just preflight` is the pre-push gate.** It runs
   every reproducible CI step, fails fast, and names the
@@ -161,10 +161,14 @@ commands, including `gale env`, do not register.
   Shared `extractTar()` in `internal/download/`.
 - Autotools builds need a timestamp reset (`touchAll`)
   after extraction to avoid clock-skew errors.
-- `--recipes <dir>` requires a value (both spellings
-  work). `gale build` auto-detects a recipe sitting
-  inside a recipes repo and resolves deps locally
-  without the flag.
+- Live installer verbs (`install`, `sync`, `update`,
+  `remove`, `lock`) take `--index <dir>`, not
+  `--recipes`. The checkout must be a git repo;
+  `index.Open` reads `git show` of HEAD.
+- `--recipes <dir>` remains on leftover commands
+  (`build`, `add`, `lint` recipes). `gale build`
+  auto-detects a recipe sitting inside a recipes
+  repo and resolves deps locally without the flag.
 - macOS `/var` is a symlink to `/private/var`. Tests
   comparing paths must `filepath.EvalSymlinks` both
   sides. `just check-darwin` cannot catch a violation —
@@ -217,7 +221,6 @@ Lessons paid for in past regressions.
 
 ## Principles
 
-- Everything from source. GHCR binaries are a cache, not
-  a substitute.
-- Prebuilt binaries only for compiler bootstraps.
-- Declarative over imperative (gale.toml → generation).
+- Fetch from the index. Source install is gone.
+- Declarative over imperative (gale.toml + v2 lock →
+  generation). `gale sync` does not write the lock.

@@ -62,6 +62,10 @@ type Request struct {
 	// the active generation links, as generation.CurrentVersions
 	// reports it.
 	Installed map[string]string
+	// Linked maps a package name to the absolute store directory
+	// the active generation links. Required for v2 so a ResolveDir
+	// link cannot satisfy a FetchPath identity.
+	Linked map[string]string
 }
 
 // Check reports whether the active generation may be activated.
@@ -82,11 +86,16 @@ func Check(req Request) error {
 		return nil
 	case lockfile.KindLegacy:
 		return fmt.Errorf(
-			"%s: %w: run gale lock to record what is installed",
+			"%s: %w: run gale fetch-adopt",
 			req.LockPath, lockfile.ErrLegacySchema,
 		)
 	case lockfile.KindV1:
-		return checkV1(req, v.V1)
+		return fmt.Errorf(
+			"%s: this lock is v1; run gale fetch-adopt",
+			req.LockPath,
+		)
+	case lockfile.KindV2:
+		return checkV2(req, v.V2)
 	default:
 		return fmt.Errorf("unhandled lockfile kind %s", v.Kind)
 	}
@@ -101,6 +110,80 @@ func Check(req Request) error {
 // would otherwise report drift, and drift's remedy is "run gale
 // sync": telling a user to rebuild against a file that cannot be
 // honored, and inviting a pipeline reading exit 5 to do it for them.
+func checkV2(req Request, lf *lockfile.V2) error {
+	if lf == nil {
+		return fmt.Errorf("%s: empty v2 lock", req.LockPath)
+	}
+	if len(lf.Targets.Host) > 0 {
+		return fmt.Errorf("%s: gale refuses host overlays", req.LockPath)
+	}
+	s := store.NewStore(req.StoreRoot)
+	roots := map[string]string{}
+	if lf.Targets.Default != nil {
+		for _, root := range lf.Targets.Default.Roots {
+			name, ver, err := lockfile.SplitV2Root(root)
+			if err != nil {
+				return err
+			}
+			pkg, ok := lf.Packages[root]
+			if !ok {
+				return fmt.Errorf("%w: %s", lockfile.ErrMissingNode, root)
+			}
+			art, ok := pkg.Artifacts[req.Platform]
+			if !ok {
+				return fmt.Errorf(
+					"%w: %s has no artifact for %s",
+					lockfile.ErrMissingArtifact, root, req.Platform,
+				)
+			}
+			if art.Method != provenance.MethodFetch {
+				return fmt.Errorf(
+					"%s: %s method %q is not fetch",
+					req.LockPath, root, art.Method,
+				)
+			}
+			want, err := s.FetchPath(name, ver, art.SHA256)
+			if err != nil {
+				return err
+			}
+			got := req.Linked[name]
+			if got == "" {
+				return fmt.Errorf(
+					"%w: it does not link %s, which %s names as a root; run gale sync",
+					ErrDrift, root, req.LockPath,
+				)
+			}
+			if filepath.Clean(got) != filepath.Clean(want) {
+				return fmt.Errorf(
+					"%w: %s links %s, want %s; run gale sync",
+					ErrDrift, name, got, want,
+				)
+			}
+			rec, err := provenance.ReadFetch(want)
+			if err != nil {
+				return err
+			}
+			if rec.Name != name || rec.Version != ver ||
+				rec.SHA256 != art.SHA256 || rec.Method != provenance.MethodFetch {
+				return fmt.Errorf(
+					"%s: %s fetch provenance does not match the lock",
+					req.LockPath, root,
+				)
+			}
+			roots[name] = ver
+		}
+	}
+	for name := range req.Installed {
+		if _, ok := roots[name]; !ok {
+			return fmt.Errorf(
+				"%w: it links %s, which %s does not name; run gale sync",
+				ErrDrift, name, req.LockPath,
+			)
+		}
+	}
+	return nil
+}
+
 func checkV1(req Request, lf *lockfile.V1) error {
 	roots, err := lf.EffectiveRoots(req.Host)
 	if err != nil {

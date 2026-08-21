@@ -1,8 +1,9 @@
 # --dry-run must not touch the store or config.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes --dry-run
+exec gale install hello -g --dry-run --index=$WORK/index
 stderr 'install'
 
 # Nothing written to the store.

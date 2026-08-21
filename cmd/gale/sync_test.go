@@ -16,29 +16,23 @@ import (
 )
 
 func TestSyncBuildFlagReplacesSource(t *testing.T) {
-	// --build must exist.
-	f := syncCmd.Flags().Lookup("build")
-	if f == nil {
-		t.Fatal("sync: --build flag not found")
+	if syncCmd.Flags().Lookup("build") != nil {
+		t.Error("sync: --build must be gone")
 	}
-
-	// --source must not exist.
 	if syncCmd.Flags().Lookup("source") != nil {
 		t.Error("sync: --source flag should not exist")
 	}
 }
 
 func TestInstallBuildFlag(t *testing.T) {
-	f := installCmd.Flags().Lookup("build")
-	if f == nil {
-		t.Fatal("install: --build flag not found")
+	if installCmd.Flags().Lookup("build") != nil {
+		t.Fatal("install: --build must be gone")
 	}
 }
 
 func TestUpdateBuildFlag(t *testing.T) {
-	f := updateCmd.Flags().Lookup("build")
-	if f == nil {
-		t.Fatal("update: --build flag not found")
+	if updateCmd.Flags().Lookup("build") != nil {
+		t.Fatal("update: --build must be gone")
 	}
 }
 

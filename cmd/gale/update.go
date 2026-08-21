@@ -2,12 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/gitutil"
-	"github.com/kelp/gale/internal/installer"
+	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/output"
 	ver "github.com/kelp/gale/internal/version"
 	"github.com/spf13/cobra"
@@ -21,279 +22,105 @@ var (
 	updateBuild     bool
 	updateNoRefresh bool
 	updateNoInstall bool
+	updateIndex     string
 	updateGlobal    bool
 	updateProject   bool
 )
 
 var updateCmd = &cobra.Command{
 	Use:   "update [package...]",
-	Short: "Update packages to the latest version",
+	Short: "Update packages from the index",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		out := newCmdOutput(cmd)
-
 		if err := validateScopeFlags(updateGlobal, updateProject); err != nil {
 			return err
 		}
-
-		// --path requires exactly one package name.
-		if updatePath != "" && len(args) != 1 {
-			return fmt.Errorf(
-				"--path requires exactly one package name",
-			)
-		}
-
-		// --no-install only makes sense for the
-		// pin-resolution path. --path and --git both imply
-		// building, so combining them is a user error.
-		if updateNoInstall && (updatePath != "" || updateGit) {
-			return fmt.Errorf(
-				"--no-install cannot be combined with --path or --git",
-			)
-		}
-
-		// Auto-refresh configured taps so a stale local clone
-		// doesn't mask an upstream version bump. Skip when
-		// --recipes is set (resolver bypasses taps anyway),
-		// when --no-refresh is passed, or when GALE_OFFLINE=1.
-		if updateRecipes == "" && !tapsOfflineMode(updateNoRefresh) {
-			if err := refreshConfiguredTapsDefault(out); err != nil {
-				out.Warn(fmt.Sprintf("tap refresh: %v", err))
-			}
-		}
-
-		// Resolve context for config path. All branches
-		// use ctx.GalePath for config writes.
-		ctx, err := newCmdContext(updateRecipes, updateGlobal, updateProject)
+		c, err := newCmdContext("", updateGlobal, updateProject)
 		if err != nil {
 			return err
 		}
-
-		if updateBuild {
-			ctx.Installer.SourceOnly = true
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
 		}
+		return runUpdateFetch(ctx, c, args, indexSource(updateIndex))
+	},
+}
 
-		// --path: rebuild from local source directory.
-		if updatePath != "" {
-			if dryRun {
-				out.Info(fmt.Sprintf(
-					"update %s (from local source)", args[0],
-				))
-				return nil
-			}
-			// Check membership in gale.toml — consistent with normal update path.
-			cfg, cfgErr := ctx.LoadConfig()
-			if cfgErr != nil {
-				return cfgErr
-			}
-			if _, ok := cfg.Packages[args[0]]; !ok {
-				return fmt.Errorf("%s not in gale.toml — use 'gale install --path %s %s' to add it",
-					args[0], updatePath, args[0])
-			}
-			return installFromLocalSource(ctx,
-				args[0], updateRecipe, updatePath, out)
-		}
-
-		// --git: check remote HEAD, rebuild if changed.
-		if updateGit {
-			if len(args) != 1 {
-				return fmt.Errorf(
-					"--git requires exactly one package name",
-				)
-			}
-			if dryRun {
-				out.Info(fmt.Sprintf(
-					"update %s (from git HEAD)", args[0],
-				))
-				return nil
-			}
-			// Check membership in gale.toml.
-			cfg, cfgErr := ctx.LoadConfig()
-			if cfgErr != nil {
-				return cfgErr
-			}
-			if _, ok := cfg.Packages[args[0]]; !ok {
-				return fmt.Errorf("%s not in gale.toml — use 'gale install --git %s' to add it",
-					args[0], args[0])
-			}
-			return updateFromGit(args[0], ctx, out)
-		}
-
-		cfg, err := ctx.LoadConfig()
-		if err != nil {
-			return err
-		}
-
-		// Determine which packages to update.
-		// Parse @version from args if present.
-		type target struct {
-			current string // version in gale.toml
-			pinned  string // explicit @version (empty = latest)
-		}
-		targets := make(map[string]target)
-
-		if len(args) > 0 {
-			for _, arg := range args {
-				name, ver, err := parsePackageArg(arg)
-				if err != nil {
-					return err
-				}
-				current, ok := cfg.Packages[name]
-				if !ok {
-					out.Warn(fmt.Sprintf(
-						"%s not in gale.toml, skipping", name,
-					))
-					continue
-				}
-				targets[name] = target{current, ver}
-			}
-		} else {
-			for name, ver := range cfg.Packages {
-				targets[name] = target{ver, ""}
-			}
-		}
-
-		if len(targets) == 0 {
-			out.Info("No packages to update.")
-			return nil
-		}
-
-		// Sort target names for deterministic order.
-		targetNames := make([]string, 0, len(targets))
-		for name := range targets {
-			targetNames = append(targetNames, name)
-		}
-		targetNames = sortedTargetKeys(targetNames)
-
-		var updated, failed int
-		for _, name := range targetNames {
-			t := targets[name]
-			var newVersion string
-
-			if t.pinned != "" {
-				// Explicit @version — fetch that version.
-				newVersion = t.pinned
-			} else {
-				// No @version — check latest from registry.
-				r, err := ctx.Resolver(context.Background(), name)
-				if err != nil {
-					out.Warn(fmt.Sprintf(
-						"Skipping %s: %v", name, err,
-					))
-					continue
-				}
-				// Compare via Package.Full() so a revision bump
-				// (e.g. recipe revision 1 → 2 at an unchanged
-				// upstream version) surfaces as outdated. Raw
-				// Package.Version drops the revision entirely
-				// and makes `update` disagree with `outdated`.
-				candidate := r.Package.Full()
-				target, skip := updateAction(
-					candidate, t.current,
-					ctx.Installer.Store.IsInstalled(
-						name, t.current,
-					),
-				)
-				if skip {
-					out.Info(fmt.Sprintf(
-						"%s@%s is up to date",
-						name, t.current,
-					))
-					continue
-				}
-				newVersion = target
-			}
-
-			// Fetch the recipe for the target version.
-			r, err := ctx.ResolveVersionedRecipe(
-				name, newVersion,
-			)
-			if err != nil {
-				out.Warn(fmt.Sprintf(
-					"Skipping %s: %v", name, err,
-				))
-				continue
-			}
-
-			if dryRun {
-				out.Info(fmt.Sprintf("update %s %s → %s",
-					name, t.current, r.Package.Full()))
-				updated++
-				continue
-			}
-
-			// --no-install: bump the gale.toml pin and stop.
-			// The user runs `gale sync` to actually build and
-			// install the new version; the lockfile stays
-			// untouched because it tracks installed artifacts.
-			if updateNoInstall {
-				host, hErr := config.CurrentHost()
-				if hErr != nil {
-					return hErr
-				}
-				if _, err := config.UpsertPackage(
-					ctx.GalePath, host,
-					name, noInstallPin(r.Package.Version,
-						r.Package.Full(), t.current),
-				); err != nil {
-					return fmt.Errorf("updating %s pin: %w",
-						name, err)
-				}
-				out.Success(fmt.Sprintf(
-					"Bumped %s %s → %s (run 'gale sync' to install)",
-					name, t.current, r.Package.Full(),
-				))
-				updated++
-				continue
-			}
-
-			out.Info(fmt.Sprintf("Updating %s %s → %s...",
-				name, t.current, r.Package.Full()))
-
-			result, err := ctx.Installer.InstallWithFinalize(context.Background(), r, false,
-				func(_ *installer.InstallResult) error {
-					return ctx.WriteConfigForRecipe(r)
-				})
-			if err != nil {
-				out.Warn(fmt.Sprintf(
-					"Failed to update %s: %v", name, err,
-				))
-				failed++
-				continue
-			}
-
-			reportResult(out, result, "Updated", "built from source")
-			updated++
-		}
-
-		// One lock write for the whole run, before the generation
-		// rebuild: a generation must never activate a graph the
-		// lock does not describe. Packages that failed to update
-		// contributed no root, so what lands is what was verified.
-		if err := ctx.WriteLock(); err != nil {
-			return fmt.Errorf("writing lock: %w", err)
-		}
-
-		// Skip the generation rebuild under --no-install: the
-		// new pin points at a store dir that does not exist
-		// yet, which would cause rebuild to fail. The
-		// follow-up `gale sync` installs and rebuilds.
-		if err := finishUpdate(dryRun || updateNoInstall, failed, updated, ctx.RebuildGeneration); err != nil {
-			return err
-		}
-		if updated == 0 {
-			out.Success("Everything is up to date.")
-		} else if updateNoInstall {
-			out.Success(fmt.Sprintf(
-				"Bumped %d pin(s) — run 'gale sync' to install",
-				updated,
-			))
-		} else {
-			out.Success(fmt.Sprintf(
-				"Updated %d package(s)", updated,
-			))
+func runUpdateFetch(
+	ctx context.Context, c *cmdContext, args []string, src index.Source,
+) error {
+	if err := refuseSwitchHosts(c.Host, c.GalePath); err != nil {
+		return err
+	}
+	cfg, err := c.LoadConfig()
+	if err != nil {
+		return err
+	}
+	pins, names, err := pinsForUpdate(declaredPins(cfg), args)
+	if err != nil {
+		return err
+	}
+	if len(pins) == 0 {
+		return nil
+	}
+	if dryRun {
+		out := newOutput()
+		for _, name := range names {
+			out.Info(fmt.Sprintf("update %s", name))
 		}
 		return nil
-	},
+	}
+	lp, err := lockfilePath(c.GalePath)
+	if err != nil {
+		return err
+	}
+	existing, err := readExistingV2(lp)
+	if err != nil {
+		return err
+	}
+	if err := refuseMixedV2(existing); err != nil {
+		return err
+	}
+	draft, arts, err := planAdopt(ctx, src, pins)
+	if err != nil {
+		return err
+	}
+	draft = mergeV2LockNames(existing, draft, names)
+	var undos []func() error
+	for _, name := range names {
+		pin := pinForManifest(draft, name)
+		cw, werr := c.writeConfigWitnessed(name, pin, pin)
+		if werr != nil {
+			return fmt.Errorf("writing config: %w", werr)
+		}
+		before, after := cw.Before, cw.After
+		undos = append(undos, func() error {
+			return config.RestoreUnderLock(c.GalePath, before, after)
+		})
+	}
+	if err := finalizeFetch(ctx, c, fetchPublish{
+		Lock:    draft,
+		Arts:    arts,
+		ToStore: installToStore,
+	}); err != nil {
+		var restore error
+		for i := len(undos) - 1; i >= 0; i-- {
+			restore = errors.Join(restore, undos[i]())
+		}
+		return errors.Join(err, restore)
+	}
+	return nil
+}
+
+func leftoverUpdateHelpers() {
+	// Source-era helpers stay until Delete the long tail.
+	_ = updateRecipes
+	_ = updatePath
+	_ = updateGit
+	_ = updateRecipe
+	_ = updateBuild
+	_ = updateNoRefresh
+	_ = updateNoInstall
 }
 
 func finishUpdate(dryRun bool, failed int, updated int, rebuild func() error) error {
@@ -424,21 +251,8 @@ func sortedTargetKeys(keys []string) []string {
 }
 
 func init() {
-	updateCmd.Flags().StringVar(&updateRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry")
-	updateCmd.Flags().StringVar(&updatePath, "path", "",
-		"Build from a local source directory")
-	updateCmd.Flags().BoolVar(&updateGit, "git", false,
-		"Update from git repository HEAD")
-	updateCmd.Flags().StringVar(&updateRecipe, "recipe", "",
-		"Use a specific recipe TOML file")
-	updateCmd.Flags().BoolVar(&updateBuild, "build", false,
-		"Build from source (skip prebuilt binary)")
-	updateCmd.Flags().BoolVar(&updateNoRefresh, "no-refresh", false,
-		"Skip refreshing configured recipe taps before resolving")
-	updateCmd.Flags().BoolVar(&updateNoInstall, "no-install", false,
-		"Write new version pins to gale.toml without installing "+
-			"(run 'gale sync' to install)")
+	updateCmd.Flags().StringVar(&updateIndex, "index", "",
+		"Resolve against a local index checkout")
 	updateCmd.Flags().BoolVarP(&updateGlobal, "global", "g",
 		false, "Update global packages")
 	updateCmd.Flags().BoolVarP(&updateProject, "project", "p",

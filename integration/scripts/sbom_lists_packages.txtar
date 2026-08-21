@@ -4,10 +4,11 @@
 # the `hello` check (substring matching would let that
 # through).
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
-exec gale install hello-dep -g --recipes=$WORK/recipes
+exec gale install hello -g --index=$WORK/index
+exec gale install hello-dep -g --index=$WORK/index
 
 exec gale sbom
 stdout 'PACKAGE'

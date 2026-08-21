@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/lockfile"
 )
 
 // useCanceledIfNeeded replaces the --if-needed parent with an
@@ -43,6 +44,20 @@ func ifNeededProject(t *testing.T, manifest string) (proj, galeDir string) {
 	return proj, filepath.Join(proj, ".gale")
 }
 
+func writeEmptyV2Lock(t *testing.T, galePath string) {
+	t.Helper()
+	lp, err := lockfilePath(galePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lockfile.WriteV2(lp, &lockfile.V2{
+		Version: lockfile.SchemaV2,
+		Targets: lockfile.Targets{Default: &lockfile.Target{}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestIfNeededDeadlineIsFixed(t *testing.T) {
 	if ifNeededDeadline != 15*time.Second {
 		t.Errorf("ifNeededDeadline = %s, want 15s", ifNeededDeadline)
@@ -68,6 +83,7 @@ func TestTypedSyncHasNoOverallDeadline(t *testing.T) {
 		return context.Background(), func() {}
 	}
 	t.Chdir(proj)
+	writeEmptyV2Lock(t, filepath.Join(proj, "gale.toml"))
 	if err := runSync(syncRun{Project: true}); err != nil {
 		t.Fatalf("typed sync: %v", err)
 	}

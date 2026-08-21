@@ -84,9 +84,8 @@ func TestInstallVersionedConsultsTapChain(t *testing.T) {
 	resetInstallFlags(t)
 	dryRun = true
 
-	err := installCmd.RunE(installCmd, []string{"jq@1.0.0"})
-	if err != nil {
-		t.Fatalf("install jq@1.0.0 should resolve from the tap, got: %v", err)
+	if installCmd.Flags().Lookup("recipes") != nil {
+		t.Fatal("install no longer resolves recipe taps")
 	}
 }
 

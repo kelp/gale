@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -52,38 +53,8 @@ func TestRemoveHostKeepsStoreWhenOtherHostStillReferences(t *testing.T) {
 		removeHost = ""
 	})
 
-	if err := removeCmd.RunE(removeCmd, []string{"foo"}); err != nil {
-		t.Fatalf("remove --host testhost failed: %v", err)
-	}
-
-	// The current host's overlay entry must be gone.
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if h, ok := cfg.Hosts["testhost"]; ok {
-		if _, has := h.Packages["foo"]; has {
-			t.Errorf("foo still in [hosts.testhost.packages]: %q",
-				string(data))
-		}
-	}
-
-	// otherbox's pin must survive untouched.
-	if h, ok := cfg.Hosts["otherbox"]; !ok {
-		t.Errorf("[hosts.otherbox] section gone: %q", string(data))
-	} else if _, has := h.Packages["foo"]; !has {
-		t.Errorf("foo missing from [hosts.otherbox.packages]: %q",
-			string(data))
-	}
-
-	// Store entry must survive — otherbox still references it.
-	if _, err := os.Stat(storeVerDir); err != nil {
-		t.Error("store entry foo@1.0 deleted while " +
-			"[hosts.otherbox.packages] still references it")
+	if err := removeCmd.RunE(removeCmd, []string{"foo"}); !errors.Is(err, errSwitchHosts) {
+		t.Fatalf("remove --host testhost: %v, want errSwitchHosts", err)
 	}
 }
 

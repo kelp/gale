@@ -373,9 +373,10 @@ func scopeClosureDirs(
 			return nil, err
 		}
 		return append(dirs, locked...), nil
-	case lockfile.KindAbsent, lockfile.KindLegacy:
-		// A legacy lock predates enforcement and records no closure,
-		// so it adds nothing to what the generation already claims.
+	case lockfile.KindAbsent, lockfile.KindLegacy, lockfile.KindV2:
+		// Legacy records no closure. A v2 fetch lock has no
+		// farm runtime edges; the generation already claims
+		// the fetch trees it links.
 		return dirs, nil
 	default:
 		// A kind this build does not know claims something it

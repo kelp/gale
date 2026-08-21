@@ -2,6 +2,7 @@ package provenance
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,27 @@ type FetchRecord struct {
 // refused. The write is os.WriteFile, not atomicfile.Write: a
 // dest/.gale-tmp-* leftover is visible to DigestTree and would
 // make a retry occupied + different digest.
+// ReadFetch reads a fetch sidecar written by WriteFetch.
+// ReadUnverified still rejects method=fetch.
+func ReadFetch(dir string) (FetchRecord, error) {
+	path := filepath.Join(dir, File)
+	data, err := os.ReadFile(path) //nolint:gosec // store sidecar
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return FetchRecord{}, fmt.Errorf("%s: %w", dir, ErrAbsent)
+		}
+		return FetchRecord{}, fmt.Errorf("read fetch provenance: %w", err)
+	}
+	var r FetchRecord
+	if err := toml.Unmarshal(data, &r); err != nil {
+		return FetchRecord{}, fmt.Errorf("%s: %w: %w", path, ErrInvalid, err)
+	}
+	if err := r.validate(); err != nil {
+		return FetchRecord{}, err
+	}
+	return r, nil
+}
+
 func WriteFetch(dir string, r FetchRecord) error {
 	if err := r.validate(); err != nil {
 		return err

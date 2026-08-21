@@ -169,8 +169,8 @@ func TestRunLockFetchPinsOneIndexCommit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadV2: %v", err)
 	}
-	if _, err := lockfile.Load(fx.lockPath()); !errors.Is(err, lockfile.ErrUnknownVersion) {
-		t.Errorf("Load = %v, want ErrUnknownVersion", err)
+	if v, err := lockfile.Load(fx.lockPath()); err != nil || v.Kind != lockfile.KindV2 {
+		t.Errorf("Load = (%v, %v), want KindV2", v, err)
 	}
 	if len(got.Packages) != 2 {
 		t.Fatalf("packages = %d, want 2", len(got.Packages))

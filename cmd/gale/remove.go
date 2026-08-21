@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -14,6 +15,7 @@ import (
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
@@ -53,189 +55,120 @@ var removeCmd = &cobra.Command{
 
 		out := newCmdOutput(cmd)
 
-		ctx, err := newCmdContext("", removeGlobal, removeProject)
+		c, err := newCmdContext("", removeGlobal, removeProject)
 		if err != nil {
 			return err
 		}
-
-		st := store.NewStore(ctx.StoreRoot)
-
-		// Look up the package. With --host, membership and
-		// the pinned version come from the targeted host's
-		// section of the raw file — the effective config
-		// flattens to the *current* host's view, which hides
-		// foreign-host entries and reports the wrong version
-		// when the pins differ (gh#75).
 		host, err := resolveHostFlag(removeHost)
 		if err != nil {
 			return err
 		}
-		var version string
-		if host != "" {
-			raw, err := rawGaleConfig(ctx.GalePath)
-			if err != nil {
-				return err
-			}
-			v, ok := raw.Hosts[host].Packages[name]
-			if !ok {
-				return fmt.Errorf(
-					"%s is not in [hosts.%s.packages] in %s",
-					name, host, ctx.GalePath,
-				)
-			}
-			version = v
-		} else {
-			cfg, err := ctx.LoadConfig()
-			if err != nil {
-				return err
-			}
-			v, ok := cfg.Packages[name]
-			if !ok {
-				return fmt.Errorf(
-					"%s is not in %s", name, ctx.GalePath,
-				)
-			}
-			version = v
+		c.Host = host
+		bg := cmd.Context()
+		if bg == nil {
+			bg = context.Background()
 		}
+		return runRemoveFetch(bg, c, name, out)
+	},
+}
 
-		if dryRun {
-			out.Info(fmt.Sprintf(
-				"remove %s@%s", name, version,
-			))
-			return nil
-		}
-
-		// Update config first so a failed write does not
-		// leave the store missing but config still listing
-		// the package. With --host, only that section is
-		// touched. Without --host, sweep every section that
-		// lists the package (shared + any host overlays) —
-		// otherwise a host overlay can survive the remove,
-		// leaving gale.toml referencing a package whose
-		// store dir we're about to delete.
-		var sections []string
-		if host != "" {
-			sections = []string{host}
-		} else {
-			sections = locatePackageSections(ctx.GalePath, name)
-		}
-		// Kept so a refusal below can put gale.toml back exactly as
-		// it was. The store-removal decision has to read the config
-		// AFTER the edit — a package this scope still declares is
-		// "referenced" and its store dir is kept — so the guard that
-		// can refuse the whole operation cannot run before the write.
-		// Witnessed, and under ONE hold of the config lock. Both
-		// states are captured beside the edit that produced them, so
-		// a refusal below can undo it without restoring over a
-		// concurrent command's manifest: a token read before the lock,
-		// or after its release, could have been that command's file
-		// rather than ours.
-		//
-		// One hold rather than one per section also closes a smaller
-		// gap: removing from two sections used to take the lock twice,
-		// so another command could observe the package gone from one
-		// section and still present in the other.
-		priorConfig, wroteConfig, err := config.RemovePackageSections(
-			ctx.GalePath, sections, name,
-		)
-		if err != nil {
-			return fmt.Errorf("removing from config: %w", err)
-		}
-
-		// Decide the store removal before the generation
-		// rebuild, because deciding it runs the cross-project
-		// farm guard, and a guard refusal must land before
-		// the generation swap and before any farm or store
-		// mutation (design §4, acceptance test 28).
-		installed := st.IsInstalled(name, version)
+func runRemoveFetch(
+	ctx context.Context, c *cmdContext, name string, out *output.Output,
+) error {
+	if err := refuseSwitchHosts(c.Host, c.GalePath); err != nil {
+		return err
+	}
+	cfg, err := c.LoadConfig()
+	if err != nil {
+		return err
+	}
+	version, ok := cfg.Packages[name]
+	if !ok {
+		return fmt.Errorf("%s is not in %s", name, c.GalePath)
+	}
+	if dryRun {
+		out.Info(fmt.Sprintf("remove %s@%s", name, version))
+		return nil
+	}
+	lp, err := lockfilePath(c.GalePath)
+	if err != nil {
+		return err
+	}
+	view, err := lockfile.Load(lp)
+	if err != nil {
+		return err
+	}
+	prior, wrote, err := config.RemovePackageSections(
+		c.GalePath, locatePackageSections(c.GalePath, name), name,
+	)
+	if err != nil {
+		return fmt.Errorf("removing from config: %w", err)
+	}
+	switch view.Kind {
+	case lockfile.KindAbsent:
+		st := store.NewStore(c.StoreRoot)
 		var dropStoreDir string
-		if installed {
-			dropStoreDir, err = storeRemovalPlan(
-				ctx, st, name, version, out,
-			)
-			if err != nil {
-				// A refusal means the removal did not happen. Every
-				// error from here reports a decision, not a mutation,
-				// so restoring the manifest leaves the machine exactly
-				// as the command found it rather than in a state where
-				// the store holds a package gale.toml no longer names
-				// and the obvious retry reports it absent.
+		if st.IsInstalled(name, version) {
+			var planErr error
+			dropStoreDir, planErr = storeRemovalPlan(c, st, name, version, out)
+			if planErr != nil {
 				return errors.Join(
-					err, config.RestoreUnderLock(ctx.GalePath, priorConfig, wroteConfig),
+					planErr,
+					config.RestoreUnderLock(c.GalePath, prior, wrote),
 				)
 			}
+		} else {
+			out.Warn(fmt.Sprintf("%s@%s not found in store", name, version))
 		}
-		// Regenerate the lock target behind every section the
-		// removal touched. Deleting the package's entry is not
-		// enough under the enforced schema: the lock records the
-		// whole closure, so the target is rebuilt from what the
-		// section still declares and the nodes nothing reaches any
-		// more are dropped, while a transitive dep a surviving root
-		// shares stays.
-		for _, section := range sections {
-			ctx.noteLockTarget(section)
-		}
-		// Witnessed, because the refusal below may have to undo this.
-		// Both tokens are observed inside WriteLock's own critical
-		// section: one taken before the lock, or read after it was
-		// released, could have caught a concurrent writer's file
-		// instead of ours, and a restore keyed on that would discard
-		// that writer's work while believing it was undoing its own.
-		lockWitness, err := ctx.writeLockWitnessed()
-		if err != nil {
+		if err := rebuildGeneration(c.GaleDir, c.StoreRoot, c.GalePath, nil); err != nil {
 			return errors.Join(
-				fmt.Errorf("writing lock: %w", err),
-				config.RestoreUnderLock(ctx.GalePath, priorConfig, wroteConfig),
+				fmt.Errorf("rebuild generation: %w", err),
+				config.RestoreUnderLock(c.GalePath, prior, wrote),
 			)
 		}
-		out.Info(fmt.Sprintf(
-			"Removed %s from %s (%s)",
-			name, ctx.GalePath,
-			formatSections(sections),
-		))
-
-		// Rebuild the generation for this scope. Do this
-		// before removing from the store so the generation
-		// is updated with the new config (package removed)
-		// before we delete the package from the store.
-		if err := ctx.RebuildGeneration(); err != nil {
-			return fmt.Errorf("rebuild generation: %w", err)
-		}
-
-		switch {
-		case dropStoreDir != "":
-			if err := dropFromStore(ctx, name, version, out); err != nil {
-				// The authoritative guard runs beside the deletion, so
-				// a claim registered after the early check refuses
-				// here — with the manifest already rewritten and the
-				// generation already rebuilt above. Undo both.
-				//
-				// The generation rebuild is not cosmetic in that undo.
-				// It is what restores the farm: the rebuild above wiped
-				// the shared farm and repopulated it from the claimants
-				// known at the time, which did not include the late one,
-				// so the entry that scope resolves through is gone. Re-
-				// running it now unions the claim in and puts the link
-				// back. Leaving it would break another scope's binaries
-				// as the price of a removal that did not even happen.
+		if dropStoreDir != "" {
+			if err := dropFromStore(c, name, version, out); err != nil {
 				return errors.Join(
 					err,
-					config.RestoreUnderLock(ctx.GalePath, priorConfig, wroteConfig),
-					restoreLock(lockWitness),
-					ctx.RebuildGeneration(),
+					config.RestoreUnderLock(c.GalePath, prior, wrote),
+					c.RebuildGeneration(),
 				)
 			}
-			out.Info(fmt.Sprintf("Removed %s@%s from store",
-				name, version))
-		case !installed:
-			out.Warn(fmt.Sprintf(
-				"%s@%s not found in store", name, version,
-			))
 		}
-
-		out.Success(fmt.Sprintf("Removed %s", name))
-		return nil
-	},
+	case lockfile.KindLegacy, lockfile.KindV1:
+		return errors.Join(
+			errSwitchV1,
+			config.RestoreUnderLock(c.GalePath, prior, wrote),
+		)
+	case lockfile.KindV2:
+		if len(view.V2.Targets.Host) > 0 {
+			return errors.Join(
+				errSwitchHosts,
+				config.RestoreUnderLock(c.GalePath, prior, wrote),
+			)
+		}
+		if err := refuseMixedV2(view.V2); err != nil {
+			return errors.Join(err, config.RestoreUnderLock(c.GalePath, prior, wrote))
+		}
+		draft := dropV2Root(view.V2, name)
+		if err := writeV2Only(c, draft); err != nil {
+			return errors.Join(
+				fmt.Errorf("writing lock: %w", err),
+				config.RestoreUnderLock(c.GalePath, prior, wrote),
+			)
+		}
+		if err := rebuildFromV2(c, draft); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
+		}
+	default:
+		return errors.Join(
+			fmt.Errorf("unhandled lockfile kind %s", view.Kind),
+			config.RestoreUnderLock(c.GalePath, prior, wrote),
+		)
+	}
+	out.Info(fmt.Sprintf("Removed %s from %s", name, c.GalePath))
+	_ = ctx
+	return nil
 }
 
 func init() {

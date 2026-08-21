@@ -11,6 +11,20 @@
 
 ### Changed
 
+- **Switch: fetch is the only installer.** `install`,
+  `sync`, `update`, and `remove` resolve the index and
+  stage `pkg/fetch/`. `--recipes` is gone on those
+  commands and on live `gale lock`. `--index <dir>`
+  stays on install, update, lock, and fetch-adopt.
+  `--recipe`, `--path`, `--git`, `--build`,
+  `--no-frozen`, `--no-install`, and `--no-refresh`
+  are gone on the live verbs. `--host` refuses.
+  A mixed source/fetch lock is refused. `gale sync`
+  does not write the lock. A v1 lock names
+  `gale fetch-adopt`. Product docs no longer describe
+  gale as everything-from-source or a Homebrew
+  replacement.
+
 - **`gale verify` checks tree digests.** It recomputes
   `DigestTree` on each `pkg/fetch/` directory the v2 lock
   names and compares it to `tree_digest`. It does not talk
@@ -25,13 +39,12 @@
 
 ### Added
 
-- **`gale fetch-adopt` unused.** Plans every default-target
+- **`gale fetch-adopt`.** Plans every default-target
   root from `gale.toml` against one `index_commit`, prints
   a lock diff, and after `--yes` or a TTY confirm stages
   current-platform fetch trees, writes a v2 lock, and swaps
   `current` last. Refuses CI, host overlays, and an existing
-  v2 lock. Install still uses recipes. Live `Load` still
-  rejects the v2 lock.
+  v2 lock. It is the v1→v2 migrator, not a second installer.
 
 - **First ten indexed.** gale-recipes `main` now has
   Darwin/arm64 catalog documents for `jq`, `ripgrep`,

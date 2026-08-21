@@ -3,13 +3,14 @@
 # the package, and the project's current/bin/ gets the
 # symlink.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
 mkdir $WORK/proj
 cd $WORK/proj
 exec sh -c 'printf "[packages]\n" > gale.toml'
 
-exec gale install hello -p --recipes=$WORK/recipes
+exec gale install hello -p --index=$WORK/index
 stderr 'Installed hello@1\.0 from binary'
 
 # Project-scoped symlinks live under $WORK/proj/.gale/,
@@ -18,7 +19,7 @@ exists $WORK/proj/.gale/current/bin/hello
 ! exists $HOME/.gale/current/bin/hello
 
 # Store is shared — install still lands globally.
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exists $HELLO_1_0_DIR/bin/hello
 
 # The project gale.toml records the install, global one
 # does not (it might not exist; check fallback).

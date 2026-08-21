@@ -222,7 +222,7 @@ One PR. Fetch is the only installer.
 release. Source build is unreachable.
 Not-in-index is an error.
 
-- [ ] **Switch.** install / sync / update /
+- [x] **Switch.** install / sync / update /
       remove go through fetch. `--recipes`
       gone; `--index <dir>` stays. Mixed
       source/fetch lock refused. `cmd/gale`
@@ -230,7 +230,7 @@ Not-in-index is an error.
       the lock; activation gate still
       holds; rollback then sync returns
       to the lock.
-- [ ] **Amend product docs** in the same PR:
+- [x] **Amend product docs** in the same PR:
       `design.md` principles, `CLAUDE.md`,
       README. Gale is not "everything from
       source" and not a Homebrew replacement.

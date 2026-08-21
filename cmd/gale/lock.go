@@ -24,18 +24,16 @@ var (
 	lockGlobal  bool
 	lockProject bool
 	lockRecipes string
+	lockIndex   string
 	lockHost    string
 )
 
 var lockCmd = &cobra.Command{
 	Use:   "lock",
 	Short: "Regenerate gale.lock for the packages gale.toml declares",
-	Long: "Resolve every package one gale.toml section declares and " +
-		"record the verified closure in gale.lock.\n\n" +
-		"Plain `gale lock` regenerates [targets.default] from the " +
-		"shared [packages] section; --host <selector> regenerates that " +
-		"host's target from [hosts.<selector>.packages]. Every other " +
-		"target is carried forward, and gale.toml is never written.",
+	Long: "Resolve every default-target root against one index " +
+		"commit and write a v2 lock. It does not fetch artifacts, " +
+		"swap current, or write gale.toml. Host overlays refuse.",
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(lockGlobal, lockProject); err != nil {
@@ -44,19 +42,20 @@ var lockCmd = &cobra.Command{
 		if err := checkLockArgs(args); err != nil {
 			return err
 		}
-		ctx, err := newCmdContext(lockRecipes, lockGlobal, lockProject)
+		c, err := newCmdContext("", lockGlobal, lockProject)
 		if err != nil {
 			return err
 		}
-		// resolveHostFlag expands `current` before the target is
-		// chosen, so the lock is keyed on the concrete hostname the
-		// manifest overlay uses. A target keyed "current" would match
-		// no machine and every reader would plan without it.
 		host, err := resolveHostFlag(lockHost)
 		if err != nil {
 			return err
 		}
-		return runLock(ctx, host, newCmdOutput(cmd))
+		c.Host = host
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return runLockLive(ctx, c, indexSource(lockIndex))
 	},
 }
 
@@ -65,8 +64,8 @@ func init() {
 		false, "Lock the global config")
 	lockCmd.Flags().BoolVarP(&lockProject, "project", "p",
 		false, "Lock the project config")
-	lockCmd.Flags().StringVar(&lockRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry")
+	lockCmd.Flags().StringVar(&lockIndex, "index", "",
+		"Resolve against a local index checkout")
 	lockCmd.Flags().StringVar(&lockHost, "host", "",
 		"Lock [hosts.<host>.packages] instead of the shared section "+
 			"(use 'current' for this machine)")

@@ -340,10 +340,7 @@ func TestGitDevVersionDistinguishesDirtyTrees(t *testing.T) {
 
 func TestRecipesFlagReplacesLocal(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"install":  installCmd,
 		"add":      addCmd,
-		"update":   updateCmd,
-		"sync":     syncCmd,
 		"outdated": outdatedCmd,
 	}
 
@@ -381,10 +378,7 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 // failed with `unknown command "."` (gh#114).
 func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"install":  installCmd,
 		"add":      addCmd,
-		"update":   updateCmd,
-		"sync":     syncCmd,
 		"outdated": outdatedCmd,
 		"gc":       gcCmd,
 		"inspect":  inspectCmd,
@@ -440,10 +434,7 @@ func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
 // commit 4a54c9e).
 func TestRecipesFlagWordingIsAccurate(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"install":  installCmd,
 		"add":      addCmd,
-		"update":   updateCmd,
-		"sync":     syncCmd,
 		"outdated": outdatedCmd,
 		"gc":       gcCmd,
 		"inspect":  inspectCmd,
@@ -483,23 +474,11 @@ func TestRecipesFlagWordingIsAccurate(t *testing.T) {
 }
 
 func TestPathFlagReplacesSource(t *testing.T) {
-	cmds := map[string]*cobra.Command{
-		"install": installCmd,
-		"update":  updateCmd,
-	}
-
-	for name, cmd := range cmds {
-		t.Run(name, func(t *testing.T) {
-			if cmd.Flags().Lookup("path") == nil {
-				t.Errorf("%s: --path flag not found", name)
-			}
-			if cmd.Flags().Lookup("source") != nil {
-				t.Errorf(
-					"%s: --source flag should not exist",
-					name,
-				)
-			}
-		})
+	for _, name := range []string{"install", "update"} {
+		cmd := findCmd(name)
+		if cmd.Flags().Lookup("path") != nil {
+			t.Errorf("%s: --path must be gone", name)
+		}
 	}
 }
 
@@ -696,15 +675,8 @@ func TestInstallRecipeFileWithVersionErrors(t *testing.T) {
 	installGit = false
 	installBuild = false
 
-	err := installCmd.RunE(installCmd, []string{"jq@1.8.1"})
-	if err == nil {
-		t.Fatal("install --recipe jq.toml jq@1.8.1 must " +
-			"return an error: @version is incompatible with --recipe")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "version") || !strings.Contains(msg, "--recipe") {
-		t.Errorf("error %q does not mention version + --recipe "+
-			"incompatibility", msg)
+	if installCmd.Flags().Lookup("recipe") != nil {
+		t.Fatal("install --recipe must be gone")
 	}
 }
 

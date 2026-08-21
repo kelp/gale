@@ -3,15 +3,16 @@
 # text format must not contain that envelope; the JSON mode
 # must.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
 # Text mode: plain "no local recipe" line.
-! exec gale install nonexistent -g --recipes=$WORK/recipes
+! exec gale install nonexistent -g --index=$WORK/index
 stderr 'no local recipe'
 ! stderr '"kind":'
 
 # JSON mode: object with kind/command/message keys.
-! exec gale install nonexistent -g --error-format=json --recipes=$WORK/recipes
+! exec gale install nonexistent -g --error-format=json --index=$WORK/index
 stderr '"kind":\s*"runtime"'
 stderr '"command":\s*"install"'
 stderr '"message":'

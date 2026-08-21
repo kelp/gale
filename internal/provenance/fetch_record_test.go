@@ -39,6 +39,14 @@ func TestWriteFetchPersistsFieldsAndStaysUnreadable(t *testing.T) {
 	if !errors.Is(err, ErrInvalid) {
 		t.Errorf("ReadUnverified error = %v, want ErrInvalid", err)
 	}
+
+	gotFetch, err := ReadFetch(dir)
+	if err != nil {
+		t.Fatalf("ReadFetch: %v", err)
+	}
+	if gotFetch != r {
+		t.Errorf("ReadFetch = %+v, want %+v", gotFetch, r)
+	}
 }
 
 func TestWriteFetchRefusesIncompleteRecord(t *testing.T) {

@@ -38,6 +38,20 @@ func TestSubstituteDataEmptyPayloads(t *testing.T) {
 	}
 }
 
+func TestFixtureSHA256IsStable(t *testing.T) {
+	a := FixtureSHA256("hello", "1.0")
+	b := FixtureSHA256("hello", "1.0")
+	if a != b {
+		t.Fatal("FixtureSHA256 must be deterministic")
+	}
+	if len(a) != 64 {
+		t.Errorf("sha256 len = %d, want 64", len(a))
+	}
+	if FixtureSHA256("hello", "1.1") == a {
+		t.Error("different versions must not share a digest")
+	}
+}
+
 func TestSubstituteDataMultiplePayloads(t *testing.T) {
 	p := &Payloads{
 		Map: map[string]*Payload{

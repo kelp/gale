@@ -3,12 +3,13 @@
 # binary resolves even when the shell's PATH doesn't
 # include it.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
 mkdir $WORK/proj
 cd $WORK/proj
 exec gale init
-exec gale install hello -p --recipes=$WORK/recipes
+exec gale install hello -p --index=$WORK/index
 exists $WORK/proj/.gale/current/bin/hello
 
 # Unlocked mode keeps working. With no lockfile there is nothing to

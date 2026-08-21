@@ -209,8 +209,8 @@ func TestFinalizeFetchHappyPathOrder(t *testing.T) {
 	if got.Version != lockfile.SchemaV2 {
 		t.Errorf("lock version = %d, want 2", got.Version)
 	}
-	if _, err := lockfile.Load(fx.lockPath()); !errors.Is(err, lockfile.ErrUnknownVersion) {
-		t.Errorf("Load = %v, want ErrUnknownVersion", err)
+	if v, err := lockfile.Load(fx.lockPath()); err != nil || v.Kind != lockfile.KindV2 {
+		t.Errorf("Load = (%v, %v), want KindV2", v, err)
 	}
 	if currentGen(t, fx.c.GaleDir) <= fx.prev {
 		t.Errorf("current = %d, want > %d", currentGen(t, fx.c.GaleDir), fx.prev)
@@ -481,6 +481,22 @@ func TestFinalizeFetchGlobalScopeSkipsRegister(t *testing.T) {
 	}
 }
 
+func TestFinalizeFetchKeepsTwoGenerations(t *testing.T) {
+	fx := newFetchPubFixture(t)
+	for i := 0; i < 3; i++ {
+		if err := finalizeFetch(context.Background(), fx.c, fx.publish()); err != nil {
+			t.Fatalf("publish %d: %v", i+1, err)
+		}
+	}
+	gens, err := generation.List(fx.c.GaleDir, fx.c.StoreRoot)
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(gens) != 2 {
+		t.Errorf("generations = %d, want 2 after three publications", len(gens))
+	}
+}
+
 func TestFinalizeFetchCanceledCtx(t *testing.T) {
 	fx := newFetchPubFixture(t)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -578,7 +594,7 @@ func assertFailClosedLock(t *testing.T, fx *fetchPubFixture) {
 	if _, err := lockfile.ReadV2(fx.lockPath()); err != nil {
 		t.Fatalf("ReadV2 after lock write: %v", err)
 	}
-	if _, err := lockfile.Load(fx.lockPath()); !errors.Is(err, lockfile.ErrUnknownVersion) {
-		t.Errorf("Load = %v, want ErrUnknownVersion", err)
+	if v, err := lockfile.Load(fx.lockPath()); err != nil || v.Kind != lockfile.KindV2 {
+		t.Errorf("Load = (%v, %v), want KindV2", v, err)
 	}
 }

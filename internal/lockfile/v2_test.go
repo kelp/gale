@@ -440,9 +440,12 @@ func TestWriteV2RoundTrip(t *testing.T) {
 		t.Errorf("round trip changed the lockfile:\n got %#v\nwant %#v", reread, original)
 	}
 
-	_, err = Load(out)
-	if !errors.Is(err, ErrUnknownVersion) {
-		t.Errorf("Load after WriteV2: %v, want ErrUnknownVersion", err)
+	v, err := Load(out)
+	if err != nil {
+		t.Fatalf("Load after WriteV2: %v", err)
+	}
+	if v.Kind != KindV2 || v.V2 == nil {
+		t.Errorf("Load after WriteV2: Kind=%v V2=%v, want KindV2", v.Kind, v.V2)
 	}
 }
 

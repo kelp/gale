@@ -31,18 +31,16 @@ var (
 
 var syncCmd = &cobra.Command{
 	Use:   "sync",
-	Short: "Install all packages in gale.toml",
+	Short: "Activate packages from the v2 lock",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(syncGlobal, syncProject); err != nil {
 			return err
 		}
 		return runSync(syncRun{
-			RecipesPath: syncRecipes,
-			BuildOnly:   syncBuild,
-			Global:      syncGlobal,
-			Project:     syncProject,
-			IfNeeded:    syncOnlyIfNeeded,
+			Global:   syncGlobal,
+			Project:  syncProject,
+			IfNeeded: syncOnlyIfNeeded,
 		})
 	},
 }
@@ -110,69 +108,66 @@ func runSync(s syncRun) (err error) {
 func executeSync(
 	ctx context.Context, cc *cmdContext, s syncRun, out *output.Output, host string,
 ) ([]syncOutcome, error) {
-	if s.BuildOnly {
-		cc.Installer.SourceOnly = true
+	_ = host
+	if err := runSyncFetch(ctx, cc, s, out); err != nil {
+		return nil, err
 	}
+	return nil, nil
+}
 
+func runSyncFetch(
+	ctx context.Context, cc *cmdContext, s syncRun, out *output.Output,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := refuseSwitchHosts(cc.Host, cc.GalePath); err != nil {
+		return err
+	}
 	cfg, err := cc.LoadConfig()
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	if len(cfg.Packages) == 0 {
-		// Deliberately not an early return. An emptied manifest is
-		// exactly the state that must still be classified against the
-		// lock: with a lock naming roots, this is a stale lock and the
-		// sync must refuse rather than report success. Unlocked, the
-		// generation still has to be rebuilt, or the last package's
-		// symlinks stay active in current/bin.
-		out.Info("No packages to sync.")
-	}
-
-	lv, err := syncLockView(cc.GalePath)
+	lp, err := lockfilePath(cc.GalePath)
 	if err != nil {
-		return nil, err
+		return err
 	}
-
-	plan, warn, err := syncPlan(ctx, cc, cfg, lv, host)
+	lf, err := requireLiveV2(lp)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if warn != "" {
-		out.Warn(warn)
+	if err := checkV2Declared(lf, declaredPins(cfg)); err != nil {
+		return err
 	}
-	if s.BuildOnly {
-		if err := rejectSourceOnly(plan); err != nil {
-			return nil, err
+	arts, err := artsFromV2(lf)
+	if err != nil {
+		return err
+	}
+	if dryRun {
+		out.Info(fmt.Sprintf("sync %d locked package(s)", len(arts)))
+		return nil
+	}
+	if len(lf.Packages) == 0 {
+		cur, curErr := generation.Current(cc.GaleDir)
+		if curErr != nil {
+			return curErr
+		}
+		if cur == 0 {
+			out.Success("Sync complete: 0 locked, lock unchanged")
+			return nil
 		}
 	}
-	// Under a plan the installer stops resolving anything: versions,
-	// artifacts, methods and dependency edges all come from the lock.
-	cc.Installer.Plan = plan
-
-	items, err := sortedSyncItems(cfg.Packages, plan)
-	if err != nil {
-		return nil, err
+	if err := landFetchArts(ctx, cc.StoreRoot, arts); err != nil {
+		return err
 	}
-	outcomes := collectSyncOutcomes(ctx, cc, items)
-
-	installed, failures := reportSyncOutcomes(out, outcomes, dryRun)
-
-	configChanged := syncDrifted(driftQuery{
-		galeDir:    cc.GaleDir,
-		storeRoot:  cc.StoreRoot,
-		declared:   cfg.Packages,
-		plan:       plan,
-		pinResolve: versionedRecipeResolverWith(cc, ctx),
-	})
-
-	return outcomes, finishAndReport(ctx, out, syncFinish{
-		dryRun:        dryRun,
-		failures:      failures,
-		installed:     installed,
-		configChanged: configChanged,
-		locked:        plan != nil,
-	}, rebuildForSync(cc, plan), len(cfg.Packages)-installed)
+	if err := rebuildFromV2(cc, lf); err != nil {
+		return fmt.Errorf("rebuild generation: %w", err)
+	}
+	out.Success(fmt.Sprintf(
+		"Sync complete: %d locked, lock unchanged", len(arts),
+	))
+	_ = s
+	return nil
 }
 
 // rebuildForSync picks the generation rebuild this sync must use.
@@ -805,12 +800,6 @@ func init() {
 		false, "Sync global packages")
 	syncCmd.Flags().BoolVarP(&syncProject, "project", "p",
 		false, "Sync project packages")
-	syncCmd.Flags().StringVar(&syncRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry")
-	syncCmd.Flags().BoolVar(&syncBuild, "build", false,
-		"Build all packages from source (skip prebuilt binaries)")
-	syncCmd.Flags().BoolVar(&syncNoFrozen, "no-frozen", false,
-		"Ignore gale.lock and install from recipes without integrity enforcement")
 	syncCmd.Flags().BoolVar(&syncOnlyIfNeeded, "if-needed", false,
 		"Sync only when the last sync did not complete on these inputs")
 	rootCmd.AddCommand(syncCmd)

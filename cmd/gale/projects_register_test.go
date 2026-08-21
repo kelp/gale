@@ -270,6 +270,7 @@ func TestSyncProjectDirNoopDoesNotRegister(t *testing.T) {
 	t.Setenv("HOME", home)
 	t.Setenv("GALE_OFFLINE", "1")
 	proj := newTestProject(t)
+	writeEmptyV2Lock(t, filepath.Join(proj, "gale.toml"))
 	t.Chdir(t.TempDir())
 
 	if err := runSync(syncRun{ProjectDir: proj}); err != nil {

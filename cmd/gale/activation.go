@@ -51,6 +51,10 @@ func gateActivation(galeDir, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("reading the active generation: %w", err)
 	}
+	linked, err := generation.CurrentStoreDirs(galeDir, storeRoot)
+	if err != nil {
+		return fmt.Errorf("reading the active generation: %w", err)
+	}
 	// Same reasoning as the strict read above: Host selects which lock
 	// roots this machine is held to, so an unknown one would quietly
 	// hold it to fewer of them.
@@ -64,5 +68,6 @@ func gateActivation(galeDir, configPath string) error {
 		Platform:  currentPlatform(),
 		StoreRoot: storeRoot,
 		Installed: installed,
+		Linked:    linked,
 	})
 }
