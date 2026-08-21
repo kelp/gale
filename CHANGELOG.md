@@ -11,6 +11,11 @@
 
 ### Changed
 
+- **`gale sync` rebuilds when the shared farm drifted.**
+  Package versions can already match. Without this, the
+  doctor farm-drift remedy (`gale sync`) was a no-op after
+  `--repair` went away.
+
 - **`gale gc` keeps the previous generation.**
   Retention is the compiled constant 2 (current +
   one previous, plus every gen at or above

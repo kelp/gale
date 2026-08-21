@@ -10,6 +10,7 @@ import (
 	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
+	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
@@ -334,11 +335,30 @@ type driftQuery struct {
 // unused one.
 func syncDrifted(q driftQuery) bool {
 	if q.plan != nil {
-		return lockedGenerationDrifted(q.galeDir, q.storeRoot, q.plan)
-	}
-	return generationDrifted(
+		if lockedGenerationDrifted(q.galeDir, q.storeRoot, q.plan) {
+			return true
+		}
+	} else if generationDrifted(
 		q.galeDir, q.storeRoot, q.declared, q.pinResolve,
+	) {
+		return true
+	}
+	// Package versions can match while the shared farm is wrong.
+	// finishSync skips the rebuild unless this is true, and that
+	// skip made "Run: gale sync" a no-op for farm drift after
+	// doctor --repair went away.
+	return farmDrifted(q.declared, q.storeRoot)
+}
+
+// farmDrifted reports whether this scope's farm closure is missing
+// or broken. Extra healthy entries from another scope are not
+// drift (CheckDrift type 1 only flags broken links).
+func farmDrifted(pkgs map[string]string, storeRoot string) bool {
+	issues, err := farm.CheckDrift(
+		generation.FarmStoreDirs(pkgs, storeRoot),
+		farm.DirFromStoreRoot(storeRoot),
 	)
+	return err != nil || len(issues) > 0
 }
 
 // lockedGenerationDrifted is generationDrifted's counterpart under a
@@ -443,9 +463,10 @@ func generationDrifted(
 //
 // configChanged signals that the active generation no longer
 // matches the config (e.g., a package was removed from
-// gale.toml). The rebuild must run even when nothing was
+// gale.toml) or that the shared farm drifted while versions
+// still match. The rebuild must run even when nothing was
 // installed; otherwise the removed package's symlink stays
-// active in current/bin.
+// active in current/bin, and farm drift stays broken.
 //
 // locked signals that the sync ran from a plan. Under a lock the plan
 // is one unit: design §8 skips the rebuild on ANY failure, not only an
