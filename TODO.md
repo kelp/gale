@@ -190,7 +190,7 @@ fine.
       `--refresh`. Unprovenanced refetch
       is `fetch-adopt`. Tests in
       `cmd/gale`.
-- [ ] **Admission command.** Gale's own
+- [x] **Admission command.** Gale's own
       extractor (`internal/download` +
       the installer digest function) is
       the only producer of `tree_digest`.

@@ -15,6 +15,13 @@ import (
 	"github.com/kelp/gale/internal/index"
 )
 
+// PlaceMapped extracts archive and copies art.Files into treeDir.
+// archive must sit in a fresh work directory: extract lands at
+// dirname(archive)/extract and is not cleared.
+func PlaceMapped(ctx context.Context, archive, treeDir string, art index.Artifact) error {
+	return placeMapped(ctx, archive, treeDir, art)
+}
+
 func placeMapped(ctx context.Context, archive, treeDir string, art index.Artifact) error {
 	extractDir := filepath.Join(filepath.Dir(archive), "extract")
 	if err := os.MkdirAll(extractDir, 0o755); err != nil {

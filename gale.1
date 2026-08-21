@@ -388,6 +388,15 @@ Warnings are reported the same way either way.
 .Pp
 .Dl $ gale lint recipes/j/jq.toml
 .Dl $ gale lint --strict recipes/j/jq.toml
+.It Cm admit
+Record an index artifact from a local archive.
+Extracts with Gale's installer path, computes
+.Ic tree_digest ,
+and prints a TOML fragment.
+Does not write the store, lock, or
+.Pa gale.toml .
+.Pp
+.Dl $ gale admit --archive just.tar.gz --name just --version 1.56.0 --os darwin --arch arm64 --url https://github.com/casey/just/releases/download/1.56.0/just.tar.gz --file just:bin/just:755
 .It Cm create-recipe Ar repo Op Fl o Ar dir
 Generate a recipe from a GitHub repository using AI.
 Accepts

@@ -113,18 +113,18 @@ func (f *Fetcher) writeSidecar(dest, name, version string, art index.Artifact) e
 	return nil
 }
 
-func (f *Fetcher) validate(art index.Artifact) error {
-	if err := validateURL(art.URL, f.allow()); err != nil {
+// ValidateSpec checks authoring fields (URL, format, strip, files).
+// It does not require sha256 or tree_digest; those are produced
+// later. allow defaults to index.AllowedHost.
+func ValidateSpec(art index.Artifact, allow func(string) bool) error {
+	if allow == nil {
+		allow = index.AllowedHost
+	}
+	if err := validateURL(art.URL, allow); err != nil {
 		return err
 	}
 	if !allowedFormat[art.Format] {
 		return fmt.Errorf("unsupported artifact format: %q", art.Format)
-	}
-	if !lockgraph.IsHexSHA256(art.SHA256) {
-		return fmt.Errorf("sha256 must be 64 lowercase hex digits")
-	}
-	if !lockgraph.IsDigest(art.TreeDigest) {
-		return fmt.Errorf("tree_digest must be a sha256 digest")
 	}
 	if art.Strip < 0 {
 		return fmt.Errorf("strip must not be negative")
@@ -133,6 +133,19 @@ func (f *Fetcher) validate(art index.Artifact) error {
 		return fmt.Errorf("binary format requires strip 0")
 	}
 	return validateFiles(art.Files)
+}
+
+func (f *Fetcher) validate(art index.Artifact) error {
+	if err := ValidateSpec(art, f.allow()); err != nil {
+		return err
+	}
+	if !lockgraph.IsHexSHA256(art.SHA256) {
+		return fmt.Errorf("sha256 must be 64 lowercase hex digits")
+	}
+	if !lockgraph.IsDigest(art.TreeDigest) {
+		return fmt.Errorf("tree_digest must be a sha256 digest")
+	}
+	return nil
 }
 
 func (f *Fetcher) allow() func(string) bool {
