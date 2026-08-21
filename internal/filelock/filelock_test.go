@@ -37,7 +37,7 @@ func TestWithReturnsFnError(t *testing.T) {
 		return expectedErr
 	})
 
-	if err != expectedErr {
+	if !errors.Is(err, expectedErr) {
 		t.Fatalf("With() returned %v, want %v", err, expectedErr)
 	}
 }

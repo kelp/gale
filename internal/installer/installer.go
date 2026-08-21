@@ -403,7 +403,7 @@ func replaceStoreDir(storeDir, buildDir string) error {
 	if err := renameDir(buildDir, storeDir); err != nil {
 		if _, statErr := os.Stat(backupDir); statErr == nil {
 			if restoreErr := renameDir(backupDir, storeDir); restoreErr != nil {
-				return fmt.Errorf("replace store dir: %w (restore old store dir: %v)", err, restoreErr)
+				return fmt.Errorf("replace store dir: %w (restore old store dir: %w)", err, restoreErr)
 			}
 		}
 		return fmt.Errorf("replace store dir: %w", err)

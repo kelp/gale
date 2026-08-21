@@ -11,6 +11,14 @@
 
 ### Fixed
 
+- **errorlint.** `TestWithReturnsFnError`
+  now matches with `errors.Is`. Dual
+  failure in `replaceStoreDir` wraps
+  both the promote and restore errors
+  with `%w`. The `issues:` block in
+  `.golangci.yml` stays until the rest
+  of the Code Standards Backlog is gone.
+
 - **forcetypeassert.** The U15 cache-entry
   test took `info.Sys().(*syscall.Stat_t)`
   twice. Both now use comma-ok and fail
