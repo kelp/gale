@@ -78,12 +78,28 @@ func runLint(cmd *cobra.Command, args []string) error {
 }
 
 func looksLikeIndex(data []byte) bool {
+	ok, err := probeIndex(data)
+	return err == nil && ok
+}
+
+func probeIndex(data []byte) (bool, error) {
 	var raw map[string]any
 	if _, err := toml.Decode(string(data), &raw); err != nil {
-		return false
+		return false, err
 	}
 	_, ok := raw["versions"]
-	return ok
+	return ok, nil
+}
+
+func requireIndexDoc(label string, data []byte) error {
+	ok, err := probeIndex(data)
+	if err != nil {
+		return fmt.Errorf("parsing %s: %w", label, err)
+	}
+	if !ok {
+		return fmt.Errorf("lint --base requires index documents")
+	}
+	return nil
 }
 
 func lintIndexWithBase(out *output.Output, base, path string) error {
@@ -95,8 +111,11 @@ func lintIndexWithBase(out *output.Output, base, path string) error {
 	if err != nil {
 		return fmt.Errorf("reading %s: %w", path, err)
 	}
-	if !looksLikeIndex(oldData) || !looksLikeIndex(newData) {
-		return fmt.Errorf("lint --base requires index documents")
+	if err := requireIndexDoc(base, oldData); err != nil {
+		return err
+	}
+	if err := requireIndexDoc(path, newData); err != nil {
+		return err
 	}
 	oldFile, err := index.Parse(oldData)
 	if err != nil {

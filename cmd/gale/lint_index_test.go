@@ -118,6 +118,22 @@ mode = 0o755
 	}
 }
 
+func TestLintIndexBaseMalformedReportsParseError(t *testing.T) {
+	old := writeLintRecipe(t, "old/just.toml", "this is not toml [")
+	path := writeLintRecipe(t, "just.toml", lintIndexTOML())
+	err := runLintWithBase(t, old, path)
+	if err == nil {
+		t.Fatal("lint --base malformed: want error, got nil")
+	}
+	got := err.Error()
+	if strings.Contains(got, "requires index documents") {
+		t.Fatalf("masked TOML error as wrong type: %v", err)
+	}
+	if !strings.Contains(got, "parsing") && !strings.Contains(got, "decode") {
+		t.Fatalf("error should name parse failure, got %v", err)
+	}
+}
+
 func TestLintBaseRequiresOneFile(t *testing.T) {
 	a := writeLintRecipe(t, "just.toml", lintIndexTOML())
 	b := writeLintRecipe(t, "other/just.toml", lintIndexTOML())
