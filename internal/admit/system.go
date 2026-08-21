@@ -25,8 +25,10 @@ func SystemOnly(goos, lib string) bool {
 }
 
 func darwinSystem(lib string) bool {
-	return strings.HasPrefix(lib, "/usr/lib") ||
-		strings.HasPrefix(lib, "/System")
+	return lib == "/usr/lib" ||
+		strings.HasPrefix(lib, "/usr/lib/") ||
+		lib == "/System" ||
+		strings.HasPrefix(lib, "/System/")
 }
 
 func linuxSystem(lib string) bool {

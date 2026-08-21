@@ -40,6 +40,34 @@ func TestClassifyMachOStub(t *testing.T) {
 	}
 }
 
+func TestClassifyFatMachO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "just")
+	if err := os.WriteFile(p, MachOFatARM64Stub(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	kind, arch, err := Classify(p)
+	if err != nil {
+		t.Fatalf("Classify: %v", err)
+	}
+	if kind != KindMachO || arch != "arm64" {
+		t.Fatalf("kind=%v arch=%q, want Mach-O arm64", kind, arch)
+	}
+}
+
+func TestInspectTreeFatMachO(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "just")
+	if err := os.WriteFile(p, MachOFatARM64Stub(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := InspectTree(context.Background(), dir, "darwin", "arm64", stubInsp{
+		libs: []string{"/usr/lib/libSystem.B.dylib"},
+	})
+	if err != nil {
+		t.Fatalf("InspectTree: %v", err)
+	}
+}
+
 func TestClassifyTextIsNotBinary(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "just")
 	if err := os.WriteFile(p, []byte("hello"), 0o644); err != nil {
@@ -59,6 +87,8 @@ func TestSystemOnly(t *testing.T) {
 		{"darwin", "/usr/lib/libSystem.B.dylib", true},
 		{"darwin", "/System/Library/Frameworks/CoreFoundation.framework/CoreFoundation", true},
 		{"darwin", "/opt/homebrew/lib/foo.dylib", false},
+		{"darwin", "/usr/libexec/libfoo.dylib", false},
+		{"darwin", "/Systematics/libfoo.dylib", false},
 		{"linux", "linux-vdso.so.1", true},
 		{"linux", "/lib64/ld-linux-x86-64.so.2", true},
 		{"linux", "/lib/x86_64-linux-gnu/libc.so.6", true},

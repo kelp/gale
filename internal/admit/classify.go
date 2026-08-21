@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"strings"
 )
 
 // Kind is the object format of an inspectable binary.
@@ -52,15 +53,35 @@ func classifyELF(path string) (Kind, string, error) {
 
 func classifyMachO(path string) (Kind, string, error) {
 	f, err := macho.Open(path)
-	if err != nil {
+	if err == nil {
+		defer f.Close()
+		arch, err := machoArch(f.Cpu)
+		if err != nil {
+			return KindNone, "", err
+		}
+		return KindMachO, arch, nil
+	}
+	fat, fatErr := macho.OpenFat(path)
+	if fatErr != nil {
 		return KindNone, "", err
 	}
-	defer f.Close()
-	arch, err := machoArch(f.Cpu)
-	if err != nil {
-		return KindNone, "", err
+	defer fat.Close()
+	return classifyFat(fat)
+}
+
+func classifyFat(fat *macho.FatFile) (Kind, string, error) {
+	var arches []string
+	for _, a := range fat.Arches {
+		arch, err := machoArch(a.Cpu)
+		if err != nil {
+			return KindNone, "", err
+		}
+		arches = append(arches, arch)
 	}
-	return KindMachO, arch, nil
+	if len(arches) == 0 {
+		return KindNone, "", fmt.Errorf("fat Mach-O has no arches")
+	}
+	return KindMachO, strings.Join(arches, ","), nil
 }
 
 func elfArch(m elf.Machine) (string, error) {
@@ -93,6 +114,24 @@ func MachOARM64Stub() []byte {
 	binary.LittleEndian.PutUint32(b[4:], uint32(macho.CpuArm64))
 	binary.LittleEndian.PutUint32(b[12:], uint32(macho.TypeExec))
 	return b[:]
+}
+
+// MachOFatARM64Stub is a one-arch universal binary wrapping
+// MachOARM64Stub. macho.Open rejects it; OpenFat must accept it.
+func MachOFatARM64Stub() []byte {
+	thin := MachOARM64Stub()
+	const offset, thinSize = 32, 32
+	if len(thin) != thinSize {
+		panic("MachOARM64Stub size")
+	}
+	b := make([]byte, offset+thinSize)
+	binary.BigEndian.PutUint32(b[0:], macho.MagicFat)
+	binary.BigEndian.PutUint32(b[4:], 1)
+	binary.BigEndian.PutUint32(b[8:], uint32(macho.CpuArm64))
+	binary.BigEndian.PutUint32(b[16:], offset)
+	binary.BigEndian.PutUint32(b[20:], thinSize)
+	copy(b[offset:], thin)
+	return b
 }
 
 // ELFStub is a minimal ELF64 header debug/elf can parse.

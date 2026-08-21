@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"strings"
 )
 
 // Inspector runs host tools against one binary. Tests inject it.
@@ -66,7 +67,7 @@ func inspectFile(a inspectArgs) error {
 	if err := matchKind(goos, kind, rel(tree, p)); err != nil {
 		return err
 	}
-	if arch != goarch {
+	if !archAllowed(arch, goarch) {
 		return fmt.Errorf("arch %s: got %s, want %s", rel(tree, p), arch, goarch)
 	}
 	if kind == KindMachO {
@@ -85,6 +86,18 @@ func inspectFile(a inspectArgs) error {
 	}
 	*found = true
 	return nil
+}
+
+func archAllowed(got, want string) bool {
+	if got == want {
+		return true
+	}
+	for _, a := range strings.Split(got, ",") {
+		if a == want {
+			return true
+		}
+	}
+	return false
 }
 
 func matchKind(goos string, kind Kind, rel string) error {
