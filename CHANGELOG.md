@@ -18,6 +18,12 @@
 
 ### Added
 
+- **First ten indexed.** gale-recipes `main` now has
+  Darwin/arm64 catalog documents for `jq`, `ripgrep`,
+  `fd`, `just`, `gh`, `go`, `gofumpt`, `golangci-lint`,
+  `direnv`, and `uv`. Every `tree_digest` came from
+  `gale admit`.
+
 - **Directory file maps.** `PlaceMapped` copies a
   directory `src` when dest mode is 0755. Nested
   dest directories are 0755. Regular-file children
