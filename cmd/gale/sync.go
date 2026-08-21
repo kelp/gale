@@ -338,7 +338,18 @@ func syncDrifted(q driftQuery) bool {
 		if lockedGenerationDrifted(q.galeDir, q.storeRoot, q.plan) {
 			return true
 		}
-	} else if generationDrifted(
+		want, err := lockedRebuildPackages(q.plan)
+		if err != nil {
+			return true
+		}
+		// Package versions can match while the shared farm is
+		// wrong. Walk the lock's roots, not gale.toml's bare
+		// pins: FarmStoreDirs floats a bare pin to the highest
+		// on-disk revision, which can hide farm drift for the
+		// locked generation.
+		return farmDrifted(want, q.storeRoot)
+	}
+	if generationDrifted(
 		q.galeDir, q.storeRoot, q.declared, q.pinResolve,
 	) {
 		return true

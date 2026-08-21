@@ -12,8 +12,11 @@
 ### Changed
 
 - **`gale sync` rebuilds when the shared farm drifted.**
-  Package versions can already match. Without this, the
-  doctor farm-drift remedy (`gale sync`) was a no-op after
+  Package versions can already match. A locked sync
+  walks the lock's roots, not gale.toml's bare pins,
+  so an orphan higher revision cannot hide farm drift
+  for the locked generation. Without this, the doctor
+  farm-drift remedy (`gale sync`) was a no-op after
   `--repair` went away.
 
 - **`gale gc` keeps the previous generation.**
