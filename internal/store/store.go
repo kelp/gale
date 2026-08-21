@@ -38,7 +38,7 @@ func NewStore(root string) *Store {
 // rather than a real installed version. ".build-*" staging dirs,
 // "<version>.bak" backups, and "<version>.stream" streaming-extract
 // staging dirs can appear briefly while commitStaged /
-// replaceStoreDir / FetchAndExtractTarZstd runs, and non-locking
+// replaceStoreDir / fetch staging runs, and non-locking
 // readers must skip them.
 func isTransientStoreEntry(name string) bool {
 	return strings.HasPrefix(name, ".build-") ||

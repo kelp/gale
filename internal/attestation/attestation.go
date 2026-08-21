@@ -35,10 +35,9 @@ type Verifier interface {
 	// Attestations API and verifying it against the file's
 	// SHA256 digest.
 	VerifyFile(filePath, repo string) error
-	// VerifyOCI verifies a Sigstore bundle (JSONL) that gale
-	// already fetched from the registry's OCI referrers
-	// against the image manifest digest ("sha256:<hex>" or
-	// bare hex). Runs offline and needs no GitHub token.
+	// VerifyOCI verifies an already-fetched Sigstore bundle
+	// (JSONL) against a digest ("sha256:<hex>" or bare hex).
+	// Runs offline and needs no GitHub token.
 	VerifyOCI(manifestDigest, repo string, bundles []byte) error
 }
 

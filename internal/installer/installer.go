@@ -303,34 +303,17 @@ func (inst *Installer) installLocked(ctx context.Context, r *recipe.Recipe, forc
 	if dest.staged {
 		defer os.RemoveAll(dest.storeDir)
 	}
-	got, err := inst.populateStore(ctx, dest, r)
-	if err != nil {
+	if err := inst.populateStore(dest); err != nil {
 		return nil, err
 	}
-	if dest.staged {
-		// The result is built before the commit rather than after,
-		// because the guard inside commitStaged decides on these
-		// exact values and a refusal must be able to name them.
-		rep := Replacement{
-			CanonicalDir: dest.canonicalDir,
-			StagingDir:   dest.storeDir,
-			Result:       got,
-		}
-		if err := inst.commitStaged(
-			inst.Store.Root, dest.storeDir, rep,
-		); err != nil {
-			return nil, fmt.Errorf("install staged output: %w", err)
-		}
-	}
-	return &got, nil
+	return nil, fmt.Errorf("leftover install succeeded")
 }
 
 // populateStore used to pour a GHCR bottle or compile from
 // source. Both leftovers refuse. Live install is fetch.
-func (inst *Installer) populateStore(_ context.Context, dest installDest, r *recipe.Recipe) (InstallResult, error) {
+func (inst *Installer) populateStore(dest installDest) error {
 	os.RemoveAll(dest.storeDir)
-	_ = r
-	return InstallResult{}, fmt.Errorf(
+	return fmt.Errorf(
 		"%s: %w",
 		lockgraph.Key(dest.name, dest.storeVersion), ErrBottleGone,
 	)

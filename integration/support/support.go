@@ -97,7 +97,8 @@ func createTarGz(srcDir, dst string) error {
 		if info.IsDir() {
 			return nil
 		}
-		rf, err := os.Open(path)
+		// G122 — srcDir is a fixture tree BuildPayloads just listed.
+		rf, err := os.Open(path) //nolint:gosec
 		if err != nil {
 			return err
 		}
