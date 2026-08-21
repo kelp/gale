@@ -28,15 +28,14 @@ var ErrGaleConfigNotFound = errors.New(
 // not exist in the config.
 var ErrPackageNotFound = errors.New("package not found")
 
-// HostConfig is a per-host packages/pinned/bin overlay under
+// HostConfig is a per-host packages/bin overlay under
 // [hosts.<name>] in gale.toml.
 //
-// Frozen: these three tables are the overlay set. Add no keys
+// Frozen: these two tables are the overlay set. Add no keys
 // until fetch is the default (Milestone 2 in
 // docs/dev/proposals/fetch-dont-build.md).
 type HostConfig struct {
 	Packages map[string]string `toml:"packages,omitempty"`
-	Pinned   map[string]bool   `toml:"pinned,omitempty"`
 	Bin      map[string]string `toml:"bin,omitempty"`
 }
 
@@ -44,7 +43,6 @@ type HostConfig struct {
 type GaleConfig struct {
 	Packages map[string]string `toml:"packages"`
 	Vars     map[string]string `toml:"vars,omitempty"`
-	Pinned   map[string]bool   `toml:"pinned,omitempty"`
 	// Bin resolves executable-name collisions: basename → the
 	// package whose copy goes into the generation. Every other
 	// provider's entry for that basename is left out. Without an
@@ -156,30 +154,13 @@ func (c *GaleConfig) PackageOrigins(host string) map[string]string {
 	return out
 }
 
-// ApplyHost replaces Packages, Pinned and Bin with the effective
+// ApplyHost replaces Packages and Bin with the effective
 // merged maps for the given host. Mutates the receiver.
 // Callers that need the raw on-disk view (e.g. mutators) must
 // not call this.
 func (c *GaleConfig) ApplyHost(host string) {
 	c.Packages = c.EffectivePackages(host)
-	c.Pinned = c.EffectivePinned(host)
 	c.Bin = c.EffectiveBin(host)
-}
-
-// EffectivePinned merges shared [pinned] with every matching
-// [hosts.<key>.pinned] overlay, using the same multi-pattern
-// matching and override order as EffectivePackages. Does not
-// mutate the receiver.
-func (c *GaleConfig) EffectivePinned(host string) map[string]bool {
-	out := make(map[string]bool, len(c.Pinned))
-	maps.Copy(out, c.Pinned)
-	if host == "" {
-		return out
-	}
-	for _, k := range matchingHostKeys(c.Hosts, host) {
-		maps.Copy(out, c.Hosts[k].Pinned)
-	}
-	return out
 }
 
 // EffectiveBin merges shared [bin] with every matching
@@ -190,7 +171,7 @@ func (c *GaleConfig) EffectivePinned(host string) map[string]bool {
 // Two machines can need different providers of one basename on
 // PATH, and a manifest-wide winner cannot say so: naming either
 // package drops the basename on the other machine. The overlay is
-// the same answer [packages] and [pinned] already give (gh#219).
+// the same answer [packages] already gives (gh#219).
 func (c *GaleConfig) EffectiveBin(host string) map[string]string {
 	out := make(map[string]string, len(c.Bin))
 	maps.Copy(out, c.Bin)
@@ -741,20 +722,6 @@ func normalizeLegacyHostHeader(content []byte, host string) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
-// hostPinned returns the pinned map for cfg.Hosts[host],
-// creating the host entry if needed.
-func hostPinned(cfg *GaleConfig, host string) map[string]bool {
-	if cfg.Hosts == nil {
-		cfg.Hosts = make(map[string]HostConfig)
-	}
-	h := cfg.Hosts[host]
-	if h.Pinned == nil {
-		h.Pinned = make(map[string]bool)
-	}
-	cfg.Hosts[host] = h
-	return cfg.Hosts[host].Pinned
-}
-
 // UpsertPackage updates a package in gale.toml, preserving its
 // existing location. If the package is present in the current
 // host's section, it is updated there; otherwise it is written
@@ -1079,78 +1046,5 @@ func RemovePackage(path, host, name string) error {
 			return ErrPackageNotFound
 		}
 		return atomicfile.Write(path, modified)
-	})
-}
-
-// PinPackage marks a package as pinned in the gale.toml at path.
-// When host is empty, the pin is recorded in shared [pinned] and
-// the package must exist in shared [packages]. Otherwise the pin
-// is recorded under [hosts.<host>.pinned] and the package must
-// exist in that host's package list. Returns ErrPackageNotFound
-// when the package is not in the targeted section.
-//
-// TODO(0012-0014): PinPackage uses struct round-trip (WriteGaleConfig)
-// which strips comments and drops unknown sections. Convert to text-based
-// edit when setTOMLBoolKey is added.
-func PinPackage(path, host, name string) error {
-	return withFileLock(path, func() error {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading gale config: %w", err)
-		}
-		cfg, err := ParseGaleConfig(string(data))
-		if err != nil {
-			return err
-		}
-
-		if host == "" {
-			if _, ok := cfg.Packages[name]; !ok {
-				return ErrPackageNotFound
-			}
-			if cfg.Pinned == nil {
-				cfg.Pinned = make(map[string]bool)
-			}
-			cfg.Pinned[name] = true
-		} else {
-			h, ok := cfg.Hosts[host]
-			if !ok {
-				return ErrPackageNotFound
-			}
-			if _, ok := h.Packages[name]; !ok {
-				return ErrPackageNotFound
-			}
-			hostPinned(cfg, host)[name] = true
-		}
-
-		return WriteGaleConfig(path, cfg)
-	})
-}
-
-// UnpinPackage removes a pin from the gale.toml at path.
-// When host is empty, removes from shared [pinned]; otherwise
-// from [hosts.<host>.pinned]. Missing pins are a no-op.
-//
-// TODO(0012-0014): UnpinPackage uses struct round-trip (WriteGaleConfig)
-// which strips comments and drops unknown sections. Convert to text-based
-// edit when setTOMLBoolKey is added.
-func UnpinPackage(path, host, name string) error {
-	return withFileLock(path, func() error {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading gale config: %w", err)
-		}
-		cfg, err := ParseGaleConfig(string(data))
-		if err != nil {
-			return err
-		}
-
-		if host == "" {
-			delete(cfg.Pinned, name)
-		} else if h, ok := cfg.Hosts[host]; ok {
-			delete(h.Pinned, name)
-			cfg.Hosts[host] = h
-		}
-
-		return WriteGaleConfig(path, cfg)
 	})
 }

@@ -109,15 +109,15 @@ func TestHostSectionExistsLegacyDottedHeader(t *testing.T) {
 	}
 }
 
-// TestHostSectionExistsPinnedOnlySection: a host declared only via
-// [hosts.<key>.pinned] still exists.
-func TestHostSectionExistsPinnedOnlySection(t *testing.T) {
+// TestHostSectionExistsBinOnlySection: a host declared only via
+// [hosts.<key>.bin] still exists.
+func TestHostSectionExistsBinOnlySection(t *testing.T) {
 	path := writeTempGaleToml(t,
-		"[hosts.\"travis-mb.local\".pinned]\n"+
-			"  rg = true\n")
+		"[hosts.\"travis-mb.local\".bin]\n"+
+			"  rg = \"ripgrep\"\n")
 
 	if !HostSectionExists(path, "travis-mb.local") {
-		t.Error("pinned-only host section should exist")
+		t.Error("bin-only host section should exist")
 	}
 }
 

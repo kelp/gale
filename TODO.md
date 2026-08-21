@@ -108,7 +108,7 @@ Milestone 4 — 193 source recipes still collide.
       `config.toml`. Update gc retention
       tests (gh#247 family). `generations`
       help: list + rollback only.
-- [ ] **Drop pin / unpin.** Remove `[pinned]`,
+- [x] **Drop pin / unpin.** Remove `[pinned]`,
       `gale pin`, `gale unpin`. `gale update`
       updates named packages. Manifest + lock
       are the only version channels.

@@ -368,30 +368,3 @@ func TestRemoveKeepsBinOverrideWhenLoserGoes(t *testing.T) {
 			cfg.Bin["foo"])
 	}
 }
-
-// TestPinPreservesBinOverrides guards the other way a [bin] entry can
-// vanish: PinPackage rewrites gale.toml through a struct round-trip,
-// which drops any section the struct does not carry. [bin] is a field
-// now, so it survives — this test is what keeps it one.
-func TestPinPreservesBinOverrides(t *testing.T) {
-	galeDir, storeRoot := setupGCHome(t)
-	configPath := filepath.Join(galeDir, "gale.toml")
-
-	mkStorePkg(t, storeRoot, "alpha", "1.0")
-	mkStorePkg(t, storeRoot, "beta", "1.0")
-	writeGlobalConfig(t, galeDir,
-		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
-			"[bin]\nfoo = \"beta\"\n")
-
-	if err := config.PinPackage(configPath, "", "beta"); err != nil {
-		t.Fatalf("PinPackage: %v", err)
-	}
-
-	cfg, err := loadEffectiveConfig(configPath)
-	if err != nil {
-		t.Fatalf("config no longer loads: %v", err)
-	}
-	if cfg.Bin["foo"] != "beta" {
-		t.Errorf("[bin] foo = %q after pin, want beta", cfg.Bin["foo"])
-	}
-}

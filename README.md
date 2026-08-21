@@ -150,8 +150,6 @@ gale init                 Set up a project
 gale env                  Print PATH and vars for shell
 gale shell                Open shell with project env
 gale run <cmd>            Run command in project env
-gale pin <pkg>            Pin version, skip on update
-gale unpin <pkg>          Unpin a package
 gale build <recipe>       Build from source
 gale lint <recipe>        Validate a recipe
 gale create-recipe <repo> Generate recipe with AI

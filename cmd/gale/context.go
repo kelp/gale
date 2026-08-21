@@ -648,7 +648,6 @@ func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
 		return nil, err
 	}
 	cfg.Packages = cfg.EffectivePackages(host)
-	cfg.Pinned = cfg.EffectivePinned(host)
 	cfg.Bin = cfg.EffectiveBin(host)
 	// After the host merge, so a [bin] winner declared only under
 	// [hosts.<selector>.packages] validates on the host it applies to,

@@ -46,10 +46,6 @@ install), and rebuilds the generation. The package must
 already be in `gale.toml`; `switch` will not add new
 packages — use `gale install` for that.
 
-Unlike `gale update`, `switch` ignores `[pinned]`: an
-explicit switch is the user's choice and overrides the pin
-guard.
-
 The `gale switch gh@2.89.0` form is accepted too, for
 consistency with `gale install`.
 

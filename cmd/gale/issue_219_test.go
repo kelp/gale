@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/generation"
 )
 
@@ -97,8 +96,8 @@ func TestRebuildGenerationAcceptsManPageCollision(t *testing.T) {
 }
 
 // TestRebuildGenerationHonorsHostScopedBinOverride carries gh#190's
-// escape hatch across the host boundary (gh#219). [packages] and
-// [pinned] both take a [hosts.<selector>.*] overlay; [bin] shipped
+// escape hatch across the host boundary (gh#219). [packages]
+// takes a [hosts.<selector>.*] overlay; [bin] shipped
 // without one, so the only way out of a collision was a single
 // manifest-wide winner. Two machines that each need a different
 // provider on PATH had no answer at all.
@@ -156,34 +155,5 @@ func TestHostScopedBinWinnerNeedsNoSharedDeclaration(t *testing.T) {
 	if got := cfg.Bin["foo"]; got != "beta" {
 		t.Errorf("cfg.Bin[foo] = %q, want beta — the overlay's winner "+
 			"must reach the rebuild's [bin] inputs", got)
-	}
-}
-
-// TestPinPreservesHostScopedBinOverrides is TestPinPreservesBinOverrides
-// for the overlay. PinPackage rewrites gale.toml through a struct
-// round-trip, so any table HostConfig does not carry is dropped on the
-// next pin. HostConfig.Bin is a field now, and this test is what keeps
-// it one.
-func TestPinPreservesHostScopedBinOverrides(t *testing.T) {
-	galeDir, storeRoot := setupGCHome(t)
-	t.Setenv("GALE_HOST", "testhost")
-	configPath := filepath.Join(galeDir, "gale.toml")
-
-	mkStorePkg(t, storeRoot, "alpha", "1.0")
-	mkStorePkg(t, storeRoot, "beta", "1.0")
-	writeGlobalConfig(t, galeDir,
-		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
-			"[hosts.testhost.bin]\nfoo = \"beta\"\n")
-
-	if err := config.PinPackage(configPath, "", "beta"); err != nil {
-		t.Fatalf("PinPackage: %v", err)
-	}
-
-	cfg, err := loadEffectiveConfig(configPath)
-	if err != nil {
-		t.Fatalf("config no longer loads: %v", err)
-	}
-	if got := cfg.Bin["foo"]; got != "beta" {
-		t.Errorf("cfg.Bin[foo] = %q after pin, want beta", got)
 	}
 }

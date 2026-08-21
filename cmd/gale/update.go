@@ -143,18 +143,10 @@ var updateCmd = &cobra.Command{
 					))
 					continue
 				}
-				if cfg.Pinned[name] {
-					warnSkippingPinnedUpdate(out, name, ver)
-					continue
-				}
 				targets[name] = target{current, ver}
 			}
 		} else {
 			for name, ver := range cfg.Packages {
-				if cfg.Pinned[name] {
-					warnSkippingPinnedUpdate(out, name, "")
-					continue
-				}
 				targets[name] = target{ver, ""}
 			}
 		}
@@ -428,33 +420,6 @@ func sortedTargetKeys(keys []string) []string {
 	copy(sorted, keys)
 	sort.Strings(sorted)
 	return sorted
-}
-
-// warnSkippingPinnedUpdate tells the user why update skipped a
-// pinned package and how to move it anyway. An explicit @version
-// on the command line still respects the pin — use switch to
-// bypass it deliberately.
-func warnSkippingPinnedUpdate(
-	out *output.Output, name, reqVersion string,
-) {
-	var msg string
-	if reqVersion != "" {
-		msg = fmt.Sprintf(
-			"skipping %s (pinned) — use "+
-				"'gale switch %s %s' or "+
-				"'gale switch %s@%s' to move to that version, or "+
-				"'gale unpin %s' then 'gale update %s' to track latest",
-			name, name, reqVersion, name, reqVersion, name, name,
-		)
-	} else {
-		msg = fmt.Sprintf(
-			"skipping %s (pinned) — use "+
-				"'gale switch %s <version>' to move to a specific version, or "+
-				"'gale unpin %s' to resume tracking latest",
-			name, name, name,
-		)
-	}
-	out.Warn(msg)
 }
 
 func init() {
