@@ -9,6 +9,15 @@
   advances the related `golang.org/x/{mod,sys,crypto,net,sync,term,tools}`
   transitives.
 
+### Added
+
+- **Unused index client.** `internal/index` can pin one
+  `index_commit` (or an `--index` checkout HEAD) and
+  resolve packages against that snapshot. Network errors
+  fail closed. ETag revalidation is kept; stale-on-error
+  and negative 404 are not. Install still uses recipes.
+  No command is wired yet.
+
 ### Changed
 
 - **`gale generations rollback` is temporary.** It

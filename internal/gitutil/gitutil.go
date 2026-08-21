@@ -2,7 +2,9 @@ package gitutil
 
 import (
 	"bytes"
+	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"strings"
 )
@@ -79,4 +81,70 @@ func RepoURL(repo string) string {
 		return repo
 	}
 	return "https://github.com/" + repo + ".git"
+}
+
+// Head returns the full 40-character SHA of dir's HEAD.
+func Head(ctx context.Context, dir string) (string, error) {
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse: %w", commandErr(ctx, err))
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// Show returns the bytes of path at commit in dir.
+// A missing path wraps os.ErrNotExist.
+func Show(ctx context.Context, dir, commit, path string) ([]byte, error) {
+	spec := commit + ":" + path
+	cmd := exec.CommandContext(ctx, "git", "-C", dir, "show", spec)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		msg := strings.TrimSpace(stderr.String())
+		if isGitMissingPath(msg) {
+			return nil, fmt.Errorf("git show %s: %w", spec, os.ErrNotExist)
+		}
+		return nil, fmt.Errorf("git show %s: %s: %w", spec, msg, commandErr(ctx, err))
+	}
+	return out, nil
+}
+
+// RemoteTip returns the full 40-character SHA of the remote
+// HEAD (or ref) without cloning.
+func RemoteTip(ctx context.Context, repo, ref string) (string, error) {
+	url := RepoURL(repo)
+	target := "HEAD"
+	if ref != "" {
+		target = "refs/heads/" + ref
+	}
+	cmd := exec.CommandContext(ctx, "git", "ls-remote", url, target)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("git ls-remote %s: %s: %w",
+			url, strings.TrimSpace(stderr.String()), commandErr(ctx, err))
+	}
+	line := strings.TrimSpace(string(out))
+	if line == "" {
+		return "", fmt.Errorf("no ref %q found at %s", target, url)
+	}
+	return strings.Fields(line)[0], nil
+}
+
+func commandErr(ctx context.Context, err error) error {
+	if ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
+}
+
+func isGitMissingPath(stderr string) bool {
+	return strings.Contains(stderr, "does not exist") ||
+		strings.Contains(stderr, "exists on disk, but not in") ||
+		strings.Contains(stderr, "bad object") ||
+		strings.Contains(stderr, "invalid object") ||
+		strings.Contains(stderr, "path not in")
 }

@@ -158,7 +158,7 @@ only installer. Index all ten. Ship
 "fetch"` flag. macOS-first. Serial is
 fine.
 
-- [ ] **Index client.** Resolve a whole
+- [x] **Index client.** Resolve a whole
       install / update / lock / outdated
       run against **one** `index_commit`
       (or `--index` checkout HEAD).
