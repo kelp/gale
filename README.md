@@ -139,7 +139,7 @@ gale list                 List packages in manifest
 gale info <pkg>           Show package metadata
 gale outdated             Show available updates
 gale which <binary>       Find which package owns it
-gale doctor               Diagnose setup issues
+gale doctor               Check PATH, lock, generation, digests
 gale gc                   Clean unused versions + gens
 gale generations          List generations or roll back one step
 gale init                 Set up a project

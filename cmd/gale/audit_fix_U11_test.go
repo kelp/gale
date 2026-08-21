@@ -4,11 +4,9 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/output"
 )
 
 // --- gh#72: install --host <other-host> is declaration-only ---
@@ -201,61 +199,5 @@ func TestDoctorUnderGlobalHomeNoNestedGaleDir(t *testing.T) {
 	nested := filepath.Join(galeDir, ".gale")
 	if _, err := os.Stat(nested); err == nil {
 		t.Errorf("doctor created bogus %s", nested)
-	}
-}
-
-// TestCheckProjectConfigUnderGlobalHome pins the gh#96
-// double-report: from inside ~/.gale, checkProjectConfig must
-// not report the global config as a project config or copy
-// the global package set into projPkgs.
-func TestCheckProjectConfigUnderGlobalHome(t *testing.T) {
-	galeDir := globalHomeFixture(t,
-		"[packages]\njq = \"1.7\"\nrg = \"14.0\"\n")
-
-	var buf bytes.Buffer
-	ctx := &doctorContext{
-		galeDir:    galeDir,
-		storeRoot:  filepath.Join(galeDir, "pkg"),
-		cwd:        galeDir,
-		globalPkgs: map[string]string{},
-		projPkgs:   map[string]string{},
-		out:        output.NewWithOptions(&buf, output.Options{}),
-	}
-	if !checkProjectConfig(ctx) {
-		t.Fatalf("checkProjectConfig failed: %s", buf.String())
-	}
-	if len(ctx.projPkgs) != 0 {
-		t.Errorf("global config double-reported as project: "+
-			"projPkgs = %v", ctx.projPkgs)
-	}
-	if strings.Contains(buf.String(), "Project config") {
-		t.Errorf("global config reported as project config: %q",
-			buf.String())
-	}
-}
-
-// TestCheckHostOverridesUnderGlobalHomeNoDoubleCount pins the
-// gh#96 double-count: from inside ~/.gale, the global
-// config's overrides were appended a second time as
-// "project" overrides.
-func TestCheckHostOverridesUnderGlobalHomeNoDoubleCount(t *testing.T) {
-	t.Setenv("GALE_HOST", "testhost")
-	galeDir := globalHomeFixture(t,
-		"[packages]\njq = \"1.7\"\n\n"+
-			"[hosts.testhost.packages]\njq = \"1.8\"\n")
-
-	var buf bytes.Buffer
-	ctx := &doctorContext{
-		galeDir:    galeDir,
-		storeRoot:  filepath.Join(galeDir, "pkg"),
-		cwd:        galeDir,
-		globalPkgs: map[string]string{},
-		projPkgs:   map[string]string{},
-		out:        output.NewWithOptions(&buf, output.Options{}),
-	}
-	checkHostOverrides(ctx)
-	if !strings.Contains(buf.String(), "shadows 1 shared") {
-		t.Errorf("expected exactly 1 shadow reported (not "+
-			"double-counted); got: %q", buf.String())
 	}
 }

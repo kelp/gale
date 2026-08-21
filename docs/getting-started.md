@@ -101,7 +101,9 @@ gale install go
 gale doctor
 ```
 
-Doctor checks your PATH, config files, and store.
+Doctor checks PATH, that the lock is readable,
+that the generation matches lock roots, and that
+tree digests match.
 Fix anything it reports before continuing.
 
 ## Project Environments (Optional)

@@ -11,6 +11,14 @@
 
 ### Changed
 
+- **Doctor is four checks.** PATH, lock
+  readable, generation matches lock roots,
+  tree digest matches. `--check-registry`
+  is gone. Farm, deps-meta, legacy-lock,
+  and the other novels are gone from
+  doctor. Those packages stay until
+  Milestone 5.
+
 - **Bin collision is a hard error.** Leftover
   `[bin]` and `[hosts.*.bin]` are ignored. Two
   packages shipping the same basename refuse

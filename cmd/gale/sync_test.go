@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/kelp/gale/internal/depsmeta"
@@ -530,3 +531,27 @@ func TestSyncDriftedTrueWhenLockedFarmDiffersFromHighestRevision(t *testing.T) {
 // (design §11), so the line both fixes landed on is gone. The
 // canonical-version invariant they were about lives on in the lock
 // writers, which root r.Package.Full() and nothing else.
+
+func versionedDylibName(t *testing.T) string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "darwin":
+		return "libfake.1.2.3.dylib"
+	case "linux":
+		return "libfake.so.1.2.3"
+	default:
+		t.Skip("farm only supports darwin and linux")
+		return ""
+	}
+}
+
+func fakelibStore(t *testing.T, storeRoot, dylib string) {
+	t.Helper()
+	libDir := filepath.Join(storeRoot, "fakelib", "1.0.0-1", "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(libDir, dylib), []byte("not really elf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

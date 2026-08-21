@@ -330,7 +330,7 @@ Rules:
   younger than `negativeCacheTTL` (1 hour), repeat fetches
   short-circuit to `HTTP 404` without a wire trip. The TTL is
   long enough to dedupe back-to-back read-only command runs
-  (`outdated`, `sbom`, `doctor`) and short enough that a freshly
+  (`outdated`, `sbom`) and short enough that a freshly
   published recipe shows up without manual cache surgery. The
   marker is pruned lazily on read once it expires; only 404s
   are negatively cached (other non-200 responses surface as
