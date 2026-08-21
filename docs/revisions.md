@@ -291,8 +291,8 @@ depends on what holds the directory (gh#200):
 
 A reinstall whose closure cannot be attested commits with no
 provenance record. That is the next step, not a failure:
-converge the closure bottom-up, then `gale lock --refresh
-<pkg>`.
+converge the closure bottom-up. No per-scope command
+replaces the resulting unprovenanced directory.
 
 ## `.versions` index and revisions
 

@@ -28,11 +28,11 @@ type replaceQuery struct {
 	galeHome  string
 	storeRoot string
 	// selfGaleDir is the initiating scope, exempt from its own veto.
-	// Design §13: `gale lock --refresh` exists to move an identity from
+	// Design §13: a replacement exists to move an identity from
 	// one hash to another, so counting the initiating lock's current
-	// value would reject every refresh as a conflict with itself. It is
-	// evaluated against the lock the operation is about to write, which
-	// the caller already holds.
+	// value would reject every replacement as a conflict with itself.
+	// It is evaluated against the lock the operation is about to write,
+	// which the caller already holds.
 	selfGaleDir   string
 	name, version string
 	// targetDir is the exact store directory the replacement destroys,
@@ -151,9 +151,8 @@ func checkReplaceable(q replaceQuery) error {
 // that appeared to work. The order is the instruction: locking a
 // scope before its source packages are rebuilt locks nothing.
 const postMigrate = "run 'gale migrate' to converge the whole machine " +
-	"at once, rebuild the source-method packages it lists, run plain " +
-	"'gale lock' in every scope that is still legacy, then retry " +
-	"--refresh"
+	"at once, rebuild the source-method packages it lists, then run " +
+	"plain 'gale lock' in every scope that is still legacy"
 
 // checkScopeClosure covers what a lock cannot state, and completeness
 // of the reading itself.

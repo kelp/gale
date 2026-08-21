@@ -265,8 +265,11 @@ func TestGCRefusesRebuildOnAnUnusableLock(t *testing.T) {
 	if code := exitCodeFor(err); code != exitLockUnusable {
 		t.Errorf("exit code = %d, want %d (%v)", code, exitLockUnusable, err)
 	}
-	if !strings.Contains(err.Error(), "gale lock --refresh") {
+	if !strings.Contains(err.Error(), "gale lock") {
 		t.Errorf("the refusal must name the remedy, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "--refresh") {
+		t.Errorf("the refusal names deleted --refresh, got: %v", err)
 	}
 	// The refusal is a refusal: the generation is left exactly as it
 	// was, not half-rebuilt.

@@ -198,18 +198,19 @@ to a host section)`.
 
 **The lock cannot be read at all** — legacy schema,
 unknown version, malformed TOML, unknown field, missing
-or malformed guard. Run `gale lock --refresh`. `gale
+or malformed guard. Run `gale lock`. `gale
 doctor` reports this state in either scope. `gale gc
 --force` rebuilds a scope whose lock is beyond repair.
 
 **A store directory attests nothing.** Every package
 installed before enforcement is unprovenanced, so the
-activation gate refuses it. `gale lock --refresh <pkg>`
-refetches, verifies and replaces one directory; `gale
-migrate` does the same in bulk for every binary-method
-package in the closure. Source-method packages cannot be
-migrated this way — `migrate` lists them and what
-rebuilding costs.
+activation gate refuses it. `gale fetch-adopt` will
+refetch, verify and replace one directory (it ships in
+a later release); `gale migrate` does the same today
+in bulk for every binary-method package in the
+closure. Source-method packages cannot be migrated
+this way — `migrate` lists them and what rebuilding
+costs.
 
 **The active generation does not match the lock.** Run
 `gale sync`. This is drift, not tampering: it is what a
@@ -253,10 +254,12 @@ inside direnv.
    ahead of an old build stops that build with the
    guard's error rather than being destroyed by it, but
    stopping is still a broken machine.
-2. Run `gale lock --refresh` in each scope. Plain `gale
-   lock` cannot finish the job on upgrade day: it reads
-   provenance, and pre-upgrade store directories have
-   none.
+2. Run `gale migrate` in each scope (binary-method
+   unprovenanced dirs), then `gale lock` to regenerate
+   the lock. Plain `gale lock` cannot finish the job
+   on upgrade day: it reads provenance, and pre-upgrade
+   store directories have none. `gale fetch-adopt` is
+   the later per-scope refetch.
 3. Or run `gale migrate`, which refetches and replaces
    every unprovenanced binary-method directory in one
    pass, and reports the source-method packages it

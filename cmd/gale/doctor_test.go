@@ -800,7 +800,7 @@ func TestCheckLegacyLockfileReportsBothScopes(t *testing.T) {
 	for _, want := range []string{
 		filepath.Join(galeDir, "gale.lock"),
 		filepath.Join(proj, "gale.lock"),
-		"gale lock --refresh",
+		"gale lock",
 	} {
 		if !strings.Contains(msg, want) {
 			t.Errorf("the report must name %q, got: %q", want, msg)

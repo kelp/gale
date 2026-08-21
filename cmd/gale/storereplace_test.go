@@ -700,7 +700,7 @@ func TestLegacyScopeRefusalNamesTheWholePostMigrateSequence(t *testing.T) {
 			// scope before its source packages are rebuilt locks nothing.
 			at := 0
 			for _, step := range []string{
-				"gale migrate", "rebuild", "gale lock", "--refresh",
+				"gale migrate", "rebuild", "gale lock",
 			} {
 				i := strings.Index(err.Error()[at:], step)
 				if i < 0 {

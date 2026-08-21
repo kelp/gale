@@ -11,6 +11,13 @@
 
 ### Added
 
+- **Unused lock-only v2 writer.** `runLockFetch` pins
+  one `index_commit`, resolves every declared root
+  against that session, and writes a v2 lock. It does
+  not fetch artifacts, register, swap `current`, or
+  write `gale.toml`. `Load` still rejects version 2.
+  Install still uses recipes. No command is wired yet.
+
 - **Unused fetch publication order.** `finalizeFetch`
   takes one mutation lock per scope, stages store
   bytes, registers the project, writes a v2 lock, and
@@ -87,10 +94,16 @@
 
 ### Changed (breaking)
 
+- **`gale lock --refresh` is gone.** `gale lock`
+  writes the lock only. Unprovenanced refetch is
+  `gale fetch-adopt` (not shipped yet). An unusable
+  lock's remedy is `gale lock`. Live `gale lock`
+  still writes v1.
+
 - **`gale doctor --repair` and `--force` are gone.**
   Doctor reports; it does not rebuild a generation,
   delete a store directory, or re-sign a binary.
-  Remedies name `gale sync`, `gale lock --refresh`,
+  Remedies name `gale sync`, `gale lock`,
   or `gale gc`. `gale gc --force` stays. Doctor still
   runs its existing checks; the four-check rewrite is
   a later cut.

@@ -180,12 +180,12 @@ func reportRebuildable(out *output.Output, targets []migrateTarget) {
 	// force=false, so an occupied store directory satisfies the cache
 	// check and returns MethodCached before anything is built or any
 	// record is written — it cannot clear the condition reported
-	// here. `lock --refresh` reinstalls with force, and §13 gives it
-	// permission to replace exactly this directory.
-	out.Info("Rebuild each in the scope that declares it with " +
-		"`gale lock --refresh <pkg>`, which costs a full source build " +
-		"per package. A directory no scope declares cannot be " +
-		"rebuilt; `gale gc` clears it once nothing links it.")
+	// here. The per-scope --refresh flag is gone; no remaining
+	// command replaces a source-built directory in one scope.
+	out.Info("No per-scope command replaces a source-built directory. " +
+		"`gale migrate` lists these packages and does not refetch them. " +
+		"A directory no scope declares cannot be rebuilt; `gale gc` " +
+		"clears it once nothing links it.")
 }
 
 // reportUnresolved names, for each pre-revision source directory, the
@@ -218,8 +218,7 @@ func reportUnresolved(
 	}
 	out.Warn(fmt.Sprintf(
 		"%d source-built %s predate revisions, so each sits in a bare "+
-			"directory migrate cannot refetch and `lock --refresh` does "+
-			"not look at:", len(targets),
+			"directory migrate cannot refetch:", len(targets),
 		plural(len(targets), "package", "packages"),
 	))
 	out.Info("Each stays unattested until it moves, so a locked " +
@@ -283,8 +282,8 @@ func reportPreRevisionRoots(out *output.Output, roots []preRevisionRoot) {
 	// nothing. Unsaid, that reads as the sync having failed.
 	out.Info("A reinstall whose closure cannot be attested commits " +
 		"with no provenance record. That is the next step rather than " +
-		"a failure: converge the closure from the bottom up, then " +
-		"`gale lock --refresh <pkg>`.")
+		"a failure: converge the closure from the bottom up. No " +
+		"per-scope command replaces the resulting directory.")
 }
 
 // reportPreRevisionOrphans names the directories `gale gc` sweeps.

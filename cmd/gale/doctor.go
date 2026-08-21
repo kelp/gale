@@ -457,7 +457,7 @@ func checkLegacyLockfile(ctx *doctorContext) bool {
 	ctx.out.Error(cappedList(
 		fmt.Sprintf("Unusable lockfile in %d scope(s):", len(unusable)),
 		unusable,
-		"Run: gale lock --refresh",
+		"Run: gale lock",
 	))
 	return false
 }

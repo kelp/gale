@@ -66,18 +66,6 @@ type cmdContext struct {
 	// so one list names every platform the lock does not cover.
 	lockMints []lockwrite.Mint
 	mintSkips []lockwrite.PlatformSkip
-
-	// refresh grants `gale lock --refresh` its one added permission:
-	// replacing an occupied canonical store directory that carries no
-	// provenance at all (design §13). It changes nothing else, which
-	// is why it is a flag on the context rather than a second command
-	// path — the resolve, verify, mint and write steps are identical.
-	refresh bool
-	// refreshOnly narrows that permission to the packages the user
-	// named, nil meaning every declared root. It narrows the
-	// permission and never the lock: refreshing destroys bytes, so
-	// naming one package must not replace the others silently.
-	refreshOnly map[string]bool
 }
 
 // newCmdContext resolves the config, store, and installer.
@@ -1344,7 +1332,7 @@ func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
 	switch {
 	case err != nil && !opt.force:
 		return fmt.Errorf(
-			"%w; run 'gale lock --refresh' to regenerate it, or rerun "+
+			"%w; run 'gale lock' to regenerate it, or rerun "+
 				"with --force to rebuild without it", err,
 		)
 	case err != nil:

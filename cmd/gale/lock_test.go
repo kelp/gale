@@ -314,7 +314,7 @@ func TestLockRefusesATargetTheManifestDeclaresNothingFor(t *testing.T) {
 // Adopting it would assert provenance for bytes nothing verified,
 // which is the unverified marker §13 rejected under another name.
 // Replacement is possible, but only through the explicit
-// `--refresh`/`migrate` route, so the refusal has to say which. The
+// `fetch-adopt`/`migrate` route, so the refusal has to say which. The
 // directory is left exactly as it was: this command decided, it did
 // not mutate.
 func TestLockRefusesAnOccupiedUnprovenancedStoreDir(t *testing.T) {
@@ -329,8 +329,11 @@ func TestLockRefusesAnOccupiedUnprovenancedStoreDir(t *testing.T) {
 	if !errors.Is(err, errUnprovenancedStoreDir) {
 		t.Fatalf("runLock error = %v, want errUnprovenancedStoreDir", err)
 	}
-	if !strings.Contains(err.Error(), "--refresh") {
-		t.Errorf("error %q does not name the remedy", err)
+	if strings.Contains(err.Error(), "--refresh") {
+		t.Errorf("error %q names deleted --refresh", err)
+	}
+	if !strings.Contains(err.Error(), "fetch-adopt") {
+		t.Errorf("error %q does not name fetch-adopt", err)
 	}
 
 	if _, statErr := os.Lstat(
@@ -604,7 +607,7 @@ func checkProvenanceFailure(t *testing.T, tc provenanceFailureCase, err error) {
 	if errors.Is(err, errUnprovenancedStoreDir) {
 		t.Errorf("error %q reads as an unprovenanced directory", err)
 	}
-	for _, remedy := range []string{"--refresh", "migrate"} {
+	for _, remedy := range []string{"--refresh", "fetch-adopt", "migrate"} {
 		if strings.Contains(err.Error(), remedy) {
 			t.Errorf("error %q offers %s for a state it cannot repair",
 				err, remedy)
