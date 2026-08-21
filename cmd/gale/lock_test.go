@@ -9,8 +9,6 @@ import (
 	"errors"
 	"io"
 	"io/fs"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -326,55 +324,6 @@ func TestLockRefusesAnOccupiedUnprovenancedStoreDir(t *testing.T) {
 	if _, statErr := os.Lstat(lp); !os.IsNotExist(statErr) {
 		data, _ := os.ReadFile(lp)
 		t.Errorf("a lock was written over an unprovenanced store dir:\n%s", data)
-	}
-}
-
-// TestLockFetchesWhenNothingIsInstalled is acceptance test 31, and
-// the positive half of 36: the canonical directory is absent, so
-// `gale lock` populates it and locks what it verified.
-//
-// A lock writer that could only describe what happened to be
-// installed would be unable to lock a package `gale add` just
-// declared, which is the whole case `gale lock` exists for.
-func TestLockFetchesWhenNothingIsInstalled(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	tarball, sum := sourceTarball(t, "freshpkg")
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, tarball)
-		},
-	))
-	defer srv.Close()
-
-	ctx := lockCtxResolver(t, tmp, "[packages]\n  freshpkg = \"1.0\"\n",
-		func(_ context.Context, name string) (*recipe.Recipe, error) {
-			return &recipe.Recipe{
-				Package: recipe.Package{Name: name, Version: "1.0"},
-				Source: recipe.Source{
-					URL: srv.URL + "/source.tar.gz", SHA256: sum,
-				},
-				Build: recipe.Build{Steps: []string{
-					"mkdir -p $PREFIX/bin",
-					"echo '#!/bin/sh' > $PREFIX/bin/freshpkg",
-					"chmod +x $PREFIX/bin/freshpkg",
-				}},
-			}, nil
-		})
-
-	if err := runLock(ctx, "", discardOutput()); err != nil {
-		t.Fatalf("runLock: %v", err)
-	}
-
-	dir := filepath.Join(ctx.StoreRoot, "freshpkg", "1.0-1")
-	if _, err := os.Lstat(filepath.Join(dir, provenance.File)); err != nil {
-		t.Errorf("no provenance under %s: %v", dir, err)
-	}
-	lf := readLock(t, ctx)
-	if lf.Targets.Default == nil || len(lf.Targets.Default.Roots) != 1 ||
-		lf.Targets.Default.Roots[0] != "freshpkg@1.0-1" {
-		t.Errorf("default target = %+v, want [freshpkg@1.0-1]", lf.Targets.Default)
 	}
 }
 

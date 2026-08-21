@@ -23,6 +23,15 @@ func resolverFor(m map[string]*recipe.Recipe) RecipeResolver {
 	}
 }
 
+func makeRecipe(runtimeDeps []string) *recipe.Recipe {
+	return &recipe.Recipe{
+		Package: recipe.Package{Name: "mypkg", Version: "1.0.0"},
+		Dependencies: recipe.Dependencies{
+			Runtime: runtimeDeps,
+		},
+	}
+}
+
 // curlRecipe builds a minimal curl recipe with the given version and revision.
 func curlRecipe(version string, revision int) *recipe.Recipe {
 	return &recipe.Recipe{
@@ -34,7 +43,7 @@ func curlRecipe(version string, revision int) *recipe.Recipe {
 func TestIsStaleReturnsTrueWhenMetadataMissing(t *testing.T) {
 	dir := t.TempDir()
 	// No metadata file present.
-	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
+	r := makeRecipe([]string{"curl"})
 	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return curlRecipe("8.19.0", 1), nil
 	}
@@ -58,7 +67,7 @@ func TestIsStaleReturnsFalseWhenDepsMatch(t *testing.T) {
 	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
+	r := makeRecipe([]string{"curl"})
 
 	resolverCallCount := 0
 	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
@@ -89,7 +98,7 @@ func TestIsStaleReturnsTrueWhenRevisionBumped(t *testing.T) {
 	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
+	r := makeRecipe([]string{"curl"})
 	resolver := resolverFor(map[string]*recipe.Recipe{
 		"curl": curlRecipe("8.19.0", 2),
 	})
@@ -114,7 +123,7 @@ func TestIsStaleReturnsTrueWhenVersionBumped(t *testing.T) {
 	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
+	r := makeRecipe([]string{"curl"})
 	resolver := resolverFor(map[string]*recipe.Recipe{
 		"curl": curlRecipe("8.20.0", 1),
 	})
@@ -139,7 +148,7 @@ func TestIsStaleReturnsResolverError(t *testing.T) {
 	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
+	r := makeRecipe([]string{"curl"})
 	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return nil, fmt.Errorf("recipe not found: %s", name)
 	}
@@ -164,7 +173,7 @@ func TestIsStaleReturnsFalseForZeroDepPackage(t *testing.T) {
 	}
 
 	// Recipe with no declared deps.
-	r := makeRecipe("mypkg", "1.0.0", nil, nil)
+	r := makeRecipe(nil)
 
 	// Resolver should never be called — there are no deps to resolve.
 	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
@@ -195,7 +204,7 @@ func TestIsStaleIgnoresUndeclaredDepsInMetadata(t *testing.T) {
 		t.Fatalf("setup: %v", err)
 	}
 	// Recipe only declares curl — openssl is no longer a dep.
-	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
+	r := makeRecipe([]string{"curl"})
 
 	resolverCallNames := []string{}
 	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
@@ -291,7 +300,7 @@ func TestIsStaleNilResolverReturn(t *testing.T) {
 	if err := depsmeta.Write(dir, md); err != nil {
 		t.Fatalf("setup: %v", err)
 	}
-	r := makeRecipe("mypkg", "1.0.0", nil, []string{"curl"})
+	r := makeRecipe([]string{"curl"})
 	// Resolver returns nil recipe with no error — the contract described
 	// in installer.go:30 ("Returns nil if the package has no recipe").
 	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {

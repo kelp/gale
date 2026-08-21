@@ -94,14 +94,19 @@ bare dirs are `gale gc` candidates.
 
 ## The shared dylib farm
 
+Rebuild no longer writes `~/.gale/lib`. `internal/farm`
+and Darwin/Linux fixup are deleted. A leftover directory
+on an upgraded machine is ignored until gc mark and
+sweep. The rest of this section is the v0.12 farm
+contract, kept so old store layouts stay readable.
+
 `~/.gale/lib/` is a flat directory of symlinks into the store,
 keyed by library basename. Binaries built under v0.12.0+ carry
 an extra rpath to the farm alongside their per-version rpaths.
 When a dep is upgraded to a SONAME-compatible revision, the
 farm symlink flips to point at the new store dir and every
 dependent binary keeps resolving through `@rpath` without a
-rebuild. Implementation in `internal/farm/`, invoked from the
-installer and from every generation rebuild.
+rebuild. That implementation is gone.
 
 Two classes of basename are farmed, under different rules.
 

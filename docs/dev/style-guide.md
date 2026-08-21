@@ -253,7 +253,7 @@ Key reuse points:
 - `resolveVersionedRecipe` — @version resolution
 - `reportResult` — install/update output
 - `lockfilePath` — derive .lock path from .toml path
-- `build.TmpDir` — scratch space in `~/.gale/tmp/`
+- `store.TmpDir` — scratch space in `~/.gale/tmp/`
 - `download.HashFile` — SHA256 of a file
 
 ### Naming

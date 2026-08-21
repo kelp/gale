@@ -12,9 +12,7 @@ import (
 
 	"github.com/kelp/gale/internal/atomicfile"
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
-	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
@@ -208,27 +206,8 @@ func init() {
 // declared pins, so a package that is nobody's root and somebody's
 // dependency reads as unreferenced. Its OLD closure is never
 // claimed, or the scope would veto its own remove.
-func guardDepopulate(ctx *cmdContext, storeDir, name string) error {
-	farmDir := farm.DirFromStoreDir(storeDir)
-	if farmDir == "" {
-		return nil
-	}
-	self, err := generation.ProposedClaimant(
-		map[string]string{name: ""}, ctx.GaleDir, ctx.StoreRoot,
-	)
-	if err != nil {
-		return err
-	}
-	return farm.GuardStoreRemoval(
-		storeDir, farmDir,
-		append(generation.FarmClaimants(ctx.StoreRoot, ctx.GaleDir), self),
-	)
-}
-
-// dropFromStore performs the guarded removal: the claimant
-// snapshot, the check, the farm depopulate and the store deletion
-// all inside ONE hold of the generation lock, which is itself
-// nested inside the version lock.
+// dropFromStore performs the store deletion inside ONE hold of
+// the generation lock, nested inside the version lock.
 //
 // The earlier call in storeRemovalPlan cannot serve on its own. It
 // runs before the generation rebuild, which takes and releases this
@@ -266,20 +245,6 @@ func dropFromStore(
 			return filelock.With(genLockPath(ctx.StoreRoot), func() error {
 				if beforeGuardedRemoval != nil {
 					beforeGuardedRemoval()
-				}
-				if err := guardDepopulate(ctx, dir, name); err != nil {
-					return err
-				}
-				// Farm cleanup is best-effort: a failure leaves stale
-				// symlinks that `gale inspect` surfaces, pointing into
-				// a store dir that is about to disappear. The deletion
-				// stays inside the generation lock so another scope's
-				// rebuild cannot repopulate this dir between the
-				// depopulate and the delete.
-				if farmDir := farm.DirFromStoreDir(dir); farmDir != "" {
-					if derr := farm.Depopulate(dir, farmDir); derr != nil {
-						out.Warn(fmt.Sprintf("farm depopulate: %v", derr))
-					}
 				}
 				return drop()
 			})
@@ -330,9 +295,6 @@ func storeRemovalPlan(
 			name, version,
 		))
 		return "", nil
-	}
-	if err := guardDepopulate(ctx, storeDir, name); err != nil {
-		return "", err
 	}
 	return storeDir, nil
 }

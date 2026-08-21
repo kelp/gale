@@ -11,6 +11,16 @@
 
 ### Changed
 
+- **Delete `internal/build` and farm.**
+  Source compile, Darwin fixup, patchelf,
+  pkg-config rewrite, and the shared dylib
+  farm are gone. Generation rebuild does
+  not write `~/.gale/lib`. `gale migrate`
+  and leftover source install refuse and
+  name fetch / `gale fetch-adopt`. Scratch
+  dirs use `store.TmpDir`. The depsmeta
+  retention walk stays for gc.
+
 - **Grow the catalog by admission.**
   gale-recipes landed a Darwin/arm64 wave of
   eight appendix A names (`fzf`, `age`,

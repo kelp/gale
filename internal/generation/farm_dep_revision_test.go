@@ -1,13 +1,13 @@
 package generation
 
-// gh#172 — FarmStoreDirs resolved each recorded dep at its
-// exact version-revision, so when a dep's installed revision
-// advanced past the revision recorded in a dependent's
-// .gale-deps.toml the dep dir silently dropped out of the farm
-// (the missing exact dir was skipped by the os.Stat guard).
-// The version pin keeps SONAME/ABI identity; the revision must
-// float to the highest installed revision, exactly as top-level
-// generation entries resolve.
+// gh#172 — FarmStoreDirsStrict resolved each recorded dep at
+// its exact version-revision, so when a dep's installed
+// revision advanced past the revision recorded in a
+// dependent's .gale-deps.toml the dep dir silently dropped
+// out of the walk (the missing exact dir was skipped by the
+// os.Stat guard). The version pin keeps SONAME/ABI identity;
+// the revision must float to the highest installed revision,
+// exactly as top-level generation entries resolve.
 
 import (
 	"path/filepath"
@@ -27,8 +27,8 @@ func containsDir(dirs []string, target string) bool {
 }
 
 // gh#172: a dep recorded at foo 1.2.3 revision 2 whose only
-// on-disk install is foo/1.2.3-3 must still enter the farm at
-// the installed revision. Before the fix, FarmStoreDirs asked
+// on-disk install is foo/1.2.3-3 must still enter the walk at
+// the installed revision. Before the fix, the walker asked
 // the store for the exact "1.2.3-2" dir, which does not exist,
 // and the os.Stat guard dropped it.
 func TestFarmStoreDirsFloatsDepRevisionToInstalled(t *testing.T) {
@@ -50,11 +50,14 @@ func TestFarmStoreDirsFloatsDepRevisionToInstalled(t *testing.T) {
 		t.Fatalf("write mainpkg deps metadata: %v", err)
 	}
 
-	dirs := FarmStoreDirs(map[string]string{"mainpkg": "1.0-1"}, storeRoot)
+	dirs, err := FarmStoreDirsStrict(map[string]string{"mainpkg": "1.0-1"}, storeRoot)
+	if err != nil {
+		t.Fatalf("FarmStoreDirsStrict: %v", err)
+	}
 
 	if !containsDir(dirs, installedDepDir) {
 		t.Errorf(
-			"FarmStoreDirs = %v, want to include %s "+
+			"FarmStoreDirsStrict = %v, want to include %s "+
 				"(dep dropped when installed revision advanced "+
 				"past recorded .gale-deps.toml revision)",
 			dirs, installedDepDir,
@@ -82,11 +85,14 @@ func TestFarmStoreDirsUsesRecordedRevisionWhenInstalled(t *testing.T) {
 		t.Fatalf("write mainpkg deps metadata: %v", err)
 	}
 
-	dirs := FarmStoreDirs(map[string]string{"mainpkg": "1.0-1"}, storeRoot)
+	dirs, err := FarmStoreDirsStrict(map[string]string{"mainpkg": "1.0-1"}, storeRoot)
+	if err != nil {
+		t.Fatalf("FarmStoreDirsStrict: %v", err)
+	}
 
 	if !containsDir(dirs, recordedDepDir) {
 		t.Errorf(
-			"FarmStoreDirs = %v, want to include %s",
+			"FarmStoreDirsStrict = %v, want to include %s",
 			dirs, recordedDepDir,
 		)
 	}

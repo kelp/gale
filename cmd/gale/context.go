@@ -16,7 +16,6 @@ import (
 	"github.com/kelp/gale/internal/activation"
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/index"
@@ -129,7 +128,6 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		Resolver: resolver,
 		Verifier: attestation.NewVerifier(),
 	}
-	wireFarmGuards(inst, galeDir, storeRoot)
 
 	return &cmdContext{
 		GalePath:  galePath,
@@ -143,78 +141,6 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 
 func indexSource(dir string) index.Source {
 	return index.Source{Dir: dir}
-}
-
-// wireFarmGuards attaches design §4's cross-project farm claimant
-// guards to an installer: every farm population and every farm
-// removal it performs is checked against the other scopes' claims
-// first. The initiating scope (galeDir) is excluded from the
-// external set — its claim is the operation itself, and its old
-// closure is superseded, not a veto.
-//
-// Separate from newCmdContext so a test can exercise the real
-// closures. A guard this intricate is exactly the thing a stub
-// cannot be trusted to stand in for: a stub cannot self-veto, which
-// is the failure mode these have.
-func wireFarmGuards(inst *installer.Installer, galeDir, storeRoot string) {
-	external := func() []farm.Claimant {
-		return generation.FarmClaimants(storeRoot, galeDir)
-	}
-	inst.FarmGuard = func(placements []farm.Placement) error {
-		// The initiating scope claims the closure this install
-		// leaves it with, so a second version of a package one
-		// of its own binaries links is refused rather than
-		// silently repointing the shared soname under it. Its
-		// OLD closure is never passed: that would be the verb
-		// veto §4 forbids, deadlocking the scope against its
-		// own update.
-		//
-		// One commit at a time, which is not the same as the
-		// whole operation. A sync installs every root before it
-		// rebuilds, so each call here sees the pre-sync
-		// generation and cannot see a conflict between two roots
-		// that only meet in the final closure. P7 replaces this
-		// with one guarded batch over the whole plan; see
-		// ProposedClaimant's own note.
-		// Staged, like the removal guard, and for one of the same two
-		// reasons: this runs BEFORE the commit, so the canonical dir
-		// still holds the artifact being replaced. Reading it makes
-		// the superseded artifact's own metadata decide whether the
-		// operation may proceed, and a refresh exists precisely
-		// because that artifact is not trustworthy.
-		self, err := generation.ProposedClaimantStaged(
-			placements, galeDir, storeRoot,
-		)
-		if err != nil {
-			return err
-		}
-		return farm.GuardPopulate(placements, append(external(), self))
-	}
-
-	// The other half of the same rule. GuardPopulate can only judge
-	// sonames the proposed closure TOUCHES, so a library the
-	// replacement stops providing is invisible to it, and deleting a
-	// farm entry violates a claim as surely as repointing one does.
-	inst.FarmRemoveGuard = func(
-		placements []farm.Placement, stale []string,
-	) error {
-		// Staged, not resolved, and this is the whole difference
-		// between a guard and a deadlock. The canonical dir still
-		// holds the artifact being replaced, so a claim resolved from
-		// directories would list the very sonames the replacement
-		// drops and refuse the scope's own repair.
-		//
-		// Self is still a claimant: another package in the INITIATING
-		// scope may link a library the refreshed artifact drops, and
-		// that is a real conflict rather than a self-veto.
-		self, err := generation.ProposedClaimantRequired(
-			placements, galeDir, storeRoot,
-		)
-		if err != nil {
-			return err
-		}
-		return farm.GuardRemoveLinks(stale, append(external(), self))
-	}
 }
 
 // registerProject records the project owning configPath in the

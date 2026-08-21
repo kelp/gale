@@ -8,10 +8,8 @@ import (
 	"runtime"
 	"sort"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
@@ -302,16 +300,9 @@ func reportSyncOutcomes(
 			))
 			failures = append(failures, o.resolveErr)
 		case o.installErr != nil:
-			if errors.Is(o.installErr, build.ErrUnsupportedPlatform) {
-				out.Warn(fmt.Sprintf(
-					"%s does not support %s/%s",
-					name, runtime.GOOS, runtime.GOARCH,
-				))
-			} else {
-				out.Warn(fmt.Sprintf(
-					"Failed to install %s: %v", name, o.installErr,
-				))
-			}
+			out.Warn(fmt.Sprintf(
+				"Failed to install %s: %v", name, o.installErr,
+			))
 			failures = append(failures, o.installErr)
 		case dryRun:
 			// After the error cases, not before them. Under a lock the
@@ -363,38 +354,12 @@ func syncDrifted(q driftQuery) bool {
 		if lockedGenerationDrifted(q.galeDir, q.storeRoot, q.plan) {
 			return true
 		}
-		want, err := lockedRebuildPackages(q.plan)
-		if err != nil {
-			return true
-		}
-		// Package versions can match while the shared farm is
-		// wrong. Walk the lock's roots, not gale.toml's bare
-		// pins: FarmStoreDirs floats a bare pin to the highest
-		// on-disk revision, which can hide farm drift for the
-		// locked generation.
-		return farmDrifted(want, q.storeRoot)
+		_, err := lockedRebuildPackages(q.plan)
+		return err != nil
 	}
-	if generationDrifted(
+	return generationDrifted(
 		q.galeDir, q.storeRoot, q.declared, q.pinResolve,
-	) {
-		return true
-	}
-	// Package versions can match while the shared farm is wrong.
-	// finishSync skips the rebuild unless this is true, and that
-	// skip made "Run: gale sync" a no-op for farm drift after
-	// doctor --repair went away.
-	return farmDrifted(q.declared, q.storeRoot)
-}
-
-// farmDrifted reports whether this scope's farm closure is missing
-// or broken. Extra healthy entries from another scope are not
-// drift (CheckDrift type 1 only flags broken links).
-func farmDrifted(pkgs map[string]string, storeRoot string) bool {
-	issues, err := farm.CheckDrift(
-		generation.FarmStoreDirs(pkgs, storeRoot),
-		farm.DirFromStoreRoot(storeRoot),
 	)
-	return err != nil || len(issues) > 0
 }
 
 // lockedGenerationDrifted is generationDrifted's counterpart under a

@@ -16,7 +16,6 @@ import (
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
-	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -28,50 +27,10 @@ import (
 // every candidate with every scope, and only then replace anything,
 // so a refusal costs nothing and one pass leaves the machine in one
 // describable state rather than half of two.
-func runMigrate(ctx *cmdContext, out *output.Output) error {
-	// filepath.Dir(storeRoot) is the global gale dir at either scope,
-	// since the store is shared.
-	galeHome := filepath.Dir(ctx.StoreRoot)
-	scan, err := migrateScan(ctx.StoreRoot,
-		func(name, version string) (*recipe.Recipe, error) {
-			return resolveVersionedRecipe(ctx, name, version)
-		})
-	if err != nil {
-		return err
-	}
-	if len(scan.candidates) == 0 && len(scan.sourceOnly) == 0 {
-		out.Success("Every store directory already attests itself.")
-		return nil
-	}
-	if err := migratePreflight(galeHome, ctx.StoreRoot, scan); err != nil {
-		return err
-	}
-	ordered, err := orderCandidates(scan.candidates, ctx.Resolver)
-	if err != nil {
-		return err
-	}
-	if dryRun {
-		for _, t := range ordered {
-			out.Info(fmt.Sprintf("migrate %s@%s (%s)", t.name, t.version, t.dir))
-		}
-		reportSourceOnly(ctx, galeHome, out, scan.sourceOnly)
-		return nil
-	}
-	var relocated []migrateTarget
-	for _, t := range ordered {
-		moved, err := migrateOne(ctx, galeHome, t, out)
-		if err != nil {
-			return err
-		}
-		if moved {
-			relocated = append(relocated, t)
-		}
-	}
-	if err := finishRelocations(ctx, galeHome, relocated, out); err != nil {
-		return err
-	}
-	reportSourceOnly(ctx, galeHome, out, scan.sourceOnly)
-	return nil
+func runMigrate(_ *cmdContext, _ *output.Output) error {
+	return fmt.Errorf(
+		"gale migrate: pouring bottles without fixup is gone; use gale fetch or gale fetch-adopt",
+	)
 }
 
 // finishRelocations moves every scope off the pre-revision paths and
@@ -110,9 +69,7 @@ func finishRelocations(
 	// check preserves the pre-revision bytes and the run looks safe,
 	// while the farm has already moved underneath the scope that
 	// disagreed.
-	if err := generation.RebuildFarm(ctx.StoreRoot, func() error {
-		return revalidateRelocations(galeHome, ctx.StoreRoot, relocated)
-	}); err != nil {
+	if err := revalidateRelocations(galeHome, ctx.StoreRoot, relocated); err != nil {
 		return err
 	}
 	scopes, err := projects.Scopes(galeHome)
@@ -532,22 +489,9 @@ func plural(n int, one, many string) string {
 // would catch it; for the relocating shape nothing would, because
 // the commit into an absent directory is never guarded.
 //
-// DeferFarm is set for the RELOCATING shape alone, and it is what
-// makes that shape possible at all. Migrate runs machine-wide, so
-// every registered scope is an external farm claimant, and a scope
-// loading a versioned library out of the bare directory claims that
-// soname AT the bare path. The canonical copy proposes the same
-// soname somewhere else, which design §4 tells GuardPopulate to
-// refuse — the guard would veto the one operation that ends the
-// disagreement it is reporting. Deferring costs nothing in the
-// direction that matters: the commit adds a directory and touches
-// neither the pre-revision bytes nor a single farm link, so a
-// failure here leaves the machine exactly as it was, and
-// finishRelocations puts the farm right for every scope at once.
-//
-// The canonical shape keeps the per-commit guard. It replaces bytes
-// in the directory the farm already points at, so its claim and the
-// claimants' agree about the path, and the ordinary rule applies.
+// The relocating shape commits into an absent canonical directory
+// and leaves the pre-revision bytes untouched until the pass
+// finishes. A failure here leaves the machine as it was.
 func migrateOne(
 	ctx *cmdContext, galeHome string, t migrateTarget, out *output.Output,
 ) (bool, error) {
@@ -579,17 +523,14 @@ func migrateOne(
 		out.Info(fmt.Sprintf("Migrating unprovenanced %s@%s...", name, full))
 	}
 
-	prevGuard, prevBinary, prevFarm := ctx.Installer.ReplaceGuard,
-		ctx.Installer.BinaryOnly, ctx.Installer.DeferFarm
+	prevGuard, prevBinary := ctx.Installer.ReplaceGuard, ctx.Installer.BinaryOnly
 	ctx.Installer.ReplaceGuard = func(rep installer.Replacement) error {
 		return checkMigrateCommit(galeHome, ctx.StoreRoot, t, rep)
 	}
 	ctx.Installer.BinaryOnly = true
-	ctx.Installer.DeferFarm = relocating
 	defer func() {
 		ctx.Installer.ReplaceGuard = prevGuard
 		ctx.Installer.BinaryOnly = prevBinary
-		ctx.Installer.DeferFarm = prevFarm
 	}()
 
 	if _, err := ctx.Installer.Reinstall(context.Background(), t.recipe); err != nil {

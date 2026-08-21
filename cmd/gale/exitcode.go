@@ -4,7 +4,6 @@ import (
 	"errors"
 
 	"github.com/kelp/gale/internal/activation"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/lockplan"
@@ -61,13 +60,6 @@ func exitCodeFor(err error) int {
 		// package reading as tampering trains users to ignore the
 		// message that means tampering.
 		return exitActivationDrift
-	case errors.Is(err, farm.ErrClaimConflict):
-		// Before the lock-unusable sentinels: the guard fails closed on
-		// an unreadable claimant by wrapping that scope's lock error,
-		// and regenerating the initiating scope's lock — the class-4
-		// remedy — cannot fix another scope's file. A farm refusal is
-		// always class 3, whatever it wraps.
-		return exitLockIntegrity
 	case errors.Is(err, lockfile.ErrDigestMismatch):
 		// The lock asserts a digest its own contents do not produce,
 		// which §8's table puts in the integrity row beside an artifact

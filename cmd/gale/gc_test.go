@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
@@ -1662,9 +1661,9 @@ func TestSweepBuildScratchSweepsFallbackScratchDir(t *testing.T) {
 	storeRoot := t.TempDir()
 	breakGaleDir(t)
 
-	scratchRoot, err := build.TmpDir()
+	scratchRoot, err := store.TmpDir()
 	if err != nil {
-		t.Fatalf("build.TmpDir: %v", err)
+		t.Fatalf("store.TmpDir: %v", err)
 	}
 	stale := filepath.Join(scratchRoot, "gale-build-deadbeef01")
 	if err := os.Mkdir(stale, 0o700); err != nil {

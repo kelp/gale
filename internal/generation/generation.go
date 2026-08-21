@@ -13,7 +13,6 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/store"
 )
@@ -166,9 +165,9 @@ func genVersions(genDir, storeRoot string) map[string]string {
 // generation" arrives at retention as "this generation references
 // nothing", and the sweep then deletes what it could not see
 // (gh#210). It is the same split AuthoritativeGenerationDirs draws
-// against this walk, and FarmStoreDirsStrict against FarmStoreDirs —
-// tolerate a partial answer where a partial answer is still useful,
-// never where a decision rests on it.
+// against this walk, and FarmStoreDirsStrict against a best-effort
+// walk — tolerate a partial answer where a partial answer is still
+// useful, never where a decision rests on it.
 func genVersionsStrict(
 	genDir, storeRoot string,
 ) (map[string]string, error) {
@@ -384,8 +383,7 @@ func currentGenDir(galeDir string) (string, error) {
 
 // ActiveStoreDirs resolves each (name, version) in pkgs to
 // its on-disk store dir. Returned in an arbitrary order.
-// Seeds FarmStoreDirs, which Build and `gale doctor` use
-// for the shared dylib farm.
+// Used by FarmStoreDirsStrict and `gale doctor`.
 func ActiveStoreDirs(pkgs map[string]string, storeRoot string) []string {
 	active := make([]string, 0, len(pkgs))
 	for name, version := range pkgs {
@@ -409,37 +407,16 @@ func ActiveVersions(pkgs map[string]string, storeRoot string) map[string]string 
 	return out
 }
 
-// FarmStoreDirs returns the store dirs whose versioned dylibs
-// belong in the shared farm: the resolved dir for every package
-// in pkgs plus the transitive dep closure recorded in each
-// dir's .gale-deps.toml. Runtime deps are farmed at install
-// time but never appear in gale.toml, so rebuilding the farm
-// from the config set alone deletes the entries dependents'
-// rpaths resolve through (gh#43). Dep dirs missing from the
-// store are skipped — the farm can only link what's on disk.
-// Visited dirs are not re-expanded, so dep cycles terminate.
-func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
-	dirs, _ := farmStoreDirs(pkgs, storeRoot, func(dir string, err error) error {
-		// Best-effort: an unreadable metadata file must
-		// not fail the whole farm rebuild.
-		fmt.Fprintf(os.Stderr,
-			"farm: read deps metadata in %s: %v\n", dir, err)
-		return nil
-	})
-	return dirs
-}
-
-// FarmStoreDirsStrict is FarmStoreDirs for callers that must not
-// act on a partial answer: an unreadable .gale-deps.toml stops the
-// walk and returns the error instead of warning past it.
+// FarmStoreDirsStrict returns the store dirs reachable from pkgs
+// plus each dir's recorded runtime closure. An unreadable
+// .gale-deps.toml stops the walk and returns the error instead of
+// warning past it.
 //
-// The farm claimant walk needs this. FarmStoreDirs' leniency is
-// correct for a rebuild, which should still repair every link it
-// can read, and wrong for a claim: a claim that quietly omits a
-// dep permits exactly the mutation it existed to refuse. It is the
-// same split the provenance reader draws against depsmeta's
-// leniency — tolerate a partial answer where a partial answer is
-// still useful, never where a decision rests on it.
+// gc uses this: a decision that destroys bytes must not act on a
+// partial answer. It is the same split the provenance reader draws
+// against depsmeta's leniency — tolerate a partial answer where a
+// partial answer is still useful, never where a decision rests on
+// it.
 //
 // Strict about an UNREADABLE record, deliberately not about an
 // ABSENT one. Both walks read through depsmeta.Read, which decodes a
@@ -537,11 +514,11 @@ func farmStoreDirs(
 			// SONAME/ABI identity; the revision floats to what is
 			// actually on disk, matching how top-level generation
 			// entries resolve. Pinning the recorded dep.Revision
-			// exactly dropped a dep from the farm whenever its
-			// installed revision advanced past the revision a
-			// dependent recorded in .gale-deps.toml (gh#172). The
-			// recorded revision still drives staleness elsewhere;
-			// this floats only farm resolution.
+			// exactly dropped a dep whenever its installed
+			// revision advanced past the revision a dependent
+			// recorded in .gale-deps.toml (gh#172). The recorded
+			// revision still drives staleness elsewhere; this
+			// floats only store-dir resolution.
 			depDir := resolveStoreDir(storeRoot, dep.Name, dep.Version)
 			if !seen[depDir] {
 				seen[depDir] = true
@@ -550,55 +527,6 @@ func farmStoreDirs(
 		}
 	}
 	return out, nil
-}
-
-// beforeFarmPublish runs between the current-symlink swap and the
-// publication of the staged farm image. nil in production; a test
-// sets it to observe the one interval the split opens, which no
-// caller can otherwise reach.
-var beforeFarmPublish func()
-
-// stageFarm builds the farm image a rebuild boundary will publish,
-// which is every part of the farm work that can fail. Its error says
-// the generation was not activated, because at every call site
-// nothing has moved yet.
-func stageFarm(dirs []string, storeRoot string, genNum int) (*farm.Staged, error) {
-	staged, err := farm.Stage(dirs, farm.DirFromStoreRoot(storeRoot))
-	if err != nil {
-		return nil, fmt.Errorf(
-			"the shared library farm for generation %d could not be "+
-				"built, so it was not activated: %w", genNum, err,
-		)
-	}
-	return staged, nil
-}
-
-// publishFarm makes the staged image live, after the swap that
-// activated genNum.
-//
-// The swap is the activation commit point, so a failure here does
-// not roll the generation back: undoing a completed swap would be a
-// second fallible transaction. It is not swallowed either. The farm
-// is what binaries resolve their dylibs through, so an incomplete
-// one is a real failure the caller must see, and a line on stderr
-// inside a direnv hook is invisible (design revision 6, section 6).
-//
-// What makes that acceptable is that publication is N renames
-// within one directory — the same class as the swap it follows —
-// while everything that realistically fails already ran in
-// stageFarm.
-func publishFarm(staged *farm.Staged, genNum int) error {
-	if beforeFarmPublish != nil {
-		beforeFarmPublish()
-	}
-	if err := staged.Publish(); err != nil {
-		return fmt.Errorf(
-			"generation %d is active, but the shared library farm is "+
-				"incomplete; run gale sync again to repair it: %w",
-			genNum, err,
-		)
-	}
-	return nil
 }
 
 //go:embed gale-readme.md
@@ -772,46 +700,9 @@ func build(pkgs map[string]string, galeDir, storeRoot string, opts Options) erro
 			return err
 		}
 
-		// Run the cross-project farm guard BEFORE the swap: a
-		// refusal must leave the previous generation active and
-		// the farm untouched (design §4). The returned set is
-		// the proposed closure plus every other scope's claim,
-		// so the wipe-and-recreate rebuild below cannot delete
-		// a soname only another scope's binaries resolve.
-		active, err := guardedRebuildDirs(pkgs, galeDir, storeRoot)
-		if err != nil {
-			cleanup()
-			return err
-		}
-
-		// Build the shared-lib farm image from this generation's
-		// packages plus their recorded dep closure (gh#43) and
-		// every other scope's claimed closure. Older revisions may
-		// still be in the store (awaiting `gale gc`), but they
-		// aren't on PATH, aren't claimed, and must not leak into
-		// the farm.
-		//
-		// BEFORE the swap, because this is the fallible half and
-		// the swap is the activation commit point: a failure here
-		// leaves the previous generation active and the farm
-		// exactly as it was (gh#184). Building the whole farm
-		// before the swap instead would commit a farm ahead of its
-		// generation, which is the rollback this code has always
-		// refused to attempt.
-		staged, err := stageFarm(active, storeRoot, next)
-		if err != nil {
-			cleanup()
-			return err
-		}
-		defer staged.Discard()
-
 		// Atomic swap: create a temporary symlink then rename.
 		if err := swapCurrentSymlink(galeDir, next); err != nil {
 			cleanup()
-			return err
-		}
-
-		if err := publishFarm(staged, next); err != nil {
 			return err
 		}
 

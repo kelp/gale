@@ -7,11 +7,9 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/provenance"
-	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -218,84 +216,4 @@ func depEdges(kind lockgraph.Kind, deps []depsmeta.ResolvedDep) []lockgraph.Edge
 		})
 	}
 	return edges
-}
-
-// sourceArtifact describes bytes this machine built. version is passed
-// rather than derived: a git install's identity comes from the commit
-// hash, not from the recipe's declared version. The artifact hash is
-// deliberately absent — the extraction path takes it from the build
-// result, so there is only ever one answer to what was produced.
-func sourceArtifact(
-	r *recipe.Recipe, version string, deps *build.BuildDeps,
-) commitArtifact {
-	buildDeps, ok := buildEdgeDeps(r, deps)
-	return commitArtifact{
-		Name:            r.Package.Name,
-		Version:         version,
-		Method:          lockgraph.MethodSource,
-		BuildDeps:       buildDeps,
-		ClosureUnusable: !ok,
-	}
-}
-
-// buildEdgeDeps names the build dependencies a source artifact was
-// produced from: the effective direct build list, implicit system
-// tools included, resolved through the build environment's named dirs.
-// ok is false when any declared name did not resolve.
-//
-// Direct, not transitive. NamedDirs holds the entire build
-// environment — build and runtime, transitively — and recording all of
-// it would attest a dependency set the recipe never named, and would
-// move a package's digest whenever an unrelated tool deep in the
-// toolchain moved. Each recorded dependency's own record names its
-// closure, so nothing is lost.
-//
-// The completeness check is the point of returning ok.
-// FromNamedDirsFiltered silently drops a name it cannot resolve, which
-// would leave a record attesting fewer build edges than the recipe
-// declared — a narrower claim that still looks complete. Unresolved
-// means unusable, not omitted.
-func buildEdgeDeps(
-	r *recipe.Recipe, deps *build.BuildDeps,
-) ([]depsmeta.ResolvedDep, bool) {
-	effective, _ := build.EffectiveDeps(
-		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
-		r.Build.System,
-	)
-	names := dedupe(effective.Build)
-	var namedDirs map[string]string
-	if deps != nil {
-		namedDirs = deps.NamedDirs
-	}
-	resolved := depsmeta.FromNamedDirsFiltered(namedDirs, names)
-	if len(resolved) != len(names) {
-		return nil, false
-	}
-	return resolved, true
-}
-
-// dedupe returns names with duplicates removed, preserving order. A
-// recipe may list a build dep twice, and FromNamedDirsFiltered returns
-// one entry per name, so the counts would not otherwise compare.
-func dedupe(names []string) []string {
-	seen := make(map[string]bool, len(names))
-	out := make([]string, 0, len(names))
-	for _, n := range names {
-		if !seen[n] {
-			seen[n] = true
-			out = append(out, n)
-		}
-	}
-	return out
-}
-
-// canonicalVersion spells a store version the way provenance and the
-// lockfile identify it. A git install stores under a bare commit hash,
-// whose canonical identity is "<hash>-1"; store.ResolveDir bridges the
-// canonical identity back to the physical directory.
-func canonicalVersion(version string) string {
-	if store.HasNumericRevisionSuffix(version) {
-		return version
-	}
-	return version + "-1"
 }
