@@ -11,6 +11,14 @@
 
 ### Added
 
+- **`gale admit`.** Extracts a local archive with
+  Gale's installer path, records `tree_digest`, and
+  prints an index artifact fragment. It checks arch,
+  Darwin codesign, and system-only linkage. It
+  refuses symlinks and hardlinks. It does not write
+  the store, lock, or `gale.toml`, and it does not
+  set `attestation`.
+
 - **Unused lock-only v2 writer.** `runLockFetch` pins
   one `index_commit`, resolves every declared root
   against that session, and writes a v2 lock. It does
