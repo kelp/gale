@@ -109,14 +109,12 @@ func TestGCRetainsGenerationsAboveCurrent(t *testing.T) {
 		t.Fatalf("gc failed: %v", err)
 	}
 
-	if _, err := os.Stat(env.jq18); err != nil {
-		t.Errorf("jq/1.8-1 is linked by gen/2, the branch above "+
-			"current, whose directory gc keeps — its store dir must "+
-			"survive too: %v", err)
+	if _, err := os.Stat(env.jq18); !os.IsNotExist(err) {
+		t.Errorf("jq/1.8-1 is linked only by abandoned gen/2 and must be swept, err=%v", err)
 	}
-	assertGenerationWhole(
-		t, filepath.Join(env.galeDir, "gen", "2"), "sits above current",
-	)
+	if _, err := os.Stat(filepath.Join(env.galeDir, "gen", "2")); !os.IsNotExist(err) {
+		t.Errorf("abandoned gen/2 above current must be swept, err=%v", err)
+	}
 
 	if _, err := os.Stat(fd); !os.IsNotExist(err) {
 		t.Errorf("fd/9.0-1 is referenced by nothing and must be "+
@@ -175,19 +173,24 @@ func TestGCRetainsProjectBranchAboveCurrent(t *testing.T) {
 	mkActiveGen(t, projGale, 1, filepath.Join(jq17, "bin", "jq"))
 	mkActiveGen(t, projGale, 2, filepath.Join(jq18, "bin", "jq"))
 	mkActiveGen(t, projGale, 1) // rolled back to gen/1
+	if err := os.WriteFile(
+		filepath.Join(os.Getenv("HOME"), ".gale", "projects"),
+		[]byte(proj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(proj)
 
 	if err := gcCmd.RunE(gcCmd, nil); err != nil {
 		t.Fatalf("gc failed: %v", err)
 	}
 
-	if _, err := os.Stat(jq18); err != nil {
-		t.Errorf("jq/1.8-1 is linked by the project's gen/2, above "+
-			"its current, and must survive gc: %v", err)
+	if _, err := os.Stat(jq18); !os.IsNotExist(err) {
+		t.Errorf("project abandoned gen/2 target must be swept, err=%v", err)
 	}
-	assertGenerationWhole(
-		t, filepath.Join(projGale, "gen", "2"), "sits above the project's current",
-	)
+	if _, err := os.Stat(filepath.Join(projGale, "gen", "2")); !os.IsNotExist(err) {
+		t.Errorf("abandoned project gen/2 must be swept, err=%v", err)
+	}
 }
 
 // TestGCProjectKeepsPreviousGeneration exercises the keep-2
@@ -211,6 +214,12 @@ func TestGCProjectKeepsPreviousGeneration(t *testing.T) {
 	mkActiveGen(t, projGale, 1, filepath.Join(jq16, "bin", "jq"))
 	mkActiveGen(t, projGale, 2, filepath.Join(jq17, "bin", "jq"))
 	mkActiveGen(t, projGale, 3, filepath.Join(jq18, "bin", "jq"))
+	if err := os.WriteFile(
+		filepath.Join(os.Getenv("HOME"), ".gale", "projects"),
+		[]byte(proj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(proj)
 
 	if err := gcCmd.RunE(gcCmd, nil); err != nil {
@@ -330,14 +339,12 @@ func TestGCRetainsRegisteredProjectBranchAboveCurrent(t *testing.T) {
 		t.Fatalf("gc failed: %v", err)
 	}
 
-	if _, err := os.Stat(jq18); err != nil {
-		t.Errorf("jq/1.8-1 is linked only by a REGISTERED "+
-			"project's gen/2, above its current, and must survive "+
-			"gc: %v", err)
+	if _, err := os.Stat(jq18); !os.IsNotExist(err) {
+		t.Errorf("registered project's abandoned gen/2 target must be swept, err=%v", err)
 	}
-	assertGenerationWhole(
-		t, filepath.Join(projGale, "gen", "2"), "sits above the registered project's current",
-	)
+	if _, err := os.Stat(filepath.Join(projGale, "gen", "2")); !os.IsNotExist(err) {
+		t.Errorf("abandoned registered gen/2 must be swept, err=%v", err)
+	}
 	if _, err := os.Stat(fd); !os.IsNotExist(err) {
 		t.Errorf("fd/9.0-1 is unreferenced and must be removed "+
 			"(proves the sweep ran), err=%v", err)
@@ -367,17 +374,12 @@ func TestGCRetainsHostOverlayPinsWithBranchAboveCurrent(t *testing.T) {
 		t.Fatalf("gc failed: %v", err)
 	}
 
-	if _, err := os.Stat(fd); err != nil {
-		t.Errorf("fd/9.0-1 is pinned by another host's overlay and "+
-			"must survive gc: %v", err)
+	if _, err := os.Stat(fd); !os.IsNotExist(err) {
+		t.Errorf("host overlay pin with no kept-gen link must be swept, err=%v", err)
 	}
-	if _, err := os.Stat(jq18); err != nil {
-		t.Errorf("jq/1.8-1 is linked by gen/2, above current, and "+
-			"must survive gc: %v", err)
+	if _, err := os.Stat(jq18); !os.IsNotExist(err) {
+		t.Errorf("abandoned gen/2 target must be swept, err=%v", err)
 	}
-	assertGenerationWhole(
-		t, filepath.Join(galeDir, "gen", "2"), "sits above current",
-	)
 }
 
 // TestRollbackRefusesIncompleteGeneration is gh#247's second

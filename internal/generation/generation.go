@@ -805,6 +805,64 @@ func RetainedNumbers(galeDir string) ([]int, error) {
 	return retainedNumbers(galeDir)
 }
 
+// KeptNumbers is current plus at most one lower generation
+// number. Abandoned generations above current after a rollback
+// are not kept. A missing current symlink keeps nothing. The
+// active number is always included so a dangling current
+// reaches KeptStoreDirs as an unreadable generation.
+func KeptNumbers(galeDir string) ([]int, error) {
+	cur, err := Current(galeDir)
+	if err != nil {
+		return nil, fmt.Errorf("read current: %w", err)
+	}
+	if cur <= 0 {
+		return nil, nil
+	}
+	nums, err := genNumbers(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	prev := cur - 1
+	if prev >= 1 && slices.Contains(nums, prev) {
+		return []int{prev, cur}, nil
+	}
+	return []int{cur}, nil
+}
+
+// KeptStoreDirs walks the two kept generations' symlink
+// targets and returns each exact owner path, including
+// fetch/<name>/<version>-<sha12>. An unreadable kept
+// generation is an error naming the number.
+func KeptStoreDirs(galeDir, storeRoot string) ([]string, error) {
+	nums, err := KeptNumbers(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, n := range nums {
+		dirs, err := storeDirsWalk(
+			filepath.Join(galeDir, "gen", strconv.Itoa(n)),
+			storeRoot,
+			func(err error) error { return err },
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"reading kept generation %d: %w", n, err,
+			)
+		}
+		for _, dir := range dirs {
+			if _, ok := seen[dir]; ok {
+				continue
+			}
+			seen[dir] = struct{}{}
+			out = append(out, dir)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
 // RetainedVersionsStrict returns every package version the
 // retained generations link, as name → versions. gc keys its
 // retention set from it, so a generation whose directory gc keeps
@@ -842,8 +900,7 @@ func RetainedVersionsStrict(
 		)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"reading retained generation %d: %w; rerun "+
-					"gc with --force", n, err,
+				"reading retained generation %d: %w", n, err,
 			)
 		}
 		for name, version := range pkgs {

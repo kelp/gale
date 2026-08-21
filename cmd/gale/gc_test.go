@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
@@ -44,7 +43,7 @@ func TestCollectReferencedPackages(t *testing.T) {
 	// should fall back to the raw config keys so unresolved
 	// references still register.
 	s := store.NewStore(t.TempDir())
-	ref, err := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -78,7 +77,7 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 	}
 
 	s := store.NewStore(t.TempDir())
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -116,7 +115,7 @@ func TestCollectReferencedPackagesResolvesBareToCanonical(t *testing.T) {
 	}
 
 	s := store.NewStore(storeRoot)
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -236,7 +235,7 @@ func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -284,7 +283,7 @@ func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -388,7 +387,7 @@ func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -543,20 +542,7 @@ func TestGCIgnoresConfigKeep(t *testing.T) {
 // for package versions and generation directories
 // rather than conflating them into a single counter.
 func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (gh#214)
-
-	// Create a project dir with an empty config (no
-	// referenced packages) and a store with one
-	// unreferenced package plus old generations.
-	projDir := t.TempDir()
-	configPath := filepath.Join(projDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Set up the store with an unreferenced package.
-	storeRoot := filepath.Join(projDir, "store")
+	galeDir, storeRoot := setupGCHome(t)
 	pkgDir := filepath.Join(
 		storeRoot, "oldpkg", "0.1", "bin",
 	)
@@ -564,11 +550,6 @@ func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Set up generations: gen/1 below the keep-2 window,
-	// gen/2 previous, gen/3 current. Without a gen below
-	// the cutoff, dry-run prints "Nothing to clean up"
-	// and the wording assertion is vacuous.
-	galeDir := filepath.Join(projDir, ".gale")
 	for _, n := range []string{"1", "2", "3"} {
 		d := filepath.Join(galeDir, "gen", n, "bin")
 		if err := os.MkdirAll(d, 0o755); err != nil {
@@ -581,9 +562,6 @@ func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
 	); err != nil {
 		t.Fatal(err)
 	}
-
-	// Run gc in dry-run mode and capture stderr.
-	chdirTo(t, projDir)
 
 	dryRun = true
 	t.Cleanup(func() { dryRun = false })
@@ -680,7 +658,7 @@ func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
 	})
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, nil,
+		globalDir, "", s, resolver,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -737,7 +715,7 @@ func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
 	})
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, nil,
+		globalDir, "", s, resolver,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -783,7 +761,7 @@ func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
 	s := store.NewStore(storeRoot)
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, nil, nil,
+		globalDir, "", s, nil,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -956,10 +934,7 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := store.NewStore(storeRoot)
-	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil,
-	)
+	ref, err := collectKeptRetentionKeys(globalDir, storeRoot)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -968,17 +943,12 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 		t.Error("jq@1.6 (linked by registered project's active " +
 			"generation) must be retained")
 	}
-	if !ref["jq@1.7"] {
-		t.Error("jq@1.7 (pinned by registered project's config) " +
-			"must be retained")
+	if ref["jq@1.7"] {
+		t.Error("jq@1.7 is only a config pin and must not be retained")
 	}
 	if ref["fd@9.0"] {
 		t.Error("fd@9.0 is unreferenced everywhere and must " +
 			"not be retained")
-	}
-	if len(retained) != 1 || retained[0] != otherProj {
-		t.Errorf("retained projects: want [%s], got %v",
-			otherProj, retained)
 	}
 }
 
@@ -996,19 +966,12 @@ func TestGCRetentionSkipsVanishedRegisteredProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := store.NewStore(storeRoot)
-	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil,
-	)
+	ref, err := collectKeptRetentionKeys(globalDir, storeRoot)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
 	if len(ref) != 0 {
 		t.Errorf("vanished project must add no refs: %v", ref)
-	}
-	if len(retained) != 0 {
-		t.Errorf("vanished project must not be listed as "+
-			"contributing: %v", retained)
 	}
 }
 
@@ -1467,7 +1430,15 @@ func TestGCRefusesSweepWhenRegisteredProjectConfigUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("unreadable config is not a retention source: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "jq", "1.6")); err != nil {
+		t.Errorf("gen-linked jq@1.6 must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "fd", "9.0")); !os.IsNotExist(err) {
+		t.Errorf("unreferenced fd must be swept, err=%v", err)
+	}
 }
 
 // TestGCRefusesSweepWhenProjectGenerationUnreadable pins the
@@ -1516,77 +1487,6 @@ func TestGCRefusesSweepWhenProjectGenerationWalkUnreadable(t *testing.T) {
 // The metadata path is a directory, so os.ReadFile returns EISDIR
 // — a non-ENOENT error, which absence must not be confused with:
 // depsmeta.Read reports a missing file as an empty closure.
-func TestGCRefusesSweepWhenDepsMetadataUnreadable(t *testing.T) {
-	storeRoot, _ := gcUnreadableProjectFixture(t)
-
-	// jq@1.7 is pinned by the registered project, so it is in the
-	// retention set whose closure gets expanded.
-	metaPath := filepath.Join(
-		storeRoot, "jq", "1.7", depsmeta.File,
-	)
-	if err := os.Mkdir(metaPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	assertGCRefused(
-		t, gcCmd.RunE(gcCmd, nil),
-		filepath.Join(storeRoot, "jq", "1.7"), storeRoot,
-	)
-}
-
-// TestGCForceSweepsDespiteUnreadableGenerationWalk verifies the
-// gh#210 refusals reuse gh#188's one escape hatch rather than
-// adding a second: --force restores the old lenient behavior for
-// the generation walk too. fd@9.0 is unreferenced everywhere, so
-// its removal proves the sweep ran.
-func TestGCForceSweepsDespiteUnreadableGenerationWalk(t *testing.T) {
-	storeRoot, proj := gcUnreadableProjectFixture(t)
-
-	breakGenerationWalk(t, filepath.Join(proj, ".gale"))
-
-	gcForce = true
-	t.Cleanup(func() { gcForce = false })
-
-	if err := gcCmd.RunE(gcCmd, nil); err != nil {
-		t.Fatalf("gc --force must sweep anyway: %v", err)
-	}
-	if _, err := os.Stat(
-		filepath.Join(storeRoot, "fd", "9.0"),
-	); !os.IsNotExist(err) {
-		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
-			"gc --force (proves the sweep ran), err=%v", err)
-	}
-}
-
-// TestGCForceSweepsDespiteUnreadableProject verifies the escape
-// hatch gh#188 asks for: --force restores the old behavior
-// explicitly, so a user who knows the mount is gone for good can
-// still reclaim space. fd@9.0 is unreferenced everywhere, so its
-// removal proves the sweep ran rather than being skipped.
-func TestGCForceSweepsDespiteUnreadableProject(t *testing.T) {
-	storeRoot, proj := gcUnreadableProjectFixture(t)
-
-	cfgPath := filepath.Join(proj, "gale.toml")
-	if err := os.Remove(cfgPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(cfgPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	gcForce = true
-	t.Cleanup(func() { gcForce = false })
-
-	if err := gcCmd.RunE(gcCmd, nil); err != nil {
-		t.Fatalf("gc --force must sweep anyway: %v", err)
-	}
-	if _, err := os.Stat(
-		filepath.Join(storeRoot, "fd", "9.0"),
-	); !os.IsNotExist(err) {
-		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
-			"gc --force (proves the sweep ran), err=%v", err)
-	}
-}
 
 // TestGCRetentionToleratesMissingConfigs guards the other half
 // of the gh#188 split: a config that is absent references
@@ -1595,19 +1495,12 @@ func TestGCForceSweepsDespiteUnreadableProject(t *testing.T) {
 // install, where no gale.toml exists yet.
 func TestGCRetentionToleratesMissingConfigs(t *testing.T) {
 	globalDir := t.TempDir() // no gale.toml, no projects registry
-	s := store.NewStore(t.TempDir())
-
-	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil,
-	)
+	ref, err := collectKeptRetentionKeys(globalDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("a missing config must not block the sweep: %v", err)
 	}
 	if len(ref) != 0 {
 		t.Errorf("nothing is installed or pinned: %v", ref)
-	}
-	if len(retained) != 0 {
-		t.Errorf("no project contributed retention: %v", retained)
 	}
 }
 
@@ -1626,10 +1519,13 @@ func TestGCRefusesSweepWhenRegisteredProjectConfigUnparsable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("unparsable config is not a retention source: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "jq", "1.6")); err != nil {
+		t.Errorf("gen-linked jq@1.6 must survive: %v", err)
+	}
 }
-
-// --- gh#235: gc surfaces an unreachable scratch dir ---
 
 // TestSweepBuildScratchErrorsWhenNoScratchDirAvailable covers the
 // one call site that could not simply propagate: sweepBuildScratch

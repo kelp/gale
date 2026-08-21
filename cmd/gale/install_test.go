@@ -375,7 +375,6 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
 	cmds := map[string]*cobra.Command{
 		"outdated": outdatedCmd,
-		"gc":       gcCmd,
 	}
 
 	for name, cmd := range cmds {
@@ -427,7 +426,6 @@ func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
 func TestRecipesFlagWordingIsAccurate(t *testing.T) {
 	cmds := map[string]*cobra.Command{
 		"outdated": outdatedCmd,
-		"gc":       gcCmd,
 	}
 
 	for name, cmd := range cmds {

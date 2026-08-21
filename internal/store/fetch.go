@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 )
 
@@ -74,6 +75,150 @@ func (s *Store) FetchExists(name, version, artifactSHA256 string) (bool, error) 
 		return false, fmt.Errorf("fetch exists: %w", err)
 	}
 	return len(entries) > 0, nil
+}
+
+// FetchIdentity is one fetch/<name>/<version>-<sha12> directory.
+type FetchIdentity struct {
+	Name    string
+	Version string
+	SHA12   string
+}
+
+// Rel is the store-relative owner path gc marks and sweeps.
+func (id FetchIdentity) Rel() string {
+	return filepath.Join(FetchNamespace, id.Name, id.Version+"-"+id.SHA12)
+}
+
+// ErrIncompleteFetchIdentity reports a RemoveFetch call that
+// is not a complete sha12 identity.
+var ErrIncompleteFetchIdentity = errors.New("fetch identity is incomplete")
+
+const fetchStagingPrefix = ".tmp-"
+
+func parseFetchDirName(dir string) (version, sha12 string, ok bool) {
+	i := strings.LastIndex(dir, "-")
+	if i <= 0 || len(dir)-i-1 != sha12Len {
+		return "", "", false
+	}
+	sha := dir[i+1:]
+	if !isHex(sha) {
+		return "", "", false
+	}
+	return dir[:i], strings.ToLower(sha), true
+}
+
+func isHex(s string) bool {
+	if s == "" {
+		return false
+	}
+	_, err := hex.DecodeString(s)
+	return err == nil && len(s)%2 == 0
+}
+
+func canonicalFetchSHA12(sha string) (string, error) {
+	if len(sha) != sha12Len || !isHex(sha) {
+		return "", fmt.Errorf("remove fetch: %w", ErrIncompleteFetchIdentity)
+	}
+	return strings.ToLower(sha), nil
+}
+
+// ListFetch returns every complete fetch/<name>/<version>-<sha12>
+// identity. Staging dirs and prefix siblings are omitted.
+func (s *Store) ListFetch() ([]FetchIdentity, error) {
+	ns := filepath.Join(s.Root, FetchNamespace)
+	nameEntries, err := os.ReadDir(ns)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("list fetch: %w", err)
+	}
+	var out []FetchIdentity
+	for _, nameEntry := range nameEntries {
+		if !nameEntry.IsDir() || strings.HasPrefix(nameEntry.Name(), fetchStagingPrefix) {
+			continue
+		}
+		name := nameEntry.Name()
+		if !safeComponent(name) || isReservedName(name) {
+			continue
+		}
+		verEntries, err := os.ReadDir(filepath.Join(ns, name))
+		if err != nil {
+			return nil, fmt.Errorf("list fetch %s: %w", name, err)
+		}
+		for _, verEntry := range verEntries {
+			if !verEntry.IsDir() {
+				continue
+			}
+			version, sha12, ok := parseFetchDirName(verEntry.Name())
+			if !ok || !safeComponent(version) {
+				continue
+			}
+			out = append(out, FetchIdentity{
+				Name: name, Version: version, SHA12: sha12,
+			})
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name != out[j].Name {
+			return out[i].Name < out[j].Name
+		}
+		if out[i].Version != out[j].Version {
+			return out[i].Version < out[j].Version
+		}
+		return out[i].SHA12 < out[j].SHA12
+	})
+	return out, nil
+}
+
+// RemoveFetch deletes one sha12 identity. It refuses the
+// reserved name and any identity that is not version + 12 hex.
+func (s *Store) RemoveFetch(name, version, sha string) error {
+	if isReservedName(name) {
+		return fmt.Errorf("remove fetch %s@%s: %w",
+			name, version, ErrReservedName)
+	}
+	if !safeComponent(name) || !safeComponent(version) {
+		return fmt.Errorf("remove fetch %s@%s: %w",
+			name, version, ErrIncompleteFetchIdentity)
+	}
+	sha12, err := canonicalFetchSHA12(sha)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Join(s.Root, FetchNamespace, name, version+"-"+sha12)
+	if _, err := os.Stat(dir); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove fetch %s@%s-%s: %w",
+				name, version, sha12, ErrNotInstalled)
+		}
+		return fmt.Errorf("stat fetch identity: %w", err)
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("remove fetch identity: %w", err)
+	}
+	return cleanupEmptyNameDir(filepath.Join(s.Root, FetchNamespace), name)
+}
+
+// FetchStagingAlive reports whether any pkg/fetch/.tmp-*
+// entry exists and returns those paths.
+func (s *Store) FetchStagingAlive() (bool, []string, error) {
+	ns := filepath.Join(s.Root, FetchNamespace)
+	entries, err := os.ReadDir(ns)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return false, nil, nil
+		}
+		return false, nil, fmt.Errorf("list fetch staging: %w", err)
+	}
+	var paths []string
+	for _, e := range entries {
+		if strings.HasPrefix(e.Name(), fetchStagingPrefix) {
+			paths = append(paths, filepath.Join(ns, e.Name()))
+		}
+	}
+	sort.Strings(paths)
+	return len(paths) > 0, paths, nil
 }
 
 func canonicalArtifactSHA256(s string) (string, error) {

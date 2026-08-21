@@ -140,14 +140,15 @@ Rollback and gc generation rebuild must not write
 
 ```
 gc
-  → load config + project registry (~/.gale/projects)
-  → compute retention set (active gens, deps metadata, canonical keys)
-  → prune store / generations / scratch
-  → optional generation rebuild when active gen links superseded orphan
+  → prune vanished projects
+  → acquire each scope's mutate.lock (sorted), then generation.lock
+  → mark exact symlink targets of current + one previous gen
+  → sweep unreferenced store / fetch / old gens / scratch
 ```
 
-Retention must match `storeRetentionKey` / canonicalize logic
-in `context.go`, not ad-hoc `store.List` string compares.
+Retention is `generation.KeptStoreDirs` for every
+`projects.Scopes` entry, not config pins or
+`storeRetentionKey`.
 
 ## Pre-change trace (tier ≥ 2)
 

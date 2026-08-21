@@ -169,8 +169,8 @@ func Rollback(galeDir, storeRoot string, target int) error {
 			return fmt.Errorf(
 				"refusing to activate generation %d: %w; run "+
 					"`gale sync` to rebuild from config, or "+
-					"`gale gc --force` to sweep it after it "+
-					"falls below current",
+					"`gale gc` after it falls below the two "+
+					"kept generations",
 				target, err,
 			)
 		}

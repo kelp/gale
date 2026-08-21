@@ -200,8 +200,8 @@ unknown version, malformed TOML, unknown field, missing
 or malformed guard. A legacy lock names
 `gale fetch-adopt`. An unreadable file reports the
 load error. `gale doctor` reports this state in
-either scope. `gale gc --force` does not rebuild
-past a present unusable lock.
+either scope. `gale gc` does not rebuild
+a generation.
 
 **A store directory attests nothing.** Every package
 installed before enforcement is unprovenanced, so the
