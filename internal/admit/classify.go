@@ -154,3 +154,30 @@ func ELFStub(goarch string) []byte {
 	binary.LittleEndian.PutUint16(b[52:], 64)
 	return b
 }
+
+// ELFInterpStub is a minimal ELF64 with PT_INTERP. Tests use it
+// to prove DynamicLibs reads the loader path without ldd.
+func ELFInterpStub(goarch, interp string) []byte {
+	hdr := ELFStub(goarch)
+	const (
+		ehsize    = 64
+		phentsize = 56
+		phoff     = 64
+	)
+	interp = strings.TrimRight(interp, "\x00") + "\x00"
+	off := phoff + phentsize
+	b := make([]byte, off+len(interp))
+	copy(b, hdr)
+	binary.LittleEndian.PutUint64(b[32:], phoff)
+	binary.LittleEndian.PutUint16(b[52:], ehsize)
+	binary.LittleEndian.PutUint16(b[54:], phentsize)
+	binary.LittleEndian.PutUint16(b[56:], 1)
+	binary.LittleEndian.PutUint32(b[phoff:], 3) // PT_INTERP
+	binary.LittleEndian.PutUint32(b[phoff+4:], 4)
+	binary.LittleEndian.PutUint64(b[phoff+8:], uint64(off))
+	binary.LittleEndian.PutUint64(b[phoff+32:], uint64(len(interp)))
+	binary.LittleEndian.PutUint64(b[phoff+40:], uint64(len(interp)))
+	binary.LittleEndian.PutUint64(b[phoff+48:], 1)
+	copy(b[off:], interp)
+	return b
+}

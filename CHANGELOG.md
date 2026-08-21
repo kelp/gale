@@ -15,9 +15,10 @@
   Gale's installer path, records `tree_digest`, and
   prints an index artifact fragment. It checks arch,
   Darwin codesign, and system-only linkage from
-  object headers (not `ldd` or `otool`). Linux
-  system libraries must be a trusted soname or live
-  under a system lib directory. It
+  object headers (not `ldd` or `otool`), including
+  the ELF `PT_INTERP` loader. Linux system libraries
+  must be a trusted bare soname or an absolute path
+  that cleans to a system lib directory. It
   refuses symlinks and hardlinks. It does not write
   the store, lock, or `gale.toml`, and it does not
   set `attestation`.

@@ -4,6 +4,7 @@ import (
 	"debug/elf"
 	"debug/macho"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 )
@@ -46,14 +47,36 @@ func elfNeeded(path string) ([]string, error) {
 		return nil, fmt.Errorf("read ELF deps: %w", err)
 	}
 	defer f.Close()
-	if f.SectionByType(elf.SHT_DYNAMIC) == nil {
-		return nil, nil
+	interp, err := elfInterp(f)
+	if err != nil {
+		return nil, err
 	}
-	libs, err := f.ImportedLibraries()
+	var libs []string
+	if interp != "" {
+		libs = append(libs, interp)
+	}
+	if f.SectionByType(elf.SHT_DYNAMIC) == nil {
+		return libs, nil
+	}
+	needed, err := f.ImportedLibraries()
 	if err != nil {
 		return nil, fmt.Errorf("read ELF deps: %w", err)
 	}
-	return libs, nil
+	return append(libs, needed...), nil
+}
+
+func elfInterp(f *elf.File) (string, error) {
+	for _, p := range f.Progs {
+		if p.Type != elf.PT_INTERP {
+			continue
+		}
+		data, err := io.ReadAll(p.Open())
+		if err != nil {
+			return "", fmt.Errorf("read ELF interpreter: %w", err)
+		}
+		return strings.TrimRight(string(data), "\x00"), nil
+	}
+	return "", nil
 }
 
 func machoDylibs(path string) ([]string, error) {

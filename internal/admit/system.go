@@ -7,9 +7,9 @@ import (
 )
 
 // SystemOnly reports whether lib is a permitted system dependency
-// for goos. Darwin allows /usr/lib/ and /System/. Linux allows
-// the vDSO by soname, and the loader or libc only when the path
-// is under a system lib directory (or the entry is a bare soname).
+// for goos. Darwin allows /usr/lib/ and /System/ after path.Clean.
+// Linux allows a bare vDSO/loader/libc soname, or an absolute
+// loader/libc path that cleans to a system lib directory.
 func SystemOnly(goos, lib string) bool {
 	lib = strings.TrimSpace(lib)
 	if lib == "" {
@@ -26,6 +26,10 @@ func SystemOnly(goos, lib string) bool {
 }
 
 func darwinSystem(lib string) bool {
+	if !strings.HasPrefix(lib, "/") {
+		return false
+	}
+	lib = path.Clean(lib)
 	return lib == "/usr/lib" ||
 		strings.HasPrefix(lib, "/usr/lib/") ||
 		lib == "/System" ||
@@ -33,17 +37,24 @@ func darwinSystem(lib string) bool {
 }
 
 func linuxSystem(lib string) bool {
-	base := path.Base(lib)
-	if linuxVDSO(base) {
-		return !strings.HasPrefix(lib, "/")
+	if strings.Contains(lib, "/") {
+		if !strings.HasPrefix(lib, "/") {
+			return false
+		}
+		lib = path.Clean(lib)
+		base := path.Base(lib)
+		if linuxVDSO(base) {
+			return false
+		}
+		if !linuxSystemSoname(base) {
+			return false
+		}
+		return linuxSystemDir(lib)
 	}
-	if !linuxSystemSoname(base) {
-		return false
-	}
-	if !strings.HasPrefix(lib, "/") {
+	if linuxVDSO(lib) {
 		return true
 	}
-	return linuxSystemDir(lib)
+	return linuxSystemSoname(lib)
 }
 
 func linuxVDSO(base string) bool {

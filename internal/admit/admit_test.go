@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -98,6 +99,11 @@ func TestSystemOnly(t *testing.T) {
 		{"linux", "/tmp/ld-linux-x86-64.so.2", false},
 		{"linux", "libc.so.6", true},
 		{"linux", "libc.so.evil", false},
+		{"linux", "opt/foo/libc.so.6", false},
+		{"linux", "/lib/../opt/foo/libc.so.6", false},
+		{"linux", "./libc.so.6", false},
+		{"darwin", "/usr/lib/../opt/foo.dylib", false},
+		{"darwin", "usr/lib/libSystem.B.dylib", false},
 	}
 	for _, tc := range cases {
 		if got := SystemOnly(tc.goos, tc.lib); got != tc.want {
@@ -117,6 +123,36 @@ func TestNativeDynamicLibsParsesELF(t *testing.T) {
 	}
 	if len(libs) != 0 {
 		t.Fatalf("libs = %#v, want none", libs)
+	}
+}
+
+func TestNativeDynamicLibsIncludesInterp(t *testing.T) {
+	const interp = "/opt/evil/ld-linux-x86-64.so.2"
+	p := filepath.Join(t.TempDir(), "just")
+	if err := os.WriteFile(p, ELFInterpStub(runtime.GOARCH, interp), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libs, err := (Native{}).DynamicLibs(p)
+	if err != nil {
+		t.Fatalf("DynamicLibs: %v", err)
+	}
+	if len(libs) != 1 || libs[0] != interp {
+		t.Fatalf("libs = %#v, want [%q]", libs, interp)
+	}
+}
+
+func TestInspectTreeRejectsNonSystemInterp(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "just")
+	if err := os.WriteFile(p, ELFInterpStub(runtime.GOARCH, "/opt/evil/ld-linux-x86-64.so.2"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := InspectTree(context.Background(), dir, "linux", runtime.GOARCH, Native{})
+	if err == nil {
+		t.Fatal("InspectTree succeeded, want non-system interpreter")
+	}
+	if !strings.Contains(err.Error(), "non-system library") {
+		t.Fatalf("err = %v, want non-system library", err)
 	}
 }
 
