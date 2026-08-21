@@ -144,6 +144,40 @@ func TestToStoreOccupiedSymlinkRefuses(t *testing.T) {
 	}
 }
 
+func TestToStoreDirectorySrcPlacesNestedTree(t *testing.T) {
+	fx := newFixture(t)
+	archive := filepath.Join(t.TempDir(), "pkg.tar.gz")
+	writeTarGz(t, archive, []tar.Header{
+		{Name: "prefix/pkg/tool", Mode: 0o755},
+		{Name: "prefix/pkg/nested/readme", Mode: 0o644},
+	}, []string{toolBody, extraBody})
+	fx.serveFile(archive)
+	art := fx.baseArt("tar.gz", 1, []index.FileEntry{{
+		Src: "pkg", Dest: "pkg", Mode: 0o755,
+	}})
+	art.SHA256 = hashFile(t, archive)
+	art.TreeDigest = mappedDigest(t, map[string]fileSpec{
+		"pkg/tool":          {toolBody, 0o755},
+		"pkg/nested/readme": {extraBody, 0o644},
+	})
+	dest := mustToStore(t, fx, "1.56.0", art)
+	if got := string(mustRead(t, filepath.Join(dest, "pkg", "tool"))); got != toolBody {
+		t.Errorf("pkg/tool = %q, want %q", got, toolBody)
+	}
+	if got := filePerm(t, filepath.Join(dest, "pkg", "nested", "readme")); got != 0o644 {
+		t.Errorf("readme mode = %o, want 0644", got)
+	}
+	digest, err := provenance.DigestTree(context.Background(), dest)
+	if err != nil {
+		t.Fatalf("DigestTree: %v", err)
+	}
+	if digest != art.TreeDigest {
+		t.Errorf("DigestTree = %q, want %q", digest, art.TreeDigest)
+	}
+	assertFetchSidecar(t, dest, "1.56.0", art)
+	assertNoStaging(t, fx.store.Root)
+}
+
 func TestToStoreMapFailuresLeaveDestAbsent(t *testing.T) {
 	cases := []struct {
 		name    string

@@ -227,6 +227,48 @@ func TestNativeDynamicLibsParsesFatMachO(t *testing.T) {
 	}
 }
 
+func TestInspectTreeSkipsNonExecutableELF(t *testing.T) {
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin", "just")
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(bin, MachOARM64Stub(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	data := filepath.Join(dir, "src", "debug", "elf", "testdata", "obj.elf")
+	if err := os.MkdirAll(filepath.Dir(data), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(data, ELFStub(runtime.GOARCH), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := InspectTree(context.Background(), dir, "darwin", "arm64", stubInsp{
+		libs: []string{"/usr/lib/libSystem.B.dylib"},
+	})
+	if err != nil {
+		t.Fatalf("InspectTree: %v", err)
+	}
+}
+
+func TestInspectTreeExecutableELFFailsOnDarwin(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "src", "debug", "elf", "testdata", "obj.elf")
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(p, ELFStub(runtime.GOARCH), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	err := InspectTree(context.Background(), dir, "darwin", "arm64", stubInsp{})
+	if err == nil {
+		t.Fatal("InspectTree succeeded, want Mach-O on darwin")
+	}
+	if !strings.Contains(err.Error(), "Mach-O") {
+		t.Fatalf("err = %v, want Mach-O", err)
+	}
+}
+
 func TestInspectTreeNoBinary(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "readme"), []byte("x"), 0o644); err != nil {
