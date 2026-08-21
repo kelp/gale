@@ -11,6 +11,16 @@
 
 ### Changed (breaking)
 
+- **`config.toml` cannot repoint the registry or
+  change download parallelism.** The index URL is
+  compiled in (`registry.DefaultURL`). Leftover
+  `[registry] url` and `[sync] parallelism` are
+  ignored. `GALE_JOBS` is ignored. The limiter stays
+  at 8 until the serial-installer heading. Retention
+  is still the compiled constant 2. `[build]`,
+  `[anthropic]`, and `[[repos]]` stay. `--recipes`
+  remains the local-directory escape hatch.
+
 - **`gale pin` / `gale unpin` and `[pinned]` are gone.**
   Manifest versions and the lock are the only version
   channels. `gale update` updates every named package,

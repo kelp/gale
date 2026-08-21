@@ -3,15 +3,15 @@ package main
 import (
 	"os"
 	"testing"
+
+	"github.com/kelp/gale/internal/config"
 )
 
-// TestNewCmdContextWiresParallelism verifies that the resolved
-// download/sync parallelism (here driven via GALE_JOBS, which
-// config.ResolveParallelism honours first) flows into both the
-// cmdContext and the Installer's Downloads limiter, so one
-// configured number bounds total in-flight downloads.
+// TestNewCmdContextWiresParallelism verifies the compiled
+// limiter size reaches both cmdContext and the Installer's
+// Downloads cap. GALE_JOBS is inert.
 func TestNewCmdContextWiresParallelism(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (project registry)
+	t.Setenv("HOME", t.TempDir())
 	tmp := t.TempDir()
 	if err := os.WriteFile(
 		tmp+"/gale.toml", []byte("[packages]\n"), 0o644,
@@ -28,9 +28,6 @@ func TestNewCmdContextWiresParallelism(t *testing.T) {
 	}
 	t.Cleanup(func() { os.Chdir(origDir) })
 
-	// GALE_JOBS is the highest-precedence input to
-	// config.ResolveParallelism, so it exercises the wiring
-	// without writing a config.toml.
 	t.Setenv("GALE_JOBS", "3")
 
 	ctx, err := newCmdContext("", false, false)
@@ -38,10 +35,11 @@ func TestNewCmdContextWiresParallelism(t *testing.T) {
 		t.Fatalf("newCmdContext: %v", err)
 	}
 
-	if ctx.Parallelism != 3 {
-		t.Errorf("ctx.Parallelism = %d, want 3", ctx.Parallelism)
+	want := config.DefaultParallelism
+	if ctx.Parallelism != want {
+		t.Errorf("ctx.Parallelism = %d, want %d", ctx.Parallelism, want)
 	}
-	if got := ctx.Installer.Downloads.Cap(); got != 3 {
-		t.Errorf("Installer.Downloads cap = %d, want 3", got)
+	if got := ctx.Installer.Downloads.Cap(); got != want {
+		t.Errorf("Installer.Downloads cap = %d, want %d", got, want)
 	}
 }

@@ -689,12 +689,16 @@ Anthropic API key for
 Path to a file appended to the recipe creation
 system prompt.
 .El
-.It Ic [registry]
-.Bl -tag -width "url" -compact
-.It Va url
-Override the recipe registry URL.
 .El
-.El
+.Pp
+The recipe registry URL is compiled in.
+Leftover
+.Ic [registry] url
+and
+.Ic [sync] parallelism
+keys are ignored.
+.Ev GALE_JOBS
+is ignored.
 .Pp
 Package declarations in
 .Pa gale.toml :

@@ -228,9 +228,6 @@ debug = false
 [anthropic]
 api_key = "sk-ant-..."
 prompt_file = "~/.gale/recipe-prompt.md"
-
-[registry]
-url = "https://raw.githubusercontent.com/kelp/gale-recipes/main"
 ```
 
 ### `[build]`
@@ -254,11 +251,10 @@ The prompt file is read on every invocation. Changes
 take effect without rebuilding gale. Use `~/` prefix
 for home-relative paths.
 
-### `[registry]`
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `url` | GitHub raw URL | Override the recipe registry base URL |
+The recipe registry URL is compiled in. Leftover
+`[registry] url` and `[sync] parallelism` keys are
+ignored. `GALE_JOBS` is ignored. A config file cannot
+repoint resolution or change the download limiter.
 
 ### `[[repos]]`
 

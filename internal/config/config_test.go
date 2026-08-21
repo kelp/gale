@@ -563,32 +563,26 @@ func TestParseAppConfigMalformedTOML(t *testing.T) {
 	}
 }
 
-// --- Behavior: Registry URL in AppConfig ---
-
-const appConfigWithRegistry = `
+// TestParseAppConfigIgnoresLeftoverRegistry: leftover
+// [registry] url and [sync] parallelism must parse and
+// must not populate a behavioral field.
+func TestParseAppConfigIgnoresLeftoverRegistry(t *testing.T) {
+	src := `
 [registry]
-url = "https://example.com/recipes"
+url = "https://example.invalid/recipes"
+
+[sync]
+parallelism = 1
+
+[build]
+debug = true
 `
-
-func TestParseAppConfigRegistryURL(t *testing.T) {
-	cfg, err := ParseAppConfig(appConfigWithRegistry)
+	cfg, err := ParseAppConfig(src)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("leftover [registry]/[sync] must parse: %v", err)
 	}
-	if cfg.Registry.URL != "https://example.com/recipes" {
-		t.Errorf("Registry.URL = %q, want %q",
-			cfg.Registry.URL, "https://example.com/recipes")
-	}
-}
-
-func TestParseAppConfigRegistryURLEmpty(t *testing.T) {
-	cfg, err := ParseAppConfig("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Registry.URL != "" {
-		t.Errorf("Registry.URL = %q, want empty",
-			cfg.Registry.URL)
+	if !cfg.Build.Debug {
+		t.Error("Build.Debug = false, want true")
 	}
 }
 
