@@ -11,6 +11,14 @@
 
 ### Fixed
 
+- **forcetypeassert.** The U15 cache-entry
+  test took `info.Sys().(*syscall.Stat_t)`
+  twice. Both now use comma-ok and fail
+  the test if `Sys()` is not
+  `*syscall.Stat_t`. The `issues:` block
+  in `.golangci.yml` stays until the rest
+  of the Code Standards Backlog is gone.
+
 - **predeclared.** Rename `real` and `min`
   locals that shadowed builtins. Four hits
   remain in the tree; the fifth was in
