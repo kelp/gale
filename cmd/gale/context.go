@@ -572,20 +572,15 @@ func rebuildInputs(r genRebuild) (pkgs, binOverrides map[string]string, err erro
 // dir accumulation. Every command that creates a generation
 // (install, update, sync, add, remove, recipe install, ...)
 // routes through rebuildGeneration, so a single hook here
-// covers all of them. Reads the keep
-// count from ~/.gale/config.toml [generation] keep, defaults
-// to DefaultGenerationKeep when unset, treats negative as
-// "disabled."
+// covers all of them. Retention is the compiled constant
+// DefaultGenerationKeep (current + one previous).
 //
 // Errors during prune are surfaced as warnings, not failures —
 // the install / sync that triggered this already succeeded and
 // must not regress because of a cleanup hiccup. Removed gen
 // numbers are reported on stderr so users see what happened.
 func autoPruneGenerations(galeDir, storeRoot string) {
-	keep := loadGenerationKeep()
-	if keep <= 0 {
-		return
-	}
+	keep := config.DefaultGenerationKeep
 	removed, err := generation.PruneOldGenerations(galeDir, storeRoot, keep)
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
@@ -598,21 +593,6 @@ func autoPruneGenerations(galeDir, storeRoot string) {
 	fmt.Fprintf(os.Stderr,
 		"auto-gc: pruned %d old generation(s) (kept last %d): %s\n",
 		len(removed), keep, formatGenList(removed))
-}
-
-// loadGenerationKeep returns the auto-gc retention from
-// ~/.gale/config.toml [generation] keep. Missing or unreadable
-// config falls back to DefaultGenerationKeep so a user who
-// has never created config.toml still gets bounded gen growth.
-//
-// Reads from the global config regardless of caller scope
-// since gen retention is an app-level concern, not per-project.
-func loadGenerationKeep() int {
-	cfg, err := loadAppConfig()
-	if err != nil {
-		return config.DefaultGenerationKeep
-	}
-	return cfg.Generation.EffectiveGenerationKeep()
 }
 
 // formatGenList renders a sorted ascending slice of gen numbers

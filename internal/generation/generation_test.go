@@ -2282,7 +2282,7 @@ func TestRetainedVersionsStrictRefusesUnreadableRetainedGeneration(
 			"retained generation, got %v", got)
 	}
 	for _, want := range []string{
-		"generation 1", "gale generations remove 1", "--force",
+		"generation 1", "--force",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error must mention %q, got: %v", want, err)

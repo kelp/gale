@@ -778,6 +778,9 @@ func TestWriteAppConfigRoundTrip(t *testing.T) {
 		t.Errorf("Repos[0].Name = %q, want %q",
 			parsed.Repos[0].Name, "core")
 	}
+	if strings.Contains(string(data), "keep") {
+		t.Errorf("WriteAppConfig must not emit [generation] keep, got:\n%s", data)
+	}
 }
 
 // --- Behavior: Add repo to config.toml ---

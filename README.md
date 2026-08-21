@@ -145,7 +145,7 @@ gale search <query>       Search by name or description
 gale which <binary>       Find which package owns it
 gale doctor               Diagnose setup issues
 gale gc                   Clean unused versions + gens
-gale generations          List and manage generations
+gale generations          List generations or roll back one step
 gale init                 Set up a project
 gale env                  Print PATH and vars for shell
 gale shell                Open shell with project env

@@ -156,8 +156,8 @@ rollback abandoned.
 Their directories are never removed automatically, so the
 versions they link are never swept either: a generation
 whose packages are gone cannot be rolled onto.
-.Cm generations remove
-is the only way to discard that branch.
+The next rebuild allocates above the highest number;
+keep-2 then prunes history below the new cutoff.
 Generations below the current one are removed, and the
 versions only they linked are reclaimed \(em that is how a
 superseded revision goes after
@@ -333,14 +333,6 @@ directory.
 .Pp
 .Dl $ gale generations
 .Dl $ gale generations -g
-.It Cm generations diff Op Ar from Op Ar to Op Fl g | Fl p
-Show packages added and removed between two
-generations.
-Defaults to comparing the current generation with
-the previous one.
-.Pp
-.Dl $ gale generations diff
-.Dl $ gale generations diff 3 5
 .It Cm generations rollback Op Ar N Op Fl g | Fl p
 Switch to a previous generation.
 Defaults to the previous generation (current \- 1).
@@ -351,20 +343,12 @@ An incomplete generation is one whose store versions are
 gone; activating it would put broken entries on PATH.
 Rebuild from config with
 .Cm sync ,
-or discard it with
-.Cm generations remove .
+or rerun
+.Cm gc Fl -force
+after it falls below current.
 .Pp
 .Dl $ gale generations rollback
 .Dl $ gale generations rollback 3
-.It Cm generations remove Ar N Op Ar N ... Op Fl g | Fl p
-Discard the named generations.
-Refuses the current generation.
-Removes nothing when any argument is not a generation.
-Generations above the current one, left by a rollback, are
-never removed automatically.
-.Pp
-.Dl $ gale generations remove 7
-.Dl $ gale generations remove 6 7 8
 .El
 .Ss Project Environment
 .Bl -tag -width Ds
