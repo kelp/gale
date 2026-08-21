@@ -286,6 +286,7 @@ func TestLintStrictKeepsIssueOutput(t *testing.T) {
 // --strict, and returns the command's error.
 func runLintCmd(t *testing.T, path string, strict bool) error {
 	t.Helper()
+	resetLintFlags(t)
 	flag := lintCmd.Flags().Lookup("strict")
 	if flag == nil {
 		if !strict {
@@ -298,9 +299,6 @@ func runLintCmd(t *testing.T, path string, strict bool) error {
 	); err != nil {
 		t.Fatalf("setting --strict=%v: %v", strict, err)
 	}
-	t.Cleanup(func() {
-		_ = lintCmd.Flags().Set("strict", "false")
-	})
 	return lintCmd.RunE(lintCmd, []string{path})
 }
 

@@ -377,17 +377,25 @@ Use
 for unoptimized builds with debug symbols.
 .Pp
 .Dl $ gale build recipes/j/jq.toml
-.It Cm lint Ar recipe.toml ... Op Fl -strict
-Validate one or more recipe files for errors and
-warnings.
-Exit non-zero when a recipe has an error.
+.It Cm lint Ar file.toml ... Op Fl -strict Op Fl -base Ar old.toml
+Validate one or more recipe or index files.
+A document with a top-level
+.Ic versions
+table is an index file.
+The filename stem must match
+.Ic package.name .
+Exit non-zero when a recipe has an error or an
+index file has any issue.
 Use
 .Fl -strict
-to exit non-zero on warnings too.
-Warnings are reported the same way either way.
+to exit non-zero on recipe warnings too.
+.Fl -base
+compares one index file to a previous document
+and refuses append-only violations.
 .Pp
 .Dl $ gale lint recipes/j/jq.toml
 .Dl $ gale lint --strict recipes/j/jq.toml
+.Dl $ gale lint --base old.toml index/j/just.toml
 .It Cm admit
 Record an index artifact from a local archive.
 Extracts with Gale's installer path, computes

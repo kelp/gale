@@ -11,6 +11,13 @@
 
 ### Added
 
+- **`gale lint` index documents.** A TOML file with a
+  top-level `versions` table is linted with
+  `index.Parse` and `index.Lint`, not the recipe
+  schema. The filename stem must match `package.name`.
+  `--base <old.toml>` runs `LintDiff` and requires
+  exactly one new file.
+
 - **`gale admit`.** Extracts a local archive with
   Gale's installer path, records `tree_digest`, and
   prints an index artifact fragment. It checks arch,
