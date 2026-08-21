@@ -60,8 +60,8 @@ var fetchAdoptCmd = &cobra.Command{
 	Long: "Resolve every default-target root against one index " +
 		"commit, print a lock diff, and after confirmation stage " +
 		"fetch trees, write a v2 lock, and swap current last. " +
-		"Other commands refuse that lock until fetch is the " +
-		"installer. Not the installer.",
+		"Install still uses recipes. Live Load still rejects v2. " +
+		"Not the installer.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(adoptGlobal, adoptProject); err != nil {
@@ -179,7 +179,7 @@ func runFetchAdopt(ctx context.Context, c *cmdContext, req adoptReq) error {
 		if req.Err == nil {
 			req.Err = os.Stderr
 		}
-		fmt.Fprint(req.Err, "Proceed? [y/N] Other commands will refuse the resulting v2 lock until fetch is the installer.\n")
+		fmt.Fprint(req.Err, "Proceed? [y/N] Install still uses recipes; live Load still rejects the v2 lock.\n")
 		ok, err := parseConfirm(req.In)
 		if err != nil {
 			return err
