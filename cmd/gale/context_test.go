@@ -167,27 +167,8 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 	storeRoot := filepath.Join(tmp, "pkg")
 	configPath := filepath.Join(tmp, "gale.toml")
 
-	s := store.NewStore(storeRoot)
-	for _, pkg := range []struct {
-		name    string
-		version string
-	}{
-		{name: "oldpkg", version: "1.0.0-1"},
-		{name: "newpkg", version: "2.0.0-1"},
-	} {
-		pkgDir, err := s.Create(pkg.name, pkg.version)
-		if err != nil {
-			t.Fatal(err)
-		}
-		binDir := filepath.Join(pkgDir, "bin")
-		if err := os.MkdirAll(binDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(binDir, pkg.name),
-			[]byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
+	mkStorePkg(t, storeRoot, "oldpkg", "1.0.0-1")
+	mkStorePkg(t, storeRoot, "newpkg", "2.0.0-1")
 
 	if err := os.WriteFile(configPath,
 		[]byte("[packages]\n  oldpkg = \"1.0.0\"\n"),

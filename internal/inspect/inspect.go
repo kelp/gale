@@ -80,150 +80,42 @@ func hasBinaryMagic(path string) bool {
 // prefix is the install directory
 // (e.g. ~/.gale/pkg/curl/8.19.0). name and version are used
 // only for populating Issue fields.
+type scanPkg struct {
+	prefix, name, version string
+}
+
+type scanRefs struct {
+	// referencedPkgs tracks pkgs the binaries use, with one
+	// of the referenced versions remembered per pkg. Used
+	// for the over-declared-dep check.
+	referencedPkgs map[string]string
+	// versionsByPkg tracks every version of each pkg seen
+	// across all binaries, for version-skew detection.
+	versionsByPkg map[string]map[string]struct{}
+}
+
 func ScanInstalled(
 	prefix, name, version string, r *recipe.Recipe,
 ) ([]Issue, error) {
 	var issues []Issue
-
-	// referencedPkgs tracks pkgs the binaries use, with one
-	// of the referenced versions remembered per pkg. Used
-	// for the over-declared-dep check.
-	referencedPkgs := map[string]string{}
-
-	// versionsByPkg tracks every version of each pkg seen
-	// across all binaries, for version-skew detection.
-	versionsByPkg := map[string]map[string]struct{}{}
+	pkg := scanPkg{prefix: prefix, name: name, version: version}
+	refs := scanRefs{
+		referencedPkgs: map[string]string{},
+		versionsByPkg:  map[string]map[string]struct{}{},
+	}
 
 	err := filepath.Walk(prefix, func(
 		path string, info os.FileInfo, err error,
 	) error {
-		if err != nil {
-			return nil //nolint:nilerr // skip unreadable
-		}
-		if info.IsDir() || !info.Mode().IsRegular() {
-			return nil
-		}
-		refs, err := readBinary(path)
-		if err != nil || refs == nil {
-			return nil //nolint:nilerr // not an inspectable binary
-		}
-		rel, rErr := filepath.Rel(prefix, path)
-		if rErr != nil {
-			rel = path
-		}
-
-		// Expand @loader_path / @executable_path to
-		// concrete dirs so rpath walks find the libs.
-		loaderDir := filepath.Dir(path)
-		expandedRpaths := expandRpaths(refs.rpaths, loaderDir)
-
-		// stale-rpath: each rpath that points to a
-		// non-existent absolute path after expansion.
-		for i, rp := range refs.rpaths {
-			ex := expandedRpaths[i]
-			if strings.HasPrefix(ex, "@") || strings.HasPrefix(ex, "$") {
-				continue
-			}
-			if _, err := os.Stat(ex); err != nil {
-				issues = append(issues, Issue{
-					Kind:    KindStaleRpath,
-					Package: name,
-					Version: version,
-					Binary:  rel,
-					Details: rp,
-				})
-			}
-		}
-
-		// Resolve each dep ref.
-		for _, dep := range refs.deps {
-			if skipDep(dep) {
-				continue
-			}
-			resolvedPath, ok := resolveRef(dep, expandedRpaths)
-			if !ok {
-				issues = append(issues, Issue{
-					Kind:    KindUnresolvableRef,
-					Package: name,
-					Version: version,
-					Binary:  rel,
-					Details: dep,
-				})
-				continue
-			}
-			if pkg, ver, ok := storeNameVersion(resolvedPath); ok {
-				// Skip self-references: curl's binaries
-				// naturally load curl's own dylibs.
-				if pkg == name {
-					continue
-				}
-				referencedPkgs[pkg] = ver
-				if _, seen := versionsByPkg[pkg]; !seen {
-					versionsByPkg[pkg] = map[string]struct{}{}
-				}
-				versionsByPkg[pkg][ver] = struct{}{}
-			}
-		}
-
+		issues = append(issues, inspectWalkFile(pkg, path, info, err, &refs)...)
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("walk %s: %w", prefix, err)
 	}
 
-	// version-skew: any pkg with more than one version.
-	for pkg, vers := range versionsByPkg {
-		if len(vers) <= 1 {
-			continue
-		}
-		var vs []string
-		for v := range vers {
-			vs = append(vs, v)
-		}
-		sort.Strings(vs)
-		issues = append(issues, Issue{
-			Kind:    KindVersionSkew,
-			Package: name,
-			Version: version,
-			Details: fmt.Sprintf("%s: %s",
-				pkg, strings.Join(vs, ", ")),
-		})
-	}
-
-	// Recipe-dependent checks.
-	if r != nil {
-		declared := declaredDepSet(r)
-
-		// undeclared-dep: binary references pkg X not in
-		// the recipe's deps.
-		for pkg := range referencedPkgs {
-			if _, ok := declared[pkg]; ok {
-				continue
-			}
-			issues = append(issues, Issue{
-				Kind:    KindUndeclaredDep,
-				Package: name,
-				Version: version,
-				Details: pkg,
-			})
-		}
-
-		// over-declared-dep: recipe declares a dep that no
-		// binary references. Checked against runtime deps
-		// only; build deps aren't expected to appear in
-		// rpaths and flagging them would be noise.
-		for _, pkg := range r.Dependencies.Runtime {
-			if _, ok := referencedPkgs[pkg]; ok {
-				continue
-			}
-			issues = append(issues, Issue{
-				Kind:    KindOverDeclaredDep,
-				Package: name,
-				Version: version,
-				Details: pkg,
-			})
-		}
-	}
+	issues = append(issues, versionSkewIssues(pkg, refs.versionsByPkg)...)
+	issues = append(issues, recipeDepIssues(pkg, refs.referencedPkgs, r)...)
 
 	sort.SliceStable(issues, func(i, j int) bool {
 		a, b := issues[i], issues[j]
@@ -236,6 +128,141 @@ func ScanInstalled(
 		return a.Details < b.Details
 	})
 	return issues, nil
+}
+
+func inspectWalkFile(
+	pkg scanPkg, path string, info os.FileInfo, err error, refs *scanRefs,
+) []Issue {
+	if err != nil {
+		return nil //nolint:nilerr // skip unreadable
+	}
+	if info.IsDir() || !info.Mode().IsRegular() {
+		return nil
+	}
+	bin, err := readBinary(path)
+	if err != nil || bin == nil {
+		return nil //nolint:nilerr // not an inspectable binary
+	}
+	return inspectBinary(pkg, path, bin, refs)
+}
+
+func inspectBinary(pkg scanPkg, path string, bin *binaryRefs, refs *scanRefs) []Issue {
+	rel, rErr := filepath.Rel(pkg.prefix, path)
+	if rErr != nil {
+		rel = path
+	}
+	expanded := expandRpaths(bin.rpaths, filepath.Dir(path))
+	var issues []Issue
+	issues = append(issues, staleRpathIssues(pkg, rel, bin.rpaths, expanded)...)
+	issues = append(issues, resolveDepIssues(pkg, rel, bin.deps, expanded, refs)...)
+	return issues
+}
+
+func staleRpathIssues(pkg scanPkg, rel string, rpaths, expanded []string) []Issue {
+	var issues []Issue
+	for i, rp := range rpaths {
+		ex := expanded[i]
+		if strings.HasPrefix(ex, "@") || strings.HasPrefix(ex, "$") {
+			continue
+		}
+		if _, err := os.Stat(ex); err != nil {
+			issues = append(issues, Issue{
+				Kind:    KindStaleRpath,
+				Package: pkg.name,
+				Version: pkg.version,
+				Binary:  rel,
+				Details: rp,
+			})
+		}
+	}
+	return issues
+}
+
+func resolveDepIssues(
+	pkg scanPkg, rel string, deps, expanded []string, refs *scanRefs,
+) []Issue {
+	var issues []Issue
+	for _, dep := range deps {
+		if skipDep(dep) {
+			continue
+		}
+		resolvedPath, ok := resolveRef(dep, expanded)
+		if !ok {
+			issues = append(issues, Issue{
+				Kind:    KindUnresolvableRef,
+				Package: pkg.name,
+				Version: pkg.version,
+				Binary:  rel,
+				Details: dep,
+			})
+			continue
+		}
+		name, ver, ok := storeNameVersion(resolvedPath)
+		if !ok || name == pkg.name {
+			// Skip self-references: curl's binaries
+			// naturally load curl's own dylibs.
+			continue
+		}
+		refs.referencedPkgs[name] = ver
+		if _, seen := refs.versionsByPkg[name]; !seen {
+			refs.versionsByPkg[name] = map[string]struct{}{}
+		}
+		refs.versionsByPkg[name][ver] = struct{}{}
+	}
+	return issues
+}
+
+func versionSkewIssues(pkg scanPkg, versionsByPkg map[string]map[string]struct{}) []Issue {
+	var issues []Issue
+	for name, vers := range versionsByPkg {
+		if len(vers) <= 1 {
+			continue
+		}
+		var vs []string
+		for v := range vers {
+			vs = append(vs, v)
+		}
+		sort.Strings(vs)
+		issues = append(issues, Issue{
+			Kind:    KindVersionSkew,
+			Package: pkg.name,
+			Version: pkg.version,
+			Details: fmt.Sprintf("%s: %s",
+				name, strings.Join(vs, ", ")),
+		})
+	}
+	return issues
+}
+
+func recipeDepIssues(pkg scanPkg, referencedPkgs map[string]string, r *recipe.Recipe) []Issue {
+	if r == nil {
+		return nil
+	}
+	declared := declaredDepSet(r)
+	var issues []Issue
+	for name := range referencedPkgs {
+		if _, ok := declared[name]; ok {
+			continue
+		}
+		issues = append(issues, Issue{
+			Kind:    KindUndeclaredDep,
+			Package: pkg.name,
+			Version: pkg.version,
+			Details: name,
+		})
+	}
+	for _, name := range r.Dependencies.Runtime {
+		if _, ok := referencedPkgs[name]; ok {
+			continue
+		}
+		issues = append(issues, Issue{
+			Kind:    KindOverDeclaredDep,
+			Package: pkg.name,
+			Version: pkg.version,
+			Details: name,
+		})
+	}
+	return issues
 }
 
 // skipDep reports whether a dep reference should be

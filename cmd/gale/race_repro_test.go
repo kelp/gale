@@ -108,28 +108,30 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 
 	<-gcDone
 
+	assertGcVsBuildRace(t, galeDir)
+}
+
+func assertGcVsBuildRace(t *testing.T, galeDir string) {
+	t.Helper()
 	_, errGen4 := os.Stat(filepath.Join(galeDir, "gen", "4"))
-	gen4Gone := os.IsNotExist(errGen4)
 	_, errGen1 := os.Stat(filepath.Join(galeDir, "gen", "1"))
-	gen1Gone := os.IsNotExist(errGen1)
 	_, errGen2 := os.Stat(filepath.Join(galeDir, "gen", "2"))
-	gen2Gone := os.IsNotExist(errGen2)
 	curAfter, _ := generation.Current(galeDir)
 
-	if !gen4Gone {
+	if !os.IsNotExist(errGen4) {
 		t.Errorf(
 			"unswapped in-flight gen/4 is not a kept generation "+
 				"and must be reaped after generation.lock is released, "+
 				"stat err: %v", errGen4,
 		)
 	}
-	if !gen1Gone {
+	if !os.IsNotExist(errGen1) {
 		t.Errorf(
 			"gc did not reap gen/1 (below keep-2 cutoff); " +
 				"expected it to be removed but it still exists",
 		)
 	}
-	if gen2Gone {
+	if os.IsNotExist(errGen2) {
 		t.Errorf("gc reaped gen/2; the previous generation must stay")
 	}
 	if curAfter != 3 {

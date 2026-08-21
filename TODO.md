@@ -355,7 +355,8 @@ Refactors (need judgment):
 - [x] **revive (13)** — early-return / superfluous-else / naming.
   (Count was stale: 6 argument/result-limit hits.
   No early-return or superfluous-else remain.)
-- [ ] **funlen (16)** — split functions over 80 lines / 50 statements.
+- [x] **funlen (16)** — split functions over 80 lines / 50 statements.
+  (Count was stale: 6 hits.)
 - [ ] **gocognit (13)** — reduce cognitive complexity below 30.
 
 ## Done

@@ -389,57 +389,11 @@ func parseSectionHeader(line string) ([]string, bool) {
 		if i >= len(s) {
 			return nil, false
 		}
-		var seg string
-		switch s[i] {
-		case '"':
-			i++
-			var b strings.Builder
-			closed := false
-			for i < len(s) {
-				c := s[i]
-				if c == '\\' && i+1 < len(s) {
-					switch s[i+1] {
-					case '"':
-						b.WriteByte('"')
-					case '\\':
-						b.WriteByte('\\')
-					default:
-						b.WriteByte(c)
-						b.WriteByte(s[i+1])
-					}
-					i += 2
-					continue
-				}
-				if c == '"' {
-					i++
-					closed = true
-					break
-				}
-				b.WriteByte(c)
-				i++
-			}
-			if !closed {
-				return nil, false
-			}
-			seg = b.String()
-		case '\'':
-			i++
-			j := strings.IndexByte(s[i:], '\'')
-			if j < 0 {
-				return nil, false
-			}
-			seg = s[i : i+j]
-			i += j + 1
-		default:
-			start := i
-			for i < len(s) && isBareKeyChar(s[i]) {
-				i++
-			}
-			if i == start {
-				return nil, false
-			}
-			seg = s[start:i]
+		seg, next, ok := parseHeaderSegment(s, i)
+		if !ok {
+			return nil, false
 		}
+		i = next
 		segs = append(segs, seg)
 		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
 			i++
@@ -462,6 +416,60 @@ func parseSectionHeader(line string) ([]string, bool) {
 		return nil, false
 	}
 	return segs, true
+}
+
+// parseHeaderSegment reads one table-header key at s[i].
+// next is the index after the segment.
+func parseHeaderSegment(s string, i int) (seg string, next int, ok bool) {
+	switch s[i] {
+	case '"':
+		i++
+		var b strings.Builder
+		closed := false
+		for i < len(s) {
+			c := s[i]
+			if c == '\\' && i+1 < len(s) {
+				switch s[i+1] {
+				case '"':
+					b.WriteByte('"')
+				case '\\':
+					b.WriteByte('\\')
+				default:
+					b.WriteByte(c)
+					b.WriteByte(s[i+1])
+				}
+				i += 2
+				continue
+			}
+			if c == '"' {
+				i++
+				closed = true
+				break
+			}
+			b.WriteByte(c)
+			i++
+		}
+		if !closed {
+			return "", 0, false
+		}
+		return b.String(), i, true
+	case '\'':
+		i++
+		j := strings.IndexByte(s[i:], '\'')
+		if j < 0 {
+			return "", 0, false
+		}
+		return s[i : i+j], i + j + 1, true
+	default:
+		start := i
+		for i < len(s) && isBareKeyChar(s[i]) {
+			i++
+		}
+		if i == start {
+			return "", 0, false
+		}
+		return s[start:i], i, true
+	}
 }
 
 // sectionLineIndex scans lines for a table header whose key path
