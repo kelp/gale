@@ -5,54 +5,6 @@ import (
 	"strings"
 )
 
-// ParseDynamicLibs extracts library paths from otool -L or ldd
-// output. The first otool line (the binary path followed by ":")
-// is skipped. "not a dynamic executable" yields no libraries.
-func ParseDynamicLibs(out string) ([]string, error) {
-	if strings.Contains(out, "not a dynamic executable") {
-		return nil, nil
-	}
-	var libs []string
-	for _, line := range strings.Split(out, "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		if strings.HasSuffix(line, ":") && !strings.Contains(line, " ") {
-			continue
-		}
-		lib, ok := libFromLine(line)
-		if !ok {
-			continue
-		}
-		libs = append(libs, lib)
-	}
-	return libs, nil
-}
-
-func libFromLine(line string) (string, bool) {
-	if i := strings.Index(line, " => "); i >= 0 {
-		right := strings.TrimSpace(line[i+4:])
-		return firstToken(right), true
-	}
-	tok := firstToken(line)
-	if tok == "" || tok == "statically" {
-		return "", false
-	}
-	return tok, true
-}
-
-func firstToken(s string) string {
-	s = strings.TrimSpace(s)
-	if s == "" || s == "not" {
-		return ""
-	}
-	if i := strings.IndexAny(s, " \t("); i >= 0 {
-		s = s[:i]
-	}
-	return s
-}
-
 // FileMap is one --file SRC:DEST:MODE entry.
 type FileMap struct {
 	Src  string

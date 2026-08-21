@@ -19,7 +19,8 @@ import (
 )
 
 // admitInspector is the host-tool seam. Tests inject a stub so
-// Linux CI never shells out to otool or codesign.
+// Linux CI never shells out to codesign. Linkage is read from
+// object headers, not ldd or otool.
 var admitInspector admit.Inspector
 
 type admitReq struct {

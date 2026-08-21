@@ -5,7 +5,6 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
 	"testing"
 )
 
@@ -90,10 +89,15 @@ func TestSystemOnly(t *testing.T) {
 		{"darwin", "/usr/libexec/libfoo.dylib", false},
 		{"darwin", "/Systematics/libfoo.dylib", false},
 		{"linux", "linux-vdso.so.1", true},
+		{"linux", "/opt/linux-vdso.so.1", false},
 		{"linux", "/lib64/ld-linux-x86-64.so.2", true},
 		{"linux", "/lib/x86_64-linux-gnu/libc.so.6", true},
 		{"linux", "/opt/foo/libbar.so", false},
 		{"linux", "/lib/x86_64-linux-gnu/libm.so.6", false},
+		{"linux", "/opt/foo/libc.so.6", false},
+		{"linux", "/tmp/ld-linux-x86-64.so.2", false},
+		{"linux", "libc.so.6", true},
+		{"linux", "libc.so.evil", false},
 	}
 	for _, tc := range cases {
 		if got := SystemOnly(tc.goos, tc.lib); got != tc.want {
@@ -102,41 +106,45 @@ func TestSystemOnly(t *testing.T) {
 	}
 }
 
-func TestParseDynamicLibsOtool(t *testing.T) {
-	t.Parallel()
-	out := `/tmp/just:
-	/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)
-	/System/Library/Frameworks/CoreFoundation.framework/Versions/A/CoreFoundation (compatibility version 150.0.0, current version 1.0.0)
-`
-	libs, err := ParseDynamicLibs(out)
-	if err != nil {
+func TestNativeDynamicLibsParsesELF(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "just")
+	if err := os.WriteFile(p, ELFStub(runtime.GOARCH), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if len(libs) != 2 || !strings.HasPrefix(libs[0], "/usr/lib/") {
-		t.Fatalf("libs = %#v", libs)
+	libs, err := (Native{}).DynamicLibs(p)
+	if err != nil {
+		t.Fatalf("DynamicLibs: %v", err)
+	}
+	if len(libs) != 0 {
+		t.Fatalf("libs = %#v, want none", libs)
 	}
 }
 
-func TestParseDynamicLibsLdd(t *testing.T) {
-	t.Parallel()
-	out := `	linux-vdso.so.1 (0x00007ffd)
-	libc.so.6 => /lib/x86_64-linux-gnu/libc.so.6 (0x00007f)
-	/lib64/ld-linux-x86-64.so.2 (0x00007f)
-`
-	libs, err := ParseDynamicLibs(out)
-	if err != nil {
+func TestNativeDynamicLibsParsesMachO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "just")
+	if err := os.WriteFile(p, MachOARM64Stub(), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if len(libs) != 3 {
-		t.Fatalf("libs = %#v", libs)
+	libs, err := (Native{}).DynamicLibs(p)
+	if err != nil {
+		t.Fatalf("DynamicLibs: %v", err)
+	}
+	if len(libs) != 0 {
+		t.Fatalf("libs = %#v, want none", libs)
 	}
 }
 
-func TestParseDynamicLibsStatic(t *testing.T) {
-	t.Parallel()
-	libs, err := ParseDynamicLibs("\tnot a dynamic executable")
-	if err != nil || libs != nil {
-		t.Fatalf("libs = %#v err=%v", libs, err)
+func TestNativeDynamicLibsParsesFatMachO(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "just")
+	if err := os.WriteFile(p, MachOFatARM64Stub(), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	libs, err := (Native{}).DynamicLibs(p)
+	if err != nil {
+		t.Fatalf("DynamicLibs: %v", err)
+	}
+	if len(libs) != 0 {
+		t.Fatalf("libs = %#v, want none", libs)
 	}
 }
 

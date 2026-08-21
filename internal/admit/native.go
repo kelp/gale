@@ -1,12 +1,16 @@
 package admit
 
 import (
+	"debug/elf"
+	"debug/macho"
 	"fmt"
 	"os/exec"
 	"strings"
 )
 
-// Native shells out to codesign, otool, and ldd.
+// Native verifies Darwin signatures with codesign. Dynamic
+// libraries are read from the object headers; ldd is not used
+// because it can execute an untrusted ELF.
 type Native struct{}
 
 // CodeSign verifies a Darwin signature. Missing codesign is fatal.
@@ -19,29 +23,67 @@ func (Native) CodeSign(path string) error {
 	return nil
 }
 
-// DynamicLibs lists linked libraries via otool or ldd.
-func (n Native) DynamicLibs(path string) ([]string, error) {
+// DynamicLibs lists linked libraries from ELF DT_NEEDED or
+// Mach-O LC_LOAD_DYLIB. It does not run the binary.
+func (Native) DynamicLibs(path string) ([]string, error) {
 	kind, _, err := Classify(path)
 	if err != nil {
 		return nil, err
 	}
-	var cmd *exec.Cmd
 	switch kind {
-	case KindMachO:
-		cmd = exec.Command("otool", "-L", path)
 	case KindELF:
-		cmd = exec.Command("ldd", path)
+		return elfNeeded(path)
+	case KindMachO:
+		return machoDylibs(path)
 	default:
 		return nil, ErrNotBinary
 	}
-	out, err := cmd.CombinedOutput()
+}
+
+func elfNeeded(path string) ([]string, error) {
+	f, err := elf.Open(path)
 	if err != nil {
-		if kind == KindELF && strings.Contains(string(out), "not a dynamic executable") {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("%s: %w: %s", cmd.Args[0], err, bytesTrim(out))
+		return nil, fmt.Errorf("read ELF deps: %w", err)
 	}
-	return ParseDynamicLibs(string(out))
+	defer f.Close()
+	if f.SectionByType(elf.SHT_DYNAMIC) == nil {
+		return nil, nil
+	}
+	libs, err := f.ImportedLibraries()
+	if err != nil {
+		return nil, fmt.Errorf("read ELF deps: %w", err)
+	}
+	return libs, nil
+}
+
+func machoDylibs(path string) ([]string, error) {
+	f, err := macho.Open(path)
+	if err == nil {
+		defer f.Close()
+		return machoFileDylibs(f), nil
+	}
+	fat, fatErr := macho.OpenFat(path)
+	if fatErr != nil {
+		return nil, fmt.Errorf("read Mach-O deps: %w", err)
+	}
+	defer fat.Close()
+	var libs []string
+	for _, a := range fat.Arches {
+		libs = append(libs, machoFileDylibs(a.File)...)
+	}
+	return libs, nil
+}
+
+func machoFileDylibs(f *macho.File) []string {
+	var libs []string
+	for _, load := range f.Loads {
+		d, ok := load.(*macho.Dylib)
+		if !ok {
+			continue
+		}
+		libs = append(libs, d.Name)
+	}
+	return libs
 }
 
 func bytesTrim(b []byte) string {
