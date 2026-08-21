@@ -494,6 +494,74 @@ func TestFinalizeFetchCanceledCtx(t *testing.T) {
 	assertUnchangedPublication(t, fx)
 }
 
+func TestFinalizeFetchStagesAllArtsBeforeRegister(t *testing.T) {
+	fx := newFetchPubFixture(t)
+	seedStore(t, fx.c.StoreRoot, "fd", "10.2.0")
+	second := fx.art
+	fx.lock.Targets.Default.Roots = []string{
+		fetchPubName + "@" + fetchPubVersion,
+		"fd@10.2.0",
+	}
+	fx.lock.Packages["fd@10.2.0"] = lockfile.V2Package{
+		Artifacts: map[string]lockfile.V2Artifact{
+			"darwin/arm64": {
+				URL:        second.URL,
+				Format:     second.Format,
+				SHA256:     second.SHA256,
+				TreeDigest: second.TreeDigest,
+				Method:     "fetch",
+				Files: []lockfile.V2File{{
+					Src: "fd", Dest: "bin/fd", Mode: 0o755,
+				}},
+			},
+		},
+	}
+
+	var staged []string
+	var registered bool
+	p := fetchPublish{
+		Arts: []fetchArt{
+			{Name: fetchPubName, Version: fetchPubVersion, Art: fx.art},
+			{Name: "fd", Version: "10.2.0", Art: second},
+		},
+		Lock:    fx.lock,
+		ToStore: fx.toStore,
+	}
+	p.afterStage = func() error {
+		if registered {
+			t.Error("register ran before afterStage")
+		}
+		return nil
+	}
+	p.afterRegister = func() error {
+		registered = true
+		return nil
+	}
+	p.ToStore = func(
+		ctx context.Context, st *store.Store, name, version string, a index.Artifact,
+	) (string, error) {
+		staged = append(staged, name+"@"+version)
+		return fx.toStore(ctx, st, name, version, a)
+	}
+
+	if err := finalizeFetch(context.Background(), fx.c, p); err != nil {
+		t.Fatalf("finalizeFetch: %v", err)
+	}
+	want := []string{fetchPubName + "@" + fetchPubVersion, "fd@10.2.0"}
+	if !reflect.DeepEqual(staged, want) {
+		t.Errorf("staged = %v, want %v", staged, want)
+	}
+	if fx.storeCalls.Load() != 2 {
+		t.Errorf("ToStore calls = %d, want 2", fx.storeCalls.Load())
+	}
+	if !registered {
+		t.Error("register did not run")
+	}
+	if currentGen(t, fx.c.GaleDir) <= fx.prev {
+		t.Errorf("current = %d, want > %d", currentGen(t, fx.c.GaleDir), fx.prev)
+	}
+}
+
 func assertUnchangedPublication(t *testing.T, fx *fetchPubFixture) {
 	t.Helper()
 	if currentGen(t, fx.c.GaleDir) != fx.prev {

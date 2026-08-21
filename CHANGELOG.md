@@ -18,6 +18,14 @@
 
 ### Added
 
+- **`gale fetch-adopt` unused.** Plans every default-target
+  root from `gale.toml` against one `index_commit`, prints
+  a lock diff, and after `--yes` or a TTY confirm stages
+  current-platform fetch trees, writes a v2 lock, and swaps
+  `current` last. Refuses CI, host overlays, and an existing
+  v2 lock. Install still uses recipes. Live `Load` still
+  rejects the v2 lock.
+
 - **First ten indexed.** gale-recipes `main` now has
   Darwin/arm64 catalog documents for `jq`, `ripgrep`,
   `fd`, `just`, `gh`, `go`, `gofumpt`, `golangci-lint`,
