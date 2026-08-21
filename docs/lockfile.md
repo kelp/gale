@@ -96,12 +96,13 @@ well-formed guard is refused, not repaired: accepting it
 would leave a nominally-enforced lock that an old build
 still destroys.
 
-## Schema v2 (readable, not written)
+## Schema v2 (written unused, not loaded)
 
-`ReadV2` models the fetch schema. Nothing writes
-`version = 2` yet. `Load` and `ReadV1` still refuse a
-v2 file as an unknown schema (exit 4). That is what
-stops this gale from rewriting a v2 lock as v1.
+`WriteV2` writes the fetch schema. `ReadV2` reads it.
+`Load` and `ReadV1` still refuse a v2 file as an
+unknown schema (exit 4). That is what stops this gale
+from rewriting a v2 lock as v1. Live install still
+writes v1.
 
 A v2 file carries its own guard:
 

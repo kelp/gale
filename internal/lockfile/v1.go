@@ -16,12 +16,14 @@ import (
 const (
 	// SchemaV1 is the enforced source-install lock schema.
 	SchemaV1 = 1
-	// SchemaV2 is the fetch lock schema. This build reads it
-	// through ReadV2; nothing writes it yet.
+	// SchemaV2 is the fetch lock schema. WriteV2 writes it;
+	// Load and WriteV1 still model v1 until the Milestone 4
+	// cutover.
 	SchemaV2 = 2
-	// SchemaVersion is the schema this build writes. It stays
-	// SchemaV1 until a v2 writer exists. Bumping it would make
-	// WriteV1 emit version = 2 with a v1 body.
+	// SchemaVersion is the schema Load and WriteV1 model. It
+	// stays SchemaV1 even though WriteV2 exists. Bumping it
+	// would make WriteV1 emit version = 2 with a v1 body and
+	// would make Load accept a v2 file as v1.
 	SchemaVersion = SchemaV1
 )
 
@@ -137,7 +139,7 @@ const (
 // reading. Version is decoded permissively: a string there is
 // exactly what the legacy decoder accepts, so rejecting it must be
 // ours to do and must name the guard rather than surfacing a TOML
-// type mismatch. It is never encoded; outPackage is the writer's
+// type mismatch. It is never encoded; writeGuarded is the writer's
 // shape.
 type wireNode[A any] struct {
 	Version   any          `toml:"version"`
@@ -152,20 +154,6 @@ type wireV1 struct {
 	Version  int                           `toml:"version"`
 	Targets  Targets                       `toml:"targets"`
 	Packages map[string]wireNode[Artifact] `toml:"packages"`
-}
-
-// outPackage is the writer's shape. Version is a pointer so it is
-// emitted for the guard alone.
-type outPackage struct {
-	Version   *int                `toml:"version,omitempty"`
-	Artifacts map[string]Artifact `toml:"artifacts,omitempty"`
-}
-
-// outV1 mirrors wireV1 for encoding.
-type outV1 struct {
-	Version  int                   `toml:"version"`
-	Targets  Targets               `toml:"targets"`
-	Packages map[string]outPackage `toml:"packages"`
 }
 
 // stripGuardNodes validates the downgrade guard and returns the
@@ -311,21 +299,44 @@ func WriteV1(path string, lf *V1) error {
 			ErrUnknownVersion, lf.Version, SchemaVersion,
 		)
 	}
-	out := outV1{
-		Version:  lf.Version,
-		Targets:  lf.Targets,
-		Packages: make(map[string]outPackage, len(lf.Packages)+1),
-	}
-	guardVersion := SchemaVersion
-	out.Packages[guardKey] = outPackage{Version: &guardVersion}
+	arts := make(map[string]map[string]Artifact, len(lf.Packages))
 	for name, p := range lf.Packages {
-		if name == guardKey {
+		arts[name] = p.Artifacts
+	}
+	return writeGuarded(path, lf.Version, lf.Targets, arts, guardKey)
+}
+
+// writeGuarded encodes a lock document with the integer downgrade
+// guard injected. WriteV1 and WriteV2 share it so the on-disk
+// guard rules stay one function.
+func writeGuarded[A any](
+	path string, version int, targets Targets,
+	packages map[string]map[string]A, key string,
+) error {
+	type outP struct {
+		Version   *int         `toml:"version,omitempty"`
+		Artifacts map[string]A `toml:"artifacts,omitempty"`
+	}
+	type outDoc struct {
+		Version  int             `toml:"version"`
+		Targets  Targets         `toml:"targets"`
+		Packages map[string]outP `toml:"packages"`
+	}
+	out := outDoc{
+		Version:  version,
+		Targets:  targets,
+		Packages: make(map[string]outP, len(packages)+1),
+	}
+	guardVersion := version
+	out.Packages[key] = outP{Version: &guardVersion}
+	for name, arts := range packages {
+		if name == key {
 			return fmt.Errorf(
 				"%w: package %q collides with the reserved entry",
 				ErrDowngradeGuard, name,
 			)
 		}
-		out.Packages[name] = outPackage{Artifacts: p.Artifacts}
+		out.Packages[name] = outP{Artifacts: arts}
 	}
 
 	var buf bytes.Buffer

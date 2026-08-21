@@ -1,0 +1,122 @@
+package main
+
+import (
+	"context"
+	"fmt"
+	"path/filepath"
+
+	"github.com/kelp/gale/internal/fetch"
+	"github.com/kelp/gale/internal/filelock"
+	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/index"
+	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/store"
+)
+
+// fetchPublish is the unused Phase 1 publisher input. It is not
+// the live FinalizeInstall path.
+type fetchPublish struct {
+	Name    string
+	Version string
+	Art     index.Artifact
+	Lock    *lockfile.V2
+	ToStore func(context.Context, *store.Store, string, string, index.Artifact) (string, error)
+
+	afterLock     func() error
+	afterStage    func() error
+	afterRegister func() error
+	afterWrite    func() error
+	beforeSwap    func() error
+}
+
+// mutateLockPath is the per-scope publication lock.
+func mutateLockPath(galeDir string) string {
+	return filepath.Join(galeDir, "mutate.lock")
+}
+
+// finalizeFetch stages a fetch tree, registers the project,
+// writes a v2 lock, and swaps current last. Source install
+// stays the only installer.
+func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	toStore := p.ToStore
+	if toStore == nil {
+		toStore = fetch.ToStore
+	}
+	return filelock.With(mutateLockPath(c.GaleDir), func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := runPublishHook(p.afterLock); err != nil {
+			return err
+		}
+		pkgs, err := pkgsFromV2Lock(p.Lock)
+		if err != nil {
+			return err
+		}
+		if _, err := toStore(ctx, store.NewStore(c.StoreRoot), p.Name, p.Version, p.Art); err != nil {
+			return fmt.Errorf("staging store: %w", err)
+		}
+		if err := runPublishHook(p.afterStage); err != nil {
+			return err
+		}
+		if err := registerProject(c.GalePath, c.GaleDir); err != nil {
+			return fmt.Errorf("registering project: %w", err)
+		}
+		if err := runPublishHook(p.afterRegister); err != nil {
+			return err
+		}
+		lp, err := lockfilePath(c.GalePath)
+		if err != nil {
+			return err
+		}
+		if err := lockfile.WriteV2(lp, p.Lock); err != nil {
+			return fmt.Errorf("writing lock: %w", err)
+		}
+		if err := runPublishHook(p.afterWrite); err != nil {
+			return err
+		}
+		if err := runPublishHook(p.beforeSwap); err != nil {
+			return err
+		}
+		if err := generation.BuildWithOptions(
+			pkgs, c.GaleDir, c.StoreRoot, generation.Options{},
+		); err != nil {
+			return fmt.Errorf("swapping current: %w", err)
+		}
+		return nil
+	})
+}
+
+func pkgsFromV2Lock(lf *lockfile.V2) (map[string]string, error) {
+	pkgs := make(map[string]string)
+	if lf == nil || lf.Targets.Default == nil {
+		return pkgs, nil
+	}
+	for _, root := range lf.Targets.Default.Roots {
+		name, version, err := lockfile.SplitV2Root(root)
+		if err != nil {
+			return nil, fmt.Errorf("lock root: %w", err)
+		}
+		if other, ok := pkgs[name]; ok && other != version {
+			return nil, fmt.Errorf(
+				"%w: one target roots both %s@%s and %s@%s",
+				lockfile.ErrVersionConflict, name, other, name, version,
+			)
+		}
+		pkgs[name] = version
+	}
+	return pkgs, nil
+}
+
+func runPublishHook(fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	if err := fn(); err != nil {
+		return fmt.Errorf("publishing: %w", err)
+	}
+	return nil
+}

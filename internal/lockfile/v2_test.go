@@ -410,3 +410,100 @@ repo = "casey/just"
 		t.Errorf("attestation = %#v, want zero value", art.Attestation)
 	}
 }
+
+func TestWriteV2RoundTrip(t *testing.T) {
+	original, err := ReadV2(writeTemp(t, v2Fixture))
+	if err != nil {
+		t.Fatalf("ReadV2: %v", err)
+	}
+
+	out := filepath.Join(t.TempDir(), "gale.lock")
+	if err := WriteV2(out, original); err != nil {
+		t.Fatalf("WriteV2: %v", err)
+	}
+	data, err := os.ReadFile(out)
+	if err != nil {
+		t.Fatalf("read written lock: %v", err)
+	}
+	if !strings.Contains(string(data), `[packages."!gale-lock-v2"]`) {
+		t.Errorf("WriteV2 omitted the downgrade guard:\n%s", data)
+	}
+	if !strings.Contains(string(data), "version = 2") {
+		t.Errorf("WriteV2 omitted version = 2:\n%s", data)
+	}
+
+	reread, err := ReadV2(out)
+	if err != nil {
+		t.Fatalf("ReadV2(rewritten): %v", err)
+	}
+	if !reflect.DeepEqual(original, reread) {
+		t.Errorf("round trip changed the lockfile:\n got %#v\nwant %#v", reread, original)
+	}
+
+	_, err = Load(out)
+	if !errors.Is(err, ErrUnknownVersion) {
+		t.Errorf("Load after WriteV2: %v, want ErrUnknownVersion", err)
+	}
+}
+
+func TestWriteV2RejectsWrongVersion(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "gale.lock")
+	err := WriteV2(out, &V2{Version: 1})
+	if !errors.Is(err, ErrUnknownVersion) {
+		t.Fatalf("err = %v, want ErrUnknownVersion", err)
+	}
+	if _, statErr := os.Stat(out); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Error("WriteV2 created a file despite rejecting the version")
+	}
+}
+
+func TestWriteV2RejectsGuardKeyCollision(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "gale.lock")
+	err := WriteV2(out, &V2{
+		Version: SchemaV2,
+		Packages: map[string]V2Package{
+			guardKeyV2: {},
+		},
+	})
+	if !errors.Is(err, ErrDowngradeGuard) {
+		t.Fatalf("err = %v, want ErrDowngradeGuard", err)
+	}
+	if _, statErr := os.Stat(out); !errors.Is(statErr, fs.ErrNotExist) {
+		t.Error("WriteV2 created a file despite rejecting the guard key")
+	}
+}
+
+func TestSplitV2Root(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in, name, version string
+		ok                bool
+	}{
+		{in: "just@1.56.0", name: "just", version: "1.56.0", ok: true},
+		{in: "jq@1.8.1", name: "jq", version: "1.8.1", ok: true},
+		{in: "just", ok: false},
+		{in: "@1.56.0", ok: false},
+		{in: "just@", ok: false},
+		{in: "", ok: false},
+		{in: "just@1.56.0@extra", ok: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.in, func(t *testing.T) {
+			t.Parallel()
+			name, version, err := SplitV2Root(tt.in)
+			if tt.ok {
+				if err != nil {
+					t.Fatalf("SplitV2Root(%q): %v", tt.in, err)
+				}
+				if name != tt.name || version != tt.version {
+					t.Errorf("SplitV2Root(%q) = %q, %q, want %q, %q",
+						tt.in, name, version, tt.name, tt.version)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("SplitV2Root(%q) = %q, %q, want error", tt.in, name, version)
+			}
+		})
+	}
+}
