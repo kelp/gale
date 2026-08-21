@@ -13,12 +13,20 @@ import (
 	"github.com/kelp/gale/internal/store"
 )
 
+// fetchArt is one current-platform artifact to stage.
+type fetchArt struct {
+	Name    string
+	Version string
+	Art     index.Artifact
+}
+
 // fetchPublish is the unused Phase 1 publisher input. It is not
 // the live FinalizeInstall path.
 type fetchPublish struct {
 	Name    string
 	Version string
 	Art     index.Artifact
+	Arts    []fetchArt
 	Lock    *lockfile.V2
 	ToStore func(context.Context, *store.Store, string, string, index.Artifact) (string, error)
 
@@ -56,8 +64,15 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if err != nil {
 			return err
 		}
-		if _, err := toStore(ctx, store.NewStore(c.StoreRoot), p.Name, p.Version, p.Art); err != nil {
-			return fmt.Errorf("staging store: %w", err)
+		arts := p.Arts
+		if len(arts) == 0 {
+			arts = []fetchArt{{Name: p.Name, Version: p.Version, Art: p.Art}}
+		}
+		st := store.NewStore(c.StoreRoot)
+		for _, a := range arts {
+			if _, err := toStore(ctx, st, a.Name, a.Version, a.Art); err != nil {
+				return fmt.Errorf("staging store: %w", err)
+			}
 		}
 		if err := runPublishHook(p.afterStage); err != nil {
 			return err

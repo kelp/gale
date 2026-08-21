@@ -204,7 +204,7 @@ fine.
       `fd`, `just`, `gh`, `go`,
       `gofumpt`, `golangci-lint`,
       `direnv`, `uv`.
-- [ ] **`gale fetch-adopt` unused.** Plan
+- [x] **`gale fetch-adopt` unused.** Plan
       all roots, print lock diff, require
       confirmation, refuse when frozen /
       CI. All-or-nothing. Any failure
