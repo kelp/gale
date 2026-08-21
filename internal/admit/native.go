@@ -24,8 +24,10 @@ func (Native) CodeSign(path string) error {
 	return nil
 }
 
-// DynamicLibs lists linked libraries from ELF DT_NEEDED or
-// Mach-O LC_LOAD_DYLIB. It does not run the binary.
+// DynamicLibs lists linked libraries from ELF DT_NEEDED,
+// PT_INTERP, and Mach-O LC_LOAD_DYLIB. ELF DT_RPATH and
+// DT_RUNPATH must be system directories. It does not run
+// the binary.
 func (Native) DynamicLibs(path string) ([]string, error) {
 	kind, _, err := Classify(path)
 	if err != nil {
@@ -58,11 +60,42 @@ func elfNeeded(path string) ([]string, error) {
 	if f.SectionByType(elf.SHT_DYNAMIC) == nil {
 		return libs, nil
 	}
+	if err := checkELFSearchPaths(f); err != nil {
+		return nil, err
+	}
 	needed, err := f.ImportedLibraries()
 	if err != nil {
 		return nil, fmt.Errorf("read ELF deps: %w", err)
 	}
 	return append(libs, needed...), nil
+}
+
+func checkELFSearchPaths(f *elf.File) error {
+	for _, tag := range []elf.DynTag{elf.DT_RPATH, elf.DT_RUNPATH} {
+		vals, err := f.DynString(tag)
+		if err != nil {
+			return fmt.Errorf("read ELF search paths: %w", err)
+		}
+		if err := checkLinuxSearchPaths(vals); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func checkLinuxSearchPaths(vals []string) error {
+	for _, v := range vals {
+		for _, p := range strings.Split(v, ":") {
+			p = strings.TrimSpace(p)
+			if p == "" {
+				continue
+			}
+			if !linuxSearchPath(p) {
+				return fmt.Errorf("non-system search path: %s", p)
+			}
+		}
+	}
+	return nil
 }
 
 func elfInterp(f *elf.File) (string, error) {

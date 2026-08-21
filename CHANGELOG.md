@@ -16,9 +16,11 @@
   prints an index artifact fragment. It checks arch,
   Darwin codesign, and system-only linkage from
   object headers (not `ldd` or `otool`), including
-  the ELF `PT_INTERP` loader. Linux system libraries
-  must be a trusted bare soname or an absolute path
-  that cleans to a system lib directory. It
+  the ELF `PT_INTERP` loader. `DT_RPATH`/`DT_RUNPATH`
+  entries must clean to a system lib directory.
+  Linux system libraries must be a trusted bare
+  soname or an absolute path that cleans to a
+  system lib directory. It
   refuses symlinks and hardlinks. It does not write
   the store, lock, or `gale.toml`, and it does not
   set `attestation`.

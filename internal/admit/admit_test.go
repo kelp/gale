@@ -112,6 +112,41 @@ func TestSystemOnly(t *testing.T) {
 	}
 }
 
+func TestLinuxSearchPath(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		p    string
+		want bool
+	}{
+		{"/lib64", true},
+		{"/usr/lib", true},
+		{"/usr/lib64/x86_64-linux-gnu", true},
+		{"/lib/x86_64-linux-gnu", true},
+		{"/opt/evil", false},
+		{"$ORIGIN", false},
+		{"$ORIGIN/../lib", false},
+		{"/lib/../opt/foo", false},
+		{"opt/foo", false},
+		{"./lib", false},
+	}
+	for _, tc := range cases {
+		if got := linuxSearchPath(tc.p); got != tc.want {
+			t.Errorf("linuxSearchPath(%s) = %v, want %v", tc.p, got, tc.want)
+		}
+	}
+}
+
+func TestCheckLinuxSearchPaths(t *testing.T) {
+	t.Parallel()
+	if err := checkLinuxSearchPaths([]string{"/lib64:/usr/lib"}); err != nil {
+		t.Fatalf("system paths: %v", err)
+	}
+	err := checkLinuxSearchPaths([]string{"$ORIGIN:/lib64"})
+	if err == nil || !strings.Contains(err.Error(), "non-system search path") {
+		t.Fatalf("err = %v, want non-system search path", err)
+	}
+}
+
 func TestNativeDynamicLibsParsesELF(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "just")
 	if err := os.WriteFile(p, ELFStub(runtime.GOARCH), 0o755); err != nil {

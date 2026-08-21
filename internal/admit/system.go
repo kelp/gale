@@ -93,3 +93,16 @@ func linuxSystemDir(lib string) bool {
 		strings.HasPrefix(lib, "/usr/lib/") ||
 		strings.HasPrefix(lib, "/usr/lib64/")
 }
+
+// linuxSearchPath reports whether a DT_RPATH / DT_RUNPATH
+// entry is a system library directory after path.Clean.
+func linuxSearchPath(p string) bool {
+	p = strings.TrimSpace(p)
+	if p == "" || !strings.HasPrefix(p, "/") {
+		return false
+	}
+	p = path.Clean(p)
+	return p == "/lib" || p == "/lib64" ||
+		p == "/usr/lib" || p == "/usr/lib64" ||
+		linuxSystemDir(p)
+}
