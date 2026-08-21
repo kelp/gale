@@ -11,6 +11,14 @@
 
 ### Added
 
+- **Unused fetch-to-store.** `internal/fetch` can download
+  an allowlisted artifact, hash it, extract the declared
+  format, place the file map, and rename a complete tree
+  into `pkg/fetch/<name>/<version>-<sha12>/`. Hash
+  mismatch and occupied-dir digest mismatch refuse.
+  Provenance is written last. Install still uses recipes.
+  No command is wired yet.
+
 - **Unused index client.** `internal/index` can pin one
   `index_commit` (or an `--index` checkout HEAD) and
   resolve packages against that snapshot. Network errors
