@@ -68,11 +68,8 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if len(arts) == 0 {
 			arts = []fetchArt{{Name: p.Name, Version: p.Version, Art: p.Art}}
 		}
-		st := store.NewStore(c.StoreRoot)
-		for _, a := range arts {
-			if _, err := toStore(ctx, st, a.Name, a.Version, a.Art); err != nil {
-				return fmt.Errorf("staging store: %w", err)
-			}
+		if err := landFetchArts(ctx, c.StoreRoot, arts, toStore); err != nil {
+			return err
 		}
 		if err := runPublishHook(p.afterStage); err != nil {
 			return err
@@ -96,13 +93,47 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if err := runPublishHook(p.beforeSwap); err != nil {
 			return err
 		}
+		opts := fetchBuildOpts(c, p.Lock)
 		if err := generation.BuildWithOptions(
-			pkgs, c.GaleDir, c.StoreRoot, generation.Options{},
+			pkgs, c.GaleDir, c.StoreRoot, opts,
 		); err != nil {
 			return fmt.Errorf("swapping current: %w", err)
 		}
+		autoPruneGenerations(c.GaleDir, c.StoreRoot)
 		return nil
 	})
+}
+
+func fetchBuildOpts(c *cmdContext, lf *lockfile.V2) generation.Options {
+	opts := generation.Options{
+		Fetch: fetchSHAMap(lf),
+	}
+	if c != nil && c.GalePath != "" {
+		if cfg, err := loadEffectiveConfig(c.GalePath); err == nil {
+			opts.BinOverrides = cfg.Bin
+		}
+	}
+	return opts
+}
+
+func fetchSHAMap(lf *lockfile.V2) map[string]string {
+	out := map[string]string{}
+	if lf == nil {
+		return out
+	}
+	plat := currentPlatform()
+	for key, pkg := range lf.Packages {
+		name, _, err := lockfile.SplitV2Root(key)
+		if err != nil {
+			continue
+		}
+		art, ok := pkg.Artifacts[plat]
+		if !ok || art.SHA256 == "" {
+			continue
+		}
+		out[name] = art.SHA256
+	}
+	return out
 }
 
 func pkgsFromV2Lock(lf *lockfile.V2) (map[string]string, error) {

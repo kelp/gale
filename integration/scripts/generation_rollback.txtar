@@ -2,13 +2,14 @@
 # generation. Multiple installs generate distinct
 # generations; rollback restores the previous one.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
+exec gale install hello -g --index=$WORK/index
 exists $HOME/.gale/current/bin/hello
 ! exists $HOME/.gale/current/bin/hello-dep
 
-exec gale install hello-dep -g --recipes=$WORK/recipes
+exec gale install hello-dep -g --index=$WORK/index
 exists $HOME/.gale/current/bin/hello-dep
 
 # Rollback: back to the gen with only hello.

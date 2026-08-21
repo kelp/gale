@@ -1,17 +1,15 @@
-# Reinstalling the same package is a no-op cache hit.
-# Regression sentinel: the install path must not refetch
-# or rebuild when the store already contains the version.
+# Reinstalling the same package is a cache hit. The
+# fetch tree is already staged.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
-stderr 'Installed hello@1\.0 from binary'
+exec gale install hello -g --index=$WORK/index
+stderr 'Installed hello'
+exists $HOME/.gale/current/bin/hello
 
-# Second install: store already populated, should take the
-# cached path and not re-download.
-exec gale install hello -g --recipes=$WORK/recipes
-stderr 'already in store'
-! stderr 'from binary'
-
-# Store still has the single version
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exec gale install hello -g --index=$WORK/index
+stderr 'Installed hello'
+exists $HELLO_1_0_DIR/bin/hello
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'

@@ -61,6 +61,8 @@ const (
 	KindLegacy
 	// KindV1 means the enforced schema.
 	KindV1
+	// KindV2 means the fetch schema.
+	KindV2
 )
 
 // String names the kind, so a failed switch reports which schema it
@@ -73,6 +75,8 @@ func (k Kind) String() string {
 		return "legacy"
 	case KindV1:
 		return "v1"
+	case KindV2:
+		return "v2"
 	default:
 		return fmt.Sprintf("Kind(%d)", int(k))
 	}
@@ -88,6 +92,7 @@ type View struct {
 	Kind   Kind
 	Legacy *LockFile
 	V1     *V1
+	V2     *V2
 }
 
 // Load reads a lockfile of either schema, classifying it by its
@@ -125,6 +130,13 @@ func Load(path string) (*View, error) {
 			return nil, fmt.Errorf("%s: %w: %w", path, ErrMalformed, err)
 		}
 		return &View{Kind: KindLegacy, Legacy: lf}, nil
+	}
+	if *version == SchemaV2 {
+		lf, err := decodeV2(path, data)
+		if err != nil {
+			return nil, err
+		}
+		return &View{Kind: KindV2, V2: lf}, nil
 	}
 	if err := checkSchemaVersion(path, *version); err != nil {
 		return nil, err

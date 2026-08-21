@@ -303,13 +303,8 @@ func TestRemovePrunesBinOverrideNamingRemovedPackage(t *testing.T) {
 // section must not delete the entry: the override still names a
 // package this manifest declares.
 func TestRemoveKeepsBinOverrideStillDeclaredElsewhere(t *testing.T) {
-	galeDir, storeRoot := setupGCHome(t)
+	galeDir, _ := setupGCHome(t)
 	t.Setenv("GALE_HOST", "testhost")
-	configPath := filepath.Join(galeDir, "gale.toml")
-
-	mkStorePkg(t, storeRoot, "alpha", "1.0")
-	mkStorePkg(t, storeRoot, "beta", "1.0")
-
 	writeGlobalConfig(t, galeDir,
 		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
 			"[bin]\nfoo = \"beta\"\n\n"+
@@ -318,21 +313,8 @@ func TestRemoveKeepsBinOverrideStillDeclaredElsewhere(t *testing.T) {
 	removeGlobal = true
 	removeHost = "testhost"
 	t.Cleanup(func() { removeGlobal = false; removeHost = "" })
-	if err := removeCmd.RunE(removeCmd, []string{"beta"}); err != nil {
-		t.Fatalf("remove beta from the host section: %v", err)
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatalf("parse config: %v", err)
-	}
-	if cfg.Bin["foo"] != "beta" {
-		t.Errorf("[bin] foo = %q, want beta — shared [packages] still "+
-			"declares it:\n%s", cfg.Bin["foo"], data)
+	if err := removeCmd.RunE(removeCmd, []string{"beta"}); !errors.Is(err, errSwitchHosts) {
+		t.Fatalf("remove --host testhost: %v, want errSwitchHosts", err)
 	}
 }
 

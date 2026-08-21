@@ -3,6 +3,9 @@
 # the current symlink and watch gale.toml so direnv
 # reloads on edits.
 
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
+
 exec gale hook direnv
 stdout 'use_gale'
 stdout 'gale sync'

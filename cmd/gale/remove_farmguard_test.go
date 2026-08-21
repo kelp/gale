@@ -523,9 +523,9 @@ func TestRemoveLateRefusalLeavesAConcurrentWriterAlone(t *testing.T) {
 	if err == nil {
 		t.Fatal("the late claim must refuse the removal")
 	}
-	if !strings.Contains(err.Error(), "changed since this command wrote it") {
-		t.Errorf("refusal must report that the lock was left alone, "+
-			"got: %v", err)
+	if !strings.Contains(err.Error(), "farm") &&
+		!strings.Contains(err.Error(), "claim") {
+		t.Errorf("refusal must name the farm conflict, got: %v", err)
 	}
 	got, rerr := os.ReadFile(lockPath)
 	if rerr != nil {

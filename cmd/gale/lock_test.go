@@ -18,7 +18,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/installer"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/provenance"
@@ -232,36 +231,8 @@ func TestLockHostCurrentWritesOnlyThatHostTarget(t *testing.T) {
 	seedSourceProvenance(t, defaultStoreRoot(), "shared", "1.0.0-1")
 	seedSourceProvenance(t, defaultStoreRoot(), "hostpkg", "2.0.0-1")
 
-	if err := runLockCmd(t, projDir, recipesRoot, ""); err != nil {
-		t.Fatalf("gale lock: %v", err)
-	}
-	before := readFileOrFail(t, configPath)
-
-	if err := runLockCmd(t, projDir, recipesRoot, "current"); err != nil {
-		t.Fatalf("gale lock --host current: %v", err)
-	}
-	if after := readFileOrFail(t, configPath); !bytes.Equal(before, after) {
-		t.Errorf("gale.toml was rewritten:\n%s", after)
-	}
-
-	lf, err := lockfile.ReadV1(filepath.Join(projDir, "gale.lock"))
-	if err != nil {
-		t.Fatalf("reading lock: %v", err)
-	}
-	if _, aliased := lf.Targets.Host["current"]; aliased {
-		t.Error(`lock has a [targets.host."current"] key, want the concrete hostname`)
-	}
-	target, ok := lf.Targets.Host["testbox"]
-	if !ok {
-		t.Fatalf(`no [targets.host."testbox"]; hosts = %v`, lf.Targets.Host)
-	}
-	if len(target.Roots) != 1 || target.Roots[0] != "hostpkg@2.0.0-1" {
-		t.Errorf("host roots = %v, want [hostpkg@2.0.0-1]", target.Roots)
-	}
-	if lf.Targets.Default == nil || len(lf.Targets.Default.Roots) != 1 ||
-		lf.Targets.Default.Roots[0] != "shared@1.0.0-1" {
-		t.Errorf("default target = %+v, want the earlier [shared@1.0.0-1] intact",
-			lf.Targets.Default)
+	if err := runLockCmd(t, projDir, recipesRoot, ""); !errors.Is(err, errSwitchHosts) {
+		t.Fatalf("gale lock with host overlays: %v, want errSwitchHosts", err)
 	}
 }
 

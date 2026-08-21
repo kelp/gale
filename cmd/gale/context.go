@@ -18,6 +18,7 @@ import (
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockplan"
@@ -40,6 +41,7 @@ type cmdContext struct {
 	Resolver  installer.RecipeResolver
 	Installer *installer.Installer
 	Registry  *registry.Registry // nil when --recipes
+	IndexDir  string             // --index checkout; empty uses compiled-in URL
 
 	// Host force-writes the package to
 	// [hosts.<Host>.packages] when finalize runs. Empty
@@ -136,6 +138,10 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		Installer: inst,
 		Registry:  reg,
 	}, nil
+}
+
+func indexSource(dir string) index.Source {
+	return index.Source{Dir: dir}
 }
 
 // wireFarmGuards attaches design §4's cross-project farm claimant
@@ -494,6 +500,9 @@ type genRebuild struct {
 	// every unlocked caller, which is what keeps gc
 	// behaving exactly as before.
 	validate func() error
+	// fetch maps name → artifact SHA256 so a v2 rebuild links
+	// FetchPath instead of ResolveDir.
+	fetch map[string]string
 }
 
 func rebuildGenerationWith(r genRebuild) error {
@@ -508,6 +517,7 @@ func rebuildGenerationWith(r genRebuild) error {
 		pkgs, r.galeDir, r.storeRoot, generation.Options{
 			Validate:     r.validate,
 			BinOverrides: binOverrides,
+			Fetch:        r.fetch,
 		},
 	); err != nil {
 		return err
@@ -1341,6 +1351,9 @@ func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
 		))
 	case locked:
 		r.pkgs = pkgs
+		if lf, rerr := lockfile.ReadV2(lockPath); rerr == nil {
+			r.fetch = fetchSHAMap(lf)
+		}
 		if opt.skipUnchanged &&
 			generationAlreadyLinks(r.galeDir, r.storeRoot, pkgs) {
 			return nil
@@ -1384,6 +1397,12 @@ func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
 				return nil, false, fmt.Errorf("%s: %w", lockPath, pErr)
 			}
 			pkgs[name] = version
+		}
+		return pkgs, true, nil
+	case lockfile.KindV2:
+		pkgs, pErr := pkgsFromV2Lock(v.V2)
+		if pErr != nil {
+			return nil, false, fmt.Errorf("%s: %w", lockPath, pErr)
 		}
 		return pkgs, true, nil
 	default:

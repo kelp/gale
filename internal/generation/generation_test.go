@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/filelock"
+	"github.com/kelp/gale/internal/store"
 )
 
 // helper creates a fake store entry with executables.
@@ -1104,7 +1105,7 @@ func TestPopulateGenerationCreatesSymlinks(t *testing.T) {
 		"fd": "10.4.2",
 	}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, Options{}); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -1150,7 +1151,7 @@ func TestPopulateGenerationFailsOnBinCollision(t *testing.T) {
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0", "gamma": "1.0"}
 
-	err := populateGeneration(genDir, pkgs, storeRoot, nil)
+	err := populateGeneration(genDir, pkgs, storeRoot, Options{})
 	var collErr *BinCollisionError
 	if !errors.As(err, &collErr) {
 		t.Fatalf("error = %v (%T), want *BinCollisionError", err, err)
@@ -1189,7 +1190,7 @@ func TestPopulateGenerationHonorsBinOverride(t *testing.T) {
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
 	overrides := map[string]string{"tool": "beta"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, overrides); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, Options{BinOverrides: overrides}); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -1227,7 +1228,7 @@ func TestPopulateGenerationAllowsNonBinCollisions(t *testing.T) {
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, Options{}); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 	if _, err := os.Lstat(
@@ -1261,7 +1262,7 @@ func TestPopulateGenerationRootLevelFiles(t *testing.T) {
 
 	pkgs := map[string]string{"go": "1.26.1"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, Options{}); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -2372,5 +2373,46 @@ func TestRetainedVersionsStrictRefusesUnreadableGenListing(t *testing.T) {
 	); err == nil {
 		t.Fatalf("RetainedVersionsStrict must refuse an unreadable "+
 			"gen listing, got %v", got)
+	}
+}
+
+func TestBuildFetchPathWinsOverResolveDir(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	sha := strings.Repeat("ab", 32)
+	st := store.NewStore(storeRoot)
+	fetchDir, err := st.FetchPath("jq", "1.8.1", sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(fetchDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fetchDir, "bin", "jq"), []byte("fetch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	err = BuildWithOptions(
+		map[string]string{"jq": "1.8.1"},
+		galeDir, storeRoot,
+		Options{Fetch: map[string]string{"jq": sha}},
+	)
+	if err != nil {
+		t.Fatalf("BuildWithOptions: %v", err)
+	}
+	link, err := os.Readlink(filepath.Join(galeDir, "current", "bin", "jq"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(link, filepath.Join("fetch", "jq")) {
+		t.Errorf("link %q does not point at fetch tree", link)
+	}
+	got, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["jq"] != "1.8.1" {
+		t.Errorf("CurrentVersions = %v, want jq=1.8.1", got)
 	}
 }

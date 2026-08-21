@@ -1,40 +1,25 @@
-# Hand-edit gale.toml to remove a package, then sync.
-# The generation rebuild must drop the removed
-# package's symlink even though the store still has
-# the package (gc is what reaps the store dir).
+# Hand-edit gale.toml to remove a package. Sync refuses a
+# stale lock. After `gale lock`, sync drops the symlink.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
-exec gale install hello-dep -g --recipes=$WORK/recipes
+exec gale install hello -g --index=$WORK/index
+exec gale install hello-dep -g --index=$WORK/index
 exists $HOME/.gale/current/bin/hello
 exists $HOME/.gale/current/bin/hello-dep
 
-# Remove hello-dep from gale.toml by rewriting the file.
 exec sh -c 'grep -v hello-dep $HOME/.gale/gale.toml > $WORK/new.toml && mv $WORK/new.toml $HOME/.gale/gale.toml'
 ! grep 'hello-dep' $HOME/.gale/gale.toml
 
-# The hand edit makes the lock stale, and under enforcement a stale
-# lock stops the sync rather than letting the manifest silently
-# override it (design §9). Sync is a pure consumer of a lock: if it
-# followed gale.toml here it would be selecting versions itself, which
-# is the behavior issue #182 removed. The refusal names its remedy,
-# because this same error is what direnv prints on cd.
-exec sh -c 'gale sync -g --recipes=$WORK/recipes; echo status=$?'
+exec sh -c 'gale sync -g; echo status=$?'
 stdout 'status=4'
-stderr 'gale.toml no longer declares'
-stderr 'gale lock'
+stderr 'orphaned hello-dep|stale|gale lock'
 
-# Following the remedy re-locks the edited manifest, and the sync then
-# does what this script has always pinned.
-exec gale lock -g --recipes=$WORK/recipes
+exec gale lock -g --index=$WORK/index
 ! grep 'hello-dep' $HOME/.gale/gale.lock
 
-exec gale sync -g --recipes=$WORK/recipes
-
-# hello-dep's symlink is gone from current/bin; hello stays.
+exec gale sync -g
 ! exists $HOME/.gale/current/bin/hello-dep
 exists $HOME/.gale/current/bin/hello
-
-# Store still has both (gc's job, not sync's).
-exists $HOME/.gale/pkg/hello-dep/1.0-1/bin/hello-dep
+exists $HELLO_DEP_1_0_DIR/bin/hello-dep

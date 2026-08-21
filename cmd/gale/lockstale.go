@@ -44,6 +44,14 @@ func lockIsStale(lockPath string, declared map[string]string, host string) (bool
 		return v.Legacy.Stale(declared), nil
 	case lockfile.KindV1:
 		return v1Stale(v.V1, declared, host)
+	case lockfile.KindV2:
+		if err := checkV2Declared(v.V2, declared); err != nil {
+			if errors.Is(err, lockfile.ErrStaleLock) {
+				return true, nil
+			}
+			return false, err
+		}
+		return false, nil
 	default:
 		return false, errors.New("unhandled lockfile kind " + v.Kind.String())
 	}

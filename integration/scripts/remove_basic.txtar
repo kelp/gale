@@ -1,22 +1,19 @@
-# `gale remove <pkg>` removes a package from the config,
-# the store, and the generation. The symlink in
-# current/bin must disappear along with the store dir.
+# `gale remove` drops the package from gale.toml, the v2
+# lock, and the generation. Fetch trees stay in the store.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exec gale install hello -g --index=$WORK/index
+exists $HELLO_1_0_DIR/bin/hello
 exists $HOME/.gale/current/bin/hello
 
 exec gale remove hello -g
 stderr 'Removed hello'
 
-! exists $HOME/.gale/pkg/hello/1.0-1
+exists $HELLO_1_0_DIR/bin/hello
 ! exists $HOME/.gale/current/bin/hello
-
-# gale.toml no longer lists hello.
 ! grep 'hello = ' $HOME/.gale/gale.toml
 
-# Removing a non-installed package errors clearly.
 ! exec gale remove hello -g
 stderr 'not in|not installed'

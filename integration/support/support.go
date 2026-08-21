@@ -328,6 +328,15 @@ func setLockManifestDigest(lockPath, pkg, manifestDigest string) error {
 //	gale-fixture serve-file <url-path> <src-file>
 //	    Serve the contents of <src-file> at <url-path>
 //	    on the fake GHCR (raw bytes, not a tarball).
+//
+//	gale-fixture index <dst>
+//	    Write a git checkout of index/hello and
+//	    index/hello-dep (versions 1.0 and 1.1) and
+//	    commit it. --index must point at this repo.
+//
+//	gale-fixture fetch-setup [name [version]]
+//	    Stage fetch trees + sidecars under
+//	    $HOME/.gale/pkg/fetch so install/sync skip HTTP.
 func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 	if neg {
 		ts.Fatalf("gale-fixture does not support negation")
@@ -379,6 +388,17 @@ func CmdFixture(ts *testscript.TestScript, neg bool, args []string) {
 			ts.Fatalf("gale-fixture serve-file: %v", err)
 		}
 		ghcr.RegisterContent(args[1], body)
+	case "index":
+		if len(args) != 2 {
+			ts.Fatalf("gale-fixture index: needs <dst>")
+		}
+		if err := writeIndexRepo(ts, ts.MkAbs(args[1])); err != nil {
+			ts.Fatalf("gale-fixture index: %v", err)
+		}
+	case "fetch-setup":
+		if err := stageFetches(ts, args[1:]); err != nil {
+			ts.Fatalf("gale-fixture fetch-setup: %v", err)
+		}
 	default:
 		ts.Fatalf("gale-fixture: unknown subcommand %q", args[0])
 	}

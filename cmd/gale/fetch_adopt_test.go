@@ -217,8 +217,8 @@ func TestFetchAdoptYesPublishesViaFinalize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadV2: %v", err)
 	}
-	if _, err := lockfile.Load(fx.lockPath()); !errors.Is(err, lockfile.ErrUnknownVersion) {
-		t.Errorf("Load = %v, want ErrUnknownVersion", err)
+	if v, err := lockfile.Load(fx.lockPath()); err != nil || v.Kind != lockfile.KindV2 {
+		t.Errorf("Load = (%v, %v), want KindV2", v, err)
 	}
 	if currentGen(t, fx.c.GaleDir) <= fx.prev {
 		t.Errorf("current = %d, want > %d", currentGen(t, fx.c.GaleDir), fx.prev)
@@ -474,8 +474,8 @@ mode = 0o755
 }
 
 func TestFetchAdoptNotTheInstaller(t *testing.T) {
-	if installCmd.Flags().Lookup("index") != nil {
-		t.Fatal("install must not grow --index")
+	if installCmd.Flags().Lookup("index") == nil {
+		t.Fatal("install must have --index")
 	}
 	cmd, _, err := rootCmd.Find([]string{"install"})
 	if err != nil {

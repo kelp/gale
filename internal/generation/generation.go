@@ -32,6 +32,58 @@ func resolveStoreDir(storeRoot, name, version string) string {
 	return store.NewStore(storeRoot).ResolveDir(name, version)
 }
 
+func resolvePkgDir(storeRoot, name, version string, fetch map[string]string) string {
+	if sha := fetch[name]; sha != "" {
+		p, err := store.NewStore(storeRoot).FetchPath(name, version, sha)
+		if err == nil {
+			return p
+		}
+	}
+	return resolveStoreDir(storeRoot, name, version)
+}
+
+type storeRel struct {
+	name, version, ownerRel string
+}
+
+func parseStoreRel(rel string) (storeRel, bool) {
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) >= 3 && parts[0] == store.FetchNamespace {
+		name := parts[1]
+		version := stripFetchSuffix(parts[2])
+		ownerRel := filepath.Join(parts[0], parts[1], parts[2])
+		if name == "" || version == "" {
+			return storeRel{}, false
+		}
+		return storeRel{name: name, version: version, ownerRel: ownerRel}, true
+	}
+	if len(parts) >= 2 && parts[0] != store.FetchNamespace {
+		return storeRel{
+			name:     parts[0],
+			version:  parts[1],
+			ownerRel: filepath.Join(parts[0], parts[1]),
+		}, true
+	}
+	return storeRel{}, false
+}
+
+func stripFetchSuffix(dir string) string {
+	const suffix = 1 + 12 // hyphen + sha12
+	if len(dir) > suffix && dir[len(dir)-suffix] == '-' {
+		return dir[:len(dir)-suffix]
+	}
+	i := strings.LastIndex(dir, "-")
+	if i <= 0 {
+		return dir
+	}
+	return dir[:i]
+}
+
+func pathExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
 // carryForwardMissingVersions returns a copy of pkgs where
 // any (name, version) whose store dir is absent has its
 // version replaced with the version that was active in the
@@ -41,6 +93,7 @@ func resolveStoreDir(storeRoot, name, version string) string {
 // install from PATH.
 func carryForwardMissingVersions(
 	pkgs map[string]string, storeRoot, galeDir string, prevGen int,
+	fetch map[string]string,
 ) map[string]string {
 	prevGenDir := filepath.Join(galeDir, "gen", strconv.Itoa(prevGen))
 	prev := genVersions(prevGenDir, storeRoot)
@@ -51,14 +104,17 @@ func carryForwardMissingVersions(
 	out := make(map[string]string, len(pkgs))
 	for name, version := range pkgs {
 		out[name] = version
-		if _, err := os.Stat(resolveStoreDir(storeRoot, name, version)); err == nil {
+		if _, ok := fetch[name]; ok {
+			continue
+		}
+		if _, err := os.Stat(resolvePkgDir(storeRoot, name, version, fetch)); err == nil {
 			continue
 		}
 		prevVer, ok := prev[name]
 		if !ok || prevVer == version {
 			continue
 		}
-		if _, err := os.Stat(resolveStoreDir(storeRoot, name, prevVer)); err != nil {
+		if _, err := os.Stat(resolvePkgDir(storeRoot, name, prevVer, fetch)); err != nil {
 			continue
 		}
 		fmt.Fprintf(os.Stderr,
@@ -164,16 +220,15 @@ func genVersionsWalk(
 		if rel == "" {
 			return nil // target outside store; not ours
 		}
-		parts := strings.Split(rel, string(filepath.Separator))
-		if len(parts) < 2 {
+		parsed, ok := parseStoreRel(rel)
+		if !ok {
 			return nil
 		}
-		name, version := parts[0], parts[1]
+		name, version, ownerRel := parsed.name, parsed.version, parsed.ownerRel
 		// Skip when the owning store dir is gone (GC'd package):
 		// a dangling link to a removed store dir must not surface.
-		// Stat both store-root spellings — only one need exist.
-		if !storeDirExists(absStore, name, version) &&
-			!storeDirExists(storeRoot, name, version) {
+		if !pathExists(filepath.Join(absStore, ownerRel)) &&
+			!pathExists(filepath.Join(storeRoot, ownerRel)) {
 			return nil
 		}
 		if _, seen := out[name]; !seen {
@@ -204,6 +259,74 @@ func relWithinStore(root, target string) string {
 func storeDirExists(root, name, version string) bool {
 	info, err := os.Stat(filepath.Join(root, name, version))
 	return err == nil && info.IsDir()
+}
+
+// CurrentStoreDirs returns name → absolute store directory
+// the active generation links. A fetch tree and a source
+// ResolveDir that share a version are different directories;
+// activation uses this map so a ResolveDir link cannot
+// satisfy a FetchPath identity.
+func CurrentStoreDirs(galeDir, storeRoot string) (map[string]string, error) {
+	genDir, err := currentGenDir(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	if genDir == "" {
+		return map[string]string{}, nil
+	}
+	return storeDirsWalk(genDir, storeRoot, func(err error) error { return err })
+}
+
+func storeDirsWalk(
+	genDir, storeRoot string,
+	onErr func(err error) error,
+) (map[string]string, error) {
+	absStore, err := filepath.EvalSymlinks(storeRoot)
+	if err != nil {
+		absStore = storeRoot
+	}
+	out := map[string]string{}
+	walkErr := filepath.Walk(genDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return onErr(fmt.Errorf("walking %s: %w", path, err))
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return nil
+		}
+		target, readErr := os.Readlink(path)
+		if readErr != nil {
+			return onErr(fmt.Errorf("reading link %s: %w", path, readErr))
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		rel := relWithinStore(absStore, target)
+		if rel == "" {
+			rel = relWithinStore(storeRoot, target)
+		}
+		if rel == "" {
+			return nil
+		}
+		parsed, ok := parseStoreRel(rel)
+		if !ok {
+			return nil
+		}
+		owner := filepath.Join(storeRoot, parsed.ownerRel)
+		if !pathExists(owner) {
+			owner = filepath.Join(absStore, parsed.ownerRel)
+		}
+		if !pathExists(owner) {
+			return nil
+		}
+		if _, seen := out[parsed.name]; !seen {
+			out[parsed.name] = owner
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	return out, nil
 }
 
 // CurrentVersions returns the package name → version map of
@@ -510,6 +633,10 @@ type Options struct {
 	// gale.toml's [bin] table. Without an entry, a contested
 	// basename refuses the build (gh#190).
 	BinOverrides map[string]string
+	// Fetch maps a package name to the artifact SHA256 used
+	// with store.FetchPath. When set, Build links that fetch
+	// tree and never a source ResolveDir for the same name.
+	Fetch map[string]string
 }
 
 // BuildWithOptions is Build with the optional inputs in Options.
@@ -590,7 +717,7 @@ func build(pkgs map[string]string, galeDir, storeRoot string, opts Options) erro
 		// yet (e.g. `gale add` without sync, a fresh clone).
 		if prev > 0 {
 			pkgs = carryForwardMissingVersions(
-				pkgs, storeRoot, galeDir, prev,
+				pkgs, storeRoot, galeDir, prev, opts.Fetch,
 			)
 		}
 
@@ -631,7 +758,7 @@ func build(pkgs map[string]string, galeDir, storeRoot string, opts Options) erro
 		cleanup := func() { os.RemoveAll(genDir) }
 
 		if err := populateGeneration(
-			genDir, pkgs, storeRoot, opts.BinOverrides,
+			genDir, pkgs, storeRoot, opts,
 		); err != nil {
 			cleanup()
 			return err
@@ -1005,7 +1132,7 @@ func Remove(galeDir, storeRoot string, targets []int) ([]int, error) {
 // and lib/, man/ and share/ have always merged across packages.
 func populateGeneration(
 	genDir string, pkgs map[string]string, storeRoot string,
-	binOverrides map[string]string,
+	opts Options,
 ) error {
 	names := make([]string, 0, len(pkgs))
 	for name := range pkgs {
@@ -1013,10 +1140,10 @@ func populateGeneration(
 	}
 	sort.Strings(names)
 
-	bins := NewBinArbiter(binOverrides)
+	bins := NewBinArbiter(opts.BinOverrides)
 	for _, name := range names {
 		version := pkgs[name]
-		pkgDir := resolveStoreDir(storeRoot, name, version)
+		pkgDir := resolvePkgDir(storeRoot, name, version, opts.Fetch)
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {

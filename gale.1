@@ -10,18 +10,18 @@
 .Op Ar args ...
 .Sh DESCRIPTION
 .Nm
-is a package manager for developer CLI tools that
-replaces Homebrew, Nix, and home-manager.
-It installs packages into versioned, isolated store
-directories and manages environment activation through
+is a package manager for developer CLI tools.
+It fetches verified artifacts from an index, pins
+them in a lockfile, and activates them through
 atomic generation snapshots.
 .Pp
 Packages are declared in
 .Pa gale.toml .
-Prebuilt binaries from GHCR are preferred; source
-builds are the automatic fallback.
-Every package can be built from source \(em binaries
-are a cache, not a requirement.
+Install and update resolve the index.
+Sync activates the v2 lock and does not rewrite it.
+A package that is not in the index is an error.
+A v1 lock migrates with
+.Cm fetch-adopt .
 .Pp
 .Nm
 supports both global packages
@@ -32,12 +32,19 @@ and per-project environments
 .Ss Package Management
 .Bl -tag -width Ds
 .It Cm install Ar pkg Ns Op @ Ns Ar ver
-Install a package.
-Downloads a prebuilt binary if available, otherwise
-builds from source.
+Install a package from the index.
+Stages
+.Pa pkg/fetch/ ,
+writes
+.Pa gale.toml
+and a v2 lock, then swaps
+.Pa current .
 Use
 .Ar pkg@ver
 to install a specific version.
+Use
+.Fl -index Ar dir
+to resolve against a local index checkout.
 .Pp
 .Dl $ gale install jq
 .Dl $ gale install go@1.26.1
@@ -55,9 +62,10 @@ Useful for declaring dependencies before running
 .Pp
 .Dl $ gale add ripgrep fd bat
 .It Cm sync
-Install all packages declared in
-.Pa gale.toml
-at their pinned versions.
+Activate every package the v2 lock names.
+It fetches missing trees and rebuilds the generation.
+It does not write
+.Pa gale.lock .
 Typically invoked automatically by direnv.
 .Pp
 Use
@@ -74,35 +82,18 @@ naming the packages still missing.
 The direnv hook uses this flag; a sync run by hand ignores
 it and always does the work.
 .Pp
-Use
-.Fl -no-frozen
-to install from recipes without enforcing
-.Pa gale.lock .
-Use
-.Fl -build
-to build every package from source.
-.Pp
 .Dl $ gale sync
 .Dl $ gale sync --if-needed
 .It Cm update Op Ar pkg Ns Op @ Ns Ar ver ...
-Update packages to the latest version, or to a specific
-version with
+Update packages from the index to the latest version, or
+to a specific version with
 .Ar pkg@ver .
-.Pp
 Use
-.Fl -no-install
-to rewrite
-.Pa gale.toml
-pins without building; run
-.Cm sync
-afterward to install.
-Use
-.Fl -no-refresh
-to skip the automatic tap refresh.
+.Fl -index Ar dir
+to resolve against a local index checkout.
 .Pp
 .Dl $ gale update
 .Dl $ gale update jq@1.8.1
-.Dl $ gale update --no-install jq
 .It Cm switch Ar pkg Ar version
 Switch a package already declared in
 .Pa gale.toml
@@ -546,20 +537,13 @@ Mutually exclusive with
 and
 .Fl p .
 .El
-.Ss Source Strategy Flags
+.Ss Index Flag
 .Bl -tag -width Ds
-.It Fl -path Ar dir
-Build from a local source directory.
-Version is derived from git describe.
-.It Fl -build
-Build from source, skipping prebuilt binaries.
-.It Fl -git
-Clone the source repository and build from HEAD.
-.It Fl -recipe Ar file
-Use a specific local recipe file.
-.It Fl -recipes Ar dir
-Resolve recipes from a local directory instead of
-the registry.
+.It Fl -index Ar dir
+Resolve install, update, lock, and fetch-adopt against
+a local index checkout.
+The directory must be a git repository.
+Uncommitted edits are invisible.
 .El
 .Ss Build Flags
 .Bl -tag -width Ds
@@ -662,11 +646,11 @@ $ gale init
 $ direnv allow
 .Ed
 .Pp
-Build and test a recipe:
+Admit an artifact into a local index:
 .Bd -literal -offset indent
-$ gale create-recipe jqlang/jq
-$ gale build recipes/j/jq.toml
-$ gale install jq --recipe recipes/j/jq.toml
+$ gale admit just-1.58.0-aarch64-apple-darwin.tar.gz
+$ gale lint --base old.toml index/j/just.toml
+$ gale install just --index ../gale-recipes
 .Ed
 .Pp
 Audit supply chain integrity:

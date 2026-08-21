@@ -1,20 +1,18 @@
-# `gale sync` installs everything listed in gale.toml,
-# not just newly-added entries. Pre-populate gale.toml
-# with a package that isn't in the store and verify sync
-# picks it up.
+# gale.toml + gale lock, then sync activates the lock
+# without rewriting it.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-# Hand-written config: hello present, no store entry yet.
-exec sh -c 'printf "%s\n" "[packages]" "hello = \"1.0-1\"" > $HOME/.gale/gale.toml'
-! exists $HOME/.gale/pkg/hello/1.0-1
+exec sh -c 'printf "%s\n" "[packages]" "hello = \"1.0\"" > $HOME/.gale/gale.toml'
+exec gale lock -g --index=$WORK/index
+exists $HOME/.gale/gale.lock
+cp $HOME/.gale/gale.lock $WORK/before.lock
 
-exec gale sync -g --recipes=$WORK/recipes
-stderr 'Installed hello'
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exec gale sync -g
 exists $HOME/.gale/current/bin/hello
+cmp $HOME/.gale/gale.lock $WORK/before.lock
 
-# Second sync is a no-op.
-exec gale sync -g --recipes=$WORK/recipes
-! stderr 'Installed hello'
-stderr 'up to date'
+exec gale sync -g
+cmp $HOME/.gale/gale.lock $WORK/before.lock
+stderr 'lock unchanged'

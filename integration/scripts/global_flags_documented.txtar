@@ -18,10 +18,11 @@ stdout '--dry-run'
 stdout '--verbose'
 
 # Each flag is accepted on a real command (not "unknown flag").
-gale-fixture recipes $WORK/recipes
-exec gale install hello -g --no-color --recipes=$WORK/recipes
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
+exec gale install hello -g --no-color --index=$WORK/index
+exists $HELLO_1_0_DIR/bin/hello
 
 exec gale remove hello -g
-exec gale install hello -g --plain --recipes=$WORK/recipes
-exists $HOME/.gale/pkg/hello/1.0-1/bin/hello
+exec gale install hello -g --plain --index=$WORK/index
+exists $HELLO_1_0_DIR/bin/hello

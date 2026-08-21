@@ -6,14 +6,11 @@ activate automatically.
 
 ## Why
 
-Homebrew is easy to start with and hard to maintain.
-Dependencies pile up invisibly, there is no manifest
-to version-control, and a clean reinstall means
-starting over. Nix solves all of this — declarative
-config, rollback, per-project isolation — but demands
-you learn a language and debug cryptic build failures.
-Gale is as easy to use as Homebrew and as predictable
-as Nix, without the baggage of either.
+Gale pins CLI tools in `gale.toml`, locks their
+artifacts, and activates them through an atomic
+generation swap. Install fetches a verified tree
+from the index. Sync rebuilds PATH from that lock
+and does not rewrite it.
 
 ## Install
 
@@ -41,8 +38,8 @@ Install a tool:
 gale install jq
 ```
 
-Gale fetches a prebuilt binary, verifies its SHA256,
-and symlinks it into your PATH.
+Gale resolves the index, fetches the artifact, verifies
+its tree digest, and swaps it onto PATH.
 
 Set up a project manifest:
 
@@ -162,44 +159,30 @@ gale completion <shell>   Generate shell completions
 
 See `man gale` for the full reference.
 
-## Recipes
+## Index
 
-Recipes are TOML files in
-[gale-recipes](https://github.com/kelp/gale-recipes).
-The repository has over 180 recipes today, covering
-tools like jq, ripgrep, git, terraform, kubectl, and
-Go. Each recipe defines how to build a package from
-source.
-Prebuilt binaries cached in GHCR are an optimization
-— every recipe can build from source if needed.
+The catalog lives in
+[gale-recipes](https://github.com/kelp/gale-recipes)
+under `index/`. Each document names versions, artifact
+URLs, `sha256`, and `tree_digest`. `gale install` and
+`gale update` resolve against that index.
+`--index <dir>` points at a local checkout (a git
+repo; uncommitted edits are invisible).
 
-`gale create-recipe owner/repo` generates a recipe
-from a GitHub repository using the Anthropic API.
-It detects the build system, computes the SHA256,
-and produces a valid recipe. Requires an API key
-in `~/.gale/config.toml`.
+A package that is not in the index is an error. v1
+locks migrate with `gale fetch-adopt`.
 
 ```toml
 [package]
-name = "mytool"
-version = "1.0.0"
-description = "Does the thing"
-license = "MIT"
-homepage = "https://github.com/owner/mytool"
+name = "just"
+latest = "1.58.0"
 
-[source]
-repo = "owner/mytool"
-url = "https://github.com/owner/mytool/archive/refs/tags/v1.0.0.tar.gz"
+[versions."1.58.0".artifacts."darwin/arm64"]
+url = "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-aarch64-apple-darwin.tar.gz"
+format = "tar.gz"
 sha256 = "..."
-
-[dependencies]
-build = ["go"]
-
-[build]
-steps = [
-  "mkdir -p ${PREFIX}/bin",
-  "go build -o ${PREFIX}/bin/mytool .",
-]
+tree_digest = "sha256:..."
+hash_source = "upstream-sha256sums"
 ```
 
 ## Optional Dependencies
@@ -223,7 +206,8 @@ git clone https://github.com/kelp/gale
 git clone https://github.com/kelp/gale-recipes
 cd gale
 just bootstrap
-gale sync --recipes ../gale-recipes
+gale lock --index ../gale-recipes
+gale sync
 direnv allow
 ```
 

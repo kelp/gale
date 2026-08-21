@@ -376,55 +376,30 @@ func TestSyncWritesNoLockfile(t *testing.T) {
 // describe a package the manifest no longer declares at that
 // version.
 func TestUpdateRegeneratesTheSectionItRewrote(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("GALE_OFFLINE", "1")
-
-	projDir := t.TempDir()
-	configPath := filepath.Join(projDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  jq = \"1.7.0\"\n"), 0o644); err != nil {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	installToStore = stageTestFetch
+	t.Cleanup(func() { installToStore = nil })
+	if err := os.WriteFile(fx.c.GalePath,
+		[]byte("[packages]\njust = \"1.56.0\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	recipesDir := filepath.Join(projDir, "recipes", "j")
-	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+	if err := runInstallFetch(context.Background(), fx.c, "just", "1.56.0", fx.src); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(
-		filepath.Join(recipesDir, "jq.toml"),
-		[]byte("[package]\nname = \"jq\"\nversion = \"1.8.0\"\n\n"+
-			"[source]\nurl = \"https://example.invalid/jq.tar.gz\"\n"+
-			"sha256 = \""+strings.Repeat("0", 64)+"\"\n"),
-		0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
-	// The new version is already in the store, so the install is a
-	// cache hit and the test needs no network.
-	seedProvenanced(t, defaultStoreRoot(), "jq", "1.8.0-1")
-	writeMatchingRecipeDigest(t,
-		filepath.Join(defaultStoreRoot(), "jq", "1.8.0-1"),
-		filepath.Join(recipesDir, "jq.toml"))
-
-	orig, _ := os.Getwd()
-	os.Chdir(projDir)
-	t.Cleanup(func() { os.Chdir(orig) })
-
-	updateRecipes = filepath.Join(projDir, "recipes")
-	t.Cleanup(func() { updateRecipes = "" })
-
-	if err := updateCmd.RunE(updateCmd, []string{"jq"}); err != nil {
+	fx.src.Commit = lockFetchPinB
+	if err := runUpdateFetch(context.Background(), fx.c, []string{"just"}, fx.src); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-
-	lf, err := lockfile.ReadV1(filepath.Join(projDir, "gale.lock"))
+	got, err := lockfile.ReadV2(fx.lockPath())
 	if err != nil {
-		t.Fatalf("reading lock: %v", err)
+		t.Fatalf("ReadV2: %v", err)
 	}
-	if lf.Targets.Default == nil ||
-		len(lf.Targets.Default.Roots) != 1 ||
-		lf.Targets.Default.Roots[0] != "jq@1.8.0-1" {
-		t.Errorf("default roots = %+v, want [jq@1.8.0-1]", lf.Targets.Default)
+	if _, ok := got.Packages["just@9.9.9"]; !ok {
+		t.Errorf("packages = %v, want just@9.9.9", got.Packages)
+	}
+	if _, ok := got.Packages["just@1.56.0"]; ok {
+		t.Error("old just@1.56.0 root survived the update")
 	}
 }
 

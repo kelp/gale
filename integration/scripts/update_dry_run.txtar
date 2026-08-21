@@ -1,20 +1,16 @@
-# gale update --dry-run reports what would change but
+# gale update --dry-run reports what would change and
 # leaves the store, gale.toml, and gale.lock untouched.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
-exists $HOME/.gale/pkg/hello/1.0-1
+exec gale install hello@1.0 -g --index=$WORK/index
+grep 'hello = "1\.0"' $HOME/.gale/gale.toml
+cp $HOME/.gale/gale.lock $WORK/before.lock
 
-# Bump recipe; dry-run update.
-gale-fixture render recipes-rev2/h/hello.toml.tmpl $WORK/recipes/h/hello.toml
-
-exec gale update --dry-run --recipes=$WORK/recipes hello
+exec gale update --dry-run hello@1.1 --index=$WORK/index
 stderr 'update hello'
 
-# The new revision was not actually installed.
-! exists $HOME/.gale/pkg/hello/1.0-2
-exists $HOME/.gale/pkg/hello/1.0-1
-
-# gale.lock still roots the old canonical.
-grep 'roots = \["hello@1\.0-1"\]' $HOME/.gale/gale.lock
+grep 'hello = "1\.0"' $HOME/.gale/gale.toml
+cmp $HOME/.gale/gale.lock $WORK/before.lock
+exists $HELLO_1_0_DIR/bin/hello

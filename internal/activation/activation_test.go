@@ -2,6 +2,7 @@ package activation
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -11,6 +12,7 @@ import (
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/provenance"
+	"github.com/kelp/gale/internal/store"
 )
 
 // Real 64-hex hashes: validation rejects anything else, so a
@@ -167,6 +169,17 @@ func (f fixture) request(installed map[string]string) Request {
 	}
 }
 
+func checkV1Request(req Request) error {
+	v, err := lockfile.Load(req.LockPath)
+	if err != nil {
+		return err
+	}
+	if v.Kind != lockfile.KindV1 {
+		return fmt.Errorf("checkV1Request: kind %s", v.Kind)
+	}
+	return checkV1(req, v.V1)
+}
+
 // wholeGeneration is what a correct sync of this fixture leaves in the
 // active generation: the source root plus its runtime dep.
 func wholeGeneration() map[string]string {
@@ -178,7 +191,7 @@ func wholeGeneration() map[string]string {
 // lock activates.
 func TestCheckAcceptsAVerifiedGeneration(t *testing.T) {
 	f := newFixture(t)
-	if err := Check(f.request(wholeGeneration())); err != nil {
+	if err := checkV1Request(f.request(wholeGeneration())); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 }
@@ -202,7 +215,7 @@ func TestCheckHashesNothing(t *testing.T) {
 			len(entries))
 	}
 
-	if err := Check(f.request(wholeGeneration())); err != nil {
+	if err := checkV1Request(f.request(wholeGeneration())); err != nil {
 		t.Fatalf("Check: %v", err)
 	}
 }
@@ -217,7 +230,7 @@ func TestCheckToleratesCollectedBuildDeps(t *testing.T) {
 	if err := os.RemoveAll(filepath.Join(f.storeRoot, "cc")); err != nil {
 		t.Fatal(err)
 	}
-	if err := Check(f.request(wholeGeneration())); err != nil {
+	if err := checkV1Request(f.request(wholeGeneration())); err != nil {
 		t.Fatalf("Check with cc collected: %v", err)
 	}
 }
@@ -235,7 +248,7 @@ func TestCheckWalksTransitiveRuntimeDeps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := Check(f.request(map[string]string{"jq": "1.8.1-2"}))
+	err := checkV1Request(f.request(map[string]string{"jq": "1.8.1-2"}))
 	if !errors.Is(err, provenance.ErrInvalid) {
 		t.Fatalf("want provenance.ErrInvalid for an unprovenanced "+
 			"transitive dep, got %v", err)
@@ -260,7 +273,7 @@ func TestCheckDetectsIntegrityConflict(t *testing.T) {
 	onig.SHA256 = shaOther
 	tampered["oniguruma@6.9.10-1"] = onig
 
-	err := Check(Request{
+	err := checkV1Request(Request{
 		LockPath:  writeLock(t, v1Doc(t, tampered, "jq@1.8.1-2")),
 		Platform:  platform,
 		StoreRoot: storeRoot,
@@ -285,7 +298,7 @@ func TestCheckRefusesAnEditedGraphDigest(t *testing.T) {
 	f := newFixture(t)
 	f.lockPath = editedDigestLock(t, f, "jq@1.8.1-2")
 
-	err := Check(f.request(wholeGeneration()))
+	err := checkV1Request(f.request(wholeGeneration()))
 	if !errors.Is(err, lockfile.ErrDigestMismatch) {
 		t.Fatalf("want lockfile.ErrDigestMismatch, got %v", err)
 	}
@@ -319,7 +332,7 @@ func TestCheckReportsACorruptLockBeforeDrift(t *testing.T) {
 	f := newFixture(t)
 	f.lockPath = editedDigestLock(t, f, "jq@1.8.1-2")
 
-	err := Check(f.request(map[string]string{}))
+	err := checkV1Request(f.request(map[string]string{}))
 	if !errors.Is(err, lockfile.ErrDigestMismatch) {
 		t.Fatalf("want lockfile.ErrDigestMismatch, got %v", err)
 	}
@@ -379,7 +392,7 @@ func TestCheckDetectsCarryForward(t *testing.T) {
 	// sound, which is the point: nothing was tampered with.
 	install(t, f.storeRoot, f.nodes, "jq@1.8.1-2", "1.8.0-1")
 
-	err := Check(f.request(map[string]string{
+	err := checkV1Request(f.request(map[string]string{
 		"jq": "1.8.0-1", "oniguruma": "6.9.10-1",
 	}))
 	if !errors.Is(err, ErrDrift) {
@@ -425,7 +438,7 @@ func TestCheckRefusesAGenerationMissingALockedRoot(t *testing.T) {
 			f := newFixture(t)
 			f.lockPath = writeLock(t, v1Doc(t, f.nodes, tc.roots...))
 
-			err := Check(f.request(tc.installed))
+			err := checkV1Request(f.request(tc.installed))
 			if !errors.Is(err, ErrDrift) {
 				t.Fatalf("want ErrDrift, got %v", err)
 			}
@@ -456,7 +469,7 @@ func TestCheckAcceptsARevisionOneRootInABareDirectory(t *testing.T) {
 	}
 	install(t, storeRoot, nodes, "jq@1.7-1", "1.7")
 
-	err := Check(Request{
+	err := checkV1Request(Request{
 		LockPath:  writeLock(t, v1Doc(t, nodes, "jq@1.7-1")),
 		Platform:  platform,
 		StoreRoot: storeRoot,
@@ -580,9 +593,90 @@ func TestCheckRefusesAnUnmodelableLock(t *testing.T) {
 			f := newFixture(t)
 			req := f.request(map[string]string{"jq": "1.8.1-2"})
 			tc.mutate(t, &req, v1Doc(t, f.nodes, "jq@1.8.1-2"))
-			if err := Check(req); !errors.Is(err, tc.wantErr) {
+			if err := checkV1Request(req); !errors.Is(err, tc.wantErr) {
 				t.Fatalf("want %v, got %v", tc.wantErr, err)
 			}
 		})
+	}
+}
+
+func TestCheckV1RefusesAndNamesFetchAdopt(t *testing.T) {
+	f := newFixture(t)
+	err := Check(f.request(wholeGeneration()))
+	if err == nil {
+		t.Fatal("v1 lock must refuse")
+	}
+	if !strings.Contains(err.Error(), "fetch-adopt") {
+		t.Errorf("error must name fetch-adopt, got %v", err)
+	}
+}
+
+func TestCheckV2AcceptsFetchPath(t *testing.T) {
+	req := v2Gate(t, true)
+	if err := Check(req); err != nil {
+		t.Fatalf("Check v2: %v", err)
+	}
+}
+
+func TestCheckV2RefusesResolveDirLink(t *testing.T) {
+	req := v2Gate(t, true)
+	src := filepath.Join(req.StoreRoot, "just", "1.56.0")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	req.Linked = map[string]string{"just": src}
+	err := Check(req)
+	if !errors.Is(err, ErrDrift) {
+		t.Fatalf("err = %v, want ErrDrift", err)
+	}
+}
+
+func v2Gate(t *testing.T, writeSidecar bool) Request {
+	t.Helper()
+	root := t.TempDir()
+	st := store.NewStore(root)
+	sha := "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+	tree := "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	dest, err := st.FetchPath("just", "1.56.0", sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dest, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dest, "bin", "just"), []byte("ok"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if writeSidecar {
+		if err := provenance.WriteFetch(dest, provenance.FetchRecord{
+			Name: "just", Version: "1.56.0", SHA256: sha,
+			TreeDigest: tree, Method: provenance.MethodFetch,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	lf := &lockfile.V2{
+		Version: lockfile.SchemaV2,
+		Targets: lockfile.Targets{Default: &lockfile.Target{Roots: []string{"just@1.56.0"}}},
+		Packages: map[string]lockfile.V2Package{
+			"just@1.56.0": {Artifacts: map[string]lockfile.V2Artifact{
+				platform: {
+					URL:    "https://github.com/kelp/just/releases/download/1.56.0/just.tar.gz",
+					Format: "tar.gz", SHA256: sha, TreeDigest: tree,
+					Method: provenance.MethodFetch,
+				},
+			}},
+		},
+	}
+	lp := filepath.Join(t.TempDir(), "gale.lock")
+	if err := lockfile.WriteV2(lp, lf); err != nil {
+		t.Fatal(err)
+	}
+	return Request{
+		LockPath:  lp,
+		Platform:  platform,
+		StoreRoot: root,
+		Installed: map[string]string{"just": "1.56.0"},
+		Linked:    map[string]string{"just": dest},
 	}
 }

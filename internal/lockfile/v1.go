@@ -16,9 +16,8 @@ import (
 const (
 	// SchemaV1 is the enforced source-install lock schema.
 	SchemaV1 = 1
-	// SchemaV2 is the fetch lock schema. WriteV2 writes it;
-	// Load and WriteV1 still model v1 until the Milestone 4
-	// cutover.
+	// SchemaV2 is the fetch lock schema. WriteV2 writes it.
+	// Load classifies it as KindV2. WriteV1 still models v1.
 	SchemaV2 = 2
 	// SchemaVersion is the schema Load and WriteV1 model. It
 	// stays SchemaV1 even though WriteV2 exists. Bumping it

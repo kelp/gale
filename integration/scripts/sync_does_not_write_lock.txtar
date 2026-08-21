@@ -1,17 +1,15 @@
-# After install, `gale sync` does not rewrite the lock
-# and the binary stays usable.
+# Heading proof: gale sync does not write the lock.
 
 gale-fixture index $WORK/index
 gale-fixture fetch-setup
 
 exec gale install hello -g --index=$WORK/index
+exists $HOME/.gale/current/bin/hello
 cp $HOME/.gale/gale.lock $WORK/before.lock
 
 exec gale sync -g
+stderr 'lock unchanged'
 cmp $HOME/.gale/gale.lock $WORK/before.lock
-
-exec gale sync -g
-cmp $HOME/.gale/gale.lock $WORK/before.lock
-
+exists $HOME/.gale/current/bin/hello
 exec $HOME/.gale/current/bin/hello
 stdout 'hello from gale integration fixture'

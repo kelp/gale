@@ -3,59 +3,33 @@
 ## What Gale Is
 
 Gale is a package manager for developer CLI tools.
-It replaces three tools with one:
+It fetches verified artifacts from a signed index,
+pins them in a lockfile, and activates them through
+atomic generation snapshots. Global tools and
+per-project environments share that model. direnv
+loads a project generation onto PATH.
 
-- **Homebrew** — global package installation
-- **Nix / home-manager** — declarative package manifests
-- **direnv + Nix flakes** — per-project environments
-
-Gale is inspired by Nix and Homebrew but is not a clone
-of either. It takes the best ideas from both — Nix's
-declarative model, Homebrew's simplicity — and refines
-them into something smaller and more opinionated.
+Gale is not a Homebrew replacement and not an
+everything-from-source build farm. A package that
+is not in the index is an error.
 
 ## Principles
 
-**Everything from source.** Every recipe defines how
-to build from source. Prebuilt binaries (GHCR cache)
-are an optimization, not a substitute. If someone
-wants to verify what they're running, they can build
-it themselves. This is the model Homebrew and Nix use
-at distro scale.
-
-**Prebuilt binaries only for compiler bootstraps.**
-Building Go requires a Go compiler. Building Rust
-requires a Rust compiler. These bootstrap binaries
-are the one exception — a prebuilt binary used only
-during the build, never shipped to users.
-
-**Toolchains are declarative and recipe-owned.**
-If a package needs a specific compiler toolchain,
-the recipe declares it in `[build]`, for example:
-
-```toml
-[build]
-toolchain = "llvm"
-
-[dependencies]
-build = ["llvm"]
-```
-
-Gale activates the installed toolchain generically
-from explicit build dependencies such as `DEP_LLVM`.
-Toolchain versions stay in recipes, not in Gale.
-Explicit env vars remain the escape hatch for local
-experiments and debugging.
+**Fetch from the index.** `install`, `sync`,
+`update`, and `remove` resolve against the catalog
+and stage `pkg/fetch/<name>/<version>-<sha12>/`.
+`--index <dir>` is the only local override. A mixed
+source/fetch lock is refused. `gale fetch-adopt`
+migrates a v1 lock.
 
 **Declarative over imperative.** The state of your
-environment is a function of gale.toml, not a history
-of commands you ran. `gale sync` always converges to
-the correct state.
+environment is a function of gale.toml plus the v2
+lock, not a history of commands you ran. `gale sync`
+activates the lock and does not rewrite it.
 
-**One tool.** Gale replaces Homebrew (global packages),
-Nix/home-manager (declarative manifests), and
-direnv+flakes (per-project environments). Users should
-not need multiple package managers.
+**Rollback is temporary.** `gale generations rollback`
+moves `current` only. The next sync returns PATH to
+the lock. Durable undo is reverting the lock in git.
 
 ## Directory Layout
 
@@ -248,15 +222,17 @@ We chose direnv over custom shell hooks because:
 
 `gale install jq`:
 
-1. Fetch recipe from registry (GitHub raw URL)
-2. Install to store: try prebuilt binary from GHCR
-   first, fall back to building from source
-3. Add `jq = "1.8.1"` to gale.toml
-4. Rebuild generation from gale.toml
+1. Resolve `jq` from the index (or `--index <dir>`)
+2. Stage the artifact under `pkg/fetch/`
+3. Write `jq = "<version>"` to gale.toml
+4. Write a v2 lock
+5. Rebuild the generation from the lock and swap
+   `current` last
 
-The installer only writes to the store. It knows
-nothing about generations or symlinks. The command
-layer handles the generation rebuild.
+`gale sync` lands any missing fetch trees and
+rebuilds the generation. It does not write the
+lock. `--host` overlays refuse. A v1 lock names
+`gale fetch-adopt`.
 
 ## Build Environment
 
