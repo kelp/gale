@@ -10,7 +10,7 @@ import "debug/macho"
 // (0xcafebabf and its swap) are listed although macho.OpenFat rejects
 // them — the filter must never answer "not a binary" where the parser
 // would have looked, and a file the parser then declines still comes
-// back (nil, nil) exactly as before.
+// back (nil, ErrNotBinary) exactly as before.
 var binaryMagics = [][4]byte{
 	{0xfe, 0xed, 0xfa, 0xce}, // MH_MAGIC (32-bit)
 	{0xce, 0xfa, 0xed, 0xfe}, // MH_CIGAM (32-bit, swapped)
@@ -23,21 +23,21 @@ var binaryMagics = [][4]byte{
 }
 
 // readBinary parses a Mach-O file and returns its LC_RPATH
-// and LC_LOAD_DYLIB entries. Returns (nil, nil) for files
-// that aren't Mach-O, so callers can skip them silently.
+// and LC_LOAD_DYLIB entries. Returns (nil, ErrNotBinary)
+// for files that aren't Mach-O, so callers can skip them.
 func readBinary(path string) (*binaryRefs, error) {
 	// One open to reject the documentation, headers and share/ data
 	// that dominate an install, before two parser opens can charge
 	// for them.
 	if !hasBinaryMagic(path) {
-		return nil, nil //nolint:nilnil // not a Mach-O; skipped silently
+		return nil, ErrNotBinary
 	}
 	f, err := macho.Open(path)
 	if err != nil {
 		// Try fat binaries — macho.Open only handles thin.
 		fat, fatErr := macho.OpenFat(path)
 		if fatErr != nil {
-			return nil, nil //nolint:nilerr // not a Mach-O
+			return nil, ErrNotBinary
 		}
 		defer fat.Close()
 		if len(fat.Arches) == 0 {

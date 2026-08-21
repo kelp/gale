@@ -337,7 +337,7 @@ Mechanical (low-risk, do first):
 - [x] **forcetypeassert (2)** — add comma-ok to bare type assertions.
 - [x] **errorlint (2)** — match with `errors.Is`/`errors.As`, wrap
   with `%w`.
-- [ ] **nilnil (3)** — return a sentinel error instead of `(nil, nil)`.
+- [x] **nilnil (3)** — return a sentinel error instead of `(nil, nil)`.
 - [ ] **contextcheck (4)** — thread `context.Context` instead of
   dropping it.
 

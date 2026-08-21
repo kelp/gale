@@ -11,6 +11,17 @@
 
 ### Fixed
 
+- **nilnil.** `readBinary` returns
+  `ErrNotBinary` instead of
+  `(nil, nil)` when a file is not an
+  inspectable binary. The backlog
+  count was stale: two flagged
+  parser-miss lines plus two already
+  suppressed magic-miss returns. The
+  `issues:` block in `.golangci.yml`
+  stays until the rest of the Code
+  Standards Backlog is gone.
+
 - **errorlint.** `TestWithReturnsFnError`
   now matches with `errors.Is`. Dual
   failure in `replaceStoreDir` wraps
