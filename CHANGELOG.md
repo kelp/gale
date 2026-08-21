@@ -11,6 +11,12 @@
 
 ### Changed
 
+- **Park the local artifact cache.**
+  `~/.gale/cache/artifacts/<sha256>` of verified
+  archives is Milestone 6, off by default, or never.
+  Own proposal if it ships. Not the registry or
+  Sigstore caches.
+
 - **Every scope rebuilds only from the lock.**
   A present v2 lock is the version selector
   for a rebuild. The manifest and
