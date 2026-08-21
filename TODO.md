@@ -166,7 +166,7 @@ fine.
       stale-serving path, including
       `outdated`. Tests with a httptest
       index.
-- [ ] **Fetch to store.** Allowlisted URL,
+- [x] **Fetch to store.** Allowlisted URL,
       declared `format`, file map, hash,
       extract into a staging dir on the
       same filesystem, rename into place,
