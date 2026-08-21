@@ -353,6 +353,9 @@ func TestAdmitBinarySrcMustBeURLBasename(t *testing.T) {
 
 func TestAdmitZipAndTarXzEmitFragment(t *testing.T) {
 	elf := hostELF(t)
+	setAdmitInspector(t, stubAdmitInspector{
+		libs: []string{"linux-vdso.so.1", "/lib64/ld-linux-x86-64.so.2", "libc.so.6"},
+	})
 	t.Run("zip", func(t *testing.T) {
 		archive := filepath.Join(t.TempDir(), "just.zip")
 		writeAdmitZip(t, archive, map[string][]byte{"just": elf})
