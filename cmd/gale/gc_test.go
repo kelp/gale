@@ -1150,16 +1150,13 @@ func TestGCRealRunPreservesRegisteredProjectStoreDirs(t *testing.T) {
 	}
 }
 
-// TestGCRealRunPreservesToolVersionsOnlyProjectPins pins the
-// .tool-versions side of registered-project pin retention: a
-// registered project that has NO gale.toml — it lives only via
-// .tool-versions — must still contribute its pins to gc's
-// retention set. The project pins jq 1.7 but its active
-// generation links jq 1.6 (pin edited, sync not yet run), so
-// only pin retention can keep jq@1.7 alive. gale.toml projects
-// get this via mergeConfigAllHosts; .tool-versions projects must
-// not be second-class. fd@9.0 is the unreferenced control.
-func TestGCRealRunPreservesToolVersionsOnlyProjectPins(t *testing.T) {
+// TestGCRealRunDropsToolVersionsOnlyProjectPins pins the
+// drop: a registered path with NO gale.toml is vanished.
+// Its .tool-versions pin (jq 1.7) and its leftover
+// generation link (jq 1.6) are not retention sources.
+// fd@9.0 is the unreferenced control that proves the
+// sweep ran.
+func TestGCRealRunDropsToolVersionsOnlyProjectPins(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("GALE_OFFLINE", "1")
@@ -1217,15 +1214,16 @@ func TestGCRealRunPreservesToolVersionsOnlyProjectPins(t *testing.T) {
 
 	if _, err := os.Stat(
 		filepath.Join(storeRoot, "jq", "1.7"),
-	); err != nil {
-		t.Errorf("jq@1.7 is pinned by a registered project's "+
-			".tool-versions and must survive a real gc: %v", err)
+	); !os.IsNotExist(err) {
+		t.Errorf("jq@1.7 is pinned only by .tool-versions and "+
+			"must be removed by a real gc, err=%v", err)
 	}
 	if _, err := os.Stat(
 		filepath.Join(storeRoot, "jq", "1.6"),
-	); err != nil {
-		t.Errorf("jq@1.6 is linked by the registered project's "+
-			"active generation and must survive a real gc: %v", err)
+	); !os.IsNotExist(err) {
+		t.Errorf("jq@1.6 is linked only by a vanished "+
+			".tool-versions-only generation and must be removed "+
+			"by a real gc, err=%v", err)
 	}
 	if _, err := os.Stat(
 		filepath.Join(storeRoot, "fd", "9.0"),

@@ -120,7 +120,7 @@ func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
 		}
 		var configs []sbomConfig
 		if projPath, err := projectConfigPath(cwd); err == nil {
-			ok, existsErr := configOrToolVersionsExists(projPath)
+			ok, existsErr := galeConfigExists(projPath)
 			if existsErr != nil {
 				return nil, existsErr
 			}
@@ -149,7 +149,7 @@ func resolveSbomConfigs(global, project, all bool) ([]sbomConfig, error) {
 	if err != nil {
 		return nil, err
 	}
-	ok, err := configOrToolVersionsExists(path)
+	ok, err := galeConfigExists(path)
 	if err != nil {
 		return nil, err
 	}
@@ -179,11 +179,7 @@ func collectSbomEntries(configs []sbomConfig, filter string) ([]sbomEntry, error
 	// no config yields any entries.
 	entries := make([]sbomEntry, 0)
 	for _, sc := range configs {
-		// readConfigOrToolVersions gives .tool-versions projects
-		// the same fallback `list` and `env` get; a missing
-		// gale.toml with a .tool-versions sibling still yields
-		// that project's packages.
-		cfg, err := readConfigOrToolVersions(sc.path)
+		cfg, err := readGaleConfig(sc.path)
 		if err != nil {
 			return nil, err
 		}

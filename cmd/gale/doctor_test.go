@@ -529,7 +529,7 @@ func TestDoctorRunWritesSummaryToStdout(t *testing.T) {
 	}
 }
 
-func TestRepairDoctorRebuildsToolVersionsProjectGeneration(t *testing.T) {
+func TestRepairDoctorIgnoresToolVersionsProjectGeneration(t *testing.T) {
 	home := t.TempDir()
 	galeDir := filepath.Join(home, ".gale")
 	storeRoot := filepath.Join(home, ".gale", "pkg")
@@ -576,8 +576,8 @@ func TestRepairDoctorRebuildsToolVersionsProjectGeneration(t *testing.T) {
 		t.Fatalf("repairDoctor: %v", err)
 	}
 
-	if _, err := os.Lstat(filepath.Join(projectGaleDir, "current", "bin", "go")); err != nil {
-		t.Fatalf("go symlink missing after project repair: %v", err)
+	if _, err := os.Lstat(filepath.Join(projectGaleDir, "current", "bin", "go")); !os.IsNotExist(err) {
+		t.Fatalf("go symlink must not come from .tool-versions, err=%v", err)
 	}
 }
 

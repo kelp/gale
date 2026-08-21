@@ -132,13 +132,10 @@ func TestOutputTablePopulatedFieldsUntouched(t *testing.T) {
 	}
 }
 
-// TestSbomToolVersionsProject pins the Bugbot finding on the
-// scope-resolution consolidation: a `.tool-versions`-only tree
-// counts as a project (projectConfigPath returns its would-be
-// gale.toml path), so sbom must read the .tool-versions
-// fallback like `list` and `env` do — not bail on the missing
-// gale.toml and emit an empty SBOM.
-func TestSbomToolVersionsProject(t *testing.T) {
+// TestSbomIgnoresToolVersionsOnly pins the drop: a
+// `.tool-versions`-only tree is not a gale project, so sbom
+// must not emit packages from that file.
+func TestSbomIgnoresToolVersionsOnly(t *testing.T) {
 	tempHome := t.TempDir()
 	t.Setenv("HOME", tempHome)
 
@@ -165,8 +162,8 @@ func TestSbomToolVersionsProject(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	out := stdout.String()
-	if !strings.Contains(out, "jq") || !strings.Contains(out, "1.7.0") {
-		t.Errorf("sbom output missing jq 1.7.0 from .tool-versions:\nstdout: %q\nstderr: %q",
+	if strings.Contains(out, "jq") || strings.Contains(out, "1.7.0") {
+		t.Errorf("sbom must ignore .tool-versions:\nstdout: %q\nstderr: %q",
 			out, stderr.String())
 	}
 }

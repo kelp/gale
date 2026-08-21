@@ -147,11 +147,10 @@ func TestPruneRemovesVanishedProjects(t *testing.T) {
 	}
 }
 
-// TestPruneKeepsToolVersionsProjects verifies that a project
-// managed via .tool-versions (no gale.toml) is still treated
-// as live — gale's config loading falls back to
-// .tool-versions, so its generation deserves retention too.
-func TestPruneKeepsToolVersionsProjects(t *testing.T) {
+// TestPruneDropsToolVersionsOnlyProjects verifies that a
+// registered path with only .tool-versions (no gale.toml) is
+// vanished and pruneable.
+func TestPruneDropsToolVersionsOnlyProjects(t *testing.T) {
 	galeHome := filepath.Join(t.TempDir(), ".gale")
 	proj := t.TempDir()
 	if err := os.WriteFile(
@@ -172,8 +171,8 @@ func TestPruneKeepsToolVersionsProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != 1 {
-		t.Errorf(".tool-versions project must survive prune, "+
+	if len(got) != 0 {
+		t.Errorf(".tool-versions-only path must be pruned, "+
 			"got %v", got)
 	}
 }

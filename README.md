@@ -98,10 +98,6 @@ Global and project packages can coexist at different
 versions. Go 1.24 globally, Go 1.26.1 in the project
 — direnv handles the switch.
 
-Teams migrating from asdf or mise can keep their
-`.tool-versions` file. Gale reads it as a fallback
-when no `gale.toml` exists.
-
 ## Multiple Machines
 
 One `gale.toml` can describe more than one machine.

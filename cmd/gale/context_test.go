@@ -315,7 +315,7 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 	}
 }
 
-func TestRebuildGenerationUsesToolVersionsFallback(t *testing.T) {
+func TestRebuildGenerationIgnoresToolVersions(t *testing.T) {
 	projectDir := t.TempDir()
 	galeDir := filepath.Join(projectDir, ".gale")
 	storeRoot := filepath.Join(t.TempDir(), "pkg")
@@ -344,8 +344,8 @@ func TestRebuildGenerationUsesToolVersionsFallback(t *testing.T) {
 		t.Fatalf("rebuildGeneration: %v", err)
 	}
 
-	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "go")); err != nil {
-		t.Fatalf("go symlink missing from current generation: %v", err)
+	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "go")); !os.IsNotExist(err) {
+		t.Fatalf("go symlink must not come from .tool-versions, err=%v", err)
 	}
 }
 

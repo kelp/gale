@@ -1,8 +1,9 @@
 package main
 
-// Tests for issue #80: gale env --project rejects a project that has
-// only a .tool-versions file, even though other read-only --project
-// commands accept it via projectConfigPath.
+// Tests for the Drop .tool-versions slice. Issue #80 added
+// env --project support for a .tool-versions-only tree.
+// Milestone 2 reverses that: gale.toml is the only project
+// manifest.
 
 import (
 	"bytes"
@@ -12,13 +13,11 @@ import (
 	"testing"
 )
 
-// TestEnvProjectAcceptsToolVersionsOnlyProject verifies that
-// `gale env --project` succeeds in a directory that has only a
-// .tool-versions file (no gale.toml), matching the behaviour of
-// `gale list --project` and other read-only commands.
-// Issue #80: resolveEnvScope used config.FindGaleConfig directly,
-// missing the .tool-versions fallback in projectConfigPath.
-func TestEnvProjectAcceptsToolVersionsOnlyProject(t *testing.T) {
+// TestEnvProjectRejectsToolVersionsOnlyProject verifies that
+// `gale env --project` errors in a directory that has only a
+// .tool-versions file (no gale.toml). Issue #80 accepted that
+// tree as a project; this slice does not.
+func TestEnvProjectRejectsToolVersionsOnlyProject(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -47,30 +46,20 @@ func TestEnvProjectAcceptsToolVersionsOnlyProject(t *testing.T) {
 		envVarsOnly = false
 	})
 
-	if err := envCmd.RunE(envCmd, nil); err != nil {
-		t.Fatalf(
-			"envCmd.RunE with --project in .tool-versions-only dir: %v",
-			err,
-		)
+	err := envCmd.RunE(envCmd, nil)
+	if err == nil {
+		t.Fatal("env --project in a .tool-versions-only dir must fail")
 	}
-
-	output := buf.String()
-	// Must export PATH pointing at the project .gale/current/bin.
-	wantDir := filepath.Join(proj, ".gale", "current", "bin")
-	if !strings.Contains(output, wantDir) {
-		t.Errorf(
-			"expected PATH to include project .gale dir %q; got:\n%s",
-			wantDir, output,
-		)
+	if err.Error() != errNoProject {
+		t.Fatalf("error = %q, want %q", err.Error(), errNoProject)
 	}
 }
 
-// TestEnvAutoResolvesToProjectForToolVersionsOnly verifies that
-// `gale env` (auto mode, no scope flag) resolves to the project
-// scope when only .tool-versions is present, rather than silently
-// falling back to global scope.
-// Issue #80: auto branch also called FindGaleConfig directly.
-func TestEnvAutoResolvesToProjectForToolVersionsOnly(t *testing.T) {
+// TestEnvAutoIgnoresToolVersionsOnly verifies that `gale env`
+// (auto mode, no scope flag) uses the global scope when only
+// .tool-versions is present. Issue #80 resolved that tree as a
+// project.
+func TestEnvAutoIgnoresToolVersionsOnly(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -104,11 +93,15 @@ func TestEnvAutoResolvesToProjectForToolVersionsOnly(t *testing.T) {
 	}
 
 	output := buf.String()
-	// Auto mode must resolve to the project .gale dir, not global.
-	wantDir := filepath.Join(proj, ".gale", "current", "bin")
+	projectBin := filepath.Join(proj, ".gale", "current", "bin")
+	if strings.Contains(output, projectBin) {
+		t.Errorf("auto mode must not use project .gale dir %q; got:\n%s",
+			projectBin, output)
+	}
+	wantDir := filepath.Join(home, ".gale", "current", "bin")
 	if !strings.Contains(output, wantDir) {
 		t.Errorf(
-			"auto mode: expected PATH to include project .gale dir %q; got:\n%s",
+			"auto mode: expected PATH to include global .gale dir %q; got:\n%s",
 			wantDir, output,
 		)
 	}
