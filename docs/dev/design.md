@@ -227,6 +227,13 @@ HTTP, hash, and extract on that path. Timeout stamps
 `incomplete`, cancels the work, and leaves `current`
 unchanged. A typed `gale sync` has no overall deadline.
 
+`gale generations rollback` is temporary: it moves
+`current` only. The lock still names the intended
+roots. Rollback deletes this scope's stamp so the
+next `--if-needed` (direnv) syncs back to the lock
+instead of treating the rolled-back generation as
+complete. Durable undo is reverting the lock in git.
+
 `gale shell` and `gale run` consult the same stamp. Their
 own gate asks whether the lock still describes the
 manifest, which a partial install failure leaves true.

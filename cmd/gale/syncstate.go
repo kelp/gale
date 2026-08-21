@@ -394,6 +394,19 @@ func syncWithheld(out *output.Output, galeDir, fingerprint string, ifNeeded bool
 	return true
 }
 
+// invalidateSyncStamp drops the completion stamp so the next
+// --if-needed cannot treat a rolled-back current as a finished
+// sync. An absent stamp is success: install-only scopes never
+// write one. Any other error warns and does not fail the
+// caller — current has already moved, same contract as stampSync.
+func invalidateSyncStamp(out *output.Output, galeDir string) {
+	err := os.Remove(syncStatePath(galeDir))
+	if err == nil || errors.Is(err, fs.ErrNotExist) {
+		return
+	}
+	out.Warn(fmt.Sprintf("clearing sync state: %v", err))
+}
+
 // stampSync records one sync's verdict. A stamp that cannot be written
 // warns and nothing more: failing to record must not change the exit
 // status of the sync it describes.

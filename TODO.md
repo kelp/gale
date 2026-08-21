@@ -145,7 +145,7 @@ Milestone 4 — 193 source recipes still collide.
       cancels work, leaves `current`
       unchanged. Typed `gale sync` is
       unbounded.
-- [ ] **Rollback is temporary.** It moves
+- [x] **Rollback is temporary.** It moves
       `current` only. Any later sync returns
       to the lock. Integration-test the
       direnv-after-rollback sequence.

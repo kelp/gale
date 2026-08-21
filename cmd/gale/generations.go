@@ -119,6 +119,11 @@ var genRollbackCmd = &cobra.Command{
 		out.Success(fmt.Sprintf(
 			"Rolled back to generation %d", target,
 		))
+		out.Warn(
+			"Rollback is temporary. The next sync returns to the lock. " +
+				"Durable undo is reverting the lock in git.",
+		)
+		invalidateSyncStamp(out, galeDir)
 		return nil
 	},
 }
