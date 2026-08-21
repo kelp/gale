@@ -338,7 +338,7 @@ Mechanical (low-risk, do first):
 - [x] **errorlint (2)** — match with `errors.Is`/`errors.As`, wrap
   with `%w`.
 - [x] **nilnil (3)** — return a sentinel error instead of `(nil, nil)`.
-- [ ] **contextcheck (4)** — thread `context.Context` instead of
+- [x] **contextcheck (4)** — thread `context.Context` instead of
   dropping it.
 
 Refactors (need judgment):

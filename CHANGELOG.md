@@ -11,6 +11,15 @@
 
 ### Fixed
 
+- **contextcheck.** The backlog count
+  was stale. Full-repo `contextcheck`
+  is already 0 on linux and darwin;
+  earlier slices threaded the
+  functions the linter can see. The
+  `issues:` block in `.golangci.yml`
+  stays until the rest of the Code
+  Standards Backlog is gone.
+
 - **nilnil.** `readBinary` returns
   `ErrNotBinary` instead of
   `(nil, nil)` when a file is not an
