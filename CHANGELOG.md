@@ -11,6 +11,14 @@
 
 ### Changed
 
+- **`gale generations rollback` is temporary.** It
+  moves `current` only and does not write the lock.
+  It prints that the next sync returns to the lock
+  and that durable undo is reverting the lock in
+  git. Rollback deletes `sync-state.toml` so
+  direnv `--if-needed` actually syncs instead of
+  treating the rolled-back generation as complete.
+
 - **`gale sync --if-needed` is bounded.** Automatic
   sync (direnv, `gale shell`, `gale run`) uses a
   compiled 15s deadline, parented through index HTTP,

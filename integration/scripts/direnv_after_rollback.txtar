@@ -1,0 +1,37 @@
+# Rollback is temporary. It moves current only.
+# Direnv's gate is `gale sync --if-needed`. After a
+# completed sync, rollback must not leave that stamp
+# claiming the rolled-back generation is finished:
+# the next --if-needed returns PATH to the lock /
+# manifest. Install alone does not write the stamp,
+# so this sequence syncs first.
+
+gale-fixture recipes $WORK/recipes
+
+mkdir $WORK/proj
+cd $WORK/proj
+
+exec sh -c 'printf "%s\n" "[packages]" "hello = \"1.0-1\"" > gale.toml'
+exec gale sync --recipes=$WORK/recipes
+exists $WORK/proj/.gale/current/bin/hello
+! exists $WORK/proj/.gale/current/bin/hello-dep
+grep 'status = "complete"' $WORK/proj/.gale/sync-state.toml
+
+exec sh -c 'printf "%s\n" "[packages]" "hello = \"1.0-1\"" "hello-dep = \"1.0-1\"" > gale.toml'
+exec gale sync --recipes=$WORK/recipes
+exists $WORK/proj/.gale/current/bin/hello-dep
+grep 'status = "complete"' $WORK/proj/.gale/sync-state.toml
+
+exec gale generations rollback
+stderr 'Rolled back'
+stderr 'temporary'
+stderr 'lock'
+stderr 'git'
+exists $WORK/proj/.gale/current/bin/hello
+! exists $WORK/proj/.gale/current/bin/hello-dep
+! exists $WORK/proj/.gale/sync-state.toml
+
+exec gale sync --if-needed --recipes=$WORK/recipes
+exists $WORK/proj/.gale/current/bin/hello
+exists $WORK/proj/.gale/current/bin/hello-dep
+grep 'status = "complete"' $WORK/proj/.gale/sync-state.toml
