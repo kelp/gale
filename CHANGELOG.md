@@ -11,6 +11,12 @@
 
 ### Changed
 
+- **Linux admission.** Proposal parked.
+  The catalog has no linux artifact keys.
+  A later PR for the ten must pass §5,
+  use new version blocks, and print
+  `tree_digest` from `gale admit`.
+
 - **Index-update PR bot.** Proposal parked.
   Humans open index PRs today. A later bot
   must be PR-only, have no write token on

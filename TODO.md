@@ -300,7 +300,7 @@ Each is its own proposal. None block 1–5.
 - [x] **Index-update PR bot** — PR-only, no
       write token on main, verifies upstream
       checksums.
-- [ ] **Linux admission** for the ten, once
+- [x] **Linux admission** for the ten, once
       macOS is boring.
 
 ## Out of scope (do not ticket)

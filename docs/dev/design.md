@@ -17,6 +17,8 @@ in the catalog. See
 Index version bumps are currently human
 PRs. The update bot is parked. See
 [`index-update-pr-bot.md`](proposals/index-update-pr-bot.md).
+The catalog has no linux artifact keys.
+See [`linux-admission.md`](proposals/linux-admission.md).
 
 ## Principles
 
