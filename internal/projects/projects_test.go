@@ -75,13 +75,13 @@ func TestRegisterDedupes(t *testing.T) {
 // motivating case.
 func TestRegisterCanonicalizesSymlinks(t *testing.T) {
 	galeHome := filepath.Join(t.TempDir(), ".gale")
-	real := t.TempDir()
+	realDir := t.TempDir()
 	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := Register(galeHome, real); err != nil {
+	if err := Register(galeHome, realDir); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register(galeHome, link); err != nil {

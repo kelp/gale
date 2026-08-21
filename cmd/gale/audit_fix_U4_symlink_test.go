@@ -45,9 +45,9 @@ func TestGCRetainsOtherHostPinsDottedHost(t *testing.T) {
 // derived from the same store root, so path spelling must not
 // matter.
 func TestGCRetainsOtherHostPinsSymlinkedHome(t *testing.T) {
-	real := t.TempDir()
+	realDir := t.TempDir()
 	link := filepath.Join(t.TempDir(), "home-link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
 	// HOME uses the symlinked spelling; Getwd() will return the
