@@ -215,32 +215,32 @@ func TestRemoveUnreferencedVersionsNoneToRemove(t *testing.T) {
 // collectReferencedPackagesWithResolver resolves each config
 // entry through the store, so bare/canonical comparisons
 // always line up.
-func TestGCKeepsCanonicalForBareRef(t *testing.T) {
-	storeRoot := t.TempDir()
-	for _, ver := range []string{"1.8.1-2", "1.7.1-1"} {
+func runBareJqGC(t *testing.T, versions []string) (storeRoot string, n int) {
+	t.Helper()
+	storeRoot = t.TempDir()
+	for _, ver := range versions {
 		dir := filepath.Join(storeRoot, "jq", ver, "bin")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-
 	globalDir := t.TempDir()
-	globalCfg := filepath.Join(globalDir, "gale.toml")
-	if err := os.WriteFile(globalCfg,
-		[]byte("[packages]\njq = \"1.8.1\"\n"),
-		0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(globalDir, "gale.toml"),
+		[]byte("[packages]\njq = \"1.8.1\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
-
 	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
-	n, _ := removeUnreferencedVersions(s, ref, false, out)
+	n, _ = removeUnreferencedVersions(s, ref, false, out)
+	return storeRoot, n
+}
 
+func TestGCKeepsCanonicalForBareRef(t *testing.T) {
+	storeRoot, n := runBareJqGC(t, []string{"1.8.1-2", "1.7.1-1"})
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
 	}
@@ -264,30 +264,7 @@ func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 // bare version to). Regression fix for the farm-drift loop
 // where inactive revisions lingered forever.
 func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
-	storeRoot := t.TempDir()
-	for _, ver := range []string{"1.8.1-2", "1.8.1-3"} {
-		dir := filepath.Join(storeRoot, "jq", ver, "bin")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	globalDir := t.TempDir()
-	globalCfg := filepath.Join(globalDir, "gale.toml")
-	if err := os.WriteFile(globalCfg,
-		[]byte("[packages]\njq = \"1.8.1\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	s := store.NewStore(storeRoot)
-	out := output.New(os.Stderr, false)
-
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
-	if err != nil {
-		t.Fatalf("collecting references: %v", err)
-	}
-	n, _ := removeUnreferencedVersions(s, ref, false, out)
+	storeRoot, n := runBareJqGC(t, []string{"1.8.1-2", "1.8.1-3"})
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
 	}

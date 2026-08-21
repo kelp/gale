@@ -425,39 +425,17 @@ func TestExtractTarGzRejectsPathTraversal(t *testing.T) {
 func TestExtractTarGzHandlesHardLinks(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "hardlink.tar.gz")
 	destDir := t.TempDir()
-
-	// Build a tar.gz with a file and a hard link to it.
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
 	content := "hardlink-target-content"
-	tw.WriteHeader(&tar.Header{
-		Name: "original.txt",
-		Mode: 0o644,
-		Size: int64(len(content)),
-	})
-	tw.Write([]byte(content))
+	writeTarGzHeaders(t, archive, []tar.Header{
+		{Name: "original.txt", Mode: 0o644},
+		{Typeflag: tar.TypeLink, Name: "linked.txt", Linkname: "original.txt"},
+	}, []string{content, ""})
 
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeLink,
-		Name:     "linked.txt",
-		Linkname: "original.txt",
-	})
-
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	err = ExtractTarGz(context.Background(), archive, destDir)
+	err := ExtractTarGz(context.Background(), archive, destDir)
 	if err != nil {
 		t.Fatalf("ExtractTarGz error: %v", err)
 	}
 
-	// Both files should exist with same content.
 	got, err := os.ReadFile(filepath.Join(destDir, "linked.txt"))
 	if err != nil {
 		t.Fatalf("read hard link: %v", err)
@@ -502,34 +480,13 @@ func TestExtractTarGzRejectsSymlinkTraversalRelative(t *testing.T) {
 func TestExtractTarGzAllowsSymlinkWithinDestDir(t *testing.T) {
 	archive := filepath.Join(t.TempDir(), "good.tar.gz")
 	destDir := t.TempDir()
-
-	// Build a tar.gz with a valid symlink inside destDir.
-	f, err := os.Create(archive)
-	if err != nil {
-		t.Fatalf("create archive: %v", err)
-	}
-	gw := gzip.NewWriter(f)
-	tw := tar.NewWriter(gw)
-
 	content := "target content"
-	tw.WriteHeader(&tar.Header{
-		Name: "target.txt",
-		Mode: 0o644,
-		Size: int64(len(content)),
-	})
-	tw.Write([]byte(content))
+	writeTarGzHeaders(t, archive, []tar.Header{
+		{Name: "target.txt", Mode: 0o644},
+		{Typeflag: tar.TypeSymlink, Name: "link.txt", Linkname: "target.txt"},
+	}, []string{content, ""})
 
-	tw.WriteHeader(&tar.Header{
-		Typeflag: tar.TypeSymlink,
-		Name:     "link.txt",
-		Linkname: "target.txt",
-	})
-
-	tw.Close()
-	gw.Close()
-	f.Close()
-
-	err = ExtractTarGz(context.Background(), archive, destDir)
+	err := ExtractTarGz(context.Background(), archive, destDir)
 	if err != nil {
 		t.Fatalf("unexpected error for valid symlink: %v", err)
 	}

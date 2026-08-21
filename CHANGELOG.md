@@ -11,6 +11,17 @@
 
 ### Fixed
 
+- **dupl in tests.** The backlog count
+  was stale (6 reports, 3 pairs).
+  Shared `t.Helper()` fixtures cover
+  the U9 remove-keeps-store pair, the
+  bare-jq gc pair, and the extract
+  tar.gz file+link pair. Full-repo
+  `dupl` is 0. The `issues:` block
+  in `.golangci.yml` stays until the
+  rest of the Code Standards Backlog
+  is gone.
+
 - **dupl in `build.go`.** The named pair
   died with `internal/build`. Remaining
   `dupl` hits are tests and stay on the
