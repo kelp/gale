@@ -2105,17 +2105,17 @@ func stageGenNumbers(t *testing.T, galeDir string, nums []int, cur int) {
 }
 
 // TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt pins the
-// rule: the active generation plus every generation above it —
-// the branch a rollback abandoned, which a roll-forward may
-// return to (gh#189) — and nothing below.
+// rule: the active generation, the keep-2 previous generation
+// when it exists, plus every generation above current — the
+// branch a rollback abandoned (gh#189).
 //
 // The set is the exact complement of what cleanOldGenerations
-// removes (n < curGen), which is what makes a hollow generation
+// removes (n < cutoff), which is what makes a hollow generation
 // impossible: gc never keeps a directory without the store dirs
 // it links, and never retains bytes for a directory it deleted.
 //
-// Gaps in the numbering are legitimate and irrelevant here: the
-// rule is a comparison against curGen, not a count.
+// Gaps in the numbering are legitimate: the rule is a comparison
+// against the keep-2 cutoff, not a count.
 func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	galeDir := t.TempDir()
 	stageGenNumbers(t, galeDir, []int{1, 5, 9, 10}, 5)
@@ -2127,8 +2127,8 @@ func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	want := []int{5, 9, 10}
 	if !slices.Equal(got, want) {
 		t.Errorf("retainedNumbers(cur=5) = %v, want %v — current "+
-			"and the branch above it, and gen/1 below it left to "+
-			"cleanOldGenerations", got, want)
+			"and the branch above it; gen/1 is below the keep-2 "+
+			"cutoff and left to cleanOldGenerations", got, want)
 	}
 }
 
@@ -2175,6 +2175,47 @@ func TestRetainedNumbersIncludesAbsentCurrent(t *testing.T) {
 	}
 }
 
+// TestRetainedNumbersIncludesPreviousGeneration pins keep=2:
+// the generation immediately below current is retained so
+// cleanOldGenerations and store-closure retention stay
+// complements.
+func TestRetainedNumbersIncludesPreviousGeneration(t *testing.T) {
+	galeDir := t.TempDir()
+	stageGenNumbers(t, galeDir, []int{1, 4, 5, 9}, 5)
+
+	got, err := retainedNumbers(galeDir)
+	if err != nil {
+		t.Fatalf("retainedNumbers: %v", err)
+	}
+	want := []int{4, 5, 9}
+	if !slices.Equal(got, want) {
+		t.Errorf("retainedNumbers(cur=5) = %v, want %v — "+
+			"keep-2 previous gen/4 plus current and the "+
+			"branch above", got, want)
+	}
+}
+
+// TestRetainedNumbersDoesNotForceIncludeAbsentPrevious pins
+// that a gap at curGen-1 is not a phantom retained generation.
+// Force-include is only for absent current (gh#188).
+func TestRetainedNumbersDoesNotForceIncludeAbsentPrevious(t *testing.T) {
+	galeDir := t.TempDir()
+	stageGenNumbers(t, galeDir, []int{1, 5, 9}, 5)
+
+	got, err := retainedNumbers(galeDir)
+	if err != nil {
+		t.Fatalf("retainedNumbers: %v", err)
+	}
+	if slices.Contains(got, 4) {
+		t.Errorf("retainedNumbers = %v, must not invent gen/4", got)
+	}
+	want := []int{5, 9}
+	if !slices.Equal(got, want) {
+		t.Errorf("retainedNumbers(cur=5, no gen/4) = %v, want %v",
+			got, want)
+	}
+}
+
 // TestRetainedVersionsStrictUnionsRetainedGenerations pins the
 // multi-version shape: the active generation and the branch
 // above it can link two versions of the same package — the
@@ -2215,35 +2256,44 @@ func TestRetainedVersionsStrictUnionsRetainedGenerations(t *testing.T) {
 }
 
 // TestRetainedVersionsStrictSkipsHistoryBelowCurrent is the
-// other half: a generation below current contributes nothing,
-// because cleanOldGenerations is about to delete it. Retaining
-// its closure would keep bytes alive for a directory that is
-// gone — and break `gale update && gale gc` (gh#137).
+// other half: a generation below the keep-2 cutoff contributes
+// nothing, because cleanOldGenerations is about to delete it.
+// Retaining its closure would keep bytes alive for a directory
+// that is gone — and break `gale update && gale gc` (gh#137).
 func TestRetainedVersionsStrictSkipsHistoryBelowCurrent(t *testing.T) {
 	storeRoot := t.TempDir()
 	galeDir := filepath.Join(t.TempDir(), ".gale")
 
+	createStoreEntry(t, storeRoot, "jq", "1.6", []string{"jq"})
 	createStoreEntry(t, storeRoot, "jq", "1.7", []string{"jq"})
 	createStoreEntry(t, storeRoot, "jq", "1.8", []string{"jq"})
 	if err := Build(
-		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
+		map[string]string{"jq": "1.6"}, galeDir, storeRoot,
 	); err != nil {
 		t.Fatalf("Build gen 1: %v", err)
 	}
 	if err := Build(
-		map[string]string{"jq": "1.8"}, galeDir, storeRoot,
+		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
 	); err != nil {
 		t.Fatalf("Build gen 2: %v", err)
+	}
+	if err := Build(
+		map[string]string{"jq": "1.8"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 3: %v", err)
 	}
 
 	got, err := RetainedVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		t.Fatalf("RetainedVersionsStrict: %v", err)
 	}
-	if want := []string{"1.8"}; !slices.Equal(got["jq"], want) {
+	versions := got["jq"]
+	slices.Sort(versions)
+	if want := []string{"1.7", "1.8"}; !slices.Equal(versions, want) {
 		t.Errorf("RetainedVersionsStrict[jq] = %v, want %v — gen/1 "+
-			"is below current and its closure is not retained",
-			got["jq"], want)
+			"is below the keep-2 cutoff and its closure is not "+
+			"retained; gen/2 is the previous generation",
+			versions, want)
 	}
 }
 

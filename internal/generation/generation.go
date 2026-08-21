@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
@@ -721,26 +722,23 @@ var skipTopLevelDirs = map[string]bool{
 }
 
 // retainedNumbers returns the generation numbers gc must not
-// sweep the store closure of, sorted ascending: the active
-// generation and every generation ABOVE it.
+// sweep the store closure of, sorted ascending: the keep-2
+// window (current + one previous when it exists) and every
+// generation ABOVE current.
 //
 // The branch above current exists only after a rollback, and it
 // is retained history a roll-forward may return to — a number,
 // once allocated, permanently identifies one snapshot (gh#189).
-// cleanOldGenerations already kept those DIRECTORIES through its
-// `n >= curGen` skip; nothing kept the store versions they link,
-// so roll back, gc, roll forward activated dangling PATH entries
-// (gh#247). A later rebuild allocates above the highest
-// number; keep-2 then prunes history below the new cutoff
-// (gh#206).
+// cleanOldGenerations deletes the complement of this set; the
+// two stay paired so a directory gc keeps cannot lose the store
+// versions it links (gh#247). A later rebuild allocates above
+// the highest number; keep-2 then prunes history below the new
+// cutoff (gh#206).
 //
-// Nothing below current is retained. Those generations are the
-// ones cleanOldGenerations deletes, and reclaiming a superseded
-// revision right after an update is gc's most common job
-// (gh#137). The set is the exact complement of what
-// cleanOldGenerations removes, which is what makes a hollow
-// generation — a directory gc keeps without the versions it
-// links — impossible by construction.
+// History below the cutoff is not retained. Those generations
+// are the ones cleanOldGenerations deletes, and reclaiming a
+// superseded revision that has fallen out of the window is gc's
+// most common job (gh#137).
 //
 // curGen == 0 (no current symlink) retains everything, matching
 // the `n >= 0` skip that already stopped cleanOldGenerations
@@ -769,9 +767,13 @@ func retainedNumbers(galeDir string) ([]int, error) {
 	if curGen <= 0 {
 		return nums, nil
 	}
+	cutoff := retentionCutoff(curGen, config.DefaultGenerationKeep)
+	if cutoff < 1 {
+		cutoff = 1
+	}
 	var retained []int
 	for _, n := range nums {
-		if n >= curGen {
+		if n >= cutoff {
 			retained = append(retained, n)
 		}
 	}
@@ -840,6 +842,17 @@ func RetainedVersionsStrict(
 	return out, nil
 }
 
+// retentionCutoff is the first generation number that stays:
+// current minus keep plus one. keep<=0 or curGen<=0 yields 0
+// (retain everything). Shared by PruneOldGenerations and
+// retainedNumbers so gale gc and auto-prune cannot drift.
+func retentionCutoff(curGen, keep int) int {
+	if keep <= 0 || curGen <= 0 {
+		return 0
+	}
+	return curGen - keep + 1
+}
+
 // PruneOldGenerations removes generation directories older than
 // (curGen - keep + 1), preserving the most recent `keep` gens
 // (including the current one). Anything at or above curGen —
@@ -874,7 +887,7 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 		if curGen == 0 {
 			return nil
 		}
-		cutoff := curGen - keep + 1
+		cutoff := retentionCutoff(curGen, keep)
 		if cutoff <= 1 {
 			return nil
 		}

@@ -122,7 +122,7 @@ Milestone 4 — 193 source recipes still collide.
       `internal/prewarm`.** Serial installer.
       Deterministic order. Every error
       surfaces.
-- [ ] **GC: keep=2 constant.** Delete
+- [x] **GC: keep=2 constant.** Delete
       `[generation] keep` and the
       `keep = -1` sentinel. Do not remove
       the resolver, network, or generation

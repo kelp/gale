@@ -430,10 +430,10 @@ func TestGCShortMentionsGenerations(t *testing.T) {
 }
 
 // TestCleanGenerationsRemovesOldDirs verifies that gc
-// removes generation directories other than the current
-// one. We set up a fake gale dir with gen/1, gen/2,
-// gen/3 and current -> gen/3/bin, then verify only
-// gen/3 survives.
+// keeps the current generation plus one previous
+// (keep=2) and removes older ones. We set up a fake
+// gale dir with gen/1, gen/2, gen/3 and current ->
+// gen/3, then verify gen/1 is gone and gen/2+gen/3 stay.
 func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := filepath.Join(galeDir, "pkg")
@@ -462,8 +462,8 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 
 	// Call cleanOldGenerations directly.
 	removed := cleanOldGenerations(galeDir, storeRoot, true)
-	if removed != 2 {
-		t.Errorf("dry-run: want 2 flagged, got %d", removed)
+	if removed != 1 {
+		t.Errorf("dry-run: want 1 flagged, got %d", removed)
 	}
 	// All dirs still exist.
 	for _, n := range []string{"1", "2", "3"} {
@@ -477,22 +477,64 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	// Now run for real.
 	dryRun = false
 	removed = cleanOldGenerations(galeDir, storeRoot, false)
-	if removed != 2 {
-		t.Errorf("want 2 removed, got %d", removed)
+	if removed != 1 {
+		t.Errorf("want 1 removed, got %d", removed)
 	}
 
-	// gen/3 must survive, gen/1 and gen/2 must be gone.
-	if _, err := os.Stat(
-		filepath.Join(genRoot, "3"),
-	); err != nil {
-		t.Error("gen/3 should still exist")
-	}
-	for _, n := range []string{"1", "2"} {
+	// keep=2: gen/2 and gen/3 survive, gen/1 is gone.
+	for _, n := range []string{"2", "3"} {
 		if _, err := os.Stat(
 			filepath.Join(genRoot, n),
-		); !os.IsNotExist(err) {
-			t.Errorf("gen/%s should have been removed", n)
+		); err != nil {
+			t.Errorf("gen/%s should still exist", n)
 		}
+	}
+	if _, err := os.Stat(
+		filepath.Join(genRoot, "1"),
+	); !os.IsNotExist(err) {
+		t.Errorf("gen/1 should have been removed")
+	}
+}
+
+// TestGCIgnoresConfigKeep pins that leftover
+// [generation] keep in config.toml cannot widen or
+// disable gale gc retention.
+func TestGCIgnoresConfigKeep(t *testing.T) {
+	for _, keep := range []string{"-1", "10"} {
+		t.Run("keep="+keep, func(t *testing.T) {
+			galeDir, _ := setupGCHome(t)
+			home := os.Getenv("HOME")
+			if err := os.WriteFile(
+				filepath.Join(home, ".gale", "config.toml"),
+				[]byte("[generation]\nkeep = "+keep+"\n"),
+				0o644,
+			); err != nil {
+				t.Fatal(err)
+			}
+			genRoot := filepath.Join(galeDir, "gen")
+			for _, n := range []string{"1", "2", "3"} {
+				if err := os.MkdirAll(
+					filepath.Join(genRoot, n, "bin"), 0o755,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(
+				filepath.Join("gen", "3"),
+				filepath.Join(galeDir, "current"),
+			); err != nil {
+				t.Fatal(err)
+			}
+			if n := cleanOldGenerations(galeDir, filepath.Join(galeDir, "pkg"), false); n != 1 {
+				t.Fatalf("removed = %d, want 1", n)
+			}
+			if _, err := os.Stat(filepath.Join(genRoot, "1")); !os.IsNotExist(err) {
+				t.Errorf("keep = %s must not disable prune; gen/1 still exists", keep)
+			}
+			if _, err := os.Stat(filepath.Join(genRoot, "2")); err != nil {
+				t.Errorf("keep = %s must not change keep-2; gen/2 gone: %v", keep, err)
+			}
+		})
 	}
 }
 
@@ -522,16 +564,19 @@ func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Set up generations: gen/1 (old), gen/2 (current).
+	// Set up generations: gen/1 below the keep-2 window,
+	// gen/2 previous, gen/3 current. Without a gen below
+	// the cutoff, dry-run prints "Nothing to clean up"
+	// and the wording assertion is vacuous.
 	galeDir := filepath.Join(projDir, ".gale")
-	for _, n := range []string{"1", "2"} {
+	for _, n := range []string{"1", "2", "3"} {
 		d := filepath.Join(galeDir, "gen", n, "bin")
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := os.Symlink(
-		filepath.Join("gen", "2"),
+		filepath.Join("gen", "3"),
 		filepath.Join(galeDir, "current"),
 	); err != nil {
 		t.Fatal(err)
