@@ -11,6 +11,17 @@
 
 ### Changed
 
+- **Every scope rebuilds only from the lock.**
+  A present v2 lock is the version selector
+  for a rebuild. The manifest and
+  `store.ResolveDir` do not choose versions.
+  v1, legacy, host-target, and incomplete
+  v2 locks refuse and name the kind-specific
+  remedy (`gale fetch-adopt` for v1/legacy).
+  `gale gc --force` no longer rebuilds past
+  a present unusable lock. Sweep `--force`
+  stays.
+
 - **Doctor is four checks.** PATH, lock
   readable, generation matches lock roots,
   tree digest matches. `--check-registry`

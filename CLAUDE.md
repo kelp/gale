@@ -24,9 +24,10 @@ Append-only.
 
 **Generation** (`~/.gale/gen/<N>/`): a snapshot of
 symlinks into the store. Rebuilt declaratively from
-gale.toml on every install/remove/sync, swapped
+the v2 lock on every install/remove/sync, swapped
 atomically with `os.Rename`. "gen" is short for
-generation.
+generation. KindAbsent still rebuilds from
+gale.toml (first install).
 
 **current** (`~/.gale/current`): symlink to the active
 gen. Users put `~/.gale/current/bin` on PATH, so one

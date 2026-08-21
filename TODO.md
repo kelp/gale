@@ -249,7 +249,7 @@ Not-in-index is an error.
       roots, tree digest matches. Farm /
       deps-meta / legacy-lock novels go
       with those packages.
-- [ ] **Every scope rebuilds only from the
+- [x] **Every scope rebuilds only from the
       lock.** Global, project, `--host`.
       `install` always writes a lock.
       Refuse to rebuild a locked generation

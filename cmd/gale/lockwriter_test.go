@@ -159,10 +159,11 @@ func TestInstallHostCurrentWritesConcreteTarget(t *testing.T) {
 	}
 	ctx.Host = host
 
-	if err := installFromRecipeFile(
+	err = installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
-	); err != nil {
-		t.Fatalf("installFromRecipeFile: %v", err)
+	)
+	if !errors.Is(err, errSwitchV1) {
+		t.Fatalf("leftover install writes v1 then rebuild refuses: %v", err)
 	}
 
 	cfg, err := os.ReadFile(ctx.GalePath)
@@ -209,8 +210,8 @@ func TestInstallWritesDefaultTarget(t *testing.T) {
 
 	if err := installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
-	); err != nil {
-		t.Fatalf("installFromRecipeFile: %v", err)
+	); !errors.Is(err, errSwitchV1) {
+		t.Fatalf("leftover install writes v1 then rebuild refuses: %v", err)
 	}
 
 	lf := readLock(t, ctx)
@@ -249,8 +250,8 @@ func TestInstallPreservesHostLocationInLock(t *testing.T) {
 
 	if err := installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
-	); err != nil {
-		t.Fatalf("installFromRecipeFile: %v", err)
+	); !errors.Is(err, errSwitchV1) {
+		t.Fatalf("leftover install writes v1 then rebuild refuses: %v", err)
 	}
 
 	lf := readLock(t, ctx)

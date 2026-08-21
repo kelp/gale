@@ -23,9 +23,11 @@ source/fetch lock is refused. `gale fetch-adopt`
 migrates a v1 lock.
 
 **Declarative over imperative.** The state of your
-environment is a function of gale.toml plus the v2
-lock, not a history of commands you ran. `gale sync`
-activates the lock and does not rewrite it.
+environment is a function of the v2 lock, not a
+history of commands you ran. `gale.toml` declares
+what to lock; a locked rebuild selects the lock.
+`gale sync` activates the lock and does not rewrite
+it.
 
 **Rollback is temporary.** `gale generations rollback`
 moves `current` only. The next sync returns PATH to

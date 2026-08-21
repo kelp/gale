@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kelp/gale/internal/activation"
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/farm"
@@ -509,14 +510,14 @@ func rebuildGenerationWith(r genRebuild) error {
 	if err := registerProject(r.configPath, r.galeDir); err != nil {
 		return fmt.Errorf("registering project: %w", err)
 	}
-	pkgs, err := rebuildInputs(r)
+	pkgs, fetch, err := rebuildInputs(&r)
 	if err != nil {
 		return err
 	}
 	if err := generation.BuildWithOptions(
 		pkgs, r.galeDir, r.storeRoot, generation.Options{
 			Validate: r.validate,
-			Fetch:    r.fetch,
+			Fetch:    fetch,
 		},
 	); err != nil {
 		return err
@@ -525,25 +526,96 @@ func rebuildGenerationWith(r genRebuild) error {
 	return nil
 }
 
-// rebuildInputs resolves the package set the generation is built from.
-// A locked rebuild brings its own package set — the lock is the
-// version selector. Leftover [bin] does not settle a collision.
-func rebuildInputs(r genRebuild) (pkgs map[string]string, err error) {
+// rebuildInputs resolves the package set and fetch SHA map the
+// generation is built from. A present lock is the only version
+// selector; the manifest and ResolveDir do not choose versions.
+func rebuildInputs(r *genRebuild) (map[string]string, map[string]string, error) {
+	if r.configPath != "" {
+		lp, err := lockfilePath(r.configPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving lockfile path: %w", err)
+		}
+		host, err := config.CurrentHost()
+		if err != nil {
+			return nil, nil, err
+		}
+		lockPkgs, locked, err := lockedRebuildPkgs(lp, host)
+		if err != nil {
+			return nil, nil, err
+		}
+		if locked {
+			return lockedRebuildMaps(r, lp, lockPkgs)
+		}
+	}
+	return unlockedRebuildInputs(r)
+}
+
+func lockedRebuildMaps(
+	r *genRebuild, lp string, lockPkgs map[string]string,
+) (map[string]string, map[string]string, error) {
+	lf, err := lockfile.ReadV2(lp)
+	if err != nil {
+		return nil, nil, err
+	}
+	fetch, err := checkedFetchSHAMap(lf)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r.pkgs != nil && !maps.Equal(r.pkgs, lockPkgs) {
+		return nil, nil, fmt.Errorf("rebuild plan does not match the lock")
+	}
+	if r.pkgs != nil {
+		return r.pkgs, fetch, nil
+	}
+	return lockPkgs, fetch, nil
+}
+
+func unlockedRebuildInputs(r *genRebuild) (map[string]string, map[string]string, error) {
 	if r.pkgs != nil && r.configPath == "" {
-		return r.pkgs, nil
+		return r.pkgs, r.fetch, nil
 	}
 	cfg, err := loadEffectiveConfig(r.configPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if r.pkgs != nil {
-		return r.pkgs, nil
+		return r.pkgs, r.fetch, nil
 	}
 	declared := cfg.Packages
 	if declared == nil {
 		declared = map[string]string{}
 	}
-	return canonicalizeForBuild(declared, r.pinResolve), nil
+	return canonicalizeForBuild(declared, r.pinResolve), r.fetch, nil
+}
+
+// checkedFetchSHAMap maps each locked default root to its
+// current-platform SHA256. Missing platform or SHA is an error
+// so resolvePkgDir cannot fall back to ResolveDir.
+func checkedFetchSHAMap(lf *lockfile.V2) (map[string]string, error) {
+	out := map[string]string{}
+	if lf == nil || lf.Targets.Default == nil {
+		return out, nil
+	}
+	plat := currentPlatform()
+	for _, root := range lf.Targets.Default.Roots {
+		name, _, err := lockfile.SplitV2Root(root)
+		if err != nil {
+			return nil, fmt.Errorf("lock root: %w", err)
+		}
+		pkg, ok := lf.Packages[root]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", lockfile.ErrMissingNode, root)
+		}
+		art, ok := pkg.Artifacts[plat]
+		if !ok || art.SHA256 == "" {
+			return nil, fmt.Errorf(
+				"%w: %s has no artifact for %s",
+				lockfile.ErrMissingArtifact, root, plat,
+			)
+		}
+		out[name] = art.SHA256
+	}
+	return out, nil
 }
 
 // autoPruneGenerations is the post-Build hook that bounds gen
@@ -1269,18 +1341,12 @@ func (ctx *cmdContext) RebuildGenerationLocked() error {
 // recoveryRebuild is rebuildUnderLock's policy, beside the generation
 // inputs themselves.
 type recoveryRebuild struct {
-	// force downgrades a lock that cannot be modeled from a refusal
-	// to a warning plus an unlocked rebuild. Without it a user whose
-	// lock is beyond repair could not run the very commands that
-	// exist to get a broken machine working again.
-	force bool
-	// skipUnchanged suppresses a locked rebuild that would relink
-	// exactly what is already active. gc sets it: its rebuild is
-	// gated on a recipe-versus-store disagreement that the lock does
-	// not resolve, so rebuilding unconditionally would mint a fresh
+	// skipUnchanged suppresses a locked rebuild that already links
+	// each lock root's FetchPath. gc sets it: its rebuild is gated
+	// on a recipe-versus-store disagreement that the lock does not
+	// resolve, so rebuilding unconditionally would mint a fresh
 	// generation on every scheduled run forever.
 	skipUnchanged bool
-	out           *output.Output
 }
 
 // rebuildUnderLock rebuilds one scope's generation with that scope's
@@ -1293,12 +1359,10 @@ type recoveryRebuild struct {
 // gate at global scope, so nothing downstream would ever notice;
 // the writer has to enforce it (gh#197).
 //
-// Three lock states, three answers. Absent is unlocked mode and keeps
-// the caller's own selection. A usable v1 lock supplies the versions
-// and no recipe is consulted, exactly as RebuildGenerationLocked
-// activates a plan. A lock that is present and cannot be modeled
-// refuses this scope's rebuild, because a rebuild nothing can check
-// against the lock is the bug itself.
+// Absent is unlocked mode and keeps the caller's own selection.
+// A usable v2 lock supplies the versions and fetch SHAs.
+// A lock that is present and cannot be modeled — v1, legacy,
+// host-target, or incomplete — refuses this scope's rebuild.
 func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
 	lockPath, err := lockfilePath(r.configPath)
 	if err != nil {
@@ -1309,40 +1373,52 @@ func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
 		return err
 	}
 	pkgs, locked, err := lockedRebuildPkgs(lockPath, host)
-	switch {
-	case err != nil && !opt.force:
-		return fmt.Errorf(
-			"%w; run 'gale lock' to regenerate it, or rerun "+
-				"with --force to rebuild without it", err,
-		)
-	case err != nil:
-		opt.out.Warn(fmt.Sprintf(
-			"rebuilding without %s: %v", lockPath, err,
-		))
-	case locked:
+	if err != nil {
+		return err
+	}
+	if locked {
 		r.pkgs = pkgs
-		if lf, rerr := lockfile.ReadV2(lockPath); rerr == nil {
-			r.fetch = fetchSHAMap(lf)
-		}
-		if opt.skipUnchanged &&
-			generationAlreadyLinks(r.galeDir, r.storeRoot, pkgs) {
+		if opt.skipUnchanged && generationLinksLockFetch(r, lockPath) {
 			return nil
 		}
 	}
 	return rebuildGenerationWith(r)
 }
 
-// lockedRebuildPkgs returns the name→version set a recovery rebuild
-// must activate: the scope lock's effective roots for host. The bool
-// reports whether a lock supplied them, which an empty map cannot —
-// a lock rooting nothing and no lock at all are different answers.
+// generationLinksLockFetch reports whether the active generation
+// already satisfies activation.Check against the lock — FetchPath
+// identity, not ResolveDir version equality.
+func generationLinksLockFetch(r genRebuild, lockPath string) bool {
+	installed, err := generation.CurrentVersionsStrict(r.galeDir, r.storeRoot)
+	if err != nil {
+		return false
+	}
+	linked, err := generation.CurrentStoreDirs(r.galeDir, r.storeRoot)
+	if err != nil {
+		return false
+	}
+	return activation.Check(activation.Request{
+		LockPath:  lockPath,
+		Platform:  currentPlatform(),
+		StoreRoot: r.storeRoot,
+		Installed: installed,
+		Linked:    linked,
+	}) == nil
+}
+
+// lockedRebuildPkgs returns the name→version set a locked rebuild
+// must activate. KindAbsent is unlocked. KindV2 without Host
+// targets supplies Default roots. Every other present lock is
+// an error. The bool reports whether a lock supplied the roots,
+// which an empty map cannot — a lock rooting nothing and no
+// lock at all are different answers.
 //
 // Roots only, and no plan. A generation links roots; the closure
 // behind them is what supports those roots, not what it links. Going
 // through lockplan would hash and validate that whole closure, which
 // is a demand gc has no business making: it is run precisely
 // when the store is in a state nothing else tolerates.
-func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
+func lockedRebuildPkgs(lockPath, _ string) (map[string]string, bool, error) {
 	v, err := lockfile.Load(lockPath)
 	if err != nil {
 		return nil, false, err
@@ -1352,24 +1428,15 @@ func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
 		return nil, false, nil
 	case lockfile.KindLegacy:
 		return nil, false, fmt.Errorf(
-			"%s: %w: it names versions this build cannot model",
+			"%s: %w: run gale fetch-adopt",
 			lockPath, lockfile.ErrLegacySchema,
 		)
 	case lockfile.KindV1:
-		roots, rErr := v.V1.EffectiveRoots(host)
-		if rErr != nil {
-			return nil, false, fmt.Errorf("%s: %w", lockPath, rErr)
-		}
-		pkgs := make(map[string]string, len(roots))
-		for name, id := range roots {
-			_, version, pErr := lockfile.ParseIdentity(id)
-			if pErr != nil {
-				return nil, false, fmt.Errorf("%s: %w", lockPath, pErr)
-			}
-			pkgs[name] = version
-		}
-		return pkgs, true, nil
+		return nil, false, fmt.Errorf("%s: %w", lockPath, errSwitchV1)
 	case lockfile.KindV2:
+		if v.V2 != nil && len(v.V2.Targets.Host) > 0 {
+			return nil, false, fmt.Errorf("%s: %w", lockPath, errSwitchHosts)
+		}
 		pkgs, pErr := pkgsFromV2Lock(v.V2)
 		if pErr != nil {
 			return nil, false, fmt.Errorf("%s: %w", lockPath, pErr)

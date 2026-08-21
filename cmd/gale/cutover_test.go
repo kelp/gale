@@ -9,6 +9,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/provenance"
@@ -335,6 +336,18 @@ func TestRemoveDropsRoot(t *testing.T) {
 	}
 	if strings.Contains(string(cfg), "just") {
 		t.Errorf("gale.toml still has just: %s", cfg)
+	}
+	fd := got.Packages["fd@10.2.0"].Artifacts[currentPlatform()]
+	want, err := store.NewStore(fx.c.StoreRoot).FetchPath("fd", "10.2.0", fd.SHA256)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dirs, err := generation.CurrentStoreDirs(fx.c.GaleDir, fx.c.StoreRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Clean(dirs["fd"]) != filepath.Clean(want) {
+		t.Errorf("fd linked %q, want fetch %q", dirs["fd"], want)
 	}
 }
 
