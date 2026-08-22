@@ -2240,8 +2240,8 @@ func stageGenNumbers(t *testing.T, galeDir string, nums []int, cur int) {
 // impossible: gc never keeps a directory without the store dirs
 // it links, and never retains bytes for a directory it deleted.
 //
-// Gaps in the numbering are legitimate: the rule is a comparison
-// against the keep-2 cutoff, not a count.
+// Gaps in the numbering are legitimate: keep-2 counts
+// existing generations, not integers in a range (gh#248).
 func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	galeDir := t.TempDir()
 	stageGenNumbers(t, galeDir, []int{1, 5, 9, 10}, 5)
@@ -2250,11 +2250,11 @@ func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retainedNumbers: %v", err)
 	}
-	want := []int{5, 9, 10}
+	want := []int{1, 5, 9, 10}
 	if !slices.Equal(got, want) {
-		t.Errorf("retainedNumbers(cur=5) = %v, want %v — current "+
-			"and the branch above it; gen/1 is below the keep-2 "+
-			"cutoff and left to cleanOldGenerations", got, want)
+		t.Errorf("retainedNumbers(cur=5) = %v, want %v — current, "+
+			"the previous existing generation, and the branch "+
+			"above it", got, want)
 	}
 }
 
@@ -2335,9 +2335,10 @@ func TestRetainedNumbersDoesNotForceIncludeAbsentPrevious(t *testing.T) {
 	if slices.Contains(got, 4) {
 		t.Errorf("retainedNumbers = %v, must not invent gen/4", got)
 	}
-	want := []int{5, 9}
+	want := []int{1, 5, 9}
 	if !slices.Equal(got, want) {
-		t.Errorf("retainedNumbers(cur=5, no gen/4) = %v, want %v",
+		t.Errorf("retainedNumbers(cur=5, no gen/4) = %v, want %v — "+
+			"gen/1 is the previous existing generation",
 			got, want)
 	}
 }

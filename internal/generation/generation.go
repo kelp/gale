@@ -734,24 +734,23 @@ var skipTopLevelDirs = map[string]bool{
 	"misc": true,
 }
 
-// retainedNumbers returns the generation numbers gc must not
-// sweep the store closure of, sorted ascending: the keep-2
-// window (current + one previous when it exists) and every
+// retainedNumbers returns the generation numbers whose store
+// closures must survive a sweep, sorted ascending: the keep-2
+// window (current + the previous existing generation) and every
 // generation ABOVE current.
 //
 // The branch above current exists only after a rollback, and it
 // is retained history a roll-forward may return to — a number,
 // once allocated, permanently identifies one snapshot (gh#189).
-// cleanOldGenerations deletes the complement of this set; the
-// two stay paired so a directory gc keeps cannot lose the store
-// versions it links (gh#247). A later rebuild allocates above
-// the highest number; keep-2 then prunes history below the new
-// cutoff (gh#206).
+// cleanOldGenerations uses KeptNumbers, which shares the same
+// keep-2 window below current and drops the branch above.
+// A later rebuild allocates above the highest number; keep-2
+// then prunes history below the new window (gh#206).
 //
-// History below the cutoff is not retained. Those generations
-// are the ones cleanOldGenerations deletes, and reclaiming a
-// superseded revision that has fallen out of the window is gc's
-// most common job (gh#137).
+// History below the keep-2 window is not retained. Those
+// generations are the ones auto-gc and gale gc delete, and
+// reclaiming a superseded revision that has fallen out of
+// the window is gc's most common job (gh#137).
 //
 // curGen == 0 (no current symlink) retains everything, matching
 // the `n >= 0` skip that already stopped cleanOldGenerations
@@ -780,13 +779,9 @@ func retainedNumbers(galeDir string) ([]int, error) {
 	if curGen <= 0 {
 		return nums, nil
 	}
-	cutoff := retentionCutoff(curGen, config.DefaultGenerationKeep)
-	if cutoff < 1 {
-		cutoff = 1
-	}
-	var retained []int
+	retained := keptAtOrBelow(nums, curGen, config.DefaultGenerationKeep)
 	for _, n := range nums {
-		if n >= cutoff {
+		if n > curGen {
 			retained = append(retained, n)
 		}
 	}
@@ -805,11 +800,12 @@ func RetainedNumbers(galeDir string) ([]int, error) {
 	return retainedNumbers(galeDir)
 }
 
-// KeptNumbers is current plus at most one lower generation
-// number. Abandoned generations above current after a rollback
-// are not kept. A missing current symlink keeps nothing. The
-// active number is always included so a dangling current
-// reaches KeptStoreDirs as an unreadable generation.
+// KeptNumbers is current plus the previous existing
+// generation, counted positionally (gh#248). Abandoned
+// generations above current after a rollback are not kept.
+// A missing current symlink keeps nothing. The active
+// number is always included so a dangling current reaches
+// KeptStoreDirs as an unreadable generation.
 func KeptNumbers(galeDir string) ([]int, error) {
 	cur, err := Current(galeDir)
 	if err != nil {
@@ -822,11 +818,12 @@ func KeptNumbers(galeDir string) ([]int, error) {
 	if err != nil {
 		return nil, err
 	}
-	prev := cur - 1
-	if prev >= 1 && slices.Contains(nums, prev) {
-		return []int{prev, cur}, nil
+	kept := keptAtOrBelow(nums, cur, config.DefaultGenerationKeep)
+	if !slices.Contains(kept, cur) {
+		kept = append(kept, cur)
+		slices.Sort(kept)
 	}
-	return []int{cur}, nil
+	return kept, nil
 }
 
 // KeptStoreDirs walks the two kept generations' symlink
@@ -912,16 +909,31 @@ func RetainedVersionsStrict(
 	return out, nil
 }
 
-// retentionCutoff is the first generation number that stays
-// for retainedNumbers: current minus keep plus one. keep<=0
-// or curGen<=0 yields 0 (retain everything). Auto-gc prune
-// no longer shares this helper — it counts generations
-// positionally (gh#248).
-func retentionCutoff(curGen, keep int) int {
-	if keep <= 0 || curGen <= 0 {
-		return 0
+// gensAtOrBelow returns the ascending scan filtered to
+// n <= curGen. Shared by the keep-window helpers so prune
+// and gc count the same set (gh#248).
+func gensAtOrBelow(nums []int, curGen int) []int {
+	var out []int
+	for _, n := range nums {
+		if n <= curGen {
+			out = append(out, n)
+		}
 	}
-	return curGen - keep + 1
+	return out
+}
+
+// keptAtOrBelow is the highest `keep` generations at or
+// below curGen, counted positionally over the scan. Empty
+// when keep or curGen is non-positive.
+func keptAtOrBelow(nums []int, curGen, keep int) []int {
+	if keep <= 0 || curGen <= 0 {
+		return nil
+	}
+	below := gensAtOrBelow(nums, curGen)
+	if len(below) <= keep {
+		return below
+	}
+	return below[len(below)-keep:]
 }
 
 // prunableNumbers returns the generation numbers
@@ -945,24 +957,19 @@ func retentionCutoff(curGen, keep int) int {
 // it by name (gh#189, gh#206). It is also where an in-flight
 // gen/curGen+1 from a concurrent Build lives.
 //
-// The split at curGen matches retainedNumbers and KeptNumbers:
-// nothing above current is pruned here. Those helpers still use
-// a numeric keep-2 window (cur-1 when it exists). This count is
-// only the auto-gc directory prune.
+// keptAtOrBelow is the complement of this set among the
+// generations at or below current. KeptNumbers and
+// retainedNumbers use that helper so gale gc cannot undo
+// the keep promise auto-gc just made.
 func prunableNumbers(nums []int, curGen, keep int) []int {
 	if keep <= 0 || curGen <= 0 {
 		return nil
 	}
-	var atOrBelow []int
-	for _, n := range nums {
-		if n <= curGen {
-			atOrBelow = append(atOrBelow, n)
-		}
-	}
-	if len(atOrBelow) <= keep {
+	below := gensAtOrBelow(nums, curGen)
+	if len(below) <= keep {
 		return nil
 	}
-	return atOrBelow[:len(atOrBelow)-keep]
+	return below[:len(below)-keep]
 }
 
 // PruneOldGenerations removes old generation directories,

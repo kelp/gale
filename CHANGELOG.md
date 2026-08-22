@@ -30,7 +30,10 @@
   below `current`. Everything above
   `current` is preserved (gh#189).
   Contiguous histories prune
-  identically. The two remaining
+  identically. `KeptNumbers` and
+  `retainedNumbers` count the same
+  window so `gale gc` cannot undo
+  the keep promise. The two remaining
   positive-assertion waits in
   `internal/generation` are deadlock
   backstops, not timing margins

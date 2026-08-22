@@ -25,6 +25,22 @@ func TestKeptNumbersCurrentAndPreviousOnly(t *testing.T) {
 	}
 }
 
+func TestKeptNumbersCountsPreviousPositionally(t *testing.T) {
+	galeDir := t.TempDir()
+	stageGenNumbers(t, galeDir, []int{1, 5, 9}, 5)
+
+	got, err := KeptNumbers(galeDir)
+	if err != nil {
+		t.Fatalf("KeptNumbers: %v", err)
+	}
+	if want := []int{1, 5}; !slices.Equal(got, want) {
+		t.Errorf("KeptNumbers(cur=5, gens 1/5/9) = %v, want %v — "+
+			"keep-2 is the previous EXISTING generation, not "+
+			"cur-1 (gen/4 is absent; gen/1 is the previous)",
+			got, want)
+	}
+}
+
 func TestKeptNumbersDoesNotInventAbsentPrevious(t *testing.T) {
 	galeDir := t.TempDir()
 	stageGenNumbers(t, galeDir, []int{1, 5, 9}, 5)
@@ -33,7 +49,10 @@ func TestKeptNumbersDoesNotInventAbsentPrevious(t *testing.T) {
 	if err != nil {
 		t.Fatalf("KeptNumbers: %v", err)
 	}
-	if want := []int{5}; !slices.Equal(got, want) {
+	if slices.Contains(got, 4) {
+		t.Errorf("KeptNumbers = %v, must not invent gen/4", got)
+	}
+	if want := []int{1, 5}; !slices.Equal(got, want) {
 		t.Errorf("KeptNumbers(cur=5, no gen/4) = %v, want %v", got, want)
 	}
 }
