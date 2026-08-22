@@ -164,14 +164,20 @@ func (w removeWork) v2(lf *lockfile.V2) error {
 	if err := refuseMixedV2(lf); err != nil {
 		return w.undo(err)
 	}
-	draft := dropV2Root(lf, w.name)
-	if err := writeV2Only(w.c, draft); err != nil {
-		return w.undo(fmt.Errorf("writing lock: %w", err))
-	}
-	if err := rebuildFromV2(w.c, draft); err != nil {
-		return fmt.Errorf("rebuild generation: %w", err)
-	}
-	return nil
+	// One mutation lock per scope covers revalidation and
+	// publication (§15.13): the read-merge-write of the lock
+	// document and the generation swap must not interleave with
+	// another publisher's.
+	return filelock.With(mutateLockPath(w.c.GaleDir), func() error {
+		draft := dropV2Root(lf, w.name)
+		if err := writeV2Only(w.c, draft); err != nil {
+			return w.undo(fmt.Errorf("writing lock: %w", err))
+		}
+		if err := rebuildFromV2(w.c, draft); err != nil {
+			return fmt.Errorf("rebuild generation: %w", err)
+		}
+		return nil
+	})
 }
 
 func init() {

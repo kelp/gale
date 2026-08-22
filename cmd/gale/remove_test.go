@@ -1,15 +1,78 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 )
+
+// §15.13: one mutation lock per scope covers revalidation and
+// publication. remove writes the lock and swaps generations like
+// every other publisher, so it must hold mutate.lock while it
+// does; otherwise a concurrent install merges against a
+// pre-remove lock and one of the two edits is lost.
+func TestRemovePublishHoldsMutationLock(t *testing.T) {
+	fx := newLockFetchFix(t)
+	if err := runLockFetch(context.Background(), fx.c, fx.req("just@1.56.0")); err != nil {
+		t.Fatal(err)
+	}
+	lf, err := lockfile.ReadV2(fx.lockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	w := removeWork{
+		c: fx.c, name: "just", version: "1.56.0", out: newOutput(),
+	}
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	holderErr := make(chan error, 1)
+	go func() {
+		holderErr <- filelock.With(mutateLockPath(fx.c.GaleDir), func() error {
+			close(held)
+			<-release
+			return nil
+		})
+	}()
+	select {
+	case <-held:
+	case err := <-holderErr:
+		t.Fatalf("holder returned early: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not acquire mutate.lock")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- w.v2(lf)
+	}()
+	select {
+	case <-time.After(50 * time.Millisecond):
+	case err := <-done:
+		t.Fatalf("remove published while mutate.lock was held: %v", err)
+	}
+
+	close(release)
+	if err := <-holderErr; err != nil {
+		t.Fatalf("holder: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("remove: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("remove did not finish after release")
+	}
+}
 
 // TestRemoveConfigBeforeStore verifies that the config
 // is updated before the store is modified. If the config
