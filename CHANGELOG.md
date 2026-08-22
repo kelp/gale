@@ -22,6 +22,15 @@
   fail-closes the leftover overwrite
   when the guard is unset.
 
+- `compileBinary` no longer passes
+  `-Wl,-headerpad_max_install_names` on
+  Linux (gh#261). GNU ld parses that
+  Mach-O flag as `-h` and stamps
+  `eaderpad_max_install_names` as the
+  executable SONAME. Darwin still
+  passes it so `install_name_tool` can
+  rewrite load commands.
+
 - Auto-gc no longer deletes generations
   the keep-2 window promised to preserve
   (gh#248). Retention derived a numeric
