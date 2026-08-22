@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/index"
+	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/output"
 	"github.com/spf13/cobra"
 )
 
@@ -14,7 +18,15 @@ var (
 	updateIndex   string
 	updateGlobal  bool
 	updateProject bool
+	// allowAttestationDrop is the §7d escape: an update that
+	// would drop a locked attestation refuses unless this is
+	// set, and setting it warns.
+	allowAttestationDrop bool
 )
+
+var errAttestationDrop = errors.New(
+	"update would drop a locked attestation; the index cannot switch "+
+		"verification off — pass --allow-attestation-drop to accept it")
 
 var updateCmd = &cobra.Command{
 	Use:   "update [package...]",
@@ -31,12 +43,14 @@ var updateCmd = &cobra.Command{
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		return runUpdateFetch(ctx, c, args, indexSource(updateIndex))
+		return runUpdateFetch(ctx, c, args, indexSource(updateIndex),
+			newCmdOutput(cmd))
 	},
 }
 
 func runUpdateFetch(
 	ctx context.Context, c *cmdContext, args []string, src index.Source,
+	out *output.Output,
 ) error {
 	if err := refuseSwitchHosts(c.Host, c.GalePath); err != nil {
 		return err
@@ -73,6 +87,13 @@ func runUpdateFetch(
 	draft, arts, err := planAdopt(ctx, src, pins)
 	if err != nil {
 		return err
+	}
+	if dropped := droppedAttestations(existing, draft, names); len(dropped) > 0 {
+		joined := strings.Join(dropped, ", ")
+		if !allowAttestationDrop {
+			return fmt.Errorf("%w: %s", errAttestationDrop, joined)
+		}
+		out.Warn("allowing attestation drop: " + joined)
 	}
 	draft = mergeV2LockNames(existing, draft, names)
 	var undos []func() error
@@ -119,9 +140,66 @@ func isGitHash(s string) bool {
 	return true
 }
 
+// droppedAttestations names the updated packages whose incoming
+// lock entry loses an attestation the existing entry carried,
+// per platform. A platform row that disappears entirely counts:
+// the requirement is gone either way.
+func droppedAttestations(
+	existing, draft *lockfile.V2, names []string,
+) []string {
+	if existing == nil {
+		return nil
+	}
+	var dropped []string
+	for _, n := range names {
+		oldPkg := v2PkgForName(existing, n)
+		newPkg := v2PkgForName(draft, n)
+		if oldPkg == nil || newPkg == nil {
+			continue
+		}
+		for _, plat := range v2SortedPlatforms(oldPkg) {
+			oldArt := oldPkg.Artifacts[plat]
+			if oldArt.Attestation == nil {
+				continue
+			}
+			newArt, ok := newPkg.Artifacts[plat]
+			if !ok || newArt.Attestation == nil {
+				dropped = append(dropped, n+" ("+plat+")")
+			}
+		}
+	}
+	slices.Sort(dropped)
+	return dropped
+}
+
+func v2PkgForName(lf *lockfile.V2, name string) *lockfile.V2Package {
+	if lf == nil {
+		return nil
+	}
+	for key, pkg := range lf.Packages {
+		if n, _, err := lockfile.SplitV2Root(key); err == nil && n == name {
+			p := pkg
+			return &p
+		}
+	}
+	return nil
+}
+
+func v2SortedPlatforms(pkg *lockfile.V2Package) []string {
+	out := make([]string, 0, len(pkg.Artifacts))
+	for plat := range pkg.Artifacts {
+		out = append(out, plat)
+	}
+	slices.Sort(out)
+	return out
+}
+
 func init() {
 	updateCmd.Flags().StringVar(&updateIndex, "index", "",
 		"Resolve against a local index checkout")
+	updateCmd.Flags().BoolVar(&allowAttestationDrop,
+		"allow-attestation-drop", false,
+		"Accept an update that drops a locked attestation (warns)")
 	updateCmd.Flags().BoolVarP(&updateGlobal, "global", "g",
 		false, "Update global packages")
 	updateCmd.Flags().BoolVarP(&updateProject, "project", "p",

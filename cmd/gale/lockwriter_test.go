@@ -324,7 +324,7 @@ func TestUpdateRegeneratesTheSectionItRewrote(t *testing.T) {
 		t.Fatal(err)
 	}
 	fx.src.Commit = lockFetchPinB
-	if err := runUpdateFetch(context.Background(), fx.c, []string{"just"}, fx.src); err != nil {
+	if err := runUpdateFetch(context.Background(), fx.c, []string{"just"}, fx.src, newOutput()); err != nil {
 		t.Fatalf("update: %v", err)
 	}
 	got, err := lockfile.ReadV2(fx.lockPath())
