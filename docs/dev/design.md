@@ -314,21 +314,29 @@ runtime instead of whatever happens to be on the host.
 Recipes are fetched on demand from GitHub raw URLs.
 No git clone needed for installation.
 
-## Registry Cache
+## Index Client and Registry Cache
 
-Recipe TOML and `index.tsv` responses are cached under
-`~/.gale/cache/registry/<sha256(url)>/{body,etag,not_found}`.
-The cache is a documented optimization, not silent state.
-A fetch-archive cache at
-`~/.gale/cache/artifacts/<sha256>` is parked
+Resolve verbs — `install`, `update`, `lock`, `outdated` — go
+through the index client (`internal/index/client.go`). A run
+opens one session pinned to one commit (`--index <dir>` pins
+the checkout's HEAD). The client has no disk cache: its ETag
+memory is per-session and in-memory only. Index fetch errors
+are errors; there is no stale-serving path and no negative-404
+TTL (§15.16 of the fetch plan).
+
+The legacy registry cache
+(`~/.gale/cache/registry/<sha256(url)>/{body,etag,not_found}`,
+`internal/registry/cache.go`) survives only for transitional
+commands that still read recipe documents (`migrate`; `info`)
+until those packages die. Its stale-on-error and negative-cache
+rules must never be wired into a resolve verb. A fetch-archive
+cache at `~/.gale/cache/artifacts/<sha256>` is parked
 (Milestone 6, off by default, or never).
-Rules:
+
+Legacy cache rules, scoped to those leftover commands only:
 
 - **First fetch** writes body + ETag. Subsequent fetches send
   `If-None-Match` and accept 304 to skip the body transfer.
-- **`--dry-run`** suppresses cache writes (positive and
-  negative). The body is still returned to the caller, but no
-  files are persisted.
 - **`GALE_OFFLINE=1`** suppresses network entirely. Precedence:
   positive cache (body), then a fresh negative marker
   (replays as `HTTP 404`), then `GALE_OFFLINE=1 and no cached
@@ -340,17 +348,12 @@ Rules:
 - **Negative cache (404)**: a 404 response writes a `not_found`
   marker holding an RFC3339Nano timestamp. While the marker is
   younger than `negativeCacheTTL` (1 hour), repeat fetches
-  short-circuit to `HTTP 404` without a wire trip. The TTL is
-  long enough to dedupe back-to-back read-only command runs
-  (`outdated`, `sbom`) and short enough that a freshly
-  published recipe shows up without manual cache surgery. The
-  marker is pruned lazily on read once it expires; only 404s
-  are negatively cached (other non-200 responses surface as
+  short-circuit to `HTTP 404` without a wire trip. The marker
+  is pruned lazily on read once it expires; only 404s are
+  negatively cached (other non-200 responses surface as
   real errors). A subsequent 200 OK supersedes the marker.
 
-Implementation lives in `internal/registry/cache.go`. All HTTP
-fetches (`FetchRecipe`, `FetchRecipeVersion`, `fetchBinaries`,
-`Search`) route through `(*Registry).cachedGet`.
+All legacy HTTP fetches route through `(*Registry).cachedGet`.
 
 ## Bootstrap
 

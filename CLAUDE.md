@@ -33,8 +33,12 @@ gale.toml (first install).
 gen. Users put `~/.gale/current/bin` on PATH, so one
 symlink swap updates bin and man together.
 
-**Registry**: recipes fetched on demand from GitHub raw
-URLs, letter-bucketed (`recipes/j/jq.toml`). No clone.
+**Index client**: resolve verbs open one session pinned to one
+commit (`--index <dir>` pins checkout HEAD) and hard-fail on
+fetch errors. The legacy registry cache (GitHub raw recipe
+TOMLs, letter-bucketed `recipes/j/jq.toml`, stale-on-error,
+negative-404 TTL) survives only behind transitional commands
+(`migrate`, `info`) and must never serve a resolve verb.
 
 **Revision**: Debian-style `[package] revision = N`,
 default 1. Store identity is
@@ -157,13 +161,12 @@ commands, including `gale env`, do not register.
   Shared `extractTar()` in `internal/download/`.
 - Autotools builds need a timestamp reset (`touchAll`)
   after extraction to avoid clock-skew errors.
-- Live installer verbs (`install`, `sync`, `update`,
-  `remove`, `lock`) take `--index <dir>`, not
-  `--recipes`. The checkout must be a git repo;
-  `index.Open` reads `git show` of HEAD.
-- `--recipes <dir>` remains on leftover commands
-  (`outdated`, `migrate`) until those packages
-  die. `gale gc` has no `--recipes`. `gale lint`
+- Resolve verbs (`install`, `update`, `lock`, `outdated`)
+  take `--index <dir>`, not `--recipes`. The checkout must be
+  a git repo; `index.Open` reads `git show` of HEAD.
+  `sync` and `remove` are lock-driven and take neither flag.
+- `--recipes <dir>` remains on `migrate` until that package
+  dies. `gale gc` has no `--recipes`. `gale lint`
   accepts index documents only.
 - macOS `/var` is a symlink to `/private/var`. Tests
   comparing paths must `filepath.EvalSymlinks` both

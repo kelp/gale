@@ -154,14 +154,13 @@ func currentGenNumber(gens []generation.GenInfo) int {
 // "*" for the active one, "+" for a generation above it, " "
 // for history below it.
 //
-// A generation above current exists only after a rollback, and
-// it is retained on purpose: the number permanently identifies
-// that snapshot (gh#189), so gc skips it and auto-prune — which
-// counts only the generations at or below current — cannot reach
-// it until current climbs back past it. Rendering it like
-// history below current hid the one state
-// a user has to see before a later rebuild climbs
-// past that branch (gh#206).
+// A generation above current exists only after a rollback. It
+// is rendered distinctly because the number identifies a
+// snapshot the user may still want to look at before a later
+// rebuild climbs past that branch (gh#206). It is not
+// retained: gc and auto-prune keep current plus one previous
+// (gh#247), so an abandoned branch is swept once retention
+// counts past it.
 func genMarker(g generation.GenInfo, cur int) string {
 	switch {
 	case g.Current:

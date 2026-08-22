@@ -179,7 +179,7 @@ func runFetchAdopt(ctx context.Context, c *cmdContext, req adoptReq) error {
 		if req.Err == nil {
 			req.Err = os.Stderr
 		}
-		fmt.Fprint(req.Err, "Proceed? [y/N] Install still uses recipes; live Load still rejects the v2 lock.\n")
+		fmt.Fprint(req.Err, "Proceed? [y/N] This fetches every root, writes the v2 lock, and swaps current last.\n")
 		ok, err := parseConfirm(req.In)
 		if err != nil {
 			return err

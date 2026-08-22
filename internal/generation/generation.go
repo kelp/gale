@@ -1030,14 +1030,14 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 // returns the removed numbers in ascending order. Duplicated
 // targets are removed once.
 //
-// The verb PruneOldGenerations is not: retention reclaims history
-// below current by counting generations, and after a rollback the
-// generations ABOVE current are unreachable to it by design — the
-// number permanently identifies that snapshot (gh#189), so they
-// survive until current climbs back past them. A user who
-// abandoned that branch on purpose names it here instead (gh#206).
-// Nothing sweeps it automatically: an unnamed set is exactly what
-// makes a destructive default unsafe.
+// Retention keeps current plus one previous generation, counted
+// positionally (gh#248); an abandoned branch above current —
+// possible only right after a rollback — is not retained and is
+// swept by gc or auto-prune like any other unreferenced history.
+// The number still identifies that snapshot for as long as it
+// exists (gh#189), which is why a user who wants a specific
+// generation gone immediately names it here instead of waiting
+// for gc (gh#206).
 //
 // Guards, in order:
 //
