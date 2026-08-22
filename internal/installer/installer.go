@@ -53,6 +53,13 @@ var ErrBottleGone = errors.New(
 	"bottle install is gone; use gale fetch or gale fetch-adopt",
 )
 
+// ErrReplaceUnwired reports a staged replace of an occupied
+// store dir with no ReplaceGuard. Occupied dests stay
+// byte-stable unless a caller is replacing on purpose (gh#211).
+var ErrReplaceUnwired = errors.New(
+	"replace refused: ReplaceGuard is unset",
+)
+
 // RecipeResolver finds and parses a recipe by package name.
 // Returns nil if the package has no recipe.
 type RecipeResolver func(ctx context.Context, name string) (*recipe.Recipe, error)
@@ -367,18 +374,18 @@ func (inst *Installer) commitStaged(
 }
 
 // guardReplace runs design §13's cross-scope veto for one staged
-// artifact about to overwrite an occupied canonical directory. Nil
-// ReplaceGuard means unwired: no guard.
+// artifact about to overwrite an occupied canonical directory.
 //
 // An ABSENT canonical dir is skipped, because nothing is being
 // replaced and no prior claim can be contradicted by an install into
 // free space. os.Lstat, not os.Stat: a link at the canonical path
 // would otherwise have the guard asked about one path while the
 // rename lands at another.
+//
+// An occupied dest with a nil ReplaceGuard is ErrReplaceUnwired.
+// Unwired means the caller is not replacing on purpose, so the
+// occupied bytes stay (gh#211).
 func (inst *Installer) guardReplace(rep Replacement) error {
-	if inst.ReplaceGuard == nil {
-		return nil
-	}
 	if _, err := os.Lstat(rep.CanonicalDir); err != nil {
 		if os.IsNotExist(err) {
 			return nil
@@ -386,6 +393,9 @@ func (inst *Installer) guardReplace(rep Replacement) error {
 		return fmt.Errorf(
 			"stat %s before replacing it: %w", rep.CanonicalDir, err,
 		)
+	}
+	if inst.ReplaceGuard == nil {
+		return fmt.Errorf("%s: %w", rep.CanonicalDir, ErrReplaceUnwired)
 	}
 	return inst.ReplaceGuard(rep)
 }

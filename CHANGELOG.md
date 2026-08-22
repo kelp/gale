@@ -11,6 +11,17 @@
 
 ### Fixed
 
+- A staged reinstall with no
+  `ReplaceGuard` no longer renames over
+  an occupied store dir (gh#211). The
+  live fetch land path already refuses
+  a dest whose tree digest disagrees.
+  `Reinstall` still returns
+  `ErrBottleGone` and leaves the dest
+  unchanged. `commitStaged` now
+  fail-closes the leftover overwrite
+  when the guard is unset.
+
 - Auto-gc no longer deletes generations
   the keep-2 window promised to preserve
   (gh#248). Retention derived a numeric
