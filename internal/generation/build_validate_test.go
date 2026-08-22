@@ -107,13 +107,16 @@ func TestBuildWithValidate_CallbackErrorMutatesNothing(t *testing.T) {
 	}
 
 	// The lock must be released once BuildWithValidate returns, so
-	// the earlier contender can now acquire it.
+	// the earlier contender can now acquire it. The contender is
+	// parked in flock, so its wakeup is asynchronous and the wait
+	// needs a clock; deadlockBackstop makes it a deadlock backstop
+	// rather than a timing margin (gh#251).
 	select {
 	case unlock := <-gotLock:
 		unlock()
 	case err := <-acquireErr:
 		t.Fatalf("acquire contending lock: %v", err)
-	case <-time.After(2 * time.Second):
+	case <-time.After(deadlockBackstop):
 		t.Fatal("store-gen lock was not released after BuildWithValidate returned")
 	}
 }

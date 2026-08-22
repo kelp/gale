@@ -11,6 +11,34 @@
 
 ### Fixed
 
+- Auto-gc no longer deletes generations
+  the keep-2 window promised to preserve
+  (gh#248). Retention derived a numeric
+  cutoff, `current - keep + 1`, which
+  counts integers rather than
+  generations — exact only while the
+  numbering is contiguous. gh#189
+  allocation is `max(prev, highest)+1`,
+  so gaps are ordinary: with
+  generations 1, 5, 9, 10 and
+  `keep = 3`, the next install kept two
+  of them and removed gen/5. A
+  `current` above every generation on
+  disk swept the lot. Retention is now
+  a count over the generations that
+  exist — the highest `keep` at or
+  below `current`. Everything above
+  `current` is preserved (gh#189).
+  Contiguous histories prune
+  identically. `KeptNumbers` and
+  `retainedNumbers` count the same
+  window so `gale gc` cannot undo
+  the keep promise. The two remaining
+  positive-assertion waits in
+  `internal/generation` are deadlock
+  backstops, not timing margins
+  (gh#251).
+
 - **gocognit.** The backlog count
   was stale. Full-repo `gocognit`
   is already 0 on linux and

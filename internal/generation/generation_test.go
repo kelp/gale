@@ -909,6 +909,32 @@ func TestBuildDeterministicSymlinkOrder(t *testing.T) {
 
 // --- Behavior 11: Unique temp-link path for concurrent builds ---
 
+// deadlockBackstop bounds a positive assertion that waits on
+// genuinely asynchronous work — a Build running in another
+// goroutine, a contender parked in flock. It exists so a real
+// deadlock fails naming what hung, instead of running the package
+// out to the go test timeout.
+//
+// It is not a performance budget, and must not be tuned to
+// expected timing. Goroutine handoff plus filelock.Acquire on a
+// free lock peaked at 3.1 ms over 2000 iterations at load 12
+// (measured for gh#246); what made these deadlines flake was the
+// rare multi-second stall — race-detector stop-the-world,
+// container CPU throttling, an I/O stall inside Acquire's
+// MkdirAll/OpenFile. A margin sized against the steady-state cost
+// converts that slowness into a failure, so this is sized to be
+// unreachable by anything short of a hang (gh#251). It matches
+// the backstops internal/installer already uses.
+//
+// A wait that has a real synchronisation point wants no clock at
+// all: when the operation under test has already returned, probe
+// the lock with a non-blocking flock instead (gh#246, gh#250).
+// Neither use below has that option — one waits for a Build to
+// finish, the other for a blocked contender to wake, and a
+// non-blocking probe cannot tell a lock a live contender just
+// took from one that was never released.
+const deadlockBackstop = 30 * time.Second
+
 func TestBuildWaitsForGenerationLock(t *testing.T) {
 	galeDir := t.TempDir()
 	// storeRoot must be a child of galeDir so that
@@ -947,7 +973,7 @@ func TestBuildWaitsForGenerationLock(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Build error after lock release: %v", err)
 		}
-	case <-time.After(1 * time.Second):
+	case <-time.After(deadlockBackstop):
 		t.Fatal("Build did not complete after generation lock release")
 	}
 }
@@ -1776,11 +1802,11 @@ func TestBuildMultiRevisionPicksHighest(t *testing.T) {
 	}
 }
 
-// TestPruneOldGenerationsKeepsLastN pins the auto-gc retention
-// policy: gen dirs with number strictly less than (curGen-keep+1)
-// are removed, anything >= that threshold (including curGen and
-// in-flight gen/curGen+1) is preserved. Returns the removed gen
-// numbers in ascending order so the caller can print them.
+// TestPruneOldGenerationsKeepsLastN pins the contiguous case:
+// with no gaps the positional count matches the old
+// curGen-keep+1 cutoff, so gens 1-5 go and 6-15 stay when
+// current is 15 and keep is 10. Gap cases live in
+// TestPruneOldGenerationsCountsPositionally.
 func TestPruneOldGenerationsKeepsLastN(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
@@ -1906,6 +1932,107 @@ func TestPruneOldGenerationsKeepZeroIsNoop(t *testing.T) {
 	}
 	if len(removed) != 0 {
 		t.Errorf("keep=0 should remove nothing, got %v", removed)
+	}
+}
+
+// TestPruneOldGenerationsCountsPositionally pins retention as a
+// COUNT over the generations at or below current, not the numeric
+// cutoff curGen-keep+1 (gh#248). The two agree only while the
+// numbering is contiguous, and since gh#189 allocation is
+// max(prev, highest)+1, so gaps are ordinary.
+//
+// Above current nothing changes: that branch is retained history a
+// roll-forward may return to, reclaimed only by naming it
+// (gh#189, gh#206). The count therefore spans {n <= current}, and
+// current itself is one of the keep.
+func TestPruneOldGenerationsCountsPositionally(t *testing.T) {
+	cases := []struct {
+		name string
+		nums []int
+		cur  int
+		keep int
+		left []int
+	}{{
+		// The cutoff reads 8 here and keeps only 9 and 10 — two
+		// generations where keep promised three. This is the
+		// destructive direction: gen/5 is a rollback target the
+		// user could see, and auto-gc deletes it.
+		name: "gaps below current",
+		nums: []int{1, 5, 9, 10},
+		cur:  10, keep: 3,
+		left: []int{5, 9, 10},
+	}, {
+		// After a rollback current sits below the highest
+		// generation. Three at or below current (3, 4, 5) plus
+		// the abandoned branch 6..10, which prune never touches.
+		name: "current below the highest generation",
+		nums: []int{1, 2, 3, 4, 5, 6, 7, 8, 9, 10},
+		cur:  5, keep: 3,
+		left: []int{3, 4, 5, 6, 7, 8, 9, 10},
+	}, {
+		// Contiguous: the count and the cutoff agree, and the
+		// answer must not move.
+		name: "contiguous numbering is unchanged",
+		nums: []int{1, 2, 3, 4, 5},
+		cur:  5, keep: 2,
+		left: []int{4, 5},
+	}, {
+		// A current above every staged generation — the shape a
+		// removed-then-rebuilt history leaves — put the cutoff
+		// past all of them and swept the lot.
+		name: "current above every staged generation",
+		nums: []int{1, 2, 3},
+		cur:  10, keep: 3,
+		left: []int{1, 2, 3},
+	}, {
+		name: "no current symlink",
+		nums: []int{1, 2, 3},
+		cur:  0, keep: 1,
+		left: []int{1, 2, 3},
+	}, {
+		name: "keep zero",
+		nums: []int{1, 2, 3},
+		cur:  3, keep: 0,
+		left: []int{1, 2, 3},
+	}, {
+		name: "keep negative",
+		nums: []int{1, 2, 3},
+		cur:  3, keep: -1,
+		left: []int{1, 2, 3},
+	}}
+
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			galeDir := t.TempDir()
+			storeRoot := t.TempDir()
+			stageGenNumbers(t, galeDir, c.nums, c.cur)
+
+			var wantRemoved []int
+			for _, n := range c.nums {
+				if !slices.Contains(c.left, n) {
+					wantRemoved = append(wantRemoved, n)
+				}
+			}
+
+			removed, err := PruneOldGenerations(galeDir, storeRoot, c.keep)
+			if err != nil {
+				t.Fatalf("PruneOldGenerations: %v", err)
+			}
+			if !slices.Equal(removed, wantRemoved) {
+				t.Errorf("removed = %v, want %v", removed, wantRemoved)
+			}
+
+			onDisk, err := genNumbers(galeDir)
+			if err != nil {
+				t.Fatalf("genNumbers: %v", err)
+			}
+			if !slices.Equal(onDisk, c.left) {
+				t.Errorf("generations left on disk = %v, want %v — "+
+					"keep=%d promises the highest %d at or below "+
+					"gen/%d, plus everything above it",
+					onDisk, c.left, c.keep, c.keep, c.cur)
+			}
+		})
 	}
 }
 
@@ -2113,8 +2240,8 @@ func stageGenNumbers(t *testing.T, galeDir string, nums []int, cur int) {
 // impossible: gc never keeps a directory without the store dirs
 // it links, and never retains bytes for a directory it deleted.
 //
-// Gaps in the numbering are legitimate: the rule is a comparison
-// against the keep-2 cutoff, not a count.
+// Gaps in the numbering are legitimate: keep-2 counts
+// existing generations, not integers in a range (gh#248).
 func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	galeDir := t.TempDir()
 	stageGenNumbers(t, galeDir, []int{1, 5, 9, 10}, 5)
@@ -2123,11 +2250,11 @@ func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retainedNumbers: %v", err)
 	}
-	want := []int{5, 9, 10}
+	want := []int{1, 5, 9, 10}
 	if !slices.Equal(got, want) {
-		t.Errorf("retainedNumbers(cur=5) = %v, want %v — current "+
-			"and the branch above it; gen/1 is below the keep-2 "+
-			"cutoff and left to cleanOldGenerations", got, want)
+		t.Errorf("retainedNumbers(cur=5) = %v, want %v — current, "+
+			"the previous existing generation, and the branch "+
+			"above it", got, want)
 	}
 }
 
@@ -2208,9 +2335,10 @@ func TestRetainedNumbersDoesNotForceIncludeAbsentPrevious(t *testing.T) {
 	if slices.Contains(got, 4) {
 		t.Errorf("retainedNumbers = %v, must not invent gen/4", got)
 	}
-	want := []int{5, 9}
+	want := []int{1, 5, 9}
 	if !slices.Equal(got, want) {
-		t.Errorf("retainedNumbers(cur=5, no gen/4) = %v, want %v",
+		t.Errorf("retainedNumbers(cur=5, no gen/4) = %v, want %v — "+
+			"gen/1 is the previous existing generation",
 			got, want)
 	}
 }
