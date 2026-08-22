@@ -299,18 +299,18 @@ func TestRunLockFetchRecordsAttestationIdentity(t *testing.T) {
 	if !ok {
 		t.Fatalf("missing gale root: %v", got.Packages)
 	}
-	att := pkg.Artifacts["darwin/arm64"].Attestation
-	if att == nil {
+	if att := pkg.Artifacts["darwin/arm64"].Attestation; att == nil {
 		t.Fatal("attested artifact locked without a recorded identity")
-	}
-	if att.Repo != "kelp/gale" {
-		t.Errorf("repo = %q, want kelp/gale", att.Repo)
-	}
-	if att.Issuer != attestation.GitHubIssuer {
-		t.Errorf("issuer = %q, want %q", att.Issuer, attestation.GitHubIssuer)
-	}
-	if att.SAN != "https://github.com/kelp/gale" {
-		t.Errorf("san = %q, want https://github.com/kelp/gale", att.SAN)
+	} else {
+		if att.Repo != "kelp/gale" {
+			t.Errorf("repo = %q, want kelp/gale", att.Repo)
+		}
+		if att.Issuer != attestation.GitHubIssuer {
+			t.Errorf("issuer = %q, want %q", att.Issuer, attestation.GitHubIssuer)
+		}
+		if att.SAN != "https://github.com/kelp/gale" {
+			t.Errorf("san = %q, want https://github.com/kelp/gale", att.SAN)
+		}
 	}
 }
 

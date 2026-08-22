@@ -38,7 +38,7 @@ func setOfflineSigstore(
 	t.Setenv("GALE_SIGSTORE_TEST_NO_SCT", "1")
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		bundle, err := fx.SignedBundle(sigstoretest.Opts{
+		bundle, err := fx.SignedBundle(sigstoretest.Opts{ //nolint:contextcheck
 			SAN: "https://github.com/" + repo +
 				"/.github/workflows/release.yml@refs/heads/main",
 			Issuer:              sigstoretest.Issuer,
