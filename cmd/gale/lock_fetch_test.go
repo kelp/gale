@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -243,6 +244,37 @@ func TestRunLockFetchPinsOneIndexCommit(t *testing.T) {
 	}
 	if registryContains(t, fx.home, fx.root) {
 		t.Error("lock-only write registered the project")
+	}
+}
+
+// One gale lock run resolves against ONE index commit: root
+// selection and recorded artifacts must come from the same
+// session (§7c), so the tip is resolved exactly once.
+func TestRunLockLiveResolvesOneSession(t *testing.T) {
+	fx := newLockFetchFix(t)
+	fx.src.Commit = ""
+	var tips atomic.Int32
+	fx.src.Tip = func(context.Context) (string, error) {
+		tips.Add(1)
+		return lockFetchPinA, nil
+	}
+	if err := runLockLive(context.Background(), fx.c, fx.src); err != nil {
+		t.Fatalf("lock: %v", err)
+	}
+	if tips.Load() != 1 {
+		t.Errorf("tip resolutions = %d, want 1: roots selected at one "+
+			"commit must not be recorded against another", tips.Load())
+	}
+	got, err := lockfile.ReadV2(fx.lockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for key, pkg := range got.Packages {
+		for plat, art := range pkg.Artifacts {
+			if art.IndexCommit != lockFetchPinA {
+				t.Errorf("%s %s index_commit = %q", key, plat, art.IndexCommit)
+			}
+		}
 	}
 }
 

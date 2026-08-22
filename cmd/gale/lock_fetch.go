@@ -62,6 +62,13 @@ func writeLockFetch(
 			Artifacts: v2ArtifactsFromIndex(ver.Artifacts, sess.Commit),
 		}
 	}
+	return writeLockDoc(c, draft)
+}
+
+// writeLockDoc writes an already-resolved v2 document under the
+// caller's mutation lock. Resolution belongs to the caller; this
+// never opens the index again.
+func writeLockDoc(c *cmdContext, draft *lockfile.V2) error {
 	lp, err := lockfilePath(c.GalePath)
 	if err != nil {
 		return err

@@ -10,6 +10,7 @@ import (
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/fetch"
+	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/provenance"
@@ -351,6 +352,10 @@ func runLockLive(ctx context.Context, c *cmdContext, src index.Source) error {
 	if len(declared) == 0 {
 		return noDeclarations(cfg, "", c.GalePath)
 	}
+	// planAdopt resolves every root against one session. Writing
+	// its draft directly keeps root selection and the recorded
+	// artifacts on a single index_commit; re-resolving in a
+	// second session would let a moving tip split the two.
 	draft, _, err := planAdopt(ctx, src, declared)
 	if err != nil {
 		return err
@@ -358,9 +363,8 @@ func runLockLive(ctx context.Context, c *cmdContext, src index.Source) error {
 	if err := refuseMixedV2(draft); err != nil {
 		return err
 	}
-	return runLockFetch(ctx, c, lockFetch{
-		Source: src,
-		Roots:  append([]string(nil), draft.Targets.Default.Roots...),
+	return filelock.With(mutateLockPath(c.GaleDir), func() error {
+		return writeLockDoc(c, draft)
 	})
 }
 
