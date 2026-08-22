@@ -64,6 +64,10 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if err != nil {
 			return err
 		}
+		opts, err := fetchBuildOpts(p.Lock)
+		if err != nil {
+			return err
+		}
 		arts := p.Arts
 		if len(arts) == 0 {
 			arts = []fetchArt{{Name: p.Name, Version: p.Version, Art: p.Art}}
@@ -93,7 +97,6 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if err := runPublishHook(p.beforeSwap); err != nil {
 			return err
 		}
-		opts := fetchBuildOpts(p.Lock)
 		if err := generation.BuildWithOptions(
 			pkgs, c.GaleDir, c.StoreRoot, opts,
 		); err != nil {
@@ -104,10 +107,17 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 	})
 }
 
-func fetchBuildOpts(lf *lockfile.V2) generation.Options {
-	return generation.Options{
-		Fetch: fetchSHAMap(lf),
+// fetchBuildOpts maps every locked root to its current-platform
+// SHA via checkedFetchSHAMap, so resolvePkgDir cannot fall back
+// to the legacy <name>/<version> namespace. A root without a
+// current-platform artifact is an error here, matching the
+// rebuild path sync and remove use.
+func fetchBuildOpts(lf *lockfile.V2) (generation.Options, error) {
+	fetch, err := checkedFetchSHAMap(lf)
+	if err != nil {
+		return generation.Options{}, err
 	}
+	return generation.Options{Fetch: fetch}, nil
 }
 
 func fetchSHAMap(lf *lockfile.V2) map[string]string {

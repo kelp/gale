@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -94,8 +96,34 @@ func TestFinalizeFetchLeftoverBinDoesNotSettle(t *testing.T) {
 	writeGlobalConfig(t, galeDir,
 		"[packages]\nalpha = \"1.0\"\nbeta = \"1.0\"\n\n"+
 			"[bin]\nfoo = \"beta\"\n")
-	dummySHA := strings.Repeat("ab", 32)
-	dummyArt := index.Artifact{SHA256: dummySHA}
+	sha := strings.Repeat("ab", 32)
+	tree := mappedBinDigest(t, "foo", "ok")
+	stage := func(
+		_ context.Context, st *store.Store, name, version string, _ index.Artifact,
+	) (string, error) {
+		dest, err := st.FetchPath(name, version, sha)
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Join(dest, "bin"), 0o755); err != nil {
+			return "", err
+		}
+		return "", os.WriteFile(filepath.Join(dest, "bin", "foo"), []byte("ok"), 0o755)
+	}
+	fetchArtifacts := func(name string) map[string]lockfile.V2Artifact {
+		return map[string]lockfile.V2Artifact{
+			currentPlatform(): {
+				URL:        "https://example.invalid/" + name,
+				Format:     "binary",
+				SHA256:     sha,
+				TreeDigest: tree,
+				Method:     provenance.MethodFetch,
+				Files: []lockfile.V2File{{
+					Src: "foo", Dest: "bin/foo", Mode: 0o755,
+				}},
+			},
+		}
+	}
 	lf := &lockfile.V2{
 		Version: lockfile.SchemaV2,
 		Targets: lockfile.Targets{
@@ -104,8 +132,8 @@ func TestFinalizeFetchLeftoverBinDoesNotSettle(t *testing.T) {
 			},
 		},
 		Packages: map[string]lockfile.V2Package{
-			"alpha@1.0": {},
-			"beta@1.0":  {},
+			"alpha@1.0": {Artifacts: fetchArtifacts("alpha")},
+			"beta@1.0":  {Artifacts: fetchArtifacts("beta")},
 		},
 	}
 	c := &cmdContext{
@@ -116,14 +144,12 @@ func TestFinalizeFetchLeftoverBinDoesNotSettle(t *testing.T) {
 	err := finalizeFetch(context.Background(), c, fetchPublish{
 		Lock: lf,
 		Arts: []fetchArt{
-			{Name: "alpha", Version: "1.0", Art: dummyArt},
-			{Name: "beta", Version: "1.0", Art: dummyArt},
+			{Name: "alpha", Version: "1.0",
+				Art: index.Artifact{SHA256: sha, TreeDigest: tree}},
+			{Name: "beta", Version: "1.0",
+				Art: index.Artifact{SHA256: sha, TreeDigest: tree}},
 		},
-		ToStore: func(
-			context.Context, *store.Store, string, string, index.Artifact,
-		) (string, error) {
-			return "", nil
-		},
+		ToStore: stage,
 	})
 	assertBinCollision(t, err)
 }

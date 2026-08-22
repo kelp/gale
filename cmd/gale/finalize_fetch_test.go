@@ -271,6 +271,27 @@ func TestFinalizeFetchRefusesOccupiedDirWithWrongDigest(t *testing.T) {
 	assertUnchangedPublication(t, fx)
 }
 
+// A merged draft root without an artifact for the running
+// platform must fail the publication, not fall back to the
+// legacy <name>/<version> store namespace.
+func TestFinalizeFetchRefusesRootWithoutPlatformArtifact(t *testing.T) {
+	fx := newFetchPubFixture(t)
+	other := "linux/amd64"
+	if currentPlatform() == other {
+		other = "darwin/arm64"
+	}
+	pkg := fx.lock.Packages[fetchPubName+"@"+fetchPubVersion]
+	pkg.Artifacts = map[string]lockfile.V2Artifact{
+		other: pkg.Artifacts[currentPlatform()],
+	}
+	fx.lock.Packages[fetchPubName+"@"+fetchPubVersion] = pkg
+	err := finalizeFetch(context.Background(), fx.c, fx.publish())
+	if !errors.Is(err, lockfile.ErrMissingArtifact) {
+		t.Fatalf("err = %v, want ErrMissingArtifact", err)
+	}
+	assertUnchangedPublication(t, fx)
+}
+
 func TestFinalizeFetchMutationLockExclusive(t *testing.T) {
 	fx := newFetchPubFixture(t)
 	started := make(chan struct{})
