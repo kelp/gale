@@ -361,7 +361,9 @@ func doctorDigestErr(err error) string {
 	case errors.Is(err, errVerifyDigest):
 		return "tree digest mismatch"
 	case errors.Is(err, errVerifyAttestation):
-		return "locked attestation is not checkable"
+		return "locked attestation did not verify"
+	case errors.Is(err, errVerifyIdentity):
+		return "locked attestation identity disagrees with policy"
 	case errors.Is(err, errVerifyMissingStore):
 		return "fetch store missing"
 	case errors.Is(err, errVerifyEmptyDigest):

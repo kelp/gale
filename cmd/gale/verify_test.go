@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
@@ -71,6 +72,10 @@ func (fx *verifyFix) plantJust() (sha, digest string) {
 type verifyLock struct {
 	sha, digest, plat string
 	attest            bool
+	// repo fills the locked attestation identity. Empty with
+	// attest=true records an empty identity, which verify must
+	// refuse against policy before any network.
+	repo string
 }
 
 func (fx *verifyFix) writeJust(v verifyLock) {
@@ -88,7 +93,11 @@ func (fx *verifyFix) writeJust(v verifyLock) {
 		}},
 	}
 	if v.attest {
-		art.Attestation = &lockfile.V2Attestation{}
+		art.Attestation = &lockfile.V2Attestation{
+			Issuer: attestation.GitHubIssuer,
+			SAN:    "https://github.com/" + v.repo,
+			Repo:   v.repo,
+		}
 	}
 	if err := lockfile.WriteV2(fx.lp, &lockfile.V2{
 		Version: lockfile.SchemaV2,
@@ -194,13 +203,16 @@ func TestVerifyNoLock(t *testing.T) {
 	}
 }
 
+// An empty locked identity disagrees with policy, so verify
+// refuses before any network. A full identity is exercised with
+// the offline sigstore in verify_attest_test.go.
 func TestVerifyLockedAttestationRefuses(t *testing.T) {
 	fx := newVerifyFix(t)
 	sha, digest := fx.plantJust()
 	fx.writeJust(verifyLock{sha: sha, digest: digest, plat: currentPlatform(), attest: true})
 	err := runVerify(context.Background(), fx.c, "just")
-	if !errors.Is(err, errVerifyAttestation) {
-		t.Fatalf("err = %v, want errVerifyAttestation", err)
+	if !errors.Is(err, errVerifyIdentity) {
+		t.Fatalf("err = %v, want errVerifyIdentity", err)
 	}
 }
 

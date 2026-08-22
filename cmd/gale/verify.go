@@ -5,9 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
 
 	"github.com/spf13/cobra"
 
+	"github.com/kelp/gale/internal/attestation"
+	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
@@ -18,13 +21,21 @@ var (
 	verifyProject bool
 )
 
+// verifyAttestFile overrides attestation verification for tests.
+// Nil means the production in-process sigstore verifier;
+// production wiring never sets it.
+var verifyAttestFile func(filePath, repo string) error
+
 var (
 	errVerifyNoLock = errors.New("gale verify needs a v2 lock")
 	errVerifyV1     = errors.New(
 		"gale verify reads a v2 lock; this lock has no tree_digest",
 	)
 	errVerifyAttestation = errors.New(
-		"gale verify: locked attestation is not checkable",
+		"gale verify: locked attestation did not verify",
+	)
+	errVerifyIdentity = errors.New(
+		"gale verify: locked attestation identity disagrees with policy",
 	)
 	errVerifyDigest     = errors.New("gale verify: tree digest mismatch")
 	errVerifyNoPlatform = errors.New(
@@ -43,9 +54,10 @@ var verifyCmd = &cobra.Command{
 	Use:   "verify [package]",
 	Short: "Check store tree digests against the lock",
 	Long: "Recompute each locked fetch tree digest and compare " +
-		"it to the v2 lock. Does not talk to GHCR. Does not " +
-		"mutate the store, lock, or current. A v1 lock has no " +
-		"tree_digest.",
+		"it to the v2 lock. A locked attestation re-fetches the " +
+		"locked URL and verifies it against the locked identity. " +
+		"Does not mutate the store, lock, or current. A v1 lock " +
+		"has no tree_digest.",
 	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(verifyGlobal, verifyProject); err != nil {
@@ -153,7 +165,9 @@ func verifyOne(
 		return fmt.Errorf("%w: %s", errVerifyEmptyDigest, root)
 	}
 	if art.Attestation != nil {
-		return fmt.Errorf("%w: %s", errVerifyAttestation, root)
+		if err := verifyLockedAttestation(ctx, name, art); err != nil {
+			return err
+		}
 	}
 	ok, err = st.FetchExists(name, version, art.SHA256)
 	if err != nil {
@@ -172,6 +186,52 @@ func verifyOne(
 	}
 	if got != art.TreeDigest {
 		return fmt.Errorf("%w: %s", errVerifyDigest, root)
+	}
+	return nil
+}
+
+// verifyLockedAttestation re-fetches the locked artifact and
+// checks that its bytes still hash to the lock and still carry
+// an attestation from the identity gale's policy names (§7d).
+// The lock is the switch: the verified identity is the one
+// recorded at lock time, cross-checked against the current
+// policy so a stale or tampered record cannot pass. It never
+// mutates.
+func verifyLockedAttestation(
+	ctx context.Context, name string, art lockfile.V2Artifact,
+) error {
+	repo, ok := attestation.PolicyFor(name)
+	if !ok {
+		return fmt.Errorf("%w: %s has no identity policy",
+			errVerifyIdentity, name)
+	}
+	if art.Attestation.Repo != repo {
+		return fmt.Errorf("%w: locked %q, policy %q",
+			errVerifyIdentity, art.Attestation.Repo, repo)
+	}
+	tmp, err := os.CreateTemp("", "gale-verify-")
+	if err != nil {
+		return fmt.Errorf("%w: temp archive: %w",
+			errVerifyAttestation, err)
+	}
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+	if err := download.Fetch(ctx, art.URL, tmpPath); err != nil {
+		return fmt.Errorf("%w: re-fetching %s: %w",
+			errVerifyAttestation, art.URL, err)
+	}
+	if err := download.VerifySHA256(ctx, tmpPath, art.SHA256); err != nil {
+		return fmt.Errorf("%w: re-fetched bytes: %w",
+			errVerifyAttestation, err)
+	}
+	verify := verifyAttestFile
+	if verify == nil {
+		verify = attestation.NewVerifier().VerifyFile
+	}
+	if err := verify(tmpPath, art.Attestation.Repo); err != nil {
+		return fmt.Errorf("%w against %s: %w",
+			errVerifyAttestation, art.Attestation.Repo, err)
 	}
 	return nil
 }
