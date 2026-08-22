@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"maps"
 	"path/filepath"
+	"slices"
 
 	"github.com/kelp/gale/internal/fetch"
 	"github.com/kelp/gale/internal/filelock"
@@ -12,6 +15,10 @@ import (
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/store"
 )
+
+// errPublishIncomplete refuses the current swap when the merged
+// lock names a root this machine never staged.
+var errPublishIncomplete = errors.New("publication incomplete")
 
 // fetchArt is one current-platform artifact to stage.
 type fetchArt struct {
@@ -75,6 +82,9 @@ func finalizeFetch(ctx context.Context, c *cmdContext, p fetchPublish) error {
 		if err := landFetchArts(ctx, c.StoreRoot, arts, toStore); err != nil {
 			return err
 		}
+		if err := requireStagedRoots(c.StoreRoot, pkgs, opts.Fetch); err != nil {
+			return err
+		}
 		if err := runPublishHook(p.afterStage); err != nil {
 			return err
 		}
@@ -118,6 +128,34 @@ func fetchBuildOpts(lf *lockfile.V2) (generation.Options, error) {
 		return generation.Options{}, err
 	}
 	return generation.Options{Fetch: fetch}, nil
+}
+
+// requireStagedRoots refuses the swap while any locked root has
+// no fetch tree on this machine. A generation built over a
+// missing root would skip it with a warning and still swap
+// current, publishing a partial PATH. The remedy is convergence:
+// gale sync lands every locked tree and rebuilds.
+func requireStagedRoots(
+	storeRoot string, pkgs map[string]string, fetch map[string]string,
+) error {
+	st := store.NewStore(storeRoot)
+	for _, name := range slices.Sorted(maps.Keys(pkgs)) {
+		sha := fetch[name]
+		if sha == "" {
+			return fmt.Errorf("%w: %s@%s", errPublishIncomplete, name, pkgs[name])
+		}
+		ok, err := st.FetchExists(name, pkgs[name], sha)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return fmt.Errorf(
+				"%w: locked root %s@%s is not staged; run gale sync",
+				errPublishIncomplete, name, pkgs[name],
+			)
+		}
+	}
+	return nil
 }
 
 func fetchSHAMap(lf *lockfile.V2) map[string]string {

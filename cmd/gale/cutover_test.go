@@ -243,6 +243,12 @@ func TestInstallKeepsUnrelatedLockedRoot(t *testing.T) {
 	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\nfd = \"10.2.0\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Convergence: the lock-only root is materialized by sync
+	// before install publishes on top of it.
+	out := newOutput()
+	if err := runSyncFetch(context.Background(), fx.c, syncRun{}, out); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
 	if err := runInstallFetch(context.Background(), fx.c, "just", "1.56.0", fx.src); err != nil {
 		t.Fatalf("install: %v", err)
 	}
@@ -255,6 +261,34 @@ func TestInstallKeepsUnrelatedLockedRoot(t *testing.T) {
 	}
 	if _, ok := got.Packages["just@1.56.0"]; !ok {
 		t.Errorf("missing just: %v", got.Packages)
+	}
+	for _, name := range []string{"fd", "just"} {
+		bin := filepath.Join(fx.c.GaleDir, "current", "bin", name)
+		if _, err := os.Lstat(bin); err != nil {
+			t.Errorf("current/bin/%s: %v", name, err)
+		}
+	}
+}
+
+// A bare install over a lock-only root that was never staged must
+// refuse instead of swapping a partial generation onto current.
+func TestInstallRefusesUnstagedLockedRoot(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	if err := runLockFetch(context.Background(), fx.c, fx.req("fd@10.2.0")); err != nil {
+		t.Fatal(err)
+	}
+	installToStore = stageTestFetch
+	t.Cleanup(func() { installToStore = nil })
+	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\nfd = \"10.2.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := runInstallFetch(context.Background(), fx.c, "just", "1.56.0", fx.src)
+	if err == nil || !strings.Contains(err.Error(), "not staged") {
+		t.Fatalf("err = %v, want unstaged-root refusal", err)
+	}
+	if cur := currentGen(t, fx.c.GaleDir); cur != fx.prev {
+		t.Errorf("current = %d, want unchanged %d", cur, fx.prev)
 	}
 }
 

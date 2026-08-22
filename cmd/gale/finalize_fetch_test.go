@@ -292,6 +292,37 @@ func TestFinalizeFetchRefusesRootWithoutPlatformArtifact(t *testing.T) {
 	assertUnchangedPublication(t, fx)
 }
 
+// Publishing must refuse the swap when a merged lock names a
+// root this machine never staged. Skipping it silently put a
+// partial environment on PATH; the remedy is convergence via
+// gale sync.
+func TestFinalizeFetchRefusesSwapWithUnstagedRoot(t *testing.T) {
+	fx := newFetchPubFixture(t)
+	fdPkg := lockfile.V2Package{
+		Artifacts: map[string]lockfile.V2Artifact{
+			currentPlatform(): {
+				URL:        "https://example.invalid/fd",
+				Format:     "tar.gz",
+				SHA256:     strings.Repeat("cd", 32),
+				TreeDigest: "sha256:" + strings.Repeat("ef", 32),
+				Method:     "fetch",
+			},
+		},
+	}
+	fx.lock.Packages["fd@10.2.0"] = fdPkg
+	fx.lock.Targets.Default.Roots = append(
+		fx.lock.Targets.Default.Roots, "fd@10.2.0",
+	)
+	err := finalizeFetch(context.Background(), fx.c, fx.publish())
+	if err == nil || !strings.Contains(err.Error(), "fd@10.2.0") {
+		t.Fatalf("err = %v, want unstaged fd@10.2.0", err)
+	}
+	if !strings.Contains(err.Error(), "gale sync") {
+		t.Errorf("err = %v, want gale sync remedy", err)
+	}
+	assertUnchangedPublication(t, fx)
+}
+
 func TestFinalizeFetchMutationLockExclusive(t *testing.T) {
 	fx := newFetchPubFixture(t)
 	started := make(chan struct{})

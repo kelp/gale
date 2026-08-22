@@ -201,7 +201,12 @@ func TestFetchAdoptYesPublishesViaFinalize(t *testing.T) {
 			if err != nil {
 				return "", err
 			}
-			if err := os.MkdirAll(dest, 0o755); err != nil {
+			if err := os.MkdirAll(filepath.Join(dest, "bin"), 0o755); err != nil {
+				return "", err
+			}
+			if err := os.WriteFile(
+				filepath.Join(dest, "bin", name), []byte("ok"), 0o755,
+			); err != nil {
 				return "", err
 			}
 			return dest, nil
