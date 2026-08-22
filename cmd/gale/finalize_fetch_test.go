@@ -242,6 +242,35 @@ func TestFinalizeFetchRejectsConflictingLockRoots(t *testing.T) {
 	assertUnchangedPublication(t, fx)
 }
 
+// A pre-existing fetch directory whose bytes do not match the
+// lock's tree digest must be refused on every publication path,
+// not only sync's. §7f: occupied dir + different digest = refuse;
+// same digest = cache hit.
+func TestFinalizeFetchRefusesOccupiedDirWithWrongDigest(t *testing.T) {
+	fx := newFetchPubFixture(t)
+	dest := fx.fetchDest()
+	if err := os.MkdirAll(filepath.Join(dest, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dest, "bin", fetchPubName), []byte("tampered"), 0o755,
+	); err != nil {
+		t.Fatal(err)
+	}
+	p := fx.publish()
+	p.ToStore = func(
+		ctx context.Context, st *store.Store, name, version string, a index.Artifact,
+	) (string, error) {
+		t.Error("ToStore ran for an occupied directory")
+		return dest, nil
+	}
+	err := finalizeFetch(context.Background(), fx.c, p)
+	if !errors.Is(err, errSwitchOccupied) {
+		t.Fatalf("err = %v, want errSwitchOccupied", err)
+	}
+	assertUnchangedPublication(t, fx)
+}
+
 func TestFinalizeFetchMutationLockExclusive(t *testing.T) {
 	fx := newFetchPubFixture(t)
 	started := make(chan struct{})

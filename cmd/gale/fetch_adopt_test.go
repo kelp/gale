@@ -451,7 +451,7 @@ latest = "1.0.0"
 url = "https://github.com/kelp/other/releases/download/1.0.0/other.tar.gz"
 format = "tar.gz"
 sha256 = "` + lockFetchSHA + `"
-tree_digest = "` + lockFetchTree + `"
+tree_digest = "` + fetchTreeDigest("other") + `"
 hash_source = "upstream-sha256sums"
 strip = 1
 

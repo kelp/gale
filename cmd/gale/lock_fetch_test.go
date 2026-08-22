@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -24,8 +25,32 @@ const (
 	lockFetchPinA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	lockFetchPinB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 	lockFetchSHA  = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-	lockFetchTree = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
 )
+
+// fetchTreeDigest returns the tree digest of exactly what
+// stageTestFetch stages for name (bin/<name> holding "ok",
+// mode 0755). The index fixture must declare the digest of the
+// bytes it actually serves, or occupied-dir admission refuses
+// every re-land.
+func fetchTreeDigest(name string) string {
+	dir, err := os.MkdirTemp("", "gale-tree-digest")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+	p := filepath.Join(dir, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		panic(err)
+	}
+	if err := os.WriteFile(p, []byte("ok"), 0o755); err != nil {
+		panic(err)
+	}
+	d, err := provenance.DigestTree(context.Background(), dir)
+	if err != nil {
+		panic(err)
+	}
+	return d
+}
 
 type lockFetchHTTP struct {
 	mu    sync.Mutex
@@ -120,6 +145,7 @@ func (fx *lockFetchFix) lockPath() string {
 }
 
 func lockIndexTOML(name, version string) string {
+	tree := fetchTreeDigest(name)
 	return `[package]
 name = "` + name + `"
 description = "test package"
@@ -132,7 +158,7 @@ latest = "` + version + `"
 url = "https://github.com/kelp/` + name + `/releases/download/` + version + `/` + name + `.tar.gz"
 format = "tar.gz"
 sha256 = "` + lockFetchSHA + `"
-tree_digest = "` + lockFetchTree + `"
+tree_digest = "` + tree + `"
 hash_source = "upstream-sha256sums"
 strip = 1
 attestation = true
@@ -146,7 +172,7 @@ mode = 0o755
 url = "https://github.com/kelp/` + name + `/releases/download/` + version + `/` + name + `-linux.tar.gz"
 format = "tar.gz"
 sha256 = "` + lockFetchSHA + `"
-tree_digest = "` + lockFetchTree + `"
+tree_digest = "` + tree + `"
 hash_source = "upstream-sha256sums"
 strip = 1
 

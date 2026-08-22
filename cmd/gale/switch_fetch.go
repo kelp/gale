@@ -204,9 +204,10 @@ func landFetchArt(
 		return err
 	}
 	if ok {
-		if toStore != nil {
-			return nil
-		}
+		// Occupied dir + different tree digest = refuse; same
+		// digest = cache hit (§7f). This holds on every path:
+		// a non-nil toStore hook only changes how a MISS is
+		// staged, it never waives admission.
 		got, derr := provenance.DigestTree(ctx, dest)
 		if derr != nil {
 			return fmt.Errorf("%w: %s: %w", errSwitchOccupied, dest, derr)
