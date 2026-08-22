@@ -2,6 +2,7 @@ package inspect
 
 import (
 	"bytes"
+	"debug/elf"
 	"errors"
 	"os"
 	"os/exec"
@@ -313,6 +314,34 @@ func TestMagicPrefilterKeepsRealBinaries(t *testing.T) {
 	}
 }
 
+// TestCompileBinaryDoesNotStampGNUHeaderpadSoname checks that
+// compileBinary does not pass -Wl,-headerpad_max_install_names
+// to GNU ld. That Mach-O flag is parsed as -h and stamps
+// eaderpad_max_install_names as the executable SONAME (gh#261).
+func TestCompileBinaryDoesNotStampGNUHeaderpadSoname(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("GNU ld headerpad SONAME is Linux-only")
+	}
+	if _, err := exec.LookPath("cc"); err != nil {
+		t.Skip("cc not available: the fixture is a compiled binary")
+	}
+	bin := compileBinary(t, t.TempDir())
+	ef, err := elf.Open(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ef.Close() })
+	names, err := ef.DynString(elf.DT_SONAME)
+	if err != nil {
+		return
+	}
+	for _, name := range names {
+		if name == "eaderpad_max_install_names" {
+			t.Fatalf("compileBinary stamped GNU ld SONAME %q", name)
+		}
+	}
+}
+
 func compileBinary(t *testing.T, dir string) string {
 	t.Helper()
 	src := filepath.Join(dir, "dummy.c")
@@ -321,9 +350,13 @@ func compileBinary(t *testing.T, dir string) string {
 		[]byte("int main() { return 0; }\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cmd := exec.Command("cc",
-		"-Wl,-headerpad_max_install_names",
-		"-o", bin, src)
+	args := []string{"-o", bin, src}
+	if runtime.GOOS == "darwin" {
+		// Reserves load-command padding so install_name_tool
+		// can rewrite LC_LOAD_DYLIB / LC_RPATH in place.
+		args = append(args, "-Wl,-headerpad_max_install_names")
+	}
+	cmd := exec.Command("cc", args...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Skipf("cc not available: %v\n%s", err, out)
