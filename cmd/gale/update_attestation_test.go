@@ -2,36 +2,40 @@ package main
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/lockfile"
 )
-
 // §7d: the index cannot switch attestation off. An update that
 // drops the attestation a locked package carried is a refusal;
 // --allow-attestation-drop is the explicit escape, and it warns.
-func attestDropIndexDoc(name, version string) string {
+func attestGaleDoc(version string, withAttestation bool) string {
+	att := ""
+	if withAttestation {
+		att = "attestation = true\n"
+	}
 	return `[package]
-name = "` + name + `"
+name = "gale"
 description = "test package"
 license = "MIT"
-homepage = "https://github.com/kelp/` + name + `"
-repo = "kelp/` + name + `"
+homepage = "https://github.com/kelp/gale"
+repo = "kelp/gale"
 latest = "` + version + `"
 
 [versions."` + version + `".artifacts."darwin/arm64"]
-url = "https://github.com/kelp/` + name + `/releases/download/` + version + `/` + name + `.tar.gz"
+url = "https://github.com/kelp/gale/releases/download/` + version + `/gale.tar.gz"
 format = "tar.gz"
 sha256 = "` + lockFetchSHA + `"
-tree_digest = "` + fetchTreeDigest(name) + `"
+tree_digest = "` + fetchTreeDigest("gale") + `"
 hash_source = "upstream-sha256sums"
 strip = 1
-
+` + att + `
 [[versions."` + version + `".artifacts."darwin/arm64".files]]
-src = "` + name + `"
-dest = "bin/` + name + `"
+src = "gale"
+dest = "bin/gale"
 mode = 0o755
 `
 }
@@ -39,14 +43,21 @@ mode = 0o755
 func attestDropFixture(t *testing.T) *lockFetchFix {
 	t.Helper()
 	fx := newLockFetchFix(t)
-	if err := runLockFetch(context.Background(), fx.c,
-		fx.req("just@1.56.0")); err != nil {
+	// Locked at 1.56.0 with an attestation; the newer 9.9.9 block
+	// drops it. "gale" is the one package with an identity policy,
+	// so the initial lock records a full identity.
+	fx.h.files["/"+lockFetchPinA+"/index/g/gale.toml"] =
+		attestGaleDoc("1.56.0", true)
+	fx.h.files["/"+lockFetchPinB+"/index/g/gale.toml"] =
+		attestGaleDoc("9.9.9", false)
+	if err := os.WriteFile(fx.c.GalePath,
+		[]byte("[packages]\ngale = \"1.56.0\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// A newer 9.9.9 block whose darwin/arm64 artifact carries NO
-	// attestation, while the locked 1.56.0 was attested (the
-	// fixture index sets attestation = true on darwin/arm64).
-	fx.h.files["/"+lockFetchPinB+"/index/j/just.toml"] = attestDropIndexDoc("just", "9.9.9")
+	if err := runLockFetch(context.Background(), fx.c,
+		fx.req("gale@1.56.0")); err != nil {
+		t.Fatal(err)
+	}
 	return fx
 }
 
@@ -63,7 +74,7 @@ func TestUpdateRefusesAttestationDrop(t *testing.T) {
 	resetAllowAttestationDrop(t, false)
 
 	err := runUpdateFetch(
-		context.Background(), fx.c, []string{"just"},
+		context.Background(), fx.c, []string{"gale"},
 		index.Source{BaseURL: fx.src.BaseURL, Commit: lockFetchPinB},
 		newOutput(),
 	)
@@ -74,7 +85,7 @@ func TestUpdateRefusesAttestationDrop(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	if _, ok := got.Packages["just@1.56.0"]; !ok {
+	if _, ok := got.Packages["gale@1.56.0"]; !ok {
 		t.Errorf("refused update still rewrote the lock: %v", got.Packages)
 	}
 }
@@ -89,7 +100,7 @@ func TestUpdateAllowsAttestationDropWithFlagAndWarns(t *testing.T) {
 	var buf strings.Builder
 	out := newOutputForWriter(&buf)
 	err := runUpdateFetch(
-		context.Background(), fx.c, []string{"just"},
+		context.Background(), fx.c, []string{"gale"},
 		index.Source{BaseURL: fx.src.BaseURL, Commit: lockFetchPinB},
 		out,
 	)
@@ -104,7 +115,7 @@ func TestUpdateAllowsAttestationDropWithFlagAndWarns(t *testing.T) {
 	if readErr != nil {
 		t.Fatal(readErr)
 	}
-	pkg, ok := got.Packages["just@9.9.9"]
+	pkg, ok := got.Packages["gale@9.9.9"]
 	if !ok {
 		t.Fatalf("lock not updated to 9.9.9: %v", got.Packages)
 	}

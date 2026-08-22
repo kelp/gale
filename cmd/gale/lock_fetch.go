@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/lockfile"
@@ -58,9 +59,11 @@ func writeLockFetch(
 		if err != nil {
 			return fmt.Errorf("resolving %s: %w", root, err)
 		}
-		draft.Packages[name+"@"+got] = lockfile.V2Package{
-			Artifacts: v2ArtifactsFromIndex(ver.Artifacts, sess.Commit),
+		arts, err := v2ArtifactsFromIndex(name, ver.Artifacts, sess.Commit)
+		if err != nil {
+			return err
 		}
+		draft.Packages[name+"@"+got] = lockfile.V2Package{Artifacts: arts}
 	}
 	return writeLockDoc(c, draft)
 }
@@ -79,17 +82,27 @@ func writeLockDoc(c *cmdContext, draft *lockfile.V2) error {
 	return nil
 }
 
+// v2ArtifactsFromIndex converts every platform row of one index
+// version. name selects the attestation identity policy: a
+// declared attestation without a gale-side policy is an error,
+// because it could never be verified (§7d).
 func v2ArtifactsFromIndex(
-	arts map[string]index.Artifact, commit string,
-) map[string]lockfile.V2Artifact {
+	name string, arts map[string]index.Artifact, commit string,
+) (map[string]lockfile.V2Artifact, error) {
 	out := make(map[string]lockfile.V2Artifact, len(arts))
 	for plat, a := range arts {
-		out[plat] = v2ArtifactFromIndex(a, commit)
+		art, err := v2ArtifactFromIndex(name, a, commit)
+		if err != nil {
+			return nil, err
+		}
+		out[plat] = art
 	}
-	return out
+	return out, nil
 }
 
-func v2ArtifactFromIndex(a index.Artifact, commit string) lockfile.V2Artifact {
+func v2ArtifactFromIndex(
+	name string, a index.Artifact, commit string,
+) (lockfile.V2Artifact, error) {
 	files := make([]lockfile.V2File, 0, len(a.Files))
 	for _, f := range a.Files {
 		files = append(files, lockfile.V2File{
@@ -108,7 +121,18 @@ func v2ArtifactFromIndex(a index.Artifact, commit string) lockfile.V2Artifact {
 		Files:       files,
 	}
 	if a.Attestation != nil {
-		art.Attestation = &lockfile.V2Attestation{}
+		repo, ok := attestation.PolicyFor(name)
+		if !ok {
+			return lockfile.V2Artifact{}, fmt.Errorf(
+				"index declares an attestation for %s but gale has "+
+					"no identity policy for it; refusing to lock "+
+					"what cannot be verified", name)
+		}
+		art.Attestation = &lockfile.V2Attestation{
+			Issuer: attestation.GitHubIssuer,
+			SAN:    "https://github.com/" + repo,
+			Repo:   repo,
+		}
 	}
-	return art
+	return art, nil
 }

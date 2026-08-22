@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/index"
@@ -108,10 +109,10 @@ func newLockFetchFix(t *testing.T) *lockFetchFix {
 	}
 
 	h := &lockFetchHTTP{files: map[string]string{
-		"/" + lockFetchPinA + "/index/j/just.toml": lockIndexTOML("just", "1.56.0"),
-		"/" + lockFetchPinA + "/index/f/fd.toml":   lockIndexTOML("fd", "10.2.0"),
-		"/" + lockFetchPinB + "/index/j/just.toml": lockIndexTOML("just", "9.9.9"),
-		"/" + lockFetchPinB + "/index/f/fd.toml":   lockIndexTOML("fd", "9.9.9"),
+		"/" + lockFetchPinA + "/index/j/just.toml": lockIndexTOML("just", "1.56.0", false),
+		"/" + lockFetchPinA + "/index/f/fd.toml":   lockIndexTOML("fd", "10.2.0", false),
+		"/" + lockFetchPinB + "/index/j/just.toml": lockIndexTOML("just", "9.9.9", false),
+		"/" + lockFetchPinB + "/index/f/fd.toml":   lockIndexTOML("fd", "9.9.9", false),
 	}}
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
@@ -145,8 +146,12 @@ func (fx *lockFetchFix) lockPath() string {
 	return lp
 }
 
-func lockIndexTOML(name, version string) string {
+func lockIndexTOML(name, version string, withAttestation bool) string {
 	tree := fetchTreeDigest(name)
+	att := ""
+	if withAttestation {
+		att = "attestation = true\n"
+	}
 	return `[package]
 name = "` + name + `"
 description = "test package"
@@ -162,8 +167,7 @@ sha256 = "` + lockFetchSHA + `"
 tree_digest = "` + tree + `"
 hash_source = "upstream-sha256sums"
 strip = 1
-attestation = true
-
+` + att + `
 [[versions."` + version + `".artifacts."darwin/arm64".files]]
 src = "` + name + `"
 dest = "bin/` + name + `"
@@ -219,8 +223,8 @@ func TestRunLockFetchPinsOneIndexCommit(t *testing.T) {
 		}
 	}
 	just := got.Packages["just@1.56.0"].Artifacts["darwin/arm64"]
-	if just.Attestation == nil {
-		t.Error("just darwin attestation: want presence")
+	if just.Attestation != nil {
+		t.Error("just darwin attestation: want absent (no policy for just)")
 	}
 	fd := got.Packages["fd@10.2.0"].Artifacts["linux/amd64"]
 	if fd.Attestation != nil {
@@ -275,6 +279,54 @@ func TestRunLockLiveResolvesOneSession(t *testing.T) {
 				t.Errorf("%s %s index_commit = %q", key, plat, art.IndexCommit)
 			}
 		}
+	}
+}
+
+// §7d: the lock records the attestation identity gale's policy
+// requires, not just that an attestation exists.
+func TestRunLockFetchRecordsAttestationIdentity(t *testing.T) {
+	fx := newLockFetchFix(t)
+	fx.h.files["/"+lockFetchPinA+"/index/g/gale.toml"] =
+		lockIndexTOML("gale", "1.0.0", true)
+	if err := runLockFetch(context.Background(), fx.c,
+		fx.req("gale@1.0.0")); err != nil {
+		t.Fatalf("runLockFetch: %v", err)
+	}
+	got, err := lockfile.ReadV2(fx.lockPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg, ok := got.Packages["gale@1.0.0"]
+	if !ok {
+		t.Fatalf("missing gale root: %v", got.Packages)
+	}
+	att := pkg.Artifacts["darwin/arm64"].Attestation
+	if att == nil {
+		t.Fatal("attested artifact locked without a recorded identity")
+	}
+	if att.Repo != "kelp/gale" {
+		t.Errorf("repo = %q, want kelp/gale", att.Repo)
+	}
+	if att.Issuer != attestation.GitHubIssuer {
+		t.Errorf("issuer = %q, want %q", att.Issuer, attestation.GitHubIssuer)
+	}
+	if att.SAN != "https://github.com/kelp/gale" {
+		t.Errorf("san = %q, want https://github.com/kelp/gale", att.SAN)
+	}
+}
+
+// A declared attestation for a package gale has no identity
+// policy for cannot be verified later, so resolving it is a
+// refusal at lock time — never an empty record.
+func TestRunLockFetchRefusesUnpolicedAttestation(t *testing.T) {
+	fx := newLockFetchFix(t)
+	fx.h.files["/"+lockFetchPinA+"/index/o/other.toml"] =
+		lockIndexTOML("other", "1.0.0", true)
+	if err := runLockFetch(context.Background(), fx.c,
+		fx.req("other@1.0.0")); err == nil {
+		t.Fatal("locked an attested package with no identity policy")
+	} else if !strings.Contains(err.Error(), "identity policy") {
+		t.Errorf("err = %v, want it to name the policy gap", err)
 	}
 }
 

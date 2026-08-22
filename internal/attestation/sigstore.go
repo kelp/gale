@@ -27,6 +27,10 @@ import (
 // identities.
 const githubOIDCIssuer = "https://token.actions.githubusercontent.com"
 
+// GitHubIssuer is the exported form of githubOIDCIssuer for
+// callers that record the expected identity (the v2 lock).
+const GitHubIssuer = githubOIDCIssuer
+
 // provenancePredicateType is the in-toto predicate type required of
 // every accepted attestation statement.
 const provenancePredicateType = "https://slsa.dev/provenance/v1"

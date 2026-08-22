@@ -264,9 +264,11 @@ func planAdopt(
 		}
 		key := name + "@" + got
 		draft.Targets.Default.Roots = append(draft.Targets.Default.Roots, key)
-		draft.Packages[key] = lockfile.V2Package{
-			Artifacts: v2ArtifactsFromIndex(ver.Artifacts, sess.Commit),
+		v2Arts, err := v2ArtifactsFromIndex(name, ver.Artifacts, sess.Commit)
+		if err != nil {
+			return nil, nil, err
 		}
+		draft.Packages[key] = lockfile.V2Package{Artifacts: v2Arts}
 		art, ok := ver.Artifacts[plat]
 		if !ok {
 			return nil, nil, fmt.Errorf(
