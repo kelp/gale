@@ -115,7 +115,8 @@ func TestSyncStampNamesFailedPackage(t *testing.T) {
 
 	proj := t.TempDir()
 	galeDir := filepath.Join(proj, ".gale")
-	if err := os.WriteFile(filepath.Join(proj, "gale.toml"),
+	if err := os.WriteFile(
+		filepath.Join(proj, "gale.toml"),
 		[]byte("[packages]\njust = \"1.56.0\"\nfd = \"10.2.0\"\n"), 0o644,
 	); err != nil {
 		t.Fatal(err)

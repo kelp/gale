@@ -229,12 +229,14 @@ func landFetchArt(
 		got, derr := provenance.DigestTree(ctx, dest)
 		if derr != nil {
 			return stageErr(a, fmt.Errorf(
-				"%w: %s: %w", errSwitchOccupied, dest, derr))
+				"%w: %s: %w", errSwitchOccupied, dest, derr,
+			))
 		}
 		if got != a.Art.TreeDigest {
 			return stageErr(a, fmt.Errorf(
 				"%w: %s tree digest is %s, want %s",
-				errSwitchOccupied, dest, got, a.Art.TreeDigest))
+				errSwitchOccupied, dest, got, a.Art.TreeDigest,
+			))
 		}
 		return nil
 	}
