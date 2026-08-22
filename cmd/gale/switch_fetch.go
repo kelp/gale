@@ -189,22 +189,22 @@ func v2ToIndexArt(a lockfile.V2Artifact) index.Artifact {
 	return out
 }
 
-// stagingErr marks a landing failure with the artifact it
+// stagingError marks a landing failure with the artifact it
 // belongs to, so a sync can record which package failed in
 // sync-state.toml instead of reporting an anonymous break.
-type stagingErr struct {
+type stagingError struct {
 	name, version string
 	err           error
 }
 
-func (e *stagingErr) Error() string {
+func (e *stagingError) Error() string {
 	return e.name + "@" + e.version + ": " + e.err.Error()
 }
 
-func (e *stagingErr) Unwrap() error { return e.err }
+func (e *stagingError) Unwrap() error { return e.err }
 
-func stageErr(a fetchArt, err error) *stagingErr {
-	return &stagingErr{name: a.Name, version: a.Version, err: err}
+func stageErr(a fetchArt, err error) *stagingError {
+	return &stagingError{name: a.Name, version: a.Version, err: err}
 }
 
 func landFetchArt(

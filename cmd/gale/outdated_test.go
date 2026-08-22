@@ -24,7 +24,7 @@ func TestOutdatedSortedOutput(t *testing.T) {
 	latest := func(name string) (string, error) { return "2.0.0", nil }
 
 	out := newCmdOutput(outdatedCmd)
-	result := checkOutdated(t.Context(), pkgs, latest, out)
+	result := checkOutdated(pkgs, latest, out)
 
 	if len(result.Items) != len(pkgs) {
 		t.Fatalf("expected %d items, got %d",

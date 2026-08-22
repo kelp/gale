@@ -82,7 +82,7 @@ func runOutdated(
 		return got, err
 	}
 
-	result := checkOutdated(ctx, cfg.Packages, latest, out)
+	result := checkOutdated(cfg.Packages, latest, out)
 
 	// Print outdated rows in sorted order.
 	for _, line := range formatOutdated(result.Items) {
@@ -97,7 +97,6 @@ func runOutdated(
 // bad document) is recorded and reported; it does not stop the
 // remaining probes, and none of them is ever answered from a cache.
 func checkOutdated(
-	ctx context.Context,
 	pkgs map[string]string,
 	latest func(name string) (string, error),
 	out *output.Output,

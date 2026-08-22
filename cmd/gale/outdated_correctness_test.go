@@ -125,7 +125,7 @@ func TestCheckOutdatedReportsEveryFailure(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(context.Background(), pkgs, latest, out)
+	result := checkOutdated(pkgs, latest, out)
 
 	if len(calls) != 3 {
 		t.Errorf("expected all 3 packages probed, got %d calls: %v",

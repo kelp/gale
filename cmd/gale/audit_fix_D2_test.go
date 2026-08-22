@@ -9,7 +9,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"testing"
 
 	"github.com/kelp/gale/internal/output"
@@ -32,7 +31,7 @@ func TestCheckOutdatedGitHashNotReportedAsOutdated(t *testing.T) {
 
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(context.Background(), pkgs, latest, out)
+	result := checkOutdated(pkgs, latest, out)
 
 	if len(result.Items) != 0 {
 		t.Errorf(
@@ -57,7 +56,7 @@ func TestCheckOutdatedGitHashSameAsLatestNotOutdated(t *testing.T) {
 
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(context.Background(), pkgs, latest, out)
+	result := checkOutdated(pkgs, latest, out)
 
 	if len(result.Items) != 0 {
 		t.Errorf(
@@ -79,7 +78,7 @@ func TestCheckOutdatedSemverStillWorks(t *testing.T) {
 
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(context.Background(), pkgs, latest, out)
+	result := checkOutdated(pkgs, latest, out)
 
 	if len(result.Items) != 1 {
 		t.Errorf(

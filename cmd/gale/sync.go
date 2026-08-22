@@ -109,7 +109,7 @@ func executeSync(
 	if err := runSyncFetch(ctx, cc, s, out); err != nil {
 		// A landing failure carries its artifact's identity so
 		// the stamp can name the package that broke the sync.
-		var se *stagingErr
+		var se *stagingError
 		if errors.As(err, &se) {
 			return []syncOutcome{{
 				name: se.name, version: se.version, installErr: se.err,
