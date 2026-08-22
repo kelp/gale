@@ -37,11 +37,12 @@ func loadRecipeFile(path string, local bool) (*recipe.Recipe, error) {
 // resolveRecipeResolver constructs a RecipeResolver from
 // the --recipes flag value. When recipesFlag is non-empty,
 // returns a local resolver for that directory. Otherwise
-// composes a chain: configured `[[repos]]` taps (priority
-// order, lowest number first) → registry. The returned
-// registry is nil when using local recipes; when taps are
-// wired in it remains non-nil so versioned fetches still
-// resolve through the registry.
+// resolves through the registry. The returned registry is
+// nil when using local recipes.
+//
+// The `[[repos]]` tap chain is gone with the long tail: no
+// command consults configured taps anymore, so resolution is
+// local-flag or registry, never composed (§15.18).
 func resolveRecipeResolver(recipesFlag string) (installer.RecipeResolver, *registry.Registry, error) {
 	if recipesFlag != "" {
 		recipesDir, err := findLocalRecipesDir(recipesFlag)
@@ -51,23 +52,11 @@ func resolveRecipeResolver(recipesFlag string) (installer.RecipeResolver, *regis
 		return localRecipeResolver(recipesDir), nil, nil
 	}
 
-	repoResolvers, err := configuredRepoResolvers()
-	if err != nil {
-		return nil, nil, err
-	}
-
 	reg, err := newRegistry()
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(repoResolvers) == 0 {
-		return reg.FetchRecipe, reg, nil
-	}
-
-	chain := make([]installer.RecipeResolver, 0, len(repoResolvers)+1)
-	chain = append(chain, repoResolvers...)
-	chain = append(chain, reg.FetchRecipe)
-	return composeResolvers(chain...), reg, nil
+	return reg.FetchRecipe, reg, nil
 }
 
 // localRecipeResolver returns a RecipeResolver that reads
@@ -83,26 +72,15 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 		data, err := os.ReadFile(path)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {
-				// A genuine miss — composeResolvers falls
-				// through to the next resolver in the chain.
 				return nil, fmt.Errorf(
 					"no local recipe for %q", name,
 				)
 			}
-			// The recipe exists but cannot be read — a real
-			// failure that must stop the resolver chain (gh#71).
-			return nil, &recipeResolveError{
-				fmt.Errorf("reading recipe %s: %w", path, err),
-			}
+			return nil, fmt.Errorf("reading recipe %s: %w", path, err)
 		}
 		rec, err := recipe.Parse(string(data))
 		if err != nil {
-			// Corrupt recipe — surface the parse error naming
-			// the file instead of letting a lower-priority
-			// resolver shadow it (gh#71).
-			return nil, &recipeResolveError{
-				fmt.Errorf("parsing recipe %s: %w", path, err),
-			}
+			return nil, fmt.Errorf("parsing recipe %s: %w", path, err)
 		}
 		rec.MarkWorkingTree(data)
 		return rec, nil

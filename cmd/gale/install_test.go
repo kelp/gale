@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/store"
-	"github.com/spf13/cobra"
 )
 
 func TestParsePackageArg(t *testing.T) {
@@ -337,130 +336,6 @@ func TestGitDevVersionDistinguishesDirtyTrees(t *testing.T) {
 	if again != second {
 		t.Errorf("same tree gave %q then %q — the identity must be "+
 			"a function of the content", second, again)
-	}
-}
-
-func TestRecipesFlagReplacesLocal(t *testing.T) {
-	cmds := map[string]*cobra.Command{
-		"outdated": outdatedCmd,
-	}
-
-	for name, cmd := range cmds {
-		t.Run(name, func(t *testing.T) {
-			// --recipes must exist.
-			f := cmd.Flags().Lookup("recipes")
-			if f == nil {
-				t.Fatalf("%s: --recipes flag not found", name)
-			}
-			if f.DefValue != "" {
-				t.Errorf("%s: --recipes default = %q, want empty",
-					name, f.DefValue)
-			}
-			// No bare form: NoOptDefVal must be unset so the
-			// space form (--recipes <dir>) parses (gh#114).
-			if f.NoOptDefVal != "" {
-				t.Errorf("%s: --recipes NoOptDefVal = %q, want empty",
-					name, f.NoOptDefVal)
-			}
-
-			// --local must not exist.
-			if cmd.Flags().Lookup("local") != nil {
-				t.Errorf("%s: --local flag should not exist",
-					name)
-			}
-		})
-	}
-}
-
-// TestRecipesFlagAcceptsSpaceForm verifies that
-// `--recipes <dir>` (space-separated) parses the value like
-// every other string flag. Setting NoOptDefVal broke this:
-// `gale sync --recipes .` treated `.` as a positional arg and
-// failed with `unknown command "."` (gh#114).
-func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
-	cmds := map[string]*cobra.Command{
-		"outdated": outdatedCmd,
-	}
-
-	for name, cmd := range cmds {
-		t.Run(name, func(t *testing.T) {
-			f := cmd.Flags().Lookup("recipes")
-			if f == nil {
-				t.Fatalf("%s: --recipes flag not found", name)
-			}
-			// Restore shared command state for other tests.
-			defer func() {
-				if err := f.Value.Set(""); err != nil {
-					t.Fatalf("resetting flag: %v", err)
-				}
-				f.Changed = false
-			}()
-
-			if err := cmd.ParseFlags(
-				[]string{"--recipes", "."},
-			); err != nil {
-				t.Fatalf("%s: parsing --recipes .: %v", name, err)
-			}
-			got, err := cmd.Flags().GetString("recipes")
-			if err != nil {
-				t.Fatalf("%s: reading flag: %v", name, err)
-			}
-			if got != "." {
-				t.Errorf("%s: --recipes value = %q, want %q "+
-					"(space form must consume the value, not "+
-					"leave it as a positional arg)",
-					name, got, ".")
-			}
-			if args := cmd.Flags().Args(); len(args) != 0 {
-				t.Errorf("%s: leftover positional args %v, want none",
-					name, args)
-			}
-		})
-	}
-}
-
-// TestRecipesFlagWordingIsAccurate verifies the --recipes
-// flag description across every command that exposes it. The
-// previous wording — "Use local recipes directory (default:
-// ../gale-recipes/)" — was inaccurate: with no flag, recipes
-// resolve through the remote registry, not a sibling. The
-// bare form and its sibling default were removed (gh#114).
-//
-// See finding F-2 (and the original fix on outdated in
-// commit 4a54c9e).
-func TestRecipesFlagWordingIsAccurate(t *testing.T) {
-	cmds := map[string]*cobra.Command{
-		"outdated": outdatedCmd,
-	}
-
-	for name, cmd := range cmds {
-		t.Run(name, func(t *testing.T) {
-			f := cmd.Flags().Lookup("recipes")
-			if f == nil {
-				t.Fatalf("%s: --recipes flag not found", name)
-			}
-			// The old wording implied the sibling path was the
-			// default with no flag, which it is not. Reject it.
-			if strings.Contains(f.Usage,
-				"Use local recipes directory (default:") {
-				t.Errorf("%s: --recipes still uses the old "+
-					"misleading wording: %q", name, f.Usage)
-			}
-			// The new wording must say "instead of the registry"
-			// so it is clear what the default behavior is.
-			if !strings.Contains(f.Usage, "instead of the registry") {
-				t.Errorf("%s: --recipes usage %q does not "+
-					"clarify it overrides the registry",
-					name, f.Usage)
-			}
-			// The bare form was removed (gh#114); the usage
-			// must not advertise it.
-			if strings.Contains(f.Usage, "bare --recipes") {
-				t.Errorf("%s: --recipes usage %q still "+
-					"advertises the removed bare form",
-					name, f.Usage)
-			}
-		})
 	}
 }
 

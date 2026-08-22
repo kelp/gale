@@ -30,7 +30,7 @@ func TestCutoverDropsRecipesOnInstallerVerbs(t *testing.T) {
 }
 
 func TestCutoverIndexOnResolveVerbsOnly(t *testing.T) {
-	for _, name := range []string{"install", "update", "lock"} {
+	for _, name := range []string{"install", "update", "lock", "outdated"} {
 		cmd := findCmd(name)
 		if cmd == nil {
 			t.Fatalf("command %q missing", name)
@@ -46,6 +46,21 @@ func TestCutoverIndexOnResolveVerbsOnly(t *testing.T) {
 		}
 		if cmd.Flags().Lookup("index") != nil {
 			t.Errorf("%s: --index must not exist", name)
+		}
+	}
+}
+
+// outdated resolves through the index client (§10: it talks to
+// the index, not the legacy registry), so the registry-only
+// overrides must be gone from its surface.
+func TestOutdatedRegistryFlagsGone(t *testing.T) {
+	cmd := findCmd("outdated")
+	if cmd == nil {
+		t.Fatal("command outdated missing")
+	}
+	for _, flag := range []string{"recipes", "no-refresh", "local"} {
+		if cmd.Flags().Lookup(flag) != nil {
+			t.Errorf("outdated: --%s must be gone", flag)
 		}
 	}
 }

@@ -1,12 +1,9 @@
 package main
 
 import (
-	"context"
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/kelp/gale/internal/recipe"
 )
 
 // TestOutdatedSortedOutput pins audit RO-J:output-format/0004:
@@ -22,20 +19,12 @@ func TestOutdatedSortedOutput(t *testing.T) {
 		"mm-tool": "1.0.0",
 	}
 
-	// Resolver returns a newer version for every package so all
+	// Latest returns a newer version for every package so all
 	// appear in result.Items.
-	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
-		return &recipe.Recipe{
-			Package: recipe.Package{
-				Name:    name,
-				Version: "2.0.0",
-			},
-		}, nil
-	}
+	latest := func(name string) (string, error) { return "2.0.0", nil }
 
-	// Use a nil output to discard any warnings.
 	out := newCmdOutput(outdatedCmd)
-	result := checkOutdated(pkgs, resolver, out)
+	result := checkOutdated(t.Context(), pkgs, latest, out)
 
 	if len(result.Items) != len(pkgs) {
 		t.Fatalf("expected %d items, got %d",

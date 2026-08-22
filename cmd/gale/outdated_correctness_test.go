@@ -5,13 +5,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 
+	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/recipe"
-	"github.com/kelp/gale/internal/registry"
 )
 
 // TestSummarizeOutdatedExitsNonZeroWhenAllSkipped pins
@@ -70,65 +71,53 @@ func TestSummarizeOutdatedPartialSkipExitsNonZero(t *testing.T) {
 	}
 }
 
-// TestCheckOutdatedStopsAfterFirstTransportError pins
-// audit/readonly/network-perf/0003: when the first resolver
-// call fails with a transport-level error, we stop probing
-// the remaining packages and report them all as skipped.
-// Serial order is sorted names, so the only call is "a".
-func TestCheckOutdatedStopsAfterFirstTransportError(t *testing.T) {
-	var (
-		mu    sync.Mutex
-		calls []string
-	)
-	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
-		mu.Lock()
-		calls = append(calls, name)
-		mu.Unlock()
-		// Simulate connection refused on every call.
-		return nil, errors.New(
-			"fetch recipe: connection refused",
-		)
+// TestOutdatedUnreachableIndexFailsRun pins §15.16: index fetch
+// errors are errors. outdated resolves through the index client
+// with no cache behind it, so an unreachable index must fail the
+// run instead of serving a stale answer or silently passing.
+func TestOutdatedUnreachableIndexFailsRun(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	proj := home
+	if err := os.WriteFile(filepath.Join(proj, "gale.toml"),
+		[]byte("[packages]\njust = \"1.56.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
+	t.Chdir(proj)
 
-	pkgs := map[string]string{
-		"a": "1.0", "b": "1.0", "c": "1.0", "d": "1.0",
-	}
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(pkgs, resolver, out)
 
-	if len(calls) != 1 || calls[0] != "a" {
-		t.Errorf("resolver calls = %v, want [a]", calls)
+	// A directory that is not a git checkout cannot yield an
+	// index HEAD.
+	src := index.Source{Dir: filepath.Join(t.TempDir(), "nope")}
+	err := runOutdated(context.Background(), src, out)
+	if err == nil {
+		t.Fatal("unreachable index produced no error: outdated has " +
+			"no business succeeding without the index")
 	}
-	if result.Skipped != 4 {
-		t.Errorf("Skipped = %d, want 4 (all packages)",
-			result.Skipped)
+	if !strings.Contains(err.Error(), "index") {
+		t.Errorf("err = %v, want it to name the index", err)
 	}
 }
 
-// TestCheckOutdatedContinuesPastPerPackageErrors verifies
-// that a non-transport error (e.g. recipe not found in
-// registry) does not poison the rest of the run. A 404 for
-// one package is per-package; the loop must keep going.
-func TestCheckOutdatedContinuesPastPerPackageErrors(t *testing.T) {
+// TestCheckOutdatedReportsEveryFailure pins the per-package
+// contract: one bad entry does not poison the rest of the run,
+// every failure is recorded, and none is answered from a cache.
+func TestCheckOutdatedReportsEveryFailure(t *testing.T) {
 	var (
 		mu    sync.Mutex
 		calls []string
 	)
-	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
+	latest := func(name string) (string, error) {
 		mu.Lock()
 		calls = append(calls, name)
 		mu.Unlock()
 		if name == "missing" {
-			return nil, fmt.Errorf("fetch recipe missing: HTTP 404")
+			return "", fmt.Errorf("index/j/missing.toml: %w",
+				errors.New("not found"))
 		}
-		// Return a recipe with the same version so it's not
-		// reported as outdated.
-		return &recipe.Recipe{
-			Package: recipe.Package{
-				Name: name, Version: "1.0", Revision: 1,
-			},
-		}, nil
+		return "1.0", nil // same version → not outdated
 	}
 
 	pkgs := map[string]string{
@@ -136,7 +125,7 @@ func TestCheckOutdatedContinuesPastPerPackageErrors(t *testing.T) {
 	}
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(pkgs, resolver, out)
+	result := checkOutdated(context.Background(), pkgs, latest, out)
 
 	if len(calls) != 3 {
 		t.Errorf("expected all 3 packages probed, got %d calls: %v",
@@ -145,45 +134,10 @@ func TestCheckOutdatedContinuesPastPerPackageErrors(t *testing.T) {
 	if result.Skipped != 1 {
 		t.Errorf("Skipped = %d, want 1", result.Skipped)
 	}
-}
-
-// TestIsTransportErrorDetectsCommonShapes pins the heuristic
-// used by checkOutdated to short-circuit the loop. These
-// strings come from net.OpError, the http stdlib timeout
-// message, and the registry offline sentinel.
-func TestIsTransportErrorDetectsCommonShapes(t *testing.T) {
-	// String-matched transport errors (net.OpError, stdlib timeout).
-	transport := []string{
-		"dial tcp 127.0.0.1:1: connect: connection refused",
-		"dial tcp: lookup nope.invalid: no such host",
-		"net/http: request canceled (Client.Timeout exceeded)",
-		"read tcp: i/o timeout",
-		"context deadline exceeded",
-		"context canceled",
-	}
-	for _, s := range transport {
-		if !isTransportError(errors.New(s)) {
-			t.Errorf("expected transport error for: %q", s)
-		}
-	}
-
-	// The offline sentinel must be detected via errors.Is, not
-	// string-matching. Wrap it as cachedGet does (with %w).
-	offlineErr := fmt.Errorf("%w for jq.toml", registry.ErrOfflineNoCache)
-	if !isTransportError(offlineErr) {
-		t.Errorf("expected transport error for wrapped ErrOfflineNoCache: %v",
-			offlineErr)
-	}
-
-	notTransport := []string{
-		"HTTP 404",
-		"HTTP 500",
-		"parsing recipe: bad TOML",
-		"version not found in registry",
-	}
-	for _, s := range notTransport {
-		if isTransportError(errors.New(s)) {
-			t.Errorf("should NOT be transport error: %q", s)
-		}
+	if len(result.Errors) != 1 || !strings.Contains(
+		result.Errors[0].Error(), "missing",
+	) {
+		t.Errorf("Errors = %v, want the missing entry named",
+			result.Errors)
 	}
 }

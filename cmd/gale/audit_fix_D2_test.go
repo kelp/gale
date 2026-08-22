@@ -13,7 +13,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/recipe"
 )
 
 // TestCheckOutdatedGitHashNotReportedAsOutdated is the RED test for
@@ -21,19 +20,11 @@ import (
 // (e.g. "abc1234") as its version. checkOutdated must not report it
 // as outdated just because the hash fails semver validation.
 func TestCheckOutdatedGitHashNotReportedAsOutdated(t *testing.T) {
-	// Resolver returns a semver recipe version ("1.2.3-1").
-	// The installed version is a bare git hash — non-semver.
-	// The invariant: a read-only report command must not flag a
-	// package as outdated solely because of version format mismatch.
-	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
-		return &recipe.Recipe{
-			Package: recipe.Package{
-				Name:     name,
-				Version:  "1.2.3",
-				Revision: 1,
-			},
-		}, nil
-	}
+	// Latest returns a semver version ("1.2.3"). The installed
+	// version is a bare git hash — non-semver. The invariant: a
+	// read-only report command must not flag a package as
+	// outdated solely because of version format mismatch.
+	latest := func(name string) (string, error) { return "1.2.3", nil }
 
 	pkgs := map[string]string{
 		"mypkg": "abc1234", // bare git short hash
@@ -41,7 +32,7 @@ func TestCheckOutdatedGitHashNotReportedAsOutdated(t *testing.T) {
 
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(pkgs, resolver, out)
+	result := checkOutdated(context.Background(), pkgs, latest, out)
 
 	if len(result.Items) != 0 {
 		t.Errorf(
@@ -57,16 +48,8 @@ func TestCheckOutdatedGitHashNotReportedAsOutdated(t *testing.T) {
 // when both installed and latest are the same git hash, the package
 // is not reported as outdated.
 func TestCheckOutdatedGitHashSameAsLatestNotOutdated(t *testing.T) {
-	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
-		// Recipe version is also a git hash (edge case).
-		return &recipe.Recipe{
-			Package: recipe.Package{
-				Name:     name,
-				Version:  "abc1234",
-				Revision: 1,
-			},
-		}, nil
-	}
+	// Latest is also a git hash (edge case).
+	latest := func(name string) (string, error) { return "abc1234", nil }
 
 	pkgs := map[string]string{
 		"mypkg": "abc1234",
@@ -74,7 +57,7 @@ func TestCheckOutdatedGitHashSameAsLatestNotOutdated(t *testing.T) {
 
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(pkgs, resolver, out)
+	result := checkOutdated(context.Background(), pkgs, latest, out)
 
 	if len(result.Items) != 0 {
 		t.Errorf(
@@ -88,15 +71,7 @@ func TestCheckOutdatedGitHashSameAsLatestNotOutdated(t *testing.T) {
 // TestCheckOutdatedSemverStillWorks verifies the normal (semver)
 // case is unaffected by the git-hash guard.
 func TestCheckOutdatedSemverStillWorks(t *testing.T) {
-	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
-		return &recipe.Recipe{
-			Package: recipe.Package{
-				Name:     name,
-				Version:  "2.0.0",
-				Revision: 1,
-			},
-		}, nil
-	}
+	latest := func(name string) (string, error) { return "2.0.0", nil }
 
 	pkgs := map[string]string{
 		"mypkg": "1.0.0-1", // older semver version
@@ -104,7 +79,7 @@ func TestCheckOutdatedSemverStillWorks(t *testing.T) {
 
 	var buf bytes.Buffer
 	out := output.NewWithOptions(&buf, output.Options{})
-	result := checkOutdated(pkgs, resolver, out)
+	result := checkOutdated(context.Background(), pkgs, latest, out)
 
 	if len(result.Items) != 1 {
 		t.Errorf(
