@@ -144,10 +144,14 @@ func TestFinalizeFetchLeftoverBinDoesNotSettle(t *testing.T) {
 	err := finalizeFetch(context.Background(), c, fetchPublish{
 		Lock: lf,
 		Arts: []fetchArt{
-			{Name: "alpha", Version: "1.0",
-				Art: index.Artifact{SHA256: sha, TreeDigest: tree}},
-			{Name: "beta", Version: "1.0",
-				Art: index.Artifact{SHA256: sha, TreeDigest: tree}},
+			{
+				Name: "alpha", Version: "1.0",
+				Art: index.Artifact{SHA256: sha, TreeDigest: tree},
+			},
+			{
+				Name: "beta", Version: "1.0",
+				Art: index.Artifact{SHA256: sha, TreeDigest: tree},
+			},
 		},
 		ToStore: stage,
 	})
