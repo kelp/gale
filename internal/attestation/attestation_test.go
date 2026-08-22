@@ -59,9 +59,9 @@ func TestFetchBundle(t *testing.T) {
 	defer srv.Close()
 
 	t.Setenv("GALE_GITHUB_TOKEN", "token")
-	orig := attestationsEndpoint
-	attestationsEndpoint = srv.URL + "/repos/%s/attestations/%s"
-	defer func() { attestationsEndpoint = orig }()
+	orig := AttestationsEndpoint
+	AttestationsEndpoint = srv.URL + "/repos/%s/attestations/%s"
+	defer func() { AttestationsEndpoint = orig }()
 
 	got, err := FetchBundle("deadbeef", "owner/repo")
 	if err != nil {
@@ -79,9 +79,9 @@ func TestFetchBundleNoAttestations(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	orig := attestationsEndpoint
-	attestationsEndpoint = srv.URL + "/repos/%s/attestations/%s"
-	defer func() { attestationsEndpoint = orig }()
+	orig := AttestationsEndpoint
+	AttestationsEndpoint = srv.URL + "/repos/%s/attestations/%s"
+	defer func() { AttestationsEndpoint = orig }()
 
 	_, err := FetchBundle("deadbeef", "owner/repo")
 	if err == nil {

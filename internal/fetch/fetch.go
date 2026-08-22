@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/lockgraph"
@@ -18,10 +19,15 @@ import (
 	"github.com/kelp/gale/internal/store"
 )
 
-// Fetcher lands one artifact. Tests inject AllowHost and WriteFetch.
+// Fetcher lands one artifact. Tests inject AllowHost, WriteFetch,
+// and VerifyFile.
 type Fetcher struct {
 	AllowHost  func(host string) bool
 	WriteFetch func(dir string, r provenance.FetchRecord) error
+	// VerifyFile overrides attestation verification for tests.
+	// Nil means the production in-process sigstore verifier;
+	// production wiring never sets it.
+	VerifyFile func(filePath, repo string) error
 }
 
 // ToStore fetches art into st at FetchPath(name, version, sha256).
@@ -75,6 +81,12 @@ func (f *Fetcher) materialize(ctx context.Context, staging string, job landJob) 
 	if err := download.VerifySHA256(ctx, archive, job.art.SHA256); err != nil {
 		return err
 	}
+	// §7d: a declared attestation is verified against gale's
+	// identity policy before anything is extracted. There is no
+	// remedy: verification failure refuses the install.
+	if err := f.verifyAttestation(job, archive); err != nil {
+		return err
+	}
 	treeDir := filepath.Join(staging, "tree")
 	if err := os.MkdirAll(treeDir, 0o755); err != nil {
 		return fmt.Errorf("create mapped tree: %w", err)
@@ -93,6 +105,33 @@ func (f *Fetcher) materialize(ctx context.Context, staging string, job landJob) 
 		return err
 	}
 	return f.writeSidecar(job.dest, job.name, job.version, job.art)
+}
+
+// verifyAttestation enforces a declared attestation: the
+// artifact must carry a bundle from the GitHub repo gale's
+// policy names for this package, signed under the GitHub
+// Actions issuer. An unpoliced declaration is refused here too,
+// so a store landing can never bypass resolve-time checks.
+func (f *Fetcher) verifyAttestation(job landJob, archive string) error {
+	if job.art.Attestation == nil {
+		return nil
+	}
+	repo, ok := attestation.PolicyFor(job.name)
+	if !ok {
+		return fmt.Errorf(
+			"index declares an attestation for %s but gale has "+
+				"no identity policy for it", job.name,
+		)
+	}
+	verify := f.VerifyFile
+	if verify == nil {
+		verify = attestation.NewVerifier().VerifyFile
+	}
+	if err := verify(archive, repo); err != nil {
+		return fmt.Errorf("attestation for %s@%s did not verify "+
+			"against %s: %w", job.name, job.version, repo, err)
+	}
+	return nil
 }
 
 func (f *Fetcher) writeSidecar(dest, name, version string, art index.Artifact) error {

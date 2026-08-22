@@ -21,10 +21,10 @@ import (
 // binaries are built and attested.
 const DefaultRepo = "kelp/gale-recipes"
 
-// attestationsEndpoint is the GitHub Attestations API URL
+// AttestationsEndpoint is the GitHub Attestations API URL
 // format string. It is package-level so tests can point it
 // at a local HTTP server.
-var attestationsEndpoint = "https://api.github.com/repos/%s/attestations/%s"
+var AttestationsEndpoint = "https://api.github.com/repos/%s/attestations/%s"
 
 // Verifier checks Sigstore attestations. The production
 // implementation is *SigstoreVerifier (sigstore.go), which
@@ -51,7 +51,7 @@ type Verifier interface {
 // a Bearer token to avoid unauthenticated rate limits.
 func FetchBundle(digest, repo string) ([]byte, error) {
 	subject := "sha256:" + digest
-	u := fmt.Sprintf(attestationsEndpoint, repo, subject)
+	u := fmt.Sprintf(AttestationsEndpoint, repo, subject)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
