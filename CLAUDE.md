@@ -184,9 +184,14 @@ commands, including `gale env`, do not register.
 - gosec G306 flags `os.WriteFile` with 0644. Use
   `//nolint:gosec` for world-readable files.
 - `internal/attestation/` verifies in-process via
-  sigstore-go — no external tool. A non-nil `Verifier`
-  always verifies and fails closed; nil is a test-only
-  seam that production wiring never passes.
+  sigstore-go — no external tool. §7d wiring: the identity
+  policy lives in gale (`attestation.PolicyFor`; `gale`
+  itself is a required declaration). A declared attestation
+  is verified before extraction on every fetch, the v2 lock
+  records issuer/SAN/repo, updates refuse to drop one
+  without `--allow-attestation-drop`, and `verify`/doctor
+  re-fetch and check it. Nil verifier fields are test-only
+  seams that production wiring never sets.
   `GALE_SIGSTORE_TRUSTED_ROOT` overrides the trusted
   root with a local file, and `GALE_SIGSTORE_TEST_NO_SCT`
   drops the SCT requirement but only takes effect
