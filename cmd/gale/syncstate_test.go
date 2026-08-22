@@ -15,6 +15,8 @@ package main
 // every `cd` rebuild.
 
 import (
+	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -22,6 +24,9 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/index"
+	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/store"
 )
 
 // stampTime is the fixed instant every stamp in this file is recorded
@@ -98,6 +103,67 @@ func TestSyncStateRecordsIncompleteWhenPackagesFailed(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("sync state missing %q, got:\n%s", want, got)
 		}
+	}
+}
+
+// The live fetch path must record WHICH package failed, not only
+// that something did: the within-interval warning names the
+// packages so the user can act without running anything first.
+func TestSyncStampNamesFailedPackage(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	proj := t.TempDir()
+	galeDir := filepath.Join(proj, ".gale")
+	if err := os.WriteFile(filepath.Join(proj, "gale.toml"),
+		[]byte("[packages]\njust = \"1.56.0\"\nfd = \"10.2.0\"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	plat := currentPlatform()
+	lf := &lockfile.V2{
+		Version: lockfile.SchemaV2,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"fd@10.2.0", "just@1.56.0"}},
+		},
+		Packages: map[string]lockfile.V2Package{},
+	}
+	for _, root := range []string{"fd@10.2.0", "just@1.56.0"} {
+		lf.Packages[root] = lockfile.V2Package{
+			Artifacts: map[string]lockfile.V2Artifact{
+				plat: {SHA256: strings.Repeat("ab", 32), TreeDigest: "sha256:" + strings.Repeat("cd", 32)},
+			},
+		}
+	}
+	lp, err := lockfilePath(filepath.Join(proj, "gale.toml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lockfile.WriteV2(lp, lf); err != nil {
+		t.Fatal(err)
+	}
+
+	prevHook := installToStore
+	installToStore = func(
+		ctx context.Context, st *store.Store, name, version string, a index.Artifact,
+	) (string, error) {
+		if name == "fd" {
+			return "", fmt.Errorf("extract exploded")
+		}
+		return stageTestFetch(ctx, st, name, version, a)
+	}
+	t.Cleanup(func() { installToStore = prevHook })
+
+	err = runSync(syncRun{ProjectDir: proj})
+	if err == nil || !strings.Contains(err.Error(), "fd") {
+		t.Fatalf("err = %v, want fd staging failure", err)
+	}
+	data, err := os.ReadFile(filepath.Join(galeDir, syncStateFile))
+	if err != nil {
+		t.Fatalf("reading sync state: %v", err)
+	}
+	if !strings.Contains(string(data), "fd@10.2.0") {
+		t.Errorf("sync state does not name the failed package:\n%s", data)
 	}
 }
 

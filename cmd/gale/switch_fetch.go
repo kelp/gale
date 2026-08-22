@@ -188,6 +188,24 @@ func v2ToIndexArt(a lockfile.V2Artifact) index.Artifact {
 	return out
 }
 
+// stagingErr marks a landing failure with the artifact it
+// belongs to, so a sync can record which package failed in
+// sync-state.toml instead of reporting an anonymous break.
+type stagingErr struct {
+	name, version string
+	err           error
+}
+
+func (e *stagingErr) Error() string {
+	return e.name + "@" + e.version + ": " + e.err.Error()
+}
+
+func (e *stagingErr) Unwrap() error { return e.err }
+
+func stageErr(a fetchArt, err error) *stagingErr {
+	return &stagingErr{name: a.Name, version: a.Version, err: err}
+}
+
 func landFetchArt(
 	ctx context.Context, st *store.Store, a fetchArt,
 	toStore func(context.Context, *store.Store, string, string, index.Artifact) (string, error),
@@ -197,11 +215,11 @@ func landFetchArt(
 	}
 	dest, err := st.FetchPath(a.Name, a.Version, a.Art.SHA256)
 	if err != nil {
-		return err
+		return stageErr(a, err)
 	}
 	ok, err := st.FetchExists(a.Name, a.Version, a.Art.SHA256)
 	if err != nil {
-		return err
+		return stageErr(a, err)
 	}
 	if ok {
 		// Occupied dir + different tree digest = refuse; same
@@ -210,11 +228,13 @@ func landFetchArt(
 		// staged, it never waives admission.
 		got, derr := provenance.DigestTree(ctx, dest)
 		if derr != nil {
-			return fmt.Errorf("%w: %s: %w", errSwitchOccupied, dest, derr)
+			return stageErr(a, fmt.Errorf(
+				"%w: %s: %w", errSwitchOccupied, dest, derr))
 		}
 		if got != a.Art.TreeDigest {
-			return fmt.Errorf("%w: %s tree digest is %s, want %s",
-				errSwitchOccupied, dest, got, a.Art.TreeDigest)
+			return stageErr(a, fmt.Errorf(
+				"%w: %s tree digest is %s, want %s",
+				errSwitchOccupied, dest, got, a.Art.TreeDigest))
 		}
 		return nil
 	}
@@ -223,7 +243,7 @@ func landFetchArt(
 		fn = liveToStore()
 	}
 	if _, err := fn(ctx, st, a.Name, a.Version, a.Art); err != nil {
-		return fmt.Errorf("staging store: %w", err)
+		return stageErr(a, fmt.Errorf("staging store: %w", err))
 	}
 	return nil
 }
