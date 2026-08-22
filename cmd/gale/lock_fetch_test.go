@@ -286,8 +286,7 @@ func TestRunLockLiveResolvesOneSession(t *testing.T) {
 // requires, not just that an attestation exists.
 func TestRunLockFetchRecordsAttestationIdentity(t *testing.T) {
 	fx := newLockFetchFix(t)
-	fx.h.files["/"+lockFetchPinA+"/index/g/gale.toml"] =
-		lockIndexTOML("gale", "1.0.0", true)
+	fx.h.files["/"+lockFetchPinA+"/index/g/gale.toml"] = lockIndexTOML("gale", "1.0.0", true)
 	if err := runLockFetch(context.Background(), fx.c,
 		fx.req("gale@1.0.0")); err != nil {
 		t.Fatalf("runLockFetch: %v", err)
@@ -320,8 +319,7 @@ func TestRunLockFetchRecordsAttestationIdentity(t *testing.T) {
 // refusal at lock time — never an empty record.
 func TestRunLockFetchRefusesUnpolicedAttestation(t *testing.T) {
 	fx := newLockFetchFix(t)
-	fx.h.files["/"+lockFetchPinA+"/index/o/other.toml"] =
-		lockIndexTOML("other", "1.0.0", true)
+	fx.h.files["/"+lockFetchPinA+"/index/o/other.toml"] = lockIndexTOML("other", "1.0.0", true)
 	if err := runLockFetch(context.Background(), fx.c,
 		fx.req("other@1.0.0")); err == nil {
 		t.Fatal("locked an attested package with no identity policy")

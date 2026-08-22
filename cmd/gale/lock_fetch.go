@@ -126,7 +126,8 @@ func v2ArtifactFromIndex(
 			return lockfile.V2Artifact{}, fmt.Errorf(
 				"index declares an attestation for %s but gale has "+
 					"no identity policy for it; refusing to lock "+
-					"what cannot be verified", name)
+					"what cannot be verified", name,
+			)
 		}
 		art.Attestation = &lockfile.V2Attestation{
 			Issuer: attestation.GitHubIssuer,

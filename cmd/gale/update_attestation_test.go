@@ -9,6 +9,7 @@ import (
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/lockfile"
 )
+
 // §7d: the index cannot switch attestation off. An update that
 // drops the attestation a locked package carried is a refusal;
 // --allow-attestation-drop is the explicit escape, and it warns.
@@ -46,10 +47,8 @@ func attestDropFixture(t *testing.T) *lockFetchFix {
 	// Locked at 1.56.0 with an attestation; the newer 9.9.9 block
 	// drops it. "gale" is the one package with an identity policy,
 	// so the initial lock records a full identity.
-	fx.h.files["/"+lockFetchPinA+"/index/g/gale.toml"] =
-		attestGaleDoc("1.56.0", true)
-	fx.h.files["/"+lockFetchPinB+"/index/g/gale.toml"] =
-		attestGaleDoc("9.9.9", false)
+	fx.h.files["/"+lockFetchPinA+"/index/g/gale.toml"] = attestGaleDoc("1.56.0", true)
+	fx.h.files["/"+lockFetchPinB+"/index/g/gale.toml"] = attestGaleDoc("9.9.9", false)
 	if err := os.WriteFile(fx.c.GalePath,
 		[]byte("[packages]\ngale = \"1.56.0\"\n"), 0o644); err != nil {
 		t.Fatal(err)
