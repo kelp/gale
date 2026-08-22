@@ -112,9 +112,9 @@ type Installer struct {
 	// is called inside the store-gen lock immediately before a
 	// staged artifact supersedes an existing directory, with the
 	// artifact actually about to be committed. A non-nil error
-	// aborts with everything as it was. nil skips the guard, and
-	// also skips superseding, which is every caller that is not
-	// replacing bytes on purpose.
+	// aborts with everything as it was. nil refuses an occupied
+	// dest (ErrReplaceUnwired): that is every caller that is not
+	// replacing bytes on purpose (gh#211).
 	ReplaceGuard func(rep Replacement) error
 }
 
