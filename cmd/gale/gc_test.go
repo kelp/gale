@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -10,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kelp/gale/internal/build"
-	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/recipe"
@@ -44,7 +43,7 @@ func TestCollectReferencedPackages(t *testing.T) {
 	// should fall back to the raw config keys so unresolved
 	// references still register.
 	s := store.NewStore(t.TempDir())
-	ref, err := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, projCfg, s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -78,7 +77,7 @@ func TestCollectReferencedPackagesNoProject(t *testing.T) {
 	}
 
 	s := store.NewStore(t.TempDir())
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -116,7 +115,7 @@ func TestCollectReferencedPackagesResolvesBareToCanonical(t *testing.T) {
 	}
 
 	s := store.NewStore(storeRoot)
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -216,32 +215,32 @@ func TestRemoveUnreferencedVersionsNoneToRemove(t *testing.T) {
 // collectReferencedPackagesWithResolver resolves each config
 // entry through the store, so bare/canonical comparisons
 // always line up.
-func TestGCKeepsCanonicalForBareRef(t *testing.T) {
-	storeRoot := t.TempDir()
-	for _, ver := range []string{"1.8.1-2", "1.7.1-1"} {
+func runBareJqGC(t *testing.T, versions []string) (storeRoot string, n int) {
+	t.Helper()
+	storeRoot = t.TempDir()
+	for _, ver := range versions {
 		dir := filepath.Join(storeRoot, "jq", ver, "bin")
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-
 	globalDir := t.TempDir()
-	globalCfg := filepath.Join(globalDir, "gale.toml")
-	if err := os.WriteFile(globalCfg,
-		[]byte("[packages]\njq = \"1.8.1\"\n"),
-		0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(globalDir, "gale.toml"),
+		[]byte("[packages]\njq = \"1.8.1\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
-
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
-	n, _ := removeUnreferencedVersions(s, ref, false, out)
+	n, _ = removeUnreferencedVersions(s, ref, false, out)
+	return storeRoot, n
+}
 
+func TestGCKeepsCanonicalForBareRef(t *testing.T) {
+	storeRoot, n := runBareJqGC(t, []string{"1.8.1-2", "1.7.1-1"})
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
 	}
@@ -265,30 +264,7 @@ func TestGCKeepsCanonicalForBareRef(t *testing.T) {
 // bare version to). Regression fix for the farm-drift loop
 // where inactive revisions lingered forever.
 func TestGCReapsOldRevisionsWhenConfigIsBare(t *testing.T) {
-	storeRoot := t.TempDir()
-	for _, ver := range []string{"1.8.1-2", "1.8.1-3"} {
-		dir := filepath.Join(storeRoot, "jq", ver, "bin")
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	globalDir := t.TempDir()
-	globalCfg := filepath.Join(globalDir, "gale.toml")
-	if err := os.WriteFile(globalCfg,
-		[]byte("[packages]\njq = \"1.8.1\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	s := store.NewStore(storeRoot)
-	out := output.New(os.Stderr, false)
-
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
-	if err != nil {
-		t.Fatalf("collecting references: %v", err)
-	}
-	n, _ := removeUnreferencedVersions(s, ref, false, out)
+	storeRoot, n := runBareJqGC(t, []string{"1.8.1-2", "1.8.1-3"})
 	if n != 1 {
 		t.Errorf("want 1 removed, got %d", n)
 	}
@@ -388,7 +364,7 @@ func TestGCKeepsExplicitlyPinnedRevision(t *testing.T) {
 	s := store.NewStore(storeRoot)
 	out := output.New(os.Stderr, false)
 
-	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil, nil)
+	ref, err := collectReferencedPackagesWithResolver(globalDir, "", s, nil)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -430,10 +406,10 @@ func TestGCShortMentionsGenerations(t *testing.T) {
 }
 
 // TestCleanGenerationsRemovesOldDirs verifies that gc
-// removes generation directories other than the current
-// one. We set up a fake gale dir with gen/1, gen/2,
-// gen/3 and current -> gen/3/bin, then verify only
-// gen/3 survives.
+// keeps the current generation plus one previous
+// (keep=2) and removes older ones. We set up a fake
+// gale dir with gen/1, gen/2, gen/3 and current ->
+// gen/3, then verify gen/1 is gone and gen/2+gen/3 stay.
 func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := filepath.Join(galeDir, "pkg")
@@ -462,8 +438,8 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 
 	// Call cleanOldGenerations directly.
 	removed := cleanOldGenerations(galeDir, storeRoot, true)
-	if removed != 2 {
-		t.Errorf("dry-run: want 2 flagged, got %d", removed)
+	if removed != 1 {
+		t.Errorf("dry-run: want 1 flagged, got %d", removed)
 	}
 	// All dirs still exist.
 	for _, n := range []string{"1", "2", "3"} {
@@ -477,22 +453,64 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 	// Now run for real.
 	dryRun = false
 	removed = cleanOldGenerations(galeDir, storeRoot, false)
-	if removed != 2 {
-		t.Errorf("want 2 removed, got %d", removed)
+	if removed != 1 {
+		t.Errorf("want 1 removed, got %d", removed)
 	}
 
-	// gen/3 must survive, gen/1 and gen/2 must be gone.
-	if _, err := os.Stat(
-		filepath.Join(genRoot, "3"),
-	); err != nil {
-		t.Error("gen/3 should still exist")
-	}
-	for _, n := range []string{"1", "2"} {
+	// keep=2: gen/2 and gen/3 survive, gen/1 is gone.
+	for _, n := range []string{"2", "3"} {
 		if _, err := os.Stat(
 			filepath.Join(genRoot, n),
-		); !os.IsNotExist(err) {
-			t.Errorf("gen/%s should have been removed", n)
+		); err != nil {
+			t.Errorf("gen/%s should still exist", n)
 		}
+	}
+	if _, err := os.Stat(
+		filepath.Join(genRoot, "1"),
+	); !os.IsNotExist(err) {
+		t.Errorf("gen/1 should have been removed")
+	}
+}
+
+// TestGCIgnoresConfigKeep pins that leftover
+// [generation] keep in config.toml cannot widen or
+// disable gale gc retention.
+func TestGCIgnoresConfigKeep(t *testing.T) {
+	for _, keep := range []string{"-1", "10"} {
+		t.Run("keep="+keep, func(t *testing.T) {
+			galeDir, _ := setupGCHome(t)
+			home := os.Getenv("HOME")
+			if err := os.WriteFile(
+				filepath.Join(home, ".gale", "config.toml"),
+				[]byte("[generation]\nkeep = "+keep+"\n"),
+				0o644,
+			); err != nil {
+				t.Fatal(err)
+			}
+			genRoot := filepath.Join(galeDir, "gen")
+			for _, n := range []string{"1", "2", "3"} {
+				if err := os.MkdirAll(
+					filepath.Join(genRoot, n, "bin"), 0o755,
+				); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := os.Symlink(
+				filepath.Join("gen", "3"),
+				filepath.Join(galeDir, "current"),
+			); err != nil {
+				t.Fatal(err)
+			}
+			if n := cleanOldGenerations(galeDir, filepath.Join(galeDir, "pkg"), false); n != 1 {
+				t.Fatalf("removed = %d, want 1", n)
+			}
+			if _, err := os.Stat(filepath.Join(genRoot, "1")); !os.IsNotExist(err) {
+				t.Errorf("keep = %s must not disable prune; gen/1 still exists", keep)
+			}
+			if _, err := os.Stat(filepath.Join(genRoot, "2")); err != nil {
+				t.Errorf("keep = %s must not change keep-2; gen/2 gone: %v", keep, err)
+			}
+		})
 	}
 }
 
@@ -501,20 +519,7 @@ func TestCleanGenerationsRemovesOldDirs(t *testing.T) {
 // for package versions and generation directories
 // rather than conflating them into a single counter.
 func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
-	t.Setenv("HOME", t.TempDir()) // isolate ~/.gale (gh#214)
-
-	// Create a project dir with an empty config (no
-	// referenced packages) and a store with one
-	// unreferenced package plus old generations.
-	projDir := t.TempDir()
-	configPath := filepath.Join(projDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Set up the store with an unreferenced package.
-	storeRoot := filepath.Join(projDir, "store")
+	galeDir, storeRoot := setupGCHome(t)
 	pkgDir := filepath.Join(
 		storeRoot, "oldpkg", "0.1", "bin",
 	)
@@ -522,23 +527,18 @@ func TestGCSummaryDistinguishesVersionsAndGenerations(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Set up generations: gen/1 (old), gen/2 (current).
-	galeDir := filepath.Join(projDir, ".gale")
-	for _, n := range []string{"1", "2"} {
+	for _, n := range []string{"1", "2", "3"} {
 		d := filepath.Join(galeDir, "gen", n, "bin")
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := os.Symlink(
-		filepath.Join("gen", "2"),
+		filepath.Join("gen", "3"),
 		filepath.Join(galeDir, "current"),
 	); err != nil {
 		t.Fatal(err)
 	}
-
-	// Run gc in dry-run mode and capture stderr.
-	chdirTo(t, projDir)
 
 	dryRun = true
 	t.Cleanup(func() { dryRun = false })
@@ -587,7 +587,7 @@ func makeTestRecipe(name, version string, revision int,
 func recipeResolverFromMap(
 	m map[string]*recipe.Recipe,
 ) installer.RecipeResolver {
-	return func(name string) (*recipe.Recipe, error) {
+	return func(_ context.Context, name string) (*recipe.Recipe, error) {
 		r, ok := m[name]
 		if !ok {
 			return nil, fmt.Errorf("no recipe for %s", name)
@@ -635,7 +635,7 @@ func TestCollectReferencedPackagesIncludesRuntimeDeps(t *testing.T) {
 	})
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, nil,
+		globalDir, "", s, resolver,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -692,7 +692,7 @@ func TestCollectReferencedPackagesRuntimeDepsTransitive(t *testing.T) {
 	})
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, resolver, nil,
+		globalDir, "", s, resolver,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -738,7 +738,7 @@ func TestCollectReferencedPackagesNilResolverFallsBackToConfig(t *testing.T) {
 	s := store.NewStore(storeRoot)
 
 	ref, err := collectReferencedPackagesWithResolver(
-		globalDir, "", s, nil, nil,
+		globalDir, "", s, nil,
 	)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
@@ -845,18 +845,26 @@ func TestRemoveUnreferencedVersionsReturnsFailureCount(t *testing.T) {
 	}
 }
 
+// registeredProject is the string fields for
+// makeRegisteredProject after t.
+type registeredProject struct {
+	storeRoot  string
+	configToml string
+	pkg        string
+	ver        string
+	binName    string
+}
+
 // makeRegisteredProject creates a project dir with a gale.toml
 // and an active generation (gen/1) whose bin/<binName> symlink
 // points into storeRoot/<pkg>/<ver>/bin/<binName>. Returns the
 // project path. Helper for the gh#115 registry retention tests.
-func makeRegisteredProject(
-	t *testing.T, storeRoot, configToml, pkg, ver, binName string,
-) string {
+func makeRegisteredProject(t *testing.T, in registeredProject) string {
 	t.Helper()
 	proj := t.TempDir()
 	if err := os.WriteFile(
 		filepath.Join(proj, "gale.toml"),
-		[]byte(configToml), 0o644,
+		[]byte(in.configToml), 0o644,
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -865,8 +873,8 @@ func makeRegisteredProject(
 		t.Fatal(err)
 	}
 	if err := os.Symlink(
-		filepath.Join(storeRoot, pkg, ver, "bin", binName),
-		filepath.Join(binDir, binName),
+		filepath.Join(in.storeRoot, in.pkg, in.ver, "bin", in.binName),
+		filepath.Join(binDir, in.binName),
 	); err != nil {
 		t.Fatal(err)
 	}
@@ -900,10 +908,13 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 	}
 
 	globalDir := t.TempDir()
-	otherProj := makeRegisteredProject(
-		t, storeRoot, "[packages]\njq = \"1.7\"\n",
-		"jq", "1.6", "jq",
-	)
+	otherProj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.6",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(globalDir, "projects"),
 		[]byte(otherProj+"\n"), 0o644,
@@ -911,10 +922,7 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := store.NewStore(storeRoot)
-	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil,
-	)
+	ref, err := collectKeptRetentionKeys(globalDir, storeRoot)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
@@ -923,17 +931,12 @@ func TestGCRetentionIncludesRegisteredProjects(t *testing.T) {
 		t.Error("jq@1.6 (linked by registered project's active " +
 			"generation) must be retained")
 	}
-	if !ref["jq@1.7"] {
-		t.Error("jq@1.7 (pinned by registered project's config) " +
-			"must be retained")
+	if ref["jq@1.7"] {
+		t.Error("jq@1.7 is only a config pin and must not be retained")
 	}
 	if ref["fd@9.0"] {
 		t.Error("fd@9.0 is unreferenced everywhere and must " +
 			"not be retained")
-	}
-	if len(retained) != 1 || retained[0] != otherProj {
-		t.Errorf("retained projects: want [%s], got %v",
-			otherProj, retained)
 	}
 }
 
@@ -951,19 +954,12 @@ func TestGCRetentionSkipsVanishedRegisteredProjects(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	s := store.NewStore(storeRoot)
-	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil,
-	)
+	ref, err := collectKeptRetentionKeys(globalDir, storeRoot)
 	if err != nil {
 		t.Fatalf("collecting references: %v", err)
 	}
 	if len(ref) != 0 {
 		t.Errorf("vanished project must add no refs: %v", ref)
-	}
-	if len(retained) != 0 {
-		t.Errorf("vanished project must not be listed as "+
-			"contributing: %v", retained)
 	}
 }
 
@@ -988,10 +984,13 @@ func TestGCDryRunListsContributingProjects(t *testing.T) {
 		}
 	}
 
-	otherProj := makeRegisteredProject(
-		t, storeRoot, "[packages]\njq = \"1.7\"\n",
-		"jq", "1.7", "jq",
-	)
+	otherProj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.7",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(home, ".gale", "projects"),
 		[]byte(otherProj+"\n"), 0o644,
@@ -1108,10 +1107,13 @@ func TestGCRealRunPreservesRegisteredProjectStoreDirs(t *testing.T) {
 		}
 	}
 
-	otherProj := makeRegisteredProject(
-		t, storeRoot, "[packages]\njq = \"1.7\"\n",
-		"jq", "1.7", "jq",
-	)
+	otherProj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.7",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(home, ".gale", "projects"),
 		[]byte(otherProj+"\n"), 0o644,
@@ -1150,16 +1152,13 @@ func TestGCRealRunPreservesRegisteredProjectStoreDirs(t *testing.T) {
 	}
 }
 
-// TestGCRealRunPreservesToolVersionsOnlyProjectPins pins the
-// .tool-versions side of registered-project pin retention: a
-// registered project that has NO gale.toml — it lives only via
-// .tool-versions — must still contribute its pins to gc's
-// retention set. The project pins jq 1.7 but its active
-// generation links jq 1.6 (pin edited, sync not yet run), so
-// only pin retention can keep jq@1.7 alive. gale.toml projects
-// get this via mergeConfigAllHosts; .tool-versions projects must
-// not be second-class. fd@9.0 is the unreferenced control.
-func TestGCRealRunPreservesToolVersionsOnlyProjectPins(t *testing.T) {
+// TestGCRealRunDropsToolVersionsOnlyProjectPins pins the
+// drop: a registered path with NO gale.toml is vanished.
+// Its .tool-versions pin (jq 1.7) and its leftover
+// generation link (jq 1.6) are not retention sources.
+// fd@9.0 is the unreferenced control that proves the
+// sweep ran.
+func TestGCRealRunDropsToolVersionsOnlyProjectPins(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("GALE_OFFLINE", "1")
@@ -1217,15 +1216,16 @@ func TestGCRealRunPreservesToolVersionsOnlyProjectPins(t *testing.T) {
 
 	if _, err := os.Stat(
 		filepath.Join(storeRoot, "jq", "1.7"),
-	); err != nil {
-		t.Errorf("jq@1.7 is pinned by a registered project's "+
-			".tool-versions and must survive a real gc: %v", err)
+	); !os.IsNotExist(err) {
+		t.Errorf("jq@1.7 is pinned only by .tool-versions and "+
+			"must be removed by a real gc, err=%v", err)
 	}
 	if _, err := os.Stat(
 		filepath.Join(storeRoot, "jq", "1.6"),
-	); err != nil {
-		t.Errorf("jq@1.6 is linked by the registered project's "+
-			"active generation and must survive a real gc: %v", err)
+	); !os.IsNotExist(err) {
+		t.Errorf("jq@1.6 is linked only by a vanished "+
+			".tool-versions-only generation and must be removed "+
+			"by a real gc, err=%v", err)
 	}
 	if _, err := os.Stat(
 		filepath.Join(storeRoot, "fd", "9.0"),
@@ -1326,10 +1326,13 @@ func gcUnreadableProjectFixture(t *testing.T) (string, string) {
 		}
 	}
 
-	proj := makeRegisteredProject(
-		t, storeRoot, "[packages]\njq = \"1.7\"\n",
-		"jq", "1.6", "jq",
-	)
+	proj := makeRegisteredProject(t, registeredProject{
+		storeRoot:  storeRoot,
+		configToml: "[packages]\njq = \"1.7\"\n",
+		pkg:        "jq",
+		ver:        "1.6",
+		binName:    "jq",
+	})
 	if err := os.WriteFile(
 		filepath.Join(home, ".gale", "projects"),
 		[]byte(proj+"\n"), 0o644,
@@ -1424,7 +1427,15 @@ func TestGCRefusesSweepWhenRegisteredProjectConfigUnreadable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("unreadable config is not a retention source: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "jq", "1.6")); err != nil {
+		t.Errorf("gen-linked jq@1.6 must survive: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "fd", "9.0")); !os.IsNotExist(err) {
+		t.Errorf("unreferenced fd must be swept, err=%v", err)
+	}
 }
 
 // TestGCRefusesSweepWhenProjectGenerationUnreadable pins the
@@ -1473,77 +1484,6 @@ func TestGCRefusesSweepWhenProjectGenerationWalkUnreadable(t *testing.T) {
 // The metadata path is a directory, so os.ReadFile returns EISDIR
 // — a non-ENOENT error, which absence must not be confused with:
 // depsmeta.Read reports a missing file as an empty closure.
-func TestGCRefusesSweepWhenDepsMetadataUnreadable(t *testing.T) {
-	storeRoot, _ := gcUnreadableProjectFixture(t)
-
-	// jq@1.7 is pinned by the registered project, so it is in the
-	// retention set whose closure gets expanded.
-	metaPath := filepath.Join(
-		storeRoot, "jq", "1.7", depsmeta.File,
-	)
-	if err := os.Mkdir(metaPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	assertGCRefused(
-		t, gcCmd.RunE(gcCmd, nil),
-		filepath.Join(storeRoot, "jq", "1.7"), storeRoot,
-	)
-}
-
-// TestGCForceSweepsDespiteUnreadableGenerationWalk verifies the
-// gh#210 refusals reuse gh#188's one escape hatch rather than
-// adding a second: --force restores the old lenient behavior for
-// the generation walk too. fd@9.0 is unreferenced everywhere, so
-// its removal proves the sweep ran.
-func TestGCForceSweepsDespiteUnreadableGenerationWalk(t *testing.T) {
-	storeRoot, proj := gcUnreadableProjectFixture(t)
-
-	breakGenerationWalk(t, filepath.Join(proj, ".gale"))
-
-	gcForce = true
-	t.Cleanup(func() { gcForce = false })
-
-	if err := gcCmd.RunE(gcCmd, nil); err != nil {
-		t.Fatalf("gc --force must sweep anyway: %v", err)
-	}
-	if _, err := os.Stat(
-		filepath.Join(storeRoot, "fd", "9.0"),
-	); !os.IsNotExist(err) {
-		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
-			"gc --force (proves the sweep ran), err=%v", err)
-	}
-}
-
-// TestGCForceSweepsDespiteUnreadableProject verifies the escape
-// hatch gh#188 asks for: --force restores the old behavior
-// explicitly, so a user who knows the mount is gone for good can
-// still reclaim space. fd@9.0 is unreferenced everywhere, so its
-// removal proves the sweep ran rather than being skipped.
-func TestGCForceSweepsDespiteUnreadableProject(t *testing.T) {
-	storeRoot, proj := gcUnreadableProjectFixture(t)
-
-	cfgPath := filepath.Join(proj, "gale.toml")
-	if err := os.Remove(cfgPath); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Mkdir(cfgPath, 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	gcForce = true
-	t.Cleanup(func() { gcForce = false })
-
-	if err := gcCmd.RunE(gcCmd, nil); err != nil {
-		t.Fatalf("gc --force must sweep anyway: %v", err)
-	}
-	if _, err := os.Stat(
-		filepath.Join(storeRoot, "fd", "9.0"),
-	); !os.IsNotExist(err) {
-		t.Errorf("fd@9.0 is unreferenced and must be removed by "+
-			"gc --force (proves the sweep ran), err=%v", err)
-	}
-}
 
 // TestGCRetentionToleratesMissingConfigs guards the other half
 // of the gh#188 split: a config that is absent references
@@ -1552,19 +1492,12 @@ func TestGCForceSweepsDespiteUnreadableProject(t *testing.T) {
 // install, where no gale.toml exists yet.
 func TestGCRetentionToleratesMissingConfigs(t *testing.T) {
 	globalDir := t.TempDir() // no gale.toml, no projects registry
-	s := store.NewStore(t.TempDir())
-
-	ref, retained, err := collectGCRetention(
-		globalDir, "", "", s, nil, nil,
-	)
+	ref, err := collectKeptRetentionKeys(globalDir, t.TempDir())
 	if err != nil {
 		t.Fatalf("a missing config must not block the sweep: %v", err)
 	}
 	if len(ref) != 0 {
 		t.Errorf("nothing is installed or pinned: %v", ref)
-	}
-	if len(retained) != 0 {
-		t.Errorf("no project contributed retention: %v", retained)
 	}
 }
 
@@ -1583,10 +1516,13 @@ func TestGCRefusesSweepWhenRegisteredProjectConfigUnparsable(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	assertGCRefused(t, gcCmd.RunE(gcCmd, nil), proj, storeRoot)
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("unparsable config is not a retention source: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(storeRoot, "jq", "1.6")); err != nil {
+		t.Errorf("gen-linked jq@1.6 must survive: %v", err)
+	}
 }
-
-// --- gh#235: gc surfaces an unreachable scratch dir ---
 
 // TestSweepBuildScratchErrorsWhenNoScratchDirAvailable covers the
 // one call site that could not simply propagate: sweepBuildScratch
@@ -1618,9 +1554,9 @@ func TestSweepBuildScratchSweepsFallbackScratchDir(t *testing.T) {
 	storeRoot := t.TempDir()
 	breakGaleDir(t)
 
-	scratchRoot, err := build.TmpDir()
+	scratchRoot, err := store.TmpDir()
 	if err != nil {
-		t.Fatalf("build.TmpDir: %v", err)
+		t.Fatalf("store.TmpDir: %v", err)
 	}
 	stale := filepath.Join(scratchRoot, "gale-build-deadbeef01")
 	if err := os.Mkdir(stale, 0o700); err != nil {

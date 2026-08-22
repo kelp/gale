@@ -3,6 +3,7 @@ package download
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -72,7 +73,7 @@ func TestExtractTarGzAbsoluteSymlinkParentEscape(t *testing.T) {
 
 	// Extraction may legitimately fail; what must never happen is a
 	// write landing outside destDir.
-	_ = ExtractTarGz(archive, destDir)
+	_ = ExtractTarGz(context.Background(), archive, destDir)
 
 	pwned := filepath.Join(outside, "pwned")
 	if _, err := os.Stat(pwned); err == nil {
@@ -104,7 +105,7 @@ func TestExtractTarGzAbsoluteSymlinkOverwriteEscape(t *testing.T) {
 		{hdr: tar.Header{Typeflag: tar.TypeReg, Name: "x", Mode: 0o644}, body: "CLOBBERED"},
 	})
 
-	_ = ExtractTarGz(archive, destDir)
+	_ = ExtractTarGz(context.Background(), archive, destDir)
 
 	got, err := os.ReadFile(secret)
 	if err != nil {
@@ -142,10 +143,10 @@ func TestExtractTarGzAbsoluteSymlinkHardlinkEscape(t *testing.T) {
 		{hdr: tar.Header{Typeflag: tar.TypeLink, Name: "captured", Linkname: "dir/secret"}},
 	})
 
-	_ = ExtractTarGz(archive, destDir)
+	_ = ExtractTarGz(context.Background(), archive, destDir)
 
 	captured := filepath.Join(destDir, "captured")
 	if _, err := os.Lstat(captured); err == nil {
-		t.Fatalf("sandbox escape: out-of-sandbox file hardlinked into store at %s", captured)
+		t.Fatalf("sandbox escape: out-of-sandbox file linked as a hard link into store at %s", captured)
 	}
 }

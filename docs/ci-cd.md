@@ -65,7 +65,7 @@ gale sync
 case $? in
   0) ;;
   3) echo "gale: lock integrity violation" >&2; exit 3 ;;
-  4) gale lock --refresh && gale sync || exit $? ;;
+  4) gale lock && gale sync || exit $? ;;
   *) exit 1 ;;
 esac
 ```

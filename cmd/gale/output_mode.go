@@ -4,7 +4,6 @@ import (
 	"io"
 	"os"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/download"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/timing"
@@ -107,7 +106,6 @@ func newCmdOutput(_ *cobra.Command) *output.Output {
 }
 
 func configureSubsystemOutput(out *output.Output, mode outputMode) {
-	build.SetOutput(out)
 	download.ProgressPrefix = out.StepPrefix()
 	download.SetProgressEnabled(mode.progress)
 	timing.SetOutput(out)

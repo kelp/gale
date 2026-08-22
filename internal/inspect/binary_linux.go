@@ -14,17 +14,17 @@ var binaryMagics = [][4]byte{
 }
 
 // readBinary parses an ELF file and returns its RUNPATH (or
-// RPATH fallback) and NEEDED entries. Returns (nil, nil)
-// for files that aren't ELF.
+// RPATH fallback) and NEEDED entries. Returns
+// (nil, ErrNotBinary) for files that aren't ELF.
 func readBinary(path string) (*binaryRefs, error) {
 	// One open to reject the non-binaries that dominate an install
 	// before elf.Open reads and validates a header for them.
 	if !hasBinaryMagic(path) {
-		return nil, nil //nolint:nilnil // not an ELF; skipped silently
+		return nil, ErrNotBinary
 	}
 	f, err := elf.Open(path)
 	if err != nil {
-		return nil, nil //nolint:nilerr // not ELF
+		return nil, ErrNotBinary
 	}
 	defer f.Close()
 

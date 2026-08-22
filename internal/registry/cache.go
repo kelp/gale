@@ -125,8 +125,11 @@ func defaultCacheDir() (string, error) {
 //     the cache.
 //
 // Non-200/304 responses return an error wrapping the status
-// code; the caller owns HTTP-specific handling like 404-is-not-
-// fatal for the .binaries.toml path (see fetchBinaries).
+// code; the caller owns HTTP-specific handling.
+type cachePaths struct {
+	url, entryDir, bodyPath, etagPath, markerPath string
+}
+
 func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, error) {
 	// No cache configured — plain fetch, unless offline.
 	if r.CacheDir == "" {
@@ -141,28 +144,21 @@ func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, erro
 	}
 
 	entryDir := filepath.Join(r.CacheDir, "registry", cacheKey(url))
-	bodyPath := filepath.Join(entryDir, "body")
-	etagPath := filepath.Join(entryDir, "etag")
-	markerPath := filepath.Join(entryDir, "not_found")
-
+	paths := cachePaths{
+		url:        url,
+		entryDir:   entryDir,
+		bodyPath:   filepath.Join(entryDir, "body"),
+		etagPath:   filepath.Join(entryDir, "etag"),
+		markerPath: filepath.Join(entryDir, "not_found"),
+	}
 	// Lazy prune: if a not_found marker exists but is older than
 	// the TTL, drop it before doing anything else. Best-effort —
 	// a failed remove just means the next branch decides freshness
 	// itself.
-	markerFresh := negativeMarkerFresh(markerPath)
+	markerFresh := negativeMarkerFresh(paths.markerPath)
 
-	// Offline mode: never touch the network. Order of precedence:
-	//   1. positive cache (body) — strongest signal.
-	//   2. fresh negative marker — package is known absent.
-	//   3. otherwise → "no cached entry" error.
 	if r.Offline {
-		if body, err := os.ReadFile(bodyPath); err == nil {
-			return cacheResult{Body: body, Stale: true}, nil
-		}
-		if markerFresh {
-			return cacheResult{}, errHTTP404
-		}
-		return cacheResult{}, fmt.Errorf("%w for %s", ErrOfflineNoCache, url)
+		return r.offlineCachedGet(paths, markerFresh)
 	}
 
 	// Fresh negative cache short-circuits before the wire.
@@ -174,35 +170,62 @@ func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, erro
 	if err != nil {
 		return cacheResult{}, err
 	}
-	// If we have a prior ETag, send it.
-	if etag, err := os.ReadFile(etagPath); err == nil {
+	if etag, err := os.ReadFile(paths.etagPath); err == nil {
 		req.Header.Set("If-None-Match", string(etag))
 	}
 
-	resp, err := httpclient.Default().Do(req)
-	if err != nil {
-		// Stale-on-error: transport-level failure. Serve the
-		// cached body if it exists, then fall back to the
-		// negative marker (any age — better than surfacing the
-		// transport error). Do NOT rewrite the cache.
-		if body, rerr := os.ReadFile(bodyPath); rerr == nil {
-			return cacheResult{Body: body, Stale: true}, nil
-		}
-		if _, rerr := os.Stat(markerPath); rerr == nil {
-			return cacheResult{}, errHTTP404
-		}
+	if err := ctx.Err(); err != nil {
 		return cacheResult{}, err
 	}
+	resp, err := httpclient.Default().Do(req)
+	if err != nil {
+		// Cancel is not a transport blip. A deadline around
+		// sync --if-needed must not become a stale-cache hit.
+		if ctx.Err() != nil {
+			return cacheResult{}, ctx.Err()
+		}
+		return r.staleOnTransportError(err, paths)
+	}
 	defer resp.Body.Close()
+	return r.applyCacheResponse(ctx, resp, paths)
+}
 
+// offlineCachedGet serves cache without touching the network.
+// Order: positive cache, then a fresh negative marker, else
+// ErrOfflineNoCache.
+func (r *Registry) offlineCachedGet(paths cachePaths, markerFresh bool) (cacheResult, error) {
+	if body, err := os.ReadFile(paths.bodyPath); err == nil {
+		return cacheResult{Body: body, Stale: true}, nil
+	}
+	if markerFresh {
+		return cacheResult{}, errHTTP404
+	}
+	return cacheResult{}, fmt.Errorf("%w for %s", ErrOfflineNoCache, paths.url)
+}
+
+func (r *Registry) staleOnTransportError(err error, paths cachePaths) (cacheResult, error) {
+	// Serve the cached body if it exists, then fall back to
+	// the negative marker (any age — better than surfacing
+	// the transport error). Do NOT rewrite the cache.
+	if body, rerr := os.ReadFile(paths.bodyPath); rerr == nil {
+		return cacheResult{Body: body, Stale: true}, nil
+	}
+	if _, rerr := os.Stat(paths.markerPath); rerr == nil {
+		return cacheResult{}, errHTTP404
+	}
+	return cacheResult{}, err
+}
+
+func (r *Registry) applyCacheResponse(
+	ctx context.Context, resp *http.Response, paths cachePaths,
+) (cacheResult, error) {
 	switch resp.StatusCode {
 	case http.StatusNotModified:
-		// Cached body is authoritative — return it verbatim.
-		body, rerr := os.ReadFile(bodyPath)
+		body, rerr := os.ReadFile(paths.bodyPath)
 		if rerr != nil {
 			// Cache disappeared between request and read. Fall
 			// back to a fresh fetch without the conditional.
-			body, perr := plainGet(ctx, url)
+			body, perr := plainGet(ctx, paths.url)
 			return cacheResult{Body: body}, perr
 		}
 		return cacheResult{Body: body}, nil
@@ -211,25 +234,16 @@ func (r *Registry) cachedGet(ctx context.Context, url string) (cacheResult, erro
 		if rerr != nil {
 			return cacheResult{}, rerr
 		}
-		// A 200 supersedes any stale negative marker.
 		if !r.DryRun {
-			_ = os.Remove(markerPath)
-		}
-		// Only persist if the server gave us a validator. ETag is
-		// the only one we use; without it the cache entry could
-		// never be refreshed and would serve stale content.
-		// DryRun suppresses all writes.
-		if !r.DryRun {
+			_ = os.Remove(paths.markerPath)
 			if etag := resp.Header.Get("ETag"); etag != "" {
-				writeCacheEntry(entryDir, body, etag)
+				writeCacheEntry(paths.entryDir, body, etag)
 			}
 		}
 		return cacheResult{Body: body}, nil
 	case http.StatusNotFound:
-		// Record the 404 so future calls within the TTL window
-		// don't re-hit the network. DryRun suppresses the write.
 		if !r.DryRun {
-			writeNegativeMarker(entryDir, markerPath)
+			writeNegativeMarker(paths.entryDir, paths.markerPath)
 		}
 		return cacheResult{}, errHTTP404
 	default:

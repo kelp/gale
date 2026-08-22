@@ -11,8 +11,8 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/depsmeta"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/store"
 )
@@ -31,6 +31,58 @@ func resolveStoreDir(storeRoot, name, version string) string {
 	return store.NewStore(storeRoot).ResolveDir(name, version)
 }
 
+func resolvePkgDir(storeRoot, name, version string, fetch map[string]string) string {
+	if sha := fetch[name]; sha != "" {
+		p, err := store.NewStore(storeRoot).FetchPath(name, version, sha)
+		if err == nil {
+			return p
+		}
+	}
+	return resolveStoreDir(storeRoot, name, version)
+}
+
+type storeRel struct {
+	name, version, ownerRel string
+}
+
+func parseStoreRel(rel string) (storeRel, bool) {
+	parts := strings.Split(rel, string(filepath.Separator))
+	if len(parts) >= 3 && parts[0] == store.FetchNamespace {
+		name := parts[1]
+		version := stripFetchSuffix(parts[2])
+		ownerRel := filepath.Join(parts[0], parts[1], parts[2])
+		if name == "" || version == "" {
+			return storeRel{}, false
+		}
+		return storeRel{name: name, version: version, ownerRel: ownerRel}, true
+	}
+	if len(parts) >= 2 && parts[0] != store.FetchNamespace {
+		return storeRel{
+			name:     parts[0],
+			version:  parts[1],
+			ownerRel: filepath.Join(parts[0], parts[1]),
+		}, true
+	}
+	return storeRel{}, false
+}
+
+func stripFetchSuffix(dir string) string {
+	const suffix = 1 + 12 // hyphen + sha12
+	if len(dir) > suffix && dir[len(dir)-suffix] == '-' {
+		return dir[:len(dir)-suffix]
+	}
+	i := strings.LastIndex(dir, "-")
+	if i <= 0 {
+		return dir
+	}
+	return dir[:i]
+}
+
+func pathExists(p string) bool {
+	info, err := os.Stat(p)
+	return err == nil && info.IsDir()
+}
+
 // carryForwardMissingVersions returns a copy of pkgs where
 // any (name, version) whose store dir is absent has its
 // version replaced with the version that was active in the
@@ -40,6 +92,7 @@ func resolveStoreDir(storeRoot, name, version string) string {
 // install from PATH.
 func carryForwardMissingVersions(
 	pkgs map[string]string, storeRoot, galeDir string, prevGen int,
+	fetch map[string]string,
 ) map[string]string {
 	prevGenDir := filepath.Join(galeDir, "gen", strconv.Itoa(prevGen))
 	prev := genVersions(prevGenDir, storeRoot)
@@ -50,14 +103,17 @@ func carryForwardMissingVersions(
 	out := make(map[string]string, len(pkgs))
 	for name, version := range pkgs {
 		out[name] = version
-		if _, err := os.Stat(resolveStoreDir(storeRoot, name, version)); err == nil {
+		if _, ok := fetch[name]; ok {
+			continue
+		}
+		if _, err := os.Stat(resolvePkgDir(storeRoot, name, version, fetch)); err == nil {
 			continue
 		}
 		prevVer, ok := prev[name]
 		if !ok || prevVer == version {
 			continue
 		}
-		if _, err := os.Stat(resolveStoreDir(storeRoot, name, prevVer)); err != nil {
+		if _, err := os.Stat(resolvePkgDir(storeRoot, name, prevVer, fetch)); err != nil {
 			continue
 		}
 		fmt.Fprintf(os.Stderr,
@@ -109,9 +165,9 @@ func genVersions(genDir, storeRoot string) map[string]string {
 // generation" arrives at retention as "this generation references
 // nothing", and the sweep then deletes what it could not see
 // (gh#210). It is the same split AuthoritativeGenerationDirs draws
-// against this walk, and FarmStoreDirsStrict against FarmStoreDirs —
-// tolerate a partial answer where a partial answer is still useful,
-// never where a decision rests on it.
+// against this walk, and FarmStoreDirsStrict against a best-effort
+// walk — tolerate a partial answer where a partial answer is still
+// useful, never where a decision rests on it.
 func genVersionsStrict(
 	genDir, storeRoot string,
 ) (map[string]string, error) {
@@ -163,16 +219,15 @@ func genVersionsWalk(
 		if rel == "" {
 			return nil // target outside store; not ours
 		}
-		parts := strings.Split(rel, string(filepath.Separator))
-		if len(parts) < 2 {
+		parsed, ok := parseStoreRel(rel)
+		if !ok {
 			return nil
 		}
-		name, version := parts[0], parts[1]
+		name, version, ownerRel := parsed.name, parsed.version, parsed.ownerRel
 		// Skip when the owning store dir is gone (GC'd package):
 		// a dangling link to a removed store dir must not surface.
-		// Stat both store-root spellings — only one need exist.
-		if !storeDirExists(absStore, name, version) &&
-			!storeDirExists(storeRoot, name, version) {
+		if !pathExists(filepath.Join(absStore, ownerRel)) &&
+			!pathExists(filepath.Join(storeRoot, ownerRel)) {
 			return nil
 		}
 		if _, seen := out[name]; !seen {
@@ -203,6 +258,74 @@ func relWithinStore(root, target string) string {
 func storeDirExists(root, name, version string) bool {
 	info, err := os.Stat(filepath.Join(root, name, version))
 	return err == nil && info.IsDir()
+}
+
+// CurrentStoreDirs returns name → absolute store directory
+// the active generation links. A fetch tree and a source
+// ResolveDir that share a version are different directories;
+// activation uses this map so a ResolveDir link cannot
+// satisfy a FetchPath identity.
+func CurrentStoreDirs(galeDir, storeRoot string) (map[string]string, error) {
+	genDir, err := currentGenDir(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	if genDir == "" {
+		return map[string]string{}, nil
+	}
+	return storeDirsWalk(genDir, storeRoot, func(err error) error { return err })
+}
+
+func storeDirsWalk(
+	genDir, storeRoot string,
+	onErr func(err error) error,
+) (map[string]string, error) {
+	absStore, err := filepath.EvalSymlinks(storeRoot)
+	if err != nil {
+		absStore = storeRoot
+	}
+	out := map[string]string{}
+	walkErr := filepath.Walk(genDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return onErr(fmt.Errorf("walking %s: %w", path, err))
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return nil
+		}
+		target, readErr := os.Readlink(path)
+		if readErr != nil {
+			return onErr(fmt.Errorf("reading link %s: %w", path, readErr))
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		rel := relWithinStore(absStore, target)
+		if rel == "" {
+			rel = relWithinStore(storeRoot, target)
+		}
+		if rel == "" {
+			return nil
+		}
+		parsed, ok := parseStoreRel(rel)
+		if !ok {
+			return nil
+		}
+		owner := filepath.Join(storeRoot, parsed.ownerRel)
+		if !pathExists(owner) {
+			owner = filepath.Join(absStore, parsed.ownerRel)
+		}
+		if !pathExists(owner) {
+			return nil
+		}
+		if _, seen := out[parsed.name]; !seen {
+			out[parsed.name] = owner
+		}
+		return nil
+	})
+	if walkErr != nil {
+		return nil, walkErr
+	}
+	return out, nil
 }
 
 // CurrentVersions returns the package name → version map of
@@ -260,8 +383,7 @@ func currentGenDir(galeDir string) (string, error) {
 
 // ActiveStoreDirs resolves each (name, version) in pkgs to
 // its on-disk store dir. Returned in an arbitrary order.
-// Seeds FarmStoreDirs, which Build and `gale doctor` use
-// for the shared dylib farm.
+// Used by FarmStoreDirsStrict and `gale doctor`.
 func ActiveStoreDirs(pkgs map[string]string, storeRoot string) []string {
 	active := make([]string, 0, len(pkgs))
 	for name, version := range pkgs {
@@ -285,37 +407,16 @@ func ActiveVersions(pkgs map[string]string, storeRoot string) map[string]string 
 	return out
 }
 
-// FarmStoreDirs returns the store dirs whose versioned dylibs
-// belong in the shared farm: the resolved dir for every package
-// in pkgs plus the transitive dep closure recorded in each
-// dir's .gale-deps.toml. Runtime deps are farmed at install
-// time but never appear in gale.toml, so rebuilding the farm
-// from the config set alone deletes the entries dependents'
-// rpaths resolve through (gh#43). Dep dirs missing from the
-// store are skipped — the farm can only link what's on disk.
-// Visited dirs are not re-expanded, so dep cycles terminate.
-func FarmStoreDirs(pkgs map[string]string, storeRoot string) []string {
-	dirs, _ := farmStoreDirs(pkgs, storeRoot, func(dir string, err error) error {
-		// Best-effort: an unreadable metadata file must
-		// not fail the whole farm rebuild.
-		fmt.Fprintf(os.Stderr,
-			"farm: read deps metadata in %s: %v\n", dir, err)
-		return nil
-	})
-	return dirs
-}
-
-// FarmStoreDirsStrict is FarmStoreDirs for callers that must not
-// act on a partial answer: an unreadable .gale-deps.toml stops the
-// walk and returns the error instead of warning past it.
+// FarmStoreDirsStrict returns the store dirs reachable from pkgs
+// plus each dir's recorded runtime closure. An unreadable
+// .gale-deps.toml stops the walk and returns the error instead of
+// warning past it.
 //
-// The farm claimant walk needs this. FarmStoreDirs' leniency is
-// correct for a rebuild, which should still repair every link it
-// can read, and wrong for a claim: a claim that quietly omits a
-// dep permits exactly the mutation it existed to refuse. It is the
-// same split the provenance reader draws against depsmeta's
-// leniency — tolerate a partial answer where a partial answer is
-// still useful, never where a decision rests on it.
+// gc uses this: a decision that destroys bytes must not act on a
+// partial answer. It is the same split the provenance reader draws
+// against depsmeta's leniency — tolerate a partial answer where a
+// partial answer is still useful, never where a decision rests on
+// it.
 //
 // Strict about an UNREADABLE record, deliberately not about an
 // ABSENT one. Both walks read through depsmeta.Read, which decodes a
@@ -413,11 +514,11 @@ func farmStoreDirs(
 			// SONAME/ABI identity; the revision floats to what is
 			// actually on disk, matching how top-level generation
 			// entries resolve. Pinning the recorded dep.Revision
-			// exactly dropped a dep from the farm whenever its
-			// installed revision advanced past the revision a
-			// dependent recorded in .gale-deps.toml (gh#172). The
-			// recorded revision still drives staleness elsewhere;
-			// this floats only farm resolution.
+			// exactly dropped a dep whenever its installed
+			// revision advanced past the revision a dependent
+			// recorded in .gale-deps.toml (gh#172). The recorded
+			// revision still drives staleness elsewhere; this
+			// floats only store-dir resolution.
 			depDir := resolveStoreDir(storeRoot, dep.Name, dep.Version)
 			if !seen[depDir] {
 				seen[depDir] = true
@@ -426,55 +527,6 @@ func farmStoreDirs(
 		}
 	}
 	return out, nil
-}
-
-// beforeFarmPublish runs between the current-symlink swap and the
-// publication of the staged farm image. nil in production; a test
-// sets it to observe the one interval the split opens, which no
-// caller can otherwise reach.
-var beforeFarmPublish func()
-
-// stageFarm builds the farm image a rebuild boundary will publish,
-// which is every part of the farm work that can fail. Its error says
-// the generation was not activated, because at every call site
-// nothing has moved yet.
-func stageFarm(dirs []string, storeRoot string, genNum int) (*farm.Staged, error) {
-	staged, err := farm.Stage(dirs, farm.DirFromStoreRoot(storeRoot))
-	if err != nil {
-		return nil, fmt.Errorf(
-			"the shared library farm for generation %d could not be "+
-				"built, so it was not activated: %w", genNum, err,
-		)
-	}
-	return staged, nil
-}
-
-// publishFarm makes the staged image live, after the swap that
-// activated genNum.
-//
-// The swap is the activation commit point, so a failure here does
-// not roll the generation back: undoing a completed swap would be a
-// second fallible transaction. It is not swallowed either. The farm
-// is what binaries resolve their dylibs through, so an incomplete
-// one is a real failure the caller must see, and a line on stderr
-// inside a direnv hook is invisible (design revision 6, section 6).
-//
-// What makes that acceptable is that publication is N renames
-// within one directory — the same class as the swap it follows —
-// while everything that realistically fails already ran in
-// stageFarm.
-func publishFarm(staged *farm.Staged, genNum int) error {
-	if beforeFarmPublish != nil {
-		beforeFarmPublish()
-	}
-	if err := staged.Publish(); err != nil {
-		return fmt.Errorf(
-			"generation %d is active, but the shared library farm is "+
-				"incomplete; run gale sync again to repair it: %w",
-			genNum, err,
-		)
-	}
-	return nil
 }
 
 //go:embed gale-readme.md
@@ -492,8 +544,8 @@ var galeReadme []byte
 // generations are retained for history and rollback.
 //
 // Two packages shipping the same bin/ basename are refused, before
-// the current symlink moves, unless Options.BinOverrides names a
-// winner (gh#190).
+// the current symlink moves. There is no overlay that names a
+// winner.
 func Build(pkgs map[string]string, galeDir, storeRoot string) error {
 	return BuildWithOptions(pkgs, galeDir, storeRoot, Options{})
 }
@@ -504,11 +556,10 @@ type Options struct {
 	// Validate is design section 6's revalidation callback. See
 	// BuildWithValidate.
 	Validate func() error
-	// BinOverrides resolves executable-name collisions: basename →
-	// the package whose copy goes into the generation. Read from
-	// gale.toml's [bin] table. Without an entry, a contested
-	// basename refuses the build (gh#190).
-	BinOverrides map[string]string
+	// Fetch maps a package name to the artifact SHA256 used
+	// with store.FetchPath. When set, Build links that fetch
+	// tree and never a source ResolveDir for the same name.
+	Fetch map[string]string
 }
 
 // BuildWithOptions is Build with the optional inputs in Options.
@@ -589,7 +640,7 @@ func build(pkgs map[string]string, galeDir, storeRoot string, opts Options) erro
 		// yet (e.g. `gale add` without sync, a fresh clone).
 		if prev > 0 {
 			pkgs = carryForwardMissingVersions(
-				pkgs, storeRoot, galeDir, prev,
+				pkgs, storeRoot, galeDir, prev, opts.Fetch,
 			)
 		}
 
@@ -630,7 +681,7 @@ func build(pkgs map[string]string, galeDir, storeRoot string, opts Options) erro
 		cleanup := func() { os.RemoveAll(genDir) }
 
 		if err := populateGeneration(
-			genDir, pkgs, storeRoot, opts.BinOverrides,
+			genDir, pkgs, storeRoot, opts,
 		); err != nil {
 			cleanup()
 			return err
@@ -649,46 +700,9 @@ func build(pkgs map[string]string, galeDir, storeRoot string, opts Options) erro
 			return err
 		}
 
-		// Run the cross-project farm guard BEFORE the swap: a
-		// refusal must leave the previous generation active and
-		// the farm untouched (design §4). The returned set is
-		// the proposed closure plus every other scope's claim,
-		// so the wipe-and-recreate rebuild below cannot delete
-		// a soname only another scope's binaries resolve.
-		active, err := guardedRebuildDirs(pkgs, galeDir, storeRoot)
-		if err != nil {
-			cleanup()
-			return err
-		}
-
-		// Build the shared-lib farm image from this generation's
-		// packages plus their recorded dep closure (gh#43) and
-		// every other scope's claimed closure. Older revisions may
-		// still be in the store (awaiting `gale gc`), but they
-		// aren't on PATH, aren't claimed, and must not leak into
-		// the farm.
-		//
-		// BEFORE the swap, because this is the fallible half and
-		// the swap is the activation commit point: a failure here
-		// leaves the previous generation active and the farm
-		// exactly as it was (gh#184). Building the whole farm
-		// before the swap instead would commit a farm ahead of its
-		// generation, which is the rollback this code has always
-		// refused to attempt.
-		staged, err := stageFarm(active, storeRoot, next)
-		if err != nil {
-			cleanup()
-			return err
-		}
-		defer staged.Discard()
-
 		// Atomic swap: create a temporary symlink then rename.
 		if err := swapCurrentSymlink(galeDir, next); err != nil {
 			cleanup()
-			return err
-		}
-
-		if err := publishFarm(staged, next); err != nil {
 			return err
 		}
 
@@ -721,25 +735,23 @@ var skipTopLevelDirs = map[string]bool{
 }
 
 // retainedNumbers returns the generation numbers gc must not
-// sweep the store closure of, sorted ascending: the active
-// generation and every generation ABOVE it.
+// sweep the store closure of, sorted ascending: the keep-2
+// window (current + one previous when it exists) and every
+// generation ABOVE current.
 //
 // The branch above current exists only after a rollback, and it
 // is retained history a roll-forward may return to — a number,
 // once allocated, permanently identifies one snapshot (gh#189).
-// cleanOldGenerations already kept those DIRECTORIES through its
-// `n >= curGen` skip; nothing kept the store versions they link,
-// so roll back, gc, roll forward activated dangling PATH entries
-// (gh#247). `gale generations remove N` stays the only way to
-// reclaim that branch (gh#206).
+// cleanOldGenerations deletes the complement of this set; the
+// two stay paired so a directory gc keeps cannot lose the store
+// versions it links (gh#247). A later rebuild allocates above
+// the highest number; keep-2 then prunes history below the new
+// cutoff (gh#206).
 //
-// Nothing below current is retained. Those generations are the
-// ones cleanOldGenerations deletes, and reclaiming a superseded
-// revision right after an update is gc's most common job
-// (gh#137). The set is the exact complement of what
-// cleanOldGenerations removes, which is what makes a hollow
-// generation — a directory gc keeps without the versions it
-// links — impossible by construction.
+// History below the cutoff is not retained. Those generations
+// are the ones cleanOldGenerations deletes, and reclaiming a
+// superseded revision that has fallen out of the window is gc's
+// most common job (gh#137).
 //
 // curGen == 0 (no current symlink) retains everything, matching
 // the `n >= 0` skip that already stopped cleanOldGenerations
@@ -768,9 +780,13 @@ func retainedNumbers(galeDir string) ([]int, error) {
 	if curGen <= 0 {
 		return nums, nil
 	}
+	cutoff := retentionCutoff(curGen, config.DefaultGenerationKeep)
+	if cutoff < 1 {
+		cutoff = 1
+	}
 	var retained []int
 	for _, n := range nums {
-		if n >= curGen {
+		if n >= cutoff {
 			retained = append(retained, n)
 		}
 	}
@@ -787,6 +803,64 @@ func retainedNumbers(galeDir string) ([]int, error) {
 // exactly, not the listing (gh#206 declined to export that).
 func RetainedNumbers(galeDir string) ([]int, error) {
 	return retainedNumbers(galeDir)
+}
+
+// KeptNumbers is current plus at most one lower generation
+// number. Abandoned generations above current after a rollback
+// are not kept. A missing current symlink keeps nothing. The
+// active number is always included so a dangling current
+// reaches KeptStoreDirs as an unreadable generation.
+func KeptNumbers(galeDir string) ([]int, error) {
+	cur, err := Current(galeDir)
+	if err != nil {
+		return nil, fmt.Errorf("read current: %w", err)
+	}
+	if cur <= 0 {
+		return nil, nil
+	}
+	nums, err := genNumbers(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	prev := cur - 1
+	if prev >= 1 && slices.Contains(nums, prev) {
+		return []int{prev, cur}, nil
+	}
+	return []int{cur}, nil
+}
+
+// KeptStoreDirs walks the two kept generations' symlink
+// targets and returns each exact owner path, including
+// fetch/<name>/<version>-<sha12>. An unreadable kept
+// generation is an error naming the number.
+func KeptStoreDirs(galeDir, storeRoot string) ([]string, error) {
+	nums, err := KeptNumbers(galeDir)
+	if err != nil {
+		return nil, err
+	}
+	seen := map[string]struct{}{}
+	var out []string
+	for _, n := range nums {
+		dirs, err := storeDirsWalk(
+			filepath.Join(galeDir, "gen", strconv.Itoa(n)),
+			storeRoot,
+			func(err error) error { return err },
+		)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"reading kept generation %d: %w", n, err,
+			)
+		}
+		for _, dir := range dirs {
+			if _, ok := seen[dir]; ok {
+				continue
+			}
+			seen[dir] = struct{}{}
+			out = append(out, dir)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 // RetainedVersionsStrict returns every package version the
@@ -826,9 +900,7 @@ func RetainedVersionsStrict(
 		)
 		if err != nil {
 			return nil, fmt.Errorf(
-				"reading retained generation %d: %w; discard it "+
-					"with `gale generations remove %d`, or rerun "+
-					"gc with --force", n, err, n,
+				"reading retained generation %d: %w", n, err,
 			)
 		}
 		for name, version := range pkgs {
@@ -838,6 +910,18 @@ func RetainedVersionsStrict(
 		}
 	}
 	return out, nil
+}
+
+// retentionCutoff is the first generation number that stays
+// for retainedNumbers: current minus keep plus one. keep<=0
+// or curGen<=0 yields 0 (retain everything). Auto-gc prune
+// no longer shares this helper — it counts generations
+// positionally (gh#248).
+func retentionCutoff(curGen, keep int) int {
+	if keep <= 0 || curGen <= 0 {
+		return 0
+	}
+	return curGen - keep + 1
 }
 
 // prunableNumbers returns the generation numbers
@@ -861,14 +945,10 @@ func RetainedVersionsStrict(
 // it by name (gh#189, gh#206). It is also where an in-flight
 // gen/curGen+1 from a concurrent Build lives.
 //
-// The split at curGen is the same one retainedNumbers makes, but
-// the two answer different questions and neither implements the
-// other. retainedNumbers is gc's store-closure policy: it is
-// keep-independent, retains {n >= curGen} and nothing below, and
-// injects curGen even when its directory is gone so gc's
-// refuse-to-sweep path fires (gh#247, gh#258). Retention here is
-// a count below current, over the set gc deliberately retains
-// nothing of.
+// The split at curGen matches retainedNumbers and KeptNumbers:
+// nothing above current is pruned here. Those helpers still use
+// a numeric keep-2 window (cur-1 when it exists). This count is
+// only the auto-gc directory prune.
 func prunableNumbers(nums []int, curGen, keep int) []int {
 	if keep <= 0 || curGen <= 0 {
 		return nil
@@ -901,10 +981,10 @@ func prunableNumbers(nums []int, curGen, keep int) []int {
 // caller can report them. keep<=0 or no current symlink is a
 // no-op (returns nil).
 //
-// Intended as an auto-gc hook after Build: callers pass the
-// user-configured retention (default 10) so per-install gen
-// accumulation can't drown the filesystem in inodes (the dev-
-// host incident with ~3M gen/ inodes across 33 untouched gens).
+// Intended as an auto-gc hook after Build: production
+// passes keep 2 so per-install gen accumulation can't
+// drown the filesystem in inodes (the dev-host incident
+// with ~3M gen/ inodes across 33 untouched gens).
 func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 	if keep <= 0 {
 		return nil, nil
@@ -944,10 +1024,10 @@ func PruneOldGenerations(galeDir, storeRoot string, keep int) ([]int, error) {
 // targets are removed once.
 //
 // The verb PruneOldGenerations is not: retention reclaims history
-// below current on a numeric cutoff, and after a rollback the
+// below current by counting generations, and after a rollback the
 // generations ABOVE current are unreachable to it by design — the
 // number permanently identifies that snapshot (gh#189), so they
-// survive until current climbs back past the cutoff. A user who
+// survive until current climbs back past them. A user who
 // abandoned that branch on purpose names it here instead (gh#206).
 // Nothing sweeps it automatically: an unnamed set is exactly what
 // makes a destructive default unsafe.
@@ -1022,15 +1102,15 @@ func Remove(galeDir, storeRoot string, targets []int) ([]int, error) {
 // with a warning (see Build).
 //
 // Two packages shipping the same bin/ basename fail the whole
-// generation, naming both providers, unless binOverrides (gale.toml's
-// [bin] table) names a winner. Sort order used to decide it silently,
+// generation, naming both providers. Leftover [bin] tables do
+// not settle a collision. Sort order used to decide it silently,
 // which put a binary on PATH nobody chose (gh#190). Every collision
 // is collected before the error returns, so one edit fixes them all.
 // Only bin/ is arbitrated: nothing else decides what runs from PATH,
 // and lib/, man/ and share/ have always merged across packages.
 func populateGeneration(
 	genDir string, pkgs map[string]string, storeRoot string,
-	binOverrides map[string]string,
+	opts Options,
 ) error {
 	names := make([]string, 0, len(pkgs))
 	for name := range pkgs {
@@ -1038,10 +1118,10 @@ func populateGeneration(
 	}
 	sort.Strings(names)
 
-	bins := NewBinArbiter(binOverrides)
+	bins := NewBinArbiter()
 	for _, name := range names {
 		version := pkgs[name]
-		pkgDir := resolveStoreDir(storeRoot, name, version)
+		pkgDir := resolvePkgDir(storeRoot, name, version, opts.Fetch)
 		entries, err := os.ReadDir(pkgDir)
 		if err != nil {
 			if errors.Is(err, os.ErrNotExist) {

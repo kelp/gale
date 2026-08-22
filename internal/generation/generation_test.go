@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/kelp/gale/internal/filelock"
+	"github.com/kelp/gale/internal/store"
 )
 
 // helper creates a fake store entry with executables.
@@ -1130,7 +1131,7 @@ func TestPopulateGenerationCreatesSymlinks(t *testing.T) {
 		"fd": "10.4.2",
 	}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, Options{}); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -1176,7 +1177,7 @@ func TestPopulateGenerationFailsOnBinCollision(t *testing.T) {
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0", "gamma": "1.0"}
 
-	err := populateGeneration(genDir, pkgs, storeRoot, nil)
+	err := populateGeneration(genDir, pkgs, storeRoot, Options{})
 	var collErr *BinCollisionError
 	if !errors.As(err, &collErr) {
 		t.Fatalf("error = %v (%T), want *BinCollisionError", err, err)
@@ -1191,18 +1192,20 @@ func TestPopulateGenerationFailsOnBinCollision(t *testing.T) {
 		t.Errorf("collisions = %+v, want %+v", collErr.Collisions, want)
 	}
 	for _, fragment := range []string{
-		"tool", "cut", "alpha", "beta", "gamma", "[bin]",
+		"tool", "cut", "alpha", "beta", "gamma", "remove",
 	} {
 		if !strings.Contains(err.Error(), fragment) {
 			t.Errorf("error %q omits %q", err, fragment)
 		}
 	}
+	if strings.Contains(err.Error(), "doctor --repair") {
+		t.Errorf("collision error must not name deleted doctor --repair: %q", err)
+	}
 }
 
-// TestPopulateGenerationHonorsBinOverride covers the escape hatch:
-// the named package wins, the other provider's entry is left out,
-// and no collision is reported.
-func TestPopulateGenerationHonorsBinOverride(t *testing.T) {
+// TestPopulateGenerationLeftoverBinDoesNotWin: leftover
+// [bin] is gone. Two packages shipping one basename refuse.
+func TestPopulateGenerationLeftoverBinDoesNotWin(t *testing.T) {
 	storeRoot := t.TempDir()
 	genDir := newGenDir(t)
 
@@ -1210,19 +1213,15 @@ func TestPopulateGenerationHonorsBinOverride(t *testing.T) {
 	createStoreEntry(t, storeRoot, "beta", "1.0", []string{"tool"})
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
-	overrides := map[string]string{"tool": "beta"}
-
-	if err := populateGeneration(genDir, pkgs, storeRoot, overrides); err != nil {
-		t.Fatalf("populateGeneration error: %v", err)
+	err := populateGeneration(genDir, pkgs, storeRoot, Options{})
+	if err == nil {
+		t.Fatal("want bin collision, leftover [bin] must not win")
 	}
-
-	target, err := os.Readlink(filepath.Join(genDir, "bin", "tool"))
-	if err != nil {
-		t.Fatalf("readlink: %v", err)
+	if !strings.Contains(err.Error(), "tool") {
+		t.Errorf("error %q must name tool", err)
 	}
-	if !strings.Contains(target, string(filepath.Separator)+"beta"+
-		string(filepath.Separator)) {
-		t.Errorf("bin/tool -> %s, want beta's copy", target)
+	if strings.Contains(err.Error(), "[bin]") {
+		t.Errorf("error still advertises [bin]: %q", err)
 	}
 }
 
@@ -1250,7 +1249,7 @@ func TestPopulateGenerationAllowsNonBinCollisions(t *testing.T) {
 
 	pkgs := map[string]string{"alpha": "1.0", "beta": "1.0"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, Options{}); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 	if _, err := os.Lstat(
@@ -1284,7 +1283,7 @@ func TestPopulateGenerationRootLevelFiles(t *testing.T) {
 
 	pkgs := map[string]string{"go": "1.26.1"}
 
-	if err := populateGeneration(genDir, pkgs, storeRoot, nil); err != nil {
+	if err := populateGeneration(genDir, pkgs, storeRoot, Options{}); err != nil {
 		t.Fatalf("populateGeneration error: %v", err)
 	}
 
@@ -1803,11 +1802,11 @@ func TestBuildMultiRevisionPicksHighest(t *testing.T) {
 	}
 }
 
-// TestPruneOldGenerationsKeepsLastN pins the auto-gc retention
-// policy: gen dirs with number strictly less than (curGen-keep+1)
-// are removed, anything >= that threshold (including curGen and
-// in-flight gen/curGen+1) is preserved. Returns the removed gen
-// numbers in ascending order so the caller can print them.
+// TestPruneOldGenerationsKeepsLastN pins the contiguous case:
+// with no gaps the positional count matches the old
+// curGen-keep+1 cutoff, so gens 1-5 go and 6-15 stay when
+// current is 15 and keep is 10. Gap cases live in
+// TestPruneOldGenerationsCountsPositionally.
 func TestPruneOldGenerationsKeepsLastN(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := t.TempDir()
@@ -2232,17 +2231,17 @@ func stageGenNumbers(t *testing.T, galeDir string, nums []int, cur int) {
 }
 
 // TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt pins the
-// rule: the active generation plus every generation above it —
-// the branch a rollback abandoned, which a roll-forward may
-// return to (gh#189) — and nothing below.
+// rule: the active generation, the keep-2 previous generation
+// when it exists, plus every generation above current — the
+// branch a rollback abandoned (gh#189).
 //
 // The set is the exact complement of what cleanOldGenerations
-// removes (n < curGen), which is what makes a hollow generation
+// removes (n < cutoff), which is what makes a hollow generation
 // impossible: gc never keeps a directory without the store dirs
 // it links, and never retains bytes for a directory it deleted.
 //
-// Gaps in the numbering are legitimate and irrelevant here: the
-// rule is a comparison against curGen, not a count.
+// Gaps in the numbering are legitimate: the rule is a comparison
+// against the keep-2 cutoff, not a count.
 func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	galeDir := t.TempDir()
 	stageGenNumbers(t, galeDir, []int{1, 5, 9, 10}, 5)
@@ -2254,8 +2253,8 @@ func TestRetainedNumbersKeepsCurrentAndTheBranchAboveIt(t *testing.T) {
 	want := []int{5, 9, 10}
 	if !slices.Equal(got, want) {
 		t.Errorf("retainedNumbers(cur=5) = %v, want %v — current "+
-			"and the branch above it, and gen/1 below it left to "+
-			"cleanOldGenerations", got, want)
+			"and the branch above it; gen/1 is below the keep-2 "+
+			"cutoff and left to cleanOldGenerations", got, want)
 	}
 }
 
@@ -2302,6 +2301,47 @@ func TestRetainedNumbersIncludesAbsentCurrent(t *testing.T) {
 	}
 }
 
+// TestRetainedNumbersIncludesPreviousGeneration pins keep=2:
+// the generation immediately below current is retained so
+// cleanOldGenerations and store-closure retention stay
+// complements.
+func TestRetainedNumbersIncludesPreviousGeneration(t *testing.T) {
+	galeDir := t.TempDir()
+	stageGenNumbers(t, galeDir, []int{1, 4, 5, 9}, 5)
+
+	got, err := retainedNumbers(galeDir)
+	if err != nil {
+		t.Fatalf("retainedNumbers: %v", err)
+	}
+	want := []int{4, 5, 9}
+	if !slices.Equal(got, want) {
+		t.Errorf("retainedNumbers(cur=5) = %v, want %v — "+
+			"keep-2 previous gen/4 plus current and the "+
+			"branch above", got, want)
+	}
+}
+
+// TestRetainedNumbersDoesNotForceIncludeAbsentPrevious pins
+// that a gap at curGen-1 is not a phantom retained generation.
+// Force-include is only for absent current (gh#188).
+func TestRetainedNumbersDoesNotForceIncludeAbsentPrevious(t *testing.T) {
+	galeDir := t.TempDir()
+	stageGenNumbers(t, galeDir, []int{1, 5, 9}, 5)
+
+	got, err := retainedNumbers(galeDir)
+	if err != nil {
+		t.Fatalf("retainedNumbers: %v", err)
+	}
+	if slices.Contains(got, 4) {
+		t.Errorf("retainedNumbers = %v, must not invent gen/4", got)
+	}
+	want := []int{5, 9}
+	if !slices.Equal(got, want) {
+		t.Errorf("retainedNumbers(cur=5, no gen/4) = %v, want %v",
+			got, want)
+	}
+}
+
 // TestRetainedVersionsStrictUnionsRetainedGenerations pins the
 // multi-version shape: the active generation and the branch
 // above it can link two versions of the same package — the
@@ -2342,35 +2382,44 @@ func TestRetainedVersionsStrictUnionsRetainedGenerations(t *testing.T) {
 }
 
 // TestRetainedVersionsStrictSkipsHistoryBelowCurrent is the
-// other half: a generation below current contributes nothing,
-// because cleanOldGenerations is about to delete it. Retaining
-// its closure would keep bytes alive for a directory that is
-// gone — and break `gale update && gale gc` (gh#137).
+// other half: a generation below the keep-2 cutoff contributes
+// nothing, because cleanOldGenerations is about to delete it.
+// Retaining its closure would keep bytes alive for a directory
+// that is gone — and break `gale update && gale gc` (gh#137).
 func TestRetainedVersionsStrictSkipsHistoryBelowCurrent(t *testing.T) {
 	storeRoot := t.TempDir()
 	galeDir := filepath.Join(t.TempDir(), ".gale")
 
+	createStoreEntry(t, storeRoot, "jq", "1.6", []string{"jq"})
 	createStoreEntry(t, storeRoot, "jq", "1.7", []string{"jq"})
 	createStoreEntry(t, storeRoot, "jq", "1.8", []string{"jq"})
 	if err := Build(
-		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
+		map[string]string{"jq": "1.6"}, galeDir, storeRoot,
 	); err != nil {
 		t.Fatalf("Build gen 1: %v", err)
 	}
 	if err := Build(
-		map[string]string{"jq": "1.8"}, galeDir, storeRoot,
+		map[string]string{"jq": "1.7"}, galeDir, storeRoot,
 	); err != nil {
 		t.Fatalf("Build gen 2: %v", err)
+	}
+	if err := Build(
+		map[string]string{"jq": "1.8"}, galeDir, storeRoot,
+	); err != nil {
+		t.Fatalf("Build gen 3: %v", err)
 	}
 
 	got, err := RetainedVersionsStrict(galeDir, storeRoot)
 	if err != nil {
 		t.Fatalf("RetainedVersionsStrict: %v", err)
 	}
-	if want := []string{"1.8"}; !slices.Equal(got["jq"], want) {
+	versions := got["jq"]
+	slices.Sort(versions)
+	if want := []string{"1.7", "1.8"}; !slices.Equal(versions, want) {
 		t.Errorf("RetainedVersionsStrict[jq] = %v, want %v — gen/1 "+
-			"is below current and its closure is not retained",
-			got["jq"], want)
+			"is below the keep-2 cutoff and its closure is not "+
+			"retained; gen/2 is the previous generation",
+			versions, want)
 	}
 }
 
@@ -2409,7 +2458,7 @@ func TestRetainedVersionsStrictRefusesUnreadableRetainedGeneration(
 			"retained generation, got %v", got)
 	}
 	for _, want := range []string{
-		"generation 1", "gale generations remove 1", "--force",
+		"generation 1",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error must mention %q, got: %v", want, err)
@@ -2446,5 +2495,46 @@ func TestRetainedVersionsStrictRefusesUnreadableGenListing(t *testing.T) {
 	); err == nil {
 		t.Fatalf("RetainedVersionsStrict must refuse an unreadable "+
 			"gen listing, got %v", got)
+	}
+}
+
+func TestBuildFetchPathWinsOverResolveDir(t *testing.T) {
+	galeDir := t.TempDir()
+	storeRoot := t.TempDir()
+	sha := strings.Repeat("ab", 32)
+	st := store.NewStore(storeRoot)
+	fetchDir, err := st.FetchPath("jq", "1.8.1", sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(fetchDir, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(fetchDir, "bin", "jq"), []byte("fetch"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	createStoreEntry(t, storeRoot, "jq", "1.8.1", []string{"jq"})
+
+	err = BuildWithOptions(
+		map[string]string{"jq": "1.8.1"},
+		galeDir, storeRoot,
+		Options{Fetch: map[string]string{"jq": sha}},
+	)
+	if err != nil {
+		t.Fatalf("BuildWithOptions: %v", err)
+	}
+	link, err := os.Readlink(filepath.Join(galeDir, "current", "bin", "jq"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(link, filepath.Join("fetch", "jq")) {
+		t.Errorf("link %q does not point at fetch tree", link)
+	}
+	got, err := CurrentVersions(galeDir, storeRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got["jq"] != "1.8.1" {
+		t.Errorf("CurrentVersions = %v, want jq=1.8.1", got)
 	}
 }

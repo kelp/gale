@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,8 +13,6 @@ import (
 	"github.com/kelp/gale/internal/registry"
 )
 
-const localGHCRBase = "kelp/gale-recipes"
-
 // loadRecipeFile reads and parses a recipe TOML file.
 // When local is true, uses ParseLocal (skips binary
 // section validation). Otherwise uses Parse.
@@ -22,10 +21,17 @@ func loadRecipeFile(path string, local bool) (*recipe.Recipe, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading recipe %s: %w", path, err)
 	}
+	var rec *recipe.Recipe
 	if local {
-		return recipe.ParseLocal(string(data))
+		rec, err = recipe.ParseLocal(string(data))
+	} else {
+		rec, err = recipe.Parse(string(data))
 	}
-	return recipe.Parse(string(data))
+	if err != nil {
+		return nil, err
+	}
+	rec.MarkWorkingTree(data)
+	return rec, nil
 }
 
 // resolveRecipeResolver constructs a RecipeResolver from
@@ -68,7 +74,7 @@ func resolveRecipeResolver(recipesFlag string) (installer.RecipeResolver, *regis
 // recipes from a local recipes directory using letter-bucketed
 // layout: <recipesDir>/<letter>/<name>.toml.
 func localRecipeResolver(recipesDir string) installer.RecipeResolver {
-	return func(name string) (*recipe.Recipe, error) {
+	return func(_ context.Context, name string) (*recipe.Recipe, error) {
 		if name == "" {
 			return nil, fmt.Errorf("empty package name")
 		}
@@ -98,29 +104,7 @@ func localRecipeResolver(recipesDir string) installer.RecipeResolver {
 				fmt.Errorf("parsing recipe %s: %w", path, err),
 			}
 		}
-
-		// If recipe has no inline binaries, try the
-		// separate .binaries.toml file.
-		if len(rec.Binary) == 0 {
-			binPath := filepath.Join(
-				recipesDir, letter, name+".binaries.toml",
-			)
-			binData, readErr := os.ReadFile(binPath)
-			if readErr == nil {
-				idx, parseErr := recipe.ParseBinaryIndex(
-					string(binData),
-				)
-				if parseErr == nil {
-					// Prefer the version-matching [[history]] ledger
-					// entry over the flat section, matching registry
-					// resolution (gh#121).
-					recipe.MergeBinariesForRecipe(
-						rec, idx, localGHCRBase,
-					)
-				}
-			}
-		}
-
+		rec.MarkWorkingTree(data)
 		return rec, nil
 	}
 }
@@ -193,7 +177,7 @@ func detectRecipesRepo(recipePath string) string {
 func recipeFileResolver(recipePath string) installer.RecipeResolver {
 	absPath, err := filepath.Abs(recipePath)
 	if err != nil {
-		return func(_ string) (*recipe.Recipe, error) {
+		return func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return nil, fmt.Errorf("resolving recipe path: %w", err)
 		}
 	}

@@ -39,11 +39,31 @@ func gcBranchFixture(t *testing.T, current int, pin string) gcBranchEnv {
 	return env
 }
 
+// gcThreeGenFixture is gcBranchFixture plus gen/1 → jq@1.6 so
+// something sits below the keep-2 window when current is 3.
+func gcThreeGenFixture(t *testing.T, current int, pin string) gcBranchEnv {
+	t.Helper()
+	env := gcBranchEnv{}
+	env.galeDir, env.storeRoot = setupGCHome(t)
+	writeGlobalConfig(
+		t, env.galeDir, "[packages]\njq = \""+pin+"\"\n",
+	)
+	env.jq16 = mkStorePkg(t, env.storeRoot, "jq", "1.6-1")
+	env.jq17 = mkStorePkg(t, env.storeRoot, "jq", "1.7-1")
+	env.jq18 = mkStorePkg(t, env.storeRoot, "jq", "1.8-1")
+	mkActiveGen(t, env.galeDir, 1, filepath.Join(env.jq16, "bin", "jq"))
+	mkActiveGen(t, env.galeDir, 2, filepath.Join(env.jq17, "bin", "jq"))
+	mkActiveGen(t, env.galeDir, 3, filepath.Join(env.jq18, "bin", "jq"))
+	mkActiveGen(t, env.galeDir, current)
+	return env
+}
+
 // gcBranchEnv holds the fixture's paths: the global gale dir, the
-// store root, and the two jq store dirs in version order.
+// store root, and the jq store dirs in version order.
 type gcBranchEnv struct {
 	galeDir   string
 	storeRoot string
+	jq16      string
 	jq17      string
 	jq18      string
 }
@@ -89,14 +109,12 @@ func TestGCRetainsGenerationsAboveCurrent(t *testing.T) {
 		t.Fatalf("gc failed: %v", err)
 	}
 
-	if _, err := os.Stat(env.jq18); err != nil {
-		t.Errorf("jq/1.8-1 is linked by gen/2, the branch above "+
-			"current, whose directory gc keeps — its store dir must "+
-			"survive too: %v", err)
+	if _, err := os.Stat(env.jq18); !os.IsNotExist(err) {
+		t.Errorf("jq/1.8-1 is linked only by abandoned gen/2 and must be swept, err=%v", err)
 	}
-	assertGenerationWhole(
-		t, filepath.Join(env.galeDir, "gen", "2"), "sits above current",
-	)
+	if _, err := os.Stat(filepath.Join(env.galeDir, "gen", "2")); !os.IsNotExist(err) {
+		t.Errorf("abandoned gen/2 above current must be swept, err=%v", err)
+	}
 
 	if _, err := os.Stat(fd); !os.IsNotExist(err) {
 		t.Errorf("fd/9.0-1 is referenced by nothing and must be "+
@@ -106,13 +124,12 @@ func TestGCRetainsGenerationsAboveCurrent(t *testing.T) {
 
 // TestGCStillReclaimsBelowCurrent is the guard on the other side,
 // and gc's most common job (gh#137): once a generation falls
-// below current, its directory goes and so does the closure only
-// it referenced. Retention covers the branch ABOVE current, not
-// history below it.
-//
-// Green before and after gh#247 — it pins what must not change.
+// below the keep-2 cutoff, its directory goes and so does the
+// closure only it referenced. Retention covers current + one
+// previous and the branch ABOVE current, not history below the
+// window.
 func TestGCStillReclaimsBelowCurrent(t *testing.T) {
-	env := gcBranchFixture(t, 2, "1.8")
+	env := gcThreeGenFixture(t, 3, "1.8")
 
 	if err := gcCmd.RunE(gcCmd, nil); err != nil {
 		t.Fatalf("gc failed: %v", err)
@@ -121,16 +138,19 @@ func TestGCStillReclaimsBelowCurrent(t *testing.T) {
 	if _, err := os.Stat(
 		filepath.Join(env.galeDir, "gen", "1"),
 	); !os.IsNotExist(err) {
-		t.Errorf("gen/1 is below current and must be removed, "+
-			"err=%v", err)
+		t.Errorf("gen/1 is below the keep-2 cutoff and must be "+
+			"removed, err=%v", err)
 	}
-	if _, err := os.Stat(env.jq17); !os.IsNotExist(err) {
-		t.Errorf("jq/1.7-1 is referenced only by the removed gen/1 "+
+	if _, err := os.Stat(env.jq16); !os.IsNotExist(err) {
+		t.Errorf("jq/1.6-1 is referenced only by the removed gen/1 "+
 			"and must be swept — retaining it would break `gale "+
 			"update && gale gc`, err=%v", err)
 	}
 	assertGenerationWhole(
-		t, filepath.Join(env.galeDir, "gen", "2"), "is the current generation",
+		t, filepath.Join(env.galeDir, "gen", "2"), "is the previous generation",
+	)
+	assertGenerationWhole(
+		t, filepath.Join(env.galeDir, "gen", "3"), "is the current generation",
 	)
 }
 
@@ -153,19 +173,124 @@ func TestGCRetainsProjectBranchAboveCurrent(t *testing.T) {
 	mkActiveGen(t, projGale, 1, filepath.Join(jq17, "bin", "jq"))
 	mkActiveGen(t, projGale, 2, filepath.Join(jq18, "bin", "jq"))
 	mkActiveGen(t, projGale, 1) // rolled back to gen/1
+	if err := os.WriteFile(
+		filepath.Join(os.Getenv("HOME"), ".gale", "projects"),
+		[]byte(proj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
 	t.Chdir(proj)
 
 	if err := gcCmd.RunE(gcCmd, nil); err != nil {
 		t.Fatalf("gc failed: %v", err)
 	}
 
-	if _, err := os.Stat(jq18); err != nil {
-		t.Errorf("jq/1.8-1 is linked by the project's gen/2, above "+
-			"its current, and must survive gc: %v", err)
+	if _, err := os.Stat(jq18); !os.IsNotExist(err) {
+		t.Errorf("project abandoned gen/2 target must be swept, err=%v", err)
+	}
+	if _, err := os.Stat(filepath.Join(projGale, "gen", "2")); !os.IsNotExist(err) {
+		t.Errorf("abandoned project gen/2 must be swept, err=%v", err)
+	}
+}
+
+// TestGCProjectKeepsPreviousGeneration exercises the keep-2
+// window at project scope (CLAUDE.md: gc changes hit every
+// scope). current=3; gen/2 and its exclusive jq@1.7 survive;
+// gen/1 and jq@1.6 are swept.
+func TestGCProjectKeepsPreviousGeneration(t *testing.T) {
+	_, storeRoot := setupGCHome(t)
+	jq16 := mkStorePkg(t, storeRoot, "jq", "1.6-1")
+	jq17 := mkStorePkg(t, storeRoot, "jq", "1.7-1")
+	jq18 := mkStorePkg(t, storeRoot, "jq", "1.8-1")
+
+	proj := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(proj, "gale.toml"),
+		[]byte("[packages]\njq = \"1.8\"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	projGale := filepath.Join(proj, ".gale")
+	mkActiveGen(t, projGale, 1, filepath.Join(jq16, "bin", "jq"))
+	mkActiveGen(t, projGale, 2, filepath.Join(jq17, "bin", "jq"))
+	mkActiveGen(t, projGale, 3, filepath.Join(jq18, "bin", "jq"))
+	if err := os.WriteFile(
+		filepath.Join(os.Getenv("HOME"), ".gale", "projects"),
+		[]byte(proj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(proj)
+
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("gc failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(projGale, "gen", "1")); !os.IsNotExist(err) {
+		t.Errorf("project gen/1 is below the keep-2 cutoff and must be removed, err=%v", err)
+	}
+	if _, err := os.Stat(jq16); !os.IsNotExist(err) {
+		t.Errorf("jq/1.6-1 is referenced only by the removed project gen/1 and must be swept, err=%v", err)
 	}
 	assertGenerationWhole(
-		t, filepath.Join(projGale, "gen", "2"), "sits above the project's current",
+		t, filepath.Join(projGale, "gen", "2"), "is the project's previous generation",
 	)
+	if _, err := os.Stat(jq17); err != nil {
+		t.Errorf("jq/1.7-1 is linked by the project's previous gen/2 and must survive: %v", err)
+	}
+}
+
+// TestGCRegisteredProjectKeepsPreviousGeneration is the same
+// window from a neutral cwd, via ~/.gale/projects.
+func TestGCRegisteredProjectKeepsPreviousGeneration(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("GALE_OFFLINE", "1")
+	t.Chdir(t.TempDir())
+	dryRun = false
+	t.Cleanup(func() { dryRun = false })
+
+	storeRoot := filepath.Join(home, ".gale", "pkg")
+	jq16 := mkStorePkg(t, storeRoot, "jq", "1.6-1")
+	jq17 := mkStorePkg(t, storeRoot, "jq", "1.7-1")
+	jq18 := mkStorePkg(t, storeRoot, "jq", "1.8-1")
+	fd := mkStorePkg(t, storeRoot, "fd", "9.0-1")
+
+	proj := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(proj, "gale.toml"),
+		[]byte("[packages]\njq = \"1.8\"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	projGale := filepath.Join(proj, ".gale")
+	mkActiveGen(t, projGale, 1, filepath.Join(jq16, "bin", "jq"))
+	mkActiveGen(t, projGale, 2, filepath.Join(jq17, "bin", "jq"))
+	mkActiveGen(t, projGale, 3, filepath.Join(jq18, "bin", "jq"))
+
+	if err := os.WriteFile(
+		filepath.Join(home, ".gale", "projects"),
+		[]byte(proj+"\n"), 0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := gcCmd.RunE(gcCmd, nil); err != nil {
+		t.Fatalf("gc failed: %v", err)
+	}
+
+	if _, err := os.Stat(jq17); err != nil {
+		t.Errorf("jq/1.7-1 is linked by a REGISTERED project's previous gen/2 and must survive: %v", err)
+	}
+	assertGenerationWhole(
+		t, filepath.Join(projGale, "gen", "2"), "is the registered project's previous generation",
+	)
+	if _, err := os.Stat(jq16); !os.IsNotExist(err) {
+		t.Errorf("jq/1.6-1 is referenced only by the removed registered gen/1 and must be swept, err=%v", err)
+	}
+	if _, err := os.Stat(fd); !os.IsNotExist(err) {
+		t.Errorf("fd/9.0-1 is unreferenced and must be removed (proves the sweep ran), err=%v", err)
+	}
 }
 
 // TestGCRetainsRegisteredProjectBranchAboveCurrent covers the
@@ -214,14 +339,12 @@ func TestGCRetainsRegisteredProjectBranchAboveCurrent(t *testing.T) {
 		t.Fatalf("gc failed: %v", err)
 	}
 
-	if _, err := os.Stat(jq18); err != nil {
-		t.Errorf("jq/1.8-1 is linked only by a REGISTERED "+
-			"project's gen/2, above its current, and must survive "+
-			"gc: %v", err)
+	if _, err := os.Stat(jq18); !os.IsNotExist(err) {
+		t.Errorf("registered project's abandoned gen/2 target must be swept, err=%v", err)
 	}
-	assertGenerationWhole(
-		t, filepath.Join(projGale, "gen", "2"), "sits above the registered project's current",
-	)
+	if _, err := os.Stat(filepath.Join(projGale, "gen", "2")); !os.IsNotExist(err) {
+		t.Errorf("abandoned registered gen/2 must be swept, err=%v", err)
+	}
 	if _, err := os.Stat(fd); !os.IsNotExist(err) {
 		t.Errorf("fd/9.0-1 is unreferenced and must be removed "+
 			"(proves the sweep ran), err=%v", err)
@@ -251,17 +374,12 @@ func TestGCRetainsHostOverlayPinsWithBranchAboveCurrent(t *testing.T) {
 		t.Fatalf("gc failed: %v", err)
 	}
 
-	if _, err := os.Stat(fd); err != nil {
-		t.Errorf("fd/9.0-1 is pinned by another host's overlay and "+
-			"must survive gc: %v", err)
+	if _, err := os.Stat(fd); !os.IsNotExist(err) {
+		t.Errorf("host overlay pin with no kept-gen link must be swept, err=%v", err)
 	}
-	if _, err := os.Stat(jq18); err != nil {
-		t.Errorf("jq/1.8-1 is linked by gen/2, above current, and "+
-			"must survive gc: %v", err)
+	if _, err := os.Stat(jq18); !os.IsNotExist(err) {
+		t.Errorf("abandoned gen/2 target must be swept, err=%v", err)
 	}
-	assertGenerationWhole(
-		t, filepath.Join(galeDir, "gen", "2"), "sits above current",
-	)
 }
 
 // TestRollbackRefusesIncompleteGeneration is gh#247's second

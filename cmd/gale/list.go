@@ -3,11 +3,9 @@ package main
 import (
 	"fmt"
 	"io"
-	"maps"
 	"os"
 	"sort"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -25,8 +23,7 @@ var listCmd = &cobra.Command{
 	Long: "List packages declared in gale.toml.\n\n" +
 		"Reads the active gale.toml (project if present, else " +
 		"global). Entries not yet present in the store are " +
-		"flagged with (not installed). Use `gale sbom` for a " +
-		"store-rooted view of what is actually installed.",
+		"flagged with (not installed).",
 	// ExactArgs(0) over NoArgs: cobra.NoArgs emits the
 	// confusing "unknown command" message when called with a
 	// positional like `gale list pkgname` — list has no
@@ -44,10 +41,10 @@ var listCmd = &cobra.Command{
 // (exit 0): "nothing declared" is not an error.
 func runList(stdout, stderr io.Writer) error {
 	switch listScope {
-	case "all", "shared", "host":
+	case "all", "shared":
 	default:
 		return fmt.Errorf(
-			"invalid --scope %q: want all|shared|host", listScope,
+			"invalid --scope %q: want all|shared", listScope,
 		)
 	}
 	if err := validateScopeFlags(listGlobal, listProject); err != nil {
@@ -83,7 +80,7 @@ func runListAll(stdout, stderr io.Writer) error {
 
 	wrote := false
 	if projErr == nil {
-		ok, existsErr := configOrToolVersionsExists(projectPath)
+		ok, existsErr := galeConfigExists(projectPath)
 		if existsErr != nil {
 			return existsErr
 		}
@@ -119,55 +116,22 @@ func runListAll(stdout, stderr io.Writer) error {
 // gale.toml. Headers and entries go to stdout indented with
 // prefix; the empty-state notice goes to stderr.
 func printConfigList(stdout, stderr io.Writer, configPath, prefix string) error {
-	// readConfigOrToolVersions gives .tool-versions projects the
-	// same fallback sync, env, and sbom get (gh#169); when both
-	// files are absent it returns an empty config, which flows to
-	// the empty-state notice below.
-	cfg, err := readConfigOrToolVersions(configPath)
+	// A missing gale.toml returns an empty config, which
+	// flows to the empty-state notice below.
+	cfg, err := readGaleConfig(configPath)
 	if err != nil {
 		return err
 	}
 
-	host, err := config.CurrentHost()
-	if err != nil {
-		return err
-	}
-	hostPkgs := hostOverlayPackages(cfg, host)
 	s := store.NewStore(defaultStoreRoot())
 
-	showShared := listScope == "all" || listScope == "shared"
-	showHost := listScope == "all" || listScope == "host"
-
-	// Stable schema: always use the grouped Shared / Host
-	// form. Previously the command switched to a flat
-	// `name@version` schema when no overlays applied, which
-	// broke pipelines the day a user added their first
-	// overlay. See audit/readonly/output-format/findings/
-	// 0003-list-format-changes-with-overlays.md.
+	// Shared [packages] only. Leftover [hosts.*] overlays
+	// refuse on live verbs; list does not present them.
 	wrote := false
-	if showShared && len(cfg.Packages) > 0 {
+	if len(cfg.Packages) > 0 {
 		fmt.Fprintf(stdout, "%sShared:\n", prefix)
 		for _, name := range sortedKeys(cfg.Packages) {
 			ver := cfg.Packages[name]
-			suffix := installedSuffix(s, name, ver)
-			if _, shadowed := hostPkgs[name]; shadowed {
-				fmt.Fprintf(stdout,
-					"%s  %s@%s  (overridden by host)%s\n",
-					prefix, name, ver, suffix)
-			} else {
-				fmt.Fprintf(stdout, "%s  %s@%s%s\n",
-					prefix, name, ver, suffix)
-			}
-		}
-		wrote = true
-	}
-	if showHost && len(hostPkgs) > 0 {
-		if wrote {
-			fmt.Fprintln(stdout)
-		}
-		fmt.Fprintf(stdout, "%sHost (%s):\n", prefix, host)
-		for _, name := range sortedKeys(hostPkgs) {
-			ver := hostPkgs[name]
 			suffix := installedSuffix(s, name, ver)
 			fmt.Fprintf(stdout, "%s  %s@%s%s\n",
 				prefix, name, ver, suffix)
@@ -193,28 +157,6 @@ func installedSuffix(s *store.Store, name, ver string) string {
 	return "  (not installed)"
 }
 
-// hostOverlayPackages returns the merged map of packages
-// contributed by every [hosts.<key>] section that matches
-// host. Unlike EffectivePackages, the shared [packages]
-// section is NOT included — callers want only the overlay
-// contributions for the Host section.
-func hostOverlayPackages(cfg *config.GaleConfig, host string) map[string]string {
-	if host == "" || len(cfg.Hosts) == 0 {
-		return nil
-	}
-	out := map[string]string{}
-	for key, h := range cfg.Hosts {
-		if !config.HostKeyMatches(key, host) {
-			continue
-		}
-		maps.Copy(out, h.Packages)
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
 func sortedKeys(m map[string]string) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
@@ -226,7 +168,7 @@ func sortedKeys(m map[string]string) []string {
 
 func init() {
 	listCmd.Flags().StringVar(&listScope, "scope", "all",
-		"Filter by scope: all|shared|host")
+		"Filter by scope: all|shared")
 	listCmd.Flags().BoolVarP(&listGlobal, "global", "g", false,
 		"List packages from the global gale.toml")
 	listCmd.Flags().BoolVarP(&listProject, "project", "p", false,

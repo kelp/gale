@@ -29,12 +29,12 @@ func TestSyncAfterRollbackAllocatesAboveHighestGeneration(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
 	configPath := filepath.Join(galeDir, "gale.toml")
 
-	// Ten builds, each pinning a distinct jq version, so every
-	// generation's bin/jq resolves to a different store dir. A
-	// clobbered gen is then detectable by its symlink target, not
-	// merely by its absence — rebuilding gen/6 from the same
-	// config would leave a directory that still stats fine.
-	const gens = 10
+	// Two builds, each pinning a distinct jq version, so the
+	// abandoned generation's bin/jq resolves to a different
+	// store dir. A clobbered gen is then detectable by its
+	// symlink target, not merely by its absence. keep=2 would
+	// prune a longer fixture before the rollback can run.
+	const gens = 2
 	for i := 1; i <= gens; i++ {
 		version := fmt.Sprintf("1.%d", i)
 		mkStorePkg(t, storeRoot, "jq", version+"-1")
@@ -50,14 +50,10 @@ func TestSyncAfterRollbackAllocatesAboveHighestGeneration(t *testing.T) {
 		t.Fatalf("setup: current = %d (err=%v), want %d", cur, err, gens)
 	}
 
-	// Record what gens 6..10 point at before the rollback.
-	want := make(map[int]string, 5)
-	for n := 6; n <= gens; n++ {
-		want[n] = readGenJQ(t, galeDir, n)
-	}
+	want2 := readGenJQ(t, galeDir, gens)
 
-	if err := genRollbackCmd.RunE(genRollbackCmd, []string{"5"}); err != nil {
-		t.Fatalf("rollback to gen 5: %v", err)
+	if err := genRollbackCmd.RunE(genRollbackCmd, []string{"1"}); err != nil {
+		t.Fatalf("rollback to gen 1: %v", err)
 	}
 
 	// The sync that follows the rollback.
@@ -77,17 +73,15 @@ func TestSyncAfterRollbackAllocatesAboveHighestGeneration(t *testing.T) {
 			"generation, never reuse a number", cur, gens+1)
 	}
 
-	for n := 6; n <= gens; n++ {
-		got := readGenJQ(t, galeDir, n)
-		if got != want[n] {
-			t.Errorf("gen/%d/bin/jq = %q, want %q — the rebuild "+
-				"overwrote a generation the rollback left intact",
-				n, got, want[n])
-		}
+	got2 := readGenJQ(t, galeDir, gens)
+	if got2 != want2 {
+		t.Errorf("gen/%d/bin/jq = %q, want %q — the rebuild "+
+			"overwrote a generation the rollback left intact",
+			gens, got2, want2)
 	}
 
-	// Retention still bounds growth: with keep=10 and current at
-	// 11, the cutoff is 2, so gen/1 goes.
+	// Retention still bounds growth: with keep=2 and current at
+	// 3, the cutoff is 2, so gen/1 goes.
 	if _, err := os.Stat(
 		filepath.Join(galeDir, "gen", "1"),
 	); !os.IsNotExist(err) {

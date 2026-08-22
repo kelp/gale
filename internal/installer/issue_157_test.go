@@ -1,6 +1,7 @@
 package installer
 
 import (
+	"context"
 	"runtime"
 	"testing"
 
@@ -39,7 +40,7 @@ func TestIsStaleIgnoresBuildDepBump(t *testing.T) {
 		"cmake": {Package: recipe.Package{Name: "cmake", Version: "3.0.0", Revision: 2}},
 	})
 
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("IsStale error: %v", err)
 	}
@@ -70,7 +71,7 @@ func TestIsStaleStillDetectsRuntimeDepBump(t *testing.T) {
 		"zlib": {Package: recipe.Package{Name: "zlib", Version: "1.3.1", Revision: 2}},
 	})
 
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("IsStale error: %v", err)
 	}
@@ -116,7 +117,7 @@ func TestIsStaleHonorsPlatformRuntimeOverride(t *testing.T) {
 		"zlib":    {Package: recipe.Package{Name: "zlib", Version: "1.3.1", Revision: 1}},
 	})
 
-	stale, err := IsStale(dir, r, runtime.GOOS, runtime.GOARCH, resolver)
+	stale, err := IsStale(context.Background(), StaleQuery{StoreDir: dir, Recipe: r, GOOS: runtime.GOOS, GOARCH: runtime.GOARCH, Resolver: resolver})
 	if err != nil {
 		t.Fatalf("IsStale error: %v", err)
 	}

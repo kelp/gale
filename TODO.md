@@ -1,5 +1,325 @@
 # TODO
 
+Active roadmap: fetch, don't build. Plan:
+[`docs/dev/proposals/fetch-dont-build.md`](docs/dev/proposals/fetch-dont-build.md).
+One checkbox is one PR. Do not start Milestone 3
+until 0–2 are done. Milestone 3 lands unused
+code. Milestone 4 is the sole cutover. Do
+not make fetch the default until the first
+ten are in the index and `fetch-adopt` ships
+in the same release. A jq-only switch is a
+dual backend. A switch without adopt
+strands v1 locks. Implementation is a later
+session; this file is the queue.
+
+## Milestone 0 — Plan
+
+- [x] Write the fetch-don't-build proposal
+- [x] Fold fable / opus 5 / sol review into the plan
+- [x] Owner: cut is the plan; index in gale-recipes;
+      leftovers use brew; Phase 1 waits for merge
+- [x] Control-plane cuts (§15) and this milestone list
+- [x] Fold second-pass fable / sol simplify cuts
+- [x] Fold third-pass sol reliability cuts
+- [x] Fold third-pass fable simplify cuts
+- [x] Merge the proposal PR
+
+## Milestone 1 — Prerequisites
+
+No v2 lock is written. Each PR is mergeable to
+main on its own.
+
+- [x] **Lock v2 types + fail-closed reader.** New
+      schema, new downgrade guard. No writer.
+      Old gale must fail loud on a v2 file. Tests
+      in `internal/lockfile`.
+- [x] **Fetch store namespace.**
+      `pkg/fetch/<name>/<version>-<sha12>/`.
+      Old `resolveVersion` cannot hit it as
+      bare `<version>`. Acceptance: two
+      scopes retain the same `name@version`
+      with different locked artifacts.
+      Tests in `internal/store`.
+- [x] **Tree digest.** Sorted `path + mode
+      + sha256` of regular files. Exclude
+      `.gale-*.toml`. Admission **refuses**
+      artifacts with symlinks or
+      hardlinks. Computed at **index
+      admission** by gale's extractor,
+      copied into the lock. Installer
+      recomputes and checks. Tests in
+      `internal/provenance`.
+- [x] **Harden extract.** `ExtractZip`
+      matches `extractTar`. Mask
+      setuid/setgid. Cap entry count,
+      compressed download size, and
+      decompressed size. Reject writes of
+      `.gale-*.toml`. Reject any symlink
+      or hardlink. Tests in
+      `internal/download`.
+- [x] **HTTP fetch policy.** Per-host
+      redirect allowlist (GitHub →
+      `objects.githubusercontent.com`). No
+      `GALE_GITHUB_TOKEN` on artifact
+      fetch. Reject `url` values with
+      credentials. Delete the GNU
+      `mirrors` map. Honor
+      `context.Context` on index HTTP,
+      artifact HTTP, hashing, and
+      extract. Tests in
+      `internal/download` / `httpclient`.
+- [x] **Index types + linter.**
+      Version-keyed TOML. Required
+      `sha256`, `hash_source`,
+      `tree_digest`, `format` (`tar.gz` |
+      `tar.xz` | `zip` | `binary`),
+      `files` (src → dest + mode). Host
+      allowlist. No credentials in `url`.
+      Version / tag is `[A-Za-z0-9._+-]`
+      or the URL is fully written.
+      Immutable version blocks. `latest`
+      must name a version block that
+      exists. The linter checks
+      `tree_digest` is present; it never
+      computes one. Lives in gale
+      (library). Tests in `internal/index`
+      (new).
+
+## Milestone 2 — Control plane
+
+Do these before fetch is the default. Safe on
+main. Stops new host / pin / tool-versions work.
+Bin-collision-as-hard-error waits until
+Milestone 4 — 193 source recipes still collide.
+
+- [x] **Freeze host sections.** Comment + test
+      that `--host` / `[hosts.*]` gain no new
+      semantics. Changelog note. No feature
+      delete yet.
+- [x] **Drop `.tool-versions`.** Gale reads
+      `gale.toml` only. Delete the parser and
+      the fallback. `cmd/gale` tests that a
+      `.tool-versions` project is not a gale
+      project.
+- [x] **Keep two generations.** Retention is
+      the compiled constant 2 (current + one
+      previous). Delete `[generation] keep`
+      and the `keep = -1` sentinel from
+      `config.toml`. Update gc retention
+      tests (gh#247 family). `generations`
+      help: list + rollback only.
+- [x] **Drop pin / unpin.** Remove `[pinned]`,
+      `gale pin`, `gale unpin`. `gale update`
+      updates named packages. Manifest + lock
+      are the only version channels.
+- [x] **Freeze `config.toml`.** Compiled-in
+      index URL. `--index <dir>` is the only
+      override. No parallelism knob, no
+      `GALE_JOBS`. Add no keys. A config file
+      must not repoint resolution or disable
+      gc.
+- [x] **Delete `internal/parallel` and
+      `internal/prewarm`.** Serial installer.
+      Deterministic order. Every error
+      surfaces.
+- [x] **GC: keep=2 constant.** Delete
+      `[generation] keep` and the
+      `keep = -1` sentinel. Do not remove
+      the resolver, network, or generation
+      rebuild in this PR — that rewrite
+      is Milestone 5.
+- [x] **Doctor: delete `--repair` and
+      `--force`.** Deletion only. The
+      four-check rewrite is Milestone 4.
+- [x] **Register before swap.** A project
+      generation does not swap `current`
+      until its canonical root is durably
+      registered. Registration failure
+      leaves `current` on the previous gen.
+      Read-only commands do not register.
+- [x] **Bound `sync --if-needed`.** Fixed
+      deadline, propagated as
+      `context.Context` through index
+      HTTP, artifact HTTP, hashing, and
+      extract. Timeout records incomplete,
+      cancels work, leaves `current`
+      unchanged. Typed `gale sync` is
+      unbounded.
+- [x] **Rollback is temporary.** It moves
+      `current` only. Any later sync returns
+      to the lock. Integration-test the
+      direnv-after-rollback sequence.
+
+## Milestone 3 — Unused fetch path
+
+Land unused code. Source install stays the
+only installer. Index all ten. Ship
+`fetch-adopt` unused. No `backend =
+"fetch"` flag. macOS-first. Serial is
+fine.
+
+- [x] **Index client.** Resolve a whole
+      install / update / lock / outdated
+      run against **one** `index_commit`
+      (or `--index` checkout HEAD).
+      Hard-fail on network error. No
+      stale-serving path, including
+      `outdated`. Tests with a httptest
+      index.
+- [x] **Fetch to store.** Allowlisted URL,
+      declared `format`, file map, hash,
+      extract into a staging dir on the
+      same filesystem, rename into place,
+      provenance last. A crash leaves no
+      half-tree at the store path. Hash
+      mismatch refuses. Occupied dir +
+      different digest refuses. Tests in
+      `internal/fetch`.
+- [x] **Publication order.** One mutation
+      lock per scope. Stage store bytes,
+      register, write the lock, swap
+      `current` last. Failure injection
+      at each boundary. Crash recovery
+      is fail-closed plus sync
+      convergence. Tests in `cmd/gale`
+      (`finalize_*`).
+- [x] **`gale lock` is lock-only.** One
+      `index_commit`. Write the lock. No
+      fetch. No `current` swap. Never
+      writes `gale.toml`. Delete
+      `--refresh`. Unprovenanced refetch
+      is `fetch-adopt`. Tests in
+      `cmd/gale`.
+- [x] **Admission command.** Gale's own
+      extractor (`internal/download` +
+      the installer digest function) is
+      the only producer of `tree_digest`.
+      Records arch, codesign, `otool -L`
+      system-only, format, file map.
+      Refuses symlinks and hardlinks.
+      Lands before any index entry.
+- [x] **Index the first ten.** Admission
+      recorded by that command. One PR
+      per few packages: `jq`, `ripgrep`,
+      `fd`, `just`, `gh`, `go`,
+      `gofumpt`, `golangci-lint`,
+      `direnv`, `uv`.
+- [x] **`gale fetch-adopt` unused.** Plan
+      all roots, print lock diff, require
+      confirmation, refuse when frozen /
+      CI. All-or-nothing. Any failure
+      leaves the old lock and generation.
+      `cmd/gale` tests. Not wired as the
+      installer.
+- [x] **`gale verify`** = tree digest
+      matches lock (+ locked attestation
+      if any). Not GHCR.
+
+## Milestone 4 — Sole cutover
+
+One PR. Fetch is the only installer.
+`fetch-adopt` is available in this
+release. Source build is unreachable.
+Not-in-index is an error.
+
+- [x] **Switch.** install / sync / update /
+      remove go through fetch. `--recipes`
+      gone; `--index <dir>` stays. Mixed
+      source/fetch lock refused. `cmd/gale`
+      + `integration/`: sync does not write
+      the lock; activation gate still
+      holds; rollback then sync returns
+      to the lock.
+- [x] **Amend product docs** in the same PR:
+      `design.md` principles, `CLAUDE.md`,
+      README. Gale is not "everything from
+      source" and not a Homebrew replacement.
+- [x] **Delete the long tail.** `build`,
+      `create-recipe`, `audit`, recipe
+      `lint`, `search`, `switch`, `add`,
+      `sbom`, `inspect`, `repo *`. No
+      stubs. Mark leftover TODO items
+      below the fold as superseded.
+- [x] **Bin collision is a hard error.**
+      Remove `[bin]` overlays and per-host
+      winners. Two packages shipping the
+      same basename refuse the generation.
+- [x] **Doctor is four checks.** PATH, lock
+      readable, generation matches lock
+      roots, tree digest matches. Farm /
+      deps-meta / legacy-lock novels go
+      with those packages.
+- [x] **Every scope rebuilds only from the
+      lock.** Global, project, `--host`.
+      `install` always writes a lock.
+      Refuse to rebuild a locked generation
+      from the store or manifest alone.
+- [x] **Park the local artifact cache.**
+      Milestone 6, off by default, or never.
+- [x] **Grow the catalog by admission.**
+      After the cutover is boring. Batches
+      from appendix A candidates. Skip
+      anything that fails `otool -L` /
+      codesign / arch.
+
+## Milestone 5 — Delete the distro
+
+Adopt already shipped at the cutover.
+
+- [x] **Delete `internal/build` and farm.**
+      Including Darwin fixup and patchelf.
+- [x] **Delete GHCR bottle wiring.** Keep a
+      generalized attestation verifier.
+      Delete `tar.zst` create/extract and
+      `tar.bz2` with it. Admitted formats
+      are `tar.gz`, `tar.xz`, `zip`,
+      `binary`.
+- [x] **gale-recipes: strip the farm.**
+      Remove promote / ledger / verify-build
+      CI. Recipes become index TOML.
+- [x] **gc mark and sweep under the same
+      lock as publication.** Retention =
+      the two kept generations' exact
+      targets, every registered scope.
+      Prefix-safe. Never delete a live
+      fetch's staging directory. Still no
+      resolver and no network. Fail closed
+      if retention is incomplete.
+
+## Milestone 6 — Optional leftovers
+
+Each is its own proposal. None block 1–5.
+
+- [x] **`git = "system"`** (note in
+      gale.toml, not an installer).
+- [x] **python-build-standalone** — only
+      with declared attestations and store
+      immutability (no pip into the prefix).
+- [x] **Delete frozen host sections** if
+      still unused.
+- [x] **Index-update PR bot** — PR-only, no
+      write token on main, verifies upstream
+      checksums.
+- [x] **Linux admission** for the ten, once
+      macOS is boring.
+
+## Out of scope (do not ticket)
+
+Brew wrapper or bottle backend. aqua-registry.
+`go install` / `cargo install`. Source fallback.
+Required attestations for every package. Index
+signing. Content-addressed store paths.
+Parallel fetch as a reliability project.
+
+---
+
+Items below this line are historical. The
+Code Standards Backlog still applies. Open
+product items that assume source-build,
+GHCR bottles, the farm, recipe CI, or
+SBOM/audit of our bottles are superseded
+by the fetch plan. Do not ticket them.
+
 ## Code Standards Backlog
 
 The strict golangci-lint config (`.golangci.yml`, paired with the
@@ -12,26 +332,35 @@ repo-wide. Re-measure anytime: remove the `issues:` block and run
 
 Mechanical (low-risk, do first):
 
-- [ ] **misspell (1)** — fix the flagged spelling.
-- [ ] **predeclared (5)** — rename identifiers that shadow builtins.
-- [ ] **forcetypeassert (2)** — add comma-ok to bare type assertions.
-- [ ] **errorlint (2)** — match with `errors.Is`/`errors.As`, wrap
+- [x] **misspell (1)** — fix the flagged spelling.
+- [x] **predeclared (5)** — rename identifiers that shadow builtins.
+- [x] **forcetypeassert (2)** — add comma-ok to bare type assertions.
+- [x] **errorlint (2)** — match with `errors.Is`/`errors.As`, wrap
   with `%w`.
-- [ ] **nilnil (3)** — return a sentinel error instead of `(nil, nil)`.
-- [ ] **contextcheck (4)** — thread `context.Context` instead of
+- [x] **nilnil (3)** — return a sentinel error instead of `(nil, nil)`.
+- [x] **contextcheck (4)** — thread `context.Context` instead of
   dropping it.
 
 Refactors (need judgment):
 
-- [ ] **dupl in `build.go` (1 pair)** — `internal/build/build.go:1107`
+- [x] **dupl in `build.go` (1 pair)** — `internal/build/build.go:1107`
   duplicates `:1155`; extract the shared block into a helper.
-- [ ] **dupl in tests (19 hits)** — duplicated setup across
-  `cmd/gale/*_test.go`, `internal/build`, `internal/download`,
-  `internal/recipe`. Replace with shared `t.Helper()` fixtures or
-  table-driven cases (dupl is enforced on tests by design).
-- [ ] **revive (13)** — early-return / superfluous-else / naming.
-- [ ] **funlen (16)** — split functions over 80 lines / 50 statements.
-- [ ] **gocognit (13)** — reduce cognitive complexity below 30.
+  (Stale: `internal/build` was deleted. Remaining dupl hits
+  are tests and belong to the next heading.)
+- [x] **dupl in tests (19 hits)** — duplicated setup across
+  `cmd/gale/*_test.go` and `internal/download`. Replace with
+  shared `t.Helper()` fixtures or table-driven cases (dupl is
+  enforced on tests by design). (Count was stale: 3 pairs.
+  `internal/build` and `internal/recipe` had no remaining hits.)
+- [x] **revive (13)** — early-return / superfluous-else / naming.
+  (Count was stale: 6 argument/result-limit hits.
+  No early-return or superfluous-else remain.)
+- [x] **funlen (16)** — split functions over 80 lines / 50 statements.
+  (Count was stale: 6 hits.)
+- [x] **gocognit (13)** — reduce cognitive complexity below 30.
+  (Count was stale. Full-repo gocognit
+  is already 0; funlen split the last
+  flagged functions.)
 
 ## Done
 
@@ -267,9 +596,8 @@ paper-cut a new user is likely to hit.
 
 ### SBOM format
 
-- [ ] **CycloneDX or SPDX output** — current JSON is
-  custom. Add a standard format option when someone
-  needs compliance tooling.
+- [x] **CycloneDX or SPDX output** — superseded by
+  Delete the long tail (`gale sbom` is gone).
 
 ### Audit usefulness
 
@@ -422,16 +750,9 @@ Moved to gale-recipes TODO. Recipe format additions
   versions not referenced by any gale.toml. `--dry-run`
   previews what would be removed.
 
-- [ ] **`gale generations rollback` should rebuild the
-  farm.** `internal/generation/history.go:153` only swaps
-  the `current` symlink; the shared dylib farm at
-  `~/.gale/lib/` stays pointing at the post-Build state,
-  so binaries in the rolled-to gen may load dylibs from
-  revisions that gen never included. Fix requires
-  persisting the gen's package set (e.g. a small
-  per-gen manifest file) so rollback can pass the
-  active set to `farm.Rebuild`. Surfaced while fixing
-  the store-walking farm rebuild.
+- [x] **`gale generations rollback` should rebuild the
+  farm.** Superseded by Delete the long tail. The farm
+  dies in Milestone 5; this ticket is not live.
 
 - [x] **Collapse install-time farm replace output.**
   During a revision bump, `farm.Populate` prints one
@@ -565,9 +886,10 @@ pure `[binary.<platform>]` with no `[build]` block.
 
 # Testing
 
-- [ ] Integration testing suite that tests all flags
+- [x] Integration testing suite that tests all flags
   and functionality. Every CLI permutation, end to end.
   Tests many possible recipe builds of all types.
+  Superseded by Delete the long tail.
 
 # Build Infrastructure
 
@@ -578,8 +900,8 @@ pure `[binary.<platform>]` with no `[build]` block.
 - [x] pkg-config fixup — FixupPkgConfig rewrites .pc
   files to relative ${pcfiledir} paths on both source
   builds and binary installs
-- [ ] Rebuild all GHCR binaries with pkg-config fixup
-  so prebuilt packages have correct .pc files
+- [x] Rebuild all GHCR binaries with pkg-config fixup
+  — superseded by Delete the long tail / fetch plan.
 
 ## Performance & Distribution
 
@@ -677,9 +999,8 @@ closure at once is essentially free — yet a real `bat` install spends
 ~7×4s on it. That makes the highest-value perf work **gale-side
 attestation handling**, ahead of any distribution change:
 
-- [ ] **Cache attestation per store artifact.** Once a binary at a
-  given sha256 is verified, record it; shared deps and reinstalls
-  skip re-verification entirely.
+- [x] **Cache attestation per store artifact.** Superseded
+  by Delete the long tail / fetch plan (GHCR bottle path).
 - [x] **Verify a closure's artifacts concurrently.** Resolved as a
   side effect of in-process verification (gh#129): attestation now
   runs inline inside each package's `installBinaryTo`, which already
@@ -688,11 +1009,9 @@ attestation handling**, ahead of any distribution change:
 - [x] **(Stretch) in-process Sigstore verification** (gh#129).
   sigstore-go verifies bundles in-process; the per-artifact `gh`
   subprocess spawn is gone.
-- [ ] **Drop the GitHub-API file-subject fallback in
-  `VerifyPrebuilt`.** Once gale-recipes confirms every
-  ledger-referenced artifact has an OCI referrer, remove the
-  `VerifyFile`/Attestations-API fallback path and require the
-  OCI-referrer path unconditionally.
+- [x] **Drop the GitHub-API file-subject fallback in
+  `VerifyPrebuilt`.** Superseded by Delete the long tail /
+  fetch plan.
 
 This corrects the earlier read that distribution infra (Tier 2/3)
 was the next lever — it isn't, until attestation is addressed. The
@@ -705,26 +1024,14 @@ Today every recipe fetch is a separate HTTPS GET to
 `.versions` files help with version resolution but you still
 make one request per recipe.
 
-- [ ] **Bundled recipe index.** Periodically (CI) build a
-  single `index.tar.zst` of all recipes + a manifest mapping
-  name → contents. `gale sync`-style operations fetch the
-  bundle once, read locally. Per-recipe fetch path still
-  works as a fallback for cache misses or fresh recipes
-  between bundle rebuilds. Roughly the `apt update` model.
-  Repo: gale-recipes (build) + gale (consume).
+- [x] **Bundled recipe index.** Superseded by Delete the
+  long tail / fetch plan.
 
-- [ ] **HTTP compression on recipe fetches.**
-  `raw.githubusercontent.com` doesn't serve `Content-Encoding:
-  gzip` consistently. Recipes are small TOML — gzip is 5–10×.
-  Solved naturally if we move recipe distribution off raw.
-  githubusercontent.com (see Tier 3).
+- [x] **HTTP compression on recipe fetches.** Superseded
+  by Delete the long tail / fetch plan.
 
-- [ ] **Local "registry mirror" model.** `gale update`
-  (separate from `gale update <pkg>` — naming conflict to
-  resolve) fetches the bundled index and writes it to
-  `~/.gale/cache/registry/`. Subsequent commands consult the
-  local copy first. Apt-style. Cuts steady-state recipe
-  fetches to zero. Pair with TTL-based auto-refresh.
+- [x] **Local "registry mirror" model.** Superseded by
+  Delete the long tail / fetch plan.
 
 ### Tier 3 — Binary distribution infrastructure
 
@@ -734,39 +1041,25 @@ become tractable once the security-side OIDC keyless work
 ships (Layer 6 Tier 2) — at that point the OCI registry
 isn't carrying signing semantics, just bytes.
 
-- [ ] **Cloudflare R2 (or similar) for binary hosting.** Zero
-  egress fees, CDN-backed, no token dance, HTTP/2 native.
-  At gale's scale ~$5/mo. Migrate gale-recipes CI to push to
-  R2 alongside GHCR initially (parallel), then cut GHCR over
-  after a soak period. Expected gain: 1.5–3× on binary
-  download depending on user geography. Repo: gale-recipes
-  (CI changes) + gale (alternate URL resolution).
+- [x] **Cloudflare R2 (or similar) for binary hosting.**
+  Superseded by Delete the long tail / fetch plan.
 
-- [ ] **Precompiled-recipe bundle on CDN.** Same R2 / CDN
-  endpoint as binaries. Bundle + binaries from the same
-  origin means one connection pool, one TLS handshake.
+- [x] **Precompiled-recipe bundle on CDN.** Superseded by
+  Delete the long tail / fetch plan.
 
-- [ ] **HTTP/2 multiplexing across the binary fetch.** If a
-  package ships as multiple layered blobs (current archives
-  are a single tar.zst, so this is mostly future-proofing
-  for if we move to OCI-layer-style distribution).
+- [x] **HTTP/2 multiplexing across the binary fetch.**
+  Superseded by Delete the long tail / fetch plan.
 
 ### Tier 4 — Speculative
 
-- [ ] **Async warmup on `gale install`.** Background-fetch
-  the dep closure's recipes while the user is downloading
-  the requested package's binary. Hides recipe latency on
-  the deps almost entirely.
+- [x] **Async warmup on `gale install`.** Superseded by
+  Delete the long tail / fetch plan.
 
-- [ ] **Binary deduplication via the shared dylib farm.**
-  Already exists for source-built dylibs. Investigate
-  whether binary-installed packages with shared deps could
-  hardlink-share dylibs at install time. Saves disk on
-  heavy projects.
+- [x] **Binary deduplication via the shared dylib farm.**
+  Superseded by Delete the long tail (farm dies in M5).
 
-- [ ] **Resume partial downloads.** GHCR / R2 both support
-  HTTP Range. On a flaky connection, resume rather than
-  restart. Cheap once a range-aware HTTP client exists.
+- [x] **Resume partial downloads.** Superseded by Delete
+  the long tail / fetch plan (GHCR / R2 bottle hosting).
 
 ### Comparison reference
 

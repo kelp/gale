@@ -16,7 +16,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/recipe"
@@ -229,11 +228,6 @@ func traverse(req Request, roots map[string]string) (map[string]Node, error) {
 		chosen[n.Name] = key
 		nodes[key] = n
 		queue = append(queue, n.RuntimeDeps...)
-		// A prebuilt binary was not produced from its build deps, so
-		// they are not part of what must be installed for it.
-		if n.Method == lockgraph.MethodSource {
-			queue = append(queue, n.BuildDeps...)
-		}
 	}
 	return nodes, nil
 }
@@ -302,63 +296,11 @@ func validateRecipe(n Node, r *recipe.Recipe, platform string) error {
 			ErrRecipeMismatch, n.Name, platform,
 		)
 	}
-	if err := validateMethod(n, r, goos, goarch); err != nil {
-		return err
-	}
-	return validateEdges(n, r, goos, goarch)
-}
-
-// validateMethod checks the locked method is one this recipe can
-// actually deliver, and that any hash the recipe carries agrees.
-func validateMethod(n Node, r *recipe.Recipe, goos, goarch string) error {
-	if n.Method != lockgraph.MethodBinary {
-		// BuildForPlatform is what an actual build runs, so the
-		// default steps are the wrong question: a recipe may carry
-		// steps only in the target-platform override, or an override
-		// may remove them.
-		if len(r.BuildForPlatform(goos, goarch).Steps) == 0 {
-			return fmt.Errorf(
-				"%w: %s is locked to source with no build steps",
-				ErrRecipeMismatch, n.Name,
-			)
-		}
-		return nil
-	}
-	bin := r.BinaryForPlatform(goos, goarch)
-	if bin == nil {
-		return fmt.Errorf(
-			"%w: %s is locked to a binary the recipe does not declare for %s-%s",
-			ErrRecipeMismatch, n.Name, goos, goarch,
-		)
-	}
-	// Declared is not the same as usable, and a locked binary cannot
-	// fall back to source. An entry the installer will reject at fetch
-	// time must fail here instead, while the plan can still be
-	// abandoned without touching the store.
-	if bin.URL == "" {
-		return fmt.Errorf(
-			"%w: %s is locked to a binary with no URL", ErrRecipeMismatch, n.Name,
-		)
-	}
-	if err := bin.CheckTrustPolicy(); err != nil {
-		return fmt.Errorf("%w: %s: %w", ErrRecipeMismatch, n.Name, err)
-	}
-	// Compared only where the recipe carries a value: a recipe may
-	// legitimately omit the manifest digest, and omission is not
-	// disagreement.
-	if bin.SHA256 != "" && bin.SHA256 != n.SHA256 {
-		return fmt.Errorf(
-			"%w: %s recipe sha256 %s, lock says %s",
-			ErrRecipeMismatch, n.Name, bin.SHA256, n.SHA256,
-		)
-	}
-	if bin.ManifestDigest != "" && bin.ManifestDigest != n.ManifestDigest {
-		return fmt.Errorf(
-			"%w: %s recipe manifest digest %s, lock says %s",
-			ErrRecipeMismatch, n.Name, bin.ManifestDigest, n.ManifestDigest,
-		)
-	}
-	return nil
+	// Leftover bottle and source locks refuse. Live install is fetch.
+	return fmt.Errorf(
+		"%w: %s is locked to leftover %s; use gale fetch or gale fetch-adopt",
+		ErrRecipeMismatch, n.Name, n.Method,
+	)
 }
 
 // validateEdges checks the locked dependency names against the ones
@@ -373,11 +315,10 @@ func validateEdges(n Node, r *recipe.Recipe, goos, goarch string) error {
 	if err := compareEdges(n.Name, "runtime", n.RuntimeDeps, deps.Runtime); err != nil {
 		return err
 	}
-	if n.Method != lockgraph.MethodSource && len(n.BuildDeps) == 0 {
+	if len(n.BuildDeps) == 0 {
 		return nil
 	}
-	effective, _ := build.EffectiveDeps(deps, r.Build.System)
-	return compareEdges(n.Name, "build", n.BuildDeps, effective.Build)
+	return compareEdges(n.Name, "build", n.BuildDeps, deps.Build)
 }
 
 // compareEdges compares locked identities against declared names.

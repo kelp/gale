@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -124,80 +125,6 @@ func TestWriteConfigHostUpdatesExisting(t *testing.T) {
 	}
 }
 
-// finalizeInstall (post-gh#23) is lenient about unrelated
-// missing packages in gale.toml — the install for the
-// target package must land on PATH even if other entries
-// reference store dirs not yet on this host (the
-// fresh-clone-on-new-host scenario). This test pins that
-// contract: with awscli configured but its store dir
-// absent, installing gale must still succeed and rotate
-// the gen so gale's bin/ appears in the active generation.
-//
-// The "fail loud on missing target" half of the contract
-// is exercised separately via
-// TestFinalizeInstallErrorsWhenTargetMissing below.
-func TestFinalizeInstallTolerantOfUnrelatedMissingPackage(t *testing.T) {
-	tmp := t.TempDir()
-	galeDir := filepath.Join(tmp, ".gale")
-	storeRoot := filepath.Join(tmp, "pkg")
-	configPath := filepath.Join(tmp, "gale.toml")
-
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  awscli = \"2.34.19\"\n"),
-		0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	s := store.NewStore(storeRoot)
-	pkgDir, err := s.Create("gale", "0.11.1-1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	binDir := filepath.Join(pkgDir, "bin")
-	if err := os.MkdirAll(binDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(binDir, "gale"),
-		[]byte("#!/bin/sh\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-
-	ctx := &cmdContext{
-		GaleDir:   galeDir,
-		StoreRoot: storeRoot,
-		GalePath:  configPath,
-	}
-	writeProvenance(t, storeRoot, "gale", "0.11.1-1")
-	err = ctx.FinalizeInstall("gale", "0.11.1", "0.11.1-1")
-	if err != nil {
-		t.Fatalf("FinalizeInstall should tolerate unrelated "+
-			"missing awscli store dir; got error: %v", err)
-	}
-
-	currentTarget, err := os.Readlink(
-		filepath.Join(galeDir, "current"),
-	)
-	if err != nil {
-		t.Fatalf("current symlink missing: %v", err)
-	}
-	if currentTarget != filepath.Join("gen", "1") {
-		t.Errorf("current = %q, want gen/1", currentTarget)
-	}
-	if _, err := os.Lstat(
-		filepath.Join(galeDir, "gen", "1", "bin", "gale"),
-	); err != nil {
-		t.Errorf("gale symlink missing in gen/1: %v", err)
-	}
-}
-
-// TestFinalizeInstallErrorsWhenTargetMissing pins the other
-// half of the gh#23 fix: while finalizeInstall is now
-// lenient about unrelated packages, it MUST still fail
-// loud when the target package itself doesn't land in the
-// active generation. Without this, lenient rebuild would
-// silently swallow the case where the target's store dir
-// went missing between install and rebuild, leaving the
-// user with a stale PATH and a "success" message.
 func TestFinalizeInstallErrorsWhenTargetMissing(t *testing.T) {
 	tmp := t.TempDir()
 	galeDir := filepath.Join(tmp, ".gale")
@@ -240,27 +167,8 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 	storeRoot := filepath.Join(tmp, "pkg")
 	configPath := filepath.Join(tmp, "gale.toml")
 
-	s := store.NewStore(storeRoot)
-	for _, pkg := range []struct {
-		name    string
-		version string
-	}{
-		{name: "oldpkg", version: "1.0.0-1"},
-		{name: "newpkg", version: "2.0.0-1"},
-	} {
-		pkgDir, err := s.Create(pkg.name, pkg.version)
-		if err != nil {
-			t.Fatal(err)
-		}
-		binDir := filepath.Join(pkgDir, "bin")
-		if err := os.MkdirAll(binDir, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(filepath.Join(binDir, pkg.name),
-			[]byte("#!/bin/sh\n"), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
+	mkStorePkg(t, storeRoot, "oldpkg", "1.0.0-1")
+	mkStorePkg(t, storeRoot, "newpkg", "2.0.0-1")
 
 	if err := os.WriteFile(configPath,
 		[]byte("[packages]\n  oldpkg = \"1.0.0\"\n"),
@@ -315,7 +223,7 @@ func TestFinalizeInstallRebuildFailureKeepsCurrent(t *testing.T) {
 	}
 }
 
-func TestRebuildGenerationUsesToolVersionsFallback(t *testing.T) {
+func TestRebuildGenerationIgnoresToolVersions(t *testing.T) {
 	projectDir := t.TempDir()
 	galeDir := filepath.Join(projectDir, ".gale")
 	storeRoot := filepath.Join(t.TempDir(), "pkg")
@@ -344,8 +252,8 @@ func TestRebuildGenerationUsesToolVersionsFallback(t *testing.T) {
 		t.Fatalf("rebuildGeneration: %v", err)
 	}
 
-	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "go")); err != nil {
-		t.Fatalf("go symlink missing from current generation: %v", err)
+	if _, err := os.Lstat(filepath.Join(galeDir, "current", "bin", "go")); !os.IsNotExist(err) {
+		t.Fatalf("go symlink must not come from .tool-versions, err=%v", err)
 	}
 }
 
@@ -364,7 +272,7 @@ func TestResolveVersionedRecipeMatchesFullVersion(t *testing.T) {
 		},
 	}
 	ctx := &cmdContext{
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return want, nil
 		},
 	}
@@ -399,7 +307,7 @@ func TestResolveVersionedRecipeWrapsRegistryError(t *testing.T) {
 		t.Fatalf("registry.NewWithURL: %v", err)
 	}
 	ctx := &cmdContext{
-		Resolver: func(name string) (*recipe.Recipe, error) {
+		Resolver: func(_ context.Context, name string) (*recipe.Recipe, error) {
 			return want, nil
 		},
 		Registry: reg,

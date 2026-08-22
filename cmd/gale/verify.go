@@ -2,18 +2,15 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"os"
-	"time"
+	"io/fs"
 
-	"github.com/kelp/gale/internal/attestation"
-	"github.com/kelp/gale/internal/build"
-	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/download"
-	"github.com/kelp/gale/internal/ghcr"
-	"github.com/kelp/gale/internal/lockfile"
-	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/spf13/cobra"
+
+	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/provenance"
+	"github.com/kelp/gale/internal/store"
 )
 
 var (
@@ -21,182 +18,49 @@ var (
 	verifyProject bool
 )
 
+var (
+	errVerifyNoLock = errors.New("gale verify needs a v2 lock")
+	errVerifyV1     = errors.New(
+		"gale verify reads a v2 lock; this lock has no tree_digest",
+	)
+	errVerifyAttestation = errors.New(
+		"gale verify: locked attestation is not checkable",
+	)
+	errVerifyDigest     = errors.New("gale verify: tree digest mismatch")
+	errVerifyNoPlatform = errors.New(
+		"gale verify: no current-platform artifact",
+	)
+	errVerifyEmptyDigest  = errors.New("gale verify: empty tree_digest")
+	errVerifyMissingStore = errors.New(
+		"gale verify: fetch store missing",
+	)
+	errVerifyUnknownRoot = errors.New(
+		"gale verify: package is not a default-target root",
+	)
+)
+
 var verifyCmd = &cobra.Command{
-	Use:   "verify <package>",
-	Short: "Verify attestation for an installed package",
-	Long:  "Check Sigstore attestation to confirm a package binary was built by gale-recipes CI. Verification runs in-process; no external tools required.",
-	Args:  cobra.ExactArgs(1),
+	Use:   "verify [package]",
+	Short: "Check store tree digests against the lock",
+	Long: "Recompute each locked fetch tree digest and compare " +
+		"it to the v2 lock. Does not talk to GHCR. Does not " +
+		"mutate the store, lock, or current. A v1 lock has no " +
+		"tree_digest.",
+	Args: cobra.MaximumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(verifyGlobal, verifyProject); err != nil {
 			return err
 		}
-		name := args[0]
-		out := newCmdOutput(cmd)
-
-		v := attestation.NewVerifier()
-
-		// Resolve context first so lockfile uses the same
-		// config path the installer would use.
-		ctx, err := newCmdContext("", verifyGlobal, verifyProject)
+		c, err := newCmdContext("", verifyGlobal, verifyProject)
 		if err != nil {
 			return fmt.Errorf("creating context: %w", err)
 		}
-
-		// Find the lockfile to get the version.
-		lp, lpErr := lockfilePath(ctx.GalePath)
-		if lpErr != nil {
-			return lpErr
+		var name string
+		if len(args) == 1 {
+			name = args[0]
 		}
-		lv, err := lockfile.Load(lp)
-		if err != nil {
-			return fmt.Errorf("reading lockfile: %w", err)
-		}
-		host, hErr := config.CurrentHost()
-		if hErr != nil {
-			return hErr
-		}
-		pkg, ok, err := lv.Entry(name, host, currentPlatform())
-		if err != nil {
-			return fmt.Errorf("reading lockfile: %w", err)
-		}
-		if !ok {
-			return fmt.Errorf(
-				"%s not found in lockfile — install it first", name,
-			)
-		}
-		if err := checkPrebuilt(name, pkg); err != nil {
-			return err
-		}
-
-		repoPath := localGHCRBase + "/" + name
-
-		out.Step(fmt.Sprintf(
-			"Verifying attestation for %s@%s...", name, pkg.Version,
-		))
-
-		if err := attestation.VerifyPrebuilt(v, attestation.PrebuiltParams{
-			Repo:           attestation.DefaultRepo,
-			ManifestDigest: pkg.ManifestDigest,
-			FetchBundle: func() ([]byte, error) {
-				ctx, cancel := context.WithTimeout(
-					context.Background(), 30*time.Second,
-				)
-				defer cancel()
-				token, terr := ghcr.Token(repoPath)
-				if terr != nil {
-					return nil, fmt.Errorf("fetch ghcr token: %w", terr)
-				}
-				return ghcr.FetchReferrerBundle(
-					ctx, verifyBlobURL(name, pkg.SHA256),
-					pkg.ManifestDigest, token,
-				)
-			},
-			Archive: func() (string, func(), error) {
-				archivePath, dlErr := downloadArchive(name, pkg.SHA256)
-				if dlErr != nil {
-					return "", nil, dlErr
-				}
-				return archivePath, func() { os.Remove(archivePath) }, nil
-			},
-		}); err != nil {
-			return fmt.Errorf("verification failed: %w", err)
-		}
-
-		out.Success(fmt.Sprintf(
-			"%s@%s attestation verified", name, pkg.Version,
-		))
-		return nil
+		return runVerify(cmd.Context(), c, name)
 	},
-}
-
-// checkPrebuilt rejects a lock entry that names no prebuilt artifact.
-//
-// Sigstore attestation covers a binary published by gale-recipes CI. A
-// source artifact's recorded hash is the output of a local build, so no
-// GHCR blob stands behind it and no bundle exists to fetch. Left to
-// run, verification fails after a token exchange and an HTTP round trip
-// with an error about a missing blob, which describes the symptom
-// rather than the cause.
-//
-// A legacy entry records no method and cannot answer the question, so
-// it keeps today's behavior rather than being guessed at.
-func checkPrebuilt(name string, e lockfile.Entry) error {
-	if e.Method == lockgraph.MethodSource {
-		return fmt.Errorf(
-			"%s@%s is locked as a source build, which has no prebuilt "+
-				"attestation to verify — use 'gale audit %s' to rebuild "+
-				"and compare its hash instead",
-			name, e.Version, name,
-		)
-	}
-	return nil
-}
-
-// downloadArchive fetches the raw tar.zst package blob from GHCR so
-// `gale verify` can fall back to the GitHub Attestations API for
-// packages published before OCI attestations were pushed as referrers.
-func downloadArchive(name, sha256 string) (string, error) {
-	// Scratch space first: it is a local precondition, so failing
-	// on it costs no token exchange and no round trip. The error
-	// is propagated, never swallowed — build.TmpDir already
-	// exhausted its own fallback before returning one (gh#235).
-	tmpDir, err := build.TmpDir()
-	if err != nil {
-		return "", fmt.Errorf("build temp dir: %w", err)
-	}
-
-	token, err := ghcr.Token(localGHCRBase + "/" + name)
-	if err != nil {
-		return "", fmt.Errorf("fetch ghcr token: %w", err)
-	}
-	blobURL := verifyBlobURL(name, sha256)
-
-	f, err := os.CreateTemp(tmpDir, "gale-verify-archive-*.tar.zst")
-	if err != nil {
-		return "", fmt.Errorf("create temp archive: %w", err)
-	}
-	f.Close()
-
-	if err := download.FetchWithAuth(blobURL, f.Name(), token); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-
-	// Verify the downloaded bytes against the expected digest before
-	// handing the file to attestation verification. A mismatch here is
-	// far clearer than a downstream bundle 404.
-	if err := verifyArchiveDigest(f.Name(), sha256); err != nil {
-		os.Remove(f.Name())
-		return "", err
-	}
-	return f.Name(), nil
-}
-
-// verifyBlobURL builds the GHCR blob URL for a package's archive,
-// honoring the GALE_GHCR_URL override (via ghcr.BaseURL) so the
-// referrer fetch and the file-fallback download both reach the same
-// registry host, including a fake one in integration tests.
-func verifyBlobURL(name, sha256 string) string {
-	return fmt.Sprintf(
-		"%s/v2/%s/%s/blobs/sha256:%s",
-		ghcr.BaseURL(), localGHCRBase, name, sha256,
-	)
-}
-
-// verifyArchiveDigest checks that the file at path hashes to wantSHA
-// (hex-encoded SHA256), returning a localized error on mismatch.
-func verifyArchiveDigest(path, wantSHA string) error {
-	got, err := download.HashFile(path)
-	if err != nil {
-		return fmt.Errorf("hashing downloaded archive: %w", err)
-	}
-	if got != wantSHA {
-		return fmt.Errorf(
-			"downloaded archive sha256 mismatch: expected %s, got %s",
-			wantSHA, got,
-		)
-	}
-	return nil
 }
 
 func init() {
@@ -205,4 +69,109 @@ func init() {
 	verifyCmd.Flags().BoolVarP(&verifyProject, "project", "p", false,
 		"Verify against the project lockfile")
 	rootCmd.AddCommand(verifyCmd)
+}
+
+func runVerify(ctx context.Context, c *cmdContext, name string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	lp, err := lockfilePath(c.GalePath)
+	if err != nil {
+		return err
+	}
+	lf, err := readVerifyLock(lp)
+	if err != nil {
+		return err
+	}
+	roots, err := verifyRoots(lf, name)
+	if err != nil {
+		return err
+	}
+	plat := currentPlatform()
+	st := store.NewStore(c.StoreRoot)
+	for _, root := range roots {
+		if err := verifyOne(ctx, st, lf, root, plat); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readVerifyLock(lp string) (*lockfile.V2, error) {
+	lf, err := lockfile.ReadV2(lp)
+	if err == nil {
+		return lf, nil
+	}
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil, errVerifyNoLock
+	}
+	if _, v1err := lockfile.ReadV1(lp); v1err == nil {
+		return nil, errVerifyV1
+	}
+	return nil, fmt.Errorf("reading lockfile: %w", err)
+}
+
+func verifyRoots(lf *lockfile.V2, name string) ([]string, error) {
+	if lf.Targets.Default == nil {
+		return nil, errVerifyUnknownRoot
+	}
+	roots := lf.Targets.Default.Roots
+	if name == "" {
+		return append([]string(nil), roots...), nil
+	}
+	for _, root := range roots {
+		got, _, err := lockfile.SplitV2Root(root)
+		if err != nil {
+			return nil, err
+		}
+		if got == name {
+			return []string{root}, nil
+		}
+	}
+	return nil, fmt.Errorf("%w: %s", errVerifyUnknownRoot, name)
+}
+
+func verifyOne(
+	ctx context.Context,
+	st *store.Store,
+	lf *lockfile.V2,
+	root, plat string,
+) error {
+	name, version, err := lockfile.SplitV2Root(root)
+	if err != nil {
+		return err
+	}
+	pkg, ok := lf.Packages[root]
+	if !ok {
+		return fmt.Errorf("%w: %s", errVerifyUnknownRoot, root)
+	}
+	art, ok := pkg.Artifacts[plat]
+	if !ok {
+		return fmt.Errorf("%w: %s %s", errVerifyNoPlatform, root, plat)
+	}
+	if art.TreeDigest == "" {
+		return fmt.Errorf("%w: %s", errVerifyEmptyDigest, root)
+	}
+	if art.Attestation != nil {
+		return fmt.Errorf("%w: %s", errVerifyAttestation, root)
+	}
+	ok, err = st.FetchExists(name, version, art.SHA256)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("%w: %s", errVerifyMissingStore, root)
+	}
+	dest, err := st.FetchPath(name, version, art.SHA256)
+	if err != nil {
+		return err
+	}
+	got, err := provenance.DigestTree(ctx, dest)
+	if err != nil {
+		return fmt.Errorf("digesting %s: %w", dest, err)
+	}
+	if got != art.TreeDigest {
+		return fmt.Errorf("%w: %s", errVerifyDigest, root)
+	}
+	return nil
 }

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"github.com/kelp/gale/internal/depsmeta"
-	"github.com/kelp/gale/internal/farm"
 )
 
 // AuthoritativeClosure returns the store directories reachable from
@@ -28,8 +27,9 @@ import (
 // reference is the generation's links plus each directory's own
 // dependency metadata.
 //
-// The completeness flag is the point, and it is why FarmStoreDirs
-// cannot serve here. That walk reads through depsmeta.Read, which
+// The completeness flag is the point, and it is why
+// FarmStoreDirsStrict cannot serve here. That walk reads through
+// depsmeta.Read, which
 // decodes a missing file to an empty Metadata, so a package with
 // dependencies and no recorded metadata reads as a leaf and its
 // dependencies look unreferenced — the walk reports success while
@@ -43,7 +43,7 @@ import (
 func AuthoritativeClosure(
 	roots []string, storeRoot string,
 ) (map[string]bool, bool) {
-	return walkClosure(roots, storeRoot, nil, "").authoritative()
+	return walkClosure(roots, storeRoot, "").authoritative()
 }
 
 // ReferenceClosure is AuthoritativeClosure for a caller about to
@@ -67,37 +67,8 @@ func ReferenceClosure(
 	roots []string, storeRoot, replacing string,
 ) (map[string]bool, bool) {
 	return walkClosure(
-		roots, storeRoot, nil, canonicalDir(replacing),
+		roots, storeRoot, CanonicalDir(replacing),
 	).authoritative()
-}
-
-// ProposedClosure is the walk for a closure that must be SATISFIED
-// rather than merely enumerated: the one a scope will have once a
-// set of staged artifacts commit.
-//
-// Two differences from AuthoritativeClosure, and both come from
-// that. A referenced directory that is absent makes the closure
-// INCOMPLETE here, where the migration veto treats absence as
-// nothing to protect: a dependency that is gone is a dependency the
-// proposed closure cannot satisfy, and dependency locks are
-// released before the root commits, so one can be collected between
-// the mint and this walk.
-//
-// And the proposed store view substitutes for canonical. It says,
-// for each directory, where that directory's bytes can be read from
-// right now, so the walk reads the artifact about to land rather
-// than the one being replaced. Without it a refresh reads the
-// metadata it is superseding: malformed metadata in an
-// unprovenanced legacy artifact would refuse the very operation that
-// replaces it, and a package still on disk under the old closure
-// would be claimed as though the replacement kept it.
-//
-// A nil view substitutes nothing.
-func ProposedClosure(
-	roots []string, storeRoot string, view *farm.ProposedStore,
-	requirePresent bool,
-) (map[string]bool, bool) {
-	return walkClosure(roots, storeRoot, view, "").proposed(requirePresent)
 }
 
 // closureNode is one directory the walk reached, recorded rather
@@ -179,55 +150,8 @@ func (c closure) authoritative() (map[string]bool, bool) {
 	return c.dirs(), complete
 }
 
-// proposed is the reading for a closure that must be SATISFIED
-// rather than merely enumerated, with the two tolerances the farm
-// claim has always had and the removal claim has never had.
-//
-// require is the caller's direction of travel. Populating retargets
-// a soname and a dependency that is gone provides none, so a
-// shrinking claim is honest there. Deleting a farm entry on the
-// strength of a closure that could not be enumerated is the
-// fail-open case, so absence and unreadable staged metadata both
-// refuse once bytes go away.
-func (c closure) proposed(require bool) (map[string]bool, bool) {
-	complete := true
-	for _, n := range c.nodes {
-		switch {
-		case !n.Present:
-			// A dependency that is gone is one the proposed closure
-			// cannot satisfy, but only where the answer decides a
-			// deletion.
-			if n.StatErr != nil || require {
-				complete = false
-			}
-		case n.Leaf:
-		case n.Meta == depsmeta.StateRecorded:
-		case n.Staged && !require:
-			// A STAGED artifact whose metadata does not decode is one
-			// the installer commits anyway, with no provenance record
-			// (design §7's all-or-nothing rule, recordProvenance's
-			// deliberate nil return). A guard on the non-destructive
-			// side must not be stricter than the commit it guards, or
-			// it refuses installs that are policy-allowed today.
-		case n.Meta == depsmeta.StateAbsent && !n.Staged:
-			// A COMMITTED directory with no metadata is a leaf, which
-			// is what the farm walk has always taken it for. Calling
-			// it unknown would make the claim unusable for every
-			// package installed before metadata existed, and an
-			// unusable claim refuses every operation on the machine.
-			//
-			// A directory read from ELSEWHERE is different: gale
-			// staged it moments ago, so a missing record means one was
-			// not produced and the closure really is unknown.
-		default:
-			complete = false
-		}
-	}
-	return c.dirs(), complete
-}
-
 // walkClosure observes the closure reachable from roots, reading
-// each directory through view and stopping at leaf.
+// each directory and stopping at leaf.
 //
 // It decides nothing. Descent is the one policy it must apply,
 // because it cannot record a node it never reached, and descent is
@@ -238,15 +162,15 @@ func (c closure) proposed(require bool) (map[string]bool, bool) {
 // A nil view is the empty view and substitutes nothing, which is
 // what the interpretations with no staged bytes want.
 func walkClosure(
-	roots []string, storeRoot string, view *farm.ProposedStore, leaf string,
+	roots []string, storeRoot string, leaf string,
 ) closure {
 	// One spelling throughout, matching AuthoritativeGenerationDirs.
 	// A caller comparing a directory it resolved itself against these
 	// must not miss a match because of macOS /var versus /private/var.
-	absStore := canonicalDir(storeRoot)
+	absStore := CanonicalDir(storeRoot)
 	queue := make([]string, 0, len(roots))
 	for _, r := range roots {
-		queue = append(queue, canonicalDir(r))
+		queue = append(queue, CanonicalDir(r))
 	}
 	seen := make(map[string]bool, len(queue))
 	for _, d := range queue {
@@ -257,7 +181,7 @@ func walkClosure(
 	for len(queue) > 0 {
 		dir := queue[0]
 		queue = queue[1:]
-		n, deps := observe(dir, view, leaf)
+		n, deps := observe(dir, leaf)
 		out.nodes = append(out.nodes, n)
 		// The one policy the walk must apply, because it cannot
 		// record a node it never reached. It is the same for every
@@ -272,7 +196,7 @@ func walkClosure(
 			// By bare version, matching how the farm resolves: the
 			// pin holds SONAME identity while the revision floats to
 			// whatever is installed (gh#172).
-			depDir := canonicalDir(
+			depDir := CanonicalDir(
 				resolveStoreDir(absStore, dep.Name, dep.Version),
 			)
 			if !seen[depDir] {
@@ -290,18 +214,10 @@ func walkClosure(
 // observe records one directory without judging it, returning the
 // dependencies it declares so the walk reads each record once.
 func observe(
-	dir string, view *farm.ProposedStore, leaf string,
+	dir string, leaf string,
 ) (closureNode, []depsmeta.ResolvedDep) {
 	n := closureNode{Dir: dir, ReadFrom: dir, Leaf: leaf != "" && dir == leaf}
-	if path, staged, known := view.ReadPath(dir); known {
-		n.ReadFrom, n.Staged = path, staged
-	}
-	if n.Staged {
-		// The staged bytes stand in for the canonical dir entirely:
-		// present even when the canonical path does not exist yet,
-		// and read from where they are.
-		n.Present = true
-	} else if _, err := os.Stat(dir); err == nil {
+	if _, err := os.Stat(dir); err == nil {
 		n.Present = true
 	} else if !os.IsNotExist(err) {
 		n.StatErr = err
@@ -418,10 +334,11 @@ func AuthoritativeGenerationDirs(galeDir, storeRoot string) ([]string, error) {
 	return out, nil
 }
 
-// canonicalDir resolves a store directory's spelling without touching
-// its version. It delegates to farm.CanonicalDir: the guard compares
-// this package's keys against the farm's, so the two must be the same
-// rule and not merely the same rule today.
-func canonicalDir(dir string) string {
-	return farm.CanonicalDir(dir)
+// CanonicalDir resolves a store directory's spelling without
+// touching its version, so /var and /private/var compare equal.
+func CanonicalDir(dir string) string {
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		return resolved
+	}
+	return dir
 }

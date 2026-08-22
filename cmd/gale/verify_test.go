@@ -1,197 +1,246 @@
 package main
 
 import (
-	"crypto/sha256"
-	"fmt"
+	"context"
+	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/lockfile"
+	"github.com/kelp/gale/internal/provenance"
+	"github.com/kelp/gale/internal/store"
 )
 
-func TestVerifyBlobURL(t *testing.T) {
-	t.Setenv("GALE_GHCR_URL", "")
-	const sha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-	got := verifyBlobURL("hello", sha)
-	want := "https://ghcr.io/v2/kelp/gale-recipes/hello/blobs/sha256:" + sha
-	if got != want {
-		t.Fatalf("verifyBlobURL = %q, want %q", got, want)
-	}
+const verifySHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-	t.Setenv("GALE_GHCR_URL", "http://127.0.0.1:5555")
-	got = verifyBlobURL("hello", sha)
-	want = "http://127.0.0.1:5555/v2/kelp/gale-recipes/hello/blobs/sha256:" + sha
-	if got != want {
-		t.Fatalf("verifyBlobURL (override) = %q, want %q", got, want)
+type verifyFix struct {
+	t    *testing.T
+	c    *cmdContext
+	home string
+	lp   string
+}
+
+func newVerifyFix(t *testing.T) *verifyFix {
+	t.Helper()
+	p := newProjectLayout(t)
+	if err := os.WriteFile(p.configPath, []byte("[packages]\njust = \"1.56.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	lp, err := lockfilePath(p.configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &verifyFix{
+		t:    t,
+		home: p.home,
+		lp:   lp,
+		c: &cmdContext{
+			GalePath:  p.configPath,
+			GaleDir:   p.galeDir,
+			StoreRoot: p.storeRoot,
+		},
 	}
 }
 
-func TestVerifyArchiveDigest(t *testing.T) {
-	dir := t.TempDir()
-	content := []byte("gale archive bytes")
-	path := filepath.Join(dir, "archive.tar.zst")
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		t.Fatalf("write temp archive: %v", err)
+func (fx *verifyFix) plantJust() (sha, digest string) {
+	fx.t.Helper()
+	const name, version = "just", "1.56.0"
+	st := store.NewStore(fx.c.StoreRoot)
+	dest, err := st.FetchPath(name, version, verifySHA)
+	if err != nil {
+		fx.t.Fatal(err)
 	}
-	good := fmt.Sprintf("%x", sha256.Sum256(content))
-
-	tests := []struct {
-		name    string
-		path    string
-		wantSHA string
-		wantErr string
-	}{
-		{
-			name:    "match",
-			path:    path,
-			wantSHA: good,
-			wantErr: "",
-		},
-		{
-			name:    "mismatch",
-			path:    path,
-			wantSHA: strings.Repeat("0", 64),
-			wantErr: "downloaded archive sha256 mismatch",
-		},
-		{
-			name:    "missing file",
-			path:    filepath.Join(dir, "nope.tar.zst"),
-			wantSHA: good,
-			wantErr: "hashing downloaded archive",
-		},
+	bin := filepath.Join(dest, "bin", name)
+	if err := os.MkdirAll(filepath.Dir(bin), 0o755); err != nil {
+		fx.t.Fatal(err)
 	}
+	if err := os.WriteFile(bin, []byte(name+"-bytes\n"), 0o755); err != nil {
+		fx.t.Fatal(err)
+	}
+	if err := os.Chmod(bin, 0o755); err != nil {
+		fx.t.Fatal(err)
+	}
+	digest, err = provenance.DigestTree(context.Background(), dest)
+	if err != nil {
+		fx.t.Fatal(err)
+	}
+	return verifySHA, digest
+}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := verifyArchiveDigest(tt.path, tt.wantSHA)
-			if tt.wantErr == "" {
-				if err != nil {
-					t.Fatalf("expected no error, got %v", err)
-				}
-				return
-			}
-			if err == nil {
-				t.Fatalf("expected error containing %q, got nil", tt.wantErr)
-			}
-			if !strings.Contains(err.Error(), tt.wantErr) {
-				t.Fatalf("expected error containing %q, got %q", tt.wantErr, err.Error())
-			}
-		})
+type verifyLock struct {
+	sha, digest, plat string
+	attest            bool
+}
+
+func (fx *verifyFix) writeJust(v verifyLock) {
+	fx.t.Helper()
+	const name, version = "just", "1.56.0"
+	key := name + "@" + version
+	art := lockfile.V2Artifact{
+		URL:        "https://github.com/kelp/" + name + "/releases/download/" + version + "/" + name,
+		Format:     "binary",
+		SHA256:     v.sha,
+		TreeDigest: v.digest,
+		Method:     provenance.MethodFetch,
+		Files: []lockfile.V2File{{
+			Src: name, Dest: "bin/" + name, Mode: 0o755,
+		}},
+	}
+	if v.attest {
+		art.Attestation = &lockfile.V2Attestation{}
+	}
+	if err := lockfile.WriteV2(fx.lp, &lockfile.V2{
+		Version: lockfile.SchemaV2,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{key}},
+		},
+		Packages: map[string]lockfile.V2Package{
+			key: {Artifacts: map[string]lockfile.V2Artifact{v.plat: art}},
+		},
+	}); err != nil {
+		fx.t.Fatal(err)
 	}
 }
 
-// TestCheckPrebuilt pins that `gale verify` refuses a locked source
-// artifact before it touches the network.
-//
-// Sigstore attestation covers a prebuilt binary published by
-// gale-recipes CI. A source artifact's recorded hash is the output of
-// a local build, so there is no GHCR blob behind it and no bundle to
-// fetch: verification would fail after a token exchange and an HTTP
-// round trip, with an error about a missing blob rather than about the
-// thing that is actually wrong.
-//
-// The legacy schema recorded no method, so it cannot answer the
-// question and keeps its existing behavior. Only the enforced schema
-// makes the refusal possible.
-func TestCheckPrebuilt(t *testing.T) {
-	tests := []struct {
-		name    string
-		entry   lockfile.Entry
-		wantErr bool
-	}{
-		{
-			name:  "locked binary verifies",
-			entry: lockfile.Entry{Version: "1.8.1-1", Method: "binary"},
-		},
-		{
-			name:    "locked source is refused",
-			entry:   lockfile.Entry{Version: "1.8.1-1", Method: "source"},
-			wantErr: true,
-		},
-		{
-			name:  "legacy entry records no method",
-			entry: lockfile.Entry{Version: "1.8.1"},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := checkPrebuilt("jq", tt.entry)
-			if tt.wantErr {
-				if err == nil {
-					t.Fatal("checkPrebuilt accepted a source artifact")
-				}
-				// The message has to name the package and say why, since
-				// it is the whole output the user gets.
-				for _, want := range []string{"jq", "source"} {
-					if !strings.Contains(err.Error(), want) {
-						t.Errorf("error does not mention %q: %v", want, err)
-					}
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("checkPrebuilt: %v", err)
-			}
-		})
+func TestVerifyMatchingTree(t *testing.T) {
+	fx := newVerifyFix(t)
+	sha, digest := fx.plantJust()
+	fx.writeJust(verifyLock{sha: sha, digest: digest, plat: currentPlatform()})
+	if err := runVerify(context.Background(), fx.c, ""); err != nil {
+		t.Fatalf("verify: %v", err)
 	}
 }
 
-// --- gh#235: build.TmpDir's error is propagated, not absorbed ---
-
-// TestDownloadArchiveErrorsWhenNoScratchDirAvailable pins the
-// contract at a cmd/gale caller. downloadArchive used to test the
-// return value itself (`if tmpDir == ""`), which never fired,
-// because "" meant "os.TempDir()" to os.CreateTemp — the verify
-// archive silently landed in /tmp. Now build.TmpDir has already
-// exhausted its own fallback, so the only thing left for the
-// caller to do is propagate.
-//
-// GALE_GITHUB_TOKEN and GALE_GHCR_URL are set so a regression that
-// reordered the check behind the token exchange would fail on a
-// network error here rather than hang: the assertion is that the
-// error names the scratch dir, not merely that one occurred.
-func TestDownloadArchiveErrorsWhenNoScratchDirAvailable(t *testing.T) {
-	t.Setenv("GALE_GITHUB_TOKEN", "test-token")
-	t.Setenv("GALE_GHCR_URL", "http://127.0.0.1:1")
-	breakGaleDir(t)
-	breakSystemTemp(t)
-
-	const sha = "0123456789abcdef0123456789abcdef" +
-		"0123456789abcdef0123456789abcdef"
-	path, err := downloadArchive("hello", sha)
-	if err == nil {
-		os.Remove(path)
-		t.Fatal("downloadArchive returned nil error with no usable " +
-			"scratch dir")
+func TestVerifyDriftedTree(t *testing.T) {
+	fx := newVerifyFix(t)
+	sha, digest := fx.plantJust()
+	fx.writeJust(verifyLock{sha: sha, digest: digest, plat: currentPlatform()})
+	dest, err := store.NewStore(fx.c.StoreRoot).FetchPath("just", "1.56.0", sha)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if path != "" {
-		t.Errorf("downloadArchive returned path %q alongside error %v",
-			path, err)
+	if err := os.WriteFile(filepath.Join(dest, "bin", "just"), []byte("tampered\n"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(err.Error(), "build temp dir") {
-		t.Errorf("downloadArchive error %q does not name the scratch "+
-			"dir as the cause", err)
+	before, err := os.ReadFile(fx.lp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = runVerify(context.Background(), fx.c, "just")
+	if !errors.Is(err, errVerifyDigest) {
+		t.Fatalf("err = %v, want errVerifyDigest", err)
+	}
+	after, err := os.ReadFile(fx.lp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Error("verify mutated the lock")
 	}
 }
 
-// TestDownloadArchiveUsesFallbackScratchDir is the other half:
-// an unusable ~/.gale is survivable, so downloadArchive must get
-// past scratch allocation and fail at the network instead.
-func TestDownloadArchiveUsesFallbackScratchDir(t *testing.T) {
-	t.Setenv("GALE_GITHUB_TOKEN", "test-token")
-	t.Setenv("GALE_GHCR_URL", "http://127.0.0.1:1")
-	breakGaleDir(t)
+func TestVerifyMissingFetchStore(t *testing.T) {
+	fx := newVerifyFix(t)
+	fx.writeJust(verifyLock{sha: verifySHA, digest: "sha256:dead", plat: currentPlatform()})
+	err := runVerify(context.Background(), fx.c, "just")
+	if !errors.Is(err, errVerifyMissingStore) {
+		t.Fatalf("err = %v, want errVerifyMissingStore", err)
+	}
+}
 
-	const sha = "0123456789abcdef0123456789abcdef" +
-		"0123456789abcdef0123456789abcdef"
-	if _, err := downloadArchive("hello", sha); err == nil {
-		t.Fatal("downloadArchive unexpectedly succeeded against an " +
-			"unroutable registry")
-	} else if strings.Contains(err.Error(), "build temp dir") {
-		t.Errorf("downloadArchive failed on scratch allocation (%v); "+
-			"an unusable ~/.gale must fall back, not abort", err)
+func TestVerifySourceDirDoesNotMaskFetch(t *testing.T) {
+	fx := newVerifyFix(t)
+	sha, digest := fx.plantJust()
+	fx.writeJust(verifyLock{sha: sha, digest: digest, plat: currentPlatform()})
+	seedStore(t, fx.c.StoreRoot, "just", "1.56.0")
+	dest, err := store.NewStore(fx.c.StoreRoot).FetchPath("just", "1.56.0", sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(dest); err != nil {
+		t.Fatal(err)
+	}
+	err = runVerify(context.Background(), fx.c, "just")
+	if !errors.Is(err, errVerifyMissingStore) {
+		t.Fatalf("err = %v, want errVerifyMissingStore (not source tree)", err)
+	}
+}
+
+func TestVerifyV1Lock(t *testing.T) {
+	fx := newVerifyFix(t)
+	if err := lockfile.WriteV1(fx.lp, &lockfile.V1{
+		Version: lockfile.SchemaVersion,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{Roots: []string{"just@1.56.0-1"}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := runVerify(context.Background(), fx.c, "just")
+	if !errors.Is(err, errVerifyV1) {
+		t.Fatalf("err = %v, want errVerifyV1", err)
+	}
+	if errors.Is(err, errVerifyNoLock) {
+		t.Error("v1 lock classified as missing")
+	}
+}
+
+func TestVerifyNoLock(t *testing.T) {
+	fx := newVerifyFix(t)
+	err := runVerify(context.Background(), fx.c, "just")
+	if !errors.Is(err, errVerifyNoLock) {
+		t.Fatalf("err = %v, want errVerifyNoLock", err)
+	}
+}
+
+func TestVerifyLockedAttestationRefuses(t *testing.T) {
+	fx := newVerifyFix(t)
+	sha, digest := fx.plantJust()
+	fx.writeJust(verifyLock{sha: sha, digest: digest, plat: currentPlatform(), attest: true})
+	err := runVerify(context.Background(), fx.c, "just")
+	if !errors.Is(err, errVerifyAttestation) {
+		t.Fatalf("err = %v, want errVerifyAttestation", err)
+	}
+}
+
+func TestVerifyEmptyTreeDigest(t *testing.T) {
+	fx := newVerifyFix(t)
+	sha, _ := fx.plantJust()
+	fx.writeJust(verifyLock{sha: sha, plat: currentPlatform()})
+	err := runVerify(context.Background(), fx.c, "just")
+	if !errors.Is(err, errVerifyEmptyDigest) {
+		t.Fatalf("err = %v, want errVerifyEmptyDigest", err)
+	}
+}
+
+func TestVerifyMissingCurrentPlatform(t *testing.T) {
+	fx := newVerifyFix(t)
+	other := "darwin/arm64"
+	if currentPlatform() == other {
+		other = "linux/amd64"
+	}
+	fx.writeJust(verifyLock{sha: verifySHA, digest: "sha256:dead", plat: other})
+	err := runVerify(context.Background(), fx.c, "just")
+	if !errors.Is(err, errVerifyNoPlatform) {
+		t.Fatalf("err = %v, want errVerifyNoPlatform", err)
+	}
+}
+
+func TestVerifyUnknownPackage(t *testing.T) {
+	fx := newVerifyFix(t)
+	sha, digest := fx.plantJust()
+	fx.writeJust(verifyLock{sha: sha, digest: digest, plat: currentPlatform()})
+	err := runVerify(context.Background(), fx.c, "fd")
+	if !errors.Is(err, errVerifyUnknownRoot) {
+		t.Fatalf("err = %v, want errVerifyUnknownRoot", err)
+	}
+}
+
+func TestVerifyGHCRHelpersGone(t *testing.T) {
+	// compile-time: the old helpers must not exist. This file
+	// replacing TestVerifyBlobURL is the proof.
+	if verifyCmd.Short == "Verify attestation for an installed package" {
+		t.Fatal("verify Short still describes GHCR attestation")
 	}
 }

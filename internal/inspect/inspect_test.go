@@ -2,6 +2,7 @@ package inspect
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -235,8 +236,50 @@ func TestMagicPrefilterRejectsANonBinary(t *testing.T) {
 		t.Errorf("a text file must not reach the binary parser")
 	}
 	refs, err := readBinary(path)
-	if err != nil || refs != nil {
-		t.Errorf("readBinary(text) = (%v, %v), want (nil, nil)", refs, err)
+	if refs != nil || !errors.Is(err, ErrNotBinary) {
+		t.Errorf("readBinary(text) = (%v, %v), want (nil, ErrNotBinary)", refs, err)
+	}
+}
+
+// TestReadBinaryParserMissIsErrNotBinary covers the flagged
+// nilnil lines: magic matches, the parser then declines, and
+// the skip signal is ErrNotBinary rather than (nil, nil).
+func TestReadBinaryParserMissIsErrNotBinary(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "almost-binary")
+	body := append(binaryMagics[0][:], []byte("not a real binary")...)
+	if err := os.WriteFile(path, body, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !hasBinaryMagic(path) {
+		t.Fatal("fixture must pass the magic prefilter")
+	}
+	refs, err := readBinary(path)
+	if refs != nil || !errors.Is(err, ErrNotBinary) {
+		t.Errorf("readBinary(fake magic) = (%v, %v), want (nil, ErrNotBinary)", refs, err)
+	}
+}
+
+// TestScanInstalledSkipsNonBinary locks the scanner skip:
+// a prefix that contains only a text file is not an error
+// and reports no issues when the recipe has no runtime deps.
+func TestScanInstalledSkipsNonBinary(t *testing.T) {
+	prefix := t.TempDir()
+	doc := filepath.Join(prefix, "share", "doc.txt")
+	if err := os.MkdirAll(filepath.Dir(doc), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(doc, []byte("not a binary\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r := &recipe.Recipe{
+		Package: recipe.Package{Name: "example", Version: "1.0"},
+	}
+	issues, err := ScanInstalled(prefix, "example", "1.0", r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(issues) != 0 {
+		t.Errorf("got %d issues, want 0: %v", len(issues), issues)
 	}
 }
 

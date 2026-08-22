@@ -94,14 +94,19 @@ bare dirs are `gale gc` candidates.
 
 ## The shared dylib farm
 
+Rebuild no longer writes `~/.gale/lib`. `internal/farm`
+and Darwin/Linux fixup are deleted. A leftover directory
+on an upgraded machine is ignored until gc mark and
+sweep. The rest of this section is the v0.12 farm
+contract, kept so old store layouts stay readable.
+
 `~/.gale/lib/` is a flat directory of symlinks into the store,
 keyed by library basename. Binaries built under v0.12.0+ carry
 an extra rpath to the farm alongside their per-version rpaths.
 When a dep is upgraded to a SONAME-compatible revision, the
 farm symlink flips to point at the new store dir and every
 dependent binary keeps resolving through `@rpath` without a
-rebuild. Implementation in `internal/farm/`, invoked from the
-installer and from every generation rebuild.
+rebuild. That implementation is gone.
 
 Two classes of basename are farmed, under different rules.
 
@@ -131,8 +136,7 @@ Farm invariants:
   deliberate, so the versioned rule would turn it into a
   machine-wide outage. Dropping leaves the unversioned name
   exactly as unresolvable as it was before the farm carried
-  aliases at all. `gale doctor` warns about the drop but does
-  not fail — no repair can clear it. The collision is keyed on
+  aliases at all. The collision is keyed on
   the store dir, so two revisions of one package behind one
   alias are dropped too.
 - **A binary recording an unversioned name is therefore not
@@ -142,19 +146,14 @@ Farm invariants:
   (gh#198).
 - The farm is reconciled every time the generation is rebuilt
   (`internal/generation/generation.go:91-95` →
-  `farm.Repopulate`). `gale doctor` detects drift (broken
-  symlinks, missing entries) at `cmd/gale/doctor.go:250-280`
-  and `--repair` triggers the rebuild path.
+  `farm.Repopulate`). `gale sync` rebuilds when the farm
+  is missing a dep dylib.
 
-### Pre-farm prebuilts are brittle
+### GHCR bottles are gone
 
-GHCR prebuilts produced before the farm-rpath feature landed
-**do not carry** `~/.gale/lib/` in their dyld search list.
-They rely only on per-version rpaths, so a dep revision bump
-that relocates a dep's store dir orphans them. Rebuilding
-that dependent from a v0.12.0+ recipe embeds the farm rpath
-and future upgrades work. There is no retrofit — only a
-rebuild embeds new rpaths into an existing binary.
+Leftover GHCR prebuilts and sibling `.binaries.toml`
+ledgers are not a live install path. `gale fetch` reads
+the index. Leftover `[binary]` TOML is ignored.
 
 ## Staleness and `.gale-deps.toml`
 
@@ -206,7 +205,6 @@ constraint violation at resolve time stops the install
 before it starts.
 
 `gale sync` reinstalls stale packages automatically.
-`gale doctor` surfaces them with a hint to run sync.
 
 ### An absent file is not an empty closure
 
@@ -291,8 +289,8 @@ depends on what holds the directory (gh#200):
 
 A reinstall whose closure cannot be attested commits with no
 provenance record. That is the next step, not a failure:
-converge the closure bottom-up, then `gale lock --refresh
-<pkg>`.
+converge the closure bottom-up. No per-scope command
+replaces the resulting unprovenanced directory.
 
 ## `.versions` index and revisions
 
@@ -320,37 +318,12 @@ rebuild pass referenced in that repo's CHANGELOG), you may
 need to target a bare `foo@1.2.3` and let the resolver pick
 the highest revision it can find.
 
-## `.binaries.toml` resolved-closure index
+## Leftover `.binaries.toml`
 
-Alongside the `sha256` for each platform, CI also writes the
-resolved (name, version, revision) closure the prebuilt was
-linked against:
-
-```toml
-version = "2.53.0-2"
-
-[darwin-arm64]
-sha256 = "..."
-deps = [
-  { name = "curl", version = "8.11.0", revision = 1 },
-  { name = "openssl", version = "3.6.1", revision = 2 },
-]
-```
-
-This is informational only at install time — the archive's
-own `.gale-deps.toml` (written by `gale build` and preserved
-through the tarball) remains the authoritative record the
-installer consults for staleness. The registry-level `deps`
-block lets `gale info`, audit tooling, and reviewers
-inspect closures without fetching and extracting the
-archive. Older `.binaries.toml` files (pre-C4) carry no
-`deps` field; gale's parser returns an empty closure in
-that case.
-
-CI extracts `deps` from the archive's `.gale-deps.toml` in
-`gale-recipes/.github/workflows/build.yml` (the "Save
-build metadata" step), then emits the array-of-tables into
-`.binaries.toml` in the "Write .binaries.toml files" step.
+Sibling `<name>.binaries.toml` files are leftover bottle
+ledgers. The registry does not fetch or merge them.
+`gale lint` still skips them. Live metadata is the
+index document.
 
 ## Related reading
 

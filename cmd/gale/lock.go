@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -23,51 +24,32 @@ var (
 	lockGlobal  bool
 	lockProject bool
 	lockRecipes string
-	lockHost    string
-	lockRefresh bool
+	lockIndex   string
 )
 
 var lockCmd = &cobra.Command{
 	Use:   "lock",
 	Short: "Regenerate gale.lock for the packages gale.toml declares",
-	Long: "Resolve every package one gale.toml section declares and " +
-		"record the verified closure in gale.lock.\n\n" +
-		"Plain `gale lock` regenerates [targets.default] from the " +
-		"shared [packages] section; --host <selector> regenerates that " +
-		"host's target from [hosts.<selector>.packages]. Every other " +
-		"target is carried forward, and gale.toml is never written.",
-	// Arguments name packages to refresh, which is why they are
-	// accepted at all: `unprovenanced` prints
-	// `gale lock --refresh <pkg>` as the remedy, and a command that
-	// refuses its own documented remedy sends the user nowhere.
-	// Without --refresh they mean nothing, and silently locking
-	// everything would be a different operation than the one typed.
+	Long: "Resolve every default-target root against one index " +
+		"commit and write a v2 lock. It does not fetch artifacts, " +
+		"swap current, or write gale.toml. Host overlays refuse.",
 	Args: cobra.ArbitraryArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(lockGlobal, lockProject); err != nil {
 			return err
 		}
-		if err := checkLockArgs(args, lockRefresh); err != nil {
+		if err := checkLockArgs(args); err != nil {
 			return err
 		}
-		ctx, err := newCmdContext(lockRecipes, lockGlobal, lockProject)
+		c, err := newCmdContext("", lockGlobal, lockProject)
 		if err != nil {
 			return err
 		}
-		// resolveHostFlag expands `current` before the target is
-		// chosen, so the lock is keyed on the concrete hostname the
-		// manifest overlay uses. A target keyed "current" would match
-		// no machine and every reader would plan without it.
-		host, err := resolveHostFlag(lockHost)
-		if err != nil {
-			return err
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
 		}
-		if lockRefresh {
-			return runLockRefresh(
-				ctx, host, args, newCmdOutput(cmd),
-			)
-		}
-		return runLock(ctx, host, newCmdOutput(cmd))
+		return runLockLive(ctx, c, indexSource(lockIndex))
 	},
 }
 
@@ -76,15 +58,25 @@ func init() {
 		false, "Lock the global config")
 	lockCmd.Flags().BoolVarP(&lockProject, "project", "p",
 		false, "Lock the project config")
-	lockCmd.Flags().StringVar(&lockRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry")
-	lockCmd.Flags().StringVar(&lockHost, "host", "",
-		"Lock [hosts.<host>.packages] instead of the shared section "+
-			"(use 'current' for this machine)")
-	lockCmd.Flags().BoolVar(&lockRefresh, "refresh", false,
-		"Replace store directories that carry no provenance, refetching "+
-			"and verifying each before it is replaced")
+	lockCmd.Flags().StringVar(&lockIndex, "index", "",
+		"Resolve against a local index checkout")
 	rootCmd.AddCommand(lockCmd)
+}
+
+// errLockTakesNoPackages reports package names given to gale lock.
+// Unprovenanced refetch is gale fetch-adopt, not a lock argument.
+var errLockTakesNoPackages = errors.New("gale lock takes no package names")
+
+// checkLockArgs refuses positional package names. Those named the
+// deleted --refresh subset; unprovenanced refetch is fetch-adopt.
+func checkLockArgs(args []string) error {
+	if len(args) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"gale lock %s: %w; unprovenanced refetch is gale fetch-adopt",
+		strings.Join(args, " "), errLockTakesNoPackages,
+	)
 }
 
 // errNoDeclarations reports a lock target whose manifest section
@@ -132,11 +124,6 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	if len(declared) == 0 {
 		return noDeclarations(cfg, target, ctx.GalePath)
 	}
-	// Before the first resolve, so a misspelled name costs nothing
-	// and replaces nothing.
-	if err := checkRefreshNames(ctx, declared); err != nil {
-		return err
-	}
 	roots, err := resolveRoots(ctx, declared)
 	if err != nil {
 		return err
@@ -155,15 +142,7 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	for _, r := range roots {
 		name := r.Package.Name
 		out.Info(fmt.Sprintf("Locking %s@%s...", name, r.Package.Full()))
-		// --refresh's one added permission (design §13): an occupied
-		// canonical directory with no provenance at all is replaced
-		// with a newly verified one. Every other state falls through to
-		// lockRoot, which refuses the ones replacement would corrupt.
-		if ctx.refresh && refreshable(ctx, r) {
-			if err := replaceUnprovenanced(ctx, r, out); err != nil {
-				return err
-			}
-		} else if err := lockRoot(ctx, r); err != nil {
+		if err := lockRoot(ctx, r); err != nil {
 			return err
 		}
 		ctx.noteLockRoot(target, name, r.Package.Full())
@@ -171,14 +150,12 @@ func runLock(ctx *cmdContext, target string, out *output.Output) error {
 	// `gale lock` is the only writer that mints (§11), so the mints are
 	// attached here rather than inside WriteLock, which every writer
 	// shares.
-	ctx.lockMints, ctx.mintSkips = mintOtherPlatforms(ctx.Resolver, roots)
 	if err := ctx.WriteLock(); err != nil {
 		return err
 	}
 	// After the write, for the same reason warnUnlocked is: what these
 	// describe is what the new lockfile leaves out, and a failed write
 	// leaves the previous one intact, omitting nothing.
-	warnSkippedPlatforms(out, ctx.mintSkips)
 	return nil
 }
 
@@ -309,10 +286,10 @@ func lockRoot(ctx *cmdContext, r *recipe.Recipe) error {
 		// provenance the lock is written from. Without it `gale lock`
 		// could only describe what happened to be installed, and a
 		// package `gale add` just declared could never be locked at all.
-		if _, err := ctx.Installer.Install(r); err != nil {
-			return fmt.Errorf("installing %s@%s to lock it: %w", name, full, err)
-		}
-		return nil
+		return fmt.Errorf(
+			"locking %s@%s: store is empty; use gale fetch or gale fetch-adopt",
+			name, full,
+		)
 	}
 	rec, err := provenance.ReadUnverified(dir)
 	switch {
@@ -363,32 +340,19 @@ func checkRecipeBacks(r *recipe.Recipe, rec provenance.Record) error {
 		return nil
 	}
 	name, full := r.Package.Name, r.Package.Full()
-	b := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	if b == nil {
-		// Nothing declared is not the same as nothing to check: the
-		// installed bytes came from somewhere this recipe no longer
-		// names, so the recipe cannot back them either.
-		return recipeDisagrees(name, full, "sha256", rec.SHA256, "none")
-	}
-	if b.SHA256 != rec.SHA256 {
-		return recipeDisagrees(name, full, "sha256", rec.SHA256, b.SHA256)
-	}
-	if b.ManifestDigest != "" && b.ManifestDigest != rec.ManifestDigest {
-		return recipeDisagrees(
-			name, full, "manifest_digest", rec.ManifestDigest, b.ManifestDigest,
-		)
-	}
-	return nil
+	return fmt.Errorf(
+		"locking leftover bottle %s@%s: use gale fetch or gale fetch-adopt",
+		name, full,
+	)
 }
 
 // recipeDisagrees names both values, because which one is wrong is
 // the user's call: an upstream artifact may have been replaced, or
 // the recipe re-pinned without a revision bump.
 //
-// It offers no `--refresh`. That flag replaces a canonical directory
-// only where the directory is absent, unreferenced, or unprovenanced,
-// and this one is none of those, so naming it would send the user to
-// a command that must refuse (§11).
+// It offers no replacement command. A provenanced disagreement is
+// not the unprovenanced refetch case, so naming fetch-adopt would
+// send the user to a command that must refuse.
 func recipeDisagrees(name, version, field, installed, declared string) error {
 	return fmt.Errorf(
 		"%s@%s: %w: the installed artifact records %s %q and the recipe "+
@@ -419,18 +383,11 @@ type unprovenancedDir struct {
 // `gale lock` deliberately is not one of them. Writing a record
 // beside bytes it never fetched would attest a directory on the
 // strength of it being in the right place, which is exactly the
-// unverified marker §13 rejected; replacement under §11 and §13 is an
-// explicit user action.
-//
-// `--refresh` is offered only when it can actually help, per §13's
-// rule that a conflict names a remedy only where the directory is
-// replaceable. A pre-revision bare directory is not: other scopes'
-// generations link it by that path, so relocating the identity is
-// machine-wide migrate's job and refresh would refuse.
+// unverified marker §13 rejected; replacement is an explicit user
+// action (`gale fetch-adopt`, or machine-wide `gale migrate` for a
+// pre-revision bare directory).
 func unprovenanced(u unprovenancedDir) error {
-	remedy := fmt.Sprintf(
-		"`gale lock --refresh %s` or `gale migrate`", u.name,
-	)
+	remedy := fmt.Sprintf("`gale fetch-adopt` for %s, or `gale migrate`", u.name)
 	if u.dir != u.canonical {
 		remedy = fmt.Sprintf(
 			"`gale migrate`, since %s predates revisions and moving it "+
@@ -446,12 +403,8 @@ func unprovenanced(u unprovenancedDir) error {
 }
 
 // noDeclarations reports a lock target whose section declares
-// nothing, naming the sections that do declare packages.
-//
-// The list is the whole point of the error. --host takes the
-// selector verbatim, so a user whose packages all live under
-// overlays needs to see which strings are spelled in the file rather
-// than guess at their own hostname.
+// nothing, naming the leftover sections that still declare
+// packages. Remedies do not name --host.
 func noDeclarations(cfg *config.GaleConfig, target, path string) error {
 	sections := declaredRemedies(cfg)
 	if len(sections) == 0 {
@@ -467,13 +420,10 @@ func noDeclarations(cfg *config.GaleConfig, target, path string) error {
 	)
 }
 
-// declaredRemedies names the command that locks each manifest section
-// that declares at least one package, in a stable order.
-//
-// Commands rather than section names, because the section a user must
-// pass and the flag they must pass it with are not the same string:
-// shared [packages] is locked by plain `gale lock`, and offering
-// --host for it sends the user back into the failure they just hit.
+// declaredRemedies names the command that locks each leftover
+// section that still declares packages. Shared [packages]
+// is `gale lock`. Leftover [hosts.*] names moving pins into
+// [packages], then gale lock.
 func declaredRemedies(cfg *config.GaleConfig) []string {
 	var out []string
 	if len(cfg.Packages) > 0 {
@@ -483,17 +433,9 @@ func declaredRemedies(cfg *config.GaleConfig) []string {
 		if len(cfg.Hosts[host].Packages) == 0 {
 			continue
 		}
-		flag, ok := hostFlagArg(host)
-		if !ok {
-			// Unspellable in one line, so the section is named and the
-			// user supplies the selector themselves.
-			out = append(out, fmt.Sprintf(
-				"gale lock --host, with the selector spelled as in %s",
-				lockwrite.ManifestSection(host),
-			))
-			continue
-		}
-		out = append(out, "gale lock "+flag)
+		out = append(out,
+			"move leftover [hosts.*] pins into [packages], then gale lock")
+		break
 	}
 	return out
 }

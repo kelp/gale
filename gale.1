@@ -10,18 +10,18 @@
 .Op Ar args ...
 .Sh DESCRIPTION
 .Nm
-is a package manager for developer CLI tools that
-replaces Homebrew, Nix, and home-manager.
-It installs packages into versioned, isolated store
-directories and manages environment activation through
+is a package manager for developer CLI tools.
+It fetches verified artifacts from an index, pins
+them in a lockfile, and activates them through
 atomic generation snapshots.
 .Pp
 Packages are declared in
 .Pa gale.toml .
-Prebuilt binaries from GHCR are preferred; source
-builds are the automatic fallback.
-Every package can be built from source \(em binaries
-are a cache, not a requirement.
+Install and update resolve the index.
+Sync activates the v2 lock and does not rewrite it.
+A package that is not in the index is an error.
+A v1 lock migrates with
+.Cm fetch-adopt .
 .Pp
 .Nm
 supports both global packages
@@ -32,12 +32,19 @@ and per-project environments
 .Ss Package Management
 .Bl -tag -width Ds
 .It Cm install Ar pkg Ns Op @ Ns Ar ver
-Install a package.
-Downloads a prebuilt binary if available, otherwise
-builds from source.
+Install a package from the index.
+Stages
+.Pa pkg/fetch/ ,
+writes
+.Pa gale.toml
+and a v2 lock, then swaps
+.Pa current .
 Use
 .Ar pkg@ver
 to install a specific version.
+Use
+.Fl -index Ar dir
+to resolve against a local index checkout.
 .Pp
 .Dl $ gale install jq
 .Dl $ gale install go@1.26.1
@@ -46,18 +53,11 @@ Remove a package from the store and
 .Pa gale.toml .
 .Pp
 .Dl $ gale remove htop
-.It Cm add Ar pkg Ns Op @ Ns Ar ver ...
-Add one or more packages to
-.Pa gale.toml
-without installing.
-Useful for declaring dependencies before running
-.Cm sync .
-.Pp
-.Dl $ gale add ripgrep fd bat
 .It Cm sync
-Install all packages declared in
-.Pa gale.toml
-at their pinned versions.
+Activate every package the v2 lock names.
+It fetches missing trees and rebuilds the generation.
+It does not write
+.Pa gale.lock .
 Typically invoked automatically by direnv.
 .Pp
 Use
@@ -74,60 +74,34 @@ naming the packages still missing.
 The direnv hook uses this flag; a sync run by hand ignores
 it and always does the work.
 .Pp
-Use
-.Fl -no-frozen
-to install from recipes without enforcing
-.Pa gale.lock .
-Use
-.Fl -build
-to build every package from source.
-.Pp
 .Dl $ gale sync
 .Dl $ gale sync --if-needed
 .It Cm update Op Ar pkg Ns Op @ Ns Ar ver ...
-Update packages to the latest version, or to a specific
-version with
+Update packages from the index to the latest version, or
+to a specific version with
 .Ar pkg@ver .
-Skips pinned packages unless explicitly named.
-.Pp
 Use
-.Fl -no-install
-to rewrite
-.Pa gale.toml
-pins without building; run
-.Cm sync
-afterward to install.
-Use
-.Fl -no-refresh
-to skip the automatic tap refresh.
+.Fl -index Ar dir
+to resolve against a local index checkout.
 .Pp
 .Dl $ gale update
 .Dl $ gale update jq@1.8.1
-.Dl $ gale update --no-install jq
-.It Cm switch Ar pkg Ar version
-Switch a package already declared in
-.Pa gale.toml
-to a specific version.
-Bypasses
-.Ic [pinned] ,
-works for downgrades as well as upgrades, and refuses to
-add packages that aren't already declared (use
-.Cm install
-for that).
-Accepts both two-arg and
-.Ar pkg@ver
-forms.
-.Pp
-.Dl $ gale switch gh 2.89.0
-.Dl $ gale switch gh@2.89.0
-.It Cm list Op Fl -scope Ar all|shared|host Op Fl g | Fl p | Fl a
+.It Cm list Op Fl -scope Ar all|shared Op Fl g | Fl p | Fl a
 List packages declared in
 .Pa gale.toml
 with their versions.
 Use
 .Fl -scope
-to filter shared and host overlay entries
+to filter
+.Ic [packages]
+entries
 .Pq default Li all .
+.Li all
+and
+.Li shared
+are the same list.
+.Li host
+is invalid.
 Use
 .Fl g
 to list global packages from inside a project,
@@ -137,86 +111,49 @@ to force project scope, or
 to list both with section headers.
 .Pp
 .Dl $ gale list
-.Dl $ gale list --scope host
+.Dl $ gale list --scope shared
 .Dl $ gale list -a
-.It Cm gc Op Fl -force
+.It Cm gc
 Remove unused package versions from the store and
 old generations.
-Keeps versions referenced by any
-.Pa gale.toml ,
-by the active generation, and by every generation above
-the active one, in the global scope, the project scope,
-and every project recorded in
-.Pa ~/.gale/projects ,
-so a gc run from one directory cannot sweep versions
-another project still links.
+Keeps the exact store directories linked by the
+current generation and at most one previous
+generation, in the global scope and every project
+recorded in
+.Pa ~/.gale/projects .
+A leftover
+.Ic [hosts. Ns Ar * Ns Ic ]
+pin that no kept generation links is swept.
+Abandoned generations above current after a rollback
+are swept with the versions only they linked.
 .Pp
-The generations above the current one are the branch a
-rollback abandoned.
-Their directories are never removed automatically, so the
-versions they link are never swept either: a generation
-whose packages are gone cannot be rolled onto.
-.Cm generations remove
-is the only way to discard that branch.
-Generations below the current one are removed, and the
-versions only they linked are reclaimed \(em that is how a
-superseded revision goes after
-.Cm update .
+Never deletes a live fetch staging directory
+.Pq Pa pkg/fetch/.tmp-* .
+If any such directory exists, the fetch-namespace
+sweep is refused; other store layout may still sweep.
+Unlinked fetch identities younger than one hour are
+kept.
+.Pp
+Refuses to sweep when a registered project's kept
+generations cannot be read.
+There is no
+.Fl -force .
+.Pp
 Registry entries whose project directory has vanished
 are pruned on each real run.
-Each build of a dirty tree installed with
-.Ic install Fl -path
-keeps its own store directory, so a development loop
-accumulates them.
-.Nm Cm gc
-is how they are reclaimed, once no generation links
-them.
 With
 .Fl -dry-run ,
 also lists the registered projects that contributed
 retention.
 .Pp
-Refuses to sweep, naming the project, when a registered
-project still exists but its config or its active
-generation cannot be read.
-An unreadable project is not proof that its packages are
-unreferenced; a down network mount is the usual cause.
-A project that is genuinely gone reads as absent and
-sweeps normally.
-Use
-.Fl -force
-to sweep anyway.
-.Pp
-When gc rebuilds a generation it takes the versions from
-that scope's lockfile, so the rebuild cannot put a version
-the lock does not name on PATH.
-A scope whose lockfile is present and cannot be read is
-refused;
-.Fl -force
-rebuilds it without the lock.
-.Pp
 .Dl $ gale gc --dry-run
 .Dl $ gale gc
-.Dl $ gale gc --force
-.It Cm pin Ar pkg
-Pin a package to its current version.
-Pinned packages are skipped by
-.Cm update
-unless explicitly named.
-.Pp
-.Dl $ gale pin go
-.It Cm unpin Ar pkg
-Remove the pin on a package, allowing
-.Cm update
-to upgrade it again.
-.Pp
-.Dl $ gale unpin go
 .El
 .Ss Inspection
 .Bl -tag -width Ds
 .It Cm info Ar pkg Op Fl g | Fl p
 Show package metadata: version, store path, scope,
-config path, and pin status.
+and config path.
 For uninstalled packages, shows registry information.
 With
 .Fl g ,
@@ -249,76 +186,23 @@ to skip the automatic tap refresh.
 .Pp
 .Dl $ gale outdated
 .Dl jq 1.7.1 -> 1.8.1
-.It Cm inspect Op Ar pkg | Fl -all
-Audit installed packages for linkage issues:
-unresolvable
-.Va @rpath
-references, stale rpath entries, and mismatches between
-binary references and the recipe's declared deps.
-Exits non-zero when issues are found, so CI can gate on it.
-Use
-.Fl -all
-to scan every installed package, or
-.Fl -json
-for machine-readable output.
-.Pp
-.Dl $ gale inspect jq
-.Dl $ gale inspect --all --json
-.It Cm doctor Op Fl -repair Op Fl -force
-Check the gale installation for common problems:
-PATH configuration, store integrity, stale generations,
-host-overlay shadows, and lib farm drift.
-It also reports the states that block a rebuild: a lockfile
-in a schema this build cannot use, a store directory whose
-.Pa .gale-deps.toml
-cannot be read, and two declared packages shipping the same
-executable name with no
-.Sy [bin]
-winner.
-It also reports, without failing, the man pages and root-level
-files more than one declared package provides.
-Those are not arbitrated: the first package in sorted order
-provides the file, and removing one provider is the only way to
-change which.
-On macOS it fails when an installed binary in the active
-generation's closure carries an
-.Pa @rpath
-dependency reference that none of its own rpath entries
-resolves.
-Such a binary aborts under
-.Xr dyld 1
-on the next exec; rebuild it with
-.Cm gale install --build Ar pkg .
-The check is skipped on other platforms.
-A scope whose last sync did not complete is reported the same
-way, naming the packages that failed.
-Run
-.Cm gale sync
-to retry them at once; an automatic retry waits out the
-ten-minute interval.
-Use
-.Fl -repair
-to rebuild active generations and re-sign Mach-O binaries.
-Repair also deletes the store directories whose dependency
-metadata is unreadable, together with every package directory
-on a dependency path to one; run
-.Cm gale sync
-afterwards to reinstall them.
-A rebuilt generation takes its versions from the scope's
-lockfile, so repair cannot put a version the lock does not
-name on PATH.
-A scope whose lockfile is present and cannot be read is
-refused; use
-.Fl -force
-to rebuild it without the lock.
+.It Cm doctor
+Four checks: PATH includes
+.Pa ~/.gale/current/bin ,
+the lock is a readable v2 file,
+the active generation matches the lock roots,
+and each locked fetch tree digest matches.
+A v1 lock names
+.Cm gale fetch-adopt .
+Generation drift names
+.Cm gale sync .
+A digest mismatch names
+.Cm gale verify .
+Doctor does not rebuild generations or delete store
+directories. The remedy it prints is a command the
+user runs.
 .Pp
 .Dl $ gale doctor
-.Dl $ gale doctor --repair
-.Dl $ gale doctor --repair --force
-.It Cm search Ar query
-Search for packages by name or description.
-.Pp
-.Dl $ gale search json
 .El
 .Ss Generation Management
 .Bl -tag -width Ds
@@ -333,14 +217,6 @@ directory.
 .Pp
 .Dl $ gale generations
 .Dl $ gale generations -g
-.It Cm generations diff Op Ar from Op Ar to Op Fl g | Fl p
-Show packages added and removed between two
-generations.
-Defaults to comparing the current generation with
-the previous one.
-.Pp
-.Dl $ gale generations diff
-.Dl $ gale generations diff 3 5
 .It Cm generations rollback Op Ar N Op Fl g | Fl p
 Switch to a previous generation.
 Defaults to the previous generation (current \- 1).
@@ -351,20 +227,12 @@ An incomplete generation is one whose store versions are
 gone; activating it would put broken entries on PATH.
 Rebuild from config with
 .Cm sync ,
-or discard it with
-.Cm generations remove .
+or rerun
+.Cm gc
+after it falls below the two kept generations.
 .Pp
 .Dl $ gale generations rollback
 .Dl $ gale generations rollback 3
-.It Cm generations remove Ar N Op Ar N ... Op Fl g | Fl p
-Discard the named generations.
-Refuses the current generation.
-Removes nothing when any argument is not a generation.
-Generations above the current one, left by a rollback, are
-never removed automatically.
-.Pp
-.Dl $ gale generations remove 7
-.Dl $ gale generations remove 6 7 8
 .El
 .Ss Project Environment
 .Bl -tag -width Ds
@@ -410,104 +278,42 @@ shell function for
 .Pp
 .Dl $ gale hook direnv >> ~/.config/direnv/direnvrc
 .El
-.Ss Recipe Development
+.Ss Index
 .Bl -tag -width Ds
-.It Cm build Ar recipe.toml Op Fl -debug
-Build a package from a local recipe file.
-Produces a
-.Pa .tar.zst
-archive.
-Use
-.Fl -debug
-for unoptimized builds with debug symbols.
+.It Cm lint Ar file.toml ... Op Fl -base Ar old.toml
+Validate one or more index files.
+A document with a top-level
+.Ic versions
+table is an index file.
+The filename stem must match
+.Ic package.name .
+A source recipe is not an index document.
+.Fl -base
+compares one index file to a previous document
+and refuses append-only violations.
 .Pp
-.Dl $ gale build recipes/j/jq.toml
-.It Cm lint Ar recipe.toml ... Op Fl -strict
-Validate one or more recipe files for errors and
-warnings.
-Exit non-zero when a recipe has an error.
-Use
-.Fl -strict
-to exit non-zero on warnings too.
-Warnings are reported the same way either way.
+.Dl $ gale lint index/j/just.toml
+.Dl $ gale lint --base old.toml index/j/just.toml
+.It Cm admit
+Record an index artifact from a local archive.
+Extracts with Gale's installer path, computes
+.Ic tree_digest ,
+and prints a TOML fragment.
+Does not write the store, lock, or
+.Pa gale.toml .
 .Pp
-.Dl $ gale lint recipes/j/jq.toml
-.Dl $ gale lint --strict recipes/j/jq.toml
-.It Cm create-recipe Ar repo Op Fl o Ar dir
-Generate a recipe from a GitHub repository using AI.
-Accepts
-.Ar owner/repo ,
-.Ar github.com/owner/repo ,
-or a full URL.
-.Pp
-Automatically detects build systems, computes source
-SHA256, and validates with lint.
-Missing dependencies are created recursively (up to
-6 levels deep).
-.Pp
-When run inside a gale-recipes directory, writes
-recipes to
-.Pa recipes/<letter>/<name>.toml .
-Otherwise prints to stdout.
-Use
-.Fl o
-to specify an output directory.
-.Pp
-Requires an Anthropic API key in
-.Pa ~/.gale/config.toml .
-.Pp
-.Dl $ gale create-recipe jqlang/jq
-.Dl $ gale create-recipe -o recipes/ benhoyt/inih
+.Dl $ gale admit --archive just.tar.gz --name just --version 1.56.0 --os darwin --arch arm64 --url https://github.com/casey/just/releases/download/1.56.0/just.tar.gz --file just:bin/just:755
 .El
 .Ss Supply Chain Security
 .Bl -tag -width Ds
-.It Cm audit Ar pkg Op Fl g | Fl p
-Rebuild a package from source and compare its SHA256
-against the installed binary.
-A match confirms the build is reproducible; most builds
-are not yet deterministic, so a mismatch does not
-indicate tampering.
-Scope flags select which lockfile to read the
-installed hash from.
-.Pp
-.Dl $ gale audit jq
-.It Cm verify Ar pkg Op Fl g | Fl p
-Check the Sigstore attestation for an installed
-package's prebuilt binary.
-Scope flags select which lockfile to read the
-installed version from.
+.It Cm verify Op Ar pkg Op Fl g | Fl p
+Recompute each locked fetch tree digest and
+compare it to the v2 lock.
+Does not talk to GHCR.
+A v1 lock has no tree_digest.
+Scope flags select which lockfile to read.
 .Pp
 .Dl $ gale verify jq
-.It Cm sbom Op Ar pkg Op Fl -json Op Fl g | Fl p | Fl a
-Show a software bill of materials for installed
-packages.
-Use
-.Fl -json
-for machine-readable output.
-With
-.Fl a ,
-emit entries from both the project and global
-gale.toml; each entry gets a
-.Ic scope
-field
-.Pq Sq project No or Sq global .
-.Pp
-.Dl $ gale sbom
-.Dl $ gale sbom jq --json
-.Dl $ gale sbom -a
-.El
-.Ss Repository Management
-.Bl -tag -width Ds
-.It Cm repo add Ar name Ar url
-Add a recipe repository with the given name and URL.
-.It Cm repo remove Ar name
-Remove a recipe repository.
-.It Cm repo list
-List configured recipe repositories.
-.It Cm repo init Ar name
-Create a new recipe repository scaffold.
-.It Cm repo update Op Ar name
-Update one or all recipe repositories.
 .El
 .Ss Shell Completion
 .Bl -tag -width Ds
@@ -573,20 +379,13 @@ Mutually exclusive with
 and
 .Fl p .
 .El
-.Ss Source Strategy Flags
+.Ss Index Flag
 .Bl -tag -width Ds
-.It Fl -path Ar dir
-Build from a local source directory.
-Version is derived from git describe.
-.It Fl -build
-Build from source, skipping prebuilt binaries.
-.It Fl -git
-Clone the source repository and build from HEAD.
-.It Fl -recipe Ar file
-Use a specific local recipe file.
-.It Fl -recipes Ar dir
-Resolve recipes from a local directory instead of
-the registry.
+.It Fl -index Ar dir
+Resolve install, update, lock, and fetch-adopt against
+a local index checkout.
+The directory must be a git repository.
+Uncommitted edits are invisible.
 .El
 .Ss Build Flags
 .Bl -tag -width Ds
@@ -671,15 +470,14 @@ Install packages and set up a project:
 $ gale install ripgrep bat fd
 $ cd myproject
 $ gale init
-$ gale add go@1.26.1 golangci-lint
-$ gale sync
+$ gale install go@1.26.1
+$ gale install golangci-lint
 .Ed
 .Pp
-Update everything except pinned packages:
+Update every package in the manifest:
 .Bd -literal -offset indent
-$ gale pin go
 $ gale update
-$ gale unpin go
+$ gale update jq
 .Ed
 .Pp
 Use direnv for automatic project environments:
@@ -690,18 +488,16 @@ $ gale init
 $ direnv allow
 .Ed
 .Pp
-Build and test a recipe:
+Admit an artifact into a local index:
 .Bd -literal -offset indent
-$ gale create-recipe jqlang/jq
-$ gale build recipes/j/jq.toml
-$ gale install jq --recipe recipes/j/jq.toml
+$ gale admit just-1.58.0-aarch64-apple-darwin.tar.gz
+$ gale lint --base old.toml index/j/just.toml
+$ gale install just --index ../gale-recipes
 .Ed
 .Pp
-Audit supply chain integrity:
+Check store trees against the lock:
 .Bd -literal -offset indent
-$ gale audit jq
 $ gale verify jq
-$ gale sbom --json
 .Ed
 .Sh CONFIGURATION
 Application settings in
@@ -714,20 +510,15 @@ When true, all builds use debug flags.
 Default: false.
 .El
 .It Ic [anthropic]
-.Bl -tag -width "prompt_file" -compact
-.It Va api_key
-Anthropic API key for
-.Cm create-recipe .
-.It Va prompt_file
-Path to a file appended to the recipe creation
-system prompt.
+Leftover. Ignored.
 .El
-.It Ic [registry]
-.Bl -tag -width "url" -compact
-.It Va url
-Override the recipe registry URL.
-.El
-.El
+.Pp
+The recipe registry URL is compiled in.
+Leftover
+.Ic [registry] url
+and
+.Ic [sync] parallelism
+keys are ignored.
 .Pp
 Package declarations in
 .Pa gale.toml :
@@ -736,76 +527,26 @@ Package declarations in
 jq = "1.8.1"
 go = "1.26.1"
 
-[pinned]
-go = true
-
 [vars]
 GOPATH = "${HOME}/go"
-
-[bin]
-npx = "corepack"
-
-[hosts.my-mac.packages]
-fzf = "0.50"
-
-[hosts.my-server.packages]
-htop = "3.0"
 .Ed
 .Pp
-Top-level
 .Ic [packages]
-applies on every machine.
+is the only write path.
+Leftover
 .Ic [hosts. Ns Ar name Ns Ic .packages]
-sections add machine-specific packages when the local
-hostname matches
-.Ar name .
-Host entries override shared entries when both
-declare the same package.
-.Ic [hosts. Ns Ar name Ns Ic .pinned]
+tables refuse.
+There is no
+.Fl -host
+flag.
+A second machine uses a second file.
+Leftover
+.Ic [bin]
 and
 .Ic [hosts. Ns Ar name Ns Ic .bin]
-mirror the shared
-.Ic [pinned]
-and
-.Ic [bin]
-behavior per host.
-.Pp
-.Ic [bin]
-maps an executable's basename to the package whose copy
-belongs on
-.Ev PATH .
-Two packages shipping one basename refuse the generation
-rebuild, naming both providers, until an entry here picks
-the winner.
-The losing package stays installed; only that basename is
-left out, and
-.Cm which
-reports it as another provider.
-The winner must be a package the same file declares.
-A
-.Ic [hosts. Ns Ar name Ns Ic .bin]
-entry overrides the shared one on the machines
-.Ar name
-matches, so two machines can put different providers of one
-basename on
-.Ev PATH .
-.Cm remove
-deletes an entry whose winner it removes, in either table, so
-the manifest still loads.
-The active host is
-.Ev GALE_HOST
-if set, otherwise the value returned by
-.Xr hostname 1 .
-.Pp
-Use
-.Fl -host Ar name
-on
-.Cm add , remove , pin ,
-and
-.Cm unpin
-to target a host section.
-.Fl -host current
-expands to the current machine.
+keys are ignored.
+Two packages shipping the same basename refuse the
+generation. Remove one package.
 .Sh ENVIRONMENT
 .Bl -tag -width Ds
 .It Ev NO_COLOR
@@ -816,12 +557,12 @@ Follows the
 convention.
 An empty value is ignored.
 .It Ev GALE_HOST
-Overrides the hostname used to select
+Leftover.
+Did select
 .Ic [hosts. Ns Ar X Ns Ic ]
-sections in
-.Pa gale.toml .
-Defaults to
-.Xr hostname 1 .
+sections.
+Those tables now refuse.
+Unset it.
 .El
 .Sh FILES
 .Bl -tag -width "~/.gale/config.toml" -compact
@@ -841,8 +582,8 @@ to PATH.
 Machine-local project registry, one absolute path per
 line, recorded automatically on project-scoped use.
 .Cm gc
-retains every registered project's pins and active
-generation.
+retains every registered project's two kept
+generations.
 .It Pa gale.toml
 Project package declarations.
 .It Pa gale.lock

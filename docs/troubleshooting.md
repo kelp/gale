@@ -6,8 +6,9 @@
 gale doctor
 ```
 
-Doctor checks PATH configuration, config files, the
-package store, symlink integrity, and direnv setup.
+Doctor checks PATH, that the lock is readable, that
+the generation matches lock roots, and that tree
+digests match.
 Fix everything it reports before investigating further.
 
 ## Common Issues
@@ -78,21 +79,13 @@ and the active one with `*`:
 + 7   13 packages
 ```
 
-Nothing reclaims them on its own. `gale gc` skips
-everything at or above `current`, and automatic
-retention only reaches them once `current` climbs back
-past its cutoff. `gale gc -n` reports how many are
-being retained.
-
-To discard a branch you abandoned on purpose, name it:
-
-```sh
-gale generations remove 6 7
-```
-
-The command refuses the current generation and removes
-nothing at all when any number in the batch is not a
+Nothing reclaims them on its own until the next rebuild
+allocates above the highest number. Automatic retention
+then prunes history below the keep-2 cutoff.
+`gale gc` keeps current and at most one previous
 generation.
+Abandoned generations above current are swept.
+`gale gc -n` reports what would be removed.
 
 ### Build failures
 
@@ -124,7 +117,7 @@ tampering.
 The remedy is to re-lock on the machine that failed:
 
 ```sh
-gale lock --refresh <pkg>
+gale lock
 ```
 
 Or pin a version with a prebuilt binary, so the closure
@@ -138,39 +131,13 @@ the digests above it unreproducible too. A closure
 containing a source build is portable exactly as far as
 that build reproduces. See [lockfile.md](lockfile.md).
 
-### Audit reports a mismatch
+### Verify reports a digest mismatch
 
-`gale audit <pkg>` rebuilds a package from source and
-compares the SHA256 against the installed binary. A
-mismatch is normal for most packages.
-
-A **match** confirms the build is reproducible — the
-installed binary is exactly what the source produces.
-
-A **mismatch** does not indicate tampering. These
-sources of non-determinism are not fixable without
-Nix-level build isolation:
-
-- **Mach-O LC_UUID.** macOS clang embeds a unique
-  UUID in every compiled binary.
-- **Libtool .la files.** Contain absolute paths to
-  the build temp directory.
-- **pkg-config .pc files.** Contain absolute paths
-  to the build prefix directory.
-- **ar/ranlib timestamps.** Embedded in `.a` static
-  archives. `ZERO_AR_DATE=1` helps but does not
-  fully solve it on macOS.
-
-These parts of the build output ARE deterministic:
-
-- Archive packaging (zstd compression, tar metadata,
-  symlink targets).
-- Text files, man pages, shell scripts.
-- File sizes and permissions.
-
-`gale audit` currently reads from the project
-lockfile. It does not yet support `-g` for auditing
-globally installed packages.
+`gale verify` recomputes the tree digest of each
+`pkg/fetch/` directory the v2 lock names. A mismatch
+means the store is not the locked artifact. Re-fetch
+or restore the store; do not treat this as a
+source-rebuild check. `gale audit` is gone.
 
 ### Direnv not activating
 
@@ -212,8 +179,7 @@ Sigstore TUF CDN, caching it for a day under
 `~/.gale/cache/sigstore-tuf/`. If the network is
 unreachable, gale falls back to a trusted-root
 snapshot embedded in the binary and prints a
-one-time warning. `gale doctor` reports the cache
-state.
+one-time warning.
 
 For air-gapped verification, set
 `GALE_SIGSTORE_TRUSTED_ROOT` to a local

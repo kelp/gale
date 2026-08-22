@@ -1,15 +1,13 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/installer"
-	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -95,13 +93,18 @@ func TestParsePackageArgRejectsBadInput(t *testing.T) {
 }
 
 func TestInstallHasHostFlag(t *testing.T) {
-	f := installCmd.Flags().Lookup("host")
-	if f == nil {
-		t.Fatal("install: --host flag not found")
+	if f := installCmd.Flags().Lookup("host"); f != nil {
+		t.Fatal("install: leftover --host flag")
 	}
-	if f.DefValue != "" {
-		t.Errorf("install: --host default = %q, want empty",
-			f.DefValue)
+	installCmd.SetArgs([]string{"--host", "current", "jq"})
+	t.Cleanup(func() { installCmd.SetArgs(nil) })
+	err := installCmd.ParseFlags([]string{"--host", "current", "jq"})
+	if err == nil {
+		t.Fatal("install --host: want unknown-flag error")
+	}
+	if !strings.Contains(err.Error(), "unknown flag") &&
+		!strings.Contains(err.Error(), "unknown shorthand") {
+		t.Fatalf("install --host: %v, want unknown flag", err)
 	}
 }
 
@@ -339,10 +342,6 @@ func TestGitDevVersionDistinguishesDirtyTrees(t *testing.T) {
 
 func TestRecipesFlagReplacesLocal(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"install":  installCmd,
-		"add":      addCmd,
-		"update":   updateCmd,
-		"sync":     syncCmd,
 		"outdated": outdatedCmd,
 	}
 
@@ -380,15 +379,7 @@ func TestRecipesFlagReplacesLocal(t *testing.T) {
 // failed with `unknown command "."` (gh#114).
 func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"install":  installCmd,
-		"add":      addCmd,
-		"update":   updateCmd,
-		"sync":     syncCmd,
 		"outdated": outdatedCmd,
-		"gc":       gcCmd,
-		"inspect":  inspectCmd,
-		"switch":   switchCmd,
-		"build":    buildCmd,
 	}
 
 	for name, cmd := range cmds {
@@ -439,15 +430,7 @@ func TestRecipesFlagAcceptsSpaceForm(t *testing.T) {
 // commit 4a54c9e).
 func TestRecipesFlagWordingIsAccurate(t *testing.T) {
 	cmds := map[string]*cobra.Command{
-		"install":  installCmd,
-		"add":      addCmd,
-		"update":   updateCmd,
-		"sync":     syncCmd,
 		"outdated": outdatedCmd,
-		"gc":       gcCmd,
-		"inspect":  inspectCmd,
-		"switch":   switchCmd,
-		"build":    buildCmd,
 	}
 
 	for name, cmd := range cmds {
@@ -482,23 +465,11 @@ func TestRecipesFlagWordingIsAccurate(t *testing.T) {
 }
 
 func TestPathFlagReplacesSource(t *testing.T) {
-	cmds := map[string]*cobra.Command{
-		"install": installCmd,
-		"update":  updateCmd,
-	}
-
-	for name, cmd := range cmds {
-		t.Run(name, func(t *testing.T) {
-			if cmd.Flags().Lookup("path") == nil {
-				t.Errorf("%s: --path flag not found", name)
-			}
-			if cmd.Flags().Lookup("source") != nil {
-				t.Errorf(
-					"%s: --source flag should not exist",
-					name,
-				)
-			}
-		})
+	for _, name := range []string{"install", "update"} {
+		cmd := findCmd(name)
+		if cmd.Flags().Lookup("path") != nil {
+			t.Errorf("%s: --path must be gone", name)
+		}
 	}
 }
 
@@ -534,14 +505,14 @@ func TestResolveScope(t *testing.T) {
 			false, false, tmp, false,
 		},
 		{
-			"no flags with .tool-versions defaults project",
+			"no flags with .tool-versions defaults global",
 			false, false, func() string {
 				dir := t.TempDir()
 				if err := os.WriteFile(filepath.Join(dir, ".tool-versions"), []byte("golang 1.26.1\n"), 0o644); err != nil {
 					t.Fatal(err)
 				}
 				return dir
-			}(), false,
+			}(), true,
 		},
 	}
 
@@ -586,7 +557,7 @@ func TestResolverForRecipeInBucketedRepo(t *testing.T) {
 	}
 
 	// The resolver should be able to find jq.toml by name.
-	r, err := resolver("jq")
+	r, err := resolver(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("resolver failed for jq: %v", err)
 	}
@@ -639,7 +610,7 @@ func TestInstallFromGitResolverFallback(t *testing.T) {
 	// With the old recipeFileResolver, navigating up 3 dirs
 	// from /tmp/xxx/custom.toml would compute a wrong path.
 	// The fallback should return a working resolver.
-	_, err = resolver("nonexistent-pkg-xyz")
+	_, err = resolver(context.Background(), "nonexistent-pkg-xyz")
 	if err == nil {
 		t.Fatal("expected error for nonexistent package")
 	}
@@ -695,328 +666,7 @@ func TestInstallRecipeFileWithVersionErrors(t *testing.T) {
 	installGit = false
 	installBuild = false
 
-	err := installCmd.RunE(installCmd, []string{"jq@1.8.1"})
-	if err == nil {
-		t.Fatal("install --recipe jq.toml jq@1.8.1 must " +
-			"return an error: @version is incompatible with --recipe")
-	}
-	msg := err.Error()
-	if !strings.Contains(msg, "version") || !strings.Contains(msg, "--recipe") {
-		t.Errorf("error %q does not mention version + --recipe "+
-			"incompatibility", msg)
-	}
-}
-
-// TestInstallFromRecipeFileRotatesGeneration is a regression
-// test for gale#22 [sic: gh#23]: `gale install -g <name>
-// --recipe <file>` must rotate the active generation so
-// current/bin/<name> resolves to the freshly installed
-// revision. Before the fix, the lockfile got updated but
-// the gen was left untouched — silent stale-PATH bug.
-//
-// Uses the MethodCached path (pre-populated store) so the
-// test doesn't depend on a real build: install returns a
-// "cached" result with empty SHA256, finalize runs anyway,
-// and we assert generation.Build was reached and produced
-// gen/1.
-func TestInstallFromRecipeFileRotatesGeneration(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	// Recipe file (letter-bucketed so resolverForRecipe
-	// recognizes it as a recipes-repo recipe).
-	recipesDir := filepath.Join(tmp, "gale-recipes", "recipes", "t")
-	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	recipePath := filepath.Join(recipesDir, "testpkg.toml")
-	// Source URL/SHA are required by recipe.Parse but never
-	// fetched in this test — the pre-populated store dir
-	// triggers MethodCached.
-	recipeTOML := strings.Join([]string{
-		`[package]`,
-		`name = "testpkg"`,
-		`version = "1.0.0"`,
-		`revision = 1`,
-		``,
-		`[source]`,
-		`url = "https://example.invalid/testpkg-1.0.0.tar.gz"`,
-		`sha256 = "0000000000000000000000000000000000000000000000000000000000000000"`,
-		``,
-		`[build]`,
-		`steps = ["true"]`,
-	}, "\n")
-	if err := os.WriteFile(recipePath,
-		[]byte(recipeTOML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Pre-populate the store at <version>-1/bin/testpkg so
-	// IsInstalled returns true and install short-circuits
-	// to MethodCached. Avoids needing a real source tarball.
-	galeDir := filepath.Join(tmp, ".gale")
-	storeRoot := filepath.Join(galeDir, "pkg")
-	pkgBin := filepath.Join(storeRoot, "testpkg", "1.0.0-1", "bin")
-	if err := os.MkdirAll(pkgBin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(pkgBin, "testpkg"),
-		[]byte("#!/bin/sh\n"), 0o755,
-	); err != nil {
-		t.Fatal(err)
-	}
-	writeProvenance(t, storeRoot, "testpkg", "1.0.0-1")
-
-	// Bootstrap an empty gale.toml.
-	configPath := filepath.Join(galeDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out := output.New(os.Stderr, false)
-	ctx := &cmdContext{
-		GalePath:  configPath,
-		GaleDir:   galeDir,
-		StoreRoot: storeRoot,
-		Installer: &installer.Installer{
-			Store: store.NewStore(storeRoot),
-		},
-	}
-
-	if err := installFromRecipeFile(ctx, recipePath, out); err != nil {
-		t.Fatalf("installFromRecipeFile: %v", err)
-	}
-
-	// Contract: a new generation was built and current points
-	// at it. Before the fix this was silently skipped.
-	currentTarget, err := os.Readlink(filepath.Join(galeDir, "current"))
-	if err != nil {
-		t.Fatalf("readlink current: %v — install did not rotate the generation", err)
-	}
-	if currentTarget != filepath.Join("gen", "1") {
-		t.Errorf("current = %q, want gen/1", currentTarget)
-	}
-
-	// And bin/testpkg in the new gen resolves to the store.
-	symlinkPath := filepath.Join(galeDir, "gen", "1", "bin", "testpkg")
-	target, err := os.Readlink(symlinkPath)
-	if err != nil {
-		t.Fatalf("readlink testpkg: %v", err)
-	}
-	wantSuffix := filepath.Join("testpkg", "1.0.0-1", "bin", "testpkg")
-	if !strings.Contains(target, wantSuffix) {
-		t.Errorf("testpkg symlink = %q, want suffix %q",
-			target, wantSuffix)
-	}
-}
-
-// TestInstallFromRecipeFileRotatesGenWhenOtherPackagesMissing
-// is the precise repro for gh#23: the user runs
-// `gale install -g <name> --recipe <file>` against a
-// machine whose gale.toml lists OTHER packages whose store
-// dirs aren't on this host yet (a fresh-clone-on-new-host
-// scenario). Strict generation.Build errors on those, so
-// the install for the target package "succeeds" in store
-// + lockfile but the active generation is never rotated.
-// User-visible: lockfile updated, store has new revision,
-// but `which <name>` resolves the prior revision (or in
-// the gen/308 case, a broken binary that segfaults).
-//
-// Fix: the install path uses lenient rebuild and verifies
-// the target package landed on PATH. Other packages with
-// missing store dirs no longer block this install from
-// rotating the gen.
-func TestInstallFromRecipeFileRotatesGenWhenOtherPackagesMissing(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	// Recipe file for the target package.
-	recipesDir := filepath.Join(tmp, "gale-recipes", "recipes", "t")
-	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	recipePath := filepath.Join(recipesDir, "testpkg.toml")
-	recipeTOML := strings.Join([]string{
-		`[package]`,
-		`name = "testpkg"`,
-		`version = "1.0.0"`,
-		`revision = 1`,
-		``,
-		`[source]`,
-		`url = "https://example.invalid/testpkg-1.0.0.tar.gz"`,
-		`sha256 = "0000000000000000000000000000000000000000000000000000000000000000"`,
-		``,
-		`[build]`,
-		`steps = ["true"]`,
-	}, "\n")
-	if err := os.WriteFile(recipePath,
-		[]byte(recipeTOML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Pre-populate the store for testpkg so install short-
-	// circuits to MethodCached.
-	galeDir := filepath.Join(tmp, ".gale")
-	storeRoot := filepath.Join(galeDir, "pkg")
-	pkgBin := filepath.Join(storeRoot, "testpkg", "1.0.0-1", "bin")
-	if err := os.MkdirAll(pkgBin, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(pkgBin, "testpkg"),
-		[]byte("#!/bin/sh\n"), 0o755,
-	); err != nil {
-		t.Fatal(err)
-	}
-	writeProvenance(t, storeRoot, "testpkg", "1.0.0-1")
-
-	// gale.toml lists testpkg AND another package whose
-	// store dir is INTENTIONALLY missing — mirrors the
-	// fresh-host scenario described in #23.
-	configPath := filepath.Join(galeDir, "gale.toml")
-	cfgTOML := strings.Join([]string{
-		`[packages]`,
-		`  testpkg = "1.0.0"`,
-		`  missingpkg = "9.9.9"`,
-		``,
-	}, "\n")
-	if err := os.WriteFile(configPath,
-		[]byte(cfgTOML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out := output.New(os.Stderr, false)
-	ctx := &cmdContext{
-		GalePath:  configPath,
-		GaleDir:   galeDir,
-		StoreRoot: storeRoot,
-		Installer: &installer.Installer{
-			Store: store.NewStore(storeRoot),
-		},
-	}
-
-	if err := installFromRecipeFile(ctx, recipePath, out); err != nil {
-		t.Fatalf("installFromRecipeFile: %v\n\n"+
-			"This is the gh#23 failure: strict rebuild errors on "+
-			"the unrelated missing 'missingpkg' store dir, blocking "+
-			"the gen rotation that would put testpkg on PATH.",
-			err)
-	}
-
-	// After the fix, current points to the new gen and
-	// testpkg's symlink is there.
-	currentTarget, err := os.Readlink(filepath.Join(galeDir, "current"))
-	if err != nil {
-		t.Fatalf("readlink current: %v — install did not rotate generation", err)
-	}
-	if currentTarget != filepath.Join("gen", "1") {
-		t.Errorf("current = %q, want gen/1", currentTarget)
-	}
-
-	if _, err := os.Lstat(
-		filepath.Join(galeDir, "gen", "1", "bin", "testpkg"),
-	); err != nil {
-		t.Errorf("testpkg symlink missing in gen/1: %v", err)
-	}
-}
-
-func TestInstallLocalFinalizesWhenStoreHasVersion(t *testing.T) {
-	tmp := t.TempDir()
-
-	// Create a git repo as the "source dir" so
-	// gitDevVersion returns a stable version.
-	srcDir := filepath.Join(tmp, "src")
-	if err := os.MkdirAll(srcDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	for _, args := range [][]string{
-		{"init"},
-		{"config", "user.email", "test@test.com"},
-		{"config", "user.name", "Test"},
-		{"config", "commit.gpgsign", "false"},
-		{"commit", "--allow-empty", "-m", "init"},
-		{"tag", "v1.0.0"},
-	} {
-		cmd := exec.Command("git", args...)
-		cmd.Dir = srcDir
-		if out, err := cmd.CombinedOutput(); err != nil {
-			t.Fatalf("git %v: %s: %v",
-				args, string(out), err)
-		}
-	}
-
-	// Create a recipe in a sibling gale-recipes dir.
-	recipesDir := filepath.Join(tmp, "gale-recipes",
-		"recipes", "t")
-	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	recipePath := filepath.Join(recipesDir, "testpkg.toml")
-	recipeTOML := strings.Join([]string{
-		`[package]`,
-		`name = "testpkg"`,
-		`version = "1.0.0"`,
-		``,
-		`[build]`,
-		`steps = ["true"]`,
-	}, "\n")
-	if err := os.WriteFile(recipePath, []byte(recipeTOML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	// Pre-populate the store so IsInstalled returns true.
-	storeRoot := filepath.Join(tmp, "store")
-	pkgDir := filepath.Join(storeRoot, "testpkg", "1.0.0",
-		"bin")
-	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(
-		filepath.Join(pkgDir, "testpkg"),
-		[]byte("#!/bin/sh\n"), 0o755,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	// Create a gale dir and empty gale.toml.
-	galeDir := filepath.Join(tmp, "gale-home")
-	if err := os.MkdirAll(galeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(galeDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	out := output.New(os.Stderr, false)
-	ctx := &cmdContext{
-		GalePath:  configPath,
-		GaleDir:   galeDir,
-		StoreRoot: storeRoot,
-		Installer: &installer.Installer{
-			Store: store.NewStore(storeRoot),
-		},
-	}
-	err := installFromLocalSource(ctx, "testpkg", recipePath,
-		srcDir, out)
-	if err != nil {
-		t.Fatalf("installFromLocalSource: %v", err)
-	}
-
-	// Verify the package was added to gale.toml.
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := cfg.Packages["testpkg"]; !ok {
-		t.Error("testpkg not added to gale.toml — " +
-			"finalize was skipped")
+	if installCmd.Flags().Lookup("recipe") != nil {
+		t.Fatal("install --recipe must be gone")
 	}
 }

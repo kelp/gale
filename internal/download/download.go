@@ -1,10 +1,6 @@
 package download
 
 import (
-	"archive/tar"
-	"archive/zip"
-	"compress/bzip2"
-	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -14,89 +10,78 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"time"
-
-	"github.com/klauspost/compress/zstd"
-	"github.com/ulikunitz/xz"
 
 	"github.com/kelp/gale/internal/httpclient"
 )
 
-// httpClient serves all download traffic. It is the process-wide
-// shared client from internal/httpclient, which deliberately has
-// no whole-transfer Timeout: a hard cap (formerly 5 minutes here)
-// aborts large GHCR blob and source tarball transfers mid-stream
-// on slow links (gh#61). Stalled connections are still bounded by
-// the transport's dial and TLS handshake timeouts; callers that
-// need a per-request deadline pass one via context.
-var httpClient = httpclient.Default()
+// httpBase is the client tests swap via SetHTTPClient. Production
+// uses httpclient.Default so registry fetches keep the shared pool.
+// Each fetch derives a policy client from this base: unauth gets
+// hop-validated CheckRedirect; auth gets userinfo + no
+// https→http. The hop map never rides Default itself.
+var httpBase = httpclient.Default()
 
-// mirrors maps URL prefixes to fallback mirror prefixes.
-// When a download fails with an HTTP error, the URL prefix
-// is replaced with each fallback in order until one succeeds.
-var mirrors = map[string][]string{
-	"https://ftpmirror.gnu.org/": {
-		"https://mirrors.kernel.org/gnu/",
-		"https://ftp.gnu.org/pub/gnu/",
-	},
-	"https://ftp.gnu.org/gnu/": {
-		"https://mirrors.kernel.org/gnu/",
-		"https://ftpmirror.gnu.org/",
-	},
+// SetHTTPClient replaces the base HTTP client.
+// Intended for tests that need a custom TLS configuration
+// (e.g., httptest.NewTLSServer). Policy CheckRedirect is
+// reapplied on every fetch so a swap cannot drop it.
+// Returns a function that restores the original client.
+func SetHTTPClient(c *http.Client) func() {
+	saved := httpBase
+	httpBase = c
+	return func() { httpBase = saved }
 }
 
-// SetHTTPClient replaces the package-level HTTP client.
-// Intended for tests that need a custom TLS configuration
-// (e.g., httptest.NewTLSServer). Returns a function that
-// restores the original client.
-func SetHTTPClient(c *http.Client) func() {
-	saved := httpClient
-	httpClient = c
-	return func() { httpClient = saved }
+func unauthClient() *http.Client {
+	return &http.Client{
+		Transport:     httpBase.Transport,
+		Timeout:       httpBase.Timeout,
+		CheckRedirect: httpclient.CheckRedirect,
+	}
+}
+
+func authClient() *http.Client {
+	return &http.Client{
+		Transport:     httpBase.Transport,
+		Timeout:       httpBase.Timeout,
+		CheckRedirect: httpclient.AuthCheckRedirect,
+	}
+}
+
+func rejectCredentials(rawURL string) error {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return fmt.Errorf("parse URL: %w", err)
+	}
+	if u.User != nil {
+		return fmt.Errorf("url must not contain credentials")
+	}
+	return nil
 }
 
 // Fetch downloads a file from rawURL to destPath.
 // Intermediate directories are created as needed.
 // On HTTP error or failure, the destination file is removed.
-// If the primary URL fails, known mirror fallbacks are tried.
-func Fetch(rawURL, destPath string) error {
+// Fetch never reads GALE_GITHUB_TOKEN or GITHUB_TOKEN.
+func Fetch(ctx context.Context, rawURL, destPath string) error {
+	if err := rejectCredentials(rawURL); err != nil {
+		return err
+	}
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
-
-	err := fetchOnce(rawURL, destPath)
-	if err == nil {
-		return nil
-	}
-
-	// Try mirror fallbacks.
-	for prefix, fallbacks := range mirrors {
-		if !strings.HasPrefix(rawURL, prefix) {
-			continue
-		}
-		suffix := rawURL[len(prefix):]
-		for _, fb := range fallbacks {
-			alt := fb + suffix
-			fmt.Fprintf(os.Stderr,
-				"  > Mirror fallback: %s\n", alt)
-			if ferr := fetchOnce(alt, destPath); ferr == nil {
-				fmt.Fprintf(os.Stderr,
-					"  > Mirror fetched from: %s\n", alt)
-				return nil
-			}
-		}
-	}
-
-	return err
+	return fetchOnce(ctx, rawURL, destPath, unauthClient(), "")
 }
 
 // FetchWithAuth downloads a file from rawURL to destPath with a
 // bearer token in the Authorization header. HTTPS is required so
-// the token is never sent in the clear. No mirror fallbacks: the
-// token is scoped to the primary host.
-func FetchWithAuth(rawURL, destPath, bearerToken string) error {
+// the token is never sent in the clear. The token is an explicit
+// argument; this function does not read the environment.
+func FetchWithAuth(ctx context.Context, rawURL, destPath, bearerToken string) error {
+	if err := rejectCredentials(rawURL); err != nil {
+		return err
+	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return fmt.Errorf("parse URL: %w", err)
@@ -111,30 +96,20 @@ func FetchWithAuth(rawURL, destPath, bearerToken string) error {
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return fmt.Errorf("create destination directory: %w", err)
 	}
-
-	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
-	if err != nil {
-		return fmt.Errorf("create request: %w", err)
-	}
-	req.Header.Set("Authorization", "Bearer "+bearerToken)
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("fetch %s: %w", rawURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
-	}
-
-	name := filepath.Base(rawURL)
-	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
+	return fetchOnce(ctx, rawURL, destPath, authClient(), bearerToken)
 }
 
 // fetchOnce performs a single HTTP GET and writes to destPath.
-func fetchOnce(rawURL, destPath string) error {
-	resp, err := httpClient.Get(rawURL) //nolint:gosec // G107 — URL is caller-provided
+func fetchOnce(ctx context.Context, rawURL, destPath string, client *http.Client, token string) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return fmt.Errorf("create request: %w", err)
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch %s: %w", rawURL, err)
 	}
@@ -145,7 +120,7 @@ func fetchOnce(rawURL, destPath string) error {
 	}
 
 	name := filepath.Base(rawURL)
-	return writeWithProgress(resp.Body, resp.ContentLength, destPath, name)
+	return writeWithProgress(ctx, resp.Body, resp.ContentLength, destPath, name)
 }
 
 // ProgressPrefix is the colored prefix used for download
@@ -167,7 +142,7 @@ func SetProgressEnabled(enabled bool) func() {
 
 // writeWithProgress copies from reader to a file at destPath,
 // printing download progress to stderr.
-func writeWithProgress(reader io.Reader, total int64, destPath, name string) error {
+func writeWithProgress(ctx context.Context, reader io.Reader, total int64, destPath, name string) error {
 	f, err := os.Create(destPath)
 	if err != nil {
 		return fmt.Errorf("create destination file: %w", err)
@@ -178,7 +153,8 @@ func writeWithProgress(reader io.Reader, total int64, destPath, name string) err
 		start: time.Now(),
 		name:  name,
 	}
-	if _, err := io.Copy(f, io.TeeReader(reader, pw)); err != nil {
+	body := ctxReader{ctx: ctx, r: limitCompressed(reader)}
+	if _, err := io.Copy(f, io.TeeReader(body, pw)); err != nil {
 		f.Close()
 		os.Remove(destPath)
 		return fmt.Errorf("write destination file: %w", err)
@@ -282,7 +258,10 @@ func formatBytes(b int64) string {
 
 // HashFile returns the hex-encoded SHA256 hash of the
 // file at the given path.
-func HashFile(path string) (string, error) {
+func HashFile(ctx context.Context, path string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	f, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open file for hashing: %w", err)
@@ -290,7 +269,7 @@ func HashFile(path string) (string, error) {
 	defer f.Close()
 
 	h := sha256.New()
-	if _, err := io.Copy(h, f); err != nil {
+	if _, err := io.Copy(h, ctxReader{ctx: ctx, r: f}); err != nil {
 		return "", fmt.Errorf("hash file: %w", err)
 	}
 
@@ -307,8 +286,8 @@ var ErrSHA256Mismatch = errors.New("sha256 mismatch")
 
 // VerifySHA256 checks that the file at path has the expected
 // SHA256 hash. The expected value must be hex-encoded.
-func VerifySHA256(path, expected string) error {
-	actual, err := HashFile(path)
+func VerifySHA256(ctx context.Context, path, expected string) error {
+	actual, err := HashFile(ctx, path)
 	if err != nil {
 		return err
 	}
@@ -319,564 +298,4 @@ func VerifySHA256(path, expected string) error {
 		)
 	}
 	return nil
-}
-
-// ExtractTarGz extracts a tar.gz file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarGz(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return fmt.Errorf("open archive: %w", err)
-	}
-	defer f.Close()
-
-	gr, err := gzip.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("create gzip reader: %w", err)
-	}
-	defer gr.Close()
-
-	tr := tar.NewReader(gr)
-	if err := extractTar(tr, destDir); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// ExtractZip extracts a zip file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractZip(archivePath, destDir string) error {
-	r, err := zip.OpenReader(archivePath)
-	if err != nil {
-		return fmt.Errorf("open zip archive: %w", err)
-	}
-	defer r.Close()
-
-	for _, zf := range r.File {
-		target := filepath.Join(destDir, zf.Name) //nolint:gosec // G305 — path validated below
-		cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
-
-		if !strings.HasPrefix(filepath.Clean(target), cleanDest) {
-			return fmt.Errorf("illegal path in archive: %s", zf.Name)
-		}
-
-		if zf.FileInfo().IsDir() {
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return fmt.Errorf("create directory %s: %w",
-					zf.Name, err)
-			}
-			continue
-		}
-
-		if err := os.MkdirAll(
-			filepath.Dir(target), 0o755,
-		); err != nil {
-			return fmt.Errorf(
-				"create parent directory for %s: %w",
-				zf.Name, err,
-			)
-		}
-
-		rc, err := zf.Open()
-		if err != nil {
-			return fmt.Errorf("open zip entry %s: %w",
-				zf.Name, err)
-		}
-
-		if err := writeFile(target, rc, zf.Mode()); err != nil {
-			rc.Close()
-			return fmt.Errorf("extract %s: %w", zf.Name, err)
-		}
-		rc.Close()
-	}
-
-	return nil
-}
-
-// ExtractTarZstd extracts a tar.zst file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarZstd(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return fmt.Errorf("open archive: %w", err)
-	}
-	defer f.Close()
-
-	zr, err := zstd.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("create zstd reader: %w", err)
-	}
-	defer zr.Close()
-
-	tr := tar.NewReader(zr)
-	if err := extractTar(tr, destDir); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// ExtractTarXz extracts a tar.xz file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarXz(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return fmt.Errorf("open archive: %w", err)
-	}
-	defer f.Close()
-
-	xr, err := xz.NewReader(f)
-	if err != nil {
-		return fmt.Errorf("create xz reader: %w", err)
-	}
-
-	tr := tar.NewReader(xr)
-	return extractTar(tr, destDir)
-}
-
-// ExtractTarBz2 extracts a tar.bz2 file to destDir, preserving
-// relative paths and creating directories as needed.
-func ExtractTarBz2(archivePath, destDir string) error {
-	f, err := os.Open(archivePath)
-	if err != nil {
-		return fmt.Errorf("open archive: %w", err)
-	}
-	defer f.Close()
-
-	br := bzip2.NewReader(f)
-	tr := tar.NewReader(br)
-	return extractTar(tr, destDir)
-}
-
-// ExtractSource extracts a source archive to destDir,
-// detecting the format from the file extension.
-func ExtractSource(archivePath, destDir string) error {
-	switch {
-	case strings.HasSuffix(archivePath, ".tar.gz"),
-		strings.HasSuffix(archivePath, ".tgz"):
-		return ExtractTarGz(archivePath, destDir)
-	case strings.HasSuffix(archivePath, ".tar.xz"):
-		return ExtractTarXz(archivePath, destDir)
-	case strings.HasSuffix(archivePath, ".tar.bz2"):
-		return ExtractTarBz2(archivePath, destDir)
-	case strings.HasSuffix(archivePath, ".tar.zst"):
-		return ExtractTarZstd(archivePath, destDir)
-	case strings.HasSuffix(archivePath, ".zip"):
-		return ExtractZip(archivePath, destDir)
-	default:
-		return fmt.Errorf(
-			"unsupported archive format: %s", archivePath,
-		)
-	}
-}
-
-// ensureNoSymlinkParent verifies that no parent component of target
-// (below destDir) is a symlink. extractTar may create absolute symlink
-// entries verbatim, so without this check a later regular-file or
-// hard-link entry could traverse such a symlink and write outside
-// destDir. Components that do not yet exist are safe — MkdirAll
-// creates them as real directories. Returns an error naming the
-// offending path when a symlinked component is found.
-func ensureNoSymlinkParent(destDir, target string) error {
-	rel, err := filepath.Rel(destDir, target)
-	if err != nil {
-		return fmt.Errorf("resolve path against destDir: %w", err)
-	}
-	parts := strings.Split(rel, string(os.PathSeparator))
-	cur := destDir
-	// Walk every parent component, excluding the final entry itself.
-	for _, p := range parts[:len(parts)-1] {
-		if p == "" || p == "." {
-			continue
-		}
-		cur = filepath.Join(cur, p)
-		info, err := os.Lstat(cur)
-		if err != nil {
-			if os.IsNotExist(err) {
-				// Component does not exist yet; it (and anything
-				// deeper) will be created as real directories.
-				return nil
-			}
-			return fmt.Errorf("stat path component %s: %w", cur, err)
-		}
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("illegal path through symlink in archive")
-		}
-	}
-	return nil
-}
-
-// extractTar reads entries from a tar reader and extracts them
-// to destDir. Validates paths to prevent directory traversal.
-func extractTar(tr *tar.Reader, destDir string) error {
-	cleanDest := filepath.Clean(destDir) + string(os.PathSeparator)
-
-	for {
-		hdr, err := tr.Next()
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("read tar entry: %w", err)
-		}
-
-		target := filepath.Join(destDir, hdr.Name) //nolint:gosec // G305 — path validated below
-
-		cleanTarget := filepath.Clean(target)
-		if cleanTarget != filepath.Clean(destDir) && !strings.HasPrefix(cleanTarget, cleanDest) {
-			return fmt.Errorf("illegal path in archive: %s", hdr.Name)
-		}
-
-		// Guard every entry against traversal through a symlink
-		// planted earlier in the same archive. extractTar permits
-		// absolute symlink entries to be created verbatim (legitimate
-		// source tarballs ship them), so a later entry whose path
-		// crosses such a symlink could otherwise land outside destDir.
-		// Rejecting any path with a symlinked parent component closes
-		// that escape while leaving dangling symlinks intact.
-		if err := ensureNoSymlinkParent(destDir, target); err != nil {
-			return fmt.Errorf("%w: %s", err, hdr.Name)
-		}
-
-		switch hdr.Typeflag {
-		case tar.TypeDir:
-			if err := os.MkdirAll(target, 0o755); err != nil {
-				return fmt.Errorf("create directory %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeReg:
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755,
-			); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err,
-				)
-			}
-			if err := writeFile(target, tr, hdr.FileInfo().Mode()); err != nil {
-				return fmt.Errorf("extract %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeSymlink:
-			// For relative symlinks, validate that the resolved
-			// target stays within destDir to prevent traversal.
-			// Absolute symlinks pointing outside destDir are
-			// written as-is (potentially dangling). They cannot be
-			// used to escape because no later write follows a
-			// symlinked parent component (see ensureNoSymlinkParent)
-			// and file writes use O_NOFOLLOW.
-			if !filepath.IsAbs(hdr.Linkname) {
-				resolved := filepath.Join(filepath.Dir(target), hdr.Linkname) //nolint:gosec // G305 — validated below
-				resolved = filepath.Clean(resolved)
-				if !strings.HasPrefix(resolved, cleanDest) {
-					return fmt.Errorf("illegal symlink target in archive: %s -> %s",
-						hdr.Name, hdr.Linkname)
-				}
-			}
-
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755,
-			); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err,
-				)
-			}
-			os.Remove(target)
-			if err := os.Symlink(hdr.Linkname, target); err != nil {
-				return fmt.Errorf("create symlink %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeLink:
-			linkTarget := filepath.Join(destDir, hdr.Linkname) //nolint:gosec // G305 — path validated below
-			if !strings.HasPrefix(filepath.Clean(linkTarget), cleanDest) {
-				return fmt.Errorf("illegal hard link target in archive: %s", hdr.Linkname)
-			}
-			// Reject a hard-link source that reaches through a
-			// symlinked parent — os.Link would otherwise resolve it
-			// to a file outside destDir and pull it into the store.
-			if err := ensureNoSymlinkParent(destDir, linkTarget); err != nil {
-				return fmt.Errorf("%w: %s", err, hdr.Linkname)
-			}
-			if err := os.MkdirAll(
-				filepath.Dir(target), 0o755,
-			); err != nil {
-				return fmt.Errorf(
-					"create parent directory for %s: %w",
-					hdr.Name, err,
-				)
-			}
-			os.Remove(target)
-			if err := os.Link(linkTarget, target); err != nil {
-				return fmt.Errorf("create hard link %s: %w",
-					hdr.Name, err)
-			}
-		case tar.TypeXGlobalHeader, tar.TypeXHeader:
-			// PAX headers — skip silently.
-			continue
-		default:
-			return fmt.Errorf("unsupported tar entry type %d for %s",
-				hdr.Typeflag, hdr.Name)
-		}
-	}
-
-	return nil
-}
-
-// CreateTarZstd creates a tar.zst archive from sourceDir.
-// Files are stored relative to the sourceDir root with no
-// wrapper directory. File permissions are preserved.
-func CreateTarZstd(sourceDir, archivePath string) error {
-	f, err := os.Create(archivePath)
-	if err != nil {
-		return fmt.Errorf("create archive file: %w", err)
-	}
-	defer f.Close()
-
-	zw, err := zstd.NewWriter(f, zstd.WithEncoderConcurrency(1))
-	if err != nil {
-		return fmt.Errorf("create zstd writer: %w", err)
-	}
-	defer zw.Close()
-
-	tw := tar.NewWriter(zw)
-	defer tw.Close()
-
-	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
-		// Skip the root directory itself.
-		if path == sourceDir {
-			return nil
-		}
-
-		rel, err := filepath.Rel(sourceDir, path)
-		if err != nil {
-			return fmt.Errorf("compute relative path: %w", err)
-		}
-		// Use forward slashes in the archive.
-		rel = filepath.ToSlash(rel)
-
-		// Check for symlinks via Lstat (Walk uses Stat which follows them).
-		linfo, err := os.Lstat(path)
-		if err != nil {
-			return fmt.Errorf("lstat %s: %w", rel, err)
-		}
-
-		if linfo.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
-			if err != nil {
-				return fmt.Errorf("readlink %s: %w", rel, err)
-			}
-
-			// Convert absolute symlink targets within the
-			// source tree to relative paths. Absolute paths
-			// from make install (e.g., ln -s -f /tmp/build/
-			// prefix/bin/tool bin/alias) break after
-			// extraction and make archives non-deterministic.
-			if filepath.IsAbs(target) {
-				absSource, _ := filepath.Abs(sourceDir)
-				if strings.HasPrefix(target, absSource+string(os.PathSeparator)) {
-					// Target is inside the source tree.
-					// Make it relative to the symlink's dir.
-					linkDir := filepath.Dir(path)
-					relTarget, relErr := filepath.Rel(linkDir, target)
-					if relErr == nil {
-						target = relTarget
-					}
-				}
-			}
-
-			hdr := &tar.Header{
-				Typeflag: tar.TypeSymlink,
-				Name:     rel,
-				Linkname: filepath.ToSlash(target),
-				Mode:     int64(linfo.Mode()),
-			}
-			return tw.WriteHeader(hdr)
-		}
-
-		if info.IsDir() {
-			hdr := &tar.Header{
-				Typeflag: tar.TypeDir,
-				Name:     rel + "/",
-				Mode:     int64(info.Mode()),
-			}
-			if err := tw.WriteHeader(hdr); err != nil {
-				return fmt.Errorf("write dir header %s: %w", rel, err)
-			}
-			return nil
-		}
-
-		hdr := &tar.Header{
-			Typeflag: tar.TypeReg,
-			Name:     rel,
-			Size:     linfo.Size(),
-			Mode:     int64(linfo.Mode()),
-		}
-		if err := tw.WriteHeader(hdr); err != nil {
-			return fmt.Errorf("write file header %s: %w", rel, err)
-		}
-
-		if err := copyFileToTar(tw, path, rel); err != nil {
-			return err
-		}
-
-		return nil
-	})
-	if err != nil {
-		return fmt.Errorf("walk source directory: %w", err)
-	}
-
-	// Close in reverse order: tar, then zstd, then file.
-	if err := tw.Close(); err != nil {
-		return fmt.Errorf("close tar writer: %w", err)
-	}
-	if err := zw.Close(); err != nil {
-		return fmt.Errorf("close zstd writer: %w", err)
-	}
-	if err := f.Close(); err != nil {
-		return fmt.Errorf("close archive file: %w", err)
-	}
-
-	return nil
-}
-
-// copyFileToTar opens a file, copies it into a tar writer,
-// and closes the file immediately. This avoids deferring
-// Close inside a filepath.Walk callback, which would leak
-// file descriptors until the outer function returns.
-func copyFileToTar(tw *tar.Writer, path, rel string) error {
-	src, err := os.Open(path) //nolint:gosec // G304 — path comes from Walk
-	if err != nil {
-		return fmt.Errorf("open source file %s: %w", rel, err)
-	}
-	defer src.Close()
-
-	if _, err := io.Copy(tw, src); err != nil {
-		return fmt.Errorf("write file content %s: %w", rel, err)
-	}
-	return nil
-}
-
-// FetchAndExtractTarZstd streams a .tar.zst HTTP response
-// directly through a SHA-256 hasher and a tar.zst extractor in
-// one pass — no on-disk intermediate file. Verifies the computed
-// hash against expectedSHA256 at end of stream; on mismatch the
-// partially-extracted destDir is cleaned up before returning the
-// error. token is an optional Bearer authorization header value
-// (empty string = no Authorization header sent). Returns the
-// computed hex SHA-256 on success.
-func FetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token string) (string, error) {
-	return fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, "")
-}
-
-// FetchAndExtractTarZstdWithArchive is like FetchAndExtractTarZstd
-// but also writes the raw compressed archive bytes to archiveOut
-// (when non-empty) as they stream. The caller owns the file's
-// lifecycle (creation and deletion); this function only writes to it.
-func FetchAndExtractTarZstdWithArchive(rawURL, destDir, expectedSHA256, token, archiveOut string) (string, error) {
-	return fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut)
-}
-
-// fetchAndExtractTarZstd is the shared implementation used by both
-// FetchAndExtractTarZstd and FetchAndExtractTarZstdWithArchive.
-// When archiveOut is non-empty the raw (compressed) bytes are also
-// written to that file as they stream, enabling callers to verify
-// the archive digest (e.g. Sigstore attestation) after extraction.
-func fetchAndExtractTarZstd(rawURL, destDir, expectedSHA256, token, archiveOut string) (string, error) {
-	if token != "" {
-		u, err := url.Parse(rawURL)
-		if err != nil {
-			return "", fmt.Errorf("parse URL: %w", err)
-		}
-		if u.Scheme != "https" {
-			return "", fmt.Errorf(
-				"refusing to send bearer token over %s (https required)",
-				u.Scheme,
-			)
-		}
-	}
-
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, rawURL, nil)
-	if err != nil {
-		return "", fmt.Errorf("create request: %w", err)
-	}
-	if token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := httpClient.Do(req)
-	if err != nil {
-		return "", fmt.Errorf("fetch %s: %w", rawURL, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		_ = os.RemoveAll(destDir)
-		return "", fmt.Errorf("fetch %s: HTTP %d", rawURL, resp.StatusCode)
-	}
-
-	if err := os.MkdirAll(destDir, 0o755); err != nil {
-		return "", fmt.Errorf("create destination directory: %w", err)
-	}
-
-	hasher := sha256.New()
-	sinks := []io.Writer{hasher}
-	if archiveOut != "" {
-		af, err := os.Create(archiveOut)
-		if err != nil {
-			_ = os.RemoveAll(destDir)
-			return "", fmt.Errorf("create archive copy: %w", err)
-		}
-		defer af.Close()
-		sinks = append(sinks, af)
-	}
-	teed := io.TeeReader(resp.Body, io.MultiWriter(sinks...))
-
-	zr, err := zstd.NewReader(teed)
-	if err != nil {
-		_ = os.RemoveAll(destDir)
-		return "", fmt.Errorf("create zstd reader: %w", err)
-	}
-	defer zr.Close()
-
-	tr := tar.NewReader(zr)
-	if err := extractTar(tr, destDir); err != nil {
-		_ = os.RemoveAll(destDir)
-		return "", fmt.Errorf("extract: %w", err)
-	}
-
-	computed := fmt.Sprintf("%x", hasher.Sum(nil))
-	if !strings.EqualFold(computed, expectedSHA256) {
-		_ = os.RemoveAll(destDir)
-		return "", fmt.Errorf("%w: expected %s, got %s",
-			ErrSHA256Mismatch, expectedSHA256, computed)
-	}
-
-	return computed, nil
-}
-
-// writeFile creates a file at path, copies content from r,
-// and sets the given file mode.
-func writeFile(path string, r io.Reader, mode os.FileMode) error {
-	// O_NOFOLLOW rejects a final path component that is itself a
-	// symlink, so a regular-file entry sharing a name with a
-	// previously extracted symlink cannot follow it and clobber a
-	// target outside destDir.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_TRUNC|syscall.O_NOFOLLOW, mode)
-	if err != nil {
-		return err
-	}
-
-	if _, err := io.Copy(f, r); err != nil {
-		f.Close()
-		os.Remove(path)
-		return err
-	}
-
-	return f.Close()
 }

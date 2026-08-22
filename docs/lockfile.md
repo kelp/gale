@@ -47,10 +47,10 @@ split is what makes staleness answerable: a lock is
 stale when its roots disagree with the manifest, and
 transitive entries never enter that comparison.
 
-Host targets are keyed by `gale.toml`'s selector string
-verbatim, wildcards and comma lists included. They are
-not resolved against the current machine, so one
-committed lock serves every host the manifest names.
+Leftover `[targets.host.*]` refuses live verbs.
+Move leftover `[hosts.*]` pins into `[packages]`,
+delete the host tables, then `gale lock`. There is
+no `--host` flag.
 
 Package nodes are keyed `name@version-revision`, so a
 lock can name several versions of one package across
@@ -96,14 +96,34 @@ well-formed guard is refused, not repaired: accepting it
 would leave a nominally-enforced lock that an old build
 still destroys.
 
+## Schema v2 (written unused, not loaded)
+
+`WriteV2` writes the fetch schema. `ReadV2` reads it.
+`Load` and `ReadV1` still refuse a v2 file as an
+unknown schema (exit 4). That is what stops this gale
+from rewriting a v2 lock as v1. Live install still
+writes v1.
+
+A v2 file carries its own guard:
+
+```toml
+[packages."!gale-lock-v2"]
+version = 2
+```
+
+Already-shipped gale fails loud on those bytes: a
+v1-enforcement build rejects top-level `version = 2`;
+a pre-enforcement build fails the integer guard the
+same way it fails the v1 guard. Package keys and
+target roots are `name@version`, with no revision.
+
 ## Enforcement model
 
 **Writers.** `gale install`, `gale update`, `gale
 remove` and `gale lock` write `gale.lock`. Each resolves
 its complete closure first, then replaces the file in
 one atomic write. A partial or failed resolution leaves
-the previous lockfile byte-identical. `gale add` writes
-the manifest only.
+the previous lockfile byte-identical.
 
 **`gale sync` never writes the lock.** It is a pure
 consumer: it installs the closure the lock names and
@@ -140,8 +160,8 @@ Global relies on enforcement at write time instead, and
 a locked global plan forbids carry-forward: a version
 carried into the generation that the lock does not name
 is exactly what no later check would catch. `gale gc`
-and `gale doctor --repair` take their versions from the
-scope's lock for the same reason.
+takes its versions from the scope's lock for the same
+reason.
 
 **The escape hatch is explicit.** `gale sync
 --no-frozen` ignores `gale.lock`, installs from recipes
@@ -166,30 +186,29 @@ and then names the fix:
 - For one it has: `'gale lock' to regenerate the
   affected target(s)`.
 
-When the package's pin comes from a host section, the
-`gale lock` in those sentences is spelled `gale lock
---host "<selector>"`, naming every target that has to be
-rewritten. Running one and not the others leaves the
-next sync failing on the rest. When gale cannot tell
-which section owns the pin, it says `'gale lock' (or
-'gale lock --host <selector>' when the package belongs
-to a host section)`.
+When the pin or lock target is leftover
+`[hosts.*]` / `[targets.host.*]`, gale names
+that leftover and the fix: move leftover
+`[hosts.*]` pins into `[packages]`, then
+`gale lock`. It does not name `--host`.
 
 **The lock cannot be read at all** — legacy schema,
 unknown version, malformed TOML, unknown field, missing
-or malformed guard. Run `gale lock --refresh`. `gale
-doctor` reports this state in either scope, and `gale
-doctor --repair --force` rebuilds a scope whose lock is
-beyond repair.
+or malformed guard. A legacy lock names
+`gale fetch-adopt`. An unreadable file reports the
+load error. `gale doctor` reports this state in
+either scope. `gale gc` does not rebuild
+a generation.
 
 **A store directory attests nothing.** Every package
 installed before enforcement is unprovenanced, so the
-activation gate refuses it. `gale lock --refresh <pkg>`
-refetches, verifies and replaces one directory; `gale
-migrate` does the same in bulk for every binary-method
-package in the closure. Source-method packages cannot be
-migrated this way — `migrate` lists them and what
-rebuilding costs.
+activation gate refuses it. `gale fetch-adopt` will
+refetch, verify and replace one directory (it ships in
+a later release); `gale migrate` does the same today
+in bulk for every binary-method package in the
+closure. Source-method packages cannot be migrated
+this way — `migrate` lists them and what rebuilding
+costs.
 
 **The active generation does not match the lock.** Run
 `gale sync`. This is drift, not tampering: it is what a
@@ -205,14 +224,9 @@ whether upstream moved legitimately or not.
 
 ## Source builds and portability
 
-A locked source build is enforced strictly, never
-warn-only. `gale audit` mismatches are normal for most
-packages — Mach-O `LC_UUID`, absolute paths baked into
-`.la` and `.pc` files, `ar` timestamps — and the same
-non-determinism means a locked source build may
-legitimately fail to reproduce on another machine. The
-remedy is to re-lock on that machine, or to use a binary
-artifact.
+A locked source build is leftover until Milestone 5
+strips the farm. Fetch artifacts are the live path.
+`gale verify` checks tree digests against the lock.
 
 The consequence for a committed lock follows from
 `graph_digest`: a source node's output hash feeds every
@@ -233,10 +247,12 @@ inside direnv.
    ahead of an old build stops that build with the
    guard's error rather than being destroyed by it, but
    stopping is still a broken machine.
-2. Run `gale lock --refresh` in each scope. Plain `gale
-   lock` cannot finish the job on upgrade day: it reads
-   provenance, and pre-upgrade store directories have
-   none.
+2. Run `gale migrate` in each scope (binary-method
+   unprovenanced dirs), then `gale lock` to regenerate
+   the lock. Plain `gale lock` cannot finish the job
+   on upgrade day: it reads provenance, and pre-upgrade
+   store directories have none. `gale fetch-adopt` is
+   the later per-scope refetch.
 3. Or run `gale migrate`, which refetches and replaces
    every unprovenanced binary-method directory in one
    pass, and reports the source-method packages it

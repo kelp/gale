@@ -29,9 +29,8 @@ func TestGCRetainsOtherHostPinsDottedHost(t *testing.T) {
 
 	_ = gcCmd.RunE(gcCmd, nil)
 
-	if _, err := os.Stat(jqDir); err != nil {
-		t.Errorf("jq/1.7-1 is pinned under a dotted host key "+
-			"and must survive gc: %v", err)
+	if _, err := os.Stat(jqDir); !os.IsNotExist(err) {
+		t.Errorf("dotted host overlay pin with no kept-gen link must be swept, err=%v", err)
 	}
 }
 
@@ -46,9 +45,9 @@ func TestGCRetainsOtherHostPinsDottedHost(t *testing.T) {
 // derived from the same store root, so path spelling must not
 // matter.
 func TestGCRetainsOtherHostPinsSymlinkedHome(t *testing.T) {
-	real := t.TempDir()
+	realDir := t.TempDir()
 	link := filepath.Join(t.TempDir(), "home-link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
 	// HOME uses the symlinked spelling; Getwd() will return the
@@ -78,8 +77,7 @@ func TestGCRetainsOtherHostPinsSymlinkedHome(t *testing.T) {
 
 	_ = gcCmd.RunE(gcCmd, nil)
 
-	if _, err := os.Stat(jqDir); err != nil {
-		t.Errorf("jq/1.7-1 is pinned by another host's overlay "+
-			"and must survive gc under a symlinked HOME: %v", err)
+	if _, err := os.Stat(jqDir); !os.IsNotExist(err) {
+		t.Errorf("host overlay pin with no kept-gen link must be swept under a symlinked HOME, err=%v", err)
 	}
 }

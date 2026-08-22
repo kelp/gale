@@ -31,6 +31,7 @@ func TestInstallRefusesSymlinkedManifest(t *testing.T) {
 	recipePath := writeTestRecipe(t, tmp)
 	ctx := installCtx(t, tmp, "[packages]\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	target := filepath.Join(tmp, "dotfiles", "gale.toml")
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {

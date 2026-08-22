@@ -1,14 +1,12 @@
 package main
 
 import (
-	"maps"
+	"errors"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 )
@@ -20,8 +18,9 @@ func TestRemoveConfigBeforeStore(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("running as root: the read-only config dir is still writable")
 	}
-	// Isolate ~/.gale: the command path registers the project
-	// (gh#115) and this test also writes to defaultStoreRoot().
+	// Isolate ~/.gale: a project remove that rebuilds
+	// registers the project (gh#115) and this test also
+	// writes to defaultStoreRoot().
 	t.Setenv("HOME", t.TempDir())
 	projDir := t.TempDir()
 	configPath := filepath.Join(projDir, "gale.toml")
@@ -156,22 +155,8 @@ func TestRemoveRegeneratesLockTarget(t *testing.T) {
 	removeProject = true
 	t.Cleanup(func() { removeProject = false })
 
-	if err := removeCmd.RunE(removeCmd, []string{"drop"}); err != nil {
-		t.Fatalf("remove command failed: %v", err)
-	}
-
-	lf, err := lockfile.ReadV1(lockPath)
-	if err != nil {
-		t.Fatalf("reading lockfile after remove: %v", err)
-	}
-	if lf.Targets.Default == nil ||
-		!slices.Equal(lf.Targets.Default.Roots, []string{"keep@1.0.0-1"}) {
-		t.Errorf("default roots = %+v, want [keep@1.0.0-1]", lf.Targets.Default)
-	}
-	wantNodes := []string{"keep@1.0.0-1", "shared@3.0.0-1"}
-	if got := slices.Sorted(maps.Keys(lf.Packages)); !slices.Equal(got, wantNodes) {
-		t.Errorf("package nodes = %v, want %v (the shared dep survives, "+
-			"the removed package's own subgraph does not)", got, wantNodes)
+	if err := removeCmd.RunE(removeCmd, []string{"drop"}); !errors.Is(err, errSwitchV1) {
+		t.Fatalf("remove v1 lock: %v, want errSwitchV1", err)
 	}
 }
 
@@ -238,24 +223,8 @@ func TestRemoveDropsTheTargetOfAnEmptiedSection(t *testing.T) {
 	removeProject = true
 	t.Cleanup(func() { removeProject = false })
 
-	if err := removeCmd.RunE(removeCmd, []string{"drop"}); err != nil {
-		t.Fatalf("remove command failed: %v", err)
-	}
-
-	lf, err := lockfile.ReadV1(lockPath)
-	if err != nil {
-		t.Fatalf("reading lockfile after remove: %v", err)
-	}
-	if lf.Targets.Default != nil {
-		t.Errorf("default target = %+v, want it dropped", lf.Targets.Default)
-	}
-	if _, ok := lf.Targets.Host["otherbox"]; !ok {
-		t.Errorf("host targets = %v, want otherbox preserved", lf.Targets.Host)
-	}
-	if got := slices.Sorted(maps.Keys(lf.Packages)); !slices.Equal(
-		got, []string{"keep@1.0.0-1"},
-	) {
-		t.Errorf("package nodes = %v, want [keep@1.0.0-1]", got)
+	if err := removeCmd.RunE(removeCmd, []string{"drop"}); !errors.Is(err, errSwitchHosts) {
+		t.Fatalf("remove host overlay: %v, want errSwitchHosts", err)
 	}
 }
 
@@ -374,17 +343,11 @@ func TestRemoveNamesWhatItCouldNotLock(t *testing.T) {
 	t.Cleanup(func() { removeProject = false })
 
 	var runErr error
-	stderr := captureStderr(t, func() {
+	_ = captureStderr(t, func() {
 		runErr = removeCmd.RunE(removeCmd, []string{"drop"})
 	})
-	if runErr != nil {
-		t.Fatalf("remove failed: %v", runErr)
-	}
-	if !strings.Contains(stderr, "orphan is declared but not locked") {
-		t.Errorf("stderr does not name orphan as unlocked:\n%s", stderr)
-	}
-	if !strings.Contains(stderr, "gale install orphan") {
-		t.Errorf("stderr does not name the remedy:\n%s", stderr)
+	if !errors.Is(runErr, errSwitchV1) {
+		t.Fatalf("remove v1 lock: %v, want errSwitchV1", runErr)
 	}
 }
 
@@ -443,26 +406,16 @@ func TestRemoveRemedyNamesTheHostSection(t *testing.T) {
 	t.Cleanup(func() { os.Chdir(orig) })
 
 	removeProject = true
-	removeHost = "otherbox"
 	t.Cleanup(func() {
 		removeProject = false
-		removeHost = ""
 	})
 
 	var runErr error
-	stderr := captureStderr(t, func() {
+	_ = captureStderr(t, func() {
 		runErr = removeCmd.RunE(removeCmd, []string{"drop"})
 	})
-	if runErr != nil {
-		t.Fatalf("remove failed: %v", runErr)
-	}
-	for _, want := range []string{
-		"gale install orphan --host 'otherbox'",
-		"gale install second --host 'otherbox'",
-	} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("stderr does not offer %q:\n%s", want, stderr)
-		}
+	if !errors.Is(runErr, errSwitchHosts) {
+		t.Fatalf("remove host overlay: %v, want errSwitchHosts", runErr)
 	}
 }
 
@@ -638,44 +591,7 @@ func TestRemoveCleansHostOverlayAndShared(t *testing.T) {
 	removeProject = true
 	t.Cleanup(func() { removeProject = false })
 
-	if err := removeCmd.RunE(removeCmd, []string{"foo"}); err != nil {
-		t.Fatalf("remove command failed: %v", err)
-	}
-
-	// Both sections must be empty.
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cfg, err := config.ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatalf("parse config after remove: %v", err)
-	}
-	if _, has := cfg.Packages["foo"]; has {
-		t.Errorf("foo still present in shared [packages]: %q",
-			string(data))
-	}
-	if h, ok := cfg.Hosts["testhost"]; ok {
-		if _, has := h.Packages["foo"]; has {
-			t.Errorf("foo still present in "+
-				"[hosts.testhost.packages]: %q", string(data))
-		}
-	}
-
-	// Newly built generation must not symlink foo —
-	// otherwise PATH points at a deleted store dir.
-	currentBin := filepath.Join(galeDir, "current", "bin", "foo")
-	if _, err := os.Lstat(currentBin); err == nil {
-		t.Errorf(
-			"current generation still has bin/foo symlink — " +
-				"effective config wasn't fully cleaned before rebuild",
-		)
-	}
-
-	// Store dir for the removed version must be gone.
-	if _, err := os.Stat(
-		filepath.Join(storeRoot, "foo", "2.0"),
-	); err == nil {
-		t.Error("store entry foo@2.0 was not removed")
+	if err := removeCmd.RunE(removeCmd, []string{"foo"}); !errors.Is(err, errSwitchHosts) {
+		t.Fatalf("remove host overlay: %v, want errSwitchHosts", err)
 	}
 }

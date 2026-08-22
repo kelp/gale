@@ -17,24 +17,29 @@ variables. Lives at `~/.gale/gale.toml` (global) or
   jq = "1.8.1"
   just = "1.48.0"
 
-[pinned]
-  go = true
-
 [vars]
   CGO_ENABLED = "0"
   GOFLAGS = "-mod=vendor"
 ```
 
+### `git = "system"`
+
+A top-level note, not a package pin. Write it
+before the first table header (`[packages]`).
+Gale ignores the key. It means assume `git` is
+on PATH; do not fetch it. No store entry, no
+lock hash.
+
+Do not put `git = "system"` under `[packages]`
+or `[hosts.<key>.packages]`. That is a pin named
+`git` at version `system`, and not-in-index
+refuses. Use the OS copy or `brew install git`.
+Gale does not run brew.
+
 ### `[packages]`
 
 Maps package names to pinned versions. `gale sync`
 installs every listed package at the declared version.
-
-### `[pinned]`
-
-Packages listed here are skipped by `gale update`.
-Use `gale pin <pkg>` and `gale unpin <pkg>` to
-manage.
 
 ### `[vars]`
 
@@ -45,55 +50,16 @@ prints only variables, not PATH.
 
 ### `[bin]`
 
-Resolves executable-name collisions. Maps a binary's
-basename to the package whose copy belongs on PATH:
+Leftover. Ignored. Two packages shipping the same
+basename refuse the generation. Remove one package.
+There is no table that names a winner.
 
-```toml
-[bin]
-  npx = "corepack"
-```
-
-Two packages shipping the same basename refuse the
-generation rebuild, naming both providers, until one
-of them wins here. The other package stays installed;
-only that one basename is left out of the generation,
-and `gale which <name>` reports it as another
-provider.
-
-The winning package must be declared somewhere in the
-same file — `[packages]` or any `[hosts.<key>.packages]`
-overlay, whether or not that overlay applies to this
-machine. A winner declared nowhere is an error;
-honoring it would keep the binary off PATH for every
-provider.
-
-`[hosts.<key>.bin]` overrides the shared table on the
-machines `<key>` matches, using the same precedence as
-the other overlays. Two machines can therefore put
-different providers of one basename on PATH:
-
-```toml
-[bin]
-  npx = "node"
-
-[hosts.laptop.bin]
-  npx = "corepack"
-```
-
-`gale remove` deletes a `[bin]` entry whose winner it
-removes, in the same write, so the manifest still
-loads. It prunes the host tables as well — an entry
-left under a selector fails to load on exactly the
-machines that selector reaches. Removing the losing
-package leaves the entry alone: it still names a
-declared package, and it records the choice for the
-next time that package is installed.
+`[hosts.<key>.bin]` is leftover the same way.
 
 `bin/` is the only namespace gale arbitrates. Man
-pages and root-level files are **reported, not
-arbitrated**: `gale doctor` names each path more than
-one declared package provides, and the rebuild links
-the first package in sorted order, as it always has.
+pages and root-level files are **not arbitrated**:
+the rebuild links the first package in sorted
+order, as it always has.
 There is deliberately no `[man]` table. Two packages
 shipping `man/man1/foo.1` is an ordinary setup — a
 library and its CLI, a compat shim — and refusing it
@@ -102,122 +68,12 @@ correct. A shadowed man page shows the wrong docs; a
 shadowed executable runs the wrong program. Remove one
 provider to change which copy wins.
 
-### `[hosts.<key>.packages]`, `[hosts.<key>.pinned]` and `[hosts.<key>.bin]`
+### `[hosts.<key>.packages]`
 
-Per-machine overlays. Top-level `[packages]`,
-`[pinned]` and `[bin]` apply on every machine. Host
-sections add or override entries when the local
-hostname matches `<key>`.
-
-The key can be:
-
-- A single hostname: `[hosts.my-mac.packages]`
-- A comma-separated list: `[hosts."laptop,desktop".packages]`
-- A glob pattern using `*`: `[hosts."work-*".packages]`,
-  `[hosts."*".packages]`
-
-`*` is the only wildcard construct the format
-supports. A key may contain ASCII letters, digits,
-`-`, `.`, `_`, `*`, and the commas separating
-alternatives. Every other pattern construct is
-outside the format, including `?`, character classes
-such as `[0-9]`, `\` escapes, and the `/` separator.
-
-Keys outside that set are not rejected, but `gale
-lock` cannot prove whether two of them can match the
-same machine. It then checks every host section
-together rather than skipping the check, which can
-report a version conflict between sections that would
-never apply to one host. Staying inside the supported
-set avoids that.
-
-Use the multi-host or glob forms to share one package
-list across machines without duplicating it. Quote
-the key when it contains commas or wildcards so TOML
-treats it as a single string.
-
-```toml
-[packages]
-  jq = "1.8.1"
-  just = "1.48.0"
-
-[hosts."laptop,desktop".packages]
-  fzf = "0.50"
-
-[hosts."work-*".packages]
-  slack = "1.0"
-
-[hosts.my-server.packages]
-  htop = "3.0"
-```
-
-On `laptop`, `gale sync` installs jq, just, and fzf.
-On `work-mac`, jq, just, and slack. On `my-server`,
-jq, just, and htop. On any unmatched host, just jq
-and just.
-
-When the same package appears in multiple sections,
-the most specific match wins: exact hostname overrides
-a comma-list, which in turn overrides a glob. This is
-useful for running a different version of one tool on
-one machine while sharing everything else:
-
-```toml
-[hosts."laptop,desktop".packages]
-  fzf = "0.50"
-
-[hosts.laptop.packages]
-  fzf = "0.60"          # laptop only — overrides the multi-host entry
-```
-
-`gale install`, `add`, `remove`, `pin`, and `unpin`
-default to the shared `[packages]` section. Pass
-`--host <name>` (or `--host current` for the local
-machine) to write to a host section. The flag is
-opt-in: users with a single machine can ignore it.
-
-```sh
-gale install fzf --host current      # install + record under [hosts.<this-host>.packages]
-gale add fzf --host current
-gale remove htop --host my-server    # edit another machine's section
-```
-
-Bare `gale install fzf` writes to shared
-`[packages]`, except when the package already lives
-in the current host's overlay — then it updates in
-place. That way reinstalling a host-scoped tool
-without remembering the flag does not silently move
-it to shared.
-
-When the same package appears in both shared
-`[packages]` and a matching host overlay, **the host
-overlay wins** — the shared value is dead config on
-that machine. `gale list` flags shared entries with
-`(overridden by host)` and `gale doctor` reports the
-shadow so you can clean up if it was unintentional.
-
-The active hostname comes from `hostname(1)`. Override
-with the `GALE_HOST` environment variable for cases
-where the system hostname is wrong or you want a
-short identifier:
-
-```sh
-export GALE_HOST=my-mac
-```
-
-`gale list` groups output by scope when host
-overlays are present. Use `--scope shared|host|all`
-(default `all`) to filter:
-
-```sh
-gale list                # both sections
-gale list --scope shared # shared [packages] only
-gale list --scope host   # current host's overlay only
-```
-
-This composes naturally with [chezmoi](chezmoi.md):
-one `gale.toml` tracked across machines, each
-machine reads its own section.
+Leftover. Refused. Move pins into `[packages]`
+and delete the `[hosts.*]` tables. There is no
+`--host` flag. Multi-machine setups use a second
+file (chezmoi, git).
 
 ## config.toml
 
@@ -230,9 +86,6 @@ debug = false
 [anthropic]
 api_key = "sk-ant-..."
 prompt_file = "~/.gale/recipe-prompt.md"
-
-[registry]
-url = "https://raw.githubusercontent.com/kelp/gale-recipes/main"
 ```
 
 ### `[build]`
@@ -247,27 +100,19 @@ not CLI flags.
 
 ### `[anthropic]`
 
-| Field | Default | Description |
-|-------|---------|-------------|
-| `api_key` | (none) | Anthropic API key for `gale create-recipe` |
-| `prompt_file` | (none) | Path to a file appended to the recipe creation system prompt |
+Leftover. `gale create-recipe` is gone. The keys
+are ignored.
 
-The prompt file is read on every invocation. Changes
-take effect without rebuilding gale. Use `~/` prefix
-for home-relative paths.
-
-### `[registry]`
-
-| Field | Default | Description |
-|-------|---------|-------------|
-| `url` | GitHub raw URL | Override the recipe registry base URL |
+The recipe registry URL is compiled in. Leftover
+`[registry] url` and `[sync] parallelism` keys are
+ignored. `GALE_JOBS` is ignored. A config file cannot
+repoint resolution or change install order.
 
 ### `[[repos]]`
 
-Recipe repositories ("taps") consulted by the install
-resolver before falling back to the default registry.
-Managed via `gale repo add <name> <url>` /
-`gale repo list` / `gale repo remove <name>`.
+Leftover tap list. `gale repo *` is gone. Remaining
+commands that still resolve recipes (`outdated`,
+`gc`, `migrate`) may still read these entries.
 
 ```toml
 [[repos]]
@@ -284,7 +129,7 @@ priority = 5
 | Field | Default | Description |
 |-------|---------|-------------|
 | `name` | (required) | Local cache directory name under `~/.gale/repos/` |
-| `url` | (required) | Git URL cloned by `gale repo add` |
+| `url` | (required) | Git URL of a leftover tap |
 | `priority` | `0` | Lower number wins. Ties resolve by config order |
 
 `gale install <pkg>` walks repos in priority order

@@ -28,72 +28,24 @@ var ErrGaleConfigNotFound = errors.New(
 // not exist in the config.
 var ErrPackageNotFound = errors.New("package not found")
 
-// HostConfig represents a per-host packages/pinned/bin overlay
-// stored under [hosts.<name>] in gale.toml.
+// HostConfig is a per-host packages overlay under
+// [hosts.<name>] in gale.toml.
+//
+// Leftover [hosts.<name>.bin] is an unknown key and is
+// ignored. Two packages shipping the same basename refuse
+// the generation.
 type HostConfig struct {
 	Packages map[string]string `toml:"packages,omitempty"`
-	Pinned   map[string]bool   `toml:"pinned,omitempty"`
-	Bin      map[string]string `toml:"bin,omitempty"`
 }
 
 // GaleConfig represents a gale.toml file (global or project).
 type GaleConfig struct {
 	Packages map[string]string `toml:"packages"`
 	Vars     map[string]string `toml:"vars,omitempty"`
-	Pinned   map[string]bool   `toml:"pinned,omitempty"`
-	// Bin resolves executable-name collisions: basename → the
-	// package whose copy goes into the generation. Every other
-	// provider's entry for that basename is left out. Without an
-	// entry, two packages shipping one basename refuse the rebuild
-	// (gh#190) rather than letting sort order decide silently.
-	Bin   map[string]string     `toml:"bin,omitempty"`
+	// Leftover [bin] is an unknown key and is ignored.
+	// Two packages shipping the same basename refuse the
+	// generation.
 	Hosts map[string]HostConfig `toml:"hosts,omitempty"`
-}
-
-// ValidateBin reports an error when a [bin] override names a package
-// this manifest declares nowhere. An override suppresses the basename
-// in every package it does not name, so a winner that provides
-// nothing keeps the binary off PATH entirely — the silent shadowing
-// gh#190 removed, in a new shape.
-//
-// Declared ANYWHERE, not merely on this host: a winner that lives in
-// [hosts.<selector>.packages] is inert on the machines that selector
-// misses, and erroring there would break every command on those
-// machines over an entry that is correct where it applies. A typo
-// still fails, everywhere, which is the case worth catching.
-func (c *GaleConfig) ValidateBin() error {
-	names := slices.Sorted(maps.Keys(c.Bin))
-	for _, bin := range names {
-		pkg := c.Bin[bin]
-		if pkg == "" {
-			return fmt.Errorf(
-				"[bin] %s names no package; give it the package whose "+
-					"%s belongs on PATH, or delete the entry", bin, bin,
-			)
-		}
-		if !c.declares(pkg) {
-			return fmt.Errorf(
-				"[bin] %s = %q names a package this manifest does not "+
-					"declare; declare %s or delete the entry", bin, pkg, pkg,
-			)
-		}
-	}
-	return nil
-}
-
-// declares reports whether name appears in [packages] or in any
-// [hosts.<selector>.packages] overlay, whether or not that selector
-// matches this machine.
-func (c *GaleConfig) declares(name string) bool {
-	if _, ok := c.Packages[name]; ok {
-		return true
-	}
-	for _, h := range c.Hosts {
-		if _, ok := h.Packages[name]; ok {
-			return true
-		}
-	}
-	return false
 }
 
 // ParseGaleConfig parses a gale.toml string.
@@ -108,9 +60,10 @@ func ParseGaleConfig(data string) (*GaleConfig, error) {
 // EffectivePackages returns the shared [packages] merged with
 // every [hosts.<key>.packages] section whose key matches host.
 // Host section keys may list multiple comma-separated patterns
-// and use glob wildcards (*, ?). Wildcard-bearing sections are
-// applied first; exact-name sections last, so exact entries
-// override globs. Does not mutate the receiver.
+// and use `*` globs. `*` is the only wildcard the format
+// promises; `?` and character classes are not. Wildcard-bearing
+// sections are applied first; exact-name sections last, so
+// exact entries override globs. Does not mutate the receiver.
 func (c *GaleConfig) EffectivePackages(host string) map[string]string {
 	out := make(map[string]string, len(c.Packages))
 	maps.Copy(out, c.Packages)
@@ -151,51 +104,12 @@ func (c *GaleConfig) PackageOrigins(host string) map[string]string {
 	return out
 }
 
-// ApplyHost replaces Packages, Pinned and Bin with the effective
-// merged maps for the given host. Mutates the receiver.
+// ApplyHost replaces Packages with the effective merged
+// map for the given host. Mutates the receiver.
 // Callers that need the raw on-disk view (e.g. mutators) must
 // not call this.
 func (c *GaleConfig) ApplyHost(host string) {
 	c.Packages = c.EffectivePackages(host)
-	c.Pinned = c.EffectivePinned(host)
-	c.Bin = c.EffectiveBin(host)
-}
-
-// EffectivePinned merges shared [pinned] with every matching
-// [hosts.<key>.pinned] overlay, using the same multi-pattern
-// matching and override order as EffectivePackages. Does not
-// mutate the receiver.
-func (c *GaleConfig) EffectivePinned(host string) map[string]bool {
-	out := make(map[string]bool, len(c.Pinned))
-	maps.Copy(out, c.Pinned)
-	if host == "" {
-		return out
-	}
-	for _, k := range matchingHostKeys(c.Hosts, host) {
-		maps.Copy(out, c.Hosts[k].Pinned)
-	}
-	return out
-}
-
-// EffectiveBin merges shared [bin] with every matching
-// [hosts.<key>.bin] overlay, using the same multi-pattern matching
-// and override order as EffectivePackages. Does not mutate the
-// receiver.
-//
-// Two machines can need different providers of one basename on
-// PATH, and a manifest-wide winner cannot say so: naming either
-// package drops the basename on the other machine. The overlay is
-// the same answer [packages] and [pinned] already give (gh#219).
-func (c *GaleConfig) EffectiveBin(host string) map[string]string {
-	out := make(map[string]string, len(c.Bin))
-	maps.Copy(out, c.Bin)
-	if host == "" {
-		return out
-	}
-	for _, k := range matchingHostKeys(c.Hosts, host) {
-		maps.Copy(out, c.Hosts[k].Bin)
-	}
-	return out
 }
 
 // HostKeyMatches reports whether sectionKey applies to the
@@ -475,57 +389,11 @@ func parseSectionHeader(line string) ([]string, bool) {
 		if i >= len(s) {
 			return nil, false
 		}
-		var seg string
-		switch s[i] {
-		case '"':
-			i++
-			var b strings.Builder
-			closed := false
-			for i < len(s) {
-				c := s[i]
-				if c == '\\' && i+1 < len(s) {
-					switch s[i+1] {
-					case '"':
-						b.WriteByte('"')
-					case '\\':
-						b.WriteByte('\\')
-					default:
-						b.WriteByte(c)
-						b.WriteByte(s[i+1])
-					}
-					i += 2
-					continue
-				}
-				if c == '"' {
-					i++
-					closed = true
-					break
-				}
-				b.WriteByte(c)
-				i++
-			}
-			if !closed {
-				return nil, false
-			}
-			seg = b.String()
-		case '\'':
-			i++
-			j := strings.IndexByte(s[i:], '\'')
-			if j < 0 {
-				return nil, false
-			}
-			seg = s[i : i+j]
-			i += j + 1
-		default:
-			start := i
-			for i < len(s) && isBareKeyChar(s[i]) {
-				i++
-			}
-			if i == start {
-				return nil, false
-			}
-			seg = s[start:i]
+		seg, next, ok := parseHeaderSegment(s, i)
+		if !ok {
+			return nil, false
 		}
+		i = next
 		segs = append(segs, seg)
 		for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
 			i++
@@ -548,6 +416,60 @@ func parseSectionHeader(line string) ([]string, bool) {
 		return nil, false
 	}
 	return segs, true
+}
+
+// parseHeaderSegment reads one table-header key at s[i].
+// next is the index after the segment.
+func parseHeaderSegment(s string, i int) (seg string, next int, ok bool) {
+	switch s[i] {
+	case '"':
+		i++
+		var b strings.Builder
+		closed := false
+		for i < len(s) {
+			c := s[i]
+			if c == '\\' && i+1 < len(s) {
+				switch s[i+1] {
+				case '"':
+					b.WriteByte('"')
+				case '\\':
+					b.WriteByte('\\')
+				default:
+					b.WriteByte(c)
+					b.WriteByte(s[i+1])
+				}
+				i += 2
+				continue
+			}
+			if c == '"' {
+				i++
+				closed = true
+				break
+			}
+			b.WriteByte(c)
+			i++
+		}
+		if !closed {
+			return "", 0, false
+		}
+		return b.String(), i, true
+	case '\'':
+		i++
+		j := strings.IndexByte(s[i:], '\'')
+		if j < 0 {
+			return "", 0, false
+		}
+		return s[i : i+j], i + j + 1, true
+	default:
+		start := i
+		for i < len(s) && isBareKeyChar(s[i]) {
+			i++
+		}
+		if i == start {
+			return "", 0, false
+		}
+		return s[start:i], i, true
+	}
 }
 
 // sectionLineIndex scans lines for a table header whose key path
@@ -736,20 +658,6 @@ func normalizeLegacyHostHeader(content []byte, host string) []byte {
 	return []byte(strings.Join(lines, "\n"))
 }
 
-// hostPinned returns the pinned map for cfg.Hosts[host],
-// creating the host entry if needed.
-func hostPinned(cfg *GaleConfig, host string) map[string]bool {
-	if cfg.Hosts == nil {
-		cfg.Hosts = make(map[string]HostConfig)
-	}
-	h := cfg.Hosts[host]
-	if h.Pinned == nil {
-		h.Pinned = make(map[string]bool)
-	}
-	cfg.Hosts[host] = h
-	return cfg.Hosts[host].Pinned
-}
-
 // UpsertPackage updates a package in gale.toml, preserving its
 // existing location. If the package is present in the current
 // host's section, it is updated there; otherwise it is written
@@ -924,11 +832,6 @@ func RemovePackageSections(
 		if !found {
 			return ErrPackageNotFound
 		}
-		// Same content, same write, same lock hold: a [bin] entry
-		// naming a package this manifest no longer declares makes the
-		// file fail validation, so leaving one behind would end the
-		// removal with a config no command can load.
-		content = pruneBinOverrides(content, name)
 		if werr := atomicfile.Write(path, content); werr != nil {
 			return werr
 		}
@@ -936,70 +839,6 @@ func RemovePackageSections(
 		return err
 	})
 	return before, after, err
-}
-
-// pruneBinOverrides deletes every entry naming pkg as the winner,
-// from shared [bin] and from every [hosts.<selector>.bin] overlay,
-// but only once pkg is declared in no section of content.
-//
-// The overlays are not optional. loadEffectiveConfig merges them
-// into the effective [bin] on a matching machine, so an entry left
-// under a selector fails ValidateBin exactly as a shared one does —
-// just only on the hosts that selector reaches, which is the harder
-// failure to diagnose.
-//
-// A host-targeted removal that leaves the package in shared
-// [packages] (or in another host's overlay) keeps the entry: the
-// override still names a package this manifest declares, which is
-// exactly what ValidateBin asks of it. Removing it there would also
-// surprise the user who re-adds the package on that host.
-//
-// Content that will not parse is returned untouched. The removal
-// itself is a line edit that does not need the parse, and refusing a
-// remove over a manifest the user has hand-broken elsewhere would be
-// a worse trade than leaving one stale override behind.
-func pruneBinOverrides(content []byte, pkg string) []byte {
-	cfg, err := ParseGaleConfig(string(content))
-	if err != nil || cfg.declares(pkg) {
-		return content
-	}
-	content = pruneBinTable(content, binPath(), cfg.Bin, pkg)
-	for _, host := range slices.Sorted(maps.Keys(cfg.Hosts)) {
-		content = pruneBinTable(
-			content, hostBinPath(host), cfg.Hosts[host].Bin, pkg,
-		)
-	}
-	return content
-}
-
-// pruneBinTable deletes the entries of one [bin] table that name pkg
-// as the winner. bins is that table as parsed; section addresses it
-// in content, which the line editor rewrites in place.
-func pruneBinTable(
-	content []byte, section []string, bins map[string]string, pkg string,
-) []byte {
-	for _, bin := range slices.Sorted(maps.Keys(bins)) {
-		if bins[bin] != pkg {
-			continue
-		}
-		if modified, ok := deleteTOMLKey(content, section, bin); ok {
-			content = modified
-		}
-	}
-	return content
-}
-
-// binPath returns the section path of the [bin] table.
-func binPath() []string {
-	return []string{"bin"}
-}
-
-// hostBinPath returns the section path for a host's bin table,
-// [hosts.<host>.bin]. The host segment is kept as a single key —
-// encodeSectionPath quotes it when it contains dots or other
-// non-bare-key characters.
-func hostBinPath(host string) []string {
-	return []string{"hosts", host, "bin"}
 }
 
 // readFileState captures a file's existence and content. os.Lstat
@@ -1074,78 +913,5 @@ func RemovePackage(path, host, name string) error {
 			return ErrPackageNotFound
 		}
 		return atomicfile.Write(path, modified)
-	})
-}
-
-// PinPackage marks a package as pinned in the gale.toml at path.
-// When host is empty, the pin is recorded in shared [pinned] and
-// the package must exist in shared [packages]. Otherwise the pin
-// is recorded under [hosts.<host>.pinned] and the package must
-// exist in that host's package list. Returns ErrPackageNotFound
-// when the package is not in the targeted section.
-//
-// TODO(0012-0014): PinPackage uses struct round-trip (WriteGaleConfig)
-// which strips comments and drops unknown sections. Convert to text-based
-// edit when setTOMLBoolKey is added.
-func PinPackage(path, host, name string) error {
-	return withFileLock(path, func() error {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading gale config: %w", err)
-		}
-		cfg, err := ParseGaleConfig(string(data))
-		if err != nil {
-			return err
-		}
-
-		if host == "" {
-			if _, ok := cfg.Packages[name]; !ok {
-				return ErrPackageNotFound
-			}
-			if cfg.Pinned == nil {
-				cfg.Pinned = make(map[string]bool)
-			}
-			cfg.Pinned[name] = true
-		} else {
-			h, ok := cfg.Hosts[host]
-			if !ok {
-				return ErrPackageNotFound
-			}
-			if _, ok := h.Packages[name]; !ok {
-				return ErrPackageNotFound
-			}
-			hostPinned(cfg, host)[name] = true
-		}
-
-		return WriteGaleConfig(path, cfg)
-	})
-}
-
-// UnpinPackage removes a pin from the gale.toml at path.
-// When host is empty, removes from shared [pinned]; otherwise
-// from [hosts.<host>.pinned]. Missing pins are a no-op.
-//
-// TODO(0012-0014): UnpinPackage uses struct round-trip (WriteGaleConfig)
-// which strips comments and drops unknown sections. Convert to text-based
-// edit when setTOMLBoolKey is added.
-func UnpinPackage(path, host, name string) error {
-	return withFileLock(path, func() error {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("reading gale config: %w", err)
-		}
-		cfg, err := ParseGaleConfig(string(data))
-		if err != nil {
-			return err
-		}
-
-		if host == "" {
-			delete(cfg.Pinned, name)
-		} else if h, ok := cfg.Hosts[host]; ok {
-			delete(h.Pinned, name)
-			cfg.Hosts[host] = h
-		}
-
-		return WriteGaleConfig(path, cfg)
 	})
 }

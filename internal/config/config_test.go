@@ -563,185 +563,50 @@ func TestParseAppConfigMalformedTOML(t *testing.T) {
 	}
 }
 
-// --- Behavior: Registry URL in AppConfig ---
-
-const appConfigWithRegistry = `
+// TestParseAppConfigIgnoresLeftoverRegistry: leftover
+// [registry] url and [sync] parallelism must parse and
+// must not populate a behavioral field.
+func TestParseAppConfigIgnoresLeftoverRegistry(t *testing.T) {
+	src := `
 [registry]
-url = "https://example.com/recipes"
+url = "https://example.invalid/recipes"
+
+[sync]
+parallelism = 1
+
+[build]
+debug = true
 `
-
-func TestParseAppConfigRegistryURL(t *testing.T) {
-	cfg, err := ParseAppConfig(appConfigWithRegistry)
+	cfg, err := ParseAppConfig(src)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("leftover [registry]/[sync] must parse: %v", err)
 	}
-	if cfg.Registry.URL != "https://example.com/recipes" {
-		t.Errorf("Registry.URL = %q, want %q",
-			cfg.Registry.URL, "https://example.com/recipes")
+	if !cfg.Build.Debug {
+		t.Error("Build.Debug = false, want true")
 	}
 }
 
-func TestParseAppConfigRegistryURLEmpty(t *testing.T) {
-	cfg, err := ParseAppConfig("")
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Registry.URL != "" {
-		t.Errorf("Registry.URL = %q, want empty",
-			cfg.Registry.URL)
-	}
-}
-
-// --- Behavior: Pin package in gale.toml ---
-
-func TestPinPackageAddsPinnedSection(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.toml")
-
-	initial := "[packages]\njq = \"1.7.1\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
-		t.Fatalf("failed to write initial gale.toml: %v", err)
-	}
-
-	if err := PinPackage(path, "", "jq"); err != nil {
-		t.Fatalf("PinPackage error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
-	}
-
-	cfg, err := ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatalf("ParseGaleConfig error: %v", err)
-	}
-
-	if !cfg.Pinned["jq"] {
-		t.Error("expected jq to be pinned")
-	}
-}
-
-func TestPinPackagePreservesExisting(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.toml")
-
-	initial := "[packages]\njq = \"1.7.1\"\nripgrep = \"14.0\"\n\n[vars]\nFOO = \"bar\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
-		t.Fatalf("failed to write initial gale.toml: %v", err)
-	}
-
-	if err := PinPackage(path, "", "jq"); err != nil {
-		t.Fatalf("PinPackage error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
-	}
-
-	cfg, err := ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatalf("ParseGaleConfig error: %v", err)
-	}
-
-	if cfg.Packages["jq"] != "1.7.1" {
-		t.Errorf("Packages[jq] = %q, want %q",
-			cfg.Packages["jq"], "1.7.1")
-	}
-	if cfg.Packages["ripgrep"] != "14.0" {
-		t.Errorf("Packages[ripgrep] = %q, want %q",
-			cfg.Packages["ripgrep"], "14.0")
-	}
-	if cfg.Vars["FOO"] != "bar" {
-		t.Errorf("Vars[FOO] = %q, want %q",
-			cfg.Vars["FOO"], "bar")
-	}
-}
-
-// --- Behavior: Unpin package from gale.toml ---
-
-func TestUnpinPackageRemovesPin(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.toml")
-
-	initial := "[packages]\njq = \"1.7.1\"\n\n[pinned]\njq = true\n"
-	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
-		t.Fatalf("failed to write initial gale.toml: %v", err)
-	}
-
-	if err := UnpinPackage(path, "", "jq"); err != nil {
-		t.Fatalf("UnpinPackage error: %v", err)
-	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("failed to read file: %v", err)
-	}
-
-	cfg, err := ParseGaleConfig(string(data))
-	if err != nil {
-		t.Fatalf("ParseGaleConfig error: %v", err)
-	}
-
-	if cfg.Pinned["jq"] {
-		t.Error("expected jq to be unpinned")
-	}
-}
-
-func TestUnpinPackageNonexistentIsNoop(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "gale.toml")
-
-	initial := "[packages]\njq = \"1.7.1\"\n"
-	if err := os.WriteFile(path, []byte(initial), 0o644); err != nil {
-		t.Fatalf("failed to write initial gale.toml: %v", err)
-	}
-
-	// Unpinning something that isn't pinned should not error.
-	if err := UnpinPackage(path, "", "jq"); err != nil {
-		t.Fatalf("UnpinPackage error: %v", err)
-	}
-}
-
-// --- Behavior: Parse gale.toml with pinned section ---
-
-const galeWithPinned = `
+// TestParseGaleConfigIgnoresLeftoverPinned: leftover
+// [pinned] / [hosts.*.pinned] is an unknown TOML key
+// and must not fail the parse or drop [packages].
+func TestParseGaleConfigIgnoresLeftoverPinned(t *testing.T) {
+	src := `
 [packages]
 jq = "1.7.1"
-ripgrep = "14.0"
 
 [pinned]
 jq = true
+
+[hosts.my-mac.pinned]
+fzf = true
 `
-
-func TestParseGaleConfigPinnedNotNil(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithPinned)
+	cfg, err := ParseGaleConfig(src)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("leftover [pinned] must parse: %v", err)
 	}
-	if cfg.Pinned == nil {
-		t.Fatal("expected non-nil Pinned map")
-	}
-}
-
-func TestParseGaleConfigPinnedValue(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithPinned)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !cfg.Pinned["jq"] {
-		t.Error("expected Pinned[jq] to be true")
-	}
-}
-
-func TestParseGaleConfigUnpinnedPackage(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithPinned)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if cfg.Pinned["ripgrep"] {
-		t.Error("expected Pinned[ripgrep] to be false")
+	if cfg.Packages["jq"] != "1.7.1" {
+		t.Errorf("Packages[jq] = %q, want %q",
+			cfg.Packages["jq"], "1.7.1")
 	}
 }
 
@@ -777,6 +642,9 @@ func TestWriteAppConfigRoundTrip(t *testing.T) {
 	if parsed.Repos[0].Name != "core" {
 		t.Errorf("Repos[0].Name = %q, want %q",
 			parsed.Repos[0].Name, "core")
+	}
+	if strings.Contains(string(data), "keep") {
+		t.Errorf("WriteAppConfig must not emit [generation] keep, got:\n%s", data)
 	}
 }
 
@@ -1103,13 +971,10 @@ func TestEffectivePackagesDoesNotMutateReceiver(t *testing.T) {
 	}
 }
 
-const galeWithHostPinned = `
+const galeWithHostBin = `
 [packages]
 jq = "1.7.1"
 node = "24.4.0"
-
-[pinned]
-jq = true
 
 [bin]
 npx = "node"
@@ -1118,54 +983,51 @@ npx = "node"
 fzf = "0.50"
 corepack = "0.34.0"
 
-[hosts.my-mac.pinned]
-fzf = true
-
 [hosts.my-mac.bin]
 npx = "corepack"
 `
 
-func TestEffectivePinnedMergesSharedAndHost(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithHostPinned)
+// TestParseGaleConfigIgnoresLeftoverBin: leftover [bin] /
+// [hosts.*.bin] is an unknown TOML key and must not fail the
+// parse or drop [packages] / host packages.
+func TestParseGaleConfigIgnoresLeftoverBin(t *testing.T) {
+	cfg, err := ParseGaleConfig(galeWithHostBin)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("leftover [bin] must parse: %v", err)
 	}
-	pinned := cfg.EffectivePinned("my-mac")
-	if !pinned["jq"] {
-		t.Error("expected jq pinned (shared)")
+	if cfg.Packages["jq"] != "1.7.1" {
+		t.Errorf("Packages[jq] = %q, want 1.7.1", cfg.Packages["jq"])
 	}
-	if !pinned["fzf"] {
-		t.Error("expected fzf pinned (host)")
+	if got := cfg.EffectivePackages("my-mac")["fzf"]; got != "0.50" {
+		t.Errorf("EffectivePackages(my-mac)[fzf] = %q, want 0.50", got)
 	}
 }
 
-// TestEffectiveBinMergesHostOverlay puts [bin] on the footing
-// [packages] and [pinned] already have (gh#219). A machine whose
-// winner ships only in its own overlay has to resolve the collision
-// from there, and the overlay outranks the shared table.
-func TestEffectiveBinMergesHostOverlay(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithHostPinned)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := cfg.EffectiveBin("my-mac")["npx"]; got != "corepack" {
-		t.Errorf("EffectiveBin(my-mac)[npx] = %q, want %q — the overlay "+
-			"outranks shared [bin]", got, "corepack")
-	}
-}
+// TestParseGaleConfigIgnoresTopLevelGitSystemNote: git =
+// "system" before the first table is a note (assume PATH),
+// not a package pin. Unknown top-level scalars are dropped.
+func TestParseGaleConfigIgnoresTopLevelGitSystemNote(t *testing.T) {
+	src := `
+git = "system"
 
-// TestEffectiveBinIgnoresNonMatchingHost keeps the overlay scoped.
-// A selector that misses this machine must leave the shared winner
-// standing; borrowing another host's choice would drop the basename
-// from the package that actually provides it here.
-func TestEffectiveBinIgnoresNonMatchingHost(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithHostPinned)
+[packages]
+jq = "1.7.1"
+`
+	cfg, err := ParseGaleConfig(src)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("top-level git = %q must parse: %v", "system", err)
 	}
-	if got := cfg.EffectiveBin("other-box")["npx"]; got != "node" {
-		t.Errorf("EffectiveBin(other-box)[npx] = %q, want %q — my-mac's "+
-			"overlay does not reach this host", got, "node")
+	if got, ok := cfg.Packages["git"]; ok {
+		t.Errorf("Packages[git] = %q, want absent (note, not a pin)", got)
+	}
+	if cfg.Packages["jq"] != "1.7.1" {
+		t.Errorf("Packages[jq] = %q, want 1.7.1", cfg.Packages["jq"])
+	}
+	if got, ok := cfg.EffectivePackages("")["git"]; ok {
+		t.Errorf("EffectivePackages()[git] = %q, want absent", got)
+	}
+	if got, ok := cfg.EffectivePackages("any-host")["git"]; ok {
+		t.Errorf("EffectivePackages(host)[git] = %q, want absent", got)
 	}
 }
 
@@ -1485,29 +1347,6 @@ func TestEffectivePackagesUnmatchedHostStillGetsShared(t *testing.T) {
 	}
 }
 
-func TestEffectivePinnedMatchesGlob(t *testing.T) {
-	src := `
-[packages]
-jq = "1.7.1"
-
-[hosts."work-*".packages]
-slack = "1.0"
-
-[hosts."work-*".pinned]
-slack = true
-`
-	cfg, err := ParseGaleConfig(src)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if !cfg.EffectivePinned("work-mac")["slack"] {
-		t.Error("expected slack pinned on work-mac (glob)")
-	}
-	if cfg.EffectivePinned("home")["slack"] {
-		t.Error("expected slack not pinned on home")
-	}
-}
-
 // --- Bug 0012: Config mutations strip TOML comments ---
 
 func TestAddPackagePreservesComments(t *testing.T) {
@@ -1630,143 +1469,38 @@ environment = "production"
 	}
 }
 
-// --- gh#190: [bin] executable-collision overrides ---
+// --- leftover [bin] ---
 
-const galeWithBin = `
+func TestParseGaleConfigLeftoverBinDoesNotDropPackages(t *testing.T) {
+	cfg, err := ParseGaleConfig(`
 [packages]
 corepack = "0.34.0"
 node = "24.4.0"
 
 [bin]
 npx = "corepack"
-`
-
-func TestParseGaleConfigBin(t *testing.T) {
-	cfg, err := ParseGaleConfig(galeWithBin)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if got := cfg.Bin["npx"]; got != "corepack" {
-		t.Errorf("Bin[npx] = %q, want %q", got, "corepack")
-	}
-	if err := cfg.ValidateBin(); err != nil {
-		t.Errorf("ValidateBin: %v", err)
-	}
-}
-
-// TestValidateBinRejectsUndeclaredWinner keeps the override honest.
-// A winner that is not a declared package is a typo, and honoring it
-// would drop the basename from every provider — restoring, in a new
-// shape, the silent shadowing gh#190 fixed.
-func TestValidateBinRejectsUndeclaredWinner(t *testing.T) {
-	cfg, err := ParseGaleConfig(`
-[packages]
-node = "24.4.0"
-
-[bin]
-npx = "corepack"
 `)
 	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
+		t.Fatalf("leftover [bin] must parse: %v", err)
 	}
-	err = cfg.ValidateBin()
-	if err == nil {
-		t.Fatal("ValidateBin accepted an undeclared winner")
-	}
-	for _, want := range []string{"npx", "corepack"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q omits %q", err, want)
-		}
+	if cfg.Packages["node"] != "24.4.0" {
+		t.Errorf("Packages[node] = %q, want 24.4.0", cfg.Packages["node"])
 	}
 }
 
-// TestValidateBinEmptyWinner rejects a blank value rather than
-// treating it as "no override": an empty winner matches no package,
-// so every provider would lose the name.
-func TestValidateBinEmptyWinner(t *testing.T) {
-	cfg, err := ParseGaleConfig(`
-[packages]
-node = "24.4.0"
-
-[bin]
-npx = ""
-`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := cfg.ValidateBin(); err == nil {
-		t.Fatal("ValidateBin accepted an empty winner")
-	}
-}
-
-// TestValidateBinAcceptsHostDeclaredWinner keeps a host-scoped winner
-// from breaking the machines its selector misses. The override is
-// inert there — no provider, nothing suppressed — and erroring would
-// take out every command on those machines over an entry that is
-// correct where it applies.
-func TestValidateBinAcceptsHostDeclaredWinner(t *testing.T) {
-	cfg, err := ParseGaleConfig(`
-[packages]
-node = "24.4.0"
-
-[bin]
-npx = "corepack"
-
-[hosts.laptop.packages]
-corepack = "0.34.0"
-`)
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if err := cfg.ValidateBin(); err != nil {
-		t.Errorf("ValidateBin: %v", err)
-	}
-}
-
-// TestRemovePackageSectionsPrunesBinOverride pins the invariant this
-// mechanism owes the manifest: a config that loaded before a removal
-// still loads after it. A [bin] entry whose winner is gone fails
-// ValidateBin, so it goes in the same write.
-func TestRemovePackageSectionsPrunesBinOverride(t *testing.T) {
-	cfg, data := removeAndReparse(t, `[packages]
+func TestRemovePackageSectionsIgnoresLeftoverBin(t *testing.T) {
+	cfg, _ := removeAndReparse(t, `[packages]
 node = "24.4.0"
 corepack = "0.34.0"
 
 [bin]
 npx = "corepack"
 `, []string{""}, "corepack")
-
-	if _, has := cfg.Bin["npx"]; has {
-		t.Errorf("[bin] npx survived its winner's removal:\n%s", data)
+	if _, has := cfg.Packages["corepack"]; has {
+		t.Error("corepack still declared after remove")
 	}
-	if err := cfg.ValidateBin(); err != nil {
-		t.Errorf("config no longer validates: %v", err)
-	}
-}
-
-// TestRemovePrunesHostScopedBinOverride carries that invariant to a
-// host-scoped winner. [hosts.<selector>.bin] merges into the
-// effective [bin] on a matching machine (gh#219), so an entry left
-// behind naming a removed package breaks the manifest the same way —
-// on exactly the hosts the selector reaches.
-func TestRemovePrunesHostScopedBinOverride(t *testing.T) {
-	cfg, data := removeAndReparse(t, `[packages]
-node = "24.4.0"
-
-[hosts.laptop.packages]
-corepack = "0.34.0"
-
-[hosts.laptop.bin]
-npx = "corepack"
-`, []string{"laptop"}, "corepack")
-
-	if winner, has := cfg.Hosts["laptop"].Bin["npx"]; has {
-		t.Errorf("[hosts.laptop.bin] npx = %q survived its winner's "+
-			"removal:\n%s", winner, data)
-	}
-	cfg.Bin = cfg.EffectiveBin("laptop")
-	if err := cfg.ValidateBin(); err != nil {
-		t.Errorf("config no longer validates on laptop: %v", err)
+	if cfg.Packages["node"] != "24.4.0" {
+		t.Errorf("Packages[node] = %q, want 24.4.0", cfg.Packages["node"])
 	}
 }
 

@@ -1,6 +1,5 @@
-# `gale verify` can only inspect packages that exist in the
-# lockfile. A typoed name should fail with a clear "not in
-# lockfile" message — not surprise us by trying to fetch.
+# `gale verify` needs a v2 lock. With no lock it refuses
+# instead of fetching GHCR.
 
 ! exec gale verify nonexistent
-stderr 'not found in lockfile|install it first'
+stderr 'needs a v2 lock|tree_digest|not a default-target root'

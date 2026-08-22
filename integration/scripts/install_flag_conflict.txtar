@@ -1,9 +1,10 @@
 # Mutually exclusive flag pairs must produce a clear
 # error rather than a silently-ignored setting.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-! exec gale install hello -g -p --recipes=$WORK/recipes
+! exec gale install hello -g -p --index=$WORK/index
 stderr 'both|global.*project|project.*global'
 
 # State unchanged.

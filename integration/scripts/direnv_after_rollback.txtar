@@ -1,0 +1,29 @@
+# Rollback is temporary. It moves current only.
+# The next sync returns PATH to the lock.
+
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
+
+mkdir $WORK/proj
+cd $WORK/proj
+exec gale init
+exec gale install hello -p --index=$WORK/index
+exists $WORK/proj/.gale/current/bin/hello
+! exists $WORK/proj/.gale/current/bin/hello-dep
+
+exec gale install hello-dep -p --index=$WORK/index
+exists $WORK/proj/.gale/current/bin/hello-dep
+cp $WORK/proj/gale.lock $WORK/before.lock
+
+exec gale generations rollback
+stderr 'Rolled back'
+stderr 'temporary'
+stderr 'lock'
+stderr 'git'
+exists $WORK/proj/.gale/current/bin/hello
+! exists $WORK/proj/.gale/current/bin/hello-dep
+
+exec gale sync --if-needed
+exists $WORK/proj/.gale/current/bin/hello
+exists $WORK/proj/.gale/current/bin/hello-dep
+cmp $WORK/proj/gale.lock $WORK/before.lock

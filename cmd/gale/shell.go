@@ -140,7 +140,7 @@ func syncIfNeeded(w io.Writer, projectDir string) {
 	) {
 		return
 	}
-	if err := runSync("", false, false, false, projectRoot); err != nil {
+	if err := runSync(syncRun{ProjectDir: projectRoot, IfNeeded: true}); err != nil {
 		out.Warn(fmt.Sprintf("sync failed: %v", err))
 	}
 }
@@ -164,16 +164,12 @@ func prependPATH(binDir string) []string {
 }
 
 // resolveProjectRoot walks up from dir to find the
-// canonical project root. Checks for gale.toml first,
-// then .tool-versions. Returns the directory containing
-// whichever is found, or dir as-is if neither exists
+// canonical project root. Returns the directory
+// containing gale.toml, or dir as-is if none exists
 // (the project may already have .gale/ from a prior sync).
 func resolveProjectRoot(dir string) string {
 	if cp, err := config.FindGaleConfig(dir); err == nil {
 		return filepath.Dir(cp)
-	}
-	if tv := config.FindToolVersions(dir); tv != "" {
-		return filepath.Dir(tv)
 	}
 	return dir
 }

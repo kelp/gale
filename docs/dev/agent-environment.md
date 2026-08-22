@@ -21,7 +21,7 @@ just lint              # golangci-lint + go vet, 15s
 just fmt-check         # gofumpt, whole tree
 just check-darwin      # the darwin-only files Linux never compiles
 just test-symlinked-tmp  # the macOS /var path-spelling class; baseline is empty
-just integration       # hermetic Tier A, fake GHCR
+just integration       # hermetic Tier A, gale-fixture index
 ```
 
 Four things to internalize before your first command:
@@ -34,8 +34,8 @@ Four things to internalize before your first command:
    fail slowly. See [Blocked egress](#blocked-egress).
 3. **You are root.** Tests that assert a permission error skip themselves
    rather than fail. See [Running as root](#running-as-root).
-4. **Green locally is not green on CI.** Half of `internal/build` and all of
-   the Mach-O code is `//go:build darwin` and is never compiled here. See
+4. **Green locally is not green on CI.** Darwin-only files
+   (`//go:build darwin`) never compile here. See
    [Darwin code is invisible on Linux](#darwin-code-is-invisible-on-linux).
    `just preflight` closes that gap and the other CI-only gates.
 
@@ -64,14 +64,6 @@ What it installs, and where the pin comes from:
 | `govulncheck` | `go install golang.org/x/vuln/...@latest` | latest, as CI does |
 | `actionlint` | `go install github.com/rhysd/actionlint/...@latest` | latest |
 | `just` | GitHub release tarball | `gale.toml` |
-| `patchelf` | GitHub release tarball, Linux only | literal in the script |
-
-`patchelf` is a test dependency, not a dev tool: six rpath tests in
-`internal/build/fixup_linux_test.go` call `exec.LookPath("patchelf")` and skip
-without it, which quietly strips Linux coverage from the most
-regression-prone file in the repo. Its pin lives in the script rather than
-`gale.toml` because `gale.toml` drives a real dev machine's direnv toolchain,
-and gale is macOS-first, where patchelf means nothing.
 
 It also warms the Go module cache, unshallows the clone (see
 [new-from-merge-base](#golangci-lint)), and points `core.hooksPath` at
@@ -127,10 +119,10 @@ single most expensive thing to rediscover.
 
 ### Why `gale install` cannot work
 
-GHCR's token and manifest endpoints resolve, so gale finds the prebuilt
-binary — then the blob fetch 403s. gale falls back to a source build, and the
-source hosts are blocked too. A measured `gale install just` spent 3m11s
-compiling rustc before dying.
+Live install fetches index artifacts from GitHub Releases and
+upstream hosts. Those hosts are on the blocked list, so the
+command fails slowly rather than resolving a leftover GHCR
+bottle or compiling from source.
 
 A `PreToolUse` hook (`.claude/hooks/block-gale-install.sh`) blocks
 `gale install|build|sync` and `just install|bootstrap` for exactly this
@@ -152,9 +144,9 @@ What to use instead, generally:
 
 - `gale lint <recipe.toml>` — fully offline, and the real gate for recipe edits.
 - `go build -o ~/.local/bin/gale ./cmd/gale/` — rebuild gale from source.
-- `just integration` — exercises the whole install path against a hermetic
-  fake GHCR server, which is the closest thing to a real install you can run
-  here.
+- `just integration` — exercises the fetch path against a
+  hermetic `gale-fixture index` / `fetch-setup`, which is
+  the closest thing to a real install you can run here.
 
 ### GitHub API
 
@@ -166,16 +158,14 @@ scoped to `kelp/gale` and `kelp/gale-recipes`.
 
 gale is macOS-first, but this container is Linux. Every `//go:build darwin`
 file is therefore excluded from the build: it is not compiled, not
-typechecked, not vetted, and not linted. Six files, found with
-`grep -rl '^//go:build darwin' --include='*.go' .` — `fixup_darwin.go`,
-`fixup_uuid.go` and `binary_darwin.go` plus their tests, the Mach-O rpath,
-codesign and UUID paths that CLAUDE.md names as the most regression-prone
-code in the repo — get **zero** local signal.
+typechecked, not vetted, and not linted. Remaining darwin-only
+code lives under `internal/inspect/binary_darwin.go` and gets
+**zero** local signal here.
 
 The failure mode is silent. Append `func x() { doesNotExist() }` to
-`fixup_darwin.go` and `go build ./...`, `go vet ./...`, `golangci-lint run`,
-`go test ./...` and the pre-commit hook all stay green; CI's `macos-26` job is
-the first thing that notices.
+a `//go:build darwin` file and `go build ./...`, `go vet ./...`,
+`golangci-lint run`, `go test ./...` and the pre-commit hook all
+stay green; CI's `macos-26` job is the first thing that notices.
 
 The remedy:
 
@@ -236,19 +226,23 @@ That is what cost PR #227 a round trip.
 just test-symlinked-tmp   # the suite under a macOS-shaped $TMPDIR
 ```
 
-It points `$TMPDIR` at `/<name>`, a symlink to `/private/<name>`, runs
+It points `$TMPDIR` at a symlink under a writable base (`$TMPDIR`, else
+`/tmp`) whose resolved spelling re-spells that base beneath a pad directory —
+`$base/<name>` resolves to `$base/real-<name>$base/<name>` — runs
 `go test -count=1 ./...`, and removes both on exit including on failure. On
 macOS it is a no-op wrapper around `go test` — the real thing already runs
 that way.
 
-The shape is deliberate. macOS's resolved spelling *contains* its raw one
-(`/private` + `/var/folders/…`), so assertions like
+The shape is deliberate. macOS's resolved spelling *contains* its raw one as
+a suffix (`/private` + `/var/folders/…`), so assertions like
 `strings.Contains(err.Error(), rawDir)` pass there. A sibling symlink
-(`tmp -> tmp.real`) breaks that property and reports 5 extra `cmd/gale`
-failures macOS is perfectly happy with. Keeping the raw path a substring of
-the resolved one is what makes the root-level symlink necessary, which is
-why the target needs `/` writable — free in this container, `sudo` on a
-Linux dev box.
+(`tmp -> tmp.real`) breaks that suffix and reports 5 extra `cmd/gale`
+failures macOS is perfectly happy with. The layout above keeps the raw
+`$TMPDIR` a suffix of its resolved form — the same property, obtained under a
+writable base rather than at the filesystem root. It used to symlink
+`/<name> -> private/<name>` and so needed `/` writable; anchoring it under
+`$TMPDIR` lets the gate run unprivileged (e.g. in a Cursor Cloud Agent VM,
+where the agent is not root) without a `sudo` or a root-owned container.
 
 **The baseline is empty**, and `just preflight` runs it as its last gate. A
 failure here is a path-spelling bug your branch introduced — read it as yours
@@ -284,7 +278,7 @@ if os.Geteuid() == 0 {
 }
 ```
 
-22 tests skip this way, across `cmd/gale`, `internal/build`,
+22 tests skip this way, across `cmd/gale`,
 `internal/generation`, `internal/installer`, `internal/lockfile`,
 `internal/projects`, `internal/provenance` and `internal/atomicfile`. They
 still run, and still pass, as an unprivileged user on CI. `go test ./... -v`
@@ -307,17 +301,13 @@ different tests, so run both:
 
 | Run | Gains | Loses |
 | --- | --- | --- |
-| `just test` (root) | the 10 tests that shell out to `patchelf`, `cc` or `go build` | 22 permission tests |
-| `just test-unprivileged` | those 22 | the 10 — `~/.local/bin` and the Go toolchain live under root's 0700 `$HOME`, so `exec.LookPath("patchelf")` and a nested `go build` fail for uid 65534 and those tests skip themselves |
+| `just test` (root) | tests that shell out to `cc` or `go build` | 22 permission tests |
+| `just test-unprivileged` | those 22 | tests that need the root-owned toolchain under `$HOME` |
 
-Known failure: `TestBuildEnvHomeIsBuildScoped` fails under it once any root
-`go test` has run in the container. That test sets `HOME=/host/home/value`,
-and `build.TmpDir()` does `MkdirAll($HOME/.gale/tmp)` — which root happily
-creates at the filesystem root, leaving a root-owned `/host/home/value/.gale/`
-behind. Unprivileged runs then find that directory present but unwritable
-instead of absent, so `TmpDir()` returns it rather than falling back to
-`/tmp`. Removing `/host/home` clears it. The real fix belongs in the test: a
-`t.TempDir()`, not a literal path outside the test's own tree.
+Known failure: a leftover `TmpDir` test that plants `HOME` at a
+literal host path can leave a root-owned `/.gale` after a root
+`go test`. Use `t.TempDir()` instead. `store.TmpDir()` still
+creates `$HOME/.gale/tmp`.
 
 ### chmod 000 does not work as root
 
@@ -411,7 +401,6 @@ CI-only, do not attempt locally:
   its vulnerability database at `vuln.go.dev` is blocked by the egress proxy,
   so it dies with `fetching vulnerabilities: ... Forbidden`. CI filters the
   one known-unfixable advisory, `GO-2026-5932`.
-- `attestation-parity.yml` — needs real GHCR and a gh token.
 - `release.yml`.
 - `just refresh-trusted-root` — fetches the Sigstore TUF CDN.
 

@@ -4,30 +4,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"maps"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
-	"strings"
-	"sync"
-	"time"
 
 	"github.com/kelp/gale/internal/attestation"
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/depsmeta"
-	"github.com/kelp/gale/internal/download"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
-	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/lockplan"
-	"github.com/kelp/gale/internal/parallel"
-	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
-	"github.com/kelp/gale/internal/timing"
 )
 
 var renameDir = os.Rename
@@ -56,9 +43,19 @@ var ErrUnlockedSource = errors.New(
 	"cannot install from a local directory or git HEAD under a lock",
 )
 
+// ErrSourceGone reports a source compile, which fetch replaced.
+var ErrSourceGone = errors.New(
+	"source install is gone; use gale fetch or gale fetch-adopt",
+)
+
+// ErrBottleGone reports a leftover GHCR bottle pour, which fetch replaced.
+var ErrBottleGone = errors.New(
+	"bottle install is gone; use gale fetch or gale fetch-adopt",
+)
+
 // RecipeResolver finds and parses a recipe by package name.
 // Returns nil if the package has no recipe.
-type RecipeResolver func(name string) (*recipe.Recipe, error)
+type RecipeResolver func(ctx context.Context, name string) (*recipe.Recipe, error)
 
 // Installer installs packages into the store.
 type Installer struct {
@@ -104,66 +101,6 @@ type Installer struct {
 	// staged stale-reinstall path.
 	Plan *lockplan.Plan
 
-	// DeferFarm drops both the farm guard and the farm population
-	// from every commit this installer makes, leaving the store
-	// commit alone. The farm is then the caller's to establish, once,
-	// over the state the whole operation leaves behind.
-	//
-	// `gale migrate` sets it while it relocates a pre-revision
-	// install (design §13). Migrate runs machine-wide, so every
-	// registered scope is an external claimant, and a scope loading a
-	// versioned library out of the BARE directory claims that soname
-	// at the bare path. The canonical copy proposes the same soname
-	// at a different directory, which is precisely what design §4
-	// tells GuardPopulate to refuse — so asking the per-commit guard
-	// would deadlock the command against the state it exists to end.
-	//
-	// It is the same deferral a locked plan already selects
-	// internally (see commitExtracted), for a related reason: one
-	// claim per commit cannot answer a question about the closure the
-	// whole operation produces. Nothing is skipped by deferring,
-	// because nothing is mutated: the commit adds a directory and
-	// touches no farm link, so a failure anywhere in the pass leaves
-	// the farm exactly as it was.
-	DeferFarm bool
-
-	// FarmGuard, when set, is the cross-project farm claimant
-	// guard (design §4): it is called with the packages whose
-	// sonames an install is about to write into the shared farm,
-	// before the store commit and before any farm mutation, and a
-	// non-nil error aborts the install with both untouched.
-	// Production wiring passes a closure over farm.GuardPopulate
-	// with the initiating scope's claimants; nil skips the guard
-	// (unwired callers and tests). It takes a batch so deferring
-	// population to a post-validation pass can guard the whole
-	// plan with one call.
-	//
-	// Each placement scans the staging dir and names the canonical
-	// destination, because the guard must run while a refusal can
-	// still leave everything as it was — once the canonical dir is
-	// replaced, the operation has changed bytes an existing
-	// generation reaches and has also overwritten the very state a
-	// claimant would be enumerated from.
-	FarmGuard func(placements []farm.Placement) error
-
-	// FarmRemoveGuard, when set, is the other half of that guard:
-	// it is called with the farm entries a staged replacement would
-	// make stale, before the replacement happens, and a non-nil
-	// error aborts with the store and the farm untouched.
-	//
-	// A separate hook because it answers a separate question.
-	// FarmGuard asks whether repointing the sonames this artifact
-	// PROVIDES violates a claim; this asks whether dropping the ones
-	// it no longer provides does. GuardPopulate cannot answer the
-	// second, since it skips any soname the proposed closure does
-	// not touch.
-	//
-	// The placements are passed too so the caller can build the
-	// initiating scope's own proposed claim the same way it does for
-	// FarmGuard: a package in the initiating scope may link a
-	// library the refreshed artifact just stopped providing.
-	FarmRemoveGuard func(placements []farm.Placement, stale []string) error
-
 	// ReplaceGuard, when set, is design §13's cross-scope veto: it
 	// is called inside the store-gen lock immediately before a
 	// staged artifact supersedes an existing directory, with the
@@ -171,34 +108,7 @@ type Installer struct {
 	// aborts with everything as it was. nil skips the guard, and
 	// also skips superseding, which is every caller that is not
 	// replacing bytes on purpose.
-	//
-	// It takes the committed result rather than a caller's
-	// prediction because the two differ. An unlocked install falls
-	// back from a failed binary fetch to a source build, so a veto
-	// decided on the recipe's declared binary SHA would clear a
-	// hash no scope agreed to and then commit a different one.
-	//
-	// Same placement as FarmGuard, for the same reason: once the
-	// directory is replaced, the operation has changed bytes an
-	// existing generation reaches and has overwritten the state a
-	// claimant would be read from.
 	ReplaceGuard func(rep Replacement) error
-
-	// BinaryFallbackLog receives a one-line warning when a
-	// binary install fails and the installer falls back to a
-	// source build. nil means write to os.Stderr — the failure
-	// is always reported because reaching this branch means a
-	// binary was advertised in the recipe and could not be
-	// fetched/verified. Tests inject a buffer to assert on
-	// the message. Because dep installs run in parallel, this
-	// writer may receive concurrent writes; callers injecting a
-	// non-os.Stderr writer must make it concurrency-safe.
-	BinaryFallbackLog io.Writer
-
-	// Downloads bounds the number of concurrent binary network
-	// fetches across all installs sharing this Installer. A nil
-	// limiter (the zero value) is unbounded.
-	Downloads *parallel.Limiter
 }
 
 // InstallMethod represents how a package was installed.
@@ -260,84 +170,69 @@ func refusalLabel(locked bool) string {
 }
 
 // Install installs a recipe into the store and links binaries.
-func (inst *Installer) Install(r *recipe.Recipe) (*InstallResult, error) {
-	return inst.install(r, false)
-}
-
-// forDeps returns a copy of the installer that installs dependencies
-// without the caller's binary-only constraint.
-//
-// BinaryOnly is a statement about the package the caller asked for —
-// migrate cleared one declared binary with every scope — and says
-// nothing about what sits underneath it. A dependency built from
-// source is installed nondestructively, and building it is often
-// what produces the provenance the binary target needs.
-//
-// A copy rather than clearing the field in place: dependency
-// installs run concurrently against this instance, so mutating
-// shared state for the duration would be a data race. Every field is
-// a pointer or a value shared on purpose, so the copy behaves
-// identically in every other respect.
-func (inst *Installer) forDeps() *Installer {
-	if !inst.BinaryOnly {
-		return inst
-	}
-	dup := *inst
-	dup.BinaryOnly = false
-	return &dup
+func (inst *Installer) Install(ctx context.Context, r *recipe.Recipe) (*InstallResult, error) {
+	return inst.install(ctx, r, false)
 }
 
 // Reinstall is Install but skips the IsInstalled cache check so
 // callers can force a fresh install even when the store already
 // satisfies the request. Used by sync's stale-reinstall path to
 // migrate pre-revision bare-dir installs into the canonical layout.
-func (inst *Installer) Reinstall(r *recipe.Recipe) (*InstallResult, error) {
-	return inst.install(r, true)
+func (inst *Installer) Reinstall(ctx context.Context, r *recipe.Recipe) (*InstallResult, error) {
+	return inst.install(ctx, r, true)
 }
 
-func (inst *Installer) install(r *recipe.Recipe, force bool) (*InstallResult, error) {
+func (inst *Installer) install(ctx context.Context, r *recipe.Recipe, force bool) (*InstallResult, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
 	if err != nil {
 		return nil, fmt.Errorf("lock package: %w", err)
 	}
 	defer unlock()
-	return inst.installLocked(r, force)
+	return inst.installLocked(ctx, r, force)
 }
 
-// installLocked is the body of install assuming the per-package
-// lock is held by the caller. Used by install() and by
-// InstallWithFinalize (added in a follow-up commit).
-func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResult, error) {
-	name := r.Package.Name
-	version := r.Package.Version
-	// Store paths use the full <version>-<revision> form so
-	// multiple revisions of the same version can coexist.
-	// The Store layer falls back from "<v>-1" to bare "<v>"
-	// for back-compat with pre-revision installs.
-	storeVersion := r.Package.Full()
+// installDest is the store path installLocked will write into.
+// staged means a sibling rebuild dir; the caller defers cleanup
+// so a failed reinstall cannot leave the tmp behind and so
+// commitStaged still sees the dir.
+type installDest struct {
+	name         string
+	version      string
+	storeVersion string
+	canonicalDir string
+	storeDir     string
+	staged       bool
+	locked       bool
+	planned      lockplan.Node
+}
 
-	canonicalDir := filepath.Join(inst.Store.Root, name, storeVersion)
-	var storeDir string
-	staged := false
-
-	planned, locked, perr := inst.plannedNode(name, storeVersion)
-	if perr != nil {
-		return nil, perr
+// prepareInstallDest picks the dest dir and answers the cache
+// question. A non-nil cached result means the store already
+// satisfies the request and installLocked must return it.
+func (inst *Installer) prepareInstallDest(r *recipe.Recipe, force bool) (installDest, *InstallResult, error) {
+	d := installDest{
+		name:         r.Package.Name,
+		version:      r.Package.Version,
+		storeVersion: r.Package.Full(),
 	}
+	d.canonicalDir = filepath.Join(inst.Store.Root, d.name, d.storeVersion)
+
+	planned, locked, err := inst.plannedNode(d.name, d.storeVersion)
+	if err != nil {
+		return d, nil, err
+	}
+	d.planned = planned
+	d.locked = locked
 	if locked {
-		// Under a lock the cache check is an attestation check, and
-		// it is also the whole of the "already installed" question:
-		// design §4 permits committing only ABSENT canonical dirs,
-		// so an occupied one either attests the locked bytes or is a
-		// conflict. force is deliberately not consulted — the staged
-		// replacement path it selects is in-plan replaceStoreDir,
-		// which §4 prohibits outright.
-		cached, hit, cerr := inst.lockedCacheHit(planned, name, version)
+		cached, hit, cerr := inst.lockedCacheHit(planned, d.name, d.version)
 		if cerr != nil {
-			return nil, cerr
+			return d, nil, cerr
 		}
 		if hit {
-			return &cached, nil
+			return d, &cached, nil
 		}
 		force = false
 	}
@@ -351,319 +246,65 @@ func (inst *Installer) installLocked(r *recipe.Recipe, force bool) (*InstallResu
 	// sibling staging dir first. The live canonical dir stays
 	// intact until the final replace succeeds, so a failed
 	// stale reinstall does not break the active generation.
-	if !locked && !force && inst.Store.IsInstalled(name, storeVersion) {
-		return &InstallResult{
-			Name:    name,
-			Version: version,
-			Method:  MethodCached,
-		}, nil
+	//
+	// A working-tree recipe whose digest no longer matches the
+	// sidecar is not a cache hit: the occupied dir was built
+	// from different recipe bytes (gh#265). Force the staged
+	// rebuild rather than falling through into Store.Create on
+	// the live dir — binary-fallback's os.RemoveAll would
+	// otherwise delete the canonical package.
+	if !locked && !force && inst.Store.IsInstalled(d.name, d.storeVersion) {
+		occupied := d.canonicalDir
+		if dir, ok := inst.Store.StorePath(d.name, d.storeVersion); ok {
+			occupied = dir
+		}
+		if !workingTreeRecipeStale(occupied, r) {
+			return d, &InstallResult{
+				Name:    d.name,
+				Version: d.version,
+				Method:  MethodCached,
+			}, nil
+		}
+		force = true
 	}
 
 	if force {
-		pkgDir := filepath.Join(inst.Store.Root, name)
+		pkgDir := filepath.Join(inst.Store.Root, d.name)
 		if err := os.MkdirAll(pkgDir, 0o755); err != nil {
-			return nil, fmt.Errorf("create package dir: %w", err)
+			return d, nil, fmt.Errorf("create package dir: %w", err)
 		}
 		buildDir, err := os.MkdirTemp(pkgDir, ".build-")
 		if err != nil {
-			return nil, fmt.Errorf("create reinstall staging dir: %w", err)
+			return d, nil, fmt.Errorf("create reinstall staging dir: %w", err)
 		}
-		storeDir = buildDir
-		staged = true
-		defer os.RemoveAll(buildDir)
-	} else {
-		// Create store directory.
-		var err error
-		storeDir, err = inst.Store.Create(name, storeVersion)
-		if err != nil {
-			return nil, fmt.Errorf("create store dir: %w", err)
-		}
+		d.storeDir = buildDir
+		d.staged = true
+		return d, nil, nil
 	}
-
-	method := MethodSource
-	var sha256 string
-	var manifestDigest string
-
-	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	binaryViable := bin != nil && !inst.SourceOnly
-	// The locked method is binding in both directions. Plan
-	// construction already proved the recipe can serve it
-	// (lockplan.validateMethod), so this selects rather than
-	// checks: SourceOnly, which is a caller preference, cannot
-	// override a locked binary node either.
-	if locked {
-		binaryViable = planned.Method == lockgraph.MethodBinary
-	}
-	if inst.BinaryOnly && !binaryViable {
-		// Stated rather than silently source-built. BinaryOnly is a
-		// promise that nothing but the declared binary may land, so a
-		// recipe that cannot serve one for this platform is a refusal,
-		// not an invitation to build.
-		return nil, fmt.Errorf(
-			"binary install of %s: %w",
-			lockgraph.Key(name, storeVersion), errNoBinaryDeclared,
-		)
-	}
-
-	// Install runtime deps up front. The binary path needs
-	// them on disk (the prebuilt links against them); the
-	// source path needs them too. Build-only deps are
-	// deferred until we know we actually have to build from
-	// source — a successful binary install avoids them
-	// entirely.
-	//
-	// When there's no binary path to try (source-only mode,
-	// or no platform binary), install everything in one
-	// shot — matches the pre-revision behavior and keeps a
-	// single failure surface for source-only installs.
-	var depPaths *build.BuildDeps
-	var err error
-	if binaryViable {
-		depPaths, err = inst.InstallRuntimeDeps(r)
-	} else {
-		depPaths, err = inst.InstallBuildDeps(r)
-	}
+	storeDir, err := inst.Store.Create(d.name, d.storeVersion)
 	if err != nil {
-		os.RemoveAll(storeDir)
-		return nil, fmt.Errorf("install deps: %w", err)
+		return d, nil, fmt.Errorf("create store dir: %w", err)
 	}
-
-	// Try binary first (unless source-only mode).
-	if binaryViable {
-		// Resolve the declared runtime closure so metadata
-		// records the deps the shipped binary can link.
-		// Build-only tools are deliberately excluded
-		// (gh#157): recording them would pin those tools in
-		// the store for gc/farm even though the binary never
-		// links them.
-		fallback, ferr := inst.ResolveDirectDeps(r)
-		if ferr != nil {
-			os.RemoveAll(storeDir)
-			return nil, fmt.Errorf(
-				"resolve deps for metadata: %w", ferr,
-			)
-		}
-		berr := inst.installBinaryTo(r, storeDir, canonicalDir, fallback, !staged)
-		switch {
-		case berr == nil:
-			method = MethodBinary
-			sha256 = bin.SHA256
-			manifestDigest = bin.ManifestDigest
-		case locked || inst.BinaryOnly:
-			// A locked binary node never demotes to a source build
-			// (acceptance 8): the method is a locked field, so a
-			// source build would install bytes the lock never named
-			// and fail its own hash check minutes later. Leave
-			// nothing behind — the mismatching artifact must be
-			// absent from the store (acceptance 1).
-			os.RemoveAll(storeDir)
-			// A hash disagreement is an integrity violation, and design
-			// §8 puts it in the class that stops a pipeline for a human.
-			// Every other reason a fetch can fail — a 404, a refused
-			// connection, a corrupt archive — stays ordinary, because
-			// acceptance 11 turns on exactly that distinction: an
-			// ordinary failure under a lock must not read as tampering.
-			if errors.Is(berr, download.ErrSHA256Mismatch) {
-				return nil, fmt.Errorf(
-					"%s of %s: %w: %w", refusalLabel(locked),
-					lockgraph.Key(name, storeVersion),
-					provenance.ErrInvalid, berr,
-				)
-			}
-			return nil, fmt.Errorf(
-				"%s of %s: %w", refusalLabel(locked),
-				lockgraph.Key(name, storeVersion), berr,
-			)
-		case errors.Is(berr, farm.ErrClaimConflict):
-			// A farm-guard refusal is a cross-project conflict,
-			// not a defect of the artifact: a source build of the
-			// same version claims the same sonames and would only
-			// hit the same refusal at the generation rebuild,
-			// after minutes of wasted work. Abort instead of
-			// demoting to source.
-			return nil, berr
-		default:
-			// Binary install failed — fall back to source build.
-			// Reaching here means the recipe advertised a binary
-			// for this platform and the fetch/verify pipeline
-			// rejected it. Surface the reason so a silent source
-			// build doesn't hide network errors, missing GHCR
-			// artifacts, hash mismatches, or attestation failures.
-			w := inst.BinaryFallbackLog
-			if w == nil {
-				w = os.Stderr
-			}
-			fmt.Fprintf(w,
-				"warning: binary install for %s@%s failed: %v;"+
-					" falling back to source build\n",
-				name, version, berr)
-			if err := os.RemoveAll(storeDir); err != nil {
-				return nil, fmt.Errorf(
-					"clean store dir for source fallback: %w", err,
-				)
-			}
-			if err := os.MkdirAll(storeDir, 0o755); err != nil {
-				return nil, fmt.Errorf(
-					"recreate store dir for source fallback: %w", err,
-				)
-			}
-			// Top up with the build-only deps we skipped.
-			buildOnly, derr := inst.InstallBuildOnlyDeps(r)
-			if derr != nil {
-				os.RemoveAll(storeDir)
-				return nil, fmt.Errorf(
-					"install build deps for source fallback: %w", derr,
-				)
-			}
-			depPaths = mergeBuildDeps(depPaths, buildOnly)
-		}
-	}
-
-	if method != MethodBinary {
-		hash, buildErr := inst.installFromSourceTo(r, storeDir, canonicalDir, depPaths, !staged)
-		if buildErr != nil {
-			// Clean up failed install.
-			os.RemoveAll(storeDir)
-			return nil, fmt.Errorf("build from source: %w", buildErr)
-		}
-		sha256 = hash
-	}
-
-	if staged {
-		// The result is built before the commit rather than after,
-		// because the guard inside commitStaged decides on these
-		// exact values and a refusal must be able to name them.
-		rep := Replacement{
-			CanonicalDir: canonicalDir,
-			StagingDir:   storeDir,
-			Result: InstallResult{
-				Name:           name,
-				Version:        version,
-				Method:         method,
-				SHA256:         sha256,
-				ManifestDigest: manifestDigest,
-			},
-		}
-		if err := inst.commitStaged(
-			inst.Store.Root, storeDir, rep,
-		); err != nil {
-			return nil, fmt.Errorf("install staged output: %w", err)
-		}
-	}
-
-	return &InstallResult{
-		Name:           name,
-		Version:        version,
-		Method:         method,
-		SHA256:         sha256,
-		ManifestDigest: manifestDigest,
-	}, nil
+	d.storeDir = storeDir
+	return d, nil, nil
 }
 
-// installLocalLocked is the body of local-source install
-// assuming the per-package lock is held by the caller.
-// Used by InstallLocalWithFinalize.
-func (inst *Installer) installLocalLocked(r *recipe.Recipe, sourceDir string) (*InstallResult, error) {
-	name := r.Package.Name
-	version := r.Package.Version
-	// Store paths use <version>-<revision> so revisions of
-	// the same base version don't collide. Back-compat in
-	// the Store layer resolves "<v>-1" to a bare "<v>" dir
-	// when one exists from a pre-revision install.
-	storeVersion := r.Package.Full()
-
-	// Build into a temp dir inside <storeRoot>/<name>/ so
-	// the existing store entry and its active symlinks stay
-	// intact until the build succeeds. Same-filesystem
-	// rename is guaranteed since both paths are under the
-	// same parent.
-	storeDir := filepath.Join(inst.Store.Root, name, storeVersion)
-	pkgDir := filepath.Join(inst.Store.Root, name)
-	if err := os.MkdirAll(pkgDir, 0o755); err != nil {
-		return nil, fmt.Errorf("create package dir: %w", err)
-	}
-
-	// An occupied canonical dir already holds this identity's output,
-	// so there is nothing to build and nothing to replace (gh#183).
-	// A local build's identity is derived from the source content
-	// (cmd/gale's dirtDigest), which is why this can be a cache hit
-	// rather than the unconditional rebuild it used to be: a changed
-	// tree asks for a different directory.
-	//
-	// Known gap: the identity covers the SOURCE only. Rebuild an
-	// unchanged tree after upgrading a build dependency and this
-	// returns the bytes the old dependency produced. Folding the
-	// resolved build closure into the identity is gh#191's business.
-	//
-	// The canonical path is tested directly rather than through
-	// Store.IsInstalled, whose back-compat fallback answers for a
-	// bare "<v>" dir. A recipe at revision 2 would then skip on the
-	// strength of a revision-1 directory it is not about to write.
-	if occupied, err := dirOccupied(storeDir); err != nil {
+// installLocked is the body of install assuming the per-package
+// lock is held by the caller. Used by install() and by
+// InstallWithFinalize (added in a follow-up commit).
+func (inst *Installer) installLocked(ctx context.Context, r *recipe.Recipe, force bool) (*InstallResult, error) {
+	dest, cached, err := inst.prepareInstallDest(r, force)
+	if err != nil {
 		return nil, err
-	} else if occupied {
-		return &InstallResult{
-			Name:    name,
-			Version: version,
-			Method:  MethodCached,
-		}, nil
 	}
-
-	buildDir, err := os.MkdirTemp(pkgDir, ".build-")
-	if err != nil {
-		return nil, fmt.Errorf("create build dir: %w", err)
+	if cached != nil {
+		return cached, nil
 	}
-	defer os.RemoveAll(buildDir) // clean up on any exit path
-
-	// Resolve and install build deps.
-	depPaths, err := inst.InstallBuildDeps(r)
-	if err != nil {
-		return nil, fmt.Errorf("install build deps: %w", err)
-	}
-
-	hash, buildErr := inst.installFromLocalSource(r, sourceDir, buildDir, depPaths)
-	if buildErr != nil {
-		return nil, fmt.Errorf("build from local source: %w", buildErr)
-	}
-
-	// Build succeeded — swap into place atomically.
-	// The per-package lock (above) ensures no other installer
-	// of this package races; the store-gen lock here serializes
-	// with generation.Build so a concurrent gen rebuild sees
-	// either the pre-rename or post-rename tree, not a mix.
-	//
-	// The guard runs inside that lock and before the rename, like
-	// every other question this package asks about a replacement: a
-	// refusal decided afterwards would already have overwritten the
-	// bytes it was meant to protect. Reaching it means the canonical
-	// dir appeared, or was empty, after the cache check above — the
-	// backstop for an identity that failed to distinguish two builds
-	// (gh#183).
-	rep := Replacement{
-		CanonicalDir: storeDir,
-		StagingDir:   buildDir,
-		Result: InstallResult{
-			Name:    name,
-			Version: version,
-			Method:  MethodSource,
-			SHA256:  hash,
-		},
-	}
-	if err := withStoreGenLock(inst.Store.Root, func() error {
-		if err := inst.guardReplace(rep); err != nil {
-			return err
-		}
-		return replaceStoreDir(storeDir, buildDir)
-	}); err != nil {
-		return nil, fmt.Errorf("install build output: %w", err)
-	}
-
-	return &InstallResult{
-		Name:    name,
-		Version: version,
-		Method:  MethodSource,
-		SHA256:  hash,
-	}, nil
+	os.RemoveAll(dest.storeDir)
+	return nil, fmt.Errorf(
+		"%s: %w",
+		lockgraph.Key(dest.name, dest.storeVersion), ErrBottleGone,
+	)
 }
 
 // dirOccupied reports whether path is a directory holding at least
@@ -687,101 +328,10 @@ func dirOccupied(path string) (bool, error) {
 // errors are returned alongside the InstallResult so the caller
 // sees partial state.
 func (inst *Installer) InstallLocalWithFinalize(
-	r *recipe.Recipe, sourceDir string,
-	finalize func(*InstallResult) error,
+	r *recipe.Recipe, _ string,
+	_ func(*InstallResult) error,
 ) (*InstallResult, error) {
-	if inst.Plan != nil {
-		return nil, fmt.Errorf("%w: %s", ErrUnlockedSource, r.Package.Name)
-	}
-	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
-	if err != nil {
-		return nil, fmt.Errorf("lock package: %w", err)
-	}
-	defer unlock()
-
-	result, err := inst.installLocalLocked(r, sourceDir)
-	if err != nil {
-		return nil, err
-	}
-
-	if finalize != nil {
-		if err := finalize(result); err != nil {
-			return result, fmt.Errorf("finalize: %w", err)
-		}
-	}
-
-	return result, nil
-}
-
-// installGitPrepare runs the pre-lock phase of a git install:
-// installs build deps, creates a tmp dir, and calls build.BuildGit.
-// Returns the build result, commit hash, dep paths, a cleanup
-// function, and any error. cleanup is always non-nil — callers must
-// unconditionally defer it immediately after the call, before
-// checking err. On early-error paths (before MkdirTemp), cleanup is
-// a no-op; on later errors it removes the tmp dir.
-func (inst *Installer) installGitPrepare(r *recipe.Recipe) (*build.BuildResult, string, *build.BuildDeps, func(), error) {
-	noop := func() {}
-
-	// Resolve and install build deps.
-	depPaths, err := inst.InstallBuildDeps(r)
-	if err != nil {
-		return nil, "", nil, noop, fmt.Errorf("install build deps: %w", err)
-	}
-
-	// Build from git — returns hash as version.
-	scratch, err := build.TmpDir()
-	if err != nil {
-		return nil, "", nil, noop, fmt.Errorf("build temp dir: %w", err)
-	}
-	tmpDir, err := os.MkdirTemp(scratch, "gale-install-*")
-	if err != nil {
-		return nil, "", nil, noop, fmt.Errorf("create temp dir: %w", err)
-	}
-	cleanup := func() { os.RemoveAll(tmpDir) }
-
-	buildResult, hash, err := build.BuildGit(r, tmpDir, r.Build.Debug, depPaths)
-	if err != nil {
-		return nil, "", nil, cleanup, fmt.Errorf("git build: %w", err)
-	}
-	return buildResult, hash, depPaths, cleanup, nil
-}
-
-// installGitLocked performs the post-build store-mutation phase of a
-// git install. Assumes the per-package lock for (r.Package.Name, hash)
-// is held by the caller.
-func (inst *Installer) installGitLocked(r *recipe.Recipe, buildResult *build.BuildResult, hash string, depPaths *build.BuildDeps) (*InstallResult, error) {
-	name := r.Package.Name
-
-	// Skip if this hash is already installed.
-	if inst.Store.IsInstalled(name, hash) {
-		return &InstallResult{
-			Name:    name,
-			Version: hash,
-			Method:  MethodCached,
-		}, nil
-	}
-
-	// Create store dir and extract.
-	storeDir, err := inst.Store.Create(name, hash)
-	if err != nil {
-		return nil, fmt.Errorf("create store dir: %w", err)
-	}
-
-	// A git install stores under the bare commit hash; its canonical
-	// identity carries the implicit revision 1.
-	artifact := sourceArtifact(r, canonicalVersion(hash), depPaths)
-	if err := inst.extractBuild(buildResult, storeDir, depPaths, artifact); err != nil {
-		os.RemoveAll(storeDir)
-		return nil, fmt.Errorf("extracting git build: %w", err)
-	}
-
-	return &InstallResult{
-		Name:    name,
-		Version: hash,
-		Method:  MethodSource,
-		SHA256:  buildResult.SHA256,
-	}, nil
+	return nil, fmt.Errorf("%s: %w", r.Package.Name, ErrSourceGone)
 }
 
 // InstallGitWithFinalize acquires the per-package lock (keyed on the
@@ -789,112 +339,30 @@ func (inst *Installer) installGitLocked(r *recipe.Recipe, buildResult *build.Bui
 // while still holding the lock, then releases. finalize == nil is a
 // no-op. finalize errors are returned alongside the InstallResult so
 // the caller sees partial state.
-func (inst *Installer) InstallGitWithFinalize(r *recipe.Recipe, finalize func(*InstallResult) error) (*InstallResult, error) {
-	// Before installGitPrepare, which clones and builds before it
-	// ever takes the package lock: a guard further in would refuse
-	// only after minutes of work.
-	if inst.Plan != nil {
-		return nil, fmt.Errorf("%w: %s", ErrUnlockedSource, r.Package.Name)
-	}
-	buildResult, hash, depPaths, cleanup, err := inst.installGitPrepare(r)
-	defer cleanup()
-	if err != nil {
-		return nil, err
-	}
-
-	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, hash)
-	if err != nil {
-		return nil, fmt.Errorf("lock package: %w", err)
-	}
-	defer unlock()
-
-	result, err := inst.installGitLocked(r, buildResult, hash, depPaths)
-	if err != nil {
-		return nil, err
-	}
-
-	if finalize != nil {
-		if err := finalize(result); err != nil {
-			return result, fmt.Errorf("finalize: %w", err)
-		}
-	}
-
-	return result, nil
+func (inst *Installer) InstallGitWithFinalize(r *recipe.Recipe, _ func(*InstallResult) error) (*InstallResult, error) {
+	return nil, fmt.Errorf("%s: %w", r.Package.Name, ErrSourceGone)
 }
 
 // commitStaged finishes a staged reinstall by renaming the
-// staging dir into the canonical store path and repopulating
-// the shared farm. Both steps happen under the store-gen
-// lock so a concurrent generation rebuild sees either the
-// pre-install or completed install — never an intermediate.
+// staging dir into the canonical store path. The rename happens
+// under the store-gen lock so a concurrent generation rebuild
+// sees either the pre-install or completed install — never an
+// intermediate.
 //
 // If the rename fails, replaceStoreDir restores the prior
-// canonical dir from its .bak sibling. If farm.Populate fails
-// after a successful rename, the canonical dir is already the new
-// version; the caller will see the error and the farm will be
-// repopulated on the next sync.
+// canonical dir from its .bak sibling.
 //
-// The farm guard runs before the rename, reading the staging dir
-// and naming the canonical destination. Guarding after it would
-// mean a refusal had already replaced bytes the active generation
-// reaches, and would also let this operation destroy the evidence
-// it is being checked against: an external claimant on the same
-// canonical path would be enumerated from the new contents.
-//
-// The replace guard runs there too, and for the same reason, but it
-// answers a different question: the farm guard asks who else needs
-// these sonames, and the replace guard asks who else needs these
-// exact bytes at this path (design §13).
+// The replace guard runs before the rename: a refusal decided
+// afterwards would already have overwritten the bytes it was
+// meant to protect (design §13).
 func (inst *Installer) commitStaged(
 	storeRoot, stagingDir string, rep Replacement,
 ) error {
-	canonicalDir := rep.CanonicalDir
 	return withStoreGenLock(storeRoot, func() error {
 		if err := inst.guardReplace(rep); err != nil {
 			return err
 		}
-		farmDir := farm.DirFromStoreDir(canonicalDir)
-		if inst.deferFarm() {
-			// The store commit alone: no guard, no population, and no
-			// stale-link pruning either. A deferred caller rebuilds the
-			// whole farm afterwards, and that rebuild wipes before it
-			// repopulates, so a link this artifact stops backing cannot
-			// survive it. An empty farmDir is how the rest of this
-			// function already says "not here" (see DirFromStoreDir).
-			farmDir = ""
-		}
-		var stale []string
-		if farmDir != "" {
-			if err := inst.guardFarm(stagingDir, canonicalDir); err != nil {
-				return err
-			}
-			// Read before the rename, like every other question asked
-			// here: afterwards the old directory is gone and the
-			// sonames it provided can no longer be enumerated.
-			var err error
-			if stale, err = inst.guardFarmRemoval(
-				canonicalDir, stagingDir, farmDir,
-			); err != nil {
-				return err
-			}
-		}
-		if err := replaceStoreDir(canonicalDir, stagingDir); err != nil {
-			return err
-		}
-		if farmDir != "" {
-			if err := farm.Populate(canonicalDir, farmDir); err != nil {
-				return fmt.Errorf("populate farm: %w", err)
-			}
-			// After Populate, so a soname the new artifact still
-			// provides has already been repointed and is not in the
-			// stale set to begin with. Pruning first would delete a
-			// link Populate would immediately recreate, leaving a
-			// window where the farm is missing an entry it backs.
-			if err := farm.PruneLinks(farmDir, stale); err != nil {
-				return err
-			}
-		}
-		return nil
+		return replaceStoreDir(rep.CanonicalDir, stagingDir)
 	})
 }
 
@@ -922,54 +390,6 @@ func (inst *Installer) guardReplace(rep Replacement) error {
 	return inst.ReplaceGuard(rep)
 }
 
-// deferFarm reports whether the farm belongs to the caller rather
-// than to this commit: a locked plan defers it to the plan's own
-// batch, and a caller may ask for the same by setting DeferFarm (see
-// Installer.DeferFarm). One predicate, because the commit paths must
-// not disagree about which of them is wiring the farm.
-func (inst *Installer) deferFarm() bool {
-	return inst.Plan != nil || inst.DeferFarm
-}
-
-// guardFarm runs the cross-project farm claimant guard for one
-// package about to enter the shared farm, reading scanDir and
-// reporting canonicalDir. Nil FarmGuard means unwired (tests): no
-// guard.
-func (inst *Installer) guardFarm(scanDir, canonicalDir string) error {
-	if inst.FarmGuard == nil {
-		return nil
-	}
-	return inst.FarmGuard([]farm.Placement{
-		{ScanDir: scanDir, FinalDir: canonicalDir},
-	})
-}
-
-// guardFarmRemoval checks the sonames a replacement stops
-// providing, and returns them so the caller can prune their links
-// after the rename.
-//
-// The stale set is computed whether or not a guard is wired,
-// because the pruning is not optional: a link the new artifact does
-// not back is dangling the moment the rename lands, and leaving it
-// is a broken farm rather than an unguarded one.
-func (inst *Installer) guardFarmRemoval(
-	canonicalDir, stagingDir, farmDir string,
-) ([]string, error) {
-	stale, err := farm.StaleLinks(canonicalDir, stagingDir, farmDir)
-	if err != nil {
-		return nil, err
-	}
-	if len(stale) == 0 || inst.FarmRemoveGuard == nil {
-		return stale, nil
-	}
-	if err := inst.FarmRemoveGuard([]farm.Placement{
-		{ScanDir: stagingDir, FinalDir: canonicalDir},
-	}, stale); err != nil {
-		return nil, err
-	}
-	return stale, nil
-}
-
 func replaceStoreDir(storeDir, buildDir string) error {
 	backupDir := storeDir + ".bak"
 	_ = os.RemoveAll(backupDir)
@@ -983,7 +403,7 @@ func replaceStoreDir(storeDir, buildDir string) error {
 	if err := renameDir(buildDir, storeDir); err != nil {
 		if _, statErr := os.Stat(backupDir); statErr == nil {
 			if restoreErr := renameDir(backupDir, storeDir); restoreErr != nil {
-				return fmt.Errorf("replace store dir: %w (restore old store dir: %v)", err, restoreErr)
+				return fmt.Errorf("replace store dir: %w (restore old store dir: %w)", err, restoreErr)
 			}
 		}
 		return fmt.Errorf("replace store dir: %w", err)
@@ -995,523 +415,15 @@ func replaceStoreDir(storeDir, buildDir string) error {
 	return nil
 }
 
-// installBinaryTo fetches and finalizes a prebuilt archive
-// into extractDir. When inPlace is true, extractDir IS the
-// canonical store dir: the function acquires the store-gen
-// lock and populates the farm. When inPlace is false, the
-// caller is staging into a sibling dir and will commit the
-// rename + farm.Populate itself.
-//
-// The fetch streams directly into a sibling staging directory
-// (no on-disk .tar.zst intermediate). The staging dir is
-// renamed into extractDir inside the store-gen lock so a
-// concurrent generation.Build sees either the pre-install
-// or the completed install — never an intermediate.
-func (inst *Installer) installBinaryTo(
-	r *recipe.Recipe,
-	extractDir, finalStoreDir string,
-	depsFallback []depsmeta.ResolvedDep,
-	inPlace bool,
-) error {
-	bin := r.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	name := r.Package.Name
-	version := r.Package.Version
-	v := inst.Verifier
-	dl := inst.Downloads
-
-	// Enforce the recipe's declared trust policy before
-	// fetching anything. A recipe that ships a non-GHCR
-	// URL with the default (sigstore) policy is rejected
-	// here: we can't produce an attestation for an
-	// arbitrary third-party host, and silently skipping
-	// attestation for non-GHCR URLs was the C3 bypass.
-	if err := bin.CheckTrustPolicy(); err != nil {
-		return err
-	}
-
-	pkgID := name + "@" + version
-
-	// Resolve bearer token for GHCR URLs; empty string for
-	// non-GHCR (FetchAndExtractTarZstd omits the header).
-	var token string
-	if recipe.IsGHCR(bin.URL) {
-		repo := repoFromURL(bin.URL)
-		var err error
-		token, err = ghcr.Token(repo)
-		if err != nil {
-			return fmt.Errorf("ghcr auth: %w", err)
-		}
-	}
-
-	// Digest-based fetch (gh#121): when the recipe carries a
-	// manifest digest, confirm the immutable OCI manifest
-	// references exactly the layer the ledger's sha256 names
-	// before pulling it. Fail-closed — any failure aborts the
-	// binary install so the caller falls back to a source build
-	// rather than trusting an unverifiable artifact.
-	if err := verifyManifestDigest(bin, token); err != nil {
-		return fmt.Errorf("verify manifest digest: %w", err)
-	}
-
-	// Stream fetch + SHA verification + extraction in one
-	// pass into a sibling staging directory. The network
-	// fetch stays outside the store-gen lock so a slow
-	// download does not block concurrent sync operations.
-	stagingDir := extractDir + ".stream"
-	defer os.RemoveAll(stagingDir) // clean up on any exit path
-
-	// A previous crashed install of this package may have left a
-	// stale staging dir on disk. FetchAndExtractTarZstd's MkdirAll
-	// is idempotent and additive — it would extract on top of the
-	// stale state, leaving partial files alive after rename. Wipe
-	// the staging dir before fresh extraction.
-	if err := os.RemoveAll(stagingDir); err != nil {
-		return fmt.Errorf("clean staging dir: %w", err)
-	}
-
-	// When sigstore attestation is needed, tee the raw archive
-	// bytes to a unique tempfile. The file-fallback verification
-	// path hashes the subject as a file, so we verify the teed
-	// copy of the downloaded archive (the exact bytes the
-	// attestation covers) and delete it after via defer. Binary
-	// installs run 8-way parallel, so the tempfile must be
-	// collision-free (os.CreateTemp guarantees this).
-	needAttest, archiveOut, err := setupAttestTempfile(bin, v)
-	if err != nil {
-		return err
-	}
-	if archiveOut != "" {
-		defer os.Remove(archiveOut)
-	}
-
-	// Bound the number of concurrent network fetches. The slot is
-	// held ONLY around the leaf fetch and released before the
-	// attestation/commit steps, so no install ever holds a slot
-	// while waiting on a child dep — that would risk a deadlock.
-	// A nil limiter is unbounded.
-	fetchErr := func() error {
-		dl.Acquire()
-		defer dl.Release()
-		streamDone := timing.Phase("binary-stream " + pkgID)
-		defer streamDone()
-		_, err := download.FetchAndExtractTarZstdWithArchive(bin.URL, stagingDir, bin.SHA256, token, archiveOut)
-		return err
-	}()
-	if fetchErr != nil {
-		return fmt.Errorf("fetch binary: %w", fetchErr)
-	}
-
-	// Attestation verification fires whenever the recipe's
-	// trust policy requires it (sigstore — the default) and a
-	// Verifier is wired up. A non-nil verifier ALWAYS verifies
-	// and a failure aborts the binary path (the caller falls
-	// back to a source build) — fail closed, never a silent
-	// skip (gh#129). nil is a test-only seam meaning "skip
-	// attestation"; production wiring never passes nil. The
-	// explicit trust-policy check above closes the C3 bypass
-	// where a non-GHCR URL dodged this step entirely; here we
-	// only verify when the recipe opted in to sigstore (which
-	// by definition means GHCR).
-	if needAttest {
-		attestDone := timing.Phase("attestation " + pkgID)
-		err := verifyPrebuiltAttestation(bin, archiveOut, token, v)
-		attestDone()
-		if err != nil {
-			return fmt.Errorf("attestation: %w", err)
-		}
-	}
-
-	// Run the whole fixup pipeline in the staging dir BEFORE
-	// the rename, so the canonical store dir only ever appears
-	// fully finalized (gh#41). A crash or error anywhere in
-	// the pipeline leaves only the transient ".stream" staging
-	// dir, which IsInstalled and the generation resolver
-	// already skip — a retry starts clean instead of trusting
-	// a broken-but-non-empty dir forever. Every fixup writes
-	// final paths (finalStoreDir / storeRoot), never staging
-	// paths, so the content is correct after the rename.
-	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
-	if err := fixupExtracted(stagingDir, finalStoreDir, storeRoot); err != nil {
-		return err
-	}
-
-	// Record the dep closure the prebuilt expects at
-	// runtime so staleness can be detected when a dep's
-	// recipe changes. If the archive already shipped a
-	// .gale-deps.toml (built by `gale build` with full
-	// knowledge of the linked versions), keep that —
-	// it's the authoritative record. Otherwise write our
-	// locally-resolved closure, which is approximate but
-	// preserves backwards-compat with archives built
-	// before the build-time emit landed.
-	//
-	// The write happens even when depsFallback is empty:
-	// a zero-dep recipe must still record an empty file
-	// so doctor's "missing metadata = legacy install of
-	// unknown deps" heuristic doesn't flag a fresh
-	// install as stale. The legacy-stale path is
-	// preserved for installs that genuinely predate this
-	// metadata (no file on disk at all).
-	present, err := stagedDepsPresent(stagingDir)
-	if err != nil {
-		return err
-	}
-	if !present {
-		md := depsmeta.Metadata{Deps: depsFallback}
-		if err := depsmeta.Write(stagingDir, md); err != nil {
-			return fmt.Errorf("write deps metadata: %w", err)
-		}
-	}
-
-	// Record what this install verified, beside the metadata and
-	// before the commit rename, so the canonical dir never appears
-	// without its provenance. Identity is the recipe's canonical
-	// version-revision, never the store dir's basename.
-	if err := recordProvenance(storeRoot, stagingDir, commitArtifact{
-		Name:           name,
-		Version:        r.Package.Full(),
-		Method:         lockgraph.MethodBinary,
-		SHA256:         bin.SHA256,
-		ManifestDigest: bin.ManifestDigest,
-	}); err != nil {
-		return err
-	}
-
-	// Commit: rename the fully-finalized staging dir into the
-	// canonical extract dir (+ farm wiring when inPlace). The
-	// fetch + verify + fixups above intentionally stay outside
-	// the store-gen lock: they don't touch the canonical store
-	// dir, and a network stall must not block a concurrent sync.
-	return commitExtracted(commitRequest{
-		StagingDir:    stagingDir,
-		ExtractDir:    extractDir,
-		FinalStoreDir: finalStoreDir,
-		StoreRoot:     storeRoot,
-		InPlace:       inPlace,
-		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.deferFarm(),
-	})
-}
-
-// setupAttestTempfile creates a collision-free tempfile for tee-ing
-// the raw download archive when sigstore attestation is required.
-// Returns (needAttest, tempfilePath, error). When attestation is not
-// needed, tempfilePath is empty and the caller must not defer-remove
-// it. The caller is responsible for defer os.Remove(tempfilePath).
-func setupAttestTempfile(bin *recipe.Binary, v attestation.Verifier) (bool, string, error) {
-	if bin.EffectiveTrust() != recipe.TrustSigstore || v == nil {
-		return false, "", nil
-	}
-	scratch, err := build.TmpDir()
-	if err != nil {
-		return false, "", fmt.Errorf("build temp dir: %w", err)
-	}
-	af, err := os.CreateTemp(scratch, "gale-verify-*.tar.zst")
-	if err != nil {
-		return false, "", fmt.Errorf("create attestation tempfile: %w", err)
-	}
-	path := af.Name()
-	af.Close()
-	return true, path, nil
-}
-
-// fixupExtracted runs the post-extract fixup pipeline on dir,
-// rewriting content for its final home at finalStoreDir. dir is
-// always a staging dir: nothing here may assume the package is
-// visible in the store yet (gh#41 — the canonical dir must only
-// ever hold fully-finalized content).
-func fixupExtracted(dir, finalStoreDir, storeRoot string) error {
-	// Rewrite .pc files so pkg-config resolves from
-	// the store dir, not the original build prefix.
-	if err := build.FixupPkgConfig(dir); err != nil {
-		return fmt.Errorf("fixup pkg-config: %w", err)
-	}
-
-	// Replace @@GALE_PREFIX@@ placeholders with the
-	// actual store dir in scripts and text files.
-	if err := build.RestorePrefixPlaceholderTo(dir, finalStoreDir); err != nil {
-		return fmt.Errorf("restore prefix placeholders: %w", err)
-	}
-
-	// Rewrite CI-baked .gale/pkg/ paths in text files
-	// (scripts, .pc Libs.private, .la files, etc.) so
-	// they use the local store root.
-	if err := build.RelocateStalePathsInTextFiles(dir, storeRoot); err != nil {
-		return fmt.Errorf("relocate stale paths in text files: %w", err)
-	}
-
-	// Migrate legacy absolute rpaths in prebuilts published
-	// before the relative-rpath change: rewrite any RPATH
-	// referencing a foreign gale store root (CI-baked paths
-	// like /Users/runner/.gale/pkg/... or /home/runner/.gale)
-	// to the local store root. Runs on both darwin and linux.
-	// Current builds (since #26) ship $ORIGIN/@loader_path-
-	// relative rpaths that fall through this untouched, so a
-	// fresh-box install is byte-for-byte with the attested
-	// artifact and needs no patchelf at all.
-	//
-	// On linux the rewrite needs patchelf; if it is absent the
-	// step no-ops and returns nil — it does NOT error and does
-	// NOT trigger a source rebuild (the source fallback fires
-	// only when installBinaryTo returns a non-nil error).
-	// That gap only bites the obsolete pre-#26 prebuilts whose
-	// absolute CI rpath this step exists to repair; for them a
-	// patchelf-less box would install a binary with a stale
-	// rpath. Relative-rpath builds are unaffected.
-	if err := build.RelocateStaleRpaths(dir, storeRoot); err != nil {
-		return fmt.Errorf("relocate rpaths: %w", err)
-	}
-
-	// Ad-hoc sign any Mach-O that arrived unsigned — Apple
-	// Silicon kernels SIGKILL unsigned binaries on exec, and
-	// RelocateStaleRpaths only re-signs files whose rpaths
-	// were rewritten. No-op on Linux.
-	if err := build.EnsureCodeSigned(dir); err != nil {
-		return fmt.Errorf("ensure code signed: %w", err)
-	}
-
-	return nil
-}
-
-// commitExtracted promotes a fully-finalized staging dir into
-// the canonical store dir. The rename is the commit point: all
-// fixups already ran in stagingDir (gh#41), so a crash on
-// either side of the rename leaves the store consistent —
-// before: only a transient staging dir; after: a complete
-// install (at worst missing farm links, which farm.Rebuild
-// restores on the next gen swap).
-//
-// When InPlace is true, the swap and farm.Populate run under
-// the store-gen lock so a concurrent generation.Build sees
-// either the pre-install state or the completed install —
-// never an intermediate. When InPlace is false, the caller is
-// staging into a sibling dir and owns the final commit
-// (commitStaged), including the farm wiring and its guard.
-//
-// DeferFarm drops both the guard and the population, leaving only
-// the store commit. It is set under a locked plan (design §4): farm
-// links are version-independent and Populate overwrites a link
-// belonging to the same package at another version on sight, so
-// populating here would redirect a link the ACTIVE generation's
-// binaries already resolve through, and a later plan node failing
-// would leave that generation loading the new version with no swap
-// ever having happened. The per-commit guard goes with it, because
-// one claim per commit cannot see a conflict between two roots that
-// first meet in the plan's final closure.
-//
-// A caller may also ask for the deferral outright, which is how
-// `gale migrate` relocates a pre-revision install past a guard that
-// would otherwise refuse it. See Installer.DeferFarm.
-func commitExtracted(req commitRequest) error {
-	swap := func() error {
-		// The cross-project claimant guard runs before the rename,
-		// scanning the staging dir and naming the canonical
-		// destination the farm links will carry (design §4). A
-		// refusal must leave the store and the farm as it found
-		// them, which is only true while nothing has moved. A
-		// conflict (two packages claiming the same dylib) is a
-		// recipe bug — fail the install on EVERY path (gh#42) so
-		// the bad recipe gets fixed instead of silently shipping a
-		// farm where one package wins.
-		farmDir := ""
-		if req.InPlace && !req.DeferFarm {
-			farmDir = farm.DirFromStoreDir(req.FinalStoreDir)
-		}
-		if farmDir != "" && req.FarmGuard != nil {
-			if err := req.FarmGuard([]farm.Placement{{
-				ScanDir: req.StagingDir, FinalDir: req.FinalStoreDir,
-			}}); err != nil {
-				return err
-			}
-		}
-		// ExtractDir was created empty by Store.Create (or is
-		// the caller's empty staging target). Remove it so the
-		// rename can land in its place.
-		if err := os.RemoveAll(req.ExtractDir); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove empty extract dir: %w", err)
-		}
-		if err := renameDir(req.StagingDir, req.ExtractDir); err != nil {
-			return fmt.Errorf("promote staging dir: %w", err)
-		}
-		if farmDir == "" {
-			return nil
-		}
-		// Populate the shared lib farm with symlinks to this
-		// package's versioned dylibs.
-		if err := farm.Populate(req.FinalStoreDir, farmDir); err != nil {
-			return fmt.Errorf("populate farm: %w", err)
-		}
-		return nil
-	}
-	if req.InPlace {
-		return withStoreGenLock(req.StoreRoot, swap)
-	}
-	return swap()
-}
-
-// commitRequest is one staging-dir promotion into the canonical
-// store dir. A struct rather than a parameter list for the same
-// reason as extractRequest: the positional form was at the
-// argument limit before the farm guard joined it.
-type commitRequest struct {
-	StagingDir    string
-	ExtractDir    string
-	FinalStoreDir string
-	StoreRoot     string
-	InPlace       bool
-	// FarmGuard is the cross-project farm claimant guard; nil
-	// means unwired (tests). See Installer.FarmGuard.
-	FarmGuard func([]farm.Placement) error
-	// DeferFarm drops the per-commit guard and population, leaving
-	// the store commit alone. Set under a locked plan, or by a
-	// caller taking the farm on itself; see commitExtracted.
-	DeferFarm bool
-}
-
-// verifyManifestDigest enforces digest-based fetch (gh#121). When a
-// binary carries a manifest digest, gale pulls the OCI manifest by
-// that digest and confirms it references exactly the layer the
-// ledger's sha256 names — the manifest is the immutable, attested
-// handle, and the sha256 is the cross-check second factor. Returns
-// nil when no digest is declared (legacy recipes fetch the blob
-// directly). All failures propagate so the binary install aborts
-// to a source-build fallback.
-func verifyManifestDigest(bin *recipe.Binary, token string) error {
-	if bin.ManifestDigest == "" {
-		return nil
-	}
-	manifestURL, err := ghcr.ManifestURLForBlob(bin.URL, bin.ManifestDigest)
-	if err != nil {
-		// Not a GHCR blob URL, so there is no OCI manifest to
-		// verify. A manifest digest only rides on ledger-sourced
-		// GHCR binaries (always /blobs/ URLs); on any other URL it
-		// is inert metadata — sigstore+non-GHCR is already
-		// rejected, and sha256-only verifies the blob bytes
-		// directly. Nothing to check.
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	layerDigest, err := ghcr.FetchManifestLayer(ctx, manifestURL, bin.ManifestDigest, token)
-	if err != nil {
-		return err
-	}
-	got := strings.TrimPrefix(layerDigest, "sha256:")
-	if !strings.EqualFold(got, bin.SHA256) {
-		return fmt.Errorf(
-			"manifest layer %s does not match ledger sha256 %s",
-			layerDigest, bin.SHA256,
-		)
-	}
-	return nil
-}
-
-// repoFromURL extracts the repository path from a GHCR blob
-// URL like "https://ghcr.io/v2/owner/repo/name/blobs/sha256:...".
-// Returns "owner/repo/name".
-func repoFromURL(rawURL string) string {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return ""
-	}
-	// Path: /v2/owner/repo/name/blobs/sha256:...
-	// Strip "/v2/" prefix and "/blobs/..." suffix.
-	p := strings.TrimPrefix(u.Path, "/v2/")
-	if idx := strings.Index(p, "/blobs/"); idx != -1 {
-		p = p[:idx]
-	}
-	return p
-}
-
-// fetchReferrerBundle is the seam over ghcr.FetchReferrerBundle so
-// tests can stay hermetic (no real GHCR referrers API call).
-var fetchReferrerBundle = ghcr.FetchReferrerBundle
-
-// verifyPrebuiltAttestation routes a prebuilt binary's attestation
-// check through attestation.VerifyPrebuilt: the tokenless OCI-referrer
-// path first, falling back to the teed archive file only when no
-// referrer exists. archiveOut is the teed copy of the downloaded
-// archive bytes the file path verifies.
-func verifyPrebuiltAttestation(bin *recipe.Binary, archiveOut, token string, v attestation.Verifier) error {
-	return attestation.VerifyPrebuilt(v, attestation.PrebuiltParams{
-		Repo:           attestation.DefaultRepo,
-		ManifestDigest: bin.ManifestDigest,
-		FetchBundle: func() ([]byte, error) {
-			ctx, cancel := context.WithTimeout(
-				context.Background(), 30*time.Second,
-			)
-			defer cancel()
-			return fetchReferrerBundle(
-				ctx, bin.URL, bin.ManifestDigest, token,
-			)
-		},
-		Archive: func() (string, func(), error) {
-			return archiveOut, nil, nil
-		},
-	})
-}
-
-// InstallBuildDeps installs every declared direct
-// dependency (build + runtime, after applying the platform
-// overlay and merging in implicit system tools). Used by
-// the source-build paths (`gale build`, InstallLocal,
-// InstallGit) where the full toolchain is needed.
-//
-// The binary-first install path uses InstallRuntimeDeps and
-// InstallBuildOnlyDeps instead so build-only deps can be
-// skipped when a prebuilt binary install succeeds.
-func (inst *Installer) InstallBuildDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
-	deps, implicit := build.EffectiveDeps(
-		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
-		r.Build.System,
-	)
-	rCopy := copyRecipeForDeps(r, deps)
-	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
-}
-
-// InstallRuntimeDeps installs only the runtime-tagged
-// direct deps of r. Build-only deps are not installed.
-// Transitive resolution inside each runtime dep is
-// unchanged — that dep's own build deps still get
-// installed if it has to be built from source.
-//
-// Called by the binary-first install path so a prebuilt
-// binary install doesn't drag in autoconf et al.
-func (inst *Installer) InstallRuntimeDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
-	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
-	deps.Build = nil
-	rCopy := copyRecipeForDeps(r, deps)
-	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, nil, seen, &sync.Mutex{})
-}
-
-// InstallBuildOnlyDeps installs only the build-tagged
-// direct deps of r (plus implicit system tools). Used by
-// the binary-fallback-to-source path after
-// InstallRuntimeDeps has already installed the runtime
-// deps: now we top up with the build-only pieces before
-// running the source build.
-func (inst *Installer) InstallBuildOnlyDeps(r *recipe.Recipe) (*build.BuildDeps, error) {
-	deps, implicit := build.EffectiveDeps(
-		r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH),
-		r.Build.System,
-	)
-	deps.Runtime = nil
-	rCopy := copyRecipeForDeps(r, deps)
-	seen := make(map[string]bool)
-	return inst.forDeps().installDepsInner(rCopy, implicit, seen, &sync.Mutex{})
-}
-
 // ResolveDirectDeps returns the (name, version, revision)
 // tuple for every declared runtime dep of r (deduped, after
 // platform overlay). Does NOT install anything — the
 // binary-install path uses this to populate .gale-deps.toml
 // with the runtime closure the shipped binary links.
 // Build-only deps are excluded (gh#157): recording them
-// would pin build tools in the store for gc/farm even though
+// would pin build tools in the store for gc even though
 // the binary never links them, and IsStale ignores them.
-func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedDep, error) {
+func (inst *Installer) ResolveDirectDeps(ctx context.Context, r *recipe.Recipe) ([]depsmeta.ResolvedDep, error) {
 	if !inst.canResolve() {
 		return nil, nil
 	}
@@ -1526,7 +438,7 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedD
 	}
 	resolved := make([]depsmeta.ResolvedDep, 0, len(names))
 	for _, name := range names {
-		dr, err := inst.resolveDep(name)
+		dr, err := inst.resolveDep(ctx, name)
 		if err != nil {
 			return nil, fmt.Errorf(
 				"resolve dep %q: %w", name, err,
@@ -1546,423 +458,6 @@ func (inst *Installer) ResolveDirectDeps(r *recipe.Recipe) ([]depsmeta.ResolvedD
 	return resolved, nil
 }
 
-// mergeBuildDeps returns a BuildDeps whose slices and
-// NamedDirs are the union of a and b. Used to combine the
-// runtime-only install (done before the binary attempt)
-// with the build-only install (done after binary failure)
-// before handing the merged set to a source build.
-func mergeBuildDeps(a, b *build.BuildDeps) *build.BuildDeps {
-	if a == nil {
-		return b
-	}
-	if b == nil {
-		return a
-	}
-	out := &build.BuildDeps{
-		BinDirs:       append([]string{}, a.BinDirs...),
-		SystemBinDirs: append([]string{}, a.SystemBinDirs...),
-		StoreDirs:     append([]string{}, a.StoreDirs...),
-		NamedDirs: make(map[string]string,
-			len(a.NamedDirs)+len(b.NamedDirs)),
-	}
-	for k, v := range a.NamedDirs {
-		out.NamedDirs[k] = v
-	}
-	out.BinDirs = append(out.BinDirs, b.BinDirs...)
-	out.SystemBinDirs = append(out.SystemBinDirs, b.SystemBinDirs...)
-	out.StoreDirs = append(out.StoreDirs, b.StoreDirs...)
-	for k, v := range b.NamedDirs {
-		if _, exists := out.NamedDirs[k]; !exists {
-			out.NamedDirs[k] = v
-		}
-	}
-	out.Canonicalize()
-	return out
-}
-
-// copyRecipeForDeps returns a copy of r with Dependencies replaced
-// by deps. The four map fields are cloned so mutations on the copy
-// cannot affect the caller's recipe.
-func copyRecipeForDeps(r *recipe.Recipe, deps recipe.Dependencies) *recipe.Recipe {
-	cp := *r
-	cp.Dependencies = deps
-	// Clone maps shared with the original so future mutations in
-	// installDepsInner cannot affect the caller's recipe.
-	cp.Build.Platform = maps.Clone(r.Build.Platform)
-	cp.Binary = maps.Clone(r.Binary)
-	cp.Dependencies.Platform = maps.Clone(r.Dependencies.Platform)
-	// Preserve Constraints from deps (the platform-merged view returned
-	// by DependenciesForPlatform) so installDepsInner enforces the
-	// parent's version constraints (C4), including platform-scoped
-	// overrides. maps.Clone handles nil.
-	cp.Dependencies.Constraints = maps.Clone(deps.Constraints)
-	return &cp
-}
-
-// installDepsInner recursively installs build and runtime
-// dependencies. The seen map prevents cycles and deduplicates
-// diamond dependency graphs.
-//
-// implicit names the direct deps that withSystemDeps merged in as
-// system-build tools; their bin dirs go to SystemBinDirs so an
-// explicit toolchain pin keeps PATH priority (gale#174). Only the
-// top-level call classifies: the recursion passes nil, so every
-// transitive dep (of an explicit or an implicit dep alike) lands
-// in the explicit BinDirs group. A transitive tool never competes
-// with a sibling top-level pin for the same slot, so this keeps
-// the split simple and deterministic.
-func (inst *Installer) installDepsInner(
-	r *recipe.Recipe,
-	implicit map[string]bool,
-	seen map[string]bool,
-	seenMu *sync.Mutex,
-) (*build.BuildDeps, error) {
-	deps := r.DependenciesForPlatform(runtime.GOOS, runtime.GOARCH)
-	allDeps := append([]string{}, deps.Build...)
-	allDeps = append(allDeps, deps.Runtime...)
-
-	if len(allDeps) == 0 || !inst.canResolve() {
-		return &build.BuildDeps{}, nil
-	}
-
-	var result build.BuildDeps
-	// seenMu (shared across every recursion level) guards the seen
-	// map for cycle/diamond dedup; resMu guards every write into
-	// this level's result. The dep loop now fans out: each dep
-	// installs in its own goroutine so their leaf network fetches
-	// overlap, bounded by the Installer's Downloads limiter inside
-	// installBinaryTo. No limiter or store-gen lock is held across
-	// the wait on child goroutines, so the nested recursion cannot
-	// deadlock against the fan-out.
-	var resMu sync.Mutex
-
-	errs := parallel.ForEach(
-		context.Background(), allDeps, len(allDeps),
-		func(_ context.Context, dep string) error {
-			// Claim the dep before installing so two goroutines
-			// never both install the same shared (diamond) dep.
-			seenMu.Lock()
-			if seen[dep] {
-				seenMu.Unlock()
-				return nil
-			}
-			seen[dep] = true
-			seenMu.Unlock()
-
-			depRecipe, err := inst.resolveDep(dep)
-			if err != nil {
-				return fmt.Errorf("resolve dep %q: %w", dep, err)
-			}
-			if depRecipe == nil {
-				return fmt.Errorf(
-					"no recipe found for dependency %q", dep,
-				)
-			}
-
-			// C4: enforce any version constraint the parent recipe
-			// declared on this dep. The constraint was parsed and
-			// stored at recipe load time but was previously only
-			// consulted by IsStale — the resolver silently accepted
-			// whatever version the registry said was latest. Now a
-			// constraint mismatch fails the install with a clear
-			// message naming the dep, required constraint, and
-			// resolved version. Bare-string deps have no entry in
-			// Constraints and skip this check, preserving today's
-			// "resolve to latest" behavior.
-			if expr, has := deps.Constraints[dep]; has && expr != "" {
-				c, cerr := recipe.ParseConstraint(expr)
-				if cerr != nil {
-					return fmt.Errorf(
-						"dep %q: invalid version constraint %q: %w",
-						dep, expr, cerr,
-					)
-				}
-				if !c.Satisfies(
-					depRecipe.Package.Version,
-					depRecipe.Package.Revision,
-				) {
-					return fmt.Errorf(
-						"dep %q: resolved version %s does not "+
-							"satisfy constraint %q (declared in %s)",
-						dep, depRecipe.Package.Full(), expr,
-						r.Package.Name,
-					)
-				}
-			}
-
-			// Install the dep (will be cached if already present).
-			if _, err := inst.Install(depRecipe); err != nil {
-				return fmt.Errorf("install dep %q: %w", dep, err)
-			}
-
-			// Resolve the dep's actual store path. Install wrote
-			// to <name>/<version>-<revision>/, but Store.StorePath
-			// also falls back to a bare <version>/ dir for
-			// pre-revision installs.
-			storeDir, ok := inst.Store.StorePath(
-				dep, depRecipe.Package.Full(),
-			)
-			if !ok {
-				return fmt.Errorf(
-					"dep %q at %s not in store after install",
-					dep, depRecipe.Package.Full(),
-				)
-			}
-
-			binDir := filepath.Join(storeDir, "bin")
-			_, binErr := os.Stat(binDir)
-
-			// Recurse for transitive deps before recording this
-			// dep, so the merged result keeps the dep ahead of its
-			// own transitive closure as the serial loop did. nil
-			// implicit: transitive deps join the explicit BinDirs
-			// group (see installDepsInner doc).
-			//nolint:contextcheck // installDepsInner takes no ctx by design; the fan-out ctx only bounds the leaf fetches
-			transitive, err := inst.installDepsInner(depRecipe, nil, seen, seenMu)
-			if err != nil {
-				return fmt.Errorf("transitive deps of %q: %w",
-					dep, err)
-			}
-
-			resMu.Lock()
-			defer resMu.Unlock()
-			result.StoreDirs = append(result.StoreDirs, storeDir)
-			if result.NamedDirs == nil {
-				result.NamedDirs = make(map[string]string)
-			}
-			result.NamedDirs[dep] = storeDir
-			if binErr == nil {
-				if implicit[dep] {
-					result.SystemBinDirs = append(
-						result.SystemBinDirs, binDir,
-					)
-				} else {
-					result.BinDirs = append(result.BinDirs, binDir)
-				}
-			}
-			result.BinDirs = append(
-				result.BinDirs, transitive.BinDirs...,
-			)
-			result.SystemBinDirs = append(
-				result.SystemBinDirs, transitive.SystemBinDirs...,
-			)
-			result.StoreDirs = append(
-				result.StoreDirs, transitive.StoreDirs...,
-			)
-			for k, v := range transitive.NamedDirs {
-				if _, exists := result.NamedDirs[k]; !exists {
-					result.NamedDirs[k] = v
-				}
-			}
-			return nil
-		},
-	)
-	for _, err := range errs {
-		if err != nil {
-			return nil, err
-		}
-	}
-	// The fan-out above records deps in completion order; give
-	// the build deterministic inputs (gale-recipes#79).
-	result.Canonicalize()
-	return &result, nil
-}
-
-func (inst *Installer) installFromLocalSource(r *recipe.Recipe, sourceDir, storeDir string, deps *build.BuildDeps) (string, error) {
-	scratch, err := build.TmpDir()
-	if err != nil {
-		return "", fmt.Errorf("build temp dir: %w", err)
-	}
-	tmpDir, err := os.MkdirTemp(scratch, "gale-install-*")
-	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	result, err := build.BuildLocal(r, sourceDir, tmpDir, r.Build.Debug, deps)
-	if err != nil {
-		return "", fmt.Errorf("building from local source: %w", err)
-	}
-	return result.SHA256, inst.extractBuild(result, storeDir, deps,
-		sourceArtifact(r, r.Package.Full(), deps))
-}
-
-// installFromSourceTo runs the source build and extracts the
-// archive into extractDir. inPlace mirrors installBinaryTo:
-// true means extractDir is the live canonical dir; false
-// means the caller is staging. A method so the in-place commit
-// inherits the installer's farm guard.
-func (inst *Installer) installFromSourceTo(r *recipe.Recipe, extractDir, finalStoreDir string, deps *build.BuildDeps, inPlace bool) (string, error) {
-	scratch, err := build.TmpDir()
-	if err != nil {
-		return "", fmt.Errorf("build temp dir: %w", err)
-	}
-	tmpDir, err := os.MkdirTemp(scratch, "gale-install-*")
-	if err != nil {
-		return "", fmt.Errorf("create temp dir: %w", err)
-	}
-	defer os.RemoveAll(tmpDir)
-
-	result, err := build.Build(r, tmpDir, r.Build.Debug, deps)
-	if err != nil {
-		return "", fmt.Errorf("building from source: %w", err)
-	}
-	// Before promotion, never after: the extract below is the commit
-	// point, and §4 invariant A forbids committing an artifact that
-	// has not verified against the lock.
-	if err := inst.checkSourceArtifact(
-		r.Package.Name, r.Package.Full(), result.SHA256,
-	); err != nil {
-		return "", err
-	}
-	return result.SHA256, extractBuildTo(extractRequest{
-		Result:        result,
-		ExtractDir:    extractDir,
-		FinalStoreDir: finalStoreDir,
-		Deps:          deps,
-		Artifact:      sourceArtifact(r, r.Package.Full(), deps),
-		InPlace:       inPlace,
-		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.deferFarm(),
-	})
-}
-
-// extractBuild extracts a build archive into the store dir
-// and restores prefix placeholders to the actual store path.
-// If deps is non-nil, writes .gale-deps.toml recording the
-// dep closure the build was linked against.
-//
-// H7: the store-visible commit (rename + farm.Populate inside
-// commitExtracted) runs under the store-gen lock so a
-// concurrent generation.Build cannot observe a half-extracted
-// package or race with farm.Populate. Extraction itself
-// happens in a transient staging sibling outside the lock —
-// non-locking readers skip it (isTransientStoreEntry).
-// A method so the in-place commit inherits the installer's farm
-// guard.
-func (inst *Installer) extractBuild(result *build.BuildResult, storeDir string, deps *build.BuildDeps, a commitArtifact) error {
-	return extractBuildTo(extractRequest{
-		Result:        result,
-		ExtractDir:    storeDir,
-		FinalStoreDir: storeDir,
-		Deps:          deps,
-		Artifact:      a,
-		InPlace:       true,
-		FarmGuard:     inst.FarmGuard,
-		DeferFarm:     inst.deferFarm(),
-	})
-}
-
-// extractRequest is one source-build extraction: the archive, where it
-// lands, and what to attest for it. A struct rather than a parameter
-// list because the two are already at the argument limit and provenance
-// adds a third concern.
-type extractRequest struct {
-	Result        *build.BuildResult
-	ExtractDir    string
-	FinalStoreDir string
-	Deps          *build.BuildDeps
-	Artifact      commitArtifact
-	InPlace       bool
-	// FarmGuard is the cross-project farm claimant guard,
-	// forwarded to the in-place commit; nil means unwired
-	// (tests). See Installer.FarmGuard.
-	FarmGuard func([]farm.Placement) error
-	// DeferFarm is forwarded to the commit below. See
-	// commitExtracted.
-	DeferFarm bool
-}
-
-// extractBuildTo extracts result.Archive into extractDir,
-// rewriting prefix placeholders to point at finalStoreDir.
-// When inPlace is true, the work happens in a staging sibling
-// that is promoted into extractDir under the store-gen lock
-// (with farm wiring); otherwise extractDir is the caller's own
-// staging dir and the caller commits both (commitStaged).
-func extractBuildTo(req extractRequest) error {
-	result, deps := req.Result, req.Deps
-	extractDir, finalStoreDir, inPlace := req.ExtractDir, req.FinalStoreDir, req.InPlace
-	storeRoot := filepath.Dir(filepath.Dir(finalStoreDir))
-
-	// Extract + fix up in a transient staging sibling, then
-	// promote with a rename (gh#41). Extracting straight into
-	// the live canonical dir meant a crash mid-install left a
-	// partial-but-non-empty dir that IsInstalled trusted
-	// forever. The ".stream" suffix is in isTransientStoreEntry's
-	// skip set, so non-locking readers never see the staging dir.
-	workDir := extractDir
-	if inPlace {
-		workDir = extractDir + ".stream"
-		// A previous crashed install may have left stale
-		// staging debris; wipe before fresh extraction.
-		if err := os.RemoveAll(workDir); err != nil {
-			return fmt.Errorf("clean staging dir: %w", err)
-		}
-		// Pre-create the staging dir: an archive with no
-		// entries (legal for trivial recipes) would otherwise
-		// never create it and the metadata write below fails.
-		if err := os.MkdirAll(workDir, 0o755); err != nil {
-			return fmt.Errorf("create staging dir: %w", err)
-		}
-		defer os.RemoveAll(workDir) // clean up on any exit path
-	}
-
-	if err := download.ExtractTarZstd(result.Archive, workDir); err != nil {
-		return fmt.Errorf("extract build output: %w", err)
-	}
-	if err := build.RestorePrefixPlaceholderTo(workDir, finalStoreDir); err != nil {
-		return fmt.Errorf("restore prefix paths: %w", err)
-	}
-	// Keep the archive's own .gale-deps.toml when present: a
-	// source build emits a runtime-only closure (gh#157), and
-	// overwriting it here with the full build environment
-	// (deps.NamedDirs) would re-leak build-only tools into the
-	// store dir, re-pinning them for gc/farm and re-triggering
-	// spurious staleness. Only synthesize metadata when the
-	// archive shipped none (legacy or zero-dep archives),
-	// mirroring extractStreamed.
-	present, err := stagedDepsPresent(workDir)
-	if err != nil {
-		return err
-	}
-	if !present {
-		var namedDirs map[string]string
-		if deps != nil {
-			namedDirs = deps.NamedDirs
-		}
-		md := depsmeta.Metadata{Deps: depsmeta.FromNamedDirs(namedDirs)}
-		if err := depsmeta.Write(workDir, md); err != nil {
-			return fmt.Errorf("write deps metadata: %w", err)
-		}
-	}
-	// Record what the build verified before the directory becomes
-	// visible. workDir is the staging sibling when inPlace, and the
-	// caller's own staging dir otherwise; either way the record lands
-	// with the payload rather than after it.
-	//
-	// The hash comes from the build result here rather than from the
-	// artifact the caller assembled. The result is the one authority on
-	// what was produced, and a second copy travelling alongside it
-	// could only ever disagree.
-	a := req.Artifact
-	a.SHA256 = result.SHA256
-	if err := recordProvenance(storeRoot, workDir, a); err != nil {
-		return err
-	}
-	if !inPlace {
-		return nil
-	}
-	return commitExtracted(commitRequest{
-		StagingDir:    workDir,
-		ExtractDir:    extractDir,
-		FinalStoreDir: finalStoreDir,
-		StoreRoot:     storeRoot,
-		InPlace:       true,
-		FarmGuard:     req.FarmGuard,
-		DeferFarm:     req.DeferFarm,
-	})
-}
-
 // lockPackage acquires an exclusive file lock for a package
 // version. Returns an unlock function that releases the lock.
 // The lock file is kept on disk so all contenders share the
@@ -1979,7 +474,7 @@ func lockPackage(storeRoot, name, version string) (func(), error) {
 // filepath.Dir(storeRoot)/generation.lock) to serialize gen
 // rebuilds. The installer acquires this lock around its store-
 // write critical section so a sync cannot walk a half-extracted
-// package or race with farm.Populate.
+// package.
 //
 // Path semantics: generation.Build always acquires the lock at
 // filepath.Dir(storeRoot)/generation.lock regardless of the
@@ -2007,14 +502,14 @@ func withStoreGenLock(storeRoot string, fn func() error) error {
 // then invokes finalize() while still holding the lock, then releases.
 // finalize == nil is a no-op. finalize errors are returned alongside
 // the InstallResult so the caller sees partial state.
-func (inst *Installer) InstallWithFinalize(r *recipe.Recipe, force bool, finalize func(*InstallResult) error) (*InstallResult, error) {
+func (inst *Installer) InstallWithFinalize(ctx context.Context, r *recipe.Recipe, force bool, finalize func(*InstallResult) error) (*InstallResult, error) {
 	unlock, err := lockPackage(inst.Store.Root, r.Package.Name, r.Package.Full())
 	if err != nil {
 		return nil, fmt.Errorf("lock package: %w", err)
 	}
 	defer unlock()
 
-	result, err := inst.installLocked(r, force)
+	result, err := inst.installLocked(ctx, r, force)
 	if err != nil {
 		return nil, err
 	}

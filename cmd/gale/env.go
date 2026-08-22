@@ -34,12 +34,6 @@ var envCmd = &cobra.Command{
 			return err
 		}
 
-		// `gale env` is the direnv activation path (`use gale`
-		// runs it), so this is where most projects first enter
-		// the gc retention registry (gh#115). No-op for the
-		// global scope.
-		registerProject(configPath)
-
 		// The activation gate. `gale env` emits a PATH that CI and
 		// scripts consume, which makes it an activation command, and
 		// an activation command that cannot fail is a hole in the
@@ -116,9 +110,8 @@ func init() {
 }
 
 // resolveGaleDir returns the .gale directory for the
-// current scope. If a project gale.toml (or .tool-versions)
-// exists, returns the project's .gale/ dir. Otherwise
-// returns ~/.gale/.
+// current scope. If a project gale.toml exists, returns
+// the project's .gale/ dir. Otherwise returns ~/.gale/.
 func resolveGaleDir() (string, error) {
 	galeDir, _, err := resolveScopedPaths(false, false)
 	return galeDir, err

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -103,7 +104,7 @@ func TestRecipeFileResolverNeverReturnsNil(t *testing.T) {
 	if resolver == nil {
 		t.Fatal("recipeFileResolver returned nil")
 	}
-	_, err := resolver("jq")
+	_, err := resolver(context.Background(), "jq")
 	if err == nil {
 		t.Error("expected error from resolver with invalid path")
 	}
@@ -111,60 +112,9 @@ func TestRecipeFileResolverNeverReturnsNil(t *testing.T) {
 
 func TestLocalRecipeResolverEmptyName(t *testing.T) {
 	resolver := localRecipeResolver(t.TempDir())
-	_, err := resolver("")
+	_, err := resolver(context.Background(), "")
 	if err == nil {
 		t.Fatal("expected error for empty package name")
-	}
-}
-
-// A local --recipes dir whose .binaries.toml carries a [[history]]
-// ledger resolves binaries from the ledger head (gh#121).
-func TestLocalRecipeResolverUsesLedger(t *testing.T) {
-	dir := t.TempDir()
-	bucket := filepath.Join(dir, "j")
-	if err := os.MkdirAll(bucket, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	recipeTOML := `[package]
-name = "jq"
-version = "1.8.1"
-revision = 5
-
-[source]
-url = "https://example.com/jq.tar.gz"
-sha256 = "abc"
-`
-	binariesTOML := `version = "1.8.1-5"
-
-[[history]]
-version = "1.8.1-5"
-darwin-arm64 = { sha256 = "ledgersha", manifest_digest = "sha256:` +
-		strings.Repeat("a", 64) + `" }
-linux-amd64 = { sha256 = "ledgerlinux", manifest_digest = "sha256:` +
-		strings.Repeat("b", 64) + `" }
-linux-arm64 = { sha256 = "ledgerarm", manifest_digest = "sha256:` +
-		strings.Repeat("c", 64) + `" }
-`
-	if err := os.WriteFile(filepath.Join(bucket, "jq.toml"),
-		[]byte(recipeTOML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(bucket, "jq.binaries.toml"),
-		[]byte(binariesTOML), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	rec, err := localRecipeResolver(dir)("jq")
-	if err != nil {
-		t.Fatalf("resolver error: %v", err)
-	}
-	if len(rec.Binary) == 0 {
-		t.Fatal("no binaries merged from ledger")
-	}
-	for _, b := range rec.Binary {
-		if b.ManifestDigest == "" {
-			t.Error("ManifestDigest empty, want it set from the ledger")
-		}
 	}
 }
 

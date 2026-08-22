@@ -167,28 +167,3 @@ func TestFinalizeInstallUndoLeavesAConcurrentManifestAlone(t *testing.T) {
 		t.Errorf("the concurrent writer's manifest was overwritten:\n%s", got)
 	}
 }
-
-// TestFinalizeInstallKeepsConfigWhenLockWriteSucceeds guards the undo
-// from over-correcting: the ordinary install must still land its pin.
-func TestFinalizeInstallKeepsConfigWhenLockWriteSucceeds(t *testing.T) {
-	ctx := newFinalizeFixture(t)
-
-	if err := ctx.FinalizeInstall("hello", "1.0.0", "1.0.0-1"); err != nil {
-		t.Fatalf("FinalizeInstall: %v", err)
-	}
-
-	got, err := os.ReadFile(ctx.GalePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(got), `hello = "1.0.0"`) {
-		t.Errorf("gale.toml = %q, want the pin this install wrote", got)
-	}
-	lf := readLock(t, ctx)
-	if lf.Targets.Default == nil ||
-		len(lf.Targets.Default.Roots) != 1 ||
-		lf.Targets.Default.Roots[0] != "hello@1.0.0-1" {
-		t.Errorf("lock default roots = %v, want [hello@1.0.0-1]",
-			lf.Targets.Default)
-	}
-}

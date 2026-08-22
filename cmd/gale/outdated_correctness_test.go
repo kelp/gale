@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -73,18 +74,13 @@ func TestSummarizeOutdatedPartialSkipExitsNonZero(t *testing.T) {
 // audit/readonly/network-perf/0003: when the first resolver
 // call fails with a transport-level error, we stop probing
 // the remaining packages and report them all as skipped.
-// With a parallel worker pool, multiple goroutines may fire
-// before the hardStop flag is visible to later workers, so
-// the test allows up to N calls (one per package) rather
-// than asserting exactly 1. The key invariant is that no
-// MORE than the number of packages were probed, and all 4
-// are reported as skipped.
+// Serial order is sorted names, so the only call is "a".
 func TestCheckOutdatedStopsAfterFirstTransportError(t *testing.T) {
 	var (
 		mu    sync.Mutex
 		calls []string
 	)
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		mu.Lock()
 		calls = append(calls, name)
 		mu.Unlock()
@@ -101,11 +97,8 @@ func TestCheckOutdatedStopsAfterFirstTransportError(t *testing.T) {
 	out := output.NewWithOptions(&buf, output.Options{})
 	result := checkOutdated(pkgs, resolver, out)
 
-	// At most one call per package: hardStop prevents new work,
-	// but parallel workers in the same pool cycle may all fire.
-	if len(calls) > 4 {
-		t.Errorf("expected at most 4 resolver calls (one per package) "+
-			"after transport error, got %d: %v", len(calls), calls)
+	if len(calls) != 1 || calls[0] != "a" {
+		t.Errorf("resolver calls = %v, want [a]", calls)
 	}
 	if result.Skipped != 4 {
 		t.Errorf("Skipped = %d, want 4 (all packages)",
@@ -122,7 +115,7 @@ func TestCheckOutdatedContinuesPastPerPackageErrors(t *testing.T) {
 		mu    sync.Mutex
 		calls []string
 	)
-	resolver := func(name string) (*recipe.Recipe, error) {
+	resolver := func(_ context.Context, name string) (*recipe.Recipe, error) {
 		mu.Lock()
 		calls = append(calls, name)
 		mu.Unlock()

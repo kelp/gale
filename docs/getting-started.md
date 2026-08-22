@@ -101,7 +101,9 @@ gale install go
 gale doctor
 ```
 
-Doctor checks your PATH, config files, and store.
+Doctor checks PATH, that the lock is readable,
+that the generation matches lock roots, and that
+tree digests match.
 Fix anything it reports before continuing.
 
 ## Project Environments (Optional)
@@ -155,5 +157,4 @@ global one. Anyone who clones the repo runs
 
 - `gale list` shows packages in the current manifest.
 - `gale update` upgrades packages to the latest version.
-- `gale search <query>` finds available packages.
 - `man gale` has the full command reference.

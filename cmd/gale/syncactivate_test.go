@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -95,7 +96,7 @@ func TestLockedRebuildTakesVersionsFromThePlan(t *testing.T) {
 	// A resolver that would answer with a different revision. Under a
 	// correct locked rebuild it is never consulted.
 	resolved := false
-	ctx.Resolver = func(string) (*recipe.Recipe, error) {
+	ctx.Resolver = func(_ context.Context, _ string) (*recipe.Recipe, error) {
 		resolved = true
 		return minimalRecipe("jq", "9.9"), nil
 	}

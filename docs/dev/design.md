@@ -3,59 +3,42 @@
 ## What Gale Is
 
 Gale is a package manager for developer CLI tools.
-It replaces three tools with one:
+It fetches verified artifacts from a signed index,
+pins them in a lockfile, and activates them through
+atomic generation snapshots. Global tools and
+per-project environments share that model. direnv
+loads a project generation onto PATH.
 
-- **Homebrew** — global package installation
-- **Nix / home-manager** — declarative package manifests
-- **direnv + Nix flakes** — per-project environments
-
-Gale is inspired by Nix and Homebrew but is not a clone
-of either. It takes the best ideas from both — Nix's
-declarative model, Homebrew's simplicity — and refines
-them into something smaller and more opinionated.
+Gale is not a Homebrew replacement and not an
+everything-from-source build farm. A package that
+is not in the index is an error. Python is not
+in the catalog. See
+[`python-build-standalone.md`](proposals/python-build-standalone.md).
+Index version bumps are currently human
+PRs. The update bot is parked. See
+[`index-update-pr-bot.md`](proposals/index-update-pr-bot.md).
+The catalog has no linux artifact keys.
+See [`linux-admission.md`](proposals/linux-admission.md).
 
 ## Principles
 
-**Everything from source.** Every recipe defines how
-to build from source. Prebuilt binaries (GHCR cache)
-are an optimization, not a substitute. If someone
-wants to verify what they're running, they can build
-it themselves. This is the model Homebrew and Nix use
-at distro scale.
-
-**Prebuilt binaries only for compiler bootstraps.**
-Building Go requires a Go compiler. Building Rust
-requires a Rust compiler. These bootstrap binaries
-are the one exception — a prebuilt binary used only
-during the build, never shipped to users.
-
-**Toolchains are declarative and recipe-owned.**
-If a package needs a specific compiler toolchain,
-the recipe declares it in `[build]`, for example:
-
-```toml
-[build]
-toolchain = "llvm"
-
-[dependencies]
-build = ["llvm"]
-```
-
-Gale activates the installed toolchain generically
-from explicit build dependencies such as `DEP_LLVM`.
-Toolchain versions stay in recipes, not in Gale.
-Explicit env vars remain the escape hatch for local
-experiments and debugging.
+**Fetch from the index.** `install`, `sync`,
+`update`, and `remove` resolve against the catalog
+and stage `pkg/fetch/<name>/<version>-<sha12>/`.
+`--index <dir>` is the only local override. A mixed
+source/fetch lock is refused. `gale fetch-adopt`
+migrates a v1 lock.
 
 **Declarative over imperative.** The state of your
-environment is a function of gale.toml, not a history
-of commands you ran. `gale sync` always converges to
-the correct state.
+environment is a function of the v2 lock, not a
+history of commands you ran. `gale.toml` declares
+what to lock; a locked rebuild selects the lock.
+`gale sync` activates the lock and does not rewrite
+it.
 
-**One tool.** Gale replaces Homebrew (global packages),
-Nix/home-manager (declarative manifests), and
-direnv+flakes (per-project environments). Users should
-not need multiple package managers.
+**Rollback is temporary.** `gale generations rollback`
+moves `current` only. The next sync returns PATH to
+the lock. Durable undo is reverting the lock in git.
 
 ## Directory Layout
 
@@ -132,7 +115,8 @@ Updating the environment is a single `os.Rename` call:
 2. Create temp symlink: `current-new → gen/<N>`
 3. `os.Rename("current-new", "current")` — atomic
 4. Old generations accumulate; `gale gc` or
-   `PruneOldGenerations` removes them (default: keep 10).
+   `PruneOldGenerations` removes them (keep 2:
+   current + one previous).
    This is required for `gale generations rollback`.
 
 Step 3 is one syscall. PATH never sees a broken or
@@ -220,6 +204,19 @@ user-typed `gale sync` ignores the stamp entirely — which
 the warning says, because it is the only place it is
 ever said.
 
+`--if-needed` itself is also bounded: a compiled 15s
+deadline is the parent of every index HTTP, artifact
+HTTP, hash, and extract on that path. Timeout stamps
+`incomplete`, cancels the work, and leaves `current`
+unchanged. A typed `gale sync` has no overall deadline.
+
+`gale generations rollback` is temporary: it moves
+`current` only. The lock still names the intended
+roots. Rollback deletes this scope's stamp so the
+next `--if-needed` (direnv) syncs back to the lock
+instead of treating the rolled-back generation as
+complete. Durable undo is reverting the lock in git.
+
 `gale shell` and `gale run` consult the same stamp. Their
 own gate asks whether the lock still describes the
 manifest, which a partial install failure leaves true.
@@ -234,15 +231,18 @@ We chose direnv over custom shell hooks because:
 
 `gale install jq`:
 
-1. Fetch recipe from registry (GitHub raw URL)
-2. Install to store: try prebuilt binary from GHCR
-   first, fall back to building from source
-3. Add `jq = "1.8.1"` to gale.toml
-4. Rebuild generation from gale.toml
+1. Resolve `jq` from the index (or `--index <dir>`)
+2. Stage the artifact under `pkg/fetch/`
+3. Write `jq = "<version>"` to gale.toml
+4. Write a v2 lock
+5. Rebuild the generation from the lock and swap
+   `current` last
 
-The installer only writes to the store. It knows
-nothing about generations or symlinks. The command
-layer handles the generation rebuild.
+`gale sync` lands any missing fetch trees and
+rebuilds the generation. It does not write the
+lock. Leftover `[hosts.*]` overlays refuse.
+There is no `--host` flag. A v1 lock names
+`gale fetch-adopt`.
 
 ## Build Environment
 
@@ -285,11 +285,9 @@ interface), graphics frameworks (Cocoa, GTK, libGL),
 and OS-level services (PAM, NSS). You can't
 statically link the window system.
 
-**Gale's policy:** static by default. The generation
-model supports `lib/` and `include/` symlinks, and
-`FixupBinaries` rewrites dylib paths with
-`install_name_tool` (macOS) or `patchelf` (Linux)
-for packages that need dynamic linking. But for
+**Gale's policy:** static by default. Fetch installs
+index artifacts as shipped. There is no runtime
+`install_name_tool` / `patchelf` rewrite. For
 developer CLI tools, static is simpler and more
 portable.
 
@@ -308,9 +306,10 @@ runtime instead of whatever happens to be on the host.
 ## Two-Repo Architecture
 
 - **gale** — the CLI tool. Go code, all packages.
-- **gale-recipes** — recipe TOML files. CI builds
-  each recipe on macOS arm64 and Linux amd64, pushes
-  tar.zst to GHCR, updates binary sections.
+- **gale-recipes** — index documents. Fetch
+  installs from the index. There is no farm
+  CI, leftover `[build]` recipe, GHCR bottle
+  push, or `tar.zst` create.
 
 Recipes are fetched on demand from GitHub raw URLs.
 No git clone needed for installation.
@@ -320,6 +319,9 @@ No git clone needed for installation.
 Recipe TOML and `index.tsv` responses are cached under
 `~/.gale/cache/registry/<sha256(url)>/{body,etag,not_found}`.
 The cache is a documented optimization, not silent state.
+A fetch-archive cache at
+`~/.gale/cache/artifacts/<sha256>` is parked
+(Milestone 6, off by default, or never).
 Rules:
 
 - **First fetch** writes body + ETag. Subsequent fetches send
@@ -340,7 +342,7 @@ Rules:
   younger than `negativeCacheTTL` (1 hour), repeat fetches
   short-circuit to `HTTP 404` without a wire trip. The TTL is
   long enough to dedupe back-to-back read-only command runs
-  (`outdated`, `sbom`, `doctor`) and short enough that a freshly
+  (`outdated`, `sbom`) and short enough that a freshly
   published recipe shows up without manual cache surgery. The
   marker is pruned lazily on read once it expires; only 404s
   are negatively cached (other non-200 responses surface as

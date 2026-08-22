@@ -36,6 +36,11 @@ func TestLoadClassifies(t *testing.T) {
 			wantKind: KindV1,
 		},
 		{
+			name:     "v2 schema",
+			content:  v2Fixture,
+			wantKind: KindV2,
+		},
+		{
 			name:    "unknown schema version",
 			content: "version = 99\n",
 			wantErr: ErrUnknownVersion,
@@ -111,6 +116,23 @@ func TestLoadPopulatesOnlyTheMatchingSchema(t *testing.T) {
 	}
 	if v1.V1 == nil {
 		t.Fatal("v1 view has no V1")
+	}
+	if v1.V2 != nil {
+		t.Errorf("v1 view carries V2 = %+v", v1.V2)
+	}
+
+	v2, err := Load(writeTemp(t, v2Fixture))
+	if err != nil {
+		t.Fatalf("Load v2: %v", err)
+	}
+	if v2.Kind != KindV2 {
+		t.Fatalf("v2 Kind = %v, want KindV2", v2.Kind)
+	}
+	if v2.V2 == nil {
+		t.Fatal("v2 view has no V2")
+	}
+	if v2.V1 != nil || v2.Legacy != nil {
+		t.Errorf("v2 view carries V1/Legacy")
 	}
 	// Load must go through the same guard-stripping ReadV1 does, or
 	// the guard would reach plan construction as a package node.

@@ -20,17 +20,24 @@ type Constraint struct {
 	Any bool
 }
 
+// versionTuple is a four-part version for comparison.
+// Satisfies uses the caller's revision, not the one
+// parseVersion extracted from the version string.
+type versionTuple struct {
+	major, minor, patch, revision int
+}
+
 // parseVersion parses a version string of the form
 // [v]major.minor.patch[-revision] and returns its components.
 // revision defaults to 1 if absent or non-numeric.
 // Returns ok=false if the string does not have at least three
 // dot-separated numeric parts.
-func parseVersion(s string) (major, minor, patch, revision int, ok bool) {
+func parseVersion(s string) (versionTuple, bool) {
 	// Strip leading 'v'.
 	s = strings.TrimPrefix(s, "v")
 
 	// Split off optional revision suffix.
-	revision = 1
+	revision := 1
 	if idx := strings.LastIndex(s, "-"); idx >= 0 {
 		rev, err := strconv.Atoi(s[idx+1:])
 		if err == nil {
@@ -41,23 +48,23 @@ func parseVersion(s string) (major, minor, patch, revision int, ok bool) {
 
 	parts := strings.Split(s, ".")
 	if len(parts) < 3 {
-		return 0, 0, 0, 0, false
+		return versionTuple{}, false
 	}
 
-	maj, err := strconv.Atoi(parts[0])
+	major, err := strconv.Atoi(parts[0])
 	if err != nil {
-		return 0, 0, 0, 0, false
+		return versionTuple{}, false
 	}
-	min, err := strconv.Atoi(parts[1])
+	minor, err := strconv.Atoi(parts[1])
 	if err != nil {
-		return 0, 0, 0, 0, false
+		return versionTuple{}, false
 	}
-	pat, err := strconv.Atoi(parts[2])
+	patch, err := strconv.Atoi(parts[2])
 	if err != nil {
-		return 0, 0, 0, 0, false
+		return versionTuple{}, false
 	}
 
-	return maj, min, pat, revision, true
+	return versionTuple{major, minor, patch, revision}, true
 }
 
 // ParseConstraint parses an expression into a Constraint.
@@ -86,28 +93,28 @@ func ParseConstraint(expr string) (Constraint, error) {
 		op = "="
 	}
 
-	maj, min, pat, rev, ok := parseVersion(rest)
+	v, ok := parseVersion(rest)
 	if !ok {
 		return Constraint{}, fmt.Errorf("invalid version %q in constraint %q", rest, expr)
 	}
 
 	return Constraint{
 		Op:       op,
-		Major:    maj,
-		Minor:    min,
-		Patch:    pat,
-		Revision: rev,
+		Major:    v.major,
+		Minor:    v.minor,
+		Patch:    v.patch,
+		Revision: v.revision,
 	}, nil
 }
 
 // compareTuples returns -1, 0, or 1 for a<b, a==b, a>b
 // where tuples are (major, minor, patch, revision).
-func compareTuples(aMaj, aMin, aPat, aRev, bMaj, bMin, bPat, bRev int) int {
+func compareTuples(a, b versionTuple) int {
 	for _, pair := range [][2]int{
-		{aMaj, bMaj},
-		{aMin, bMin},
-		{aPat, bPat},
-		{aRev, bRev},
+		{a.major, b.major},
+		{a.minor, b.minor},
+		{a.patch, b.patch},
+		{a.revision, b.revision},
 	} {
 		if pair[0] < pair[1] {
 			return -1
@@ -127,13 +134,16 @@ func (c Constraint) Satisfies(version string, revision int) bool {
 	}
 
 	// Parse the installed version; caller provides revision
-	// authoritatively so the fourth return value is discarded.
-	iMaj, iMin, iPat, _, ok := parseVersion(version)
+	// authoritatively so parseVersion's revision is overwritten.
+	installed, ok := parseVersion(version)
 	if !ok {
 		return false
 	}
+	installed.revision = revision
 
-	cmp := compareTuples(iMaj, iMin, iPat, revision, c.Major, c.Minor, c.Patch, c.Revision)
+	cmp := compareTuples(installed, versionTuple{
+		c.Major, c.Minor, c.Patch, c.Revision,
+	})
 
 	switch c.Op {
 	case "=":

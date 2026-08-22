@@ -111,13 +111,15 @@ test-unprivileged:
 # and fails only on the macos runner (gh#227). `just check-darwin`
 # cannot catch it: it compiles darwin code, it never runs it.
 #
-# The link sits at / pointing to /private/<name>, which is macOS's
-# shape exactly — the raw path is a SUBSTRING of the resolved one,
-# so `strings.Contains(err, rawDir)` assertions pass here as they
-# do on macOS. A sibling link (tmp -> tmp.real) breaks those too
-# and over-reports 5 tests that macOS is fine with. That substring
-# property is why the link has to be at the root, and why the
-# target needs write access there.
+# The link lives under a writable base ($TMPDIR, else /tmp), and its
+# resolved spelling re-spells that base beneath a pad directory, so
+# the raw path stays a SUFFIX of the resolved one — macOS's shape,
+# where /var/folders/X is a suffix of /private/var/folders/X — and
+# `strings.Contains(err, rawDir)` assertions pass here as they do on
+# macOS. A sibling link (tmp -> tmp.real) breaks that suffix and
+# over-reports 5 tests that macOS is fine with. Keeping the suffix is
+# the whole point; the recipe used to symlink /<name> -> private/<name>
+# and so needed / writable, which unprivileged agent VMs (Cursor) lack.
 #
 # The baseline is empty as of gh#230, so `just preflight` runs it
 # and any failure here is yours.
@@ -130,27 +132,41 @@ test-symlinked-tmp:
       echo "macOS already runs every test this way (\$TMPDIR is under /var)"
       exec go test -count=1 ./...
     fi
+    # Canonical writable base (physical, so nothing under it resolves
+    # unexpectedly). $TMPDIR wins so this honours a caller's tmpfs.
+    base="$(cd "${TMPDIR:-/tmp}" && pwd -P)"
     name="gale-symtmp-$$"
-    link="/$name"
-    real="/private/$name"
-    made_private=""
-    [ -d /private ] || made_private=yes
-    if ! mkdir -p "$real" 2>/dev/null; then
-      echo "test-symlinked-tmp: cannot create $real — / must be writable" >&2
-      echo "  (the raw path must be a substring of the resolved one, which" >&2
-      echo "   only holds when the symlink is a root-level component)" >&2
+    link="$base/$name"
+    mirror="$base/real-$name"
+    # real ends with "$base/$name", so link ($base/$name) is its
+    # suffix. The relative target strips base's leading slash so the
+    # link resolves under $base rather than at the root.
+    real="$mirror$base/$name"
+    if ! mkdir -p "$real"; then
+      echo "test-symlinked-tmp: cannot create $real under $base" >&2
       exit 1
     fi
     cleanup() {
-      rm -rf "$link" "$real"
-      [ -n "$made_private" ] && rmdir /private 2>/dev/null
+      rm -rf "$link" "$mirror"
       return 0
     }
     trap cleanup EXIT INT TERM
-    if ! ln -s "private/$name" "$link"; then
+    if ! ln -s "real-$name$base/$name" "$link"; then
       echo "test-symlinked-tmp: cannot create the symlink $link" >&2
       exit 1
     fi
+    # Fail loudly if the layout did not yield the macOS-shaped split:
+    # a green run under a link that resolves to itself proves nothing.
+    resolved="$(cd "$link" && pwd -P)"
+    case "$resolved" in
+      "$link")
+        echo "test-symlinked-tmp: $link resolves to itself, no spelling split" >&2
+        exit 1 ;;
+      *"$link") : ;;
+      *)
+        echo "test-symlinked-tmp: raw $link is not a suffix of resolved $resolved" >&2
+        exit 1 ;;
+    esac
     TMPDIR="$link" go test -count=1 ./...
     status=$?
     if [ "$status" -ne 0 ]; then

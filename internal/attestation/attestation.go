@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,7 +14,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kelp/gale/internal/ghcr"
 	"github.com/kelp/gale/internal/httpclient"
 )
 
@@ -37,58 +35,10 @@ type Verifier interface {
 	// Attestations API and verifying it against the file's
 	// SHA256 digest.
 	VerifyFile(filePath, repo string) error
-	// VerifyOCI verifies a Sigstore bundle (JSONL) that gale
-	// already fetched from the registry's OCI referrers
-	// against the image manifest digest ("sha256:<hex>" or
-	// bare hex). Runs offline and needs no GitHub token.
+	// VerifyOCI verifies an already-fetched Sigstore bundle
+	// (JSONL) against a digest ("sha256:<hex>" or bare hex).
+	// Runs offline and needs no GitHub token.
 	VerifyOCI(manifestDigest, repo string, bundles []byte) error
-}
-
-// PrebuiltParams routes attestation verification for a prebuilt
-// binary through one shared decision path so the installer and
-// `gale verify` never duplicate the referrer-then-file fallback.
-type PrebuiltParams struct {
-	// Repo is the GitHub repository whose attestations sign the
-	// artifact (e.g. "kelp/gale-recipes").
-	Repo string
-	// ManifestDigest is the image manifest digest. Empty disables
-	// the referrer path and goes straight to the file fallback.
-	ManifestDigest string
-	// FetchBundle fetches the Sigstore bundle from the OCI
-	// referrers. It returns ghcr.ErrNoReferrer when none exists.
-	FetchBundle func() ([]byte, error)
-	// Archive yields the local archive to verify on the file
-	// fallback, with an optional cleanup func.
-	Archive func() (path string, cleanup func(), err error)
-}
-
-// VerifyPrebuilt verifies a prebuilt binary, preferring the
-// tokenless OCI-referrer path and falling back to the GitHub
-// Attestations API file path only when no referrer exists. It
-// fails closed: once a referrer bundle is found, a verification
-// error propagates without a file fallback, and a non-ErrNoReferrer
-// fetch error propagates too.
-func VerifyPrebuilt(v Verifier, p PrebuiltParams) error {
-	if p.ManifestDigest != "" && p.FetchBundle != nil {
-		bundle, err := p.FetchBundle()
-		switch {
-		case err == nil:
-			return v.VerifyOCI(p.ManifestDigest, p.Repo, bundle)
-		case errors.Is(err, ghcr.ErrNoReferrer):
-			// Fall through to the file path.
-		default:
-			return fmt.Errorf("fetch referrer bundle: %w", err)
-		}
-	}
-
-	path, cleanup, err := p.Archive()
-	if err != nil {
-		return fmt.Errorf("resolve attestation archive: %w", err)
-	}
-	if cleanup != nil {
-		defer cleanup()
-	}
-	return v.VerifyFile(path, p.Repo)
 }
 
 // FetchBundle downloads the Sigstore attestation bundle(s)

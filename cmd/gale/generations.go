@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"strconv"
 
@@ -16,12 +15,12 @@ var (
 
 var generationsCmd = &cobra.Command{
 	Use:   "generations",
-	Short: "List and manage generations",
-	// ExactArgs(0): bare `gale generations` lists; the diff /
-	// rollback children handle their own arg shapes. Falling
-	// through to here with an unrecognised positional (e.g.
-	// `gale generations nosuchcmd`) must reject it cleanly
-	// rather than echo cobra's stock "unknown command" line.
+	Short: "List generations or roll back one step",
+	// ExactArgs(0): bare `gale generations` lists; rollback
+	// handles its own arg shape. Falling through to here
+	// with an unrecognised positional (e.g. `gale generations
+	// nosuchcmd`) must reject it cleanly rather than echo
+	// cobra's stock "unknown command" line.
 	Args: cobra.ExactArgs(0),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(generationsGlobal, generationsProject); err != nil {
@@ -51,102 +50,6 @@ var generationsCmd = &cobra.Command{
 			fmt.Fprintf(cmd.OutOrStdout(),
 				"%s %-3d %d packages\n",
 				genMarker(g, cur), g.Number, len(g.Packages))
-		}
-
-		return nil
-	},
-}
-
-var genDiffCmd = &cobra.Command{
-	Use:   "diff [from] [to]",
-	Short: "Show differences between two generations",
-	Args:  cobra.RangeArgs(0, 2),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateScopeFlags(generationsGlobal, generationsProject); err != nil {
-			return err
-		}
-		galeDir, err := resolveGenerationsGaleDir(
-			generationsGlobal, generationsProject,
-		)
-		if err != nil {
-			return err
-		}
-
-		storeRoot := defaultStoreRoot()
-
-		var from, to int
-		switch len(args) {
-		case 0:
-			// No args: diff previous against current. Both
-			// require Current() to be set.
-			cur, err := generation.Current(galeDir)
-			if err != nil {
-				return fmt.Errorf("reading current: %w", err)
-			}
-			if cur == 0 {
-				// Match the parent `gale generations`
-				// empty-state: stderr notice, exit 0, no
-				// stdout output. Subcommands of a group must
-				// agree on what "nothing to do" looks like.
-				fmt.Fprintln(cmd.ErrOrStderr(),
-					"No generations found.")
-				return nil
-			}
-			if cur < 2 {
-				return fmt.Errorf(
-					"only one generation exists",
-				)
-			}
-			from = cur - 1
-			to = cur
-		case 1:
-			// One arg: diff the named generation against
-			// current. Current() must be set.
-			cur, err := generation.Current(galeDir)
-			if err != nil {
-				return fmt.Errorf("reading current: %w", err)
-			}
-			if cur == 0 {
-				return fmt.Errorf("no current generation")
-			}
-			from, err = strconv.Atoi(args[0])
-			if err != nil {
-				return fmt.Errorf(
-					"invalid generation number: %w", err,
-				)
-			}
-			to = cur
-		case 2:
-			// Two args: explicit pair. Don't require Current()
-			// — generation.Diff validates both ends exist.
-			var err error
-			from, err = strconv.Atoi(args[0])
-			if err != nil {
-				return fmt.Errorf(
-					"invalid from generation: %w", err,
-				)
-			}
-			to, err = strconv.Atoi(args[1])
-			if err != nil {
-				return fmt.Errorf(
-					"invalid to generation: %w", err,
-				)
-			}
-		}
-
-		d, err := generation.Diff(
-			galeDir, storeRoot, from, to,
-		)
-		if err != nil {
-			return fmt.Errorf("diffing generations: %w", err)
-		}
-
-		out := cmd.OutOrStdout()
-		for _, pkg := range d.Added {
-			fmt.Fprintf(out, "+ %s\n", pkg)
-		}
-		for _, pkg := range d.Removed {
-			fmt.Fprintf(out, "- %s\n", pkg)
 		}
 
 		return nil
@@ -216,68 +119,11 @@ var genRollbackCmd = &cobra.Command{
 		out.Success(fmt.Sprintf(
 			"Rolled back to generation %d", target,
 		))
-		return nil
-	},
-}
-
-var genRemoveCmd = &cobra.Command{
-	Use:   "remove N [N...]",
-	Short: "Discard generations by number",
-	Args:  cobra.MinimumNArgs(1),
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateScopeFlags(generationsGlobal, generationsProject); err != nil {
-			return err
-		}
-		galeDir, err := resolveGenerationsGaleDir(
-			generationsGlobal, generationsProject,
+		out.Warn(
+			"Rollback is temporary. The next sync returns to the lock. " +
+				"Durable undo is reverting the lock in git.",
 		)
-		if err != nil {
-			return err
-		}
-
-		out := newCmdOutput(cmd)
-
-		targets := make([]int, 0, len(args))
-		for _, arg := range args {
-			n, cErr := strconv.Atoi(arg)
-			if cErr != nil {
-				return fmt.Errorf(
-					"invalid generation number: %w", cErr,
-				)
-			}
-			if n <= 0 {
-				return errors.New(
-					"generation number must be positive",
-				)
-			}
-			targets = append(targets, n)
-		}
-
-		if dryRun {
-			for _, n := range targets {
-				out.Info(fmt.Sprintf(
-					"Would remove generation %d", n,
-				))
-			}
-			return nil
-		}
-
-		removed, err := generation.Remove(
-			galeDir, defaultStoreRoot(), targets,
-		)
-		// Report before returning: a removal that lands and then
-		// hits an error on a later target still destroyed a
-		// snapshot, and the user has to learn which.
-		if len(removed) > 0 {
-			out.Success(fmt.Sprintf(
-				"Removed %s %s",
-				pluralGeneration(len(removed)),
-				formatGenList(removed),
-			))
-		}
-		if err != nil {
-			return fmt.Errorf("removing generations: %w", err)
-		}
+		invalidateSyncStamp(out, galeDir)
 		return nil
 	},
 }
@@ -314,8 +160,8 @@ func currentGenNumber(gens []generation.GenInfo) int {
 // counts only the generations at or below current — cannot reach
 // it until current climbs back past it. Rendering it like
 // history below current hid the one state
-// a user has to see before naming a generation to
-// `gale generations remove` (gh#206).
+// a user has to see before a later rebuild climbs
+// past that branch (gh#206).
 func genMarker(g generation.GenInfo, cur int) string {
 	switch {
 	case g.Current:
@@ -347,11 +193,7 @@ func addGenerationsScopeFlags(c *cobra.Command) {
 
 func init() {
 	addGenerationsScopeFlags(generationsCmd)
-	addGenerationsScopeFlags(genDiffCmd)
 	addGenerationsScopeFlags(genRollbackCmd)
-	addGenerationsScopeFlags(genRemoveCmd)
-	generationsCmd.AddCommand(genDiffCmd)
 	generationsCmd.AddCommand(genRollbackCmd)
-	generationsCmd.AddCommand(genRemoveCmd)
 	rootCmd.AddCommand(generationsCmd)
 }

@@ -1,14 +1,6 @@
 package generation
 
-// Red-green tests for the U2 farm-reconcile audit unit:
-//
-//   gh#44 — Rollback never rebuilds the dylib farm, so after a
-//   rollback the farm symlinks still point at the rolled-from
-//   generation's revisions.
-//
-//   gh#43 — generation rebuild populates the farm only from the
-//   config package set, wiping runtime-dep dylibs (recorded in
-//   .gale-deps.toml) that dependents' rpaths resolve through.
+// Red-green tests for the U2 rollback-lock audit unit:
 //
 //   gh#45 — Rollback validates the target gen's existence
 //   outside the generation lock; a concurrent prune between
@@ -17,184 +9,11 @@ package generation
 import (
 	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
-	"github.com/kelp/gale/internal/depsmeta"
 	"github.com/kelp/gale/internal/filelock"
 )
-
-// dylibNameU2 returns an OS-appropriate versioned dylib
-// basename that farm.IsVersionedDylib accepts.
-func dylibNameU2(stem, major string) string {
-	if runtime.GOOS == "darwin" {
-		return "lib" + stem + "." + major + ".dylib"
-	}
-	return "lib" + stem + ".so." + major
-}
-
-// createStoreEntryWithLibU2 creates a fake store entry with
-// bin executables and lib dylibs. Returns the store dir.
-func createStoreEntryWithLibU2(
-	t *testing.T, storeRoot, name, version string,
-	executables, dylibs []string,
-) string {
-	t.Helper()
-	createStoreEntry(t, storeRoot, name, version, executables)
-	dir := filepath.Join(storeRoot, name, version)
-	libDir := filepath.Join(dir, "lib")
-	if err := os.MkdirAll(libDir, 0o755); err != nil {
-		t.Fatalf("create lib dir: %v", err)
-	}
-	for _, d := range dylibs {
-		if err := os.WriteFile(
-			filepath.Join(libDir, d), []byte("fake dylib"), 0o644,
-		); err != nil {
-			t.Fatalf("create dylib %q: %v", d, err)
-		}
-	}
-	return dir
-}
-
-// gh#44: every generation swap must leave the farm consistent
-// with the rolled-to generation's package set. Rollback swaps
-// current but historically never touched the farm, so binaries
-// in the rolled-to gen resolved dylibs from the generation the
-// user just rejected.
-func TestRollbackRebuildsFarmFromTargetGeneration(t *testing.T) {
-	// The store lives INSIDE the gale dir, as it does in
-	// production: filepath.Dir(storeRoot) is the global gale dir,
-	// an invariant storeGenLockPath and the shared farm both rest
-	// on. Two unrelated temp dirs would break it, and a farm test
-	// that breaks it cannot see a scope-confusion bug.
-	galeDir := t.TempDir()
-	storeRoot := filepath.Join(galeDir, "pkg")
-	lib := dylibNameU2("foo", "1")
-
-	oldDir := createStoreEntryWithLibU2(
-		t, storeRoot, "pkga", "1.0-1",
-		[]string{"pkga"}, []string{lib},
-	)
-	if err := Build(
-		map[string]string{"pkga": "1.0-1"}, galeDir, storeRoot,
-	); err != nil {
-		t.Fatalf("Build gen 1: %v", err)
-	}
-
-	newDir := createStoreEntryWithLibU2(
-		t, storeRoot, "pkga", "1.0-2",
-		[]string{"pkga"}, []string{lib},
-	)
-	if err := Build(
-		map[string]string{"pkga": "1.0-2"}, galeDir, storeRoot,
-	); err != nil {
-		t.Fatalf("Build gen 2: %v", err)
-	}
-
-	// Precondition: after gen 2's build the farm points at
-	// the new revision.
-	farmLink := filepath.Join(galeDir, "lib", lib)
-	target, err := os.Readlink(farmLink)
-	if err != nil {
-		t.Fatalf("read farm link after gen 2: %v", err)
-	}
-	if want := filepath.Join(newDir, "lib", lib); target != want {
-		t.Fatalf("farm after gen 2 = %s, want %s", target, want)
-	}
-
-	if err := Rollback(galeDir, storeRoot, 1); err != nil {
-		t.Fatalf("Rollback: %v", err)
-	}
-
-	target, err = os.Readlink(farmLink)
-	if err != nil {
-		t.Fatalf("read farm link after rollback: %v", err)
-	}
-	if want := filepath.Join(oldDir, "lib", lib); target != want {
-		t.Errorf(
-			"after rollback to gen 1 farm %s -> %s, want %s "+
-				"(rollback did not rebuild the farm)",
-			lib, target, want,
-		)
-	}
-}
-
-// gh#43: the farm must contain symlinks for every dylib any
-// active binary may resolve at load time — including runtime
-// deps recorded in .gale-deps.toml, which never appear in
-// gale.toml. A rebuild from the config set alone wipes them.
-func TestBuildFarmIncludesRecordedDeps(t *testing.T) {
-	// The store lives INSIDE the gale dir, as it does in
-	// production: filepath.Dir(storeRoot) is the global gale dir,
-	// an invariant storeGenLockPath and the shared farm both rest
-	// on. Two unrelated temp dirs would break it, and a farm test
-	// that breaks it cannot see a scope-confusion bug.
-	galeDir := t.TempDir()
-	storeRoot := filepath.Join(galeDir, "pkg")
-	mainLib := dylibNameU2("main", "1")
-	depLib := dylibNameU2("dep", "2")
-	subLib := dylibNameU2("sub", "3")
-
-	mainDir := createStoreEntryWithLibU2(
-		t, storeRoot, "mainpkg", "1.0-1",
-		[]string{"mainpkg"}, []string{mainLib},
-	)
-	depDir := createStoreEntryWithLibU2(
-		t, storeRoot, "deppkg", "2.0-1",
-		nil, []string{depLib},
-	)
-	subDir := createStoreEntryWithLibU2(
-		t, storeRoot, "subpkg", "3.0-1",
-		nil, []string{subLib},
-	)
-
-	// mainpkg was built against deppkg, which itself was
-	// built against subpkg — recorded at install time.
-	if err := depsmeta.Write(mainDir, depsmeta.Metadata{
-		Deps: []depsmeta.ResolvedDep{
-			{Name: "deppkg", Version: "2.0", Revision: 1},
-		},
-	}); err != nil {
-		t.Fatalf("write mainpkg deps metadata: %v", err)
-	}
-	if err := depsmeta.Write(depDir, depsmeta.Metadata{
-		Deps: []depsmeta.ResolvedDep{
-			{Name: "subpkg", Version: "3.0", Revision: 1},
-		},
-	}); err != nil {
-		t.Fatalf("write deppkg deps metadata: %v", err)
-	}
-
-	// Only mainpkg is in gale.toml; deps are runtime-only.
-	if err := Build(
-		map[string]string{"mainpkg": "1.0-1"}, galeDir, storeRoot,
-	); err != nil {
-		t.Fatalf("Build: %v", err)
-	}
-
-	for _, tc := range []struct {
-		lib string
-		dir string
-	}{
-		{mainLib, mainDir},
-		{depLib, depDir},
-		{subLib, subDir},
-	} {
-		target, err := os.Readlink(filepath.Join(galeDir, "lib", tc.lib))
-		if err != nil {
-			t.Errorf(
-				"farm entry %s missing after gen rebuild: %v "+
-					"(dep dylibs wiped by config-only farm rebuild)",
-				tc.lib, err,
-			)
-			continue
-		}
-		if want := filepath.Join(tc.dir, "lib", tc.lib); target != want {
-			t.Errorf("farm %s -> %s, want %s", tc.lib, target, want)
-		}
-	}
-}
 
 // gh#45: the target gen's existence check must happen under
 // the generation lock. A concurrent prune (autoPruneGenerations
@@ -204,9 +23,8 @@ func TestBuildFarmIncludesRecordedDeps(t *testing.T) {
 func TestRollbackChecksTargetGenUnderLock(t *testing.T) {
 	// The store lives INSIDE the gale dir, as it does in
 	// production: filepath.Dir(storeRoot) is the global gale dir,
-	// an invariant storeGenLockPath and the shared farm both rest
-	// on. Two unrelated temp dirs would break it, and a farm test
-	// that breaks it cannot see a scope-confusion bug.
+	// an invariant storeGenLockPath rests on. Two unrelated temp
+	// dirs would break it.
 	galeDir := t.TempDir()
 	storeRoot := filepath.Join(galeDir, "pkg")
 	createStoreEntry(t, storeRoot, "jq", "1.0", []string{"jq"})
@@ -251,77 +69,5 @@ func TestRollbackChecksTargetGenUnderLock(t *testing.T) {
 	// The failed rollback must leave current resolving.
 	if _, err := os.Stat(filepath.Join(galeDir, "current")); err != nil {
 		t.Errorf("current dangles after failed rollback: %v", err)
-	}
-}
-
-// TestRollbackRepointsTheSharedFarmAtProjectScope is gh#44 at
-// project scope, which is a bug that predates issue #182.
-//
-// Rollback rebuilt the farm at farm.Dir(galeDir). At global scope
-// that IS the shared farm, so the repair worked and the regression
-// test above passed. At project scope it was <project>/.gale/lib, a
-// directory nothing resolves through: no PATH entry adds it, no
-// rpath names it. So a project rollback wiped a directory nobody
-// reads and left the farm its binaries actually load through still
-// pointing at the revision the user had just rejected — exactly the
-// breakage gh#44 was filed for, unfixed for every project.
-//
-// The store is shared even when the generation is not, which is why
-// the farm must be derived from the store root rather than from
-// whichever scope initiated the operation.
-func TestRollbackRepointsTheSharedFarmAtProjectScope(t *testing.T) {
-	home := t.TempDir()
-	storeRoot := filepath.Join(home, ".gale", "pkg")
-	// A project generation, deliberately NOT under the gale home.
-	galeDir := filepath.Join(home, "proj", ".gale")
-	if err := os.MkdirAll(galeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	lib := dylibNameU2("foo", "1")
-
-	oldDir := createStoreEntryWithLibU2(
-		t, storeRoot, "pkga", "1.0-1",
-		[]string{"pkga"}, []string{lib},
-	)
-	if err := Build(
-		map[string]string{"pkga": "1.0-1"}, galeDir, storeRoot,
-	); err != nil {
-		t.Fatalf("Build gen 1: %v", err)
-	}
-	newDir := createStoreEntryWithLibU2(
-		t, storeRoot, "pkga", "1.0-2",
-		[]string{"pkga"}, []string{lib},
-	)
-	if err := Build(
-		map[string]string{"pkga": "1.0-2"}, galeDir, storeRoot,
-	); err != nil {
-		t.Fatalf("Build gen 2: %v", err)
-	}
-
-	sharedLink := filepath.Join(home, ".gale", "lib", lib)
-	target, err := os.Readlink(sharedLink)
-	if err != nil {
-		t.Fatalf("a project build must populate the SHARED farm: %v", err)
-	}
-	if want := filepath.Join(newDir, "lib", lib); target != want {
-		t.Fatalf("shared farm after gen 2 = %s, want %s", target, want)
-	}
-
-	if err := Rollback(galeDir, storeRoot, 1); err != nil {
-		t.Fatalf("rollback: %v", err)
-	}
-
-	target, err = os.Readlink(sharedLink)
-	if err != nil {
-		t.Fatalf("read shared farm link after rollback: %v", err)
-	}
-	if want := filepath.Join(oldDir, "lib", lib); target != want {
-		t.Errorf("shared farm after rollback = %s, want %s: a project "+
-			"rollback must repoint the farm its binaries resolve "+
-			"through, not a directory nothing reads", target, want)
-	}
-	// And nothing was written to the retired project-local dir.
-	if _, err := os.Stat(filepath.Join(galeDir, "lib")); err == nil {
-		t.Error("rollback recreated the retired project-local farm dir")
 	}
 }

@@ -1,10 +1,12 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"github.com/kelp/gale/internal/provenance"
@@ -12,29 +14,23 @@ import (
 )
 
 func TestSyncBuildFlagReplacesSource(t *testing.T) {
-	// --build must exist.
-	f := syncCmd.Flags().Lookup("build")
-	if f == nil {
-		t.Fatal("sync: --build flag not found")
+	if syncCmd.Flags().Lookup("build") != nil {
+		t.Error("sync: --build must be gone")
 	}
-
-	// --source must not exist.
 	if syncCmd.Flags().Lookup("source") != nil {
 		t.Error("sync: --source flag should not exist")
 	}
 }
 
 func TestInstallBuildFlag(t *testing.T) {
-	f := installCmd.Flags().Lookup("build")
-	if f == nil {
-		t.Fatal("install: --build flag not found")
+	if installCmd.Flags().Lookup("build") != nil {
+		t.Fatal("install: --build must be gone")
 	}
 }
 
 func TestUpdateBuildFlag(t *testing.T) {
-	f := updateCmd.Flags().Lookup("build")
-	if f == nil {
-		t.Fatal("update: --build flag not found")
+	if updateCmd.Flags().Lookup("build") != nil {
+		t.Fatal("update: --build must be gone")
 	}
 }
 
@@ -50,7 +46,7 @@ func TestUpdateBuildFlag(t *testing.T) {
 func TestFinishSyncPreservesAWorkerIntegrityFailure(t *testing.T) {
 	conflict := fmt.Errorf("jq@1.7-1: %w", provenance.ErrInvalid)
 
-	err := finishSync(syncFinish{
+	err := finishSync(context.Background(), syncFinish{
 		failures: []error{conflict}, installed: 1, locked: true,
 	}, func() error { return nil })
 
@@ -70,7 +66,7 @@ func TestFinishSyncPreservesAWorkerIntegrityFailure(t *testing.T) {
 // the wrapping does not promote every sync failure to an integrity
 // violation.
 func TestFinishSyncKeepsAnOrdinaryFailureOrdinary(t *testing.T) {
-	err := finishSync(syncFinish{
+	err := finishSync(context.Background(), syncFinish{
 		failures: []error{errors.New("connection refused")}, installed: 1,
 	}, func() error { return nil })
 
@@ -95,7 +91,7 @@ func TestFinishSyncKeepsAnOrdinaryFailureOrdinary(t *testing.T) {
 // the same partial generation.
 func TestFinishSyncSkipsRebuildUnderALockWithAnyFailure(t *testing.T) {
 	called := false
-	err := finishSync(syncFinish{
+	err := finishSync(context.Background(), syncFinish{
 		failures: make([]error, 1), installed: 3, configChanged: true, locked: true,
 	}, func() error {
 		called = true
@@ -114,7 +110,7 @@ func TestFinishSyncSkipsRebuildUnderALockWithAnyFailure(t *testing.T) {
 // rebuilds per issue #20.
 func TestFinishSyncStillRebuildsUnlockedWithAFailure(t *testing.T) {
 	called := false
-	err := finishSync(syncFinish{
+	err := finishSync(context.Background(), syncFinish{
 		failures: make([]error, 1), installed: 3, configChanged: true, locked: false,
 	}, func() error {
 		called = true
@@ -133,7 +129,7 @@ func TestFinishSyncStillRebuildsUnlockedWithAFailure(t *testing.T) {
 // would mean nothing a lock describes ever reaches PATH.
 func TestFinishSyncRebuildsUnderALockWhenNothingFailed(t *testing.T) {
 	called := false
-	err := finishSync(syncFinish{
+	err := finishSync(context.Background(), syncFinish{
 		installed: 2, locked: true,
 	}, func() error {
 		called = true
@@ -152,7 +148,7 @@ func TestFinishSyncRebuildsOnFailure(t *testing.T) {
 	// packages that did install land on PATH. The failure
 	// error still propagates so the exit code is non-zero.
 	called := false
-	err := finishSync(syncFinish{failures: make([]error, 1)}, func() error {
+	err := finishSync(context.Background(), syncFinish{failures: make([]error, 1)}, func() error {
 		called = true
 		return nil
 	})
@@ -170,7 +166,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 	// discarded. The install count tells the user which package
 	// broke; the rebuild error tells them the PATH may be stale.
 	rebuildErr := errors.New("rebuild boom")
-	err := finishSync(syncFinish{failures: make([]error, 2)}, func() error {
+	err := finishSync(context.Background(), syncFinish{failures: make([]error, 2)}, func() error {
 		return rebuildErr
 	})
 	if err == nil {
@@ -183,7 +179,7 @@ func TestFinishSyncFailureErrorMentionsBothFailures(t *testing.T) {
 
 func TestFinishSyncReturnsRebuildError(t *testing.T) {
 	errBoom := errors.New("boom")
-	err := finishSync(syncFinish{installed: 1}, func() error {
+	err := finishSync(context.Background(), syncFinish{installed: 1}, func() error {
 		return errBoom
 	})
 	if !errors.Is(err, errBoom) {
@@ -197,7 +193,7 @@ func TestFinishSyncReturnsRebuildError(t *testing.T) {
 // the rebuild error was silently discarded when failed > 0.
 func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 	rebuildErr := errors.New("generation build failed")
-	err := finishSync(syncFinish{failures: make([]error, 1)}, func() error { return rebuildErr })
+	err := finishSync(context.Background(), syncFinish{failures: make([]error, 1)}, func() error { return rebuildErr })
 	if err == nil {
 		t.Fatal("finishSync must return error when failed > 0")
 	}
@@ -208,7 +204,7 @@ func TestFinishSyncIncludesRebuildErrorOnFailure(t *testing.T) {
 
 func TestFinishSyncSkipsRebuildInDryRun(t *testing.T) {
 	called := false
-	err := finishSync(syncFinish{dryRun: true, installed: 1}, func() error {
+	err := finishSync(context.Background(), syncFinish{dryRun: true, installed: 1}, func() error {
 		called = true
 		return nil
 	})
@@ -254,7 +250,7 @@ func TestFinishSyncFailurePreservesPartialProgress(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = finishSync(syncFinish{failures: make([]error, 1)}, func() error {
+	err = finishSync(context.Background(), syncFinish{failures: make([]error, 1)}, func() error {
 		return rebuildGeneration(galeDir, storeRoot, configPath, nil)
 	})
 	if err == nil {
@@ -300,7 +296,7 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 	// This call verifies the function signature accepts
 	// the project parameter. Before the fix, this would
 	// fail to compile with "too many arguments".
-	err = runSync("", false, false, true, "")
+	err = runSync(syncRun{Project: true})
 	// The sync itself may fail (no store, etc.) but the
 	// important thing is that the function accepts 4 args
 	// and the project flag reaches config resolution.
@@ -314,7 +310,7 @@ func TestRunSyncProjectFlagAccepted(t *testing.T) {
 // Fix: add an `installed int` parameter and skip rebuild when installed == 0.
 func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
 	rebuilt := false
-	err := finishSync(syncFinish{}, func() error {
+	err := finishSync(context.Background(), syncFinish{}, func() error {
 		rebuilt = true
 		return nil
 	})
@@ -333,7 +329,7 @@ func TestFinishSyncSkipsRebuildWhenNothingInstalled(t *testing.T) {
 // installed == 0 was leaving the old generation active.
 func TestFinishSyncRebuildsWhenConfigChanged(t *testing.T) {
 	rebuilt := false
-	err := finishSync(syncFinish{configChanged: true}, func() error {
+	err := finishSync(context.Background(), syncFinish{configChanged: true}, func() error {
 		rebuilt = true
 		return nil
 	})
@@ -394,7 +390,7 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err := finishSync(syncFinish{configChanged: true}, func() error {
+	err := finishSync(context.Background(), syncFinish{configChanged: true}, func() error {
 		return rebuildGeneration(galeDir, storeRoot, configPath, nil)
 	})
 	if err != nil {
@@ -419,3 +415,27 @@ func TestFinishSyncDropsRemovedPackageSymlink(t *testing.T) {
 // (design §11), so the line both fixes landed on is gone. The
 // canonical-version invariant they were about lives on in the lock
 // writers, which root r.Package.Full() and nothing else.
+
+func versionedDylibName(t *testing.T) string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "darwin":
+		return "libfake.1.2.3.dylib"
+	case "linux":
+		return "libfake.so.1.2.3"
+	default:
+		t.Skip("farm only supports darwin and linux")
+		return ""
+	}
+}
+
+func fakelibStore(t *testing.T, storeRoot, dylib string) {
+	t.Helper()
+	libDir := filepath.Join(storeRoot, "fakelib", "1.0.0-1", "lib")
+	if err := os.MkdirAll(libDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(libDir, dylib), []byte("not really elf"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}

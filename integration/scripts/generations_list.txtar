@@ -1,10 +1,11 @@
 # `gale generations` lists every gen in the .gale dir
 # and marks the current one.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
-exec gale install hello-dep -g --recipes=$WORK/recipes
+exec gale install hello -g --index=$WORK/index
+exec gale install hello-dep -g --index=$WORK/index
 
 exec gale generations
 stdout '1'

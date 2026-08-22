@@ -36,22 +36,13 @@ version.
 Bad release? Switch back to a known-good version:
 
 ```sh
-gale switch gh 2.89.0
+gale update gh@2.89.0
 ```
 
-`switch` works for downgrades and upgrades alike. It updates
-`gale.toml` and `gale.lock`, installs the requested version
-(cache-hit if it's already in the store from a prior
-install), and rebuilds the generation. The package must
-already be in `gale.toml`; `switch` will not add new
-packages — use `gale install` for that.
-
-Unlike `gale update`, `switch` ignores `[pinned]`: an
-explicit switch is the user's choice and overrides the pin
-guard.
-
-The `gale switch gh@2.89.0` form is accepted too, for
-consistency with `gale install`.
+`update pkg@ver` pins that version from the index,
+writes `gale.toml` and the v2 lock, and swaps
+`current`. Use `gale install` to add a package that
+is not already declared.
 
 ## Bump Pins Without Installing
 
@@ -99,9 +90,10 @@ gale gc --dry-run
 ```
 
 Gale keeps a machine-local registry of projects at
-`~/.gale/projects`, filled in automatically whenever a
-project environment is used (direnv activation,
-`gale sync`, project-scoped installs). `gale gc`
+`~/.gale/projects`, filled in when a project generation
+is published (`gale sync`, project-scoped install,
+update, or remove). Read-only commands, including
+`gale env`, do not write it. `gale gc`
 retains every registered project's pins and active
 generation, so a gc run from your home directory or
 one project cannot sweep store versions another

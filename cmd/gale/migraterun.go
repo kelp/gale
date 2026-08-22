@@ -1,11 +1,11 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
@@ -15,8 +15,6 @@ import (
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
-	"github.com/kelp/gale/internal/recipe"
-	"github.com/kelp/gale/internal/store"
 )
 
 // runMigrate converges the whole machine on attestable store
@@ -27,50 +25,10 @@ import (
 // every candidate with every scope, and only then replace anything,
 // so a refusal costs nothing and one pass leaves the machine in one
 // describable state rather than half of two.
-func runMigrate(ctx *cmdContext, out *output.Output) error {
-	// filepath.Dir(storeRoot) is the global gale dir at either scope,
-	// since the store is shared.
-	galeHome := filepath.Dir(ctx.StoreRoot)
-	scan, err := migrateScan(ctx.StoreRoot,
-		func(name, version string) (*recipe.Recipe, error) {
-			return resolveVersionedRecipe(ctx, name, version)
-		})
-	if err != nil {
-		return err
-	}
-	if len(scan.candidates) == 0 && len(scan.sourceOnly) == 0 {
-		out.Success("Every store directory already attests itself.")
-		return nil
-	}
-	if err := migratePreflight(galeHome, ctx.StoreRoot, scan); err != nil {
-		return err
-	}
-	ordered, err := orderCandidates(scan.candidates, ctx.Resolver)
-	if err != nil {
-		return err
-	}
-	if dryRun {
-		for _, t := range ordered {
-			out.Info(fmt.Sprintf("migrate %s@%s (%s)", t.name, t.version, t.dir))
-		}
-		reportSourceOnly(ctx, galeHome, out, scan.sourceOnly)
-		return nil
-	}
-	var relocated []migrateTarget
-	for _, t := range ordered {
-		moved, err := migrateOne(ctx, galeHome, t, out)
-		if err != nil {
-			return err
-		}
-		if moved {
-			relocated = append(relocated, t)
-		}
-	}
-	if err := finishRelocations(ctx, galeHome, relocated, out); err != nil {
-		return err
-	}
-	reportSourceOnly(ctx, galeHome, out, scan.sourceOnly)
-	return nil
+func runMigrate(_ *cmdContext, _ *output.Output) error {
+	return fmt.Errorf(
+		"gale migrate: pouring bottles without fixup is gone; use gale fetch or gale fetch-adopt",
+	)
 }
 
 // finishRelocations moves every scope off the pre-revision paths and
@@ -109,9 +67,7 @@ func finishRelocations(
 	// check preserves the pre-revision bytes and the run looks safe,
 	// while the farm has already moved underneath the scope that
 	// disagreed.
-	if err := generation.RebuildFarm(ctx.StoreRoot, func() error {
-		return revalidateRelocations(galeHome, ctx.StoreRoot, relocated)
-	}); err != nil {
+	if err := revalidateRelocations(galeHome, ctx.StoreRoot, relocated); err != nil {
 		return err
 	}
 	scopes, err := projects.Scopes(galeHome)
@@ -179,12 +135,12 @@ func reportRebuildable(out *output.Output, targets []migrateTarget) {
 	// force=false, so an occupied store directory satisfies the cache
 	// check and returns MethodCached before anything is built or any
 	// record is written — it cannot clear the condition reported
-	// here. `lock --refresh` reinstalls with force, and §13 gives it
-	// permission to replace exactly this directory.
-	out.Info("Rebuild each in the scope that declares it with " +
-		"`gale lock --refresh <pkg>`, which costs a full source build " +
-		"per package. A directory no scope declares cannot be " +
-		"rebuilt; `gale gc` clears it once nothing links it.")
+	// here. The per-scope --refresh flag is gone; no remaining
+	// command replaces a source-built directory in one scope.
+	out.Info("No per-scope command replaces a source-built directory. " +
+		"`gale migrate` lists these packages and does not refetch them. " +
+		"A directory no scope declares cannot be rebuilt; `gale gc` " +
+		"clears it once nothing links it.")
 }
 
 // reportUnresolved names, for each pre-revision source directory, the
@@ -217,8 +173,7 @@ func reportUnresolved(
 	}
 	out.Warn(fmt.Sprintf(
 		"%d source-built %s predate revisions, so each sits in a bare "+
-			"directory migrate cannot refetch and `lock --refresh` does "+
-			"not look at:", len(targets),
+			"directory migrate cannot refetch:", len(targets),
 		plural(len(targets), "package", "packages"),
 	))
 	out.Info("Each stays unattested until it moves, so a locked " +
@@ -282,8 +237,8 @@ func reportPreRevisionRoots(out *output.Output, roots []preRevisionRoot) {
 	// nothing. Unsaid, that reads as the sync having failed.
 	out.Info("A reinstall whose closure cannot be attested commits " +
 		"with no provenance record. That is the next step rather than " +
-		"a failure: converge the closure from the bottom up, then " +
-		"`gale lock --refresh <pkg>`.")
+		"a failure: converge the closure from the bottom up. No " +
+		"per-scope command replaces the resulting directory.")
 }
 
 // reportPreRevisionOrphans names the directories `gale gc` sweeps.
@@ -395,18 +350,7 @@ func readPreRevisionHolds(ctx *cmdContext, galeHome string) preRevisionHolds {
 		return h
 	}
 	h.scopes = scopes
-	// gc's own entry point, with gc's own arguments. The project pass
-	// is the context's scope when it is not the global one, exactly as
-	// gc resolves it; every other project arrives through the registry
-	// walk inside.
-	projPath, projGaleDir := "", ""
-	if ctx.GaleDir != "" && !sameDir(ctx.GaleDir, galeHome) {
-		projPath, projGaleDir = ctx.GalePath, ctx.GaleDir
-	}
-	retained, _, retErr := collectGCRetention(
-		galeHome, projPath, projGaleDir, store.NewStore(ctx.StoreRoot),
-		ctx.Resolver, ctx.versionedRecipeResolver(),
-	)
+	retained, retErr := collectKeptRetentionKeys(galeHome, ctx.StoreRoot)
 	h.retained = retained
 	h.retentionUncertain = retErr != nil
 	return h
@@ -532,22 +476,9 @@ func plural(n int, one, many string) string {
 // would catch it; for the relocating shape nothing would, because
 // the commit into an absent directory is never guarded.
 //
-// DeferFarm is set for the RELOCATING shape alone, and it is what
-// makes that shape possible at all. Migrate runs machine-wide, so
-// every registered scope is an external farm claimant, and a scope
-// loading a versioned library out of the bare directory claims that
-// soname AT the bare path. The canonical copy proposes the same
-// soname somewhere else, which design §4 tells GuardPopulate to
-// refuse — the guard would veto the one operation that ends the
-// disagreement it is reporting. Deferring costs nothing in the
-// direction that matters: the commit adds a directory and touches
-// neither the pre-revision bytes nor a single farm link, so a
-// failure here leaves the machine exactly as it was, and
-// finishRelocations puts the farm right for every scope at once.
-//
-// The canonical shape keeps the per-commit guard. It replaces bytes
-// in the directory the farm already points at, so its claim and the
-// claimants' agree about the path, and the ordinary rule applies.
+// The relocating shape commits into an absent canonical directory
+// and leaves the pre-revision bytes untouched until the pass
+// finishes. A failure here leaves the machine as it was.
 func migrateOne(
 	ctx *cmdContext, galeHome string, t migrateTarget, out *output.Output,
 ) (bool, error) {
@@ -579,20 +510,17 @@ func migrateOne(
 		out.Info(fmt.Sprintf("Migrating unprovenanced %s@%s...", name, full))
 	}
 
-	prevGuard, prevBinary, prevFarm := ctx.Installer.ReplaceGuard,
-		ctx.Installer.BinaryOnly, ctx.Installer.DeferFarm
+	prevGuard, prevBinary := ctx.Installer.ReplaceGuard, ctx.Installer.BinaryOnly
 	ctx.Installer.ReplaceGuard = func(rep installer.Replacement) error {
 		return checkMigrateCommit(galeHome, ctx.StoreRoot, t, rep)
 	}
 	ctx.Installer.BinaryOnly = true
-	ctx.Installer.DeferFarm = relocating
 	defer func() {
 		ctx.Installer.ReplaceGuard = prevGuard
 		ctx.Installer.BinaryOnly = prevBinary
-		ctx.Installer.DeferFarm = prevFarm
 	}()
 
-	if _, err := ctx.Installer.Reinstall(t.recipe); err != nil {
+	if _, err := ctx.Installer.Reinstall(context.Background(), t.recipe); err != nil {
 		return false, fmt.Errorf("migrating %s@%s: %w", name, full, err)
 	}
 	if !relocating {
@@ -646,18 +574,10 @@ func canonicalAttests(storeRoot string, t migrateTarget) error {
 			name, full, t.dir, err, errCandidateUnprovenanced,
 		)
 	}
-	b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	if b == nil || rec.Method != lockgraph.MethodBinary {
+	if rec.Method != lockgraph.MethodBinary {
 		return fmt.Errorf(
-			"%w: %s@%s did not come from the declared binary, and the "+
-				"machine was cleared against that artifact alone",
+			"%w: leftover bottle %s@%s: use gale fetch or gale fetch-adopt",
 			errMigrateNotBinary, name, full,
-		)
-	}
-	if rec.SHA256 != b.SHA256 {
-		return fmt.Errorf(
-			"%w: %s@%s was cleared at %s and the store now records %s",
-			errMigrateHashMoved, name, full, b.SHA256, rec.SHA256,
 		)
 	}
 	return nil
@@ -743,44 +663,13 @@ func regenerateScope(
 	if len(pkgs) == 0 {
 		return nil
 	}
-	// [bin] alone is read from the scope's manifest — never its
-	// packages, per the paragraph above. A generation built before
-	// gh#190 may hold a shadowed executable, and the rebuild below
-	// refuses one. Without the overrides the scope could not be
-	// migrated at all: the collision lives in the active package set,
-	// so declaring the winner would fix every other command and leave
-	// this one stuck.
 	if err := generation.BuildWithOptions(
-		pkgs, s.GaleDir, storeRoot,
-		generation.Options{BinOverrides: scopeBinOverrides(s.GaleDir)},
+		pkgs, s.GaleDir, storeRoot, generation.Options{},
 	); err != nil {
 		return fmt.Errorf("regenerating %s: %w", s.Label, err)
 	}
 	out.Info(fmt.Sprintf("  regenerated %s", s.Label))
 	return nil
-}
-
-// scopeBinOverrides returns the [bin] table of the gale.toml that
-// owns galeDir, or nil when there is none to read.
-//
-// nil on any failure, deliberately: this only ever widens what a
-// rebuild accepts, so an unreadable manifest costs the scope its
-// overrides and nothing else. The rebuild still refuses the
-// collision, with the message that names the fix.
-func scopeBinOverrides(galeDir string) map[string]string {
-	globalDir, err := galeConfigDir()
-	if err != nil {
-		return nil
-	}
-	configPath := filepath.Join(filepath.Dir(galeDir), "gale.toml")
-	if sameDir(galeDir, globalDir) {
-		configPath = filepath.Join(globalDir, "gale.toml")
-	}
-	cfg, err := loadEffectiveConfig(configPath)
-	if err != nil {
-		return nil
-	}
-	return cfg.Bin
 }
 
 // errBareDirStillReferenced reports a pre-revision directory some
@@ -858,17 +747,10 @@ func checkRelocateCommit(
 	if err := checkMigrateDependents(scopes, storeRoot, t); err != nil {
 		return err
 	}
-	b := t.recipe.BinaryForPlatform(runtime.GOOS, runtime.GOARCH)
-	return checkReplaceable(replaceQuery{
-		galeHome: galeHome, storeRoot: storeRoot,
-		selfGaleDir: "",
-		name:        t.name, version: t.version,
-		// The bare directory, which is what this operation destroys.
-		targetDir:   t.dir,
-		wantSHA:     b.SHA256,
-		platform:    currentPlatform(),
-		machineWide: true,
-	})
+	return fmt.Errorf(
+		"%w: leftover bottle %s@%s: use gale fetch or gale fetch-adopt",
+		errMigrateNotBinary, t.name, t.version,
+	)
 }
 
 // checkNothingReaches refuses the removal while any scope's active

@@ -315,9 +315,11 @@ func TestCheckDeclaredRemedyCoversHostOverlays(t *testing.T) {
 	if err == nil {
 		t.Fatal("want ErrStaleLock, got nil")
 	}
-	if !strings.Contains(err.Error(), "--host") {
-		t.Errorf("remedy must mention the --host form for a package "+
-			"declared in a [hosts.*] section, got %q", err)
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("remedy must not name leftover --host, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "[hosts.*]") {
+		t.Errorf("remedy must name leftover [hosts.*], got %q", err)
 	}
 }
 
@@ -351,8 +353,12 @@ func TestCheckDeclaredRemedyNamesTheOwningTarget(t *testing.T) {
 	if err == nil {
 		t.Fatal("want ErrStaleLock, got nil")
 	}
-	if !strings.Contains(err.Error(), `gale lock --host "work-*"`) {
-		t.Errorf("remedy must name the owning selector, got %q", err)
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("remedy must not name leftover --host, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "[hosts.*]") ||
+		!strings.Contains(err.Error(), "gale lock") {
+		t.Errorf("remedy must name leftover [hosts.*] and gale lock, got %q", err)
 	}
 
 	// A default-target orphan needs the plain form, with no --host at
@@ -393,9 +399,11 @@ func TestCheckDeclaredRepinRemedyFollowsTheManifest(t *testing.T) {
 	if err == nil {
 		t.Fatal("want ErrStaleLock, got nil")
 	}
-	if !strings.Contains(err.Error(), `--host "work-*"`) {
-		t.Errorf("repin remedy must name the overlay that declares it, "+
-			"and quote the selector so the command is runnable, got %q", err)
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("repin remedy must not name leftover --host, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "[hosts.*]") {
+		t.Errorf("repin remedy must name leftover [hosts.*], got %q", err)
 	}
 }
 
@@ -418,10 +426,13 @@ func TestCheckDeclaredRemedyRendersEveryAction(t *testing.T) {
 	if err == nil {
 		t.Fatal("want ErrStaleLock, got nil")
 	}
-	for _, want := range []string{"gale install", `--host "work-*"`} {
+	for _, want := range []string{"gale install", "[hosts.*]", "gale lock"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("remedy must include %q, got %q", want, err)
 		}
+	}
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("remedy must not name leftover --host, got %q", err)
 	}
 }
 
@@ -442,9 +453,12 @@ func TestCheckDeclaredNewOverlayRootNamesItsTarget(t *testing.T) {
 	if err == nil {
 		t.Fatal("want ErrStaleLock, got nil")
 	}
-	if !strings.Contains(err.Error(), `gale lock --host "work-*"`) {
-		t.Errorf("the lock alternative for a new overlay root must name "+
-			"the overlay, got %q", err)
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("new overlay root must not name leftover --host, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "[hosts.*]") ||
+		!strings.Contains(err.Error(), "gale lock") {
+		t.Errorf("new overlay root must name leftover [hosts.*] and gale lock, got %q", err)
 	}
 }
 
@@ -464,9 +478,13 @@ func TestCheckDeclaredUnknownDeclaredOriginDoesNotAssumeDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("want ErrStaleLock, got nil")
 	}
-	if !strings.Contains(err.Error(), "<selector>") {
-		t.Errorf("an unknown declared origin must render the general "+
-			"form rather than assume the default target, got %q", err)
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("unknown declared origin must not name leftover --host, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "[hosts.*]") ||
+		!strings.Contains(err.Error(), "gale lock") {
+		t.Errorf("an unknown declared origin must name leftover [hosts.*] "+
+			"and gale lock, got %q", err)
 	}
 }
 
@@ -481,9 +499,13 @@ func TestCheckDeclaredUnknownRootOriginDoesNotAssumeDefault(t *testing.T) {
 	if err == nil {
 		t.Fatal("want ErrStaleLock, got nil")
 	}
-	if !strings.Contains(err.Error(), "<selector>") {
-		t.Errorf("an unknown root origin must render the general form, "+
-			"got %q", err)
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("unknown root origin must not name leftover --host, got %q", err)
+	}
+	if !strings.Contains(err.Error(), "[hosts.*]") ||
+		!strings.Contains(err.Error(), "gale lock") {
+		t.Errorf("an unknown root origin must name leftover [hosts.*] "+
+			"and gale lock, got %q", err)
 	}
 }
 

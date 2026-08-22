@@ -2,7 +2,470 @@
 
 ## Unreleased
 
+### Security
+
+- Bump `golang.org/x/text` to v0.39.0, clearing
+  GO-2026-5970 (CVE-2026-56852). `go mod tidy` also
+  advances the related `golang.org/x/{mod,sys,crypto,net,sync,term,tools}`
+  transitives.
+
+### Fixed
+
+- Auto-gc no longer deletes generations
+  the keep-2 window promised to preserve
+  (gh#248). Retention derived a numeric
+  cutoff, `current - keep + 1`, which
+  counts integers rather than
+  generations — exact only while the
+  numbering is contiguous. gh#189
+  allocation is `max(prev, highest)+1`,
+  so gaps are ordinary: with
+  generations 1, 5, 9, 10 and
+  `keep = 3`, the next install kept two
+  of them and removed gen/5. A
+  `current` above every generation on
+  disk swept the lot. Retention is now
+  a count over the generations that
+  exist — the highest `keep` at or
+  below `current`. Everything above
+  `current` is preserved (gh#189).
+  Contiguous histories prune
+  identically. The two remaining
+  positive-assertion waits in
+  `internal/generation` are deadlock
+  backstops, not timing margins
+  (gh#251).
+
+- **gocognit.** The backlog count
+  was stale. Full-repo `gocognit`
+  is already 0 on linux and
+  darwin; the funlen splits
+  cleared the last flagged
+  functions. The `issues:`
+  block in `.golangci.yml`
+  stays: unused and unparam
+  still fail a repo-wide lint.
+
+- **funlen.** The backlog count was
+  stale (6 hits over 80 lines or
+  50 statements). Tests reuse
+  `mkStorePkg` / `mkActiveGen`;
+  production helpers split
+  `parseSectionHeader`,
+  `ScanInstalled`, and
+  `cachedGet`. Full-repo
+  `funlen` is 0. The `issues:`
+  block in `.golangci.yml`
+  stays until the rest of the
+  Code Standards Backlog is
+  gone.
+
+- **revive.** The backlog count was
+  stale (6 hits: argument-limit and
+  function-result-limit). Version
+  tuples, `which` results, the remove
+  store plan, and registered-project
+  fixtures now group those
+  signatures. Unused
+  `assertGenerationMatchesLock` is
+  gone. Full-repo `revive` is 0. The
+  `issues:` block in `.golangci.yml`
+  stays until the rest of the Code
+  Standards Backlog is gone.
+
+- **dupl in tests.** The backlog count
+  was stale (6 reports, 3 pairs).
+  Shared `t.Helper()` fixtures cover
+  the U9 remove-keeps-store pair, the
+  bare-jq gc pair, and the extract
+  tar.gz file+link pair. Full-repo
+  `dupl` is 0. The `issues:` block
+  in `.golangci.yml` stays until the
+  rest of the Code Standards Backlog
+  is gone.
+
+- **dupl in `build.go`.** The named pair
+  died with `internal/build`. Remaining
+  `dupl` hits are tests and stay on the
+  next backlog heading. The `issues:`
+  block in `.golangci.yml` stays until
+  the rest of the Code Standards
+  Backlog is gone.
+
+- **contextcheck.** The backlog count
+  was stale. Full-repo `contextcheck`
+  is already 0 on linux and darwin;
+  earlier slices threaded the
+  functions the linter can see. The
+  `issues:` block in `.golangci.yml`
+  stays until the rest of the Code
+  Standards Backlog is gone.
+
+- **nilnil.** `readBinary` returns
+  `ErrNotBinary` instead of
+  `(nil, nil)` when a file is not an
+  inspectable binary. The backlog
+  count was stale: two flagged
+  parser-miss lines plus two already
+  suppressed magic-miss returns. The
+  `issues:` block in `.golangci.yml`
+  stays until the rest of the Code
+  Standards Backlog is gone.
+
+- **errorlint.** `TestWithReturnsFnError`
+  now matches with `errors.Is`. Dual
+  failure in `replaceStoreDir` wraps
+  both the promote and restore errors
+  with `%w`. The `issues:` block in
+  `.golangci.yml` stays until the rest
+  of the Code Standards Backlog is gone.
+
+- **forcetypeassert.** The U15 cache-entry
+  test took `info.Sys().(*syscall.Stat_t)`
+  twice. Both now use comma-ok and fail
+  the test if `Sys()` is not
+  `*syscall.Stat_t`. The `issues:` block
+  in `.golangci.yml` stays until the rest
+  of the Code Standards Backlog is gone.
+
+- **predeclared.** Rename `real` and `min`
+  locals that shadowed builtins. Four hits
+  remain in the tree; the fifth was in
+  deleted `internal/build`.
+
+- **misspell.** Reword the U6 extract test
+  message so `hardlinked` is not flagged
+  as `hardline`. The check is still a
+  hard-link sandbox escape.
+
+### Changed
+
+- **Linux admission.** Proposal parked.
+  The catalog has no linux artifact keys.
+  A later PR for the ten must pass §5,
+  use new version blocks, and print
+  `tree_digest` from `gale admit`.
+
+- **Index-update PR bot.** Proposal parked.
+  Humans open index PRs today. A later bot
+  must be PR-only, have no write token on
+  `main`, verify upstream checksums, and
+  wait for a human-reviewed diff.
+
+- **Delete frozen host sections.** Leftover
+  `[hosts.*]` and lock `Targets.Host` still
+  refuse. There is no `--host` flag. `list
+  --scope host` is invalid. Default list
+  prints `[packages]` only. Remedies name
+  moving leftover pins into `[packages]`,
+  then `gale lock`. Multi-machine setups use
+  a second file.
+
+- **python-build-standalone.** Proposal parked.
+  Python is not in the catalog. Admission is a
+  later PR and needs declared attestations,
+  store immutability (no pip into the prefix),
+  and SSL / venv / relocatability tests.
+
+- **`git = "system"`.** A top-level note in
+  `gale.toml` (before `[packages]`): assume
+  `git` is on PATH. Not a package pin and not
+  an installer. No store entry, no lock hash.
+  Use the OS copy or `brew install git`.
+
+- **gc mark and sweep.** `gale gc` retains the
+  exact store targets of current plus one
+  previous generation in every registered
+  scope. Abandoned generations above current
+  are sweepable. Config pins, host overlays,
+  deps-meta, and the recipe resolver are not
+  retention sources. `--force` and `--recipes`
+  are gone. Incomplete retention refuses with
+  no escape hatch. Live `pkg/fetch/.tmp-*`
+  staging is never deleted; its presence
+  refuses the fetch-namespace sweep. Young
+  unlinked fetch destinations survive a one
+  hour grace.
+
+- **gale-recipes: strip the farm.** Promote /
+  ledger / verify-build CI, leftover source
+  recipes, and `.binaries.toml` ledgers are
+  gone (kelp/gale-recipes#296). The catalog
+  is `index/`. Leftover `gale info` /
+  `gale outdated` still fetch
+  `recipes/<letter>/<name>.toml` and 404.
+
+- **Delete GHCR bottle wiring.** Leftover
+  `Installer.Install` refuses a bottle pour
+  and names fetch / `gale fetch-adopt`.
+  `tar.zst` create/extract and `tar.bz2`
+  extract are gone. Admitted formats are
+  `tar.gz`, `tar.xz`, `zip`, `binary`.
+  `internal/ghcr` is gone. Generalized
+  attestation (`VerifyFile`, `FetchBundle`,
+  `VerifyOCI`) stays. Leftover `[binary]`
+  TOML and `.binaries.toml` are ignored.
+  Release no longer runs attestation-parity.
+
+- **Delete `internal/build` and farm.**
+  Source compile, Darwin fixup, patchelf,
+  pkg-config rewrite, and the shared dylib
+  farm are gone. Generation rebuild does
+  not write `~/.gale/lib`. `gale migrate`
+  and leftover source install refuse and
+  name fetch / `gale fetch-adopt`. Scratch
+  dirs use `store.TmpDir`. The depsmeta
+  retention walk stays for gc.
+
+- **Grow the catalog by admission.**
+  gale-recipes landed a Darwin/arm64 wave of
+  eight appendix A names (`fzf`, `age`,
+  `shfmt`, `actionlint`, `yq`, `shellcheck`,
+  `starship`, `zoxide`). Fragments are
+  `gale admit` stdout. Further appendix A
+  names are un-ticketed catalog PRs and do
+  not block Milestone 5.
+
+- **Park the local artifact cache.**
+  `~/.gale/cache/artifacts/<sha256>` of verified
+  archives is Milestone 6, off by default, or never.
+  Own proposal if it ships. Not the registry or
+  Sigstore caches.
+
+- **Every scope rebuilds only from the lock.**
+  A present v2 lock is the version selector
+  for a rebuild. The manifest and
+  `store.ResolveDir` do not choose versions.
+  v1, legacy, host-target, and incomplete
+  v2 locks refuse and name the kind-specific
+  remedy (`gale fetch-adopt` for v1/legacy).
+  `gale gc --force` no longer rebuilds past
+  a present unusable lock. Sweep `--force`
+  stays.
+
+- **Doctor is four checks.** PATH, lock
+  readable, generation matches lock roots,
+  tree digest matches. `--check-registry`
+  is gone. Farm, deps-meta, legacy-lock,
+  and the other novels are gone from
+  doctor. Those packages stay until
+  Milestone 5.
+
+- **Bin collision is a hard error.** Leftover
+  `[bin]` and `[hosts.*.bin]` are ignored. Two
+  packages shipping the same basename refuse
+  the generation. Remove one package. There
+  is no overlay that names a winner.
+
+- **Delete the long tail.** `build`,
+  `create-recipe`, `audit`, recipe `lint`,
+  `search`, `switch`, `add`, `sbom`,
+  `inspect`, and `repo *` are gone. No
+  stubs. `gale lint` validates index
+  documents only. `--strict` is gone.
+
+- **Switch: fetch is the only installer.** `install`,
+  `sync`, `update`, and `remove` resolve the index and
+  stage `pkg/fetch/`. `--recipes` is gone on those
+  commands and on live `gale lock`. `--index <dir>`
+  stays on install, update, lock, and fetch-adopt.
+  `--recipe`, `--path`, `--git`, `--build`,
+  `--no-frozen`, `--no-install`, and `--no-refresh`
+  are gone on the live verbs. `--host` refuses.
+  A mixed source/fetch lock is refused. `gale sync`
+  does not write the lock. A v1 lock names
+  `gale fetch-adopt`. Product docs no longer describe
+  gale as everything-from-source or a Homebrew
+  replacement.
+
+- **`gale verify` checks tree digests.** It recomputes
+  `DigestTree` on each `pkg/fetch/` directory the v2 lock
+  names and compares it to `tree_digest`. It does not talk
+  to GHCR. A v1 lock, a locked attestation, or a missing
+  fetch tree refuses. The store, lock, and `current` are
+  not written.
+
+- **`gale admit` inspects executable files only.**
+  Non-executable objects (GOROOT testdata ELF/Mach-O)
+  are payload. A tree still needs one inspectable
+  binary.
+
+### Added
+
+- **`gale fetch-adopt`.** Plans every default-target
+  root from `gale.toml` against one `index_commit`, prints
+  a lock diff, and after `--yes` or a TTY confirm stages
+  current-platform fetch trees, writes a v2 lock, and swaps
+  `current` last. Refuses CI, host overlays, and an existing
+  v2 lock. It is the v1→v2 migrator, not a second installer.
+
+- **First ten indexed.** gale-recipes `main` now has
+  Darwin/arm64 catalog documents for `jq`, `ripgrep`,
+  `fd`, `just`, `gh`, `go`, `gofumpt`, `golangci-lint`,
+  `direnv`, and `uv`. Every `tree_digest` came from
+  `gale admit`.
+
+- **Directory file maps.** `PlaceMapped` copies a
+  directory `src` when dest mode is 0755. Nested
+  dest directories are 0755. Regular-file children
+  keep extractor modes. Empty directories (no
+  regular-file descendants) are refused. Copy
+  refuses symlink, hardlink, and non-regular nodes.
+
+- **`gale lint` index documents.** A TOML file with a
+  top-level `versions` table is linted with
+  `index.Parse` and `index.Lint`, not the recipe
+  schema. The filename stem must match `package.name`.
+  `--base <old.toml>` runs `LintDiff` and requires
+  exactly one new file.
+
+- **`gale admit`.** Extracts a local archive with
+  Gale's installer path, records `tree_digest`, and
+  prints an index artifact fragment. It checks arch,
+  Darwin codesign, and system-only linkage from
+  object headers (not `ldd` or `otool`), including
+  the ELF `PT_INTERP` loader. Darwin system dylibs
+  must live under `/usr/lib/` or `/System/Library/`
+  (not `/System/Volumes/`). `DT_RPATH`/`DT_RUNPATH`
+  entries must clean to a system lib directory;
+  empty path segments are refused. Linux system
+  libraries must be a trusted bare soname or an
+  absolute path that cleans to a system lib
+  directory. It
+  refuses symlinks and hardlinks. It does not write
+  the store, lock, or `gale.toml`, and it does not
+  set `attestation`.
+
+- **Unused lock-only v2 writer.** `runLockFetch` pins
+  one `index_commit`, resolves every declared root
+  against that session, and writes a v2 lock. It does
+  not fetch artifacts, register, swap `current`, or
+  write `gale.toml`. `Load` still rejects version 2.
+  Install still uses recipes. No command is wired yet.
+
+- **Unused fetch publication order.** `finalizeFetch`
+  takes one mutation lock per scope, stages store
+  bytes, registers the project, writes a v2 lock, and
+  swaps `current` last. Failure at each boundary is
+  fail-closed. A retry converges. Install still uses
+  recipes. No command is wired yet.
+
+- **Unused fetch-to-store.** `internal/fetch` can download
+  an allowlisted artifact, hash it, extract the declared
+  format, place the file map, and rename a complete tree
+  into `pkg/fetch/<name>/<version>-<sha12>/`. Hash
+  mismatch and occupied-dir digest mismatch refuse.
+  Provenance is written last. Install still uses recipes.
+  No command is wired yet.
+
+- **Unused index client.** `internal/index` can pin one
+  `index_commit` (or an `--index` checkout HEAD) and
+  resolve packages against that snapshot. Network errors
+  fail closed. ETag revalidation is kept; stale-on-error
+  and negative 404 are not. Install still uses recipes.
+  No command is wired yet.
+
+### Changed
+
+- **`gale generations rollback` is temporary.** It
+  moves `current` only and does not write the lock.
+  It prints that the next sync returns to the lock
+  and that durable undo is reverting the lock in
+  git. Rollback deletes `sync-state.toml` so
+  direnv `--if-needed` actually syncs instead of
+  treating the rolled-back generation as complete.
+
+- **`gale sync --if-needed` is bounded.** Automatic
+  sync (direnv, `gale shell`, `gale run`) uses a
+  compiled 15s deadline, parented through index HTTP,
+  artifact HTTP, hashing, and extract. Timeout stamps
+  `incomplete`, cancels in-flight work, and leaves
+  `current` unchanged. A typed `gale sync` stays
+  unbounded. The 10-minute retry interval is unchanged.
+
+- **A project generation does not swap `current`
+  until the canonical project root is in
+  `~/.gale/projects`.** Registration failure
+  leaves `current` on the previous generation.
+  Read-only commands (`gale env`, `gale doctor`,
+  and the other inventory commands) no longer
+  write the registry. A project that only ever
+  ran `gale env` enters the registry on the
+  next install/sync/update/remove that publishes
+  a generation. A moved project is unregistered
+  until that next publication.
+
+- **`gale sync` rebuilds when the shared farm drifted.**
+  Package versions can already match. A locked sync
+  walks the lock's roots, not gale.toml's bare pins,
+  so an orphan higher revision cannot hide farm drift
+  for the locked generation. Without this, the doctor
+  farm-drift remedy (`gale sync`) was a no-op after
+  `--repair` went away.
+
+- **`gale gc` keeps the previous generation.**
+  Retention is the compiled constant 2 (current +
+  one previous, plus every gen at or above
+  current), the same cutoff auto-prune already
+  uses. Leftover `[generation] keep` cannot widen
+  or disable it. Resolver, network, and generation
+  rebuild stay until the Milestone 5 rewrite.
+
+- **Install, sync, outdated, and sbom run
+  serially.** One package and one dependency at a
+  time, in deterministic order. `internal/parallel`
+  is gone. Multi-package operations are slower. The
+  jobs knob already died in the config.toml freeze.
+
 ### Changed (breaking)
+
+- **`gale lock --refresh` is gone.** `gale lock`
+  writes the lock only. Unprovenanced refetch is
+  `gale fetch-adopt` (not shipped yet). An unusable
+  lock's remedy is `gale lock`. Live `gale lock`
+  still writes v1.
+
+- **`gale doctor --repair` and `--force` are gone.**
+  Doctor reports; it does not rebuild a generation,
+  delete a store directory, or re-sign a binary.
+  Remedies name `gale sync`, `gale lock`,
+  or `gale gc`. `gale gc --force` stays. Doctor still
+  runs its existing checks; the four-check rewrite is
+  a later cut.
+
+- **`config.toml` cannot repoint the registry.** The
+  index URL is compiled in (`registry.DefaultURL`).
+  Leftover `[registry] url` and `[sync] parallelism`
+  are ignored. `GALE_JOBS` is ignored. Retention is
+  still the compiled constant 2. `[build]`,
+  `[anthropic]`, and `[[repos]]` stay. `--recipes`
+  remains the local-directory escape hatch.
+
+- **`gale pin` / `gale unpin` and `[pinned]` are gone.**
+  Manifest versions and the lock are the only version
+  channels. `gale update` updates every named package,
+  or every `[packages]` entry when run bare. Leftover
+  `[pinned]` / `[hosts.*.pinned]` keys are ignored.
+  `gale info` no longer prints a `Pinned:` line.
+  `gale switch` is unchanged.
+
+- **Generation retention is the compiled constant 2.**
+  Auto-prune after every rebuild keeps current plus one
+  previous generation. `[generation] keep` and
+  `keep = -1` in `config.toml` are ignored and no
+  longer disable gc. `gale generations` is list and
+  `rollback` only; `diff` and `remove` are gone. A
+  generation above current stays until a later rebuild
+  allocates past it. An unreadable retained generation
+  still names `gale gc --force`.
+
+- **`.tool-versions` is no longer a gale manifest.** Gale
+  reads `gale.toml` only. A directory with only
+  `.tool-versions` is not a gale project: `--project`
+  errors with `no project found — run 'gale init' first`,
+  auto scope is global, and gc does not retain pins or
+  generations from that tree. Teams migrating from asdf
+  or mise need a `gale.toml`.
 
 - **`gale.lock` is now enforced, and a lockfile written by an
   earlier gale is refused (#182).** Every project and global
@@ -43,15 +506,31 @@
   the exit-code table for pipelines is in
   [`docs/ci-cd.md`](docs/ci-cd.md).
 
-- `gale gc` and `gale doctor --repair` take their versions from
-  the scope's lockfile, and refuse the rebuild outright when
-  that lockfile is present and cannot be read (gh#197). Both
-  previously selected versions from the recipe and the store
-  alone. `--force` rebuilds without the lock. Unlocked scopes
-  are unchanged. The defect this closes is under **Fixed**
-  below.
+- `gale gc` takes its versions from the scope's lockfile, and
+  refuses the rebuild outright when that lockfile is present
+  and cannot be read (gh#197). It previously selected versions
+  from the recipe and the store alone. `--force` rebuilds
+  without the lock. Unlocked scopes are unchanged. The defect
+  this closes is under **Fixed** below.
 
 ### Changed
+
+- **Host sections and `--host` are frozen.**
+  `[hosts.<key>]` overlays stay `packages` and `bin`.
+  `--host` stays on `add`, `install`, `remove`, and
+  `lock`. Selector grammar is unchanged. This stops
+  new host-section work before fetch is the default.
+
+- **Extract hardens archive and download limits.** Setuid,
+  setgid, and sticky bits are masked; extracted file modes
+  survive umask via fchmod. Downloads refuse more than 2 GiB
+  compressed; extract refuses more than 1e6 entries or 8 GiB
+  decompressed (`ErrExtractLimit`). Zip entries that are not a
+  directory or regular file are refused, including symlink
+  entries that used to materialize as files. Source and bottle
+  extract still allow in-tree links and `.gale-deps.toml`.
+  `ExtractArtifact` is the unused store-artifact path that
+  refuses both.
 
 - **`gale gc` no longer sweeps the store versions that only the
   generations above `current` reference (#247).**
@@ -131,7 +610,7 @@
   still loads.
 
   `[hosts.<key>.bin]` overlays the table per machine, with the
-  same selector precedence `[packages]` and `[pinned]` use
+  same selector precedence `[packages]` uses
   (gh#219). Two machines can put different providers of one
   basename on PATH; a manifest-wide winner could not say that,
   since naming either package drops the basename on the other
@@ -173,11 +652,6 @@
   generation cannot be read. The escape hatch for the refusal
   below, for a mount that is gone for good.
 
-- `gale doctor --repair --force`: repair a scope whose lockfile
-  is present and cannot be read. Repair refuses such a scope
-  otherwise, and a machine with an unrepairable lock is exactly
-  where repair gets run.
-
 - `gale doctor` reports three states that block a rebuild and
   had no diagnosis. A lockfile in a schema this build cannot
   use, in either scope, with `gale lock --refresh` as the
@@ -188,31 +662,22 @@
   generation build decides by, so doctor and the rebuild cannot
   disagree about which names collide.
 
-- `gale doctor --repair` clears an unreadable `.gale-deps.toml`
-  by deleting that store directory and every package directory
-  on a dependency path to it, then rebuilding the generations.
-  Nothing less works: deleting the metadata file alone shrinks
-  the closure silently, and an install over a surviving
-  directory returns cached without descending. Run `gale sync`
-  afterwards to reinstall what was removed.
+- `gale doctor` reports an unreadable `.gale-deps.toml` by
+  naming that store directory and every package directory on a
+  dependency path to it. Remove those directories, then run
+  `gale sync`. Deleting the metadata file alone shrinks the
+  closure silently, and an install over a surviving directory
+  returns cached without descending.
 
 ### Fixed
 
-- Auto-gc no longer deletes generations `[generation] keep`
-  promised to preserve (gh#248). Retention derived a numeric
-  cutoff, `current - keep + 1`, which counts integers rather
-  than generations — exact only while the numbering is
-  contiguous. Since gh#189 allocation is `max(prev, highest)+1`,
-  so gaps are ordinary: with generations 1, 5, 9, 10 and
-  `keep = 3`, the next install kept two of them and removed
-  gen/5, a rollback target the user could still see in `gale
-  generations`. A `current` above every generation on disk swept
-  the lot. Retention is now a count over the generations that
-  exist — the highest `keep` at or below `current` — so it can
-  only ever retain more than the old rule did, never less.
-  Everything above `current` is preserved exactly as before
-  (gh#189), and contiguous histories, the common case, prune
-  identically.
+- Editing a local recipe without bumping version no longer
+  installs the previous artifact (gh#265). `--recipe`,
+  `--recipes`, and `gale sync --recipes` now record the
+  resolved recipe's digest in `.gale-recipe.toml` and rebuild
+  when it changes, including a sibling `.binaries.toml`.
+  Registry installs are unchanged: a registry recipe at a
+  version still comes with a revision bump.
 
 - Three functions no longer collapse a failure into `""`, where
   the caller reads it as a valid answer (gh#254, following
@@ -269,18 +734,17 @@
   PATH is unchanged. Only `bin/` is arbitrated; `lib/`, `man/`
   and `share/` merge across packages as they always have.
 
-- gc and `gale doctor --repair` no longer activate a version the
-  scope's lockfile does not name (gh#197). Both rebuilt the
-  generation from the recipe and the store, which after a
-  revision bump — or a withdrawn one — is a second version
-  selector: gc relinked whatever revision the recipe now offers,
-  and repair, which resolves no recipe at all, took the highest
-  revision on disk. Global scope runs no activation gate, so the
-  substitution was invisible there. A scope with a usable v1
-  lockfile now takes its versions from that lock's roots, and a
-  scope whose lockfile is present and cannot be read is refused
-  rather than rebuilt on a guess — `--force` rebuilds it without
-  the lock. Unlocked scopes are unchanged.
+- gc no longer activates a version the scope's lockfile does
+  not name (gh#197). It rebuilt the generation from the recipe
+  and the store, which after a revision bump — or a withdrawn
+  one — is a second version selector: gc relinked whatever
+  revision the recipe now offers. Global scope runs no
+  activation gate, so the substitution was invisible there. A
+  scope with a usable v1 lockfile now takes its versions from
+  that lock's roots, and a scope whose lockfile is present and
+  cannot be read is refused rather than rebuilt on a guess —
+  `--force` rebuilds it without the lock. Unlocked scopes are
+  unchanged.
 
 - gc no longer deletes store versions belonging to a live but
   unreadable project (gh#188). Project liveness counts any

@@ -106,54 +106,21 @@ tools. Chezmoi ensures it reaches every machine.
 
 ## Different packages per machine
 
-When some tools belong on your laptop but not your
-server (or vice versa), use `[hosts.<name>]`
-sections. Gale auto-selects the section matching the
-current hostname.
+One `gale.toml` is one machine. Leftover
+`[hosts.*]` tables refuse. There is no `--host`
+flag. Track a second file for the second machine
+(chezmoi `external` or a copy), then `gale sync`
+on that machine.
 
-```toml
-[packages]
-  jq = "1.8.1"
-  ripgrep = "14.1.1"
-
-[hosts.my-mac.packages]
-  fzf = "0.50"
-  mas = "1.8.6"
-
-[hosts.my-server.packages]
-  htop = "3.0"
-  tmux = "3.5"
-```
-
-Same chezmoi-tracked file on every machine. `gale
-sync` on `my-mac` installs jq, ripgrep, fzf, mas.
-On `my-server`, jq, ripgrep, htop, tmux.
-
-If your system hostname doesn't match what you want
-to call the machine, set `GALE_HOST` in your shell:
-
-```sh
-export GALE_HOST=my-mac
-```
-
-Add packages to a host section with `--host`:
-
-```sh
-gale add fzf --host current
-```
-
-See [configuration](configuration.md) for the full
-reference.
+See [configuration](configuration.md) for leftover
+`[hosts.*]` cleanup.
 
 ## Replacing `gale remote`
 
 Earlier versions of gale shipped a `gale remote`
 command that scp'd your config to a remote host and
-ran `gale sync` over SSH. With chezmoi + per-host
-sections, this is unnecessary. Your config reaches
-the remote machine through normal dotfile
-synchronization, and the remote runs its own
-`gale sync`:
+ran `gale sync` over SSH. Chezmoi already places
+the file. The remote runs its own `gale sync`:
 
 ```sh
 ssh server gale sync

@@ -1,17 +1,17 @@
 # CLAUDE.md
 
 Gale is a macOS-first package manager for developer CLI
-tools. Written in Go. Goal: replace Homebrew, Nix, and
-home-manager with one tool that handles global packages
-and per-project environments. Design rationale:
-[`docs/dev/design.md`](docs/dev/design.md).
+tools. Written in Go. It fetches verified artifacts from
+the gale-recipes index, pins them in a v2 lock, and
+activates them through generation snapshots. Design
+rationale: [`docs/dev/design.md`](docs/dev/design.md).
 
 Two repos: **gale** (this one — the CLI) and
-**gale-recipes** (`../gale-recipes` — recipe TOML files,
-plus CI that builds them and pushes binaries to GHCR).
-`gale install jq` fetches the recipe from the registry,
-pulls a prebuilt binary from GHCR if one exists, and
-falls back to building from source.
+**gale-recipes** (`../gale-recipes` — index
+documents). `gale install jq` resolves
+the index, stages `pkg/fetch/`, writes the lock, and
+swaps `current` last. Not-in-index is an error. A v1
+lock migrates with `gale fetch-adopt`.
 
 `just` runs test + lint + fmt-check; `just --list` has
 the rest.
@@ -19,17 +19,19 @@ the rest.
 ## Vocabulary
 
 **Store** (`~/.gale/pkg/`): immutable package storage.
-One directory per package per version. Append-only.
+Fetch trees live under `pkg/fetch/<name>/<version>-<sha12>/`.
+Append-only.
 
 **Generation** (`~/.gale/gen/<N>/`): a snapshot of
 symlinks into the store. Rebuilt declaratively from
-gale.toml on every install/remove/sync, swapped
+the v2 lock on every install/remove/sync, swapped
 atomically with `os.Rename`. "gen" is short for
-generation.
+generation. KindAbsent still rebuilds from
+gale.toml (first install).
 
 **current** (`~/.gale/current`): symlink to the active
 gen. Users put `~/.gale/current/bin` on PATH, so one
-symlink swap updates bin, lib, and man together.
+symlink swap updates bin and man together.
 
 **Registry**: recipes fetched on demand from GitHub raw
 URLs, letter-bucketed (`recipes/j/jq.toml`). No clone.
@@ -38,9 +40,7 @@ URLs, letter-bucketed (`recipes/j/jq.toml`). No clone.
 default 1. Store identity is
 `<name>/<version>-<revision>/`; the user-facing form is
 bare when revision = 1, and a bare `@version` resolves
-to the highest revision known. A shared dylib farm at
-`~/.gale/lib/` lets binaries absorb SONAME-compatible
-dep upgrades without rebuilding.
+to the highest revision known.
 [`docs/revisions.md`](docs/revisions.md).
 
 ## Agent Sandbox
@@ -56,10 +56,9 @@ install one. Full reference:
   blocks until the in-flight run finishes.
   `just agent-status` shows what landed.
 - **`gale install`, `gale build` and `gale sync` cannot
-  work here.** The egress proxy blocks GHCR's blob host,
-  and the source-build fallback's upstream hosts are
-  blocked too — they burn minutes, then fail. A
-  PreToolUse hook blocks them. `gale lint` is
+  work here against the real index.** The egress proxy
+  blocks artifact hosts, and those commands fail slowly.
+  A PreToolUse hook blocks them. `gale lint` is
   offline-clean and unaffected.
 - **`just preflight` is the pre-push gate.** It runs
   every reproducible CI step, fails fast, and names the
@@ -90,7 +89,7 @@ what you create.
 ## Where to Look
 
 - Editing version identity, the finalize path,
-  generation/farm, or gc/sync staleness →
+  generation rebuild, or gc/sync staleness →
   [`docs/dev/change-discipline.md`](docs/dev/change-discipline.md)
   first. These are tier 2–3: trace the pipeline and grep
   callers before editing, don't patch from memory.
@@ -116,18 +115,15 @@ adding a command — it holds every shared CLI helper
 (config resolution, registry, resolver, generation
 rebuild, result reporting, install finalization).
 
-The usual shape is `newCmdContext` → `ctx.Resolver` →
-`ctx.Installer.Install`, with `resolveVersionedRecipe`
-for `@version` support and `finalizeInstall` for the
-config + generation write. A new build mode delegates to
-`build.BuildLocal` once it has a source directory.
+The usual shape is `newCmdContext` → fetch helpers in
+`cmd/gale`, with `finalizeFetch` for the lock +
+generation write. Source compile is gone.
 
-`newCmdContext` also registers the resolved project in
-`internal/projects/` so gc retains every project's
-active generation (gh#115). Call `registerProject`
-directly only when a command re-points its config path
-after context resolution (sync's `projectDir` override)
-or resolves scope without a context (`gale env`).
+`rebuildGenerationWith` registers the project in
+`internal/projects/` immediately before the generation
+rebuild so gc retains every project's active generation
+(gh#115). Registration failure aborts the swap. Read-only
+commands, including `gale env`, do not register.
 
 ## Conventions
 
@@ -153,19 +149,22 @@ or resolves scope without a context (`gale env`).
 
 ## Gotchas
 
-- Build PATH isolates individual tools via symlinks into
-  a temp dir, keeping nix vibeutils (ls, mv) from
-  leaking in and breaking autotools. See `buildPath()`
-  in `internal/build/build.go`.
+- `git = "system"` is a top-level note in
+  `gale.toml` (before `[packages]`): assume PATH,
+  do not fetch. Git is not a gale package.
 - Tar extraction handles PAX headers, hard links,
   symlinks, and validates paths against traversal.
   Shared `extractTar()` in `internal/download/`.
 - Autotools builds need a timestamp reset (`touchAll`)
   after extraction to avoid clock-skew errors.
-- `--recipes <dir>` requires a value (both spellings
-  work). `gale build` auto-detects a recipe sitting
-  inside a recipes repo and resolves deps locally
-  without the flag.
+- Live installer verbs (`install`, `sync`, `update`,
+  `remove`, `lock`) take `--index <dir>`, not
+  `--recipes`. The checkout must be a git repo;
+  `index.Open` reads `git show` of HEAD.
+- `--recipes <dir>` remains on leftover commands
+  (`outdated`, `migrate`) until those packages
+  die. `gale gc` has no `--recipes`. `gale lint`
+  accepts index documents only.
 - macOS `/var` is a symlink to `/private/var`. Tests
   comparing paths must `filepath.EvalSymlinks` both
   sides. `just check-darwin` cannot catch a violation —
@@ -177,7 +176,7 @@ or resolves scope without a context (`gale env`).
 - Prefer static linking for CLI tools to avoid dylib
   path issues — `--disable-shared --enable-all-static`
   for autotools projects like jq.
-- gale-recipes CI pushes binary sections after builds.
+- gale-recipes CI publishes index documents.
   Expect push rejections; `git pull --rebase` first.
 - gosec G306 flags `os.WriteFile` with 0644. Use
   `//nolint:gosec` for world-readable files.
@@ -203,14 +202,9 @@ Lessons paid for in past regressions.
   cases. Getting this wrong causes infinite
   reinstall/rebuild loops that stall direnv (013b4a4,
   688ce7d, af4c3f6).
-- `internal/build/build.go` and the darwin fixup path
-  are the most regression-prone code in the repo. Gate
-  patchelf on `DT_NEEDED` — running `--set-rpath` on a
-  static Go ELF corrupts it (75440bb). Skip `.dSYM` and
-  `.o` files. Always re-sign after any Mach-O mutation,
-  preserving entitlements.
 - Any change to sync, gc, or remove must be exercised
-  across all three scopes (global, project, `--host`).
+  across global and project scopes. Leftover
+  `[hosts.*]` and `--host` are not a scope.
   Cross-scope deletion bugs recur (ad4e685, 289d13b).
 - In tests, never let a random port, map order, or
   temp-dir name feed a cache key or expected output; it
@@ -218,7 +212,6 @@ Lessons paid for in past regressions.
 
 ## Principles
 
-- Everything from source. GHCR binaries are a cache, not
-  a substitute.
-- Prebuilt binaries only for compiler bootstraps.
-- Declarative over imperative (gale.toml → generation).
+- Fetch from the index. Source install is gone.
+- Declarative over imperative (gale.toml + v2 lock →
+  generation). `gale sync` does not write the lock.

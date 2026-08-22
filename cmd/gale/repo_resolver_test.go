@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,7 +20,7 @@ import (
 // composeResolvers can exercise its fallthrough.
 func stubResolver(t *testing.T, fixtures map[string]string) installer.RecipeResolver {
 	t.Helper()
-	return func(name string) (*recipe.Recipe, error) {
+	return func(_ context.Context, name string) (*recipe.Recipe, error) {
 		body, ok := fixtures[name]
 		if !ok {
 			return nil, fmt.Errorf("stub: %q not found", name)
@@ -45,13 +46,13 @@ func TestComposeResolversFirstHitWins(t *testing.T) {
 		"jq": jqRecipe("1.0.0"),
 	})
 	secondCalled := false
-	second := installer.RecipeResolver(func(name string) (*recipe.Recipe, error) {
+	second := installer.RecipeResolver(func(_ context.Context, name string) (*recipe.Recipe, error) {
 		secondCalled = true
 		return nil, fmt.Errorf("second should not be consulted")
 	})
 
 	r := composeResolvers(first, second)
-	got, err := r("jq")
+	got, err := r(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("composeResolvers: %v", err)
 	}
@@ -69,7 +70,7 @@ func TestComposeResolversFallsThroughOnMiss(t *testing.T) {
 		"jq": jqRecipe("2.0.0"),
 	})
 	r := composeResolvers(first, second)
-	got, err := r("jq")
+	got, err := r(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("composeResolvers: %v", err)
 	}
@@ -79,14 +80,14 @@ func TestComposeResolversFallsThroughOnMiss(t *testing.T) {
 }
 
 func TestComposeResolversReturnsLastErrorOnAllMisses(t *testing.T) {
-	first := installer.RecipeResolver(func(name string) (*recipe.Recipe, error) {
+	first := installer.RecipeResolver(func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return nil, errors.New("first error")
 	})
-	second := installer.RecipeResolver(func(name string) (*recipe.Recipe, error) {
+	second := installer.RecipeResolver(func(_ context.Context, name string) (*recipe.Recipe, error) {
 		return nil, errors.New("second error: registry HTTP 502")
 	})
 	r := composeResolvers(first, second)
-	_, err := r("jq")
+	_, err := r(context.Background(), "jq")
 	if err == nil {
 		t.Fatal("expected error from all-miss compose")
 	}
@@ -98,7 +99,7 @@ func TestComposeResolversReturnsLastErrorOnAllMisses(t *testing.T) {
 
 func TestComposeResolversEmptyReturnsError(t *testing.T) {
 	r := composeResolvers()
-	_, err := r("jq")
+	_, err := r(context.Background(), "jq")
 	if err == nil {
 		t.Fatal("expected error from empty compose")
 	}
@@ -151,7 +152,7 @@ func TestConfiguredRepoResolversNoReposEntry(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	galeDir := filepath.Join(home, ".gale")
-	writeAppConfig(t, galeDir, "[registry]\nurl = \"https://example.com\"\n")
+	writeAppConfig(t, galeDir, "[build]\ndebug = false\n")
 
 	resolvers, err := configuredRepoResolvers()
 	if err != nil {
@@ -180,7 +181,7 @@ func TestConfiguredRepoResolversFindsRecipeFromTap(t *testing.T) {
 	if len(resolvers) != 1 {
 		t.Fatalf("len(resolvers) = %d, want 1", len(resolvers))
 	}
-	got, err := resolvers[0]("jq")
+	got, err := resolvers[0](context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("tap resolver: %v", err)
 	}
@@ -215,7 +216,7 @@ func TestConfiguredRepoResolversSortedByPriority(t *testing.T) {
 	if len(resolvers) != 2 {
 		t.Fatalf("len(resolvers) = %d, want 2", len(resolvers))
 	}
-	got, err := resolvers[0]("jq")
+	got, err := resolvers[0](context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("first resolver: %v", err)
 	}
@@ -248,7 +249,7 @@ func TestConfiguredRepoResolversSkipsMissingCache(t *testing.T) {
 		t.Fatalf("len(resolvers) = %d, want 1 (ghost should be skipped)",
 			len(resolvers))
 	}
-	got, err := resolvers[0]("jq")
+	got, err := resolvers[0](context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("real resolver: %v", err)
 	}
@@ -292,7 +293,7 @@ func TestResolveRecipeResolverWithRecipesFlagSkipsTaps(t *testing.T) {
 	if reg != nil {
 		t.Error("registry should be nil when --recipes is set")
 	}
-	got, err := resolver("jq")
+	got, err := resolver(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("resolver: %v", err)
 	}
@@ -321,7 +322,7 @@ func TestResolveRecipeResolverPrefersTapOverRegistry(t *testing.T) {
 	if reg == nil {
 		t.Fatal("registry should still be available for versioned fetches")
 	}
-	got, err := resolver("jq")
+	got, err := resolver(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("resolver: %v", err)
 	}
@@ -366,7 +367,7 @@ func TestRefreshConfiguredTapsNoReposEntry(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	galeDir := filepath.Join(home, ".gale")
-	writeAppConfig(t, galeDir, "[registry]\nurl = \"https://example.com\"\n")
+	writeAppConfig(t, galeDir, "[build]\ndebug = false\n")
 
 	buf := &bytes.Buffer{}
 	out := output.New(buf, false)

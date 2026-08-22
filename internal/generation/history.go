@@ -169,46 +169,15 @@ func Rollback(galeDir, storeRoot string, target int) error {
 			return fmt.Errorf(
 				"refusing to activate generation %d: %w; run "+
 					"`gale sync` to rebuild from config, or "+
-					"`gale generations remove %d` to discard it",
-				target, err, target,
+					"`gale gc` after it falls below the two "+
+					"kept generations",
+				target, err,
 			)
 		}
-
-		// Farm guard before the swap, mirroring Build: the
-		// rolled-to closure is this scope's proposed claim, and
-		// a refusal must leave the current generation active
-		// and the farm untouched (design §4).
-		pkgs := genVersions(genDir, storeRoot)
-		active, err := guardedRebuildDirs(pkgs, galeDir, storeRoot)
-		if err != nil {
-			return err
-		}
-
-		// Build the SHARED farm's image from the rolled-to
-		// generation's package set so binaries resolve the
-		// dylib revisions they were built against, not the
-		// ones the rolled-from generation installed (gh#44),
-		// plus every other scope's claimed closure.
-		//
-		// The shared farm, not this scope's gale dir: pointing
-		// it at a project's own lib dir is why gh#44's repair
-		// only ever worked at global scope. A project rollback
-		// wiped a directory nothing resolves through and left
-		// the farm its binaries actually use untouched.
-		//
-		// Mirrors Build exactly, through the same pair: the
-		// fallible half before the swap, the publication after it
-		// (gh#184).
-		staged, err := stageFarm(active, storeRoot, target)
-		if err != nil {
-			return err
-		}
-		defer staged.Discard()
 
 		if err := swapCurrentSymlink(galeDir, target); err != nil {
 			return err
 		}
-
-		return publishFarm(staged, target)
+		return nil
 	})
 }

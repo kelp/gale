@@ -75,13 +75,13 @@ func TestRegisterDedupes(t *testing.T) {
 // motivating case.
 func TestRegisterCanonicalizesSymlinks(t *testing.T) {
 	galeHome := filepath.Join(t.TempDir(), ".gale")
-	real := t.TempDir()
+	realDir := t.TempDir()
 	link := filepath.Join(t.TempDir(), "link")
-	if err := os.Symlink(real, link); err != nil {
+	if err := os.Symlink(realDir, link); err != nil {
 		t.Fatal(err)
 	}
 
-	if err := Register(galeHome, real); err != nil {
+	if err := Register(galeHome, realDir); err != nil {
 		t.Fatal(err)
 	}
 	if err := Register(galeHome, link); err != nil {
@@ -147,11 +147,10 @@ func TestPruneRemovesVanishedProjects(t *testing.T) {
 	}
 }
 
-// TestPruneKeepsToolVersionsProjects verifies that a project
-// managed via .tool-versions (no gale.toml) is still treated
-// as live — gale's config loading falls back to
-// .tool-versions, so its generation deserves retention too.
-func TestPruneKeepsToolVersionsProjects(t *testing.T) {
+// TestPruneDropsToolVersionsOnlyProjects verifies that a
+// registered path with only .tool-versions (no gale.toml) is
+// vanished and pruneable.
+func TestPruneDropsToolVersionsOnlyProjects(t *testing.T) {
 	galeHome := filepath.Join(t.TempDir(), ".gale")
 	proj := t.TempDir()
 	if err := os.WriteFile(
@@ -172,8 +171,8 @@ func TestPruneKeepsToolVersionsProjects(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
-	if len(got) != 1 {
-		t.Errorf(".tool-versions project must survive prune, "+
+	if len(got) != 0 {
+		t.Errorf(".tool-versions-only path must be pruned, "+
 			"got %v", got)
 	}
 }
@@ -343,10 +342,9 @@ func TestRegisterPruneConcurrent(t *testing.T) {
 
 // TestRegisterAlreadyRegisteredSkipsLock: Register of an
 // already-listed project must return without touching
-// projects.lock. Register runs on command hot paths (gale env
-// via direnv, sync, newCmdContext) and must not block behind a
-// long-held lock — e.g. a Prune stat'ing a project on a dead
-// network mount.
+// projects.lock. Register runs on the publication path and
+// must not block behind a long-held lock — e.g. a Prune
+// stat'ing a project on a dead network mount.
 func TestRegisterAlreadyRegisteredSkipsLock(t *testing.T) {
 	galeHome := filepath.Join(t.TempDir(), ".gale")
 	proj := t.TempDir()
@@ -376,9 +374,8 @@ func TestRegisterAlreadyRegisteredSkipsLock(t *testing.T) {
 
 // TestRegisterAlreadyRegisteredReadOnlyGaleHome: the
 // already-registered case must succeed silently on a read-only
-// gale home (best-effort contract: a read-only gale home must
-// never block install or sync, and gale env runs Register on
-// every direnv activation).
+// gale home: the already-registered fast path must not
+// take the lock or try to create files.
 func TestRegisterAlreadyRegisteredReadOnlyGaleHome(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores file permissions")

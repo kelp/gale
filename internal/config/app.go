@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"strconv"
 
 	"github.com/BurntSushi/toml"
 
@@ -20,39 +19,15 @@ type Repo struct {
 }
 
 // AppConfig represents ~/.gale/config.toml (app-level settings).
+//
+// Frozen: these three tables are the key set. Add no keys.
+// [registry] url and [sync] parallelism are ignored leftovers;
+// they must not repoint resolution or change install order.
+// Retention is the compiled DefaultGenerationKeep.
 type AppConfig struct {
-	Repos      []Repo           `toml:"repos"`
-	Build      BuildConfig      `toml:"build"`
-	Anthropic  AIConfig         `toml:"anthropic"`
-	Registry   RegistryConfig   `toml:"registry"`
-	Generation GenerationConfig `toml:"generation"`
-	Sync       SyncConfig       `toml:"sync"`
-}
-
-// SyncConfig controls sync/download behavior. Parallelism is the
-// number of concurrent downloads; default DefaultParallelism when
-// unset or non-positive.
-type SyncConfig struct {
-	Parallelism int `toml:"parallelism,omitempty"`
-}
-
-// DefaultParallelism is the fallback download parallelism when
-// nothing is configured via GALE_JOBS or [sync] parallelism.
-const DefaultParallelism = 8
-
-// ResolveParallelism returns the effective download parallelism.
-// Precedence: GALE_JOBS env var, then [sync] parallelism, then
-// DefaultParallelism. The result is always >= 1.
-func ResolveParallelism(cfg *AppConfig) int {
-	if env := os.Getenv("GALE_JOBS"); env != "" {
-		if n, err := strconv.Atoi(env); err == nil && n >= 1 {
-			return n
-		}
-	}
-	if cfg != nil && cfg.Sync.Parallelism >= 1 {
-		return cfg.Sync.Parallelism
-	}
-	return DefaultParallelism
+	Repos     []Repo      `toml:"repos"`
+	Build     BuildConfig `toml:"build"`
+	Anthropic AIConfig    `toml:"anthropic"`
 }
 
 // BuildConfig holds build-related settings.
@@ -60,42 +35,15 @@ type BuildConfig struct {
 	Debug bool `toml:"debug,omitempty"`
 }
 
-// GenerationConfig holds gen-retention settings. Keep is the
-// number of recent generations (including the current one)
-// preserved after each rebuild's auto-gc pass. Default 10 when
-// unset or non-positive; set to a negative value to disable
-// auto-gc entirely.
-type GenerationConfig struct {
-	Keep int `toml:"keep,omitempty"`
-}
-
-// DefaultGenerationKeep is the number of generations preserved
-// when config.toml has no [generation] section. Sized to cover
-// a typical week of installs while keeping inode usage bounded:
-// at ~28K inodes per gen, 10 gens ≈ 280K inodes total, two
-// orders of magnitude under typical ext4 default budgets.
-const DefaultGenerationKeep = 10
-
-// EffectiveGenerationKeep returns the configured Keep value
-// when positive, otherwise DefaultGenerationKeep. A negative
-// value (the "disabled" sentinel) is returned as-is so the
-// caller can short-circuit auto-gc.
-func (g GenerationConfig) EffectiveGenerationKeep() int {
-	if g.Keep == 0 {
-		return DefaultGenerationKeep
-	}
-	return g.Keep
-}
+// DefaultGenerationKeep is the compiled retention: current
+// plus one previous generation. config.toml cannot change
+// or disable it.
+const DefaultGenerationKeep = 2
 
 // AIConfig holds Anthropic API settings.
 type AIConfig struct {
 	APIKey     string `toml:"api_key"`
 	PromptFile string `toml:"prompt_file"`
-}
-
-// RegistryConfig holds registry settings.
-type RegistryConfig struct {
-	URL string `toml:"url"`
 }
 
 // ParseAppConfig parses a config.toml string.

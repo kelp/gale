@@ -1,8 +1,9 @@
 # `gale info <pkg>` prints recipe metadata for an
 # installed package.
 
-gale-fixture recipes $WORK/recipes
-exec gale install hello -g --recipes=$WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
+exec gale install hello -g --index=$WORK/index
 
 exec gale info hello
 stdout 'hello'

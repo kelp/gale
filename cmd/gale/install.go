@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -10,10 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 
-	"github.com/kelp/gale/internal/build"
 	"github.com/kelp/gale/internal/generation"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/output"
@@ -24,142 +23,37 @@ import (
 var (
 	installGlobal  bool
 	installProject bool
+	installIndex   string
+	// Kept for tests that still assign the removed CLI flags.
 	installRecipes string
 	installRecipe  string
 	installPath    string
 	installGit     bool
 	installBuild   bool
-	installHost    string
 )
 
 var installCmd = &cobra.Command{
 	Use:   "install <package>[@version]",
-	Short: "Install a package",
+	Short: "Install a package from the index",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if err := validateScopeFlags(installGlobal, installProject); err != nil {
 			return err
 		}
-
 		name, version, err := parsePackageArg(args[0])
 		if err != nil {
 			return err
 		}
-		out := newCmdOutput(cmd)
-
-		// --recipe (singular) names a specific file; an @version
-		// pin would be silently ignored if we let it through.
-		// --recipes (plural) is a local registry directory — it
-		// MUST accept @version (resolved by ResolveVersionedRecipe
-		// against the local recipes below). See finding F-5.3.
-		if installRecipe != "" && version != "" {
-			return fmt.Errorf("cannot specify @version with --recipe; " +
-				"the file already pins the version — omit @version, " +
-				"or use --recipes (plural) for a recipes directory")
-		}
-
-		// Resolve scope and paths via cmdContext.
-		ctx, err := newCmdContext(installRecipes, installGlobal, installProject)
+		c, err := newCmdContext("", installGlobal, installProject)
 		if err != nil {
 			return err
 		}
-		ctx.Host, err = resolveHostFlag(installHost)
-		if err != nil {
-			return err
+		c.IndexDir = installIndex
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
 		}
-		// A typo'd --host would silently create a new
-		// [hosts.<typo>] section at finalize; make that
-		// visible up front (gh#108).
-		noticeNewHostSection(out, ctx.GalePath, ctx.Host)
-
-		// If --path flag is provided, build from local source.
-		if installPath != "" {
-			if dryRun {
-				out.Info(fmt.Sprintf(
-					"install %s (from source)", name,
-				))
-				return nil
-			}
-			return installFromLocalSource(ctx, name, installRecipe,
-				installPath, out)
-		}
-
-		// If --git flag is provided, clone and build from git.
-		if installGit {
-			if dryRun {
-				out.Info(fmt.Sprintf(
-					"install %s (from git)", name,
-				))
-				return nil
-			}
-			return installFromGit(ctx, name, installRecipe, out)
-		}
-
-		// If --recipe flag is provided, install from recipe file.
-		if installRecipe != "" {
-			if dryRun {
-				out.Info(fmt.Sprintf(
-					"install %s (from recipe)", name,
-				))
-				return nil
-			}
-			return installFromRecipeFile(ctx, installRecipe, out)
-		}
-
-		out.Info(fmt.Sprintf("Fetching recipe for %s...", name))
-
-		var r *recipe.Recipe
-		switch {
-		case version != "" && version != "latest":
-			// Specific version requested — resolve through the
-			// same chain as every other version-aware command
-			// (gh#70): configured taps first, then the versioned
-			// registry index. In --recipes mode the registry is
-			// nil and the version resolves against the local
-			// recipes directory. ResolveVersionedRecipe compares
-			// against both bare Version and Full() so explicit
-			// revisions like "1.0-1" work too.
-			r, err = ctx.ResolveVersionedRecipe(name, version)
-			if err != nil {
-				return fmt.Errorf("fetching %s@%s: %w",
-					name, version, err)
-			}
-		default:
-			r, err = ctx.Resolver(name)
-			if err != nil {
-				return fmt.Errorf("fetching recipe: %w", err)
-			}
-		}
-
-		if dryRun {
-			out.Info(fmt.Sprintf("install %s@%s",
-				r.Package.Name, r.Package.Version))
-			return nil
-		}
-
-		if installBuild {
-			ctx.Installer.SourceOnly = true
-		}
-
-		out.Info(fmt.Sprintf("Installing %s@%s...",
-			r.Package.Name, r.Package.Version))
-
-		result, err := ctx.Installer.InstallWithFinalize(r, false,
-			func(_ *installer.InstallResult) error {
-				return ctx.FinalizeRecipeInstall(r)
-			})
-		if err != nil {
-			if errors.Is(err, build.ErrUnsupportedPlatform) {
-				out.Warn(fmt.Sprintf("%s does not support %s/%s",
-					r.Package.Name, runtime.GOOS, runtime.GOARCH))
-				return fmt.Errorf("install failed: %w", err)
-			}
-			return fmt.Errorf("install failed: %w", err)
-		}
-
-		reportResult(out, result, "Installed", "built from source")
-
-		return nil
+		return runInstallFetch(ctx, c, name, version, indexSource(installIndex))
 	},
 }
 
@@ -168,19 +62,8 @@ func init() {
 		false, "Install to global config")
 	installCmd.Flags().BoolVarP(&installProject, "project", "p",
 		false, "Install to project config")
-	installCmd.Flags().StringVar(&installRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry")
-	installCmd.Flags().StringVar(&installRecipe, "recipe", "",
-		"Install from a recipe TOML file")
-	installCmd.Flags().StringVar(&installPath, "path", "",
-		"Build from a local source directory")
-	installCmd.Flags().BoolVar(&installGit, "git", false,
-		"Clone and build from git repository")
-	installCmd.Flags().BoolVar(&installBuild, "build", false,
-		"Build from source (skip prebuilt binary)")
-	installCmd.Flags().StringVar(&installHost, "host", "",
-		"Write under [hosts.<host>.packages] "+
-			"(use 'current' for this machine)")
+	installCmd.Flags().StringVar(&installIndex, "index", "",
+		"Resolve against a local index checkout")
 	rootCmd.AddCommand(installCmd)
 }
 
@@ -201,59 +84,6 @@ func resolveScope(global, project bool, cwd string) bool {
 		return true // no project config → global
 	}
 	return false // project config found → project scope
-}
-
-func installFromGit(ctx *cmdContext, name, recipePath string, out *output.Output) error {
-	// Shallow-copy ctx.Installer so the Downloads limiter is
-	// inherited, then override Resolver when --recipe is set.
-	inst := *ctx.Installer
-	if recipePath != "" {
-		resolver, err := resolverForRecipe(recipePath)
-		if err != nil {
-			return err
-		}
-		inst.Resolver = resolver
-	}
-
-	// Resolve recipe.
-	var r *recipe.Recipe
-	if recipePath != "" {
-		parsed, err := loadRecipeFile(recipePath, true)
-		if err != nil {
-			return err
-		}
-		r = parsed
-	} else {
-		fetched, err := inst.Resolver(name)
-		if err != nil {
-			return fmt.Errorf("fetching recipe: %w", err)
-		}
-		r = fetched
-	}
-
-	if r.Source.Repo == "" {
-		return fmt.Errorf(
-			"recipe for %s has no source.repo — cannot build from git", name,
-		)
-	}
-
-	out.Info(fmt.Sprintf("Installing %s from git (%s)...",
-		r.Package.Name, r.Source.Repo))
-
-	result, err := (&inst).InstallGitWithFinalize(r, func(res *installer.InstallResult) error {
-		// Git installs produce a dev version derived from the
-		// repo state; sync it onto the recipe so Full() emits
-		// the matching <version>-<revision> string.
-		r.Package.Version = res.Version
-		return ctx.FinalizeRecipeInstall(r)
-	})
-	if err != nil {
-		return fmt.Errorf("install failed: %w", err)
-	}
-
-	reportResult(out, result, "Installed", "built from git")
-
-	return nil
 }
 
 func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string, out *output.Output) error {
@@ -281,8 +111,8 @@ func installFromLocalSource(ctx *cmdContext, name, recipePath, sourceDir string,
 	}
 	r.Package.Version = version
 
-	// Shallow-copy ctx.Installer to inherit the Downloads
-	// limiter, then override Resolver for local recipe resolution.
+	// Shallow-copy ctx.Installer, then override Resolver for
+	// local recipe resolution.
 	inst := *ctx.Installer
 	resolver, err := resolverForRecipe(resolvedRecipe)
 	if err != nil {
@@ -622,8 +452,8 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 		return err
 	}
 
-	// Shallow-copy ctx.Installer to inherit the Downloads
-	// limiter, then override Resolver for local recipe resolution.
+	// Shallow-copy ctx.Installer, then override Resolver for
+	// local recipe resolution.
 	inst := *ctx.Installer
 	resolver, err := resolverForRecipe(recipePath)
 	if err != nil {
@@ -639,7 +469,7 @@ func installFromRecipeFile(ctx *cmdContext, recipePath string, out *output.Outpu
 	// just-installed package before it lands in gale.toml
 	// (gh#69 — the --recipe path missed the race-0004 fix the
 	// registry, --path, and --git paths already received).
-	result, err := (&inst).InstallWithFinalize(r, false,
+	result, err := (&inst).InstallWithFinalize(context.Background(), r, false,
 		func(_ *installer.InstallResult) error {
 			return ctx.FinalizeRecipeInstall(r)
 		})

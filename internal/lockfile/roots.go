@@ -287,56 +287,17 @@ func staleRemedy(newRefs, staleRefs []originRef) string {
 // unknown origin makes the whole group general: naming some targets
 // and silently omitting others would read as a complete list.
 func lockPhrase(refs []originRef) string {
-	keys := make([]string, 0, len(refs))
+	leftover := false
 	for _, r := range refs {
-		if !r.known {
-			return "'gale lock' (or 'gale lock --host <selector>' when " +
-				"the package belongs to a host section)"
+		if !r.known || r.key != "" {
+			leftover = true
+			break
 		}
-		keys = append(keys, r.key)
 	}
-	return lockCommands(uniqueTargets(keys))
-}
-
-// lockCommands renders one `gale lock` invocation per owning target.
-// All of them, since running one leaves the sync failing on the
-// targets it did not rewrite.
-func lockCommands(targets []string) string {
-	cmds := make([]string, 0, len(targets))
-	for _, t := range targets {
-		if t == "" {
-			cmds = append(cmds, "'gale lock'")
-			continue
-		}
-		cmds = append(cmds, fmt.Sprintf("'gale lock --host %s'", quoteSelector(t)))
+	if leftover {
+		return "'gale lock' after moving leftover [hosts.*] pins into [packages]"
 	}
-	return strings.Join(cmds, " and ")
-}
-
-// quoteSelector wraps a host key so the printed command survives a
-// shell. Double quotes, not single: the message already wraps whole
-// commands in single quotes, and nesting one inside the other renders
-// 'gale lock --host 'work-*” — which is not a command anyone can
-// paste. A selector holds no shell expansions of its own, so double
-// quotes suppress the glob just as well.
-func quoteSelector(sel string) string {
-	return `"` + sel + `"`
-}
-
-// uniqueTargets sorts and dedupes so the message does not vary with
-// map iteration order.
-func uniqueTargets(targets []string) []string {
-	seen := make(map[string]bool, len(targets))
-	out := make([]string, 0, len(targets))
-	for _, t := range targets {
-		if seen[t] {
-			continue
-		}
-		seen[t] = true
-		out = append(out, t)
-	}
-	sort.Strings(out)
-	return out
+	return "'gale lock'"
 }
 
 // manifest, sorted so the message does not vary with map order.

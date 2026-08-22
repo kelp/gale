@@ -138,11 +138,10 @@ func TestSyncIfNeededNestedSubdirectory(t *testing.T) {
 	}
 }
 
-func TestResolveProjectRootToolVersionsNestedSubdir(t *testing.T) {
-	// When --project points to a nested subdirectory of a
-	// project that uses .tool-versions (no gale.toml), the
-	// resolved root must be the directory containing
-	// .tool-versions, not the raw nested path.
+func TestResolveProjectRootIgnoresToolVersionsNestedSubdir(t *testing.T) {
+	// A nested subdirectory under a .tool-versions-only
+	// tree is not a gale project root. Keep the raw path,
+	// same as no config.
 	projDir := t.TempDir()
 	tvPath := filepath.Join(projDir, ".tool-versions")
 	if err := os.WriteFile(tvPath,
@@ -156,9 +155,9 @@ func TestResolveProjectRootToolVersionsNestedSubdir(t *testing.T) {
 	}
 
 	got := resolveProjectRoot(nestedDir)
-	if got != projDir {
+	if got != nestedDir {
 		t.Errorf("resolveProjectRoot(%q) = %q, want %q",
-			nestedDir, got, projDir)
+			nestedDir, got, nestedDir)
 	}
 }
 
@@ -187,8 +186,7 @@ func TestResolveProjectRootGaleTomlNestedSubdir(t *testing.T) {
 
 func TestResolveProjectRootNoConfigKeepsRawPath(t *testing.T) {
 	// When --project points to a directory with no gale.toml
-	// and no .tool-versions anywhere up the tree, keep the
-	// raw path as-is.
+	// anywhere up the tree, keep the raw path as-is.
 	dir := t.TempDir()
 	got := resolveProjectRoot(dir)
 	if got != dir {

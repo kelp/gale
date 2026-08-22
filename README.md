@@ -6,14 +6,11 @@ activate automatically.
 
 ## Why
 
-Homebrew is easy to start with and hard to maintain.
-Dependencies pile up invisibly, there is no manifest
-to version-control, and a clean reinstall means
-starting over. Nix solves all of this — declarative
-config, rollback, per-project isolation — but demands
-you learn a language and debug cryptic build failures.
-Gale is as easy to use as Homebrew and as predictable
-as Nix, without the baggage of either.
+Gale pins CLI tools in `gale.toml`, locks their
+artifacts, and activates them through an atomic
+generation swap. Install fetches a verified tree
+from the index. Sync rebuilds PATH from that lock
+and does not rewrite it.
 
 ## Install
 
@@ -41,8 +38,8 @@ Install a tool:
 gale install jq
 ```
 
-Gale fetches a prebuilt binary, verifies its SHA256,
-and symlinks it into your PATH.
+Gale resolves the index, fetches the artifact, verifies
+its tree digest, and swaps it onto PATH.
 
 Set up a project manifest:
 
@@ -98,36 +95,16 @@ Global and project packages can coexist at different
 versions. Go 1.24 globally, Go 1.26.1 in the project
 — direnv handles the switch.
 
-Teams migrating from asdf or mise can keep their
-`.tool-versions` file. Gale reads it as a fallback
-when no `gale.toml` exists.
-
 ## Multiple Machines
 
-One `gale.toml` can describe more than one machine.
-Top-level `[packages]` applies everywhere; per-host
-sections add or override entries on a specific
-machine:
-
-```toml
-[packages]
-  jq = "1.8.1"
-  ripgrep = "14.1.1"
-
-[hosts.my-mac.packages]
-  fzf = "0.50"
-
-[hosts.my-server.packages]
-  htop = "3.0"
-```
-
-Gale picks the section that matches `hostname` (or
-`GALE_HOST` if set). Sync the same file across
-machines with chezmoi or git — each machine runs
-`gale sync` and gets its own toolset.
+One `gale.toml` is one machine. Leftover
+`[hosts.*]` tables refuse. There is no `--host`
+flag. A second machine uses a second file —
+chezmoi, git, or a copy — then `gale sync` on
+that machine.
 
 ```sh
-gale add fzf --host current   # write to this host's section
+gale sync                     # activate this file's [packages]
 ssh server gale sync          # remote install — no special command needed
 ```
 
@@ -145,79 +122,53 @@ gale update [pkg...]      Update to latest
 gale list                 List packages in manifest
 gale info <pkg>           Show package metadata
 gale outdated             Show available updates
-gale search <query>       Search by name or description
 gale which <binary>       Find which package owns it
-gale doctor               Diagnose setup issues
+gale doctor               Check PATH, lock, generation, digests
 gale gc                   Clean unused versions + gens
-gale generations          List and manage generations
+gale generations          List generations or roll back one step
 gale init                 Set up a project
 gale env                  Print PATH and vars for shell
 gale shell                Open shell with project env
 gale run <cmd>            Run command in project env
-gale pin <pkg>            Pin version, skip on update
-gale unpin <pkg>          Unpin a package
-gale build <recipe>       Build from source
-gale lint <recipe>        Validate a recipe
-gale create-recipe <repo> Generate recipe with AI
-gale audit <pkg>          Rebuild and compare hashes
-gale verify <pkg>         Check binary attestation
-gale sbom [pkg]           Software bill of materials
+gale lint <file>          Validate an index file
+gale admit                Record an index artifact from an archive
+gale verify [pkg]         Check store tree digests against the lock
 gale completion <shell>   Generate shell completions
 ```
 
 See `man gale` for the full reference.
 
-## Recipes
+## Index
 
-Recipes are TOML files in
-[gale-recipes](https://github.com/kelp/gale-recipes).
-The repository has over 180 recipes today, covering
-tools like jq, ripgrep, git, terraform, kubectl, and
-Go. Each recipe defines how to build a package from
-source.
-Prebuilt binaries cached in GHCR are an optimization
-— every recipe can build from source if needed.
+The catalog lives in
+[gale-recipes](https://github.com/kelp/gale-recipes)
+under `index/`. Each document names versions, artifact
+URLs, `sha256`, and `tree_digest`. `gale install` and
+`gale update` resolve against that index.
+`--index <dir>` points at a local checkout (a git
+repo; uncommitted edits are invisible).
 
-`gale create-recipe owner/repo` generates a recipe
-from a GitHub repository using the Anthropic API.
-It detects the build system, computes the SHA256,
-and produces a valid recipe. Requires an API key
-in `~/.gale/config.toml`.
+A package that is not in the index is an error. v1
+locks migrate with `gale fetch-adopt`.
 
 ```toml
 [package]
-name = "mytool"
-version = "1.0.0"
-description = "Does the thing"
-license = "MIT"
-homepage = "https://github.com/owner/mytool"
+name = "just"
+latest = "1.58.0"
 
-[source]
-repo = "owner/mytool"
-url = "https://github.com/owner/mytool/archive/refs/tags/v1.0.0.tar.gz"
+[versions."1.58.0".artifacts."darwin/arm64"]
+url = "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-aarch64-apple-darwin.tar.gz"
+format = "tar.gz"
 sha256 = "..."
-
-[dependencies]
-build = ["go"]
-
-[build]
-steps = [
-  "mkdir -p ${PREFIX}/bin",
-  "go build -o ${PREFIX}/bin/mytool .",
-]
+tree_digest = "sha256:..."
+hash_source = "upstream-sha256sums"
 ```
 
 ## Optional Dependencies
 
-None. Sigstore attestation verification (binary
-installs, `gale verify`, `gale audit`) runs
-in-process — no `gh` CLI or other external tool
-required.
-
-**[Anthropic API key](https://console.anthropic.com/)** —
-used by `gale create-recipe` for AI-powered recipe
-generation. Configure in `~/.gale/config.toml` under
-`[anthropic]`. Not needed for any other functionality.
+None. Sigstore attestation verification and
+`gale verify` run in-process — no `gh` CLI or
+other external tool required.
 
 ## Development
 
@@ -228,7 +179,8 @@ git clone https://github.com/kelp/gale
 git clone https://github.com/kelp/gale-recipes
 cd gale
 just bootstrap
-gale sync --recipes ../gale-recipes
+gale lock --index ../gale-recipes
+gale sync
 direnv allow
 ```
 

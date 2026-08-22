@@ -2,7 +2,6 @@ package recipe
 
 import (
 	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -13,117 +12,16 @@ import (
 type Recipe struct {
 	Package      Package
 	Source       Source
-	Build        Build             `toml:"-"`
-	Binary       map[string]Binary `toml:"binary"`
+	Build        Build `toml:"-"`
 	Dependencies Dependencies
-}
 
-// Binary holds a prebuilt archive location for a platform.
-//
-// Trust declares the expected verification policy for this
-// prebuilt. Valid values:
-//
-//   - "sigstore" (default when empty) — the binary must be
-//     served from ghcr.io and carry a Sigstore attestation
-//     tied to our CI identity. This is the fail-safe default:
-//     forgetting the field enforces attestation, not bypasses
-//     it.
-//   - "sha256-only" — the binary is served from an upstream
-//     host that doesn't publish attestations keyed to our
-//     signing identity (e.g. language-toolchain bootstraps).
-//     Only the SHA256 is verified. Recipes must opt in
-//     explicitly.
-type Binary struct {
-	URL            string `toml:"url"`
-	SHA256         string `toml:"sha256"`
-	Trust          string `toml:"trust"`
-	ManifestDigest string `toml:"manifest_digest,omitempty"`
-}
-
-// TrustSigstore requires a Sigstore attestation (default
-// policy for binaries without an explicit trust field).
-const TrustSigstore = "sigstore"
-
-// TrustSHA256Only accepts a SHA256-only verified binary
-// from a non-GHCR host. Explicit opt-in per [binary.<platform>].
-const TrustSHA256Only = "sha256-only"
-
-// EffectiveTrust returns the declared trust value, defaulting
-// to TrustSigstore when the field is empty.
-func (b Binary) EffectiveTrust() string {
-	if b.Trust == "" {
-		return TrustSigstore
-	}
-	return b.Trust
-}
-
-// CheckTrustPolicy enforces the declared verification policy for a
-// [binary.<platform>] entry.
-//
-// Decision table, indexed by the effective trust (empty defaults to
-// sigstore):
-//
-//   - sigstore + GHCR URL: accept. Attestation is verified later when
-//     the Verifier is available.
-//   - sigstore + non-GHCR URL: reject. We cannot produce a Sigstore
-//     attestation for a third-party host that isn't signing under our
-//     CI identity. Silently skipping attestation here was the C3
-//     bypass.
-//   - sha256-only: accept regardless of host. The recipe has
-//     explicitly opted out of attestation; only the SHA256 is
-//     verified downstream.
-//
-// It lives on the type that carries the policy so both consumers ask
-// one question: the installer before fetching, and plan construction
-// before committing to a locked binary that cannot fall back to
-// source.
-//
-// The returned error text names the field (trust) and the policy
-// value (sigstore) so the installer's fallback log surfaces an
-// actionable message.
-func (b Binary) CheckTrustPolicy() error {
-	switch b.EffectiveTrust() {
-	case TrustSHA256Only:
-		return nil
-	case TrustSigstore:
-		if !IsGHCR(b.URL) {
-			return fmt.Errorf(
-				"binary trust policy: %q requires a ghcr.io URL "+
-					"(got %q); set trust = %q to opt out",
-				TrustSigstore, b.URL, TrustSHA256Only,
-			)
-		}
-		return nil
-	default:
-		return fmt.Errorf(
-			"binary trust policy: unknown trust value %q", b.Trust,
-		)
-	}
-}
-
-// IsGHCR reports whether the URL host is ghcr.io. Only ghcr.io
-// receives bearer tokens — never send credentials to arbitrary hosts
-// based on path patterns alone.
-func IsGHCR(rawURL string) bool {
-	u, err := url.Parse(rawURL)
-	if err != nil {
-		return false
-	}
-	return u.Host == "ghcr.io"
-}
-
-// BinaryForPlatform returns the binary for the given OS and
-// architecture, or nil if none exists. Keys are "GOOS-GOARCH".
-func (r *Recipe) BinaryForPlatform(goos, goarch string) *Binary {
-	if r.Binary == nil {
-		return nil
-	}
-	key := goos + "-" + goarch
-	b, ok := r.Binary[key]
-	if !ok {
-		return nil
-	}
-	return &b
+	// Digest is SHA-256 of the TOML bytes this recipe was
+	// parsed from. Empty when the recipe was not loaded from
+	// a file (registry cache, in-memory tests).
+	Digest string `toml:"-"`
+	// FromWorkingTree is true when the recipe was loaded from
+	// a local file (--recipe / --recipes), not the registry.
+	FromWorkingTree bool `toml:"-"`
 }
 
 // Package holds the package metadata.
@@ -242,7 +140,6 @@ type rawRecipe struct {
 	Package      Package
 	Source       Source
 	Build        map[string]interface{} `toml:"build"`
-	Binary       map[string]Binary      `toml:"binary"`
 	Dependencies map[string]interface{} `toml:"dependencies"`
 }
 
@@ -262,24 +159,19 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 		return nil, fmt.Errorf("invalid TOML: %w", err)
 	}
 	if undecoded := md.Undecoded(); len(undecoded) > 0 {
-		// M1: catch typos in [package], [source], and
-		// [binary.<platform>] — those are strict-schema
-		// tables. Everything else (build/dependencies
+		// Catch typos in [package] and [source] — those are
+		// strict-schema tables. Leftover [binary] TOML is
+		// ignored. Everything else (build/dependencies
 		// sub-tables decoded into interface{} maps; recipe-repo
 		// extensions like [smoke]) legitimately ends up
 		// undecoded and must not fail parsing.
-		//
-		// [binary.<platform>] enforcement is load-bearing for
-		// the trust policy: an unnoticed typo on the `trust`
-		// field would silently fall back to the default
-		// (sigstore), masking the author's intent.
 		var bad []string
 		for _, key := range undecoded {
 			if len(key) < 2 {
 				continue
 			}
 			head := key[0]
-			if head == "package" || head == "source" || head == "binary" {
+			if head == "package" || head == "source" {
 				bad = append(bad, key.String())
 			}
 		}
@@ -299,7 +191,6 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 	r := &Recipe{
 		Package:      raw.Package,
 		Source:       raw.Source,
-		Binary:       raw.Binary,
 		Dependencies: deps,
 	}
 
@@ -327,20 +218,6 @@ func parse(data string, requireSource bool) (*Recipe, error) {
 		}
 		if r.Source.SHA256 == "" {
 			return nil, fmt.Errorf("missing required field: source.sha256")
-		}
-	}
-	for platform, bin := range r.Binary {
-		switch bin.Trust {
-		case "":
-			bin.Trust = TrustSigstore
-			r.Binary[platform] = bin
-		case TrustSigstore, TrustSHA256Only:
-			// ok
-		default:
-			return nil, fmt.Errorf(
-				"binary.%s: invalid trust value %q (want %q or %q)",
-				platform, bin.Trust, TrustSigstore, TrustSHA256Only,
-			)
 		}
 	}
 	return r, nil

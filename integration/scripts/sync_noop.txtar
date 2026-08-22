@@ -1,20 +1,17 @@
-# After install, `gale sync` is a no-op. This pins the
-# regression fixed in ca16643 where staleness detection
-# re-triggered install forever.
+# After install, `gale sync` does not rewrite the lock
+# and the binary stays usable.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-exec gale install hello -g --recipes=$WORK/recipes
-stderr 'Installed hello@1\.0 from binary'
+exec gale install hello -g --index=$WORK/index
+cp $HOME/.gale/gale.lock $WORK/before.lock
 
-# First sync: package is already satisfied.
-exec gale sync -g --recipes=$WORK/recipes
-! stderr 'Installed hello@1\.0 from binary'
+exec gale sync -g
+cmp $HOME/.gale/gale.lock $WORK/before.lock
 
-# Second sync also no-op — sentinel against re-detection loops.
-exec gale sync -g --recipes=$WORK/recipes
-! stderr 'Installed hello@1\.0 from binary'
+exec gale sync -g
+cmp $HOME/.gale/gale.lock $WORK/before.lock
 
-# Binary is still usable
 exec $HOME/.gale/current/bin/hello
 stdout 'hello from gale integration fixture'

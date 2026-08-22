@@ -8,12 +8,11 @@ import (
 	"archive/tar"
 	"bytes"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -25,7 +24,6 @@ import (
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/provenance"
-	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/store"
 )
 
@@ -151,16 +149,14 @@ func TestInstallHostCurrentWritesConcreteTarget(t *testing.T) {
 	recipePath := writeTestRecipe(t, tmp)
 	ctx := installCtx(t, tmp, "[packages]\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
-	host, err := resolveHostFlag("current")
-	if err != nil {
-		t.Fatalf("resolveHostFlag: %v", err)
-	}
-	ctx.Host = host
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
+	ctx.Host = "testbox"
 
-	if err := installFromRecipeFile(
+	err := installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
-	); err != nil {
-		t.Fatalf("installFromRecipeFile: %v", err)
+	)
+	if !errors.Is(err, errSwitchV1) {
+		t.Fatalf("leftover install writes v1 then rebuild refuses: %v", err)
 	}
 
 	cfg, err := os.ReadFile(ctx.GalePath)
@@ -203,11 +199,12 @@ func TestInstallWritesDefaultTarget(t *testing.T) {
 	recipePath := writeTestRecipe(t, tmp)
 	ctx := installCtx(t, tmp, "[packages]\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	if err := installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
-	); err != nil {
-		t.Fatalf("installFromRecipeFile: %v", err)
+	); !errors.Is(err, errSwitchV1) {
+		t.Fatalf("leftover install writes v1 then rebuild refuses: %v", err)
 	}
 
 	lf := readLock(t, ctx)
@@ -242,11 +239,12 @@ func TestInstallPreservesHostLocationInLock(t *testing.T) {
 	ctx := installCtx(t, tmp,
 		"[packages]\n\n[hosts.testbox.packages]\n  testpkg = \"0.9.0\"\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	if err := installFromRecipeFile(
 		ctx, recipePath, output.New(os.Stderr, false),
-	); err != nil {
-		t.Fatalf("installFromRecipeFile: %v", err)
+	); !errors.Is(err, errSwitchV1) {
+		t.Fatalf("leftover install writes v1 then rebuild refuses: %v", err)
 	}
 
 	lf := readLock(t, ctx)
@@ -307,64 +305,6 @@ func sourceTarball(t *testing.T, name string) (string, string) {
 	return path, fmt.Sprintf("%x", sha256.Sum256(data))
 }
 
-// TestSyncWritesNoLockfile pins section 11's first line: sync never
-// writes gale.lock. It is a pure consumer of one — the lock says
-// what to install — so a sync that also wrote it would ratify
-// whatever it happened to install and leave nothing to enforce.
-//
-// The install is real rather than cached, because the write this
-// test denies only ever happened after a successful install.
-func TestSyncWritesNoLockfile(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-	storeRoot := filepath.Join(tmp, "store")
-	galeDir := filepath.Join(tmp, ".gale")
-	galePath := filepath.Join(tmp, "gale.toml")
-	if err := os.MkdirAll(galeDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(galePath,
-		[]byte("[packages]\n  syncpkg = \"1.0\"\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	tarball, sum := sourceTarball(t, "syncpkg")
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, tarball)
-		},
-	))
-	defer srv.Close()
-
-	resolver := func(name string) (*recipe.Recipe, error) {
-		return &recipe.Recipe{
-			Package: recipe.Package{Name: name, Version: "1.0"},
-			Source:  recipe.Source{URL: srv.URL + "/source.tar.gz", SHA256: sum},
-			Build: recipe.Build{Steps: []string{
-				"mkdir -p $PREFIX/bin",
-				"echo '#!/bin/sh' > $PREFIX/bin/syncpkg",
-				"chmod +x $PREFIX/bin/syncpkg",
-			}},
-		}, nil
-	}
-
-	ctx := buildFakeCtx(t, galePath, galeDir, storeRoot, resolver)
-	out := runSyncOne(ctx, syncItem{name: "syncpkg", version: "1.0"}, false)
-	if out.installErr != nil || out.result == nil {
-		t.Fatalf("install did not succeed: err=%v result=%v",
-			out.installErr, out.result)
-	}
-
-	lp, err := lockfilePath(galePath)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := os.Lstat(lp); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(lp)
-		t.Errorf("sync created %s:\n%s", lp, data)
-	}
-}
-
 // TestUpdateRegeneratesTheSectionItRewrote: `update` rewrites the
 // pins in the section the package lives in, so it regenerates that
 // section's target with the version it verified this run. The prior
@@ -372,87 +312,30 @@ func TestSyncWritesNoLockfile(t *testing.T) {
 // describe a package the manifest no longer declares at that
 // version.
 func TestUpdateRegeneratesTheSectionItRewrote(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("GALE_OFFLINE", "1")
-
-	projDir := t.TempDir()
-	configPath := filepath.Join(projDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n  jq = \"1.7.0\"\n"), 0o644); err != nil {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	installToStore = stageTestFetch
+	t.Cleanup(func() { installToStore = nil })
+	if err := os.WriteFile(fx.c.GalePath,
+		[]byte("[packages]\njust = \"1.56.0\"\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	recipesDir := filepath.Join(projDir, "recipes", "j")
-	if err := os.MkdirAll(recipesDir, 0o755); err != nil {
+	if err := runInstallFetch(context.Background(), fx.c, "just", "1.56.0", fx.src); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(
-		filepath.Join(recipesDir, "jq.toml"),
-		[]byte("[package]\nname = \"jq\"\nversion = \"1.8.0\"\n\n"+
-			"[source]\nurl = \"https://example.invalid/jq.tar.gz\"\n"+
-			"sha256 = \""+strings.Repeat("0", 64)+"\"\n"),
-		0o644,
-	); err != nil {
-		t.Fatal(err)
-	}
-	// The new version is already in the store, so the install is a
-	// cache hit and the test needs no network.
-	seedProvenanced(t, defaultStoreRoot(), "jq", "1.8.0-1")
-
-	orig, _ := os.Getwd()
-	os.Chdir(projDir)
-	t.Cleanup(func() { os.Chdir(orig) })
-
-	updateRecipes = filepath.Join(projDir, "recipes")
-	t.Cleanup(func() { updateRecipes = "" })
-
-	if err := updateCmd.RunE(updateCmd, []string{"jq"}); err != nil {
+	fx.src.Commit = lockFetchPinB
+	if err := runUpdateFetch(context.Background(), fx.c, []string{"just"}, fx.src); err != nil {
 		t.Fatalf("update: %v", err)
 	}
-
-	lf, err := lockfile.ReadV1(filepath.Join(projDir, "gale.lock"))
+	got, err := lockfile.ReadV2(fx.lockPath())
 	if err != nil {
-		t.Fatalf("reading lock: %v", err)
+		t.Fatalf("ReadV2: %v", err)
 	}
-	if lf.Targets.Default == nil ||
-		len(lf.Targets.Default.Roots) != 1 ||
-		lf.Targets.Default.Roots[0] != "jq@1.8.0-1" {
-		t.Errorf("default roots = %+v, want [jq@1.8.0-1]", lf.Targets.Default)
+	if _, ok := got.Packages["just@9.9.9"]; !ok {
+		t.Errorf("packages = %v, want just@9.9.9", got.Packages)
 	}
-}
-
-// TestAddDoesNotTouchTheLock: `gale add` writes gale.toml without
-// installing, so it has verified nothing and locks nothing. The
-// resulting stale lock is deliberate, and its remedy is the message
-// add prints; writing a root for bytes no one fetched would be the
-// opposite of what the lock is for.
-func TestAddDoesNotTouchTheLock(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	projDir := t.TempDir()
-	configPath := filepath.Join(projDir, "gale.toml")
-	if err := os.WriteFile(configPath,
-		[]byte("[packages]\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	orig, _ := os.Getwd()
-	os.Chdir(projDir)
-	t.Cleanup(func() { os.Chdir(orig) })
-
-	addProject = true
-	t.Cleanup(func() { addProject = false })
-
-	// @version keeps the network resolver out of it.
-	if err := addCmd.RunE(addCmd, []string{"jq@1.8.1"}); err != nil {
-		t.Fatalf("add: %v", err)
-	}
-
-	lp := filepath.Join(projDir, "gale.lock")
-	if _, err := os.Lstat(lp); !os.IsNotExist(err) {
-		data, _ := os.ReadFile(lp)
-		t.Errorf("add created %s:\n%s", lp, data)
+	if _, ok := got.Packages["just@1.56.0"]; ok {
+		t.Error("old just@1.56.0 root survived the update")
 	}
 }
 
@@ -471,6 +354,7 @@ func TestInstallRefusesALegacyLock(t *testing.T) {
 	recipePath := writeTestRecipe(t, tmp)
 	ctx := installCtx(t, tmp, "[packages]\n  testpkg = \"1.0.0\"\n")
 	seedProvenanced(t, ctx.StoreRoot, "testpkg", "1.0.0-1")
+	writeMatchingRecipeDigest(t, filepath.Join(ctx.StoreRoot, "testpkg", "1.0.0-1"), recipePath)
 
 	lp, err := lockfilePath(ctx.GalePath)
 	if err != nil {

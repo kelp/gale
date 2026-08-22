@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -12,17 +13,17 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/kelp/gale/internal/activation"
 	"github.com/kelp/gale/internal/attestation"
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/farm"
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/lockwrite"
 	"github.com/kelp/gale/internal/output"
-	"github.com/kelp/gale/internal/parallel"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
@@ -40,12 +41,7 @@ type cmdContext struct {
 	Resolver  installer.RecipeResolver
 	Installer *installer.Installer
 	Registry  *registry.Registry // nil when --recipes
-
-	// Parallelism is the resolved download/sync concurrency
-	// (GALE_JOBS > [sync] parallelism > default). It sizes both
-	// the Installer's Downloads limiter and sync's worker pool,
-	// so one configured number bounds total in-flight downloads.
-	Parallelism int
+	IndexDir  string             // --index checkout; empty uses compiled-in URL
 
 	// Host force-writes the package to
 	// [hosts.<Host>.packages] when finalize runs. Empty
@@ -72,18 +68,6 @@ type cmdContext struct {
 	// so one list names every platform the lock does not cover.
 	lockMints []lockwrite.Mint
 	mintSkips []lockwrite.PlatformSkip
-
-	// refresh grants `gale lock --refresh` its one added permission:
-	// replacing an occupied canonical store directory that carries no
-	// provenance at all (design §13). It changes nothing else, which
-	// is why it is a flag on the context rather than a second command
-	// path — the resolve, verify, mint and write steps are identical.
-	refresh bool
-	// refreshOnly narrows that permission to the packages the user
-	// named, nil meaning every declared root. It narrows the
-	// permission and never the lock: refreshing destroys bytes, so
-	// naming one package must not replace the others silently.
-	refreshOnly map[string]bool
 }
 
 // newCmdContext resolves the config, store, and installer.
@@ -132,11 +116,6 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		return nil, fmt.Errorf("resolving gale dir: %w", err)
 	}
 
-	// Record project-scoped use in the machine-local project
-	// registry so gc can retain this project's generation when
-	// run from anywhere else (gh#115).
-	registerProject(galePath)
-
 	// Set up resolver.
 	storeRoot := defaultStoreRoot()
 	resolver, reg, resolveErr := resolveRecipeResolver(recipesPath)
@@ -144,153 +123,61 @@ func newCmdContext(recipesPath string, global, project bool) (*cmdContext, error
 		return nil, resolveErr
 	}
 
-	// Resolve download/sync concurrency once. A failure to read
-	// config.toml (e.g. absent on first run) is not fatal:
-	// ResolveParallelism falls back to GALE_JOBS or the default.
-	appCfg, _ := loadAppConfig()
-	n := config.ResolveParallelism(appCfg)
-
 	inst := &installer.Installer{
-		Store:     store.NewStore(storeRoot),
-		Resolver:  resolver,
-		Verifier:  attestation.NewVerifier(),
-		Downloads: parallel.NewLimiter(n),
+		Store:    store.NewStore(storeRoot),
+		Resolver: resolver,
+		Verifier: attestation.NewVerifier(),
 	}
-	wireFarmGuards(inst, galeDir, storeRoot)
 
 	return &cmdContext{
-		GalePath:    galePath,
-		GaleDir:     galeDir,
-		StoreRoot:   storeRoot,
-		Resolver:    resolver,
-		Installer:   inst,
-		Registry:    reg,
-		Parallelism: n,
+		GalePath:  galePath,
+		GaleDir:   galeDir,
+		StoreRoot: storeRoot,
+		Resolver:  resolver,
+		Installer: inst,
+		Registry:  reg,
 	}, nil
 }
 
-// wireFarmGuards attaches design §4's cross-project farm claimant
-// guards to an installer: every farm population and every farm
-// removal it performs is checked against the other scopes' claims
-// first. The initiating scope (galeDir) is excluded from the
-// external set — its claim is the operation itself, and its old
-// closure is superseded, not a veto.
-//
-// Separate from newCmdContext so a test can exercise the real
-// closures. A guard this intricate is exactly the thing a stub
-// cannot be trusted to stand in for: a stub cannot self-veto, which
-// is the failure mode these have.
-func wireFarmGuards(inst *installer.Installer, galeDir, storeRoot string) {
-	external := func() []farm.Claimant {
-		return generation.FarmClaimants(storeRoot, galeDir)
-	}
-	inst.FarmGuard = func(placements []farm.Placement) error {
-		// The initiating scope claims the closure this install
-		// leaves it with, so a second version of a package one
-		// of its own binaries links is refused rather than
-		// silently repointing the shared soname under it. Its
-		// OLD closure is never passed: that would be the verb
-		// veto §4 forbids, deadlocking the scope against its
-		// own update.
-		//
-		// One commit at a time, which is not the same as the
-		// whole operation. A sync installs every root before it
-		// rebuilds, so each call here sees the pre-sync
-		// generation and cannot see a conflict between two roots
-		// that only meet in the final closure. P7 replaces this
-		// with one guarded batch over the whole plan; see
-		// ProposedClaimant's own note.
-		// Staged, like the removal guard, and for one of the same two
-		// reasons: this runs BEFORE the commit, so the canonical dir
-		// still holds the artifact being replaced. Reading it makes
-		// the superseded artifact's own metadata decide whether the
-		// operation may proceed, and a refresh exists precisely
-		// because that artifact is not trustworthy.
-		self, err := generation.ProposedClaimantStaged(
-			placements, galeDir, storeRoot,
-		)
-		if err != nil {
-			return err
-		}
-		return farm.GuardPopulate(placements, append(external(), self))
-	}
-
-	// The other half of the same rule. GuardPopulate can only judge
-	// sonames the proposed closure TOUCHES, so a library the
-	// replacement stops providing is invisible to it, and deleting a
-	// farm entry violates a claim as surely as repointing one does.
-	inst.FarmRemoveGuard = func(
-		placements []farm.Placement, stale []string,
-	) error {
-		// Staged, not resolved, and this is the whole difference
-		// between a guard and a deadlock. The canonical dir still
-		// holds the artifact being replaced, so a claim resolved from
-		// directories would list the very sonames the replacement
-		// drops and refuse the scope's own repair.
-		//
-		// Self is still a claimant: another package in the INITIATING
-		// scope may link a library the refreshed artifact drops, and
-		// that is a real conflict rather than a self-veto.
-		self, err := generation.ProposedClaimantRequired(
-			placements, galeDir, storeRoot,
-		)
-		if err != nil {
-			return err
-		}
-		return farm.GuardRemoveLinks(stale, append(external(), self))
-	}
+func indexSource(dir string) index.Source {
+	return index.Source{Dir: dir}
 }
 
 // registerProject records the project owning configPath in the
 // machine-local registry (~/.gale/projects) so gc can union
 // this project's generation into its retention set (gh#115).
-// No-ops for global configs and dry runs. Best-effort by
-// design: a read-only gale home must never block the command
-// that triggered registration.
-func registerProject(configPath string) {
+//
+// Publication calls this immediately before a generation
+// rebuild. A project current swap must not happen until the
+// canonical root is in the registry; a failure is fatal and
+// leaves current on the previous gen. No-ops (nil) for dry
+// runs, empty paths, and global-layout configs (gale.toml
+// inside galeDir). Read-only commands do not call this.
+func registerProject(configPath, galeDir string) error {
 	if dryRun || configPath == "" {
-		return
+		return nil
+	}
+	if galeDir != "" && configInGaleDir(configPath, galeDir) {
+		return nil // this scope is global layout, not a project
 	}
 	globalDir, err := galeConfigDir()
 	if err != nil {
-		return
+		return err
 	}
-	if configInGaleDir(configPath, globalDir) {
-		return // the global config is not a project
-	}
-	if err := projects.Register(
-		globalDir, filepath.Dir(configPath),
-	); err != nil {
-		fmt.Fprintf(os.Stderr,
-			"warning: registering project for gc: %v\n", err)
-	}
+	return projects.Register(globalDir, filepath.Dir(configPath))
 }
 
-// readConfigOrToolVersions reads configPath and parses it
-// as a GaleConfig. If gale.toml is absent, falls back to
-// .tool-versions in the same directory. If that is also
-// absent, returns an empty GaleConfig. Callers apply
-// host-specific flattening after this returns.
-func readConfigOrToolVersions(configPath string) (*config.GaleConfig, error) {
+// readGaleConfig reads configPath and parses it as a
+// GaleConfig. If gale.toml is absent, returns an empty
+// GaleConfig. Callers apply host-specific flattening
+// after this returns.
+func readGaleConfig(configPath string) (*config.GaleConfig, error) {
 	data, err := os.ReadFile(configPath)
 	if err != nil {
-		if !errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("reading %s: %w", configPath, err)
+		if errors.Is(err, os.ErrNotExist) {
+			return &config.GaleConfig{Packages: map[string]string{}}, nil
 		}
-		// Fallback: .tool-versions in the same directory.
-		tvPath := filepath.Join(filepath.Dir(configPath), ".tool-versions")
-		tvData, tvErr := os.ReadFile(tvPath)
-		if tvErr != nil {
-			if errors.Is(tvErr, os.ErrNotExist) {
-				return &config.GaleConfig{Packages: map[string]string{}}, nil
-			}
-			return nil, fmt.Errorf("reading .tool-versions: %w", tvErr)
-		}
-		pkgs, pkgErr := config.ParseToolVersions(string(tvData))
-		if pkgErr != nil {
-			return nil, fmt.Errorf("parsing .tool-versions: %w", pkgErr)
-		}
-		return &config.GaleConfig{Packages: pkgs}, nil
+		return nil, fmt.Errorf("reading %s: %w", configPath, err)
 	}
 	cfg, err := config.ParseGaleConfig(string(data))
 	if err != nil {
@@ -299,31 +186,23 @@ func readConfigOrToolVersions(configPath string) (*config.GaleConfig, error) {
 	return cfg, nil
 }
 
-// configOrToolVersionsExists reports whether the resolved
-// config path has anything to read: the gale.toml itself, or
-// the project's .tool-versions sibling that
-// readConfigOrToolVersions falls back to when gale.toml is
-// absent (projectConfigPath returns the would-be gale.toml
-// path for .tool-versions-only trees). Used by the sbom and
-// list --all project legs.
-func configOrToolVersionsExists(path string) (bool, error) {
+// galeConfigExists reports whether the resolved gale.toml
+// path is present. Used by the sbom and list --all project
+// legs.
+func galeConfigExists(path string) (bool, error) {
 	if _, err := os.Stat(path); err == nil {
 		return true, nil
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return false, fmt.Errorf("stat %s: %w", path, err)
 	}
-	tv := filepath.Join(filepath.Dir(path), ".tool-versions")
-	if _, err := os.Stat(tv); err == nil {
-		return true, nil
-	}
 	return false, nil
 }
 
 // LoadConfig reads and parses the gale.toml that this
-// context points to. If gale.toml doesn't exist, falls
-// back to reading .tool-versions in the same directory.
+// context points to. If gale.toml doesn't exist, returns
+// an empty config.
 func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
-	cfg, err := readConfigOrToolVersions(ctx.GalePath)
+	cfg, err := readGaleConfig(ctx.GalePath)
 	if err != nil {
 		return nil, err
 	}
@@ -341,13 +220,17 @@ func (ctx *cmdContext) LoadConfig() (*config.GaleConfig, error) {
 type versionedRecipeResolver func(name, version string) (*recipe.Recipe, error)
 
 func (ctx *cmdContext) versionedRecipeResolver() versionedRecipeResolver {
-	if ctx == nil || ctx.Resolver == nil {
+	return versionedRecipeResolverWith(ctx, context.Background())
+}
+
+func versionedRecipeResolverWith(cc *cmdContext, parent context.Context) versionedRecipeResolver {
+	if cc == nil || cc.Resolver == nil {
 		return nil
 	}
-	resolve := ctx.Resolver
-	reg := ctx.Registry
+	resolve := cc.Resolver
+	reg := cc.Registry
 	return func(name, version string) (*recipe.Recipe, error) {
-		return resolveRecipeForPin(name, version, resolve, reg)
+		return resolveRecipeForPin(parent, name, version, resolve, reg)
 	}
 }
 
@@ -355,18 +238,18 @@ func (ctx *cmdContext) versionedRecipeResolver() versionedRecipeResolver {
 // Shared by sync staleness, generation rebuild, and gc
 // retention so they all agree on the canonical revision.
 func resolveRecipeForPin(
-	name, version string,
+	ctx context.Context, name, version string,
 	resolve installer.RecipeResolver,
 	reg *registry.Registry,
 ) (*recipe.Recipe, error) {
-	r, err := resolve(name)
+	r, err := resolve(ctx, name)
 	if err == nil &&
 		(r.Package.Version == version || r.Package.Full() == version) {
 		return r, nil
 	}
 	if reg != nil {
 		var pinned *recipe.Recipe
-		pinned, vErr := reg.FetchRecipeVersion(name, version)
+		pinned, vErr := reg.FetchRecipeVersion(ctx, name, version)
 		if vErr == nil {
 			return pinned, nil
 		}
@@ -541,20 +424,26 @@ type genRebuild struct {
 	pkgs map[string]string
 	// validate is design §6's revalidation callback, run inside the
 	// store-gen lock before any generation or farm mutation. nil for
-	// every unlocked caller, which is what keeps gc and doctor
+	// every unlocked caller, which is what keeps gc
 	// behaving exactly as before.
 	validate func() error
+	// fetch maps name → artifact SHA256 so a v2 rebuild links
+	// FetchPath instead of ResolveDir.
+	fetch map[string]string
 }
 
 func rebuildGenerationWith(r genRebuild) error {
-	pkgs, binOverrides, err := rebuildInputs(r)
+	if err := registerProject(r.configPath, r.galeDir); err != nil {
+		return fmt.Errorf("registering project: %w", err)
+	}
+	pkgs, fetch, err := rebuildInputs(&r)
 	if err != nil {
 		return err
 	}
 	if err := generation.BuildWithOptions(
 		pkgs, r.galeDir, r.storeRoot, generation.Options{
-			Validate:     r.validate,
-			BinOverrides: binOverrides,
+			Validate: r.validate,
+			Fetch:    fetch,
 		},
 	); err != nil {
 		return err
@@ -563,51 +452,111 @@ func rebuildGenerationWith(r genRebuild) error {
 	return nil
 }
 
-// rebuildInputs resolves the package set the generation is built from
-// and the [bin] overrides that settle executable-name collisions in
-// it (gh#190).
-//
-// A locked rebuild brings its own package set — the lock is the
-// version selector — but still reads [bin], because the override is
-// the only way out of a collision refusal and a sync that could not
-// see it would be a convergence trap. It reads nothing when no config
-// path came with the package set.
-func rebuildInputs(r genRebuild) (pkgs, binOverrides map[string]string, err error) {
+// rebuildInputs resolves the package set and fetch SHA map the
+// generation is built from. A present lock is the only version
+// selector; the manifest and ResolveDir do not choose versions.
+func rebuildInputs(r *genRebuild) (map[string]string, map[string]string, error) {
+	if r.configPath != "" {
+		lp, err := lockfilePath(r.configPath)
+		if err != nil {
+			return nil, nil, fmt.Errorf("resolving lockfile path: %w", err)
+		}
+		host, err := config.CurrentHost()
+		if err != nil {
+			return nil, nil, err
+		}
+		lockPkgs, locked, err := lockedRebuildPkgs(lp, host)
+		if err != nil {
+			return nil, nil, err
+		}
+		if locked {
+			return lockedRebuildMaps(r, lp, lockPkgs)
+		}
+	}
+	return unlockedRebuildInputs(r)
+}
+
+func lockedRebuildMaps(
+	r *genRebuild, lp string, lockPkgs map[string]string,
+) (map[string]string, map[string]string, error) {
+	lf, err := lockfile.ReadV2(lp)
+	if err != nil {
+		return nil, nil, err
+	}
+	fetch, err := checkedFetchSHAMap(lf)
+	if err != nil {
+		return nil, nil, err
+	}
+	if r.pkgs != nil && !maps.Equal(r.pkgs, lockPkgs) {
+		return nil, nil, fmt.Errorf("rebuild plan does not match the lock")
+	}
+	if r.pkgs != nil {
+		return r.pkgs, fetch, nil
+	}
+	return lockPkgs, fetch, nil
+}
+
+func unlockedRebuildInputs(r *genRebuild) (map[string]string, map[string]string, error) {
 	if r.pkgs != nil && r.configPath == "" {
-		return r.pkgs, nil, nil
+		return r.pkgs, r.fetch, nil
 	}
 	cfg, err := loadEffectiveConfig(r.configPath)
 	if err != nil {
 		return nil, nil, err
 	}
 	if r.pkgs != nil {
-		return r.pkgs, cfg.Bin, nil
+		return r.pkgs, r.fetch, nil
 	}
 	declared := cfg.Packages
 	if declared == nil {
 		declared = map[string]string{}
 	}
-	return canonicalizeForBuild(declared, r.pinResolve), cfg.Bin, nil
+	return canonicalizeForBuild(declared, r.pinResolve), r.fetch, nil
+}
+
+// checkedFetchSHAMap maps each locked default root to its
+// current-platform SHA256. Missing platform or SHA is an error
+// so resolvePkgDir cannot fall back to ResolveDir.
+func checkedFetchSHAMap(lf *lockfile.V2) (map[string]string, error) {
+	out := map[string]string{}
+	if lf == nil || lf.Targets.Default == nil {
+		return out, nil
+	}
+	plat := currentPlatform()
+	for _, root := range lf.Targets.Default.Roots {
+		name, _, err := lockfile.SplitV2Root(root)
+		if err != nil {
+			return nil, fmt.Errorf("lock root: %w", err)
+		}
+		pkg, ok := lf.Packages[root]
+		if !ok {
+			return nil, fmt.Errorf("%w: %s", lockfile.ErrMissingNode, root)
+		}
+		art, ok := pkg.Artifacts[plat]
+		if !ok || art.SHA256 == "" {
+			return nil, fmt.Errorf(
+				"%w: %s has no artifact for %s",
+				lockfile.ErrMissingArtifact, root, plat,
+			)
+		}
+		out[name] = art.SHA256
+	}
+	return out, nil
 }
 
 // autoPruneGenerations is the post-Build hook that bounds gen
 // dir accumulation. Every command that creates a generation
 // (install, update, sync, add, remove, recipe install, ...)
 // routes through rebuildGeneration, so a single hook here
-// covers all of them. Reads the keep
-// count from ~/.gale/config.toml [generation] keep, defaults
-// to DefaultGenerationKeep when unset, treats negative as
-// "disabled."
+// covers all of them. Retention is the compiled constant
+// DefaultGenerationKeep (current + one previous).
 //
 // Errors during prune are surfaced as warnings, not failures —
 // the install / sync that triggered this already succeeded and
 // must not regress because of a cleanup hiccup. Removed gen
 // numbers are reported on stderr so users see what happened.
 func autoPruneGenerations(galeDir, storeRoot string) {
-	keep := loadGenerationKeep()
-	if keep <= 0 {
-		return
-	}
+	keep := config.DefaultGenerationKeep
 	removed, err := generation.PruneOldGenerations(galeDir, storeRoot, keep)
 	if err != nil {
 		fmt.Fprintf(os.Stderr,
@@ -620,21 +569,6 @@ func autoPruneGenerations(galeDir, storeRoot string) {
 	fmt.Fprintf(os.Stderr,
 		"auto-gc: pruned %d old generation(s) (kept last %d): %s\n",
 		len(removed), keep, formatGenList(removed))
-}
-
-// loadGenerationKeep returns the auto-gc retention from
-// ~/.gale/config.toml [generation] keep. Missing or unreadable
-// config falls back to DefaultGenerationKeep so a user who
-// has never created config.toml still gets bounded gen growth.
-//
-// Reads from the global config regardless of caller scope
-// since gen retention is an app-level concern, not per-project.
-func loadGenerationKeep() int {
-	cfg, err := loadAppConfig()
-	if err != nil {
-		return config.DefaultGenerationKeep
-	}
-	return cfg.Generation.EffectiveGenerationKeep()
 }
 
 // formatGenList renders a sorted ascending slice of gen numbers
@@ -681,7 +615,7 @@ func readConfigPackages(configPath string) (map[string]string, error) {
 }
 
 func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
-	cfg, err := readConfigOrToolVersions(configPath)
+	cfg, err := readGaleConfig(configPath)
 	if err != nil {
 		return nil, err
 	}
@@ -690,25 +624,11 @@ func loadEffectiveConfig(configPath string) (*config.GaleConfig, error) {
 		return nil, err
 	}
 	cfg.Packages = cfg.EffectivePackages(host)
-	cfg.Pinned = cfg.EffectivePinned(host)
-	cfg.Bin = cfg.EffectiveBin(host)
-	// After the host merge, so a [bin] winner declared only under
-	// [hosts.<selector>.packages] validates on the host it applies to,
-	// and so a [hosts.<selector>.bin] entry is validated at all.
-	if err := cfg.ValidateBin(); err != nil {
-		return nil, fmt.Errorf("%s: %w", configPath, err)
-	}
 	return cfg, nil
 }
 
 func projectConfigPath(cwd string) (string, error) {
-	if path, err := config.FindGaleConfig(cwd); err == nil {
-		return path, nil
-	}
-	if tv := config.FindToolVersions(cwd); tv != "" {
-		return filepath.Join(filepath.Dir(tv), "gale.toml"), nil
-	}
-	return "", config.ErrGaleConfigNotFound
+	return config.FindGaleConfig(cwd)
 }
 
 // loadAppConfig reads and parses ~/.gale/config.toml.
@@ -749,21 +669,22 @@ func resolveBuildDebug(recipeDebug, cliDebug, cliRelease bool) bool {
 	return false
 }
 
-// newRegistry creates a Registry, using the URL from
-// ~/.gale/config.toml if configured. Wires the package-level
-// `dryRun` flag and the `GALE_OFFLINE` environment variable
-// (already honoured by registry.New) into the returned
-// Registry so the cache contract is uniform across commands.
+// injectedRegistry, when non-nil, is returned by newRegistry
+// after applying DryRun. Tests inject an httptest-backed
+// Registry; production leaves this nil. Not a product
+// override — leftover [registry] url is ignored.
+var injectedRegistry *registry.Registry
+
+// newRegistry returns a Registry at the compiled-in
+// DefaultURL. Wires the package-level `dryRun` flag and
+// the `GALE_OFFLINE` environment variable (already honoured
+// by registry.New) so the cache contract is uniform.
 func newRegistry() (*registry.Registry, error) {
-	var (
-		reg *registry.Registry
-		err error
-	)
-	if cfg, cfgErr := loadAppConfig(); cfgErr != nil {
-		reg, err = registry.New()
-	} else {
-		reg, err = registry.NewWithURL(cfg.Registry.URL)
+	if injectedRegistry != nil {
+		injectedRegistry.DryRun = dryRun
+		return injectedRegistry, nil
 	}
+	reg, err := registry.New()
 	if err != nil {
 		return nil, err
 	}
@@ -1000,49 +921,16 @@ func warnUnlocked(roots []lockwrite.UnlockedRoot) {
 	}
 }
 
-// lockRemedy is the command that puts one unlocked root back into
-// the section it is declared in.
-//
-// A host target's selector is passed to --host verbatim, quoted:
-// AddPackage writes to [hosts.<selector>.packages] literally, so a
-// wildcard or comma-list selector addresses exactly the section that
-// declares the package, and the quoting is what keeps a `*` from
-// being expanded by the shell before gale ever sees it. Running it on
-// a machine the selector does not match is fine — `install --host`
-// for a foreign host is declaration-only and still locks that target.
-//
-// A selector containing a single quote cannot be spelled that way in
-// one line, so the section is named instead of emitting a command
-// that would not run. Such a selector is outside the documented
-// selector grammar, which gale.toml has always accepted anyway.
+// lockRemedy is the command that puts one unlocked root back
+// into [packages]. A leftover host target names moving the
+// pin into [packages], then gale install. It does not name
+// --host.
 func lockRemedy(r lockwrite.UnlockedRoot) string {
 	if r.Target == "" {
 		return "gale install " + r.Name
 	}
-	flag, ok := hostFlagArg(r.Target)
-	if !ok {
-		return fmt.Sprintf(
-			"gale install %s --host, with the selector spelled as in "+
-				"[hosts.%q.packages]",
-			r.Name, r.Target,
-		)
-	}
-	return fmt.Sprintf("gale install %s %s", r.Name, flag)
-}
-
-// hostFlagArg renders the --host argument addressing one host
-// target's manifest section, quoted so a wildcard or comma-list
-// selector reaches gale instead of being expanded by the shell first.
-//
-// ok is false for a selector containing a single quote, which cannot
-// be spelled this way in one line. Callers name the section instead
-// of emitting a command that would not run. Shared by every remedy
-// that offers a --host command, so the quoting rule has one home.
-func hostFlagArg(target string) (string, bool) {
-	if strings.Contains(target, "'") {
-		return "", false
-	}
-	return "--host '" + target + "'", true
+	return "move leftover [hosts.*] pins into [packages], then gale install " +
+		r.Name
 }
 
 // stripNumericRevision removes a Debian-style "-N" suffix from
@@ -1054,38 +942,6 @@ func stripNumericRevision(version string) string {
 	return base
 }
 
-// addToConfig writes a package version to the given gale.toml
-// path. Returns the config path used. When host is non-empty,
-// writes to [hosts.<host>.packages]; otherwise writes to the
-// shared [packages] section, preserving an existing
-// host-scoped entry for the current machine.
-//
-// configPath is pre-resolved by the caller (once per command
-// invocation) so scope is not re-derived on every package.
-func addToConfig(name, version, host, configPath string) (string, error) {
-	version = stripNumericRevision(version)
-	if host != "" {
-		if err := config.AddPackage(
-			configPath, host, name, version,
-		); err != nil {
-			return "", fmt.Errorf("adding %s to config: %w", name, err)
-		}
-		return configPath, nil
-	}
-	host, err := config.CurrentHost()
-	if err != nil {
-		return "", err
-	}
-	// The written section is discarded: `gale add` is manifest-only
-	// and never touches the lock (design §11).
-	if _, err := config.UpsertPackage(
-		configPath, host, name, version,
-	); err != nil {
-		return "", fmt.Errorf("adding %s to config: %w", name, err)
-	}
-	return configPath, nil
-}
-
 // resolveVersionedRecipe fetches a recipe for a specific
 // version. If the version matches the latest, uses the
 // resolver directly. Otherwise falls back to the versioned
@@ -1093,7 +949,7 @@ func addToConfig(name, version, host, configPath string) (string, error) {
 // found.
 func resolveVersionedRecipe(ctx *cmdContext, name, version string) (*recipe.Recipe, error) {
 	return resolveRecipeForPin(
-		name, version, ctx.Resolver, ctx.Registry,
+		context.Background(), name, version, ctx.Resolver, ctx.Registry,
 	)
 }
 
@@ -1172,13 +1028,10 @@ func (ctx *cmdContext) FinalizeInstall(name, configVersion, lockVersion string) 
 	if err := rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, nil); err != nil {
 		return fmt.Errorf("rebuild generation: %w", err)
 	}
-	// --host targeting another machine is declaration-only:
-	// the generation just rebuilt comes from the CURRENT
-	// host's effective package set, so a package declared
-	// for a foreign host is correctly absent from it.
-	// Running the presence check anyway mis-reported every
-	// cross-host install as store corruption — after config,
-	// lock, and store were already mutated (gh#72).
+	// Leftover nonempty ctx.Host is already refused on
+	// live verbs. Keep the foreign-host skip so a leftover
+	// Host field cannot trigger a false store-corruption
+	// check after config, lock, and store mutated (gh#72).
 	if ctx.Host != "" {
 		current, err := config.CurrentHost()
 		if err != nil {
@@ -1347,9 +1200,6 @@ func (ctx *cmdContext) RebuildGenerationLocked() error {
 	if err != nil {
 		return err
 	}
-	// configPath rides along for [bin] alone: the versions come from
-	// the plan, but a locked sync must still be able to resolve an
-	// executable-name collision (gh#190).
 	return rebuildGenerationWith(genRebuild{
 		galeDir:    ctx.GaleDir,
 		storeRoot:  ctx.StoreRoot,
@@ -1362,36 +1212,28 @@ func (ctx *cmdContext) RebuildGenerationLocked() error {
 // recoveryRebuild is rebuildUnderLock's policy, beside the generation
 // inputs themselves.
 type recoveryRebuild struct {
-	// force downgrades a lock that cannot be modeled from a refusal
-	// to a warning plus an unlocked rebuild. Without it a user whose
-	// lock is beyond repair could not run the very commands that
-	// exist to get a broken machine working again.
-	force bool
-	// skipUnchanged suppresses a locked rebuild that would relink
-	// exactly what is already active. gc sets it: its rebuild is
-	// gated on a recipe-versus-store disagreement that the lock does
-	// not resolve, so rebuilding unconditionally would mint a fresh
+	// skipUnchanged suppresses a locked rebuild that already links
+	// each lock root's FetchPath. gc sets it: its rebuild is gated
+	// on a recipe-versus-store disagreement that the lock does not
+	// resolve, so rebuilding unconditionally would mint a fresh
 	// generation on every scheduled run forever.
 	skipUnchanged bool
-	out           *output.Output
 }
 
 // rebuildUnderLock rebuilds one scope's generation with that scope's
 // lock as the version selector.
 //
-// gc and doctor --repair are recovery commands, and both rebuild from
-// the recipe and the store. After a revision bump — or a withdrawn
-// one — that selection is a second version selector, so either can
-// publish a version the lock does not name. Design §12 runs no
-// activation gate at global scope, so nothing downstream would ever
-// notice; the writer has to enforce it (gh#197).
+// gc is a recovery command and rebuilds from the recipe and the
+// store. After a revision bump — or a withdrawn one — that
+// selection is a second version selector, so it can publish a
+// version the lock does not name. Design §12 runs no activation
+// gate at global scope, so nothing downstream would ever notice;
+// the writer has to enforce it (gh#197).
 //
-// Three lock states, three answers. Absent is unlocked mode and keeps
-// the caller's own selection. A usable v1 lock supplies the versions
-// and no recipe is consulted, exactly as RebuildGenerationLocked
-// activates a plan. A lock that is present and cannot be modeled
-// refuses this scope's rebuild, because a rebuild nothing can check
-// against the lock is the bug itself.
+// Absent is unlocked mode and keeps the caller's own selection.
+// A usable v2 lock supplies the versions and fetch SHAs.
+// A lock that is present and cannot be modeled — v1, legacy,
+// host-target, or incomplete — refuses this scope's rebuild.
 func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
 	lockPath, err := lockfilePath(r.configPath)
 	if err != nil {
@@ -1402,38 +1244,52 @@ func rebuildUnderLock(r genRebuild, opt recoveryRebuild) error {
 		return err
 	}
 	pkgs, locked, err := lockedRebuildPkgs(lockPath, host)
-	switch {
-	case err != nil && !opt.force:
-		return fmt.Errorf(
-			"%w; run 'gale lock --refresh' to regenerate it, or rerun "+
-				"with --force to rebuild without it", err,
-		)
-	case err != nil:
-		opt.out.Warn(fmt.Sprintf(
-			"rebuilding without %s: %v", lockPath, err,
-		))
-	case locked:
+	if err != nil {
+		return err
+	}
+	if locked {
 		r.pkgs = pkgs
-		if opt.skipUnchanged &&
-			generationAlreadyLinks(r.galeDir, r.storeRoot, pkgs) {
+		if opt.skipUnchanged && generationLinksLockFetch(r, lockPath) {
 			return nil
 		}
 	}
 	return rebuildGenerationWith(r)
 }
 
-// lockedRebuildPkgs returns the name→version set a recovery rebuild
-// must activate: the scope lock's effective roots for host. The bool
-// reports whether a lock supplied them, which an empty map cannot —
-// a lock rooting nothing and no lock at all are different answers.
+// generationLinksLockFetch reports whether the active generation
+// already satisfies activation.Check against the lock — FetchPath
+// identity, not ResolveDir version equality.
+func generationLinksLockFetch(r genRebuild, lockPath string) bool {
+	installed, err := generation.CurrentVersionsStrict(r.galeDir, r.storeRoot)
+	if err != nil {
+		return false
+	}
+	linked, err := generation.CurrentStoreDirs(r.galeDir, r.storeRoot)
+	if err != nil {
+		return false
+	}
+	return activation.Check(activation.Request{
+		LockPath:  lockPath,
+		Platform:  currentPlatform(),
+		StoreRoot: r.storeRoot,
+		Installed: installed,
+		Linked:    linked,
+	}) == nil
+}
+
+// lockedRebuildPkgs returns the name→version set a locked rebuild
+// must activate. KindAbsent is unlocked. KindV2 without Host
+// targets supplies Default roots. Every other present lock is
+// an error. The bool reports whether a lock supplied the roots,
+// which an empty map cannot — a lock rooting nothing and no
+// lock at all are different answers.
 //
 // Roots only, and no plan. A generation links roots; the closure
 // behind them is what supports those roots, not what it links. Going
 // through lockplan would hash and validate that whole closure, which
-// is a demand gc and doctor --repair have no business making: they
-// are run precisely when the store is in a state nothing else
-// tolerates.
-func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
+// is a demand gc has no business making: it is run precisely
+// when the store is in a state nothing else tolerates.
+func lockedRebuildPkgs(lockPath, _ string) (map[string]string, bool, error) {
 	v, err := lockfile.Load(lockPath)
 	if err != nil {
 		return nil, false, err
@@ -1443,21 +1299,18 @@ func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
 		return nil, false, nil
 	case lockfile.KindLegacy:
 		return nil, false, fmt.Errorf(
-			"%s: %w: it names versions this build cannot model",
+			"%s: %w: run gale fetch-adopt",
 			lockPath, lockfile.ErrLegacySchema,
 		)
 	case lockfile.KindV1:
-		roots, rErr := v.V1.EffectiveRoots(host)
-		if rErr != nil {
-			return nil, false, fmt.Errorf("%s: %w", lockPath, rErr)
+		return nil, false, fmt.Errorf("%s: %w", lockPath, errSwitchV1)
+	case lockfile.KindV2:
+		if v.V2 != nil && len(v.V2.Targets.Host) > 0 {
+			return nil, false, fmt.Errorf("%s: %w", lockPath, errSwitchHosts)
 		}
-		pkgs := make(map[string]string, len(roots))
-		for name, id := range roots {
-			_, version, pErr := lockfile.ParseIdentity(id)
-			if pErr != nil {
-				return nil, false, fmt.Errorf("%s: %w", lockPath, pErr)
-			}
-			pkgs[name] = version
+		pkgs, pErr := pkgsFromV2Lock(v.V2)
+		if pErr != nil {
+			return nil, false, fmt.Errorf("%s: %w", lockPath, pErr)
 		}
 		return pkgs, true, nil
 	default:
@@ -1476,8 +1329,8 @@ func lockedRebuildPkgs(lockPath, host string) (map[string]string, bool, error) {
 // Which needs the STRICT reader to be reachable at all (gh#210).
 // Read leniently, a generation the walk could not enumerate arrives
 // as an empty map, and against a lock rooting nothing an empty map
-// compares equal — so gc and `doctor --repair`, the two recovery
-// commands, skip the rebuild on exactly the machine that needs it.
+// compares equal — so gc skips the rebuild on exactly the
+// machine that needs it.
 func generationAlreadyLinks(galeDir, storeRoot string, pkgs map[string]string) bool {
 	active, err := generation.CurrentVersionsStrict(galeDir, storeRoot)
 	if err != nil {

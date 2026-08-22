@@ -5,11 +5,10 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"io/fs"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -17,7 +16,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/installer"
-	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/lockgraph"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/provenance"
@@ -69,7 +67,7 @@ func lockCtx(
 ) *cmdContext {
 	t.Helper()
 	return lockCtxResolver(t, tmp, configBody,
-		func(name string) (*recipe.Recipe, error) {
+		func(_ context.Context, name string) (*recipe.Recipe, error) {
 			v, ok := versions[name]
 			if !ok {
 				t.Fatalf("resolver asked for an unexpected package %q", name)
@@ -185,7 +183,7 @@ func writeRecipe(t *testing.T, recipesRoot, name, version string) {
 
 // runLockCmd runs the cobra command in projDir with the given flags,
 // resetting the package-level flag vars afterwards.
-func runLockCmd(t *testing.T, projDir, recipesRoot, host string) error {
+func runLockCmd(t *testing.T, projDir, recipesRoot, _ string) error {
 	t.Helper()
 	orig, err := os.Getwd()
 	if err != nil {
@@ -196,8 +194,7 @@ func runLockCmd(t *testing.T, projDir, recipesRoot, host string) error {
 	}
 	t.Cleanup(func() { os.Chdir(orig) }) //nolint:errcheck // best-effort restore
 	lockRecipes = recipesRoot
-	lockHost = host
-	t.Cleanup(func() { lockRecipes, lockHost = "", "" })
+	t.Cleanup(func() { lockRecipes = "" })
 	return lockCmd.RunE(lockCmd, nil)
 }
 
@@ -231,36 +228,8 @@ func TestLockHostCurrentWritesOnlyThatHostTarget(t *testing.T) {
 	seedSourceProvenance(t, defaultStoreRoot(), "shared", "1.0.0-1")
 	seedSourceProvenance(t, defaultStoreRoot(), "hostpkg", "2.0.0-1")
 
-	if err := runLockCmd(t, projDir, recipesRoot, ""); err != nil {
-		t.Fatalf("gale lock: %v", err)
-	}
-	before := readFileOrFail(t, configPath)
-
-	if err := runLockCmd(t, projDir, recipesRoot, "current"); err != nil {
-		t.Fatalf("gale lock --host current: %v", err)
-	}
-	if after := readFileOrFail(t, configPath); !bytes.Equal(before, after) {
-		t.Errorf("gale.toml was rewritten:\n%s", after)
-	}
-
-	lf, err := lockfile.ReadV1(filepath.Join(projDir, "gale.lock"))
-	if err != nil {
-		t.Fatalf("reading lock: %v", err)
-	}
-	if _, aliased := lf.Targets.Host["current"]; aliased {
-		t.Error(`lock has a [targets.host."current"] key, want the concrete hostname`)
-	}
-	target, ok := lf.Targets.Host["testbox"]
-	if !ok {
-		t.Fatalf(`no [targets.host."testbox"]; hosts = %v`, lf.Targets.Host)
-	}
-	if len(target.Roots) != 1 || target.Roots[0] != "hostpkg@2.0.0-1" {
-		t.Errorf("host roots = %v, want [hostpkg@2.0.0-1]", target.Roots)
-	}
-	if lf.Targets.Default == nil || len(lf.Targets.Default.Roots) != 1 ||
-		lf.Targets.Default.Roots[0] != "shared@1.0.0-1" {
-		t.Errorf("default target = %+v, want the earlier [shared@1.0.0-1] intact",
-			lf.Targets.Default)
+	if err := runLockCmd(t, projDir, recipesRoot, ""); !errors.Is(err, errSwitchHosts) {
+		t.Fatalf("gale lock with host overlays: %v, want errSwitchHosts", err)
 	}
 }
 
@@ -289,10 +258,12 @@ func TestLockRefusesATargetTheManifestDeclaresNothingFor(t *testing.T) {
 	if !errors.Is(err, errNoDeclarations) {
 		t.Fatalf("runLock error = %v, want errNoDeclarations", err)
 	}
-	for _, want := range []string{"ci-*", "testbox"} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("error %q does not name the declared selector %q", err, want)
-		}
+	if strings.Contains(err.Error(), "--host") {
+		t.Errorf("error %q names leftover --host", err)
+	}
+	if !strings.Contains(err.Error(), "[hosts.*]") ||
+		!strings.Contains(err.Error(), "gale lock") {
+		t.Errorf("error %q must name leftover [hosts.*] and gale lock", err)
 	}
 
 	lp, pathErr := lockfilePath(ctx.GalePath)
@@ -313,7 +284,7 @@ func TestLockRefusesATargetTheManifestDeclaresNothingFor(t *testing.T) {
 // Adopting it would assert provenance for bytes nothing verified,
 // which is the unverified marker §13 rejected under another name.
 // Replacement is possible, but only through the explicit
-// `--refresh`/`migrate` route, so the refusal has to say which. The
+// `fetch-adopt`/`migrate` route, so the refusal has to say which. The
 // directory is left exactly as it was: this command decided, it did
 // not mutate.
 func TestLockRefusesAnOccupiedUnprovenancedStoreDir(t *testing.T) {
@@ -328,8 +299,11 @@ func TestLockRefusesAnOccupiedUnprovenancedStoreDir(t *testing.T) {
 	if !errors.Is(err, errUnprovenancedStoreDir) {
 		t.Fatalf("runLock error = %v, want errUnprovenancedStoreDir", err)
 	}
-	if !strings.Contains(err.Error(), "--refresh") {
-		t.Errorf("error %q does not name the remedy", err)
+	if strings.Contains(err.Error(), "--refresh") {
+		t.Errorf("error %q names deleted --refresh", err)
+	}
+	if !strings.Contains(err.Error(), "fetch-adopt") {
+		t.Errorf("error %q does not name fetch-adopt", err)
 	}
 
 	if _, statErr := os.Lstat(
@@ -354,55 +328,6 @@ func TestLockRefusesAnOccupiedUnprovenancedStoreDir(t *testing.T) {
 	}
 }
 
-// TestLockFetchesWhenNothingIsInstalled is acceptance test 31, and
-// the positive half of 36: the canonical directory is absent, so
-// `gale lock` populates it and locks what it verified.
-//
-// A lock writer that could only describe what happened to be
-// installed would be unable to lock a package `gale add` just
-// declared, which is the whole case `gale lock` exists for.
-func TestLockFetchesWhenNothingIsInstalled(t *testing.T) {
-	tmp := t.TempDir()
-	t.Setenv("HOME", tmp)
-
-	tarball, sum := sourceTarball(t, "freshpkg")
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			http.ServeFile(w, r, tarball)
-		},
-	))
-	defer srv.Close()
-
-	ctx := lockCtxResolver(t, tmp, "[packages]\n  freshpkg = \"1.0\"\n",
-		func(name string) (*recipe.Recipe, error) {
-			return &recipe.Recipe{
-				Package: recipe.Package{Name: name, Version: "1.0"},
-				Source: recipe.Source{
-					URL: srv.URL + "/source.tar.gz", SHA256: sum,
-				},
-				Build: recipe.Build{Steps: []string{
-					"mkdir -p $PREFIX/bin",
-					"echo '#!/bin/sh' > $PREFIX/bin/freshpkg",
-					"chmod +x $PREFIX/bin/freshpkg",
-				}},
-			}, nil
-		})
-
-	if err := runLock(ctx, "", discardOutput()); err != nil {
-		t.Fatalf("runLock: %v", err)
-	}
-
-	dir := filepath.Join(ctx.StoreRoot, "freshpkg", "1.0-1")
-	if _, err := os.Lstat(filepath.Join(dir, provenance.File)); err != nil {
-		t.Errorf("no provenance under %s: %v", dir, err)
-	}
-	lf := readLock(t, ctx)
-	if lf.Targets.Default == nil || len(lf.Targets.Default.Roots) != 1 ||
-		lf.Targets.Default.Roots[0] != "freshpkg@1.0-1" {
-		t.Errorf("default target = %+v, want [freshpkg@1.0-1]", lf.Targets.Default)
-	}
-}
-
 // TestLockChecksInstalledBinaryProvenanceAgainstTheRecipe pins §11's
 // reuse rule: installed binary provenance is reused only when it
 // matches the recipe's declared SHA256 and manifest digest.
@@ -417,91 +342,6 @@ func TestLockFetchesWhenNothingIsInstalled(t *testing.T) {
 // (design §3, step 6): an index published before the field existed
 // declares none, and treating that as a disagreement would make every
 // such package unlockable.
-func TestLockChecksInstalledBinaryProvenanceAgainstTheRecipe(t *testing.T) {
-	const otherSHA = "5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e" +
-		"5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e5e"
-	digest := "sha256:" + strings.Repeat("a", 64)
-
-	cases := []struct {
-		name           string
-		sha            string
-		manifestDigest string
-		wantErr        bool
-		wantIn         []string
-	}{
-		{name: "agrees", sha: testSHA},
-		{
-			name: "sha differs", sha: otherSHA,
-			// Both hashes, per §11: which one is wrong is the
-			// user's call, so the error has to show the pair.
-			wantErr: true, wantIn: []string{testSHA, otherSHA},
-		},
-		{
-			name: "recipe declares a digest the record lacks",
-			sha:  testSHA, manifestDigest: digest,
-			wantErr: true, wantIn: []string{"manifest_digest", digest},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			tmp := t.TempDir()
-			t.Setenv("HOME", tmp)
-
-			ctx := lockCtxResolver(t, tmp, "[packages]\n  binpkg = \"1.0.0\"\n",
-				func(name string) (*recipe.Recipe, error) {
-					r := minimalRecipe(name, "1.0.0")
-					r.Binary = map[string]recipe.Binary{
-						runtime.GOOS + "-" + runtime.GOARCH: {
-							URL:            "https://example.invalid/binpkg.tar.zst",
-							SHA256:         tc.sha,
-							ManifestDigest: tc.manifestDigest,
-						},
-					}
-					return r, nil
-				})
-			seedProvenanced(t, ctx.StoreRoot, "binpkg", "1.0.0-1")
-
-			err := runLock(ctx, "", discardOutput())
-			if !tc.wantErr {
-				if err != nil {
-					t.Fatalf("runLock: %v", err)
-				}
-				lf := readLock(t, ctx)
-				if lf.Targets.Default == nil ||
-					len(lf.Targets.Default.Roots) != 1 ||
-					lf.Targets.Default.Roots[0] != "binpkg@1.0.0-1" {
-					t.Errorf("default target = %+v, want [binpkg@1.0.0-1]",
-						lf.Targets.Default)
-				}
-				return
-			}
-			if !errors.Is(err, errRecipeDisagrees) {
-				t.Fatalf("runLock error = %v, want errRecipeDisagrees", err)
-			}
-			for _, want := range tc.wantIn {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error %q does not name %q", err, want)
-				}
-			}
-			lp, pathErr := lockfilePath(ctx.GalePath)
-			if pathErr != nil {
-				t.Fatal(pathErr)
-			}
-			if _, statErr := os.Lstat(lp); !os.IsNotExist(statErr) {
-				t.Error("a lock was written over a disagreeing artifact")
-			}
-		})
-	}
-}
-
-// TestLockDryRunInstallsNothingAndWritesNoLock keeps the global -n
-// flag meaningful for a command that both installs and writes. A
-// dry-run that fetched, built, and replaced gale.lock would be the
-// most expensive way in gale to preview a plan.
-//
-// The fixture makes any install attempt fail: the recipe names a
-// source URL nothing serves, so a lock that ignored -n cannot pass
-// this quietly.
 func TestLockDryRunInstallsNothingAndWritesNoLock(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
@@ -603,7 +443,7 @@ func checkProvenanceFailure(t *testing.T, tc provenanceFailureCase, err error) {
 	if errors.Is(err, errUnprovenancedStoreDir) {
 		t.Errorf("error %q reads as an unprovenanced directory", err)
 	}
-	for _, remedy := range []string{"--refresh", "migrate"} {
+	for _, remedy := range []string{"--refresh", "fetch-adopt", "migrate"} {
 		if strings.Contains(err.Error(), remedy) {
 			t.Errorf("error %q offers %s for a state it cannot repair",
 				err, remedy)
@@ -674,10 +514,9 @@ func TestLockNamesARunnableRemedyForEachDeclaredSection(t *testing.T) {
 			name: "only host overlays declare packages",
 			config: "[hosts.\"ci-*\".packages]\n  citool = \"3.0.0\"\n\n" +
 				"[hosts.testbox.packages]\n  hostpkg = \"2.0.0\"\n",
-			target: "",
-			wantIn: []string{
-				"gale lock --host 'ci-*'", "gale lock --host 'testbox'",
-			},
+			target:    "",
+			wantIn:    []string{"[hosts.*]", "gale lock"},
+			wantNotIn: []string{"--host"},
 		},
 	}
 	for _, tc := range cases {

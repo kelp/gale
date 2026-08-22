@@ -1,8 +1,14 @@
 # Writing Recipes
 
-A recipe is a TOML file that tells gale how to build a
-package from source. Every recipe lives in the
-gale-recipes repository, letter-bucketed by name:
+Leftover. New catalog entries are index documents
+(`gale admit`, `gale lint` on `index/*.toml`).
+Source recipes stay in gale-recipes until Milestone 5
+strips the farm. This page describes that leftover
+format.
+
+A leftover recipe is a TOML file that told gale how
+to build a package from source. Every leftover recipe
+lives in gale-recipes, letter-bucketed by name:
 `recipes/j/jq.toml`.
 
 ## Recipe Structure
@@ -238,68 +244,24 @@ Issues come at two levels: errors and warnings. Plain
 `--strict` to fail on warnings too:
 
 ```sh
-gale lint --strict myrecipe.toml
+gale lint index/<letter>/<name>.toml
 ```
 
-Use `--strict` in CI. Without it a warning-level rule
-fires into a passing step and nobody sees it. The flag
-changes the exit code alone — the reported issues read
-the same either way.
+`gale lint` validates index documents only. A leftover
+source recipe is "not an index document". `--strict`
+is gone.
 
-## Testing a Recipe
+## Testing a leftover recipe
 
-Build the recipe to verify the build steps work:
-
-```sh
-gale build myrecipe.toml
-```
-
-This produces a `tar.zst` archive in the current
-directory. Inspect the contents:
-
-```sh
-tmpdir=$(mktemp -d)
-tar -xf myrecipe-1.0.0.tar.zst -C "$tmpdir"
-ls "$tmpdir/bin/"
-"$tmpdir/bin/myrecipe" --version
-rm -rf "$tmpdir"
-```
-
-Install from your local recipe file to test the full
-flow:
-
-```sh
-gale install mypkg --recipe myrecipe.toml
-```
+`gale build` is gone. Fetch is the only installer.
+Do not convert leftover recipes to index TOML here;
+that is Milestone 5.
 
 ## Contributing to gale-recipes
 
-1. Create the recipe file in the correct letter
-   bucket: `recipes/<first-letter>/<name>.toml`.
+Admit an artifact and lint the index document:
 
-2. Get the source SHA-256:
-
-   ```sh
-   curl -sL <source-url> | shasum -a 256
-   ```
-
-3. Write the recipe with all required fields.
-
-4. Lint:
-
-   ```sh
-   gale lint recipes/<letter>/<name>.toml
-   ```
-
-5. Build:
-
-   ```sh
-   gale build recipes/<letter>/<name>.toml
-   ```
-
-6. Test the installed binary.
-
-7. Submit a pull request to the gale-recipes
-   repository. CI builds the recipe on macOS ARM64
-   and Linux AMD64, generates the `.binaries.toml`
-   file, and pushes prebuilt archives to GHCR.
+```sh
+gale admit <archive>
+gale lint index/<letter>/<name>.toml
+```

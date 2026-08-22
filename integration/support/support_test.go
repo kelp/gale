@@ -8,7 +8,7 @@ import (
 func TestSubstituteDataPayloadSHA(t *testing.T) {
 	p := &Payloads{
 		Map: map[string]*Payload{
-			"hello": {TarballPath: "/fake/hello.tar.zst", SHA256: "abc123"},
+			"hello": {TarballPath: "/fake/hello.tar.gz", SHA256: "abc123"},
 		},
 	}
 	env := map[string]string{
@@ -35,6 +35,20 @@ func TestSubstituteDataEmptyPayloads(t *testing.T) {
 	want := "url=http://localhost:5678 sha=__HELLO_PAYLOAD_SHA__"
 	if string(got) != want {
 		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+func TestFixtureSHA256IsStable(t *testing.T) {
+	a := FixtureSHA256("hello", "1.0")
+	b := FixtureSHA256("hello", "1.0")
+	if a != b {
+		t.Fatal("FixtureSHA256 must be deterministic")
+	}
+	if len(a) != 64 {
+		t.Errorf("sha256 len = %d, want 64", len(a))
+	}
+	if FixtureSHA256("hello", "1.1") == a {
+		t.Error("different versions must not share a digest")
 	}
 }
 

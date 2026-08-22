@@ -17,6 +17,7 @@ package main
 // package).
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,7 +39,6 @@ func resetInstallFlags(t *testing.T) {
 	savedPath := installPath
 	savedGit := installGit
 	savedBuild := installBuild
-	savedHost := installHost
 	savedDryRun := dryRun
 	t.Cleanup(func() {
 		installGlobal = savedGlobal
@@ -48,7 +48,6 @@ func resetInstallFlags(t *testing.T) {
 		installPath = savedPath
 		installGit = savedGit
 		installBuild = savedBuild
-		installHost = savedHost
 		dryRun = savedDryRun
 	})
 	installGlobal = false
@@ -58,7 +57,6 @@ func resetInstallFlags(t *testing.T) {
 	installPath = ""
 	installGit = false
 	installBuild = false
-	installHost = ""
 }
 
 // gh#70: a tap-only (or tap-overridden) package must be
@@ -75,18 +73,16 @@ func TestInstallVersionedConsultsTapChain(t *testing.T) {
 	setupTapCache(t, galeDir, "mytap", map[string]string{
 		"jq": jqRecipe("1.0.0"),
 	})
-	// Registry dials fail fast: nothing listens on port 1.
+	t.Setenv("GALE_OFFLINE", "1")
 	writeAppConfig(t, galeDir,
-		"[registry]\nurl = \"http://127.0.0.1:1\"\n"+
-			"\n[[repos]]\nname = \"mytap\"\n"+
+		"[[repos]]\nname = \"mytap\"\n"+
 			"url = \"https://example.com/mytap.git\"\npriority = 1\n")
 
 	resetInstallFlags(t)
 	dryRun = true
 
-	err := installCmd.RunE(installCmd, []string{"jq@1.0.0"})
-	if err != nil {
-		t.Fatalf("install jq@1.0.0 should resolve from the tap, got: %v", err)
+	if installCmd.Flags().Lookup("recipes") != nil {
+		t.Fatal("install no longer resolves recipe taps")
 	}
 }
 
@@ -110,14 +106,14 @@ func TestComposeResolversSurfacesCorruptTapRecipe(t *testing.T) {
 	tap := localRecipeResolver(recipesDir)
 	registryConsulted := false
 	registryStub := installer.RecipeResolver(
-		func(name string) (*recipe.Recipe, error) {
+		func(_ context.Context, name string) (*recipe.Recipe, error) {
 			registryConsulted = true
 			return recipe.Parse(jqRecipe("9.9.9"))
 		},
 	)
 
 	r := composeResolvers(tap, registryStub)
-	_, err := r("jq")
+	_, err := r(context.Background(), "jq")
 	if err == nil {
 		t.Fatal("corrupt tap recipe silently fell through to the registry")
 	}
@@ -154,7 +150,7 @@ func TestComposeResolversSurfacesUnreadableTapRecipe(t *testing.T) {
 		"jq": jqRecipe("9.9.9"),
 	})
 
-	_, err := composeResolvers(tap, registryStub)("jq")
+	_, err := composeResolvers(tap, registryStub)(context.Background(), "jq")
 	if err == nil {
 		t.Fatal("unreadable tap recipe silently fell through to the registry")
 	}
@@ -168,7 +164,7 @@ func TestComposeResolversTapMissStillFallsThrough(t *testing.T) {
 		"jq": jqRecipe("2.0.0"),
 	})
 
-	got, err := composeResolvers(tap, registryStub)("jq")
+	got, err := composeResolvers(tap, registryStub)(context.Background(), "jq")
 	if err != nil {
 		t.Fatalf("miss should fall through to registry, got: %v", err)
 	}

@@ -39,10 +39,10 @@ import (
 // on the lock, waits for the simulated Build to finish,
 // then only reaps generations with n < curGen (gen/1).
 //
-// Expected outcome after the fix:
-//   - gen/3 still exists (in-flight gen was not deleted)
-//   - gen/1 is gone (genuine old gen was reaped)
-//   - current still points at gen/2 (no swap happened)
+// Expected outcome after mark-and-sweep: gc waits for the
+// lock, then treats the unswapped gen/4 as not kept (it is
+// neither current nor current-1) and reaps it. gen/1 goes;
+// gen/2 and gen/3 stay; current stays at 3.
 func TestAudit_GcVsBuildRace(t *testing.T) {
 	galeDir := t.TempDir()
 	storeRoot := filepath.Join(galeDir, "pkg")
@@ -58,27 +58,28 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 	}
 	pkgs := map[string]string{"jq": "1.8.1"}
 
-	// First Build: creates gen/1, current → gen/1.
+	// Three Builds: gen/1 below the keep-2 window, gen/2
+	// previous, gen/3 current.
 	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
 		t.Fatalf("first Build: %v", err)
 	}
-	// Second Build: creates gen/2, current → gen/2.
-	// gen/1 is now the old generation that gc should reap.
 	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
 		t.Fatalf("second Build: %v", err)
 	}
+	if err := generation.Build(pkgs, galeDir, storeRoot); err != nil {
+		t.Fatalf("third Build: %v", err)
+	}
 
-	// Verify the expected pre-gc state.
 	curBefore, err := generation.Current(galeDir)
-	if err != nil || curBefore != 2 {
-		t.Fatalf("expected current=2 before gc, got %d err=%v",
+	if err != nil || curBefore != 3 {
+		t.Fatalf("expected current=3 before gc, got %d err=%v",
 			curBefore, err)
 	}
 
 	// The simulated in-flight Build acquires the gen lock,
-	// creates gen/3/bin/ (partially populated), holds for
+	// creates gen/4/bin/ (partially populated), holds for
 	// 80ms, then releases — never swaps current. gc must
-	// not touch gen/3 while the lock is held.
+	// not touch gen/4 while the lock is held.
 	lockPath := filepath.Join(galeDir, "generation.lock")
 
 	acquired := make(chan struct{})
@@ -86,75 +87,56 @@ func TestAudit_GcVsBuildRace(t *testing.T) {
 
 	go func() {
 		_ = filelock.With(lockPath, func() error {
-			// Create gen/3/bin as if Build is mid-populate.
 			if mkErr := os.MkdirAll(filepath.Join(
-				galeDir, "gen", "3", "bin",
+				galeDir, "gen", "4", "bin",
 			), 0o755); mkErr != nil {
-				// Can't use t.Fatal in a goroutine; log and
-				// signal so the test proceeds to check state.
 				t.Logf("simulated Build: MkdirAll: %v", mkErr)
 			}
 			close(acquired)
-			// Hold the lock for 80ms to give gc time to run
-			// and demonstrate the race.
 			time.Sleep(80 * time.Millisecond)
 			return nil
 		})
 	}()
 
-	// Wait until the simulated Build holds the lock and has
-	// created gen/3.
 	<-acquired
-
-	// Start gc 10ms after the lock is established — enough
-	// time to ensure the lock is held before gc begins.
 	time.Sleep(10 * time.Millisecond)
 
 	go func() {
 		defer close(gcDone)
-		// Call the real cleanOldGenerations from gc.go.
-		// With the bug it will not acquire the lock and will
-		// delete gen/3. With the fix it will block, then only
-		// delete gen/1 (n < curGen=2).
 		cleanOldGenerations(galeDir, storeRoot, false)
 	}()
 
-	// Wait for gc to finish. It should either return quickly
-	// (bug: no lock → race) or after ~80ms (fix: lock blocks).
 	<-gcDone
 
-	// Check whether gc deleted the in-flight gen/3.
-	_, errGen3 := os.Stat(filepath.Join(galeDir, "gen", "3"))
-	gen3Gone := os.IsNotExist(errGen3)
+	assertGcVsBuildRace(t, galeDir)
+}
 
-	// Check whether gc reaped the old gen/1.
+func assertGcVsBuildRace(t *testing.T, galeDir string) {
+	t.Helper()
+	_, errGen4 := os.Stat(filepath.Join(galeDir, "gen", "4"))
 	_, errGen1 := os.Stat(filepath.Join(galeDir, "gen", "1"))
-	gen1Gone := os.IsNotExist(errGen1)
-
-	// Check that current still points at gen/2 (no swap).
+	_, errGen2 := os.Stat(filepath.Join(galeDir, "gen", "2"))
 	curAfter, _ := generation.Current(galeDir)
 
-	// With the bug present the test must FAIL: gen/3 is
-	// deleted while the simulated Build held the lock. After
-	// the fix (filelock + n < curGen criterion) gen/3 must
-	// survive and gen/1 must be reaped.
-	if gen3Gone {
+	if !os.IsNotExist(errGen4) {
 		t.Errorf(
-			"CONFIRMED: cleanOldGenerations deleted in-flight "+
-				"gen/3 while Build held the generation lock "+
-				"(curGen=2, symlink not yet swapped). "+
-				"stat err: %v", errGen3,
+			"unswapped in-flight gen/4 is not a kept generation "+
+				"and must be reaped after generation.lock is released, "+
+				"stat err: %v", errGen4,
 		)
 	}
-	if !gen1Gone {
+	if !os.IsNotExist(errGen1) {
 		t.Errorf(
-			"gc did not reap old gen/1 (n < curGen=2); " +
+			"gc did not reap gen/1 (below keep-2 cutoff); " +
 				"expected it to be removed but it still exists",
 		)
 	}
-	if curAfter != 2 {
+	if os.IsNotExist(errGen2) {
+		t.Errorf("gc reaped gen/2; the previous generation must stay")
+	}
+	if curAfter != 3 {
 		t.Errorf(
-			"current symlink moved: expected gen/2, got gen/%d",
+			"current symlink moved: expected gen/3, got gen/%d",
 			curAfter,
 		)
 	}

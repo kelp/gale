@@ -1,17 +1,14 @@
 # `--error-format=json` wraps top-level errors in a JSON
-# envelope on stderr so tooling can parse them. The default
-# text format must not contain that envelope; the JSON mode
-# must.
+# envelope on stderr so tooling can parse them.
 
-gale-fixture recipes $WORK/recipes
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
 
-# Text mode: plain "no local recipe" line.
-! exec gale install nonexistent -g --recipes=$WORK/recipes
-stderr 'no local recipe'
+! exec gale install nonexistent -g --index=$WORK/index
+stderr 'not found'
 ! stderr '"kind":'
 
-# JSON mode: object with kind/command/message keys.
-! exec gale install nonexistent -g --error-format=json --recipes=$WORK/recipes
+! exec gale install nonexistent -g --error-format=json --index=$WORK/index
 stderr '"kind":\s*"runtime"'
 stderr '"command":\s*"install"'
 stderr '"message":'

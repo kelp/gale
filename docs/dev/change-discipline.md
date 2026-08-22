@@ -27,9 +27,9 @@ touching code.
 | Tier | Typical touch | Upfront trace |
 |------|---------------|---------------|
 | **0** | Docs, help text, log wording | Skim only |
-| **1** | Single function inside one `internal/` package; no version, config, lock, generation, or farm semantics | Read package `_test.go`; grep the symbol |
+| **1** | Single function inside one `internal/` package; no version, config, lock, or generation semantics | Read package `_test.go`; grep the symbol |
 | **2** | `cmd/gale/context.go`, version strings, lockfile writes, registry resolution, scope (global/project/host) | **Mandatory trace** (below) |
-| **3** | Generation rebuild, farm populate, gc retention, sync staleness/reinstall, binary fixup | **Full pipeline trace** + name affected commands |
+| **3** | Generation rebuild, gc retention, sync staleness/reinstall | **Full pipeline trace** + name affected commands |
 
 When unsure, round up. Tier 2–3 bugs are expensive; tier 0–1
 can stay fast.
@@ -60,14 +60,11 @@ helpers or reshaping interfaces.
 
 **Generation**
 
-- Active environment is a **function of gale.toml** (plus
-  store contents and farm closure), not a history of
-  imperative symlink edits.
+- Active environment is a **function of the lock** (plus
+  store contents), not a history of imperative symlink
+  edits. KindAbsent still rebuilds from gale.toml.
 - `current` swap is atomic. Partial or broken PATH during
   rebuild is a bug.
-- Farm must reflect the **full closure** of the active
-  generation (config packages + runtime deps in
-  `.gale-deps.toml`), not only direct config entries.
 
 **Convergence**
 
@@ -79,9 +76,10 @@ helpers or reshaping interfaces.
 
 **Scope**
 
-- Global vs project vs host-scoped `[hosts.*.packages]`
-  change which gale.toml is read and where entries are
-  written. A fix in one scope must not corrupt another.
+- Global vs project change which gale.toml is
+  read and where entries are written. A fix in
+  one scope must not corrupt another. Leftover
+  `[hosts.*.packages]` is refused, not writable.
 
 ## Pipelines
 
@@ -96,7 +94,6 @@ command (install / update / switch / …)
   → installer.Install* (store write; binary or source path)
   → write gale.toml + gale.lock  (finalize / writeConfigAndLock)
   → rebuild generation
-  → farm populate (during generation build)
 ```
 
 Entry points: `cmd/gale/context.go` (`FinalizeInstall`,
@@ -128,31 +125,31 @@ user input (@ver, @ver-rev, bare pin in toml)
 Touches: `internal/registry/`, `internal/version/`,
 `internal/recipe/`, `cmd/gale/context.go`.
 
-### 4. Generation and farm
+### 4. Generation
 
 ```
 rebuildGeneration
-  → read config packages (+ effective closure)
+  → read lock packages
   → generation.Build (symlinks into store)
-  → farm: populate / reconcile dylibs for closure
   → atomic current swap
 ```
 
-Rollback and gc generation rebuild must leave farm consistent
-with the target generation, not the rolled-from one.
+Rollback and gc generation rebuild must not write
+`~/.gale/lib`.
 
 ### 5. GC and retention
 
 ```
 gc
-  → load config + project registry (~/.gale/projects)
-  → compute retention set (active gens, deps metadata, canonical keys)
-  → prune store / generations / scratch
-  → optional generation rebuild when active gen links superseded orphan
+  → prune vanished projects
+  → acquire each scope's mutate.lock (sorted), then generation.lock
+  → mark exact symlink targets of current + one previous gen
+  → sweep unreferenced store / fetch / old gens / scratch
 ```
 
-Retention must match `storeRetentionKey` / canonicalize logic
-in `context.go`, not ad-hoc `store.List` string compares.
+Retention is `generation.KeptStoreDirs` for every
+`projects.Scopes` entry, not config pins or
+`storeRetentionKey`.
 
 ## Pre-change trace (tier ≥ 2)
 
@@ -183,13 +180,12 @@ callers and string literals from hits.
 | Version identity | `Full()`, `canonicalize`, `stripNumericRevision`, `configVersionForRecipe` | install, switch, update, sync, gc | `audit_fix_U1_*`, `internal/version/`, `rebuild_generation_test.go` |
 | Finalize path | `FinalizeInstall`, `writeConfigAndLock`, `FinalizeRecipeInstall`, `updateLockfile` | install, update, switch, remove, pin | `context_test.go`, `audit_fix_U1_*`, `audit_fix_U11_*` |
 | Sync / staleness | `runSync`, `Reinstall`, `isSuperseded`, `canonicalizeForBuild`, `syncNeeded`, `syncFingerprint` | sync, shell, run, hook direnv | `sync_*_test.go`, `syncstate_test.go`, `audit_fix_U1_*` (gh#49) |
-| Generation / farm | `rebuildGeneration`, `generation.Build`, `farm`, `ProposedStore`, `Claimant`, `Rollback` | sync, gc, generations, rollback | `generation/audit_fix_*`, `audit_fix_U2_*`, `rebuild_generation_test.go` |
+| Generation | `rebuildGeneration`, `generation.Build`, `Rollback` | sync, gc, generations, rollback | `generation/audit_fix_*`, `audit_fix_U2_*`, `rebuild_generation_test.go` |
 | GC / retention | `storeRetentionKey`, `generationLinksSuperseded`, `projects.Register` | gc, doctor | `audit_fix_U4_*`, `gc_test.go`, `projects_*_test.go` |
 | Registry / resolve | `resolveVersionedRecipe`, `FetchRecipe`, `pickVersion`, `composeResolvers` | install, update, outdated, search | `audit_fix_U12_*`, `registry/`, `recipes_test.go` |
-| Installer / store | `installer.Install`, `installBinaryTo`, `Store.Remove`, `filelock` | install, remove, build | `installer/audit_fix_*`, `store/audit_fix_*` |
-| Binary fixup | `FixupBinaries`, `patchelf`, `install_name_tool`, `RestorePrefixPlaceholder` | install, build | `internal/build/fixup_*`, `build_test.go` |
+| Installer / store | `installer.Install`, `Store.Remove`, `filelock` | leftover refuse, remove | `installer/source_refuse_test.go`, `store/` |
 | Scope / paths | `resolveScope`, `galeDirForConfig`, `registerProject`, `resolveConfigPath` | env, init, doctor, most mutating cmds | `audit_fix_U11_*` (gh#96), `scope_*_test.go` |
-| Remove correctness | `remove`, farm depopulation, host entries | remove | `audit_fix_U9_*`, `remove_test.go` |
+| Remove correctness | `remove`, host entries | remove | `audit_fix_U9_*`, `remove_test.go` |
 
 ### `audit_fix_*` tests
 
@@ -225,9 +221,8 @@ commit stays testable:
 ```
 config, lockfile, store, output, recipe
   → generation, download
-  → build
   → installer
-  → registry, ghcr, farm, …
+  → registry, ghcr, …
   → cmd/gale
 ```
 
@@ -263,6 +258,6 @@ test diff are allowed (existing coverage must still pass).
 Sensitive paths today:
 
 - `cmd/gale/context.go`, `sync.go`, `gc.go`, `generations.go`
-- `internal/generation/`, `internal/farm/`
+- `internal/generation/`
 
 Run locally: `scripts/check-pipeline-tests.sh origin/main`.
