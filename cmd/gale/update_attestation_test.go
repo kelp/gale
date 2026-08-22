@@ -46,8 +46,7 @@ func attestDropFixture(t *testing.T) *lockFetchFix {
 	// A newer 9.9.9 block whose darwin/arm64 artifact carries NO
 	// attestation, while the locked 1.56.0 was attested (the
 	// fixture index sets attestation = true on darwin/arm64).
-	fx.h.files["/"+lockFetchPinB+"/index/j/just.toml"] =
-		attestDropIndexDoc("just", "9.9.9")
+	fx.h.files["/"+lockFetchPinB+"/index/j/just.toml"] = attestDropIndexDoc("just", "9.9.9")
 	return fx
 }
 
@@ -63,7 +62,8 @@ func TestUpdateRefusesAttestationDrop(t *testing.T) {
 	fx := attestDropFixture(t)
 	resetAllowAttestationDrop(t, false)
 
-	err := runUpdateFetch(context.Background(), fx.c, []string{"just"},
+	err := runUpdateFetch(
+		context.Background(), fx.c, []string{"just"},
 		index.Source{BaseURL: fx.src.BaseURL, Commit: lockFetchPinB},
 		newOutput(),
 	)
@@ -88,7 +88,8 @@ func TestUpdateAllowsAttestationDropWithFlagAndWarns(t *testing.T) {
 
 	var buf strings.Builder
 	out := newOutputForWriter(&buf)
-	err := runUpdateFetch(context.Background(), fx.c, []string{"just"},
+	err := runUpdateFetch(
+		context.Background(), fx.c, []string{"just"},
 		index.Source{BaseURL: fx.src.BaseURL, Commit: lockFetchPinB},
 		out,
 	)

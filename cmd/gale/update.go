@@ -25,8 +25,9 @@ var (
 )
 
 var errAttestationDrop = errors.New(
-	"update would drop a locked attestation; the index cannot switch "+
-		"verification off — pass --allow-attestation-drop to accept it")
+	"update would drop a locked attestation; the index cannot switch " +
+		"verification off — pass --allow-attestation-drop to accept it",
+)
 
 var updateCmd = &cobra.Command{
 	Use:   "update [package...]",
