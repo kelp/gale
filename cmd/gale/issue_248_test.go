@@ -9,11 +9,9 @@ import (
 	"github.com/kelp/gale/internal/generation"
 )
 
-// TestGCDoesNotUndoPositionalAutoPrune is the pairing Bugbot
-// named on gh#248: auto-gc counts generations, so with 1, 5, 10
-// and current at 10 it keeps gen/5. gale gc used a numeric
-// cur-1 window and would then delete gen/5, undoing the keep
-// promise on the next sweep.
+// TestGCDoesNotUndoPositionalAutoPrune checks that gale gc
+// keeps gen/5 after auto-gc prunes generations 1, 5, 10
+// with current at 10.
 func TestGCDoesNotUndoPositionalAutoPrune(t *testing.T) {
 	galeDir, storeRoot := setupGCHome(t)
 	writeGlobalConfig(t, galeDir, "[packages]\njq = \"1.8\"\n")
