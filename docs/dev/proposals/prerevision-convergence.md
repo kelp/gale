@@ -486,6 +486,12 @@ smuggling it in.
 
 ## 7. Relationship to gh#191's proposal
 
+> **gh#191 was closed `not_planned` on 2026-08-22** — content-
+> addressed store paths are a stated non-goal
+> (`fetch-dont-build.md` §13). The evaluation below stands as
+> written, but it now compares against a proposal that was
+> rejected rather than one awaiting a decision.
+
 **Independent. No free convergence — and the sibling proposal
 overstates this in one line.**
 

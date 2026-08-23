@@ -3,6 +3,30 @@
 Proposal for gh#191. Not implemented. Written against
 `6d81908` (post-#213). Line references are to that commit.
 
+> **Rejected, not deferred.** gh#191 was closed `not_planned`
+> on 2026-08-22. Content-addressed store paths are a stated
+> non-goal: `fetch-dont-build.md` §13 — *"Content-addressed
+> store paths (gh#191). Hash refusal is enough."* The phasing
+> below is moot rather than pending; nothing here is waiting
+> on a trigger.
+>
+> **The harm it was written to solve was closed another way.**
+> §1's motivating case — a stale reinstall renaming over a
+> store directory an older generation links — was fixed by
+> #326, which made an unwired replace **fail closed**
+> (`ErrReplaceUnwired`) instead of giving divergent bytes a
+> sibling path to land in. Refusal, not coexistence.
+>
+> **Parts of it describe deleted code.** `internal/farm` and
+> `internal/build` were removed in Milestone 5
+> (`fetch-dont-build.md`), so the farm-claim analysis and the
+> gh#198 cross-references below concern packages that no
+> longer exist.
+>
+> Kept as a record: the option comparison and the review trail
+> are why content-addressing was rejected on set-selection and
+> permanent back-compat rather than on rpath depth.
+
 Related: gh#211 (stale reinstalls replace referenced
 directories), gh#198 (scope the dylib farm), gh#183 (closed
 in part by #213), `docs/dev/design.md:77-93`,
