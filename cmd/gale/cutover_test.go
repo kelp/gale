@@ -94,9 +94,18 @@ func TestSyncSpellingNamesOnlyRegisteredCommandsAndFlags(t *testing.T) {
 	}
 }
 
-// assertRegisteredSpelling resolves every token of an advised command
-// against the live command tree.
+// assertRegisteredSpelling resolves every token of advised command
+// against the live command tree. Advice may be a `&&` chain, and every
+// link in it has to resolve — a second command is exactly where an
+// unregistered flag would hide.
 func assertRegisteredSpelling(t *testing.T, spelling string) {
+	t.Helper()
+	for _, one := range strings.Split(spelling, "&&") {
+		assertRegisteredCommand(t, strings.TrimSpace(one))
+	}
+}
+
+func assertRegisteredCommand(t *testing.T, spelling string) {
 	t.Helper()
 	tokens := strings.Fields(spelling)
 	if len(tokens) < 2 {

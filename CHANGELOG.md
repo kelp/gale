@@ -23,6 +23,11 @@
   writers are `gale lock` for an absent
   or unparseable lock and `gale
   fetch-adopt` for a legacy or v1 one.
+  `gale lock` is named with the sync
+  that follows it: it ends at
+  `lockfile.WriteV2` and swaps no
+  generation, so alone it republishes
+  nothing.
   `revisions.md` also stops promising
   that a sync reinstalls a pre-revision
   bare store dir into the canonical

@@ -267,12 +267,17 @@ Retention keeps two generations, so the bare dir survives the
 first republish by design and falls out on the second. That
 is expected, not a stalled migration.
 
-Which command step 1 is depends on the scope's lock: `gale
-sync` needs a live v2 lock, `gale fetch-adopt` migrates a
-legacy or v1 one, and `gale lock` is the only writer that
-survives a lockfile gale cannot parse. `gale sync
---no-frozen` was removed with the fetch cutover; it is not an
-escape from any of these.
+Which command step 1 is depends on the scope's lock. `gale
+sync` needs a live v2 lock. `gale fetch-adopt` migrates a
+legacy or v1 one and republishes in the same pass. An absent
+or unparseable lock takes **two** commands, `gale lock &&
+gale sync`: `gale lock` is the only writer that survives a
+lockfile gale cannot parse, but it writes the lock and stops
+— no store tree and no generation swap — so it republishes
+nothing on its own.
+
+`gale sync --no-frozen` was removed with the fetch cutover;
+it is not an escape from any of these.
 
 ### What that never reaches
 

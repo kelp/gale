@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
@@ -155,8 +156,9 @@ func reportRebuildable(out *output.Output, targets []migrateTarget) {
 //     onto the fetch namespace leaves the bare directory UNLINKED
 //     rather than replacing it — resolvePkgDir short-circuits to the
 //     fetch tree whenever a SHA is present — and `gale gc` then sweeps
-//     what nothing links. Two commands, not one; reportPreRevisionRoots
-//     names both.
+//     what nothing links. Never one command; reportPreRevisionRoots
+//     names the republish and gc both, and the republish is itself two
+//     commands where the scope's lock has to be written first.
 //   - Anything else — several scopes, or one that reaches it only
 //     through a closure. No per-scope sequence converges that, and
 //     naming one that converges nothing would be worse than naming
@@ -213,8 +215,8 @@ type preRevisionRoot struct {
 	scope  projects.Scope
 }
 
-// reportPreRevisionRoots names the command that republishes each
-// declared root, and says plainly that a second one finishes the job.
+// reportPreRevisionRoots names what republishes each declared root,
+// and says plainly that `gale gc` finishes the job.
 //
 // Nothing replaces a bare directory, and the report may not imply that
 // anything does. A republish writes the fetch tree and relinks the
@@ -223,14 +225,21 @@ type preRevisionRoot struct {
 // links it — keep-2, so it takes two publications to fall out of the
 // window. Naming the republish alone would leave the user staring at a
 // directory that is still there and reading it as a failure.
+//
+// A line may carry two commands. `gale lock` writes a lock and stops,
+// so where it leads it is not the republish and cannot be run on its
+// own.
 func reportPreRevisionRoots(out *output.Output, roots []preRevisionRoot) {
 	if len(roots) == 0 {
 		return
 	}
 	out.Info("These are declared roots of the scope named beside each. " +
-		"Republishing that scope links the fetched tree instead and " +
-		"leaves the bare directory behind, unlinked. Nothing is " +
-		"deleted and no pin is touched:")
+		"Run every command on the line: the last one republishes the " +
+		"scope, which links the fetched tree and leaves the bare " +
+		"directory behind, unlinked. A leading `gale lock` writes the " +
+		"lock and stops — no store tree, no generation — so it " +
+		"converges nothing by itself. Nothing is deleted and no pin " +
+		"is touched:")
 	for _, r := range roots {
 		out.Info(fmt.Sprintf(
 			"  %s@%s (%s): run `%s` in %s",
@@ -433,52 +442,66 @@ func scopeConfigPath(s projects.Scope) string {
 	return filepath.Join(filepath.Dir(s.LockPath), "gale.toml")
 }
 
-// convergeSpelling is the command that republishes this scope onto the
+// convergeSpelling is what the scope runs to republish itself onto the
 // fetch namespace — the first of the two steps that clear a bare
-// directory, and the only one that is the scope's to run.
+// directory, and the only step that is the scope's to run.
 //
-// The lock decides which command that is, because each writer treats a
-// different set of lock states as usable. `gale sync` enforces the lock
-// and refuses anything but a live v2 one (requireLiveV2). `gale
-// fetch-adopt` migrates a legacy or v1 lock, which is the state
-// errSwitchV1 names. An unparseable file leaves only `gale lock`:
-// fetch-adopt reads the old lock through lockfile.ReadV1 and dead-ends
-// on a parse failure, while `gale lock` never reads the existing lock
-// at all and overwrites it atomically.
+// Sometimes two commands, because the writer that can read the scope's
+// lock is not always a writer that republishes. Republishing means
+// landing the fetch trees and swapping a generation onto them, which
+// `gale sync` does through rebuildFromV2 and `gale fetch-adopt` does
+// through finalizeFetch. `gale lock` does neither: runLockFetch ends at
+// lockfile.WriteV2, so a scope told to run it alone would rebuild
+// nothing, gc would still find the bare directory linked, and the
+// advice would converge exactly nothing. Where `gale lock` is needed it
+// is named with the sync that finishes the job.
 //
-// The global scope takes -g. A bare command auto-detects its scope
-// through resolveScope, which walks up from the working directory for
-// any gale.toml — including the one in the gale home itself — so a bare
-// spelling names the global scope only by accident of where the user
-// happens to be standing. A project scope needs no flag: its label
-// already names the directory the command is run in.
+// The lock decides which. `gale sync` enforces the lock and refuses
+// anything but a live v2 one (requireLiveV2). `gale fetch-adopt`
+// migrates a legacy or v1 lock, the state errSwitchV1 names, and
+// republishes in the same pass. An absent or unparseable file has to
+// start with `gale lock`: fetch-adopt reads the old lock through
+// lockfile.ReadV1 and dead-ends on a parse failure, while `gale lock`
+// never reads the existing lock at all and overwrites it atomically.
+//
+// The global scope takes -g, on every command in the chain. A bare
+// command auto-detects its scope through resolveScope, which walks up
+// from the working directory for any gale.toml — including the one in
+// the gale home itself — so a bare spelling names the global scope only
+// by accident of where the user happens to be standing. A project scope
+// needs no flag: its label already names the directory the command is
+// run in.
 func convergeSpelling(s projects.Scope) string {
-	return scopeSuffixed(convergeVerb(s.LockPath), s)
+	cmds := convergeCommands(s.LockPath)
+	for i, cmd := range cmds {
+		cmds[i] = scopeSuffixed(cmd, s)
+	}
+	return strings.Join(cmds, " && ")
 }
 
-// convergeVerb picks the writer whose lock handling covers this state.
-func convergeVerb(lockPath string) string {
+// convergeCommands is the sequence, in order, that leaves this scope
+// republished. Every sequence ends in a command that republishes.
+func convergeCommands(lockPath string) []string {
 	lv, err := lockfile.Load(lockPath)
 	if err != nil {
 		// Present and unmodelable. Only a writer that never reads it
-		// survives this.
-		return "gale lock"
+		// can replace it, and that writer does not republish.
+		return []string{"gale lock", "gale sync"}
 	}
 	switch lv.Kind {
 	case lockfile.KindV2:
-		return "gale sync"
+		return []string{"gale sync"}
 	case lockfile.KindLegacy, lockfile.KindV1:
-		return "gale fetch-adopt"
+		return []string{"gale fetch-adopt"}
 	case lockfile.KindAbsent:
 		// Nothing to migrate and nothing to enforce, so the scope needs
-		// its first lock before any sync can run.
-		return "gale lock"
+		// its first lock before any sync can run — and then the sync.
+		return []string{"gale lock", "gale sync"}
 	default:
 		// Load classifies into exactly the kinds above. A kind this
 		// function does not understand must not be answered with a
-		// command that assumes one, and `gale lock` is the writer that
-		// assumes least.
-		return "gale lock"
+		// command that assumes one, and `gale lock` assumes least.
+		return []string{"gale lock", "gale sync"}
 	}
 }
 
