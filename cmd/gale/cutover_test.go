@@ -14,6 +14,7 @@ import (
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
+	"github.com/spf13/cobra"
 )
 
 func TestCutoverDropsRecipesOnInstallerVerbs(t *testing.T) {
@@ -87,37 +88,52 @@ func TestSyncSpellingNamesOnlyRegisteredCommandsAndFlags(t *testing.T) {
 		}
 		for _, tc := range convergeLockStates(t, global) {
 			t.Run(shape+"/"+tc.name, func(t *testing.T) {
-				spelling := syncSpelling(tc.scope)
-				tokens := strings.Fields(spelling)
-				if len(tokens) < 2 {
-					t.Fatalf("got %q, want at least `gale <command>`", spelling)
-				}
-				if tokens[0] != "gale" {
-					t.Errorf("first token = %q, want %q", tokens[0], "gale")
-				}
-				cmd := findCmd(tokens[1])
-				if cmd == nil {
-					t.Fatalf("%q names command %q, which is not registered",
-						spelling, tokens[1])
-				}
-				for _, tok := range tokens[2:] {
-					switch {
-					case strings.HasPrefix(tok, "--"):
-						if cmd.Flags().Lookup(strings.TrimPrefix(tok, "--")) == nil {
-							t.Errorf("%q names %s, which %s does not register",
-								spelling, tok, tokens[1])
-						}
-					case strings.HasPrefix(tok, "-"):
-						if cmd.Flags().ShorthandLookup(strings.TrimPrefix(tok, "-")) == nil {
-							t.Errorf("%q names %s, which %s does not register",
-								spelling, tok, tokens[1])
-						}
-					default:
-						t.Errorf("%q carries a non-flag argument %q", spelling, tok)
-					}
-				}
+				assertRegisteredSpelling(t, convergeSpelling(tc.scope))
 			})
 		}
+	}
+}
+
+// assertRegisteredSpelling resolves every token of an advised command
+// against the live command tree.
+func assertRegisteredSpelling(t *testing.T, spelling string) {
+	t.Helper()
+	tokens := strings.Fields(spelling)
+	if len(tokens) < 2 {
+		t.Fatalf("got %q, want at least `gale <command>`", spelling)
+	}
+	if tokens[0] != "gale" {
+		t.Errorf("first token = %q, want %q", tokens[0], "gale")
+	}
+	cmd := findCmd(tokens[1])
+	if cmd == nil {
+		t.Fatalf("%q names command %q, which is not registered",
+			spelling, tokens[1])
+	}
+	for _, tok := range tokens[2:] {
+		assertRegisteredFlag(t, cmd, spelling, tok)
+	}
+}
+
+// assertRegisteredFlag checks one token, long or short. Both forms are
+// checked because advice that reaches a scope needs a scope flag, and
+// a shorthand that escaped the check would be exactly the hole this
+// test exists to close.
+func assertRegisteredFlag(t *testing.T, cmd *cobra.Command, spelling, tok string) {
+	t.Helper()
+	switch {
+	case strings.HasPrefix(tok, "--"):
+		if cmd.Flags().Lookup(strings.TrimPrefix(tok, "--")) == nil {
+			t.Errorf("%q names %s, which %s does not register",
+				spelling, tok, cmd.Name())
+		}
+	case strings.HasPrefix(tok, "-"):
+		if cmd.Flags().ShorthandLookup(strings.TrimPrefix(tok, "-")) == nil {
+			t.Errorf("%q names %s, which %s does not register",
+				spelling, tok, cmd.Name())
+		}
+	default:
+		t.Errorf("%q carries a non-flag argument %q", spelling, tok)
 	}
 }
 

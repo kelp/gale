@@ -275,7 +275,7 @@ func convergeLockStates(t *testing.T, global bool) []lockStateCase {
 func TestSyncSpellingDoesNotNameASyncThatRefusesTheLock(t *testing.T) {
 	for _, tc := range convergeLockStates(t, false) {
 		t.Run(tc.name, func(t *testing.T) {
-			spelling := syncSpelling(tc.scope)
+			spelling := convergeSpelling(tc.scope)
 			if _, err := requireLiveV2(tc.scope.LockPath); err != nil {
 				if strings.HasPrefix(spelling, "gale sync") {
 					t.Errorf("got %q, want a command that runs: "+

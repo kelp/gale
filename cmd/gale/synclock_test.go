@@ -26,7 +26,7 @@ func TestLockedSyncPlanRefusesLegacySchema(t *testing.T) {
 		Legacy: &lockfile.LockFile{},
 	}
 
-	plan, warn, err := lockedSyncPlan(view, lockplan.Request{}, false)
+	plan, warn, err := lockedSyncPlan(view, lockplan.Request{})
 	if err == nil {
 		t.Fatalf("legacy lock: want refusal, got plan=%v warn=%q", plan, warn)
 	}
@@ -41,29 +41,6 @@ func TestLockedSyncPlanRefusesLegacySchema(t *testing.T) {
 	// else.
 	if !strings.Contains(err.Error(), "gale lock") {
 		t.Errorf("legacy lock: message must name 'gale lock', got %q", err)
-	}
-}
-
-// --no-frozen is the documented escape hatch (design §9): it
-// downgrades a fail-closed condition to a warning and proceeds
-// unlocked. It must not merely soften the message — the plan has to
-// come back nil, or the sync would still enforce the lock the user
-// asked it to ignore.
-func TestLockedSyncPlanNoFrozenDowngradesLegacyToWarning(t *testing.T) {
-	view := &lockfile.View{
-		Kind:   lockfile.KindLegacy,
-		Legacy: &lockfile.LockFile{},
-	}
-
-	plan, warn, err := lockedSyncPlan(view, lockplan.Request{}, true)
-	if err != nil {
-		t.Fatalf("--no-frozen: want no error, got %v", err)
-	}
-	if plan != nil {
-		t.Errorf("--no-frozen: want unlocked mode (nil plan), got %v", plan)
-	}
-	if warn == "" {
-		t.Error("--no-frozen: proceeding unlocked must warn, got no warning")
 	}
 }
 
@@ -303,7 +280,7 @@ func TestRunSyncOneUnderAPlanResolvesNothing(t *testing.T) {
 func TestLockedSyncPlanAbsentLockWarnsAndProceeds(t *testing.T) {
 	view := &lockfile.View{Kind: lockfile.KindAbsent}
 
-	plan, warn, err := lockedSyncPlan(view, lockplan.Request{}, false)
+	plan, warn, err := lockedSyncPlan(view, lockplan.Request{})
 	if err != nil {
 		t.Fatalf("absent lock: want no error, got %v", err)
 	}

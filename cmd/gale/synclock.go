@@ -13,33 +13,21 @@ import (
 //
 // Three results rather than two because "unlocked" is not one state.
 // A nil plan with a nil error means proceed unlocked, and warn carries
-// the single line saying why — an absent lock and a lock the user
-// asked to ignore are both legitimate, and both have to say so out
-// loud. A non-nil error means refuse; the plan is always nil then, so
-// no caller can install from a half-built plan.
+// the single line saying why — a lock that has never been written is
+// legitimate, and it has to say so out loud. A non-nil error means
+// refuse; the plan is always nil then, so no caller can install from a
+// half-built plan.
 //
-// Fail-closed is the default (design §9). Every condition that stops a
-// locked sync — legacy schema, unknown version, stale roots, a missing
-// package, dep or platform entry, a recipe that no longer backs the
-// locked node — is an error here, before the installer sees anything.
-// --no-frozen downgrades all of them to a warning, which is the whole
-// of the escape hatch: it does not soften enforcement, it turns
-// enforcement off, so the plan comes back nil and the sync installs
-// from recipes the way it did before enforcement existed.
+// Fail-closed is the whole of it (design §9). Every condition that
+// stops a locked sync — legacy schema, unknown version, stale roots, a
+// missing package, dep or platform entry, a recipe that no longer backs
+// the locked node — is an error here, before the installer sees
+// anything. There is no bypass: `--no-frozen` was the escape hatch and
+// it was removed with the fetch cutover, so absence is the only route
+// to a nil plan.
 func lockedSyncPlan(
-	lv *lockfile.View, req lockplan.Request, noFrozen bool,
+	lv *lockfile.View, req lockplan.Request,
 ) (*lockplan.Plan, string, error) {
-	// Before anything reads the lock, because the bypass has to be
-	// total. Applying the flag only to the failure branches left a
-	// valid lock fully enforced, which is the one case where a user
-	// reaching for the escape hatch has no other way out. runSync does
-	// not even load the file under this flag, so a malformed lock
-	// cannot fail the command either.
-	if noFrozen {
-		return nil, "--no-frozen: ignoring gale.lock and installing " +
-			"from recipes without integrity enforcement", nil
-	}
-
 	switch lv.Kind {
 	case lockfile.KindAbsent:
 		return nil, "No gale.lock — installing from recipes without " +
