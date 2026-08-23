@@ -11,6 +11,34 @@
 
 ### Fixed
 
+- Docs no longer name `gale sync
+  --no-frozen`, a flag removed with the
+  fetch cutover (gh#329). `lockfile.md`,
+  `revisions.md` and `ci-cd.md` sent a
+  user with a legacy lock to `unknown
+  flag: --no-frozen`, with plain `gale
+  sync` refusing the same lock — a dead
+  end where every refusal is supposed to
+  name the command that ends it. The
+  writers are `gale lock` for an absent
+  or unparseable lock and `gale
+  fetch-adopt` for a legacy or v1 one.
+  `gale lock` is named with the sync
+  that follows it: it ends at
+  `lockfile.WriteV2` and swaps no
+  generation, so alone it republishes
+  nothing.
+  `revisions.md` also stops promising
+  that a sync reinstalls a pre-revision
+  bare store dir into the canonical
+  path; nothing replaces one. A
+  republish leaves it unlinked and
+  `gale gc` removes it, which takes two
+  publications under keep-2 retention.
+  The migrate report's remedy string and
+  the dead `--no-frozen` bypass in
+  `lockedSyncPlan` go with them.
+
 - A staged reinstall with no
   `ReplaceGuard` no longer renames over
   an occupied store dir (gh#211). The

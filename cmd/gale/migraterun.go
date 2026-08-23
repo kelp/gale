@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/kelp/gale/internal/filelock"
 	"github.com/kelp/gale/internal/generation"
@@ -151,15 +152,22 @@ func reportRebuildable(out *output.Output, targets []migrateTarget) {
 // can be in, and it hid working escapes from the other two (gh#200).
 //
 //   - Nothing holds it. It is an orphan, and `gale gc` sweeps it.
-//   - One scope holds it, as a declared root. Unlocked sync reports a
-//     directory with no dependency metadata as stale and reinstalls it
-//     into the canonical path, additively: `gale sync`, or
-//     `gale sync --no-frozen` where that scope carries a lock a locked
-//     sync fails closed on.
+//   - One scope holds it, as a declared root. Republishing that scope
+//     onto the fetch namespace leaves the bare directory UNLINKED
+//     rather than replacing it — resolvePkgDir short-circuits to the
+//     fetch tree whenever a SHA is present — and `gale gc` then sweeps
+//     what nothing links. Never one command; reportPreRevisionRoots
+//     names the republish and gc both, and the republish is itself two
+//     commands where the scope's lock has to be written first.
 //   - Anything else — several scopes, or one that reaches it only
 //     through a closure. No per-scope sequence converges that, and
 //     naming one that converges nothing would be worse than naming
 //     none.
+//
+// The premise this used to rest on is gone (gh#329). There is no
+// unlocked sync any more and a fetch install writes no
+// `.gale-deps.toml`, so nothing reports a bare directory as stale and
+// nothing reinstalls it into the canonical path.
 //
 // Nothing here mutates, and no refusal moved. Migrate still may not
 // replace any of these directories; all that changed is what it says
@@ -200,45 +208,49 @@ func reportUnresolved(
 	reportPreRevisionStuck(out, stuck)
 }
 
-// preRevisionRoot pairs a bare directory with the one scope whose sync
-// converges it, since the spelling of that sync is the scope's.
+// preRevisionRoot pairs a bare directory with the one scope that can
+// republish it, since the spelling of that command is the scope's.
 type preRevisionRoot struct {
 	target migrateTarget
 	scope  projects.Scope
 }
 
-// reportPreRevisionRoots names the sync that converges each declared
-// root, and hands off the case where the sync lands the bytes without
-// attesting them.
+// reportPreRevisionRoots names what republishes each declared root,
+// and says plainly that `gale gc` finishes the job.
 //
-// Additive, which is why it may be named at all: `Reinstall` stages
-// into a sibling and commits at the CANONICAL path, so the bare
-// directory survives the operation and becomes a gc candidate by
-// itself once store resolution prefers the populated sibling. No pin
-// is touched and there is no window in which the bytes are gone.
+// Nothing replaces a bare directory, and the report may not imply that
+// anything does. A republish writes the fetch tree and relinks the
+// generation to it; the bare directory is left where it is, unlinked.
+// Only `gale gc` removes it, and only once no retained generation
+// links it — keep-2, so it takes two publications to fall out of the
+// window. Naming the republish alone would leave the user staring at a
+// directory that is still there and reading it as a failure.
+//
+// A line may carry two commands. `gale lock` writes a lock and stops,
+// so where it leads it is not the republish and cannot be run on its
+// own.
 func reportPreRevisionRoots(out *output.Output, roots []preRevisionRoot) {
 	if len(roots) == 0 {
 		return
 	}
-	out.Info("These are declared roots of the scope named beside each, " +
-		"which a sync reinstalls into the canonical directory. That " +
-		"adds a directory and deletes nothing:")
+	out.Info("These are declared roots of the scope named beside each. " +
+		"Run every command on the line: the last one republishes the " +
+		"scope, which links the fetched tree and leaves the bare " +
+		"directory behind, unlinked. A leading `gale lock` writes the " +
+		"lock and stops — no store tree, no generation — so it " +
+		"converges nothing by itself. Nothing is deleted and no pin " +
+		"is touched:")
 	for _, r := range roots {
 		out.Info(fmt.Sprintf(
 			"  %s@%s (%s): run `%s` in %s",
 			r.target.name, r.target.version, r.target.dir,
-			syncSpelling(r.scope), r.scope.Label,
+			convergeSpelling(r.scope), r.scope.Label,
 		))
 	}
-	// recordProvenance is all-or-nothing: it commits the directory
-	// with NO record when the closure below it cannot be attested.
-	// Since a pre-revision leftover is most often a dependency, the
-	// common shape is a root that lands canonically and still records
-	// nothing. Unsaid, that reads as the sync having failed.
-	out.Info("A reinstall whose closure cannot be attested commits " +
-		"with no provenance record. That is the next step rather than " +
-		"a failure: converge the closure from the bottom up. No " +
-		"per-scope command replaces the resulting directory.")
+	out.Info("Then `gale gc` removes the bare directory, once no " +
+		"retained generation still links it. Retention keeps two " +
+		"generations, so the directory outlives the first republish " +
+		"by design.")
 }
 
 // reportPreRevisionOrphans names the directories `gale gc` sweeps.
@@ -253,10 +265,10 @@ func reportPreRevisionOrphans(
 		return
 	}
 	if holds.retentionUncertain {
-		out.Info("Nothing links or pins these, so `gale gc` clears " +
-			"them — unless a config gale could not read still pins one:")
+		out.Info("Nothing links these, so `gale gc` clears them — " +
+			"unless a generation gale could not read still links one:")
 	} else {
-		out.Info("Nothing links or pins these, so `gale gc` clears them:")
+		out.Info("Nothing links these, so `gale gc` clears them:")
 	}
 	listTargets(out, orphans)
 }
@@ -312,11 +324,13 @@ type preRevisionHolds struct {
 	storeRoot string
 	scopes    []projects.Scope
 	// retained is GC'S retention set, deliberately not the closure
-	// walk migrate already owns. The two disagree: gc additionally
-	// keeps config-derived pin keys across every project and host and
-	// expands each retained package's recorded dep closure, so a
-	// pinned-but-unlinked directory is retained by gc and reached by
-	// nobody. Only gc's answer may be reported as gc's behaviour.
+	// walk migrate already owns. It is generation-derived and nothing
+	// else: collectKeptRetentionKeys re-keys markKeptStoreRels, which
+	// is generation.KeptStoreDirs over every scope. No config pin and
+	// no recorded dep closure widens it. The two walks can still
+	// disagree — gc reads the retained generations, migrate reads the
+	// active closure — and only gc's answer may be reported as gc's
+	// behaviour.
 	retained map[string]bool
 	// retentionUncertain records that gc's predicate could not be
 	// computed. An unreadable reference source is not proof of
@@ -428,19 +442,81 @@ func scopeConfigPath(s projects.Scope) string {
 	return filepath.Join(filepath.Dir(s.LockPath), "gale.toml")
 }
 
-// syncSpelling is the sync that actually runs in this scope.
+// convergeSpelling is what the scope runs to republish itself onto the
+// fetch namespace — the first of the two steps that clear a bare
+// directory, and the only step that is the scope's to run.
 //
-// A legacy lock, or one that will not parse, hard-fails a locked sync
-// before any package is looked at, so plain `gale sync` in such a
-// scope converges nothing. `--no-frozen` skips loading the lock
-// entirely rather than loading and bypassing it, which is why it works
-// on a file the loader rejects.
-func syncSpelling(s projects.Scope) string {
-	lv, err := lockfile.Load(s.LockPath)
-	if err != nil || lv.Kind == lockfile.KindLegacy {
-		return "gale sync --no-frozen"
+// Sometimes two commands, because the writer that can read the scope's
+// lock is not always a writer that republishes. Republishing means
+// landing the fetch trees and swapping a generation onto them, which
+// `gale sync` does through rebuildFromV2 and `gale fetch-adopt` does
+// through finalizeFetch. `gale lock` does neither: runLockFetch ends at
+// lockfile.WriteV2, so a scope told to run it alone would rebuild
+// nothing, gc would still find the bare directory linked, and the
+// advice would converge exactly nothing. Where `gale lock` is needed it
+// is named with the sync that finishes the job.
+//
+// The lock decides which. `gale sync` enforces the lock and refuses
+// anything but a live v2 one (requireLiveV2). `gale fetch-adopt`
+// migrates a legacy or v1 lock, the state errSwitchV1 names, and
+// republishes in the same pass. An absent or unparseable file has to
+// start with `gale lock`: fetch-adopt reads the old lock through
+// lockfile.ReadV1 and dead-ends on a parse failure, while `gale lock`
+// never reads the existing lock at all and overwrites it atomically.
+//
+// The global scope takes -g, on every command in the chain. A bare
+// command auto-detects its scope through resolveScope, which walks up
+// from the working directory for any gale.toml — including the one in
+// the gale home itself — so a bare spelling names the global scope only
+// by accident of where the user happens to be standing. A project scope
+// needs no flag: its label already names the directory the command is
+// run in.
+func convergeSpelling(s projects.Scope) string {
+	cmds := convergeCommands(s.LockPath)
+	for i, cmd := range cmds {
+		cmds[i] = scopeSuffixed(cmd, s)
 	}
-	return "gale sync"
+	return strings.Join(cmds, " && ")
+}
+
+// convergeCommands is the sequence, in order, that leaves this scope
+// republished. Every sequence ends in a command that republishes.
+func convergeCommands(lockPath string) []string {
+	lv, err := lockfile.Load(lockPath)
+	if err != nil {
+		// Present and unmodelable. Only a writer that never reads it
+		// can replace it, and that writer does not republish.
+		return []string{"gale lock", "gale sync"}
+	}
+	switch lv.Kind {
+	case lockfile.KindV2:
+		return []string{"gale sync"}
+	case lockfile.KindLegacy, lockfile.KindV1:
+		return []string{"gale fetch-adopt"}
+	case lockfile.KindAbsent:
+		// Nothing to migrate and nothing to enforce, so the scope needs
+		// its first lock before any sync can run — and then the sync.
+		return []string{"gale lock", "gale sync"}
+	default:
+		// Load classifies into exactly the kinds above. A kind this
+		// function does not understand must not be answered with a
+		// command that assumes one, and `gale lock` assumes least.
+		return []string{"gale lock", "gale sync"}
+	}
+}
+
+// scopeSuffixed appends the scope flag a command needs to reach the
+// scope it is named for.
+//
+// The two shapes differ structurally rather than by prose: the global
+// scope's lock sits IN its gale dir, a project's sits one level above
+// the project's .gale. Reading the paths keeps the answer independent
+// of Scope.Label, which is written for humans.
+func scopeSuffixed(cmd string, s projects.Scope) string {
+	if filepath.Clean(filepath.Dir(s.LockPath)) != filepath.Clean(s.GaleDir) {
+		return cmd
+	}
+	return cmd + " -g"
 }
 
 func listTargets(out *output.Output, targets []migrateTarget) {

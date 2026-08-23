@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/generation"
+	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/projects"
 	"github.com/kelp/gale/internal/provenance"
 )
@@ -176,4 +177,186 @@ func hashOf(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// lockStateCase names one lockfile state and the scope holding it.
+type lockStateCase struct {
+	name  string
+	scope projects.Scope
+}
+
+// convergeLockStates seeds a scope directory in every state
+// lockfile.Load classifies, plus the file it cannot parse at all.
+//
+// The five are enumerated once and shared, so a state added here has
+// to be answered by every test that ranges over them. That is the
+// property gh#329 lost: `--no-frozen` was unregistered and one branch
+// of the spelling kept naming it, with no test ranging the states to
+// notice.
+//
+// global picks the scope shape. The global scope keeps its lock IN its
+// gale dir; a project keeps its lock one level above the project's
+// `.gale`.
+func convergeLockStates(t *testing.T, global bool) []lockStateCase {
+	t.Helper()
+	scopeFor := func() projects.Scope {
+		dir := t.TempDir()
+		if global {
+			return projects.Scope{
+				Label:    "the global scope",
+				GaleDir:  dir,
+				LockPath: filepath.Join(dir, "gale.lock"),
+			}
+		}
+		return projects.Scope{
+			Label:    "project " + dir,
+			GaleDir:  filepath.Join(dir, ".gale"),
+			LockPath: filepath.Join(dir, "gale.lock"),
+		}
+	}
+	writeLock := func(s projects.Scope, body string) {
+		if err := os.WriteFile(s.LockPath, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	absent := scopeFor()
+
+	// No top-level version key is what makes a lock legacy.
+	legacy := scopeFor()
+	writeLock(legacy, "[packages.just]\nversion = \"1.56.0\"\n")
+
+	// Not TOML at all, so Load returns an error and no view.
+	unparseable := scopeFor()
+	writeLock(unparseable, "this is not a lockfile\n")
+
+	v1 := scopeFor()
+	if err := lockfile.WriteV1(v1.LockPath, &lockfile.V1{
+		Version: lockfile.SchemaV1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	v2 := scopeFor()
+	if err := lockfile.WriteV2(v2.LockPath, &lockfile.V2{
+		Version: lockfile.SchemaV2,
+		Targets: lockfile.Targets{Default: &lockfile.Target{
+			Roots: []string{"just@1.56.0"},
+		}},
+		Packages: map[string]lockfile.V2Package{
+			"just@1.56.0": {Artifacts: map[string]lockfile.V2Artifact{
+				currentPlatform(): {
+					SHA256: lockFetchSHA,
+					Method: provenance.MethodFetch,
+				},
+			}},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	return []lockStateCase{
+		{name: "absent", scope: absent},
+		{name: "legacy", scope: legacy},
+		{name: "unparseable", scope: unparseable},
+		{name: "v1", scope: v1},
+		{name: "v2", scope: v2},
+	}
+}
+
+// gh#329: the migrate report must never name a `gale sync` the live
+// sync refuses, because a refusal the report walks the user into is a
+// dead end with no next step.
+//
+// requireLiveV2 IS that refusal — it is what runSyncFetch calls before
+// it does anything — so the expectation is read off it rather than
+// hardcoded. A lock state whose classification later changes moves
+// both sides of this test together.
+func TestSyncSpellingDoesNotNameASyncThatRefusesTheLock(t *testing.T) {
+	for _, tc := range convergeLockStates(t, false) {
+		t.Run(tc.name, func(t *testing.T) {
+			spelling := convergeSpelling(tc.scope)
+			if _, err := requireLiveV2(tc.scope.LockPath); err != nil {
+				if strings.HasPrefix(spelling, "gale sync") {
+					t.Errorf("got %q, want a command that runs: "+
+						"gale sync refuses this lock with %v",
+						spelling, err)
+				}
+				return
+			}
+			if spelling != "gale sync" {
+				t.Errorf("got %q, want %q: gale sync accepts this lock",
+					spelling, "gale sync")
+			}
+		})
+	}
+}
+
+// The exact spelling per lock state, pinned (gh#329).
+//
+// The two property tests beside this one structurally cannot catch a
+// command that is registered, is not a refused sync, and still
+// converges nothing: `gale lock` passes both while writing a lock and
+// stopping there. Only naming the expected string does, so each row
+// carries why its command republishes — or why one command is not
+// enough.
+//
+// Republishing means landing the fetch trees and swapping a generation
+// onto them. That is the step which leaves the bare directory unlinked
+// and hands it to `gale gc`; advice that never reaches it converges
+// nothing.
+func TestConvergeSpellingNamesCommandsThatRepublish(t *testing.T) {
+	type want struct{ project, global string }
+	byState := map[string]want{
+		// `gale sync` republishes: runSyncFetch → rebuildFromV2
+		// (switch_fetch.go:290) swaps a new generation onto the fetch
+		// trees. A live v2 lock is the only state it accepts.
+		"v2": {"gale sync", "gale sync -g"},
+		// `gale fetch-adopt` migrates a legacy lock AND republishes in
+		// the same pass: finalizeFetch lands the artifacts and calls
+		// generation.BuildWithOptions (finalize_fetch.go:71, :97).
+		"legacy": {"gale fetch-adopt", "gale fetch-adopt -g"},
+		// Same command, same reason. errSwitchV1 names it for both.
+		"v1": {"gale fetch-adopt", "gale fetch-adopt -g"},
+		// TWO commands. A scope with no lock needs one before any sync
+		// can run, but `gale lock` does NOT republish: runLockFetch
+		// ends at lockfile.WriteV2 (lock_fetch.go:69) — no store tree,
+		// no generation swap. Advised alone it would leave the
+		// generation still linking the bare directory, gc would keep
+		// it, and nothing would converge. The sync has to be named
+		// with it.
+		"absent": {
+			project: "gale lock && gale sync",
+			global:  "gale lock -g && gale sync -g",
+		},
+		// Same pair, and `gale lock` has to lead: fetch-adopt reads the
+		// old lock through lockfile.ReadV1 (fetch_adopt.go:222) and
+		// dead-ends on a parse failure, while `gale lock` never reads
+		// the existing lock at all.
+		"unparseable": {
+			project: "gale lock && gale sync",
+			global:  "gale lock -g && gale sync -g",
+		},
+	}
+	for _, global := range []bool{false, true} {
+		shape := "project"
+		if global {
+			shape = "global"
+		}
+		for _, tc := range convergeLockStates(t, global) {
+			w, ok := byState[tc.name]
+			if !ok {
+				t.Fatalf("lock state %q has no expected spelling", tc.name)
+			}
+			expect := w.project
+			if global {
+				expect = w.global
+			}
+			t.Run(shape+"/"+tc.name, func(t *testing.T) {
+				if got := convergeSpelling(tc.scope); got != expect {
+					t.Errorf("got %q, want %q", got, expect)
+				}
+			})
+		}
+	}
 }

@@ -1,0 +1,44 @@
+# A pre-revision build-era bare store dir is retired by TWO
+# commands, not one (gh#329).
+#
+# Republishing the scope links the fetch tree instead and
+# leaves the bare dir alone; only `gale gc` removes it, and
+# only once no retained generation still links it. Retention
+# is keep-2, so the first republish is not enough.
+
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
+
+# The machine as a pre-revision gale left it: a bare dir with
+# no revision suffix and no provenance record, linked by the
+# active generation.
+mkdir $HOME/.gale/pkg/hello/1.0/bin
+cp stale $HOME/.gale/pkg/hello/1.0/bin/hello
+chmod 0755 $HOME/.gale/pkg/hello/1.0/bin/hello
+mkdir $HOME/.gale/gen/1/bin
+symlink $HOME/.gale/gen/1/bin/hello -> $HOME/.gale/pkg/hello/1.0/bin/hello
+symlink $HOME/.gale/current -> $HOME/.gale/gen/1
+
+# Publication one. The new generation links the fetch tree.
+exec gale install hello -g --index=$WORK/index
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'
+
+# The bare dir survives it, unlinked. gc still keeps it:
+# gen/1 is inside the keep-2 window and links it.
+exists $HOME/.gale/pkg/hello/1.0/bin/hello
+exec gale gc
+exists $HOME/.gale/pkg/hello/1.0/bin/hello
+
+# Publication two pushes gen/1 out of the window.
+exec gale sync -g
+exec gale gc
+! exists $HOME/.gale/pkg/hello/1.0
+
+# What the scope actually runs is untouched by the sweep.
+exec $HOME/.gale/current/bin/hello
+stdout 'hello from gale integration fixture'
+
+-- stale --
+#!/bin/sh
+echo stale build-era binary

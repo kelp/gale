@@ -163,10 +163,12 @@ is exactly what no later check would catch. `gale gc`
 takes its versions from the scope's lock for the same
 reason.
 
-**The escape hatch is explicit.** `gale sync
---no-frozen` ignores `gale.lock`, installs from recipes
-without integrity enforcement, and warns. Nothing
-downgrades to unlocked mode on its own.
+**There is no escape hatch.** `gale sync --no-frozen`
+was removed with the fetch cutover. A lock gale cannot
+honor is refused, and the refusal names the writer that
+replaces it — `gale lock` for an absent or unparseable
+one, `gale fetch-adopt` for a legacy or v1 one. Nothing
+downgrades to unlocked mode, by flag or on its own.
 
 ## Remedies
 

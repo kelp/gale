@@ -33,9 +33,10 @@ artifact, per platform.
 It is enforced. `gale sync` installs what the lock names
 and refuses anything else; it never rewrites the lock to
 match what it found. A runner that resolves a different
-artifact fails instead of proceeding. `gale sync
---no-frozen` opts out, installing from recipes without
-integrity enforcement.
+artifact fails instead of proceeding. There is no
+opt-out: `--no-frozen` was removed with the fetch
+cutover, so a runner whose lock gale cannot honor fails
+and names the writer that replaces it.
 
 Full schema, enforcement model and remedies:
 [lockfile.md](lockfile.md).

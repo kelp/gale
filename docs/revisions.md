@@ -247,37 +247,50 @@ Everything else is considered orphaned.
 
 ## Soft migration
 
-The first `gale sync` after upgrading to v0.12.0+ reinstalls
-every pre-revision install (bare store dir, no
-`.gale-deps.toml`). That's expected — each one needs the
-canonical-layout rewrite and a fresh deps-metadata file. On a
-machine with 50+ global packages it can take a while. Sync
-routes stale packages through `Reinstall` rather than the
-regular `Install` path so bare dirs don't block the migration
-via back-compat fallback.
+A pre-revision install is a bare store dir (`pkg/hello/1.0/`,
+no `.gale-deps.toml`) left by a gale that predates revisions.
+Nothing rewrites one in place. **No command replaces a bare
+directory — two commands retire it** (gh#329):
 
-### What that sync never reaches
+1. **Republish the scope onto the fetch namespace**, with
+   `gale install`, `gale fetch-adopt`, or `gale sync` under a
+   usable v2 lock. The new generation links
+   `pkg/fetch/<name>/<version>-<sha12>/` instead: store
+   resolution short-circuits to the fetch tree whenever a SHA
+   is present. The bare dir is left **unlinked**, not
+   replaced. Nothing is deleted and no pin is touched.
+2. **`gale gc` sweeps it.** Retention is generation-derived
+   only, so a directory no retained generation links is
+   removed with no grace period.
 
-Sync visits declared roots. A bare dir it never visits — a
+Retention keeps two generations, so the bare dir survives the
+first republish by design and falls out on the second. That
+is expected, not a stalled migration.
+
+Which command step 1 is depends on the scope's lock. `gale
+sync` needs a live v2 lock. `gale fetch-adopt` migrates a
+legacy or v1 one and republishes in the same pass. An absent
+or unparseable lock takes **two** commands, `gale lock &&
+gale sync`: `gale lock` is the only writer that survives a
+lockfile gale cannot parse, but it writes the lock and stops
+— no store tree and no generation swap — so it republishes
+nothing on its own.
+
+`gale sync --no-frozen` was removed with the fetch cutover;
+it is not an escape from any of these.
+
+### What that never reaches
+
+Step 1 moves declared roots. A bare dir no scope declares — a
 dependency, or a package dropped from gale.toml but still
 linked by a retained generation — stays bare, and since it
 carries no provenance record a locked environment refuses to
-activate it. `gale migrate` cannot converge one either: it
-relocates what it can refetch, and a source-method package
-has nothing to refetch.
+activate it. `gale migrate` cannot converge one either: it is
+a tombstone, and a source-method package has nothing to
+refetch in any case.
 
-So `gale migrate` reports these and names the escape, which
-depends on what holds the directory (gh#200):
-
-- **Nothing links or pins it.** It is an orphan; `gale gc`
-  sweeps it.
-- **One scope declares it.** That scope's `gale sync`
-  reinstalls it into the canonical path. Nothing is deleted
-  — the bare dir survives and becomes a gc candidate once
-  resolution prefers the populated canonical sibling. Where
-  the scope carries a legacy lock, the spelling is `gale
-  sync --no-frozen`, since a locked sync fails closed on a
-  lock it cannot honor.
+- **Nothing links it.** It is an orphan; `gale gc` sweeps it.
+- **One scope declares it.** The two steps above.
 - **Several scopes reach it, or only a dependent does.**
   There is no safe per-scope sequence, and gale says so
   instead of naming one. In particular, do not reach for
@@ -286,11 +299,6 @@ depends on what holds the directory (gh#200):
   copy of a version the registry no longer serves, and
   across scopes the removal is kept and the reinstall
   cache-hits, so nothing happens at all.
-
-A reinstall whose closure cannot be attested commits with no
-provenance record. That is the next step, not a failure:
-converge the closure bottom-up. No per-scope command
-replaces the resulting unprovenanced directory.
 
 ## `.versions` index and revisions
 

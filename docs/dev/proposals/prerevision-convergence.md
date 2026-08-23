@@ -1,11 +1,31 @@
 # Pre-Revision Convergence
 
-Design proposal for gh#200. Status: §E and §6's amendment
-are implemented; §4C is written down and deferred, and
-nothing authorizes building it. Companion to
-`.codex-pair/design-gale-issue-182.md` (the numbered design
-this document calls §N) and to `content-addressed-store.md`
-(gh#191), which is evaluated in §7.
+Design proposal for gh#200. Status: **overtaken by the fetch
+cutover.** Written against `6d81908`; §E and §6's amendment
+were implemented, §4C was deferred and is now moot.
+Companion to `.codex-pair/design-gale-issue-182.md` (the
+numbered design this document calls §N) and to
+`content-addressed-store.md` (gh#191), which is evaluated
+in §7.
+
+> **What happened.** Every mechanism this document reasons
+> about is gone. `--no-frozen` was removed with the fetch
+> cutover, so the unlocked sync §4C's premise rests on — a
+> sync that reports a directory with no dependency metadata
+> as stale and reinstalls it into the canonical path — no
+> longer exists; a fetch install writes no `.gale-deps.toml`
+> at all. `gale migrate` is a tombstone error. The
+> convergence question itself is answered, but by a different
+> pair of commands than any considered here: republish the
+> scope onto the fetch namespace, which leaves the bare
+> directory unlinked rather than replacing it, then `gale gc`.
+> Retention is keep-2, so it takes two publications
+> (`docs/revisions.md`, "Soft migration"; gh#329).
+>
+> Everything below describes commands and code paths that
+> have since been removed. It is kept for the problem
+> analysis in §1–§3, which is why the two-command answer had
+> to be two commands.
 
 Counted and cited at `6d81908`.
 

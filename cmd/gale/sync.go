@@ -23,7 +23,6 @@ var (
 	syncBuild        bool
 	syncGlobal       bool
 	syncProject      bool
-	syncNoFrozen     bool
 	syncOnlyIfNeeded bool
 )
 
@@ -218,50 +217,6 @@ func retargetSync(ctx *cmdContext, projectDir string) {
 		ctx.GalePath = filepath.Join(projectDir, "gale.toml")
 		ctx.GaleDir = filepath.Join(projectDir, ".gale")
 	}
-}
-
-// syncPlan builds the locked plan for this run, returning the plan
-// (nil when the sync is unlocked) and any advisory warning.
-//
-// The whole plan resolves before the first install runs. That ordering
-// is the point: a locked sync that cannot describe its complete
-// closure must abandon the operation while abandoning it is still
-// free, having touched neither the store nor the generation
-// (design §4).
-func syncPlan(
-	ctx context.Context, cc *cmdContext, cfg *config.GaleConfig, lv *lockfile.View, host string,
-) (*lockplan.Plan, string, error) {
-	return lockedSyncPlan(lv, lockplan.Request{
-		Host:     host,
-		Platform: currentPlatform(),
-		Declared: cfg.Packages,
-		// So a stale-lock refusal names the section that actually
-		// supplies each disagreeing pin, which for a host overlay is
-		// not the target the lock roots it in.
-		DeclaredOrigin: cfg.PackageOrigins(host),
-		Resolve:        versionedRecipeResolverWith(cc, ctx),
-	}, syncNoFrozen)
-}
-
-// syncLockView loads the lock this sync will enforce.
-//
-// Skipped entirely under --no-frozen. The flag means the lock has no
-// authority over this run, so a file that cannot even be parsed must
-// not fail the command either — loading it first and deciding
-// afterwards would leave one class of lock unbypassable.
-func syncLockView(galePath string) (*lockfile.View, error) {
-	if syncNoFrozen {
-		return &lockfile.View{Kind: lockfile.KindAbsent}, nil
-	}
-	lp, err := lockfilePath(galePath)
-	if err != nil {
-		return nil, err
-	}
-	lv, err := lockfile.Load(lp)
-	if err != nil {
-		return nil, fmt.Errorf("reading lockfile: %w", err)
-	}
-	return lv, nil
 }
 
 // reportSyncOutcomes emits every per-package line and returns the
