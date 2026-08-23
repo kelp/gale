@@ -1,13 +1,30 @@
 # Scoping the Shared Dylib Farm
 
-Status: proposal (2026-08-12)
+Status: **settled by deletion.** Proposal written
+2026-08-12; gh#198 closed as moot on 2026-08-22.
 Issue: gh#198
 Scope: `internal/farm`, `internal/generation`;
-`internal/build/fixup_*` read-only
+`internal/build/fixup_*` read-only — **`internal/farm`
+and `internal/build` no longer exist.**
 Verdict: **do not build a scoped farm now.** A scoped
 farm is reachable only by mirroring the store into the
 scope, and that is rejected on cost, not on
 impossibility.
+
+> **What happened.** Milestone 5 (`fetch-dont-build.md`)
+> deleted `internal/farm` and `internal/build` outright.
+> There is no machine-wide `~/.gale/lib/` left to scope,
+> so the question this document answers no longer arises
+> — it was not deferred, it was dissolved.
+>
+> The verdict above stands and was right as far as it
+> went; the deletion simply went further than the
+> proposal contemplated. Everything below describes a
+> subsystem that has since been removed, and is kept for
+> the cost analysis — the inode measurements are why a
+> scoped farm was rejected on price rather than on
+> feasibility, and that reasoning fed the decision to
+> drop the farm entirely.
 
 ## 1. Problem
 
