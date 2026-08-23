@@ -71,6 +71,56 @@ func TestCutoverSourceFlagsGone(t *testing.T) {
 	}
 }
 
+// gh#329: a spelling gale prints as advice has to be a spelling gale
+// accepts. `--no-frozen` was removed from syncCmd in 9776c69 and the
+// migrate report went on naming it, so the remedy for a legacy lock
+// was `unknown flag: --no-frozen`.
+//
+// Every token is checked against the live command tree rather than
+// against a list, so the next flag removal fails here instead of in a
+// user's terminal.
+func TestSyncSpellingNamesOnlyRegisteredCommandsAndFlags(t *testing.T) {
+	for _, global := range []bool{false, true} {
+		shape := "project"
+		if global {
+			shape = "global"
+		}
+		for _, tc := range convergeLockStates(t, global) {
+			t.Run(shape+"/"+tc.name, func(t *testing.T) {
+				spelling := syncSpelling(tc.scope)
+				tokens := strings.Fields(spelling)
+				if len(tokens) < 2 {
+					t.Fatalf("got %q, want at least `gale <command>`", spelling)
+				}
+				if tokens[0] != "gale" {
+					t.Errorf("first token = %q, want %q", tokens[0], "gale")
+				}
+				cmd := findCmd(tokens[1])
+				if cmd == nil {
+					t.Fatalf("%q names command %q, which is not registered",
+						spelling, tokens[1])
+				}
+				for _, tok := range tokens[2:] {
+					switch {
+					case strings.HasPrefix(tok, "--"):
+						if cmd.Flags().Lookup(strings.TrimPrefix(tok, "--")) == nil {
+							t.Errorf("%q names %s, which %s does not register",
+								spelling, tok, tokens[1])
+						}
+					case strings.HasPrefix(tok, "-"):
+						if cmd.Flags().ShorthandLookup(strings.TrimPrefix(tok, "-")) == nil {
+							t.Errorf("%q names %s, which %s does not register",
+								spelling, tok, tokens[1])
+						}
+					default:
+						t.Errorf("%q carries a non-flag argument %q", spelling, tok)
+					}
+				}
+			})
+		}
+	}
+}
+
 func stageTestFetch(_ context.Context, st *store.Store, name, version string, a index.Artifact) (string, error) {
 	dest, err := st.FetchPath(name, version, a.SHA256)
 	if err != nil {
