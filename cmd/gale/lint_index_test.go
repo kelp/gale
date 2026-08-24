@@ -77,7 +77,7 @@ func TestLintRecipeWithVersionsCommentStaysRecipe(t *testing.T) {
 	}
 }
 
-func TestLintIndexBaseRejectsAddedPlatform(t *testing.T) {
+func TestLintIndexBaseAllowsAddedPlatform(t *testing.T) {
 	old := writeLintRecipe(t, "old/just.toml", lintIndexTOML())
 	newer := lintIndexTOML() + `
 [versions."1.56.0".artifacts."linux/amd64"]
@@ -94,9 +94,8 @@ dest = "bin/just"
 mode = 0o755
 `
 	path := writeLintRecipe(t, "just.toml", newer)
-	err := runLintWithBase(t, old, path)
-	if err == nil {
-		t.Fatal("lint --base added platform: want error, got nil")
+	if err := runLintWithBase(t, old, path); err != nil {
+		t.Fatalf("lint --base added platform: %v", err)
 	}
 }
 

@@ -145,9 +145,7 @@ func TestLintDiffAddPlatformToOldVersion(t *testing.T) {
 		"1.56.0", "linux/amd64",
 		"https://github.com/casey/just/releases/download/1.56.0/just-linux.tar.gz",
 	))
-	requireIssue(t, LintDiff(old, newer),
-		"versions.1.56.0.artifacts.linux/amd64",
-		"added")
+	requireClean(t, LintDiff(old, newer))
 }
 
 func TestLintDiffDropAttestation(t *testing.T) {
