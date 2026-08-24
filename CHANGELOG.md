@@ -11,6 +11,12 @@
 
 ### Changed
 
+- `gale lint --base` allows adding a platform to
+  an existing version block. Removing or changing
+  an artifact is still refused. Needed so
+  gale-recipes can admit linux/amd64 onto
+  Darwin-only versions of the first ten.
+
 - Product docs describe fetch-and-activate
   gale. README, getting-started, lockfile,
   and related pages no longer tell a user

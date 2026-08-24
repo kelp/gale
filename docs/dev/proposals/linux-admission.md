@@ -1,7 +1,9 @@
 # Linux admission
 
-Milestone 6 leftover. Not implemented. The
-catalog has no linux artifact keys.
+Milestone 6 leftover. Lint now allows adding a
+platform to an existing version. The catalog PR
+that admits linux/amd64 for the ten is
+gale-recipes.
 
 Related: `docs/dev/proposals/fetch-dont-build.md`
 §5, Appendix A (`linux-amd64`), Appendix B
@@ -44,10 +46,11 @@ symlinks or hardlinks. No extra
 transforms. `gale admit` printed every
 `tree_digest`. Do not invent hashes.
 
-**New version blocks.** Do not add linux
-to a published `[versions."X"]`. Every
-platform that version will carry is
-admitted before commit.
+**Additive platforms.** Adding `linux/amd64`
+to a published Darwin-only version is
+allowed. Mutating or removing an artifact
+is not. New versions still admit every
+platform they will carry before commit.
 
 **Upstream checksums.** Prefer an
 upstream-published checksum file, and

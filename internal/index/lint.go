@@ -31,7 +31,9 @@ func Lint(f *File) []Issue {
 }
 
 // LintDiff reports mutations that break append-only version
-// blocks. Both sides must be non-nil.
+// blocks. Adding a platform to an existing version is
+// allowed (linux after darwin). Removing or changing
+// one is not. Both sides must be non-nil.
 func LintDiff(old, next *File) []Issue {
 	if old == nil || next == nil {
 		return []Issue{{Message: "both files are required"}}
@@ -162,11 +164,8 @@ func lintDiffArtifacts(issues *[]Issue, p string, old, next Version) {
 		}
 		lintDiffArtifact(issues, pref+plat, old.Artifacts[plat], na)
 	}
-	for _, plat := range sortedKeys(next.Artifacts) {
-		if _, ok := old.Artifacts[plat]; !ok {
-			add(issues, pref+plat, "artifact was added to an existing version")
-		}
-	}
+	// Adding a platform is allowed (linux after darwin).
+	// Mutating or removing one is not.
 }
 
 func lintDiffArtifact(issues *[]Issue, p string, old, next Artifact) {
