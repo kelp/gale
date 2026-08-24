@@ -6,9 +6,9 @@ import (
 
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
-	Short: "Gone; use gale fetch or gale fetch-adopt",
+	Short: "Gone; use gale install or gale fetch-adopt",
 	Long: "gale migrate poured bottles without fixup. That path is " +
-		"gone. Use gale fetch for a new install, or gale fetch-adopt " +
+		"gone. Use gale install for a new install, or gale fetch-adopt " +
 		"to convert a v1 lock.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {

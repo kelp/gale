@@ -206,7 +206,7 @@ a generation.
 installed before enforcement is unprovenanced, so the
 activation gate refuses it. `gale fetch-adopt`
 refetches, verifies, and replaces from a v1 lock.
-`gale migrate` is a tombstone: it names fetch and
+`gale migrate` is a tombstone: it names install and
 fetch-adopt, and does not replace directories.
 
 **The active generation does not match the lock.** Run
@@ -251,7 +251,7 @@ inside direnv.
    the generation. Plain `gale lock` cannot finish the
    job on upgrade day: it does not fetch, and
    pre-upgrade store directories have no provenance.
-3. `gale migrate` is gone. It names fetch and
+3. `gale migrate` is gone. It names install and
    fetch-adopt and exits.
 
 `gale doctor` reports each of these states, and names

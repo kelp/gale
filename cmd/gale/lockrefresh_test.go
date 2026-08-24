@@ -52,6 +52,10 @@ func TestLockDoesNotReplaceUnprovenanced(t *testing.T) {
 	if !strings.Contains(err.Error(), "fetch-adopt") {
 		t.Errorf("unprovenanced remedy must name fetch-adopt: %v", err)
 	}
+	if strings.Contains(err.Error(), "gale migrate") {
+		t.Errorf("unprovenanced remedy names tombstone gale migrate: %v", err)
+	}
+	assertGaleCommandsRegistered(t, err.Error())
 	kept, rerr := os.ReadFile(marker)
 	if rerr != nil {
 		t.Fatalf("store dir was replaced: %v", rerr)
@@ -62,6 +66,20 @@ func TestLockDoesNotReplaceUnprovenanced(t *testing.T) {
 	if _, statErr := os.Lstat(filepath.Join(dir, provenance.File)); !os.IsNotExist(statErr) {
 		t.Errorf("lock stamped provenance onto unverified bytes: %v", statErr)
 	}
+}
+
+func TestUnprovenancedBareDirNamesFetchAdoptNotMigrate(t *testing.T) {
+	err := unprovenanced(unprovenancedDir{
+		dir: "/store/jq/1.7", canonical: "/store/jq/1.7-1",
+		name: "jq", version: "1.7", cause: os.ErrNotExist,
+	})
+	if !strings.Contains(err.Error(), "fetch-adopt") {
+		t.Errorf("bare-dir remedy must name fetch-adopt: %v", err)
+	}
+	if strings.Contains(err.Error(), "gale migrate") {
+		t.Errorf("bare-dir remedy names tombstone gale migrate: %v", err)
+	}
+	assertGaleCommandsRegistered(t, err.Error())
 }
 
 func TestOrderRootsKeepsTheGivenOrderOnACycle(t *testing.T) {

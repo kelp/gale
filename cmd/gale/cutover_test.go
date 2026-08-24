@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -15,6 +16,34 @@ import (
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
 )
+
+var galeCommandRe = regexp.MustCompile(`\bgale ([a-z][a-z0-9-]*)`)
+
+// deadGaleCommands are verbs advice has named that the binary no
+// longer accepts. English after "gale" ("cannot", "lock records")
+// is ignored unless it is one of these.
+var deadGaleCommands = map[string]bool{
+	"fetch": true,
+	"pin":   true,
+	"unpin": true,
+	"build": true,
+}
+
+// assertGaleCommandsRegistered pins that advice names commands the
+// binary actually accepts. `gale fetch` is not one of them.
+func assertGaleCommandsRegistered(t *testing.T, s string) {
+	t.Helper()
+	for _, m := range galeCommandRe.FindAllStringSubmatch(s, -1) {
+		name := m[1]
+		if findCmd(name) != nil {
+			continue
+		}
+		if !deadGaleCommands[name] && !strings.Contains(name, "-") {
+			continue
+		}
+		t.Errorf("%q names gale %s, which is not registered", s, name)
+	}
+}
 
 func TestCutoverDropsRecipesOnInstallerVerbs(t *testing.T) {
 	for _, name := range []string{"install", "sync", "update", "remove", "lock", "migrate"} {

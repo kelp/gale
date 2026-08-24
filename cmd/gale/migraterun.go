@@ -10,6 +10,6 @@ import (
 // without fixup (fetch-dont-build.md §11).
 func runMigrate(_ *cmdContext, _ *output.Output) error {
 	return fmt.Errorf(
-		"gale migrate: pouring bottles without fixup is gone; use gale fetch or gale fetch-adopt",
+		"gale migrate: pouring bottles without fixup is gone; use gale install or gale fetch-adopt",
 	)
 }

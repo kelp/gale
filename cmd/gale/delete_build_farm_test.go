@@ -102,12 +102,13 @@ func TestMigrateRefuses(t *testing.T) {
 		t.Fatal("gale migrate must refuse")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "fetch") {
-		t.Errorf("refusal must name fetch: %v", err)
+	if !strings.Contains(msg, "install") {
+		t.Errorf("refusal must name install: %v", err)
 	}
 	if !strings.Contains(msg, "fetch-adopt") {
 		t.Errorf("refusal must name fetch-adopt: %v", err)
 	}
+	assertGaleCommandsRegistered(t, msg)
 }
 
 func TestProductionHasNoGHCR(t *testing.T) {

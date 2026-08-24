@@ -24,9 +24,11 @@
 
 - Deleted the `gale migrate` reporting and
   relocation tree (gh#330). The command remains
-  as a tombstone that names `gale fetch` and
-  `gale fetch-adopt`. `lockfile.md` no longer
-  tells a user to run migrate.
+  as a tombstone that names `gale install` and
+  `gale fetch-adopt`. Live refusals that still
+  named migrate as a remedy now name fetch-adopt.
+  `lockfile.md` no longer tells a user to run
+  migrate.
 
 ### Fixed
 
