@@ -94,7 +94,12 @@ func TestUpdateAllowsAttestationDropWithFlagAndWarns(t *testing.T) {
 	if !ok {
 		t.Fatalf("lock not updated to 9.9.9: %v", got.Packages)
 	}
-	if art, ok := pkg.Artifacts[currentPlatform()]; ok && art.Attestation != nil {
+	art, ok := pkg.Artifacts[currentPlatform()]
+	if !ok {
+		t.Fatalf("lock missing %s artifact: %v", currentPlatform(),
+			pkg.Artifacts)
+	}
+	if art.Attestation != nil {
 		t.Error("escaped update kept an attestation row")
 	}
 }
