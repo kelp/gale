@@ -3,6 +3,9 @@
 Set up gale from scratch. Five minutes to a working
 environment.
 
+Gale fetches upstream CLI binaries from the index. It
+does not compile packages.
+
 ## Install Gale
 
 Pick one:
@@ -36,13 +39,15 @@ source ~/.zshrc
 gale install jq
 ```
 
-Gale fetches the recipe, downloads a prebuilt binary
-(or builds from source), and symlinks it into your
-PATH. Verify:
+Gale resolves the index, downloads that platform's
+archive, checks `sha256` and `tree_digest`, writes
+the v2 lock, and swaps `current`. Verify:
 
 ```sh
 jq --version
 ```
+
+A name that is not in the index is an error.
 
 ## Set Up Global Packages
 
@@ -57,43 +62,27 @@ it directly:
   ripgrep = "14.1.1"
 ```
 
-After editing, run sync to install everything:
+After editing pins, run `gale lock` then `gale sync`.
+`gale lock` rewrites the lock from the index and
+fetches nothing. `gale sync` lands the trees the lock
+names and rebuilds PATH. It does not write the lock.
 
-```sh
-gale sync
-```
-
-Sync reads the manifest and installs any missing
-packages at their pinned versions. It is idempotent.
-Run it as many times as you like.
+If you use `gale install` for each package, lock and
+generation update together.
 
 ## The Store and Garbage Collection
 
-Gale keeps every installed version in the store at
-`~/.gale/pkg/`. When you update a package, the old
-version stays until you clean up:
+Fetch trees live under `~/.gale/pkg/fetch/` and stay
+until nothing links them:
 
 ```sh
 gale gc
 ```
 
-Garbage collection removes any version not referenced
-by a `gale.toml` (global or project). It is safe to
-run at any time.
-
-Build dependencies — packages installed temporarily to
-compile another package from source — are not declared
-in `gale.toml`. This means `gale gc` removes them. The
-next build that needs them will reinstall them
-automatically.
-
-If a build dependency is something you use directly
-(like Go for a Go project), add it to `gale.toml` so
-gc keeps it:
-
-```sh
-gale install go
-```
+Garbage collection keeps the two most recent
+generations in each registered scope and sweeps
+unreferenced fetch trees. It is safe to run at any
+time.
 
 ## Verify Setup
 
@@ -101,10 +90,10 @@ gale install go
 gale doctor
 ```
 
-Doctor checks PATH, that the lock is readable,
-that the generation matches lock roots, and that
-tree digests match.
-Fix anything it reports before continuing.
+Doctor checks PATH, that the lock is readable, that
+the generation matches lock roots, and that tree
+digests match. Fix anything it reports before
+continuing.
 
 ## Project Environments (Optional)
 
@@ -156,5 +145,5 @@ global one. Anyone who clones the repo runs
 ## Next Steps
 
 - `gale list` shows packages in the current manifest.
-- `gale update` upgrades packages to the latest version.
+- `gale update` fetches newer versions from the index.
 - `man gale` has the full command reference.

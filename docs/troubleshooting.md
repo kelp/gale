@@ -34,8 +34,9 @@ installed. Run sync:
 gale sync
 ```
 
-Sync reads the manifest, installs missing packages,
-and rebuilds the generation.
+Sync lands the trees the v2 lock names and rebuilds
+the generation. It does not write the lock. If there
+is no v2 lock, run `gale lock` or `gale fetch-adopt`.
 
 ### Broken symlinks
 
@@ -87,49 +88,15 @@ generation.
 Abandoned generations above current are swept.
 `gale gc -n` reports what would be removed.
 
-### Build failures
+### Package not in the index
 
-Source builds can fail for several reasons:
-
-- **Missing build dependencies.** The recipe lists
-  required tools in `[build] deps`. Install them first.
-- **Stale source tarball.** Try building from the
-  latest source with the `--git` flag:
-
-  ```sh
-  gale install <pkg> --git
-  ```
-
-- **Platform mismatch.** Some recipes only support
-  specific platforms. Check the recipe for platform
-  constraints.
-
-#### A locked source build fails on another machine
-
-A source build in `gale.lock` is enforced strictly, and
-strict means the artifact must hash to what the lock
-records. Source builds are not reproducible today — see
-"Audit reports a mismatch" below for why — so a build
-locked on one machine may legitimately fail on another.
-The failure is real; the mismatch is not evidence of
-tampering.
-
-The remedy is to re-lock on the machine that failed:
-
-```sh
-gale lock
+```
+Error: no such package
 ```
 
-Or pin a version with a prebuilt binary, so the closure
-carries an artifact rather than a build.
-
-This is why a committed lock is portable across machines
-with certainty **only when its whole closure is binary.**
-A source node's output hash feeds the `graph_digest` of
-every package above it, so one unreproducible build makes
-the digests above it unreproducible too. A closure
-containing a source build is portable exactly as far as
-that build reproduces. See [lockfile.md](lockfile.md).
+Gale only installs names the gale-recipes index
+documents. There is no source fallback. Admit the
+artifact or use another tool.
 
 ### Verify reports a digest mismatch
 

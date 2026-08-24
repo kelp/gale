@@ -1,10 +1,11 @@
 # CLAUDE.md
 
 Gale is a macOS-first package manager for developer CLI
-tools. Written in Go. It fetches verified artifacts from
+tools. Written in Go. It fetches upstream binaries from
 the gale-recipes index, pins them in a v2 lock, and
-activates them through generation snapshots. Design
-rationale: [`docs/dev/design.md`](docs/dev/design.md).
+activates them through generation snapshots. It does
+not compile packages. Design rationale:
+[`docs/dev/design.md`](docs/dev/design.md).
 
 Two repos: **gale** (this one — the CLI) and
 **gale-recipes** (`../gale-recipes` — index

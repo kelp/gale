@@ -1,9 +1,15 @@
 # Fetch, Don't Build
 
+> Status: implemented. Live gale fetches the index,
+> writes a v2 lock, and activates generations. This
+> file is the plan that cut produced, kept as the
+> record. Do not treat leftover "Phase 1 starts
+> later" sentences below as current work.
+
 Status: proposal (2026-08-15); accepted as the
 plan the same day. Index lives in gale-recipes.
-Phase 1 starts in a later session after this
-merges. Appendix C is the review record.
+Implemented through Milestone 6 on the TODO.
+Appendix C is the review record.
 Scope: gale CLI + gale-recipes. A product cut, not a
 patch.
 Verdict: stop being a distro. Keep the environment
@@ -11,8 +17,7 @@ manager. Fetch upstream artifacts. Pin them in the
 lock. Do not compile or cache our own bottles.
 
 This is the written form of the 2026-08-15 pivot
-discussion. It is a plan, not an implementation.
-Do not treat it as ready to code until §12's
+discussion. Implementation followed this file. §12's
 prerequisites are decided in this file — they now
 are.
 

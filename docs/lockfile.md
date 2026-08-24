@@ -1,71 +1,57 @@
 # The Lockfile
 
-`gale.lock` records the exact closure gale installed:
-every package, every dependency, and the checksum of
-every artifact, per platform. Commit it alongside
-`gale.toml`.
+`gale.lock` is a v2 lock. It names the exact upstream
+artifacts gale fetched: URL, `sha256`, `tree_digest`,
+and platform. Commit it alongside `gale.toml`.
 
 It is an enforced lock, not a report. Once a scope has
-one, gale installs what the lock names and refuses
-anything else. Every failure it can produce carries its
-own exit code, so a pipeline can tell "someone replaced
-an artifact" from "the build broke" — see
-[ci-cd.md](ci-cd.md).
+one, gale lands what the lock names and refuses
+anything else. `gale sync` does not rewrite it. Every
+failure it can produce carries its own exit code, so
+a pipeline can tell "someone replaced an artifact"
+from "the fetch failed" — see [ci-cd.md](ci-cd.md).
 
-## Schema
+## Schema (v2)
 
 ```toml
-version = 1
+version = 2
 
-[packages."!gale-lock-v1"]
-version = 1
+[packages."!gale-lock-v2"]
+version = 2
 
 [targets.default]
-roots = ["jq@1.8.1-2", "ripgrep@14.1.1-1"]
+roots = ["just@1.56.0"]
 
-[targets.host."ci-*,build-*"]
-roots = ["jq@1.8.1-2", "zig@0.14.1-1"]
-
-[packages."jq@1.8.1-2".artifacts."darwin/arm64"]
+[packages."just@1.56.0".artifacts."darwin/arm64"]
+url = "https://github.com/casey/just/releases/download/1.56.0/just-1.56.0-aarch64-apple-darwin.tar.gz"
+format = "tar.gz"
 sha256 = "..."
-manifest_digest = "sha256:..."
-method = "binary"                 # binary | source
-runtime_deps = ["oniguruma@6.9.10-1"]
-build_deps = ["autoconf@2.72-1"]
-graph_digest = "sha256:..."
+tree_digest = "sha256:..."
+method = "fetch"
+hash_source = "upstream-sha256sums"
+index_commit = "deadbeef"
 ```
 
 `version` names the schema. gale refuses a version it
-does not model rather than parsing it leniently: TOML
-decoding drops unknown fields silently, so a partial
-read followed by a write would destroy them.
+does not model rather than parsing it leniently.
 
-`[targets.*]` holds the **declared** roots — what
-`gale.toml` asks for. `[packages.*]` holds the whole
-closure, roots and transitive dependencies alike. The
-split is what makes staleness answerable: a lock is
-stale when its roots disagree with the manifest, and
-transitive entries never enter that comparison.
+`[targets.default]` holds the **declared** roots —
+what `gale.toml` asks for, keyed `name@version` with
+no revision. `[packages.*]` holds one artifact map
+per root, keyed by platform. Leftover
+`[targets.host.*]` refuses live verbs. There is no
+`--host` flag.
 
-Leftover `[targets.host.*]` refuses live verbs.
-Move leftover `[hosts.*]` pins into `[packages]`,
-delete the host tables, then `gale lock`. There is
-no `--host` flag.
+`method` is `fetch`. Source and bottle methods are
+gone. A mixed lock is refused.
 
-Package nodes are keyed `name@version-revision`, so a
-lock can name several versions of one package across
-targets. Platform is an artifact dimension, not a
-separate file: one lock covers every platform its
-writers have seen.
+The v2 guard (`[packages."!gale-lock-v2"]`) stops an
+older gale from rewriting the file as v1.
 
-`runtime_deps` and `build_deps` are recorded apart. A
-binary install validates runtime deps; a source install
-validates both. `graph_digest` binds a node's identity
-and its dependencies into one value, so a dependency
-substituted anywhere below a package changes the digest
-above it.
+A v1 lock migrates with `gale fetch-adopt`. `gale
+migrate` is a tombstone.
 
-## The downgrade guard
+## The v1 downgrade guard
 
 ```toml
 [packages."!gale-lock-v1"]
@@ -96,27 +82,6 @@ well-formed guard is refused, not repaired: accepting it
 would leave a nominally-enforced lock that an old build
 still destroys.
 
-## Schema v2 (written unused, not loaded)
-
-`WriteV2` writes the fetch schema. `ReadV2` reads it.
-`Load` and `ReadV1` still refuse a v2 file as an
-unknown schema (exit 4). That is what stops this gale
-from rewriting a v2 lock as v1. Live install still
-writes v1.
-
-A v2 file carries its own guard:
-
-```toml
-[packages."!gale-lock-v2"]
-version = 2
-```
-
-Already-shipped gale fails loud on those bytes: a
-v1-enforcement build rejects top-level `version = 2`;
-a pre-enforcement build fails the integer guard the
-same way it fails the v1 guard. Package keys and
-target roots are `name@version`, with no revision.
-
 ## Enforcement model
 
 **Writers.** `gale install`, `gale update`, `gale
@@ -126,11 +91,10 @@ one atomic write. A partial or failed resolution leaves
 the previous lockfile byte-identical.
 
 **`gale sync` never writes the lock.** It is a pure
-consumer: it installs the closure the lock names and
-fails if it cannot. This is the change that makes the
-lock a control. Before enforcement, sync rewrote the
-lock to match whatever it had just installed, so a
-changed upstream artifact was recorded rather than
+consumer: it lands the fetch trees the lock names and
+fails if it cannot. Before enforcement, sync rewrote
+the lock to match whatever it had just installed, so
+a changed upstream artifact was recorded rather than
 refused.
 
 **Readers fail closed.** A lock that is present and
@@ -205,9 +169,10 @@ a generation.
 **A store directory attests nothing.** Every package
 installed before enforcement is unprovenanced, so the
 activation gate refuses it. `gale fetch-adopt`
-refetches, verifies, and replaces from a v1 lock.
-`gale migrate` is a tombstone: it names install and
-fetch-adopt, and does not replace directories.
+refetches, verifies, writes v2, and swaps the
+generation. `gale migrate` is a tombstone: it names
+install and fetch-adopt, and does not replace
+directories.
 
 **The active generation does not match the lock.** Run
 `gale sync`. This is drift, not tampering: it is what a
@@ -221,38 +186,29 @@ This one has no automatic remedy by design. Something on
 disk is not what the lock says, and a human decides
 whether upstream moved legitimately or not.
 
-## Source builds and portability
+## Portability
 
-A locked source build is leftover until Milestone 5
-strips the farm. Fetch artifacts are the live path.
+A v2 lock names fetch artifacts. The same file works
+on every machine that has that platform's archive in
+the index. There is no source node whose output hash
+can drift.
+
 `gale verify` checks tree digests against the lock.
-
-The consequence for a committed lock follows from
-`graph_digest`: a source node's output hash feeds every
-digest above it. **A committed lock is portable across
-machines with certainty only when its whole closure is
-binary.** A closure containing a source build is
-portable exactly as far as that build reproduces, which
-today is the exception rather than the rule.
 
 ## Upgrading from a pre-enforcement lock
 
 Every project that predates enforcement has a flat
-`gale.lock` written by sync. gale refuses it, in every
-scope, on the first run after the upgrade — including
+or v1 `gale.lock`. gale refuses it, in every scope,
+on the first run after the upgrade — including
 inside direnv.
 
-1. Upgrade gale everywhere first. A v1 lock committed
-   ahead of an old build stops that build with the
-   guard's error rather than being destroyed by it, but
-   stopping is still a broken machine.
-2. Run `gale fetch-adopt` in each scope. It reads the
-   v1 lock, refetches, verifies, writes v2, and swaps
-   the generation. Plain `gale lock` cannot finish the
-   job on upgrade day: it does not fetch, and
-   pre-upgrade store directories have no provenance.
-3. `gale migrate` is gone. It names install and
-   fetch-adopt and exits.
+1. Upgrade gale everywhere first.
+2. Run `gale fetch-adopt` in each scope. It reads
+   the old lock, fetches, verifies, writes v2, and
+   swaps the generation. Plain `gale lock` cannot
+   finish the job on upgrade day: it does not fetch.
+3. `gale migrate` is gone. It names `gale install`
+   or `gale fetch-adopt` and exits.
 
 `gale doctor` reports each of these states, and names
 the same commands.

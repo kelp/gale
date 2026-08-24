@@ -3,17 +3,17 @@
 .Os
 .Sh NAME
 .Nm gale
-.Nd isolated package management for developers
+.Nd fetch and activate upstream CLI binaries
 .Sh SYNOPSIS
 .Nm
 .Ar command
 .Op Ar args ...
 .Sh DESCRIPTION
 .Nm
-is a package manager for developer CLI tools.
-It fetches verified artifacts from an index, pins
-them in a lockfile, and activates them through
-atomic generation snapshots.
+fetches upstream CLI binaries from an index, pins
+them in a v2 lockfile, and activates them through
+atomic generation snapshots. It does not compile
+packages and it does not ship bottles.
 .Pp
 Packages are declared in
 .Pa gale.toml .

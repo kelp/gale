@@ -1,14 +1,23 @@
 # Revisions, the Shared Library Farm, and Staleness
 
-Gale identifies packages by upstream version (`1.8.1`) and
-recipe revision (`-2`). Together they form the store identity
-`<name>/<version>-<revision>/`. This document explains when a
-revision bump happens, how the shared dylib farm lets one
-binary absorb dep upgrades without a rebuild, and how gale
-detects that an installed package has gone stale.
+> Leftover. Live fetch identity is
+> `<name>/<version>-<sha12>/` under `pkg/fetch/`.
+> Recipe revision and the dylib farm belonged to the
+> distro. This page remains as the record of that
+> store layout and of v1-lock upgrade. New installs
+> do not write a revision directory.
 
-Shipped in v0.12.0; `gale update` was taught to honor revision
-bumps in v0.12.2. See `CHANGELOG.md` for the rollout.
+Gale identified distro packages by upstream version
+(`1.8.1`) and recipe revision (`-2`). Together they
+formed the store identity
+`<name>/<version>-<revision>/`. The rest of this
+document is that era: when a revision bump happened,
+how the shared dylib farm worked, and how staleness
+used `.gale-deps.toml`.
+
+Shipped in v0.12.0; `gale update` was taught to honor
+revision bumps in v0.12.2. Fetch-don't-build replaced
+the store identity. See `CHANGELOG.md`.
 
 ## What a revision is
 
