@@ -333,14 +333,13 @@ func incompleteNotice(st syncState) string {
 	)
 }
 
-// failedPackageNames lists the packages a sync could not install, in
-// the outcomes' order (sortedSyncItems makes that name order). Both
-// failure modes count: a package whose recipe would not resolve is as
-// absent from PATH as one whose build broke.
+// failedPackageNames lists the packages a sync could not land, in
+// the outcomes' order. Live sync records a landing failure, not a
+// per-package resolve.
 func failedPackageNames(outcomes []syncOutcome) []string {
 	var names []string
 	for _, o := range outcomes {
-		if o.resolveErr == nil && o.installErr == nil {
+		if o.installErr == nil {
 			continue
 		}
 		names = append(names, o.name+"@"+o.version)

@@ -398,15 +398,14 @@ func TestSyncFingerprintDistinguishesAbsentAndEmptyLock(t *testing.T) {
 }
 
 // The stamp names packages, so the failed set has to survive the
-// outcome slice. A sync that fails to resolve and one that fails to
-// install are both incomplete.
-func TestFailedPackageNamesCoversResolveAndInstall(t *testing.T) {
+// outcome slice. A landing failure is incomplete; an outcome
+// without an error is not.
+func TestFailedPackageNamesCoversInstall(t *testing.T) {
 	got := failedPackageNames([]syncOutcome{
-		{name: "jq", version: "1.7", upToDate: true},
+		{name: "jq", version: "1.7"},
 		{name: "python", version: "3.13.1", installErr: os.ErrPermission},
-		{name: "ripgrep", version: "14.1.0", resolveErr: os.ErrNotExist},
 	})
-	want := []string{"python@3.13.1", "ripgrep@14.1.0"}
+	want := []string{"python@3.13.1"}
 	if len(got) != len(want) {
 		t.Fatalf("got %v, want %v", got, want)
 	}

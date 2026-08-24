@@ -9,9 +9,22 @@
   advances the related `golang.org/x/{mod,sys,crypto,net,sync,term,tools}`
   transitives.
 
+### Changed
+
+- Deleted the locked-plan `gale sync` body the
+  fetch cutover orphaned (gh#330). Live sync is
+  `runSyncFetch`: require a v2 lock, land fetch
+  trees, rebuild from that lock. `runSyncOne`,
+  `installedStale`, `finishSync`,
+  `lockedSyncPlan`, and the ~30 tests that only
+  reached them are gone. The direnv-stall and
+  bare-vs-canonical generation lessons stay in
+  `CLAUDE.md`. `gale migrate`'s reporting tree
+  is a separate deletion.
+
 ### Fixed
 
-- Docs no longer name `gale sync
+- Docs no longer name `gale sync`
   --no-frozen`, a flag removed with the
   fetch cutover (gh#329). `lockfile.md`,
   `revisions.md` and `ci-cd.md` sent a

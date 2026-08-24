@@ -21,11 +21,9 @@ import (
 	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/installer"
 	"github.com/kelp/gale/internal/lockfile"
-	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/lockwrite"
 	"github.com/kelp/gale/internal/output"
 	"github.com/kelp/gale/internal/projects"
-	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/recipe"
 	"github.com/kelp/gale/internal/registry"
 	"github.com/kelp/gale/internal/store"
@@ -1166,49 +1164,6 @@ func (ctx *cmdContext) RebuildGeneration() error {
 	return rebuildGeneration(ctx.GaleDir, ctx.StoreRoot, ctx.GalePath, nil)
 }
 
-// RebuildGenerationCanonical is RebuildGeneration with
-// bare config pins mapped to the recipe's canonical
-// revision first, so the rebuild links the revision the
-// recipe offers instead of a higher orphan left on disk
-// by a withdrawn recipe revision (gh#137). Sync uses this;
-// it costs a recipe resolution per bare pin.
-func (ctx *cmdContext) RebuildGenerationCanonical() error {
-	defer timing.Phase("generation-rebuild")()
-	return rebuildGeneration(
-		ctx.GaleDir, ctx.StoreRoot, ctx.GalePath,
-		ctx.versionedRecipeResolver(),
-	)
-}
-
-// RebuildGenerationLocked activates a plan rather than a manifest.
-//
-// The canonical rebuild maps gale.toml's bare pins through the recipe
-// resolver, which under a lock is a second version selector: it would
-// link whatever revision the recipe now offers, publishing a version
-// the lock does not describe immediately after verifying the one it
-// does. The plan already holds the answer, so the versions come from
-// there and no recipe is consulted.
-//
-// It also supplies design §6's revalidation callback. Sync is the only
-// command that carries a plan, so this is the only place the callback
-// can be wired, and without it every artifact is verified once and
-// then published without a recheck — the TOCTOU window §6 exists to
-// close.
-func (ctx *cmdContext) RebuildGenerationLocked() error {
-	defer timing.Phase("generation-rebuild")()
-	pkgs, err := lockedRebuildPackages(ctx.Installer.Plan)
-	if err != nil {
-		return err
-	}
-	return rebuildGenerationWith(genRebuild{
-		galeDir:    ctx.GaleDir,
-		storeRoot:  ctx.StoreRoot,
-		configPath: ctx.GalePath,
-		pkgs:       pkgs,
-		validate:   ctx.revalidatePlannedClosure,
-	})
-}
-
 // recoveryRebuild is rebuildUnderLock's policy, beside the generation
 // inputs themselves.
 type recoveryRebuild struct {
@@ -1337,58 +1292,6 @@ func generationAlreadyLinks(galeDir, storeRoot string, pkgs map[string]string) b
 		return false
 	}
 	return maps.Equal(active, generation.ActiveVersions(pkgs, storeRoot))
-}
-
-// lockedRebuildPackages turns the plan's roots into the name→version
-// map a generation is built from. Roots only: a generation links
-// declared packages, while the plan's other nodes are the transitive
-// closure that supports them.
-func lockedRebuildPackages(plan *lockplan.Plan) (map[string]string, error) {
-	pkgs := make(map[string]string, len(plan.Roots))
-	for _, id := range plan.Roots {
-		name, version, err := lockfile.ParseIdentity(id)
-		if err != nil {
-			return nil, fmt.Errorf("locked rebuild: %w", err)
-		}
-		pkgs[name] = version
-	}
-	return pkgs, nil
-}
-
-// revalidatePlannedClosure is design §6's validation callback: it
-// rechecks every plan entry, cache hits included, against the locked
-// graph.
-//
-// It runs inside BuildWithValidate's store-gen lock acquisition and
-// must therefore take no lock of its own — a nested acquisition on the
-// same file deadlocks the process against itself, since flock is held
-// per open file description. Everything here is a stat and a file
-// read.
-//
-// The check is the same VerifyAgainstLock the install-time cache hit
-// runs, deliberately. A second comparator written for this callback
-// would be a second serializer, and a comparator that is even slightly
-// stricter than the writer is the infinite-reinstall failure mode this
-// repo has paid for three times.
-func (ctx *cmdContext) revalidatePlannedClosure() error {
-	plan := ctx.Installer.Plan
-	if plan == nil {
-		return nil
-	}
-	for _, key := range plan.Order {
-		n := plan.Nodes[key]
-		dir, ok := ctx.Installer.Store.StorePath(n.Name, n.Version)
-		if !ok {
-			return fmt.Errorf("revalidating %s: %w: absent from the store",
-				key, provenance.ErrInvalid)
-		}
-		if _, err := provenance.VerifyAgainstLock(
-			dir, n.Graph, n.GraphDigest,
-		); err != nil {
-			return fmt.Errorf("revalidating %s: %w", key, err)
-		}
-	}
-	return nil
 }
 
 // ResolveVersionedRecipe fetches a recipe for a specific

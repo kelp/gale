@@ -204,12 +204,23 @@ commands, including `gale env`, do not register.
 Lessons paid for in past regressions.
 
 - Staleness checks must compare against the canonical
-  version-revision a reinstall would write. On-disk
-  metadata state carries meaning: a missing
-  `.gale-deps.toml` and an empty one are different
-  cases. Getting this wrong causes infinite
-  reinstall/rebuild loops that stall direnv (013b4a4,
-  688ce7d, af4c3f6).
+  version-revision a reinstall would write. An orphan
+  directory whose revision exceeds the recipe's
+  shadows the rebuild target: the check reads the
+  orphan while Reinstall writes the recipe revision,
+  so every sync rebuilds forever (013b4a4, 688ce7d,
+  af4c3f6). On-disk metadata state carries meaning: a
+  missing `.gale-deps.toml` and an empty one are
+  different cases. Fetch writes no `.gale-deps.toml`;
+  the missing-vs-empty distinction is still live in
+  generation closure (`depsmeta.StateRecorded` vs
+  `StateAbsent`).
+- Generation identity compares store-dir basenames.
+  Config pins are bare (`1.8.1`) while generation
+  symlinks carry the canonical basename (`1.8.1-4`);
+  comparing them raw reports drift on every no-op
+  (gh#49). Rebuild from the lock, or canonicalize
+  pins first.
 - Any change to sync, gc, or remove must be exercised
   across global and project scopes. Leftover
   `[hosts.*]` and `--host` are not a scope.

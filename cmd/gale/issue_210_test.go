@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/kelp/gale/internal/generation"
-	"github.com/kelp/gale/internal/lockplan"
 	"github.com/kelp/gale/internal/projects"
 )
 
@@ -21,7 +20,9 @@ import (
 //     permission (the farm claims, the activation gate, migrate's
 //     relocation);
 //   - fail toward work, for a decision about whether to redo work
-//     (sync's drift, the recovery rebuild's skip);
+//     (the recovery rebuild's skip, and live sync which rebuilds
+//     from the v2 lock even when the active generation cannot
+//     be read);
 //   - fail loud but never abort, for a diagnostic (doctor).
 //
 // The tests below pin the second and third. The first lives beside
@@ -51,68 +52,11 @@ func emptyGenerationTree(t *testing.T, galeDir string) {
 	}
 }
 
-// An unreadable generation reads as DRIFT, so the rebuild runs and
-// surfaces whatever is actually wrong.
-//
-// Today the lenient reader answers with an empty map, and against an
-// emptied manifest an empty map compares equal: no drift, no
-// rebuild, and the walk failure is never reported by anything. The
-// emptied manifest is not a corner case — runSync calls it out by
-// name, because "the generation still has to be rebuilt, or the last
-// package's symlinks stay active in current/bin".
-//
-// The posture is deliberately not gc's. Aborting here would strand a
-// user whose generation is broken in the one command that repairs
-// it, so the read is strict and the answer on error stays true.
-func TestGenerationDriftedReportsAnUnreadableGenerationAsDrift(t *testing.T) {
-	tmp := t.TempDir()
-	galeDir := filepath.Join(tmp, ".gale")
-	storeRoot := filepath.Join(tmp, "pkg")
-
-	seedStore(t, storeRoot, "jq", "1.7-1")
-	if err := generation.Build(
-		map[string]string{"jq": "1.7-1"}, galeDir, storeRoot,
-	); err != nil {
-		t.Fatal(err)
-	}
-	breakGenerationWalk(t, galeDir)
-
-	if !generationDrifted(galeDir, storeRoot, map[string]string{}, nil) {
-		t.Error("an unreadable generation was reported as matching " +
-			"an emptied manifest: the rebuild is skipped and nothing " +
-			"ever reports the walk failure")
-	}
-}
-
-// The locked half of the same rule. A locked sync compares the
-// active generation against the plan's roots rather than a recipe,
-// and a plan rooting nothing is what a project has after its last
-// package is removed and relocked.
-func TestLockedGenerationDriftedReportsAnUnreadableGenerationAsDrift(t *testing.T) {
-	tmp := t.TempDir()
-	galeDir := filepath.Join(tmp, ".gale")
-	storeRoot := filepath.Join(tmp, "pkg")
-
-	seedStore(t, storeRoot, "jq", "1.7-1")
-	if err := generation.Build(
-		map[string]string{"jq": "1.7-1"}, galeDir, storeRoot,
-	); err != nil {
-		t.Fatal(err)
-	}
-	breakGenerationWalk(t, galeDir)
-
-	if !lockedGenerationDrifted(galeDir, storeRoot, &lockplan.Plan{}) {
-		t.Error("an unreadable generation was reported as matching " +
-			"a plan rooting nothing; the sync leaves it in place")
-	}
-}
-
 // End to end: sync must rebuild rather than abort.
 //
-// The whole reason this caller keeps its tolerant answer is that
-// sync is the repair. A broken gen/ that made `gale sync` refuse
-// would leave the user with no way to fix it from inside gale, which
-// is worse than the fail-open being fixed.
+// A broken gen/ that made `gale sync` refuse would leave the user
+// with no way to fix it from inside gale. Live sync rebuilds from
+// the v2 lock; an unreadable current is not a reason to skip.
 func TestSyncRebuildsWhenTheActiveGenerationCannotBeRead(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

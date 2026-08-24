@@ -104,14 +104,16 @@ Entry points: `cmd/gale/context.go` (`FinalizeInstall`,
 
 ```
 sync
-  → load gale.toml (+ lockfile)
-  → for each package: resolve recipe, compare installed vs desired
-  → reinstall when stale (recipe revision bump, orphan mismatch, …)
-  → rebuild generation (even when nothing reinstalled — guard no-op churn)
+  → require a live v2 lock
+  → check declared pins against lock roots
+  → land fetch artifacts
+  → rebuild generation from the v2 lock
 ```
 
-Staleness must use the **same canonical version-revision**
-that a reinstall would write, not “highest revision on disk.”
+Store identity still uses the **same canonical
+version-revision** a fetch would write, not “highest
+revision on disk.” The locked-plan per-package
+staleness body is gone (gh#330); do not resurrect it.
 
 ### 3. Version resolution
 
@@ -177,9 +179,9 @@ callers and string literals from hits.
 
 | Area | Grep seeds | Commands | Test families |
 |------|------------|----------|---------------|
-| Version identity | `Full()`, `canonicalize`, `stripNumericRevision`, `configVersionForRecipe` | install, switch, update, sync, gc | `audit_fix_U1_*`, `internal/version/`, `rebuild_generation_test.go` |
-| Finalize path | `FinalizeInstall`, `writeConfigAndLock`, `FinalizeRecipeInstall`, `updateLockfile` | install, update, switch, remove, pin | `context_test.go`, `audit_fix_U1_*`, `audit_fix_U11_*` |
-| Sync / staleness | `runSync`, `Reinstall`, `isSuperseded`, `canonicalizeForBuild`, `syncNeeded`, `syncFingerprint` | sync, shell, run, hook direnv | `sync_*_test.go`, `syncstate_test.go`, `audit_fix_U1_*` (gh#49) |
+| Version identity | `Full()`, `canonicalize`, `stripNumericRevision`, `configVersionForRecipe` | install, switch, update, sync, gc | `internal/version/`, `rebuild_generation_test.go` |
+| Finalize path | `FinalizeInstall`, `writeConfigAndLock`, `FinalizeRecipeInstall`, `updateLockfile` | install, update, switch, remove, pin | `context_test.go`, `audit_fix_U11_*` |
+| Sync / staleness | `runSync`, `runSyncFetch`, `rebuildFromV2`, `canonicalizeForBuild`, `syncFingerprint` | sync, shell, run, hook direnv | `cutover_test.go`, `sync_test.go`, `syncstate_test.go`, `issue_210_test.go` (gh#49) |
 | Generation | `rebuildGeneration`, `generation.Build`, `Rollback` | sync, gc, generations, rollback | `generation/audit_fix_*`, `audit_fix_U2_*`, `rebuild_generation_test.go` |
 | GC / retention | `storeRetentionKey`, `generationLinksSuperseded`, `projects.Register` | gc, doctor | `audit_fix_U4_*`, `gc_test.go`, `projects_*_test.go` |
 | Registry / resolve | `resolveVersionedRecipe`, `FetchRecipe`, `pickVersion`, `composeResolvers` | install, update, outdated, search | `audit_fix_U12_*`, `registry/`, `recipes_test.go` |
