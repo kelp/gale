@@ -14,31 +14,7 @@ import (
 // drops the attestation a locked package carried is a refusal;
 // --allow-attestation-drop is the explicit escape, and it warns.
 func attestGaleDoc(version string, withAttestation bool) string {
-	att := ""
-	if withAttestation {
-		att = "attestation = true\n"
-	}
-	return `[package]
-name = "gale"
-description = "test package"
-license = "MIT"
-homepage = "https://github.com/kelp/gale"
-repo = "kelp/gale"
-latest = "` + version + `"
-
-[versions."` + version + `".artifacts."darwin/arm64"]
-url = "https://github.com/kelp/gale/releases/download/` + version + `/gale.tar.gz"
-format = "tar.gz"
-sha256 = "` + lockFetchSHA + `"
-tree_digest = "` + fetchTreeDigest("gale") + `"
-hash_source = "upstream-sha256sums"
-strip = 1
-` + att + `
-[[versions."` + version + `".artifacts."darwin/arm64".files]]
-src = "gale"
-dest = "bin/gale"
-mode = 0o755
-`
+	return lockIndexTOML("gale", version, withAttestation)
 }
 
 func attestDropFixture(t *testing.T) *lockFetchFix {
@@ -118,7 +94,12 @@ func TestUpdateAllowsAttestationDropWithFlagAndWarns(t *testing.T) {
 	if !ok {
 		t.Fatalf("lock not updated to 9.9.9: %v", got.Packages)
 	}
-	if art, ok := pkg.Artifacts["darwin/arm64"]; ok && art.Attestation != nil {
+	art, ok := pkg.Artifacts[currentPlatform()]
+	if !ok {
+		t.Fatalf("lock missing %s artifact: %v", currentPlatform(),
+			pkg.Artifacts)
+	}
+	if art.Attestation != nil {
 		t.Error("escaped update kept an attestation row")
 	}
 }

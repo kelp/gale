@@ -44,7 +44,8 @@ type replaceQuery struct {
 	wantSHA  string
 	platform string
 	// machineWide marks a replacement that is part of ONE proposed
-	// state for the whole machine, which today means `gale migrate`.
+	// state for the whole machine. gale migrate used to set it;
+	// fetch-adopt is per-scope and does not.
 	//
 	// It relaxes exactly one refusal, and design §13 turns on that
 	// distinction. A scope that loads the directory and names no hash
@@ -140,18 +141,10 @@ func checkReplaceable(q replaceQuery) error {
 	return nil
 }
 
-// postMigrate is the sequence that clears a legacy scope's veto,
-// stated in full because migrate does not finish the job (design
-// §13).
-//
-// `gale migrate` replaces unprovenanced BINARY directories only, so a
-// scope holding source-built packages is still legacy when it
-// returns, still vetoing, and the user has been sent to a command
-// that appeared to work. The order is the instruction: locking a
-// scope before its source packages are rebuilt locks nothing.
-const postMigrate = "run 'gale migrate' to converge the whole machine " +
-	"at once, rebuild the source-method packages it lists, then run " +
-	"plain 'gale lock' in every scope that is still legacy"
+// postAdopt is the command that clears a legacy scope's veto.
+// gale migrate is a tombstone; fetch-adopt converts a v1 lock and
+// republishes in one pass.
+const postAdopt = "run 'gale fetch-adopt' in each scope that is still legacy"
 
 // checkScopeClosure covers what a lock cannot state, and completeness
 // of the reading itself.
@@ -182,7 +175,7 @@ func checkScopeClosure(
 		return fmt.Errorf(
 			"%w: %s has a store directory whose dependency metadata gale "+
 				"cannot read, so it cannot tell what that scope loads; %s",
-			errScopeDisagrees, s.Label, postMigrate,
+			errScopeDisagrees, s.Label, postAdopt,
 		)
 	}
 	if q.machineWide {
@@ -199,7 +192,7 @@ func checkScopeClosure(
 		return fmt.Errorf(
 			"%w: %s loads %s but records no hash for it, so gale cannot "+
 				"tell which bytes it needs; %s",
-			errScopeDisagrees, s.Label, id, postMigrate,
+			errScopeDisagrees, s.Label, id, postAdopt,
 		)
 	}
 	return nil
@@ -352,8 +345,8 @@ type scopeClaim struct {
 //
 // Failing closed on any legacy lock was the other candidate and it
 // deadlocks the upgrade, since no scope can mint a v1 lock before a
-// replacement has happened. The escape is that `gale migrate` converges
-// the whole machine at once.
+// replacement has happened. The escape is gale fetch-adopt in each
+// scope.
 func lockedSHA(lockPath string, q replaceQuery) (scopeClaim, error) {
 	view, err := lockfile.Load(lockPath)
 	if err != nil {

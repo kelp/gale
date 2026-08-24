@@ -112,7 +112,7 @@ repoint resolution or change install order.
 
 Leftover tap list. `gale repo *` is gone. Remaining
 commands that still resolve recipes (`outdated`,
-`gc`, `migrate`) may still read these entries.
+`gc`) may still read these entries.
 
 ```toml
 [[repos]]

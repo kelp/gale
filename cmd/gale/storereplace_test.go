@@ -649,21 +649,10 @@ func TestCheckReplaceableV1ScopeDoesNotVetoOnMissingMetadata(t *testing.T) {
 	}
 }
 
-// A legacy scope's veto must name the whole sequence that clears it,
-// not just the first step.
-//
-// Design §13 is explicit that `gale migrate` does not finish the job
-// on its own: it replaces unprovenanced BINARY directories, so a
-// scope with source-built packages is still legacy afterwards, still
-// vetoing, and the user has been sent to a command that appears to
-// have worked. The remaining steps are rebuilding the source-method
-// packages migrate lists, running plain `gale lock` in every scope
-// that is still legacy, and only then retrying `--refresh`.
-//
-// Both closure vetoes carry it, because both are the same condition:
-// a scope gale cannot prove is uninvolved because it predates
-// provenance.
-func TestLegacyScopeRefusalNamesTheWholePostMigrateSequence(t *testing.T) {
+// A legacy scope's veto must name the command that republishes it.
+// gale migrate is a tombstone; fetch-adopt converts a v1 lock and
+// swaps the generation.
+func TestLegacyScopeRefusalNamesFetchAdopt(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		withMeta bool
@@ -696,19 +685,13 @@ func TestLegacyScopeRefusalNamesTheWholePostMigrateSequence(t *testing.T) {
 			if !errors.Is(err, errScopeDisagrees) {
 				t.Fatalf("err = %v, want errScopeDisagrees", err)
 			}
-			// In order, because the order is the instruction: locking a
-			// scope before its source packages are rebuilt locks nothing.
-			at := 0
-			for _, step := range []string{
-				"gale migrate", "rebuild", "gale lock",
-			} {
-				i := strings.Index(err.Error()[at:], step)
-				if i < 0 {
-					t.Fatalf("the refusal omits %q or states it out of "+
-						"order: %q", step, err)
-				}
-				at += i + len(step)
+			if !strings.Contains(err.Error(), "fetch-adopt") {
+				t.Fatalf("legacy-scope refusal must name fetch-adopt: %v", err)
 			}
+			if strings.Contains(err.Error(), "gale migrate") {
+				t.Fatalf("legacy-scope refusal names tombstone gale migrate: %v", err)
+			}
+			assertGaleCommandsRegistered(t, err.Error())
 		})
 	}
 }

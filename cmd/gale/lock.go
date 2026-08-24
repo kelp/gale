@@ -384,15 +384,17 @@ type unprovenancedDir struct {
 // beside bytes it never fetched would attest a directory on the
 // strength of it being in the right place, which is exactly the
 // unverified marker §13 rejected; replacement is an explicit user
-// action (`gale fetch-adopt`, or machine-wide `gale migrate` for a
-// pre-revision bare directory).
+// action (`gale fetch-adopt`). A pre-revision bare directory is not
+// replaced in place: fetch-adopt lands the canonical tree, and gc
+// removes the bare dir once no generation links it.
 func unprovenanced(u unprovenancedDir) error {
-	remedy := fmt.Sprintf("`gale fetch-adopt` for %s, or `gale migrate`", u.name)
+	remedy := fmt.Sprintf("`gale fetch-adopt` for %s", u.name)
 	if u.dir != u.canonical {
 		remedy = fmt.Sprintf(
-			"`gale migrate`, since %s predates revisions and moving it "+
-				"to %s is machine-wide work that one scope cannot do "+
-				"safely", u.dir, u.canonical,
+			"`gale fetch-adopt` for %s; %s predates revisions, so a "+
+				"fetch lands at %s and gale gc removes the bare "+
+				"directory once no generation links it",
+			u.name, u.dir, u.canonical,
 		)
 	}
 	return fmt.Errorf(

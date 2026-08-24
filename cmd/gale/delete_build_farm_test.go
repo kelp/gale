@@ -87,26 +87,38 @@ func TestRollbackCommandDoesNotCreateFarmLib(t *testing.T) {
 }
 
 func TestMigrateRefuses(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	storeRoot := filepath.Join(home, ".gale", "pkg")
-	if err := os.MkdirAll(storeRoot, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	ctx := &cmdContext{
-		GaleDir:   filepath.Join(home, ".gale"),
-		StoreRoot: storeRoot,
-	}
-	err := runMigrate(ctx, discardOutput())
+	err := runMigrate()
 	if err == nil {
 		t.Fatal("gale migrate must refuse")
 	}
 	msg := err.Error()
-	if !strings.Contains(msg, "fetch") {
-		t.Errorf("refusal must name fetch: %v", err)
+	if !strings.Contains(msg, "install") {
+		t.Errorf("refusal must name install: %v", err)
 	}
 	if !strings.Contains(msg, "fetch-adopt") {
 		t.Errorf("refusal must name fetch-adopt: %v", err)
+	}
+	assertGaleCommandsRegistered(t, msg)
+}
+
+func TestMigrateCmdTombstoneDoesNotNeedContext(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "home")
+	if err := os.WriteFile(home, []byte("not a dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Chdir(t.TempDir())
+
+	err := migrateCmd.RunE(migrateCmd, nil)
+	if err == nil {
+		t.Fatal("gale migrate must refuse")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "install") || !strings.Contains(msg, "fetch-adopt") {
+		t.Fatalf("tombstone must name install and fetch-adopt, got %v", err)
+	}
+	if strings.Contains(msg, "finding home") || strings.Contains(msg, "not a directory") {
+		t.Fatalf("tombstone must not depend on cmdContext setup: %v", err)
 	}
 }
 
