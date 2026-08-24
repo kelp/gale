@@ -180,7 +180,7 @@ sha256 = "` + lockFetchSHA + `"
 tree_digest = "` + tree + `"
 hash_source = "upstream-sha256sums"
 strip = 1
-
+` + att + `
 [[versions."` + version + `".artifacts."linux/amd64".files]]
 src = "` + name + `"
 dest = "bin/` + name + `"
