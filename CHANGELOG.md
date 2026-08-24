@@ -11,6 +11,12 @@
 
 ### Changed
 
+- Product docs describe fetch-and-activate
+  gale. README, getting-started, lockfile,
+  and related pages no longer tell a user
+  that gale compiles packages or writes a
+  v1 lock.
+
 - Deleted the locked-plan `gale sync` body the
   fetch cutover orphaned (gh#330). Live sync is
   `runSyncFetch`: require a v2 lock, land fetch

@@ -54,10 +54,11 @@ ln -s ~/dotfiles/gale.toml ~/.gale/gale.toml
 gale sync
 ```
 
-Sync reads `~/.gale/gale.toml`, installs every
-package at its pinned version, and rebuilds the
-generation. After sync completes, all your tools
-are on PATH.
+Sync lands the trees the v2 lock names and rebuilds
+the generation. If this machine has no v2 lock yet,
+run `gale lock` (or `gale fetch-adopt` for a v1
+file) first. After sync completes, the tools are on
+PATH.
 
 Verify:
 

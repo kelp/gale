@@ -10,7 +10,7 @@ gale outdated
 ```
 
 Lists every package in your manifest that has a newer
-version available in the registry.
+version available in the index.
 
 ## Update a Specific Package
 
@@ -18,7 +18,7 @@ version available in the registry.
 gale update jq
 ```
 
-Downloads and installs the latest version, updates
+Fetches the latest version from the index, updates
 `gale.toml` and `gale.lock`, and rebuilds the current
 generation.
 
@@ -44,24 +44,6 @@ writes `gale.toml` and the v2 lock, and swaps
 `current`. Use `gale install` to add a package that
 is not already declared.
 
-## Bump Pins Without Installing
-
-To split the workflow — review the new versions before
-touching the store — use `--no-install`:
-
-```sh
-gale update --no-install      # rewrite gale.toml pins
-git diff gale.toml            # review the bumps
-gale sync                     # install what gale.toml says
-```
-
-`--no-install` writes new versions to `gale.toml` but
-does not build, install, update `gale.lock`, or rebuild
-the generation. The follow-up `gale sync` does all of
-those based on the new pins. This is useful in shared
-projects where a PR that bumps pins is reviewed
-separately from the install.
-
 ## Preview Changes
 
 Before running sync on a modified manifest, preview
@@ -77,7 +59,7 @@ changed in version. No files are modified.
 ## Clean Up Old Versions
 
 After updates, previous versions remain in the store.
-Remove versions not referenced by any `gale.toml`:
+Remove fetch trees no retained generation still links:
 
 ```sh
 gale gc

@@ -1,16 +1,18 @@
 # Gale
 
-Fast, isolated package management for developers.
-Versioned installs, per-project environments that
-activate automatically.
+Gale fetches upstream CLI binaries, pins their hashes
+in a lockfile, and puts them on PATH. It does not
+compile packages. It does not ship bottles.
+
+Declare tools in `gale.toml`. Install writes a v2 lock
+and swaps `~/.gale/current`. Sync lands what that lock
+already names. Not-in-index is an error.
 
 ## Why
 
-Gale pins CLI tools in `gale.toml`, locks their
-artifacts, and activates them through an atomic
-generation swap. Install fetches a verified tree
-from the index. Sync rebuilds PATH from that lock
-and does not rewrite it.
+One file names the tools. One lock names the exact
+archives. One symlink swap updates bin and man. A
+clone runs `gale sync` and gets the same trees.
 
 ## Install
 
@@ -24,7 +26,7 @@ Or with Homebrew:
 brew install kelp/tap/gale
 ```
 
-Add gale to your PATH:
+Add gale to PATH:
 
 ```sh
 export PATH="$HOME/.gale/current/bin:$PATH"
@@ -32,16 +34,16 @@ export PATH="$HOME/.gale/current/bin:$PATH"
 
 ## Get Started
 
-Install a tool:
-
 ```sh
 gale install jq
 ```
 
-Gale resolves the index, fetches the artifact, verifies
-its tree digest, and swaps it onto PATH.
+Gale resolves the [gale-recipes](https://github.com/kelp/gale-recipes)
+index, downloads that platform's archive, checks
+`sha256` and `tree_digest`, writes `gale.lock`, and
+swaps `current`.
 
-Set up a project manifest:
+A project:
 
 ```sh
 cd myproject
@@ -50,20 +52,22 @@ gale install go@1.26.1
 gale install just
 ```
 
-This creates `gale.toml` with pinned versions and a
-lockfile with SHA256 hashes. Commit both. Anyone who
-clones the repo runs `gale sync` and gets identical
-tools.
+Commit `gale.toml` and `gale.lock`. Anyone who clones
+the repo runs `gale sync` and gets the same tools.
 
 ## How It Works
 
-Packages live in `~/.gale/pkg/`, one directory per
-version, never modified after install. A generation
-directory holds symlinks into the store, and
-`~/.gale/current` points to the active generation.
-Installing or removing a package builds a new
-generation and swaps the `current` symlink in one
-atomic operation. No partial states, no broken PATH.
+Fetch trees live under
+`~/.gale/pkg/fetch/<name>/<version>-<sha12>/` and are
+never modified. A generation is a directory of
+symlinks into that store. `~/.gale/current` points at
+the active generation. Install, update, remove, and
+sync build a new generation and rename `current` onto
+it. PATH never sees a half-updated bin.
+
+`gale.toml` declares names and versions. `gale.lock`
+names URLs, hashes, and tree digests. Sync does not
+rewrite the lock.
 
 ## Project Environments
 
@@ -86,55 +90,50 @@ With direnv, environments activate on `cd`:
 eval "$(gale hook direnv)"
 ```
 
-Enter the project directory and direnv syncs packages,
-adds `.gale/current/bin` to PATH, and exports
-variables from `[vars]`. Leave the directory and your
-global environment returns.
+Enter the project and direnv syncs, adds
+`.gale/current/bin` to PATH, and exports `[vars]`.
+Leave and the global environment returns.
 
 Global and project packages can coexist at different
-versions. Go 1.24 globally, Go 1.26.1 in the project
-— direnv handles the switch.
+versions. Go 1.24 globally, Go 1.26.1 in the project.
 
 ## Multiple Machines
 
-One `gale.toml` is one machine. Leftover
-`[hosts.*]` tables refuse. There is no `--host`
-flag. A second machine uses a second file —
-chezmoi, git, or a copy — then `gale sync` on
-that machine.
-
-```sh
-gale sync                     # activate this file's [packages]
-ssh server gale sync          # remote install — no special command needed
-```
+One `gale.toml` is one machine. Leftover `[hosts.*]`
+tables refuse. There is no `--host` flag. A second
+machine uses a second file, then `gale sync` there.
 
 See [docs/chezmoi.md](docs/chezmoi.md) and
-[docs/configuration.md](docs/configuration.md) for
-details.
+[docs/configuration.md](docs/configuration.md).
 
 ## Commands
 
 ```
-gale install <pkg>[@ver]  Install a package
+gale install <pkg>[@ver]  Fetch a package from the index
 gale remove <pkg>         Remove a package
-gale sync                 Install at pinned versions
-gale update [pkg...]      Update to latest
-gale list                 List packages in manifest
-gale info <pkg>           Show package metadata
+gale sync                 Activate the v2 lock (does not write it)
+gale update [pkg...]      Fetch latest from the index
+gale lock                 Rewrite the v2 lock from the index
+gale fetch-adopt          Convert a v1 lock to v2
+gale list                 List packages in the manifest
 gale outdated             Show available updates
 gale which <binary>       Find which package owns it
 gale doctor               Check PATH, lock, generation, digests
-gale gc                   Clean unused versions + gens
+gale verify [pkg]         Check store tree digests against the lock
+gale gc                   Clean unused fetch trees and gens
 gale generations          List generations or roll back one step
 gale init                 Set up a project
 gale env                  Print PATH and vars for shell
 gale shell                Open shell with project env
 gale run <cmd>            Run command in project env
-gale lint <file>          Validate an index file
+gale lint <file>          Validate an index document
 gale admit                Record an index artifact from an archive
-gale verify [pkg]         Check store tree digests against the lock
 gale completion <shell>   Generate shell completions
 ```
+
+`gale migrate` is gone. It names `gale install` or
+`gale fetch-adopt` and exits. `gale info` still reads
+the leftover recipe cache and is not the index.
 
 See `man gale` for the full reference.
 
@@ -143,13 +142,13 @@ See `man gale` for the full reference.
 The catalog lives in
 [gale-recipes](https://github.com/kelp/gale-recipes)
 under `index/`. Each document names versions, artifact
-URLs, `sha256`, and `tree_digest`. `gale install` and
-`gale update` resolve against that index.
-`--index <dir>` points at a local checkout (a git
-repo; uncommitted edits are invisible).
+URLs, `sha256`, and `tree_digest`. Resolve verbs
+(`install`, `update`, `lock`, `outdated`) talk to that
+index. `--index <dir>` pins a local git checkout
+(uncommitted edits are invisible).
 
-A package that is not in the index is an error. v1
-locks migrate with `gale fetch-adopt`.
+A package that is not in the index is an error. A v1
+lock migrates with `gale fetch-adopt`.
 
 ```toml
 [package]
@@ -164,11 +163,14 @@ tree_digest = "sha256:..."
 hash_source = "upstream-sha256sums"
 ```
 
+The catalog is macOS-first. Adding a package is
+`gale admit` plus `gale lint` on an index document.
+See [docs/writing-recipes.md](docs/writing-recipes.md).
+
 ## Optional Dependencies
 
 None. Sigstore attestation verification and
-`gale verify` run in-process — no `gh` CLI or
-other external tool required.
+`gale verify` run in-process. No `gh` CLI.
 
 ## Development
 

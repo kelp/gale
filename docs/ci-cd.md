@@ -18,10 +18,10 @@ gale sync
 eval "$(gale env)"
 ```
 
-`gale sync` reads `gale.toml` from the repository root
-and installs every package at its pinned version.
-`gale env` prints the PATH export for the current
-directory.
+`gale sync` lands the trees the committed v2 lock
+names and rebuilds the generation. It does not write
+the lock. `gale env` prints the PATH export for the
+current directory.
 
 ## Lockfile
 

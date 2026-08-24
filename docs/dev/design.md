@@ -2,23 +2,21 @@
 
 ## What Gale Is
 
-Gale is a package manager for developer CLI tools.
-It fetches verified artifacts from a signed index,
-pins them in a lockfile, and activates them through
-atomic generation snapshots. Global tools and
-per-project environments share that model. direnv
-loads a project generation onto PATH.
+Gale fetches upstream CLI binaries, pins them in a
+v2 lock, and activates them through atomic generation
+snapshots. It does not compile packages and it does
+not ship bottles. Global tools and per-project
+environments share that model. direnv loads a project
+generation onto PATH.
 
-Gale is not a Homebrew replacement and not an
-everything-from-source build farm. A package that
-is not in the index is an error. Python is not
-in the catalog. See
-[`python-build-standalone.md`](proposals/python-build-standalone.md).
-Index version bumps are currently human
-PRs. The update bot is parked. See
+A package that is not in the
+[gale-recipes](https://github.com/kelp/gale-recipes)
+index is an error. The catalog is macOS-first.
+Python is not in the catalog. Index version bumps
+are human PRs. The update bot is parked. See
+[`python-build-standalone.md`](proposals/python-build-standalone.md)
+and
 [`index-update-pr-bot.md`](proposals/index-update-pr-bot.md).
-The catalog has no linux artifact keys.
-See [`linux-admission.md`](proposals/linux-admission.md).
 
 ## Principles
 
@@ -44,15 +42,14 @@ the lock. Durable undo is reverting the lock in git.
 
 ```
 ~/.gale/
-  gale.toml       Package manifest (source of truth)
-  config.toml     Settings (registry URL, API keys)
-  sync-state.toml Last sync's verdict (see Environment Activation)
+  gale.toml       Package manifest
+  gale.lock       v2 lock (exact artifacts)
+  sync-state.toml Last sync's verdict
   current → gen/2 Symlink to active generation
   gen/            Generation snapshots
-    2/bin/        Symlinks into pkg/
-  pkg/            Package store (immutable)
-    jq/1.8.1-2/   <name>/<version>-<revision>/
-    fd/10.4.2-1/
+    2/bin/        Symlinks into pkg/fetch/
+  pkg/fetch/      Fetch store (immutable)
+    jq/<ver>-<sha12>/
   README.md       Auto-generated, explains this layout
 ```
 
@@ -62,28 +59,16 @@ one extra sync, never correctness.
 
 ## Terminology
 
-**Store** (`pkg/`): where package contents live. Each
-version gets its own directory. Once installed, a store
-entry is never modified — only deleted when the package
-is removed. Inspired by the Nix store, but simpler:
-no content-addressing, just `name/version-revision/`
-(e.g. `jq/1.8.1-2/`).
-
-A committed store directory is byte-stable for as long
-as any generation links it, and `gale install --path`
-enforces that rather than assuming it: a local build's
-version carries a digest of the uncommitted working
-tree, so a changed tree asks for a different directory,
-and a replace that would land on a referenced one is
-refused. The identity is content-**keyed**, not
-content-**addressed** — the digest distinguishes one
-tree from another on one machine; it does not address
-the artifact globally the way a Nix hash does.
+**Store** (`pkg/fetch/`): where fetched trees live.
+Identity is `<name>/<version>-<sha12>/`. Once
+installed, a store entry is never modified — only
+deleted when nothing links it. The tree digest in the
+v2 lock is the byte identity of that directory.
 
 **Generation** (`gen/`): a numbered snapshot of symlinks
 pointing into the store. "Gen" is short for generation.
-Each gen directory contains `bin/`, and eventually
-`lib/` and `man/`. Generations are cheap to create and
+Each gen directory contains `bin/` and `man/`.
+Generations are cheap to create and
 disposable — only the one pointed to by `current`
 matters.
 
@@ -103,9 +88,9 @@ of mutations. If something went wrong, you couldn't
 tell what state it should be in.
 
 The new model: the bin directory is a **function of
-gale.toml**. Read the manifest, build a gen directory,
+the v2 lock**. Read the lock, build a gen directory,
 swap the symlink. Idempotent, predictable, recoverable.
-Run `gale sync` and you always get the right state.
+Run `gale sync` and you always get the locked state.
 
 ## Atomic Swap
 
@@ -285,34 +270,23 @@ interface), graphics frameworks (Cocoa, GTK, libGL),
 and OS-level services (PAM, NSS). You can't
 statically link the window system.
 
-**Gale's policy:** static by default. Fetch installs
-index artifacts as shipped. There is no runtime
-`install_name_tool` / `patchelf` rewrite. For
-developer CLI tools, static is simpler and more
-portable.
-
-For autotools projects (like jq): `--disable-shared
---enable-all-static`. Rust and Go produce static
-binaries by default.
-
-When static linking is not practical, recipes should
-use the smallest dynamic surface possible and rely on
-Gale's fixups to make packaged binaries relocatable.
-Modern C++ CLI tools may opt into an explicit LLVM
-build toolchain (`build.toolchain = "llvm"`) so they
-use the packaged compiler, linker, headers, and C++
-runtime instead of whatever happens to be on the host.
+**Gale's policy:** admit upstream artifacts as
+shipped. There is no runtime `install_name_tool` /
+`patchelf` rewrite. Prefer static upstream builds
+when the publisher offers them.
 
 ## Two-Repo Architecture
 
-- **gale** — the CLI tool. Go code, all packages.
+- **gale** — the CLI. Go code.
 - **gale-recipes** — index documents. Fetch
-  installs from the index. There is no farm
-  CI, leftover `[build]` recipe, GHCR bottle
-  push, or `tar.zst` create.
+  installs from that index. There is no farm
+  CI, source recipe, GHCR bottle push, or
+  `tar.zst` create.
 
-Recipes are fetched on demand from GitHub raw URLs.
-No git clone needed for installation.
+Resolve verbs open an index session pinned to one
+commit. `--index <dir>` pins a local checkout's
+HEAD. The leftover recipe cache is not on this
+path.
 
 ## Index Client and Registry Cache
 
