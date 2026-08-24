@@ -11,12 +11,8 @@ var migrateCmd = &cobra.Command{
 		"gone. Use gale install for a new install, or gale fetch-adopt " +
 		"to convert a v1 lock.",
 	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		ctx, err := newCmdContext("", true, false)
-		if err != nil {
-			return err
-		}
-		return runMigrate(ctx, newCmdOutput(cmd))
+	RunE: func(_ *cobra.Command, _ []string) error {
+		return runMigrate()
 	},
 }
 

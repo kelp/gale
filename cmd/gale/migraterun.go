@@ -1,14 +1,11 @@
 package main
 
-import (
-	"fmt"
-
-	"github.com/kelp/gale/internal/output"
-)
+import "fmt"
 
 // runMigrate is a tombstone. Fetch-adopt replaced pouring bottles
-// without fixup (fetch-dont-build.md §11).
-func runMigrate(_ *cmdContext, _ *output.Output) error {
+// without fixup (fetch-dont-build.md §11). It takes no context:
+// constructing one can fail for reasons unrelated to migrate.
+func runMigrate() error {
 	return fmt.Errorf(
 		"gale migrate: pouring bottles without fixup is gone; use gale install or gale fetch-adopt",
 	)
