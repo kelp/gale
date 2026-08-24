@@ -14,11 +14,10 @@ import (
 	"github.com/kelp/gale/internal/lockfile"
 	"github.com/kelp/gale/internal/provenance"
 	"github.com/kelp/gale/internal/store"
-	"github.com/spf13/cobra"
 )
 
 func TestCutoverDropsRecipesOnInstallerVerbs(t *testing.T) {
-	for _, name := range []string{"install", "sync", "update", "remove", "lock"} {
+	for _, name := range []string{"install", "sync", "update", "remove", "lock", "migrate"} {
 		cmd := findCmd(name)
 		if cmd == nil {
 			t.Fatalf("command %q missing", name)
@@ -84,80 +83,6 @@ func TestCutoverSourceFlagsGone(t *testing.T) {
 				t.Errorf("%s: --%s must be gone", name, flag)
 			}
 		}
-	}
-}
-
-// gh#329: a spelling gale prints as advice has to be a spelling gale
-// accepts. `--no-frozen` was removed from syncCmd in 9776c69 and the
-// migrate report went on naming it, so the remedy for a legacy lock
-// was `unknown flag: --no-frozen`.
-//
-// Every token is checked against the live command tree rather than
-// against a list, so the next flag removal fails here instead of in a
-// user's terminal.
-func TestSyncSpellingNamesOnlyRegisteredCommandsAndFlags(t *testing.T) {
-	for _, global := range []bool{false, true} {
-		shape := "project"
-		if global {
-			shape = "global"
-		}
-		for _, tc := range convergeLockStates(t, global) {
-			t.Run(shape+"/"+tc.name, func(t *testing.T) {
-				assertRegisteredSpelling(t, convergeSpelling(tc.scope))
-			})
-		}
-	}
-}
-
-// assertRegisteredSpelling resolves every token of advised command
-// against the live command tree. Advice may be a `&&` chain, and every
-// link in it has to resolve — a second command is exactly where an
-// unregistered flag would hide.
-func assertRegisteredSpelling(t *testing.T, spelling string) {
-	t.Helper()
-	for _, one := range strings.Split(spelling, "&&") {
-		assertRegisteredCommand(t, strings.TrimSpace(one))
-	}
-}
-
-func assertRegisteredCommand(t *testing.T, spelling string) {
-	t.Helper()
-	tokens := strings.Fields(spelling)
-	if len(tokens) < 2 {
-		t.Fatalf("got %q, want at least `gale <command>`", spelling)
-	}
-	if tokens[0] != "gale" {
-		t.Errorf("first token = %q, want %q", tokens[0], "gale")
-	}
-	cmd := findCmd(tokens[1])
-	if cmd == nil {
-		t.Fatalf("%q names command %q, which is not registered",
-			spelling, tokens[1])
-	}
-	for _, tok := range tokens[2:] {
-		assertRegisteredFlag(t, cmd, spelling, tok)
-	}
-}
-
-// assertRegisteredFlag checks one token, long or short. Both forms are
-// checked because advice that reaches a scope needs a scope flag, and
-// a shorthand that escaped the check would be exactly the hole this
-// test exists to close.
-func assertRegisteredFlag(t *testing.T, cmd *cobra.Command, spelling, tok string) {
-	t.Helper()
-	switch {
-	case strings.HasPrefix(tok, "--"):
-		if cmd.Flags().Lookup(strings.TrimPrefix(tok, "--")) == nil {
-			t.Errorf("%q names %s, which %s does not register",
-				spelling, tok, cmd.Name())
-		}
-	case strings.HasPrefix(tok, "-"):
-		if cmd.Flags().ShorthandLookup(strings.TrimPrefix(tok, "-")) == nil {
-			t.Errorf("%q names %s, which %s does not register",
-				spelling, tok, cmd.Name())
-		}
-	default:
-		t.Errorf("%q carries a non-flag argument %q", spelling, tok)
 	}
 }
 

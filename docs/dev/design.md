@@ -327,7 +327,7 @@ TTL (§15.16 of the fetch plan).
 The legacy registry cache
 (`~/.gale/cache/registry/<sha256(url)>/{body,etag,not_found}`,
 `internal/registry/cache.go`) survives only for transitional
-commands that still read recipe documents (`migrate`; `info`)
+commands that still read recipe documents (`info`)
 until those packages die. Its stale-on-error and negative-cache
 rules must never be wired into a resolve verb. A fetch-archive
 cache at `~/.gale/cache/artifacts/<sha256>` is parked

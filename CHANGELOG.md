@@ -22,6 +22,12 @@
   `CLAUDE.md`. `gale migrate`'s reporting tree
   is a separate deletion.
 
+- Deleted the `gale migrate` reporting and
+  relocation tree (gh#330). The command remains
+  as a tombstone that names `gale fetch` and
+  `gale fetch-adopt`. `lockfile.md` no longer
+  tells a user to run migrate.
+
 ### Fixed
 
 - Docs no longer name `gale sync`

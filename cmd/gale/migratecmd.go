@@ -4,31 +4,15 @@ import (
 	"github.com/spf13/cobra"
 )
 
-var migrateRecipes string
-
 var migrateCmd = &cobra.Command{
 	Use:   "migrate",
-	Short: "Refetch and replace store directories that attest nothing",
-	Long: "Converge every package installed before gale enforced " +
-		"gale.lock.\n\n" +
-		"Such a package has no provenance record, so nothing can prove " +
-		"which bytes it holds, and a locked environment refuses to " +
-		"activate it. For each one whose recipe declares a prebuilt " +
-		"binary, migrate refetches the artifact, verifies it, and puts " +
-		"the verified result in place of the old directory. It never " +
-		"writes a record beside a directory it did not replace.\n\n" +
-		"The whole machine is one unit: every scope is consulted about " +
-		"every candidate before anything is replaced, because the store " +
-		"is shared and a per-scope pass would race its neighbours. " +
-		"Source-built packages cannot be migrated by refetching, so " +
-		"they are listed rather than claimed.",
+	Short: "Gone; use gale fetch or gale fetch-adopt",
+	Long: "gale migrate poured bottles without fixup. That path is " +
+		"gone. Use gale fetch for a new install, or gale fetch-adopt " +
+		"to convert a v1 lock.",
 	Args: cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// Global scope deliberately, and not because migrate belongs to
-		// it: the store and the project registry are machine-wide, and
-		// resolving a project context would make the command's reach
-		// depend on the directory it was run from.
-		ctx, err := newCmdContext(migrateRecipes, true, false)
+		ctx, err := newCmdContext("", true, false)
 		if err != nil {
 			return err
 		}
@@ -37,7 +21,5 @@ var migrateCmd = &cobra.Command{
 }
 
 func init() {
-	migrateCmd.Flags().StringVar(&migrateRecipes, "recipes", "",
-		"Resolve recipes from a local directory instead of the registry")
 	rootCmd.AddCommand(migrateCmd)
 }

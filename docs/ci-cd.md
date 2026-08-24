@@ -77,7 +77,7 @@ longer matches the lock. Its remedy is `gale sync`.
 
 The same codes come from every command that can reach
 these states: `sync`, `install`, `update`, `lock`,
-`migrate`, `shell`, `run`, `remove` and `env`.
+`shell`, `run`, `remove` and `env`.
 
 ## Caching
 

@@ -3,11 +3,9 @@ package main
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"github.com/kelp/gale/internal/generation"
-	"github.com/kelp/gale/internal/projects"
 )
 
 // gh#210: the remaining callers of the lenient generation reader.
@@ -17,16 +15,15 @@ import (
 // Three apply here:
 //
 //   - fail closed, for a decision that destroys bytes or grants
-//     permission (the farm claims, the activation gate, migrate's
-//     relocation);
+//     permission (the farm claims, the activation gate);
 //   - fail toward work, for a decision about whether to redo work
 //     (the recovery rebuild's skip, and live sync which rebuilds
 //     from the v2 lock even when the active generation cannot
 //     be read);
 //   - fail loud but never abort, for a diagnostic (doctor).
 //
-// The tests below pin the second and third. The first lives beside
-// the code it guards, in internal/generation and activation_test.go.
+// The tests below pin the second. The first lives beside the
+// code it guards, in internal/generation and activation_test.go.
 
 // emptyGenerationTree leaves galeDir with a current pointer onto a
 // generation directory that is not there, while gen/ itself stays a
@@ -124,66 +121,5 @@ func TestGenerationAlreadyLinksIsFalseWhenTheGenerationIsUnreadable(t *testing.T
 		t.Error("an unreadable generation was reported as already " +
 			"linking the target set; gc would skip the " +
 			"rebuild that would repair it")
-	}
-}
-
-// Migrate's per-scope regeneration relocates bytes, so it fails
-// closed.
-//
-// regenerateScope reads the scope's ACTIVE package set to follow its
-// symlinks into the canonical directory. Read leniently, a scope
-// whose generation cannot be walked comes back with nothing, hits
-// the "never synced, nothing to move" branch, and is skipped in
-// silence — after which the pass removes the pre-revision directory
-// that scope's symlinks still name. It already errors when
-// generation.Current fails; this is the same refusal one layer down.
-//
-// Both scopes, because migrate walks the global scope and every
-// registered project through one code path and a cross-scope miss
-// here destroys the bytes of whichever one was skipped.
-func TestRegenerateScopeFailsClosedOnUnreadableGeneration(t *testing.T) {
-	for _, scope := range []string{"global scope", "project scope"} {
-		t.Run(scope, func(t *testing.T) {
-			home := t.TempDir()
-			storeRoot := filepath.Join(home, "pkg")
-
-			galeDir := filepath.Join(home, ".gale")
-			label := "the global scope"
-			if scope == "project scope" {
-				proj := filepath.Join(home, "proj")
-				if err := os.MkdirAll(proj, 0o755); err != nil {
-					t.Fatal(err)
-				}
-				if err := projects.Register(galeDir, proj); err != nil {
-					t.Fatal(err)
-				}
-				galeDir = filepath.Join(proj, ".gale")
-				label = "project " + proj
-			}
-
-			seedStore(t, storeRoot, "old", "1.0")
-			if err := generation.Build(
-				map[string]string{"old": "1.0"}, galeDir, storeRoot,
-			); err != nil {
-				t.Fatal(err)
-			}
-			seedStore(t, storeRoot, "old", "1.0-1")
-			breakGenerationWalk(t, galeDir)
-
-			err := regenerateScope(projects.Scope{
-				Label: label, GaleDir: galeDir,
-			}, storeRoot, discardOutput())
-			if err == nil {
-				t.Fatal("a scope whose generation could not be read " +
-					"was skipped as though it had never synced; the " +
-					"pre-revision directory its symlinks name is then " +
-					"removed")
-			}
-			for _, want := range []string{label, filepath.Join("gen", "1")} {
-				if !strings.Contains(err.Error(), want) {
-					t.Errorf("error must name %s, got: %v", want, err)
-				}
-			}
-		})
 	}
 }
