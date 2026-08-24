@@ -287,7 +287,7 @@ func lockRoot(ctx *cmdContext, r *recipe.Recipe) error {
 		// could only describe what happened to be installed, and a
 		// package `gale add` just declared could never be locked at all.
 		return fmt.Errorf(
-			"locking %s@%s: store is empty; use gale fetch or gale fetch-adopt",
+			"locking %s@%s: store is empty; use gale install or gale fetch-adopt",
 			name, full,
 		)
 	}
@@ -341,7 +341,7 @@ func checkRecipeBacks(r *recipe.Recipe, rec provenance.Record) error {
 	}
 	name, full := r.Package.Name, r.Package.Full()
 	return fmt.Errorf(
-		"locking leftover bottle %s@%s: use gale fetch or gale fetch-adopt",
+		"locking leftover bottle %s@%s: use gale install or gale fetch-adopt",
 		name, full,
 	)
 }

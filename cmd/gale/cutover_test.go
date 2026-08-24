@@ -58,7 +58,7 @@ func TestCutoverDropsRecipesOnInstallerVerbs(t *testing.T) {
 }
 
 func TestCutoverIndexOnResolveVerbsOnly(t *testing.T) {
-	for _, name := range []string{"install", "update", "lock", "outdated"} {
+	for _, name := range []string{"install", "update", "lock", "outdated", "info"} {
 		cmd := findCmd(name)
 		if cmd == nil {
 			t.Fatalf("command %q missing", name)

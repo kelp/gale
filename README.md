@@ -132,8 +132,7 @@ gale completion <shell>   Generate shell completions
 ```
 
 `gale migrate` is gone. It names `gale install` or
-`gale fetch-adopt` and exits. `gale info` still reads
-the leftover recipe cache and is not the index.
+`gale fetch-adopt` and exits.
 
 See `man gale` for the full reference.
 

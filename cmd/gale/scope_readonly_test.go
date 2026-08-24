@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/kelp/gale/internal/index"
 	"github.com/spf13/cobra"
 )
 
@@ -254,11 +256,7 @@ func TestInfoGlobalOverridesProjectShadow(t *testing.T) {
 	t.Cleanup(func() { infoGlobal = false })
 
 	var buf bytes.Buffer
-	reg, err := newRegistry()
-	if err != nil {
-		t.Fatalf("newRegistry: %v", err)
-	}
-	if err := runInfo(&buf, reg, "jq"); err != nil {
+	if err := runInfo(context.Background(), &buf, index.Source{}, "jq"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()

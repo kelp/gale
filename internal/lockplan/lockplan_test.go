@@ -150,8 +150,8 @@ func leftoverBinaryRefuse(t *testing.T, err error) {
 	if !errors.Is(err, ErrRecipeMismatch) {
 		t.Fatalf("err = %v, want leftover MethodBinary refusal", err)
 	}
-	if !strings.Contains(err.Error(), "fetch") {
-		t.Errorf("refusal must name fetch: %v", err)
+	if !strings.Contains(err.Error(), "gale install") {
+		t.Errorf("refusal must name gale install: %v", err)
 	}
 }
 
@@ -598,8 +598,11 @@ func TestBuildPlan_LeftoverBinaryRefusesFetchAdopt(t *testing.T) {
 	if !errors.Is(err, ErrRecipeMismatch) {
 		t.Fatalf("err = %v, want ErrRecipeMismatch", err)
 	}
-	if !strings.Contains(err.Error(), "fetch") {
-		t.Errorf("refusal must name fetch: %v", err)
+	if !strings.Contains(err.Error(), "gale install") {
+		t.Errorf("refusal must name gale install: %v", err)
+	}
+	if !strings.Contains(err.Error(), "fetch-adopt") {
+		t.Errorf("refusal must name fetch-adopt: %v", err)
 	}
 }
 

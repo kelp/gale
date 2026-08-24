@@ -87,8 +87,8 @@ verbs talk to the compiled-in index URL, or
 `gale repo` are gone. A config file cannot repoint
 resolution or change install order.
 
-`gale info` may still read leftover `[[repos]]` and
-the legacy recipe cache. Resolve verbs do not.
+Resolve verbs, including `gale info`, do not read
+`config.toml` or leftover taps.
 
 ## Lockfile (gale.lock)
 

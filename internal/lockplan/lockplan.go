@@ -298,7 +298,7 @@ func validateRecipe(n Node, r *recipe.Recipe, platform string) error {
 	}
 	// Leftover bottle and source locks refuse. Live install is fetch.
 	return fmt.Errorf(
-		"%w: %s is locked to leftover %s; use gale fetch or gale fetch-adopt",
+		"%w: %s is locked to leftover %s; use gale install or gale fetch-adopt",
 		ErrRecipeMismatch, n.Name, n.Method,
 	)
 }

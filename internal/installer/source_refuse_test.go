@@ -24,8 +24,8 @@ func TestInstallRefusesSource(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Install compiled from source: %+v", got)
 	}
-	if !strings.Contains(err.Error(), "fetch") {
-		t.Errorf("refusal must name fetch: %v", err)
+	if !strings.Contains(err.Error(), "gale install") {
+		t.Errorf("refusal must name gale install: %v", err)
 	}
 }
 
@@ -39,8 +39,8 @@ func TestInstallLocalRefusesSource(t *testing.T) {
 	if err == nil {
 		t.Fatalf("InstallLocalWithFinalize compiled from source: %+v", got)
 	}
-	if !strings.Contains(err.Error(), "fetch") {
-		t.Errorf("refusal must name fetch: %v", err)
+	if !strings.Contains(err.Error(), "gale install") {
+		t.Errorf("refusal must name gale install: %v", err)
 	}
 }
 
@@ -59,8 +59,8 @@ func TestInstallRefusesBottle(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Install poured a leftover bottle: %+v", got)
 	}
-	if !strings.Contains(err.Error(), "fetch") {
-		t.Errorf("refusal must name fetch: %v", err)
+	if !strings.Contains(err.Error(), "gale install") {
+		t.Errorf("refusal must name gale install: %v", err)
 	}
 	if hits != 0 {
 		t.Errorf("Install hit leftover bottle URL %d times", hits)
@@ -77,7 +77,7 @@ func TestInstallGitRefusesSource(t *testing.T) {
 	if err == nil {
 		t.Fatalf("InstallGitWithFinalize compiled from source: %+v", got)
 	}
-	if !strings.Contains(err.Error(), "fetch") {
-		t.Errorf("refusal must name fetch: %v", err)
+	if !strings.Contains(err.Error(), "gale install") {
+		t.Errorf("refusal must name gale install: %v", err)
 	}
 }

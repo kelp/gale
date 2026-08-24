@@ -11,6 +11,11 @@
 
 ### Changed
 
+- `gale info` resolves the index, not the leftover
+  recipe registry. It takes `--index` like the other
+  resolve verbs. Leftover advice that named
+  `gale fetch` now names `gale install`.
+
 - `gale lint --base` allows adding a platform to
   an existing version block. Removing or changing
   an artifact is still refused. Needed so
