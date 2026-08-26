@@ -4,9 +4,7 @@
 git = "system"
 
 [packages]
-  gale = "0.21.3"
   go = "1.26.1"
-  gofumpt = "0.10.0"
-  golangci-lint = "2.11.4"
-  just = "1.48.0"
-  zstd = "1.5.7"
+  gofumpt = "0.11.0"
+  golangci-lint = "2.13.1"
+  just = "1.58.0"
