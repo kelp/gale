@@ -213,20 +213,44 @@ func oldLockRoots(lp string, snap FileSnapshot) ([]string, error) {
 	if !snap.Exists {
 		return nil, nil
 	}
-	if _, err := lockfile.ReadV2(lp); err == nil {
-		return nil, errAdoptAlreadyV2
-	}
-	doc, err := lockfile.ReadV1(lp)
+	view, err := lockfile.Load(lp)
 	if err != nil {
 		return nil, fmt.Errorf("reading lockfile: %w", err)
 	}
-	if len(doc.Targets.Host) > 0 {
-		return nil, errAdoptHosts
-	}
-	if doc.Targets.Default == nil {
+	switch view.Kind {
+	case lockfile.KindAbsent:
 		return nil, nil
+	case lockfile.KindV2:
+		return nil, errAdoptAlreadyV2
+	case lockfile.KindLegacy:
+		return legacyLockRoots(view.Legacy), nil
+	case lockfile.KindV1:
+		if view.V1 == nil || view.V1.Targets.Default == nil {
+			return nil, nil
+		}
+		if len(view.V1.Targets.Host) > 0 {
+			return nil, errAdoptHosts
+		}
+		return append([]string(nil), view.V1.Targets.Default.Roots...), nil
+	default:
+		return nil, fmt.Errorf("reading lockfile: unhandled kind %s", view.Kind)
 	}
-	return append([]string(nil), doc.Targets.Default.Roots...), nil
+}
+
+func legacyLockRoots(lf *lockfile.LockFile) []string {
+	if lf == nil {
+		return nil
+	}
+	roots := make([]string, 0, len(lf.Packages))
+	for name, pkg := range lf.Packages {
+		if pkg.Version == "" {
+			roots = append(roots, name)
+			continue
+		}
+		roots = append(roots, name+"@"+pkg.Version)
+	}
+	slices.Sort(roots)
+	return roots
 }
 
 type adoptDrop struct {

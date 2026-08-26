@@ -336,6 +336,32 @@ func TestFetchAdoptRefusesV1HostTargets(t *testing.T) {
 	}
 }
 
+func TestFetchAdoptLegacyLockDryRun(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	legacy := "[packages]\n  [packages.just]\n    version = \"1.56.0-1\"\n    sha256 = \"" +
+		lockFetchSHA + "\"\n"
+	if err := os.WriteFile(fx.lockPath(), []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, buf := adoptOut()
+	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
+		Source: fx.src,
+		DryRun: true,
+		Out:    out,
+	})
+	if err != nil {
+		t.Fatalf("legacy lock dry-run: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "- just@1.56.0-1") {
+		t.Errorf("diff missing legacy root:\n%s", got)
+	}
+	if !strings.Contains(got, "+ just@1.56.0") {
+		t.Errorf("diff missing fetch root:\n%s", got)
+	}
+}
+
 func TestFetchAdoptRefusesAlreadyV2(t *testing.T) {
 	clearAdoptCI(t)
 	fx := newLockFetchFix(t)

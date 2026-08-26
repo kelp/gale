@@ -20,7 +20,9 @@
   names the index does not have and bumps
   pins the index has moved. One confirm
   fetches the rest, rewrites `gale.toml`,
-  writes v2, and swaps `current`.
+  writes v2, and swaps `current`. A
+  pre-enforcement (legacy) lock is accepted
+  the same way as v1.
 
 - `just install` and `just bootstrap` install gale
   from the index. Local `--path` self-install is
