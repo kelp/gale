@@ -27,6 +27,25 @@ func adoptOut() (io.Writer, *bytes.Buffer) {
 	return &buf, &buf
 }
 
+func adoptToStore(t *testing.T) func(context.Context, *store.Store, string, string, index.Artifact) (string, error) {
+	t.Helper()
+	return func(_ context.Context, st *store.Store, name, version string, a index.Artifact) (string, error) {
+		dest, err := st.FetchPath(name, version, a.SHA256)
+		if err != nil {
+			return "", err
+		}
+		if err := os.MkdirAll(filepath.Join(dest, "bin"), 0o755); err != nil {
+			return "", err
+		}
+		if err := os.WriteFile(
+			filepath.Join(dest, "bin", name), []byte("ok"), 0o755,
+		); err != nil {
+			return "", err
+		}
+		return dest, nil
+	}
+}
+
 func TestParseConfirm(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -125,23 +144,21 @@ func TestFetchAdoptPlansAllRootsBeforeFetch(t *testing.T) {
 		t.Fatal(err)
 	}
 	var calls atomic.Int32
+	land := adoptToStore(t)
 	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
 		Source: fx.src,
 		Yes:    true,
 		Out:    io.Discard,
-		ToStore: func(context.Context, *store.Store, string, string, index.Artifact) (string, error) {
+		ToStore: func(ctx context.Context, st *store.Store, name, version string, a index.Artifact) (string, error) {
 			calls.Add(1)
-			return "", nil
+			return land(ctx, st, name, version, a)
 		},
 	})
-	if err == nil {
-		t.Fatal("want resolve error for missing")
+	if err != nil {
+		t.Fatalf("missing name should drop, not fail: %v", err)
 	}
-	if calls.Load() != 0 {
-		t.Errorf("ToStore calls = %d, want 0", calls.Load())
-	}
-	if _, err := lockfile.ReadV2(fx.lockPath()); err == nil {
-		t.Error("failed plan wrote a v2 lock")
+	if calls.Load() != 1 {
+		t.Errorf("ToStore calls = %d, want 1 (kept just)", calls.Load())
 	}
 }
 
@@ -289,6 +306,9 @@ func TestFetchAdoptRefusesHostOverlayManifest(t *testing.T) {
 	})
 	if !errors.Is(err, errAdoptHosts) {
 		t.Fatalf("err = %v, want errAdoptHosts", err)
+	}
+	if !strings.Contains(err.Error(), "hosts.laptop") {
+		t.Errorf("host refusal must name the table: %v", err)
 	}
 }
 
@@ -482,8 +502,199 @@ mode = 0o755
 		Yes:    true,
 		Out:    io.Discard,
 	})
-	if !errors.Is(err, errAdoptNoPlatform) {
-		t.Fatalf("err = %v, want errAdoptNoPlatform", err)
+	if !errors.Is(err, errNoDeclarations) {
+		t.Fatalf("err = %v, want errNoDeclarations, got %v", err, err)
+	}
+}
+
+func TestFetchAdoptBumpsStalePin(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\njust = \"1.0.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, buf := adoptOut()
+	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
+		Source: fx.src,
+		DryRun: true,
+		Out:    out,
+	})
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "~ just 1.0.0 -> 1.56.0") {
+		t.Errorf("diff missing bump:\n%s", got)
+	}
+	if _, err := lockfile.ReadV2(fx.lockPath()); err == nil {
+		t.Error("dry-run wrote a v2 lock")
+	}
+}
+
+func TestFetchAdoptBumpsStalePinPublishes(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\njust = \"1.0.0\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
+		Source:  fx.src,
+		Yes:     true,
+		Out:     io.Discard,
+		ToStore: adoptToStore(t),
+	})
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	data, err := os.ReadFile(fx.c.GalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `just = "1.56.0"`) {
+		t.Errorf("gale.toml pin not bumped:\n%s", data)
+	}
+	got, err := lockfile.ReadV2(fx.lockPath())
+	if err != nil {
+		t.Fatalf("ReadV2: %v", err)
+	}
+	if _, ok := got.Packages["just@1.56.0"]; !ok {
+		t.Errorf("lock roots = %v, want just@1.56.0", got.Targets.Default.Roots)
+	}
+}
+
+func TestFetchAdoptDropsMissingName(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\njust = \"1.56.0\"\nzstd = \"1.5.7\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, buf := adoptOut()
+	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
+		Source: fx.src,
+		DryRun: true,
+		Out:    out,
+	})
+	if err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	got := buf.String()
+	if !strings.Contains(got, "- zstd (not in index)") {
+		t.Errorf("diff missing drop:\n%s", got)
+	}
+	if strings.Contains(got, "zstd@") {
+		t.Errorf("drop must not become a lock root:\n%s", got)
+	}
+}
+
+func TestFetchAdoptDropsMissingNamePublishes(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\njust = \"1.56.0\"\nzstd = \"1.5.7\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
+		Source:  fx.src,
+		Yes:     true,
+		Out:     io.Discard,
+		ToStore: adoptToStore(t),
+	})
+	if err != nil {
+		t.Fatalf("adopt: %v", err)
+	}
+	data, err := os.ReadFile(fx.c.GalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), "zstd") {
+		t.Errorf("zstd still in gale.toml:\n%s", data)
+	}
+	got, err := lockfile.ReadV2(fx.lockPath())
+	if err != nil {
+		t.Fatalf("ReadV2: %v", err)
+	}
+	for _, root := range got.Targets.Default.Roots {
+		if strings.HasPrefix(root, "zstd@") {
+			t.Errorf("lock still has %s", root)
+		}
+	}
+}
+
+func TestFetchAdoptLandFailureLeavesToml(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\njust = \"1.56.0\"\nzstd = \"1.5.7\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
+		Source: fx.src,
+		Yes:    true,
+		Out:    io.Discard,
+		ToStore: func(context.Context, *store.Store, string, string, index.Artifact) (string, error) {
+			return "", errors.New("land failed")
+		},
+	})
+	if err == nil {
+		t.Fatal("want land error")
+	}
+	data, err := os.ReadFile(fx.c.GalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `zstd = "1.5.7"`) {
+		t.Errorf("toml changed after land failure:\n%s", data)
+	}
+	if _, err := lockfile.ReadV2(fx.lockPath()); err == nil {
+		t.Error("land failure wrote a v2 lock")
+	}
+}
+
+func TestFetchAdoptRestoresTomlAfterManifestEdit(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\njust = \"1.56.0\"\nzstd = \"1.5.7\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { adoptFailAfterManifest = nil })
+	adoptFailAfterManifest = func() error {
+		return errors.New("forced after manifest")
+	}
+	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
+		Source:  fx.src,
+		Yes:     true,
+		Out:     io.Discard,
+		ToStore: adoptToStore(t),
+	})
+	if err == nil {
+		t.Fatal("want forced after-manifest error")
+	}
+	data, err := os.ReadFile(fx.c.GalePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `zstd = "1.5.7"`) {
+		t.Errorf("toml not restored:\n%s", data)
+	}
+	if _, err := lockfile.ReadV2(fx.lockPath()); err == nil {
+		t.Error("failed swap wrote a v2 lock")
+	}
+}
+
+func TestFetchAdoptAllMissingRefuses(t *testing.T) {
+	clearAdoptCI(t)
+	fx := newLockFetchFix(t)
+	if err := os.WriteFile(fx.c.GalePath, []byte("[packages]\nzstd = \"1.5.7\"\ngale = \"0.21.3\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := runFetchAdopt(context.Background(), fx.c, adoptReq{
+		Source: fx.src,
+		Yes:    true,
+		Out:    io.Discard,
+	})
+	if !errors.Is(err, errNoDeclarations) {
+		t.Fatalf("err = %v, want errNoDeclarations", err)
+	}
+	if _, err := lockfile.ReadV2(fx.lockPath()); err == nil {
+		t.Error("all-missing wrote a v2 lock")
 	}
 }
 

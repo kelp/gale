@@ -200,10 +200,13 @@ on the first run after the upgrade — including
 inside direnv.
 
 1. Upgrade gale everywhere first.
-2. Run `gale migrate` in each scope. It reads
-   the old lock, fetches, verifies, writes v2, and
-   swaps the generation. Plain `gale lock` cannot
-   finish the job on upgrade day: it does not fetch.
+2. Run `gale migrate` in each scope. It prints
+   a diff: names the index does not have are
+   dropped from `gale.toml`, pins the index has
+   moved bump to `latest`. One confirm fetches
+   the rest, writes v2, and swaps the generation.
+   Plain `gale lock` cannot finish the job on
+   upgrade day: it does not fetch.
 
 `gale doctor` reports each of these states, and names
 the same commands.

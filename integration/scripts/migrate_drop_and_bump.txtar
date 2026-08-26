@@ -1,0 +1,35 @@
+# gale migrate drops names the index does not have
+# and bumps pins the index has moved.
+
+env CI=
+env GITHUB_ACTIONS=
+
+gale-fixture index $WORK/index
+gale-fixture fetch-setup
+
+mkdir $WORK/proj
+cd $WORK/proj
+exec gale init
+cp $WORK/manifest.toml gale.toml
+cp $WORK/v1.lock gale.lock
+
+exec gale migrate --yes -p --index=$WORK/index
+stdout '~ hello 9.9 -> 1.0'
+stdout '- zstd \(not in index\)'
+grep 'hello = "1.0"' gale.toml
+! grep zstd gale.toml
+grep 'hello@1.0' gale.lock
+
+-- manifest.toml --
+[packages]
+hello = "9.9"
+zstd = "1.5.7"
+
+-- v1.lock --
+version = 1
+
+[packages."!gale-lock-v1"]
+version = 1
+
+[targets.default]
+roots = ["hello@1.0-1"]

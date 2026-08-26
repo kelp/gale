@@ -16,7 +16,11 @@
   implemented, never shipped, and now deleted.
   0.21.3 users already know migrate. Live
   refusals, doctor, and product docs name
-  `gale migrate`.
+  `gale migrate`. The printed diff drops
+  names the index does not have and bumps
+  pins the index has moved. One confirm
+  fetches the rest, rewrites `gale.toml`,
+  writes v2, and swaps `current`.
 
 - `just install` and `just bootstrap` install gale
   from the index. Local `--path` self-install is

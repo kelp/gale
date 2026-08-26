@@ -12,8 +12,10 @@ var migrateCmd = &cobra.Command{
 	Use:   "migrate",
 	Short: "Convert a v1 lock to a fetch lock",
 	Long: "Resolve every default-target root against one index " +
-		"commit, print a lock diff, and after confirmation stage " +
-		"fetch trees, write a v2 lock, and swap current last. " +
+		"commit, print a diff, and after confirmation stage " +
+		"fetch trees, rewrite gale.toml to match, write a v2 lock, " +
+		"and swap current last. Names the index does not have " +
+		"are dropped. Pins the index has moved bump to latest. " +
 		"Migrates a v1 lock. Not a second installer: gale install " +
 		"already fetches.",
 	Args: cobra.NoArgs,

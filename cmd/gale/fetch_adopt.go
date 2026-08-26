@@ -33,6 +33,10 @@ var adoptTTY = stdinIsTTY
 // before confirm/publish. Production stays nil.
 var adoptAfterDiff func()
 
+// adoptFailAfterManifest is a test hook after gale.toml is rewritten
+// and before register/lock/swap. Production stays nil.
+var adoptFailAfterManifest func() error
+
 var (
 	errAdoptCI      = errors.New("gale migrate refuses CI")
 	errAdoptNeedYes = errors.New(
@@ -115,16 +119,19 @@ func runFetchAdopt(ctx context.Context, c *cmdContext, req adoptReq) error {
 		return err
 	}
 
-	draft, arts, err := planAdopt(ctx, req.Source, declared)
+	plan, err := planMigrate(ctx, req.Source, declared)
 	if err != nil {
 		return err
 	}
-	printAdoptDiff(req.Out, oldRoots, draft)
+	printAdoptDiff(req.Out, oldRoots, plan)
 	if adoptAfterDiff != nil {
 		adoptAfterDiff()
 	}
 	if req.DryRun {
 		return nil
+	}
+	if len(plan.Arts) == 0 {
+		return fmt.Errorf("%w", errNoDeclarations)
 	}
 	if !req.Yes {
 		if !req.TTY {
@@ -133,7 +140,7 @@ func runFetchAdopt(ctx context.Context, c *cmdContext, req adoptReq) error {
 		if req.Err == nil {
 			req.Err = os.Stderr
 		}
-		fmt.Fprint(req.Err, "Proceed? [y/N] This fetches every root, writes the v2 lock, and swaps current last.\n")
+		fmt.Fprint(req.Err, adoptProceedPrompt(plan)+"\n")
 		ok, err := parseConfirm(req.In)
 		if err != nil {
 			return err
@@ -147,9 +154,13 @@ func runFetchAdopt(ctx context.Context, c *cmdContext, req adoptReq) error {
 	if toStore == nil {
 		toStore = fetch.ToStore
 	}
-	return finalizeFetch(ctx, c, fetchPublish{
-		Arts:    arts,
-		Lock:    draft,
+	var (
+		edited       bool
+		prior, wrote config.FileState
+	)
+	err = finalizeFetch(ctx, c, fetchPublish{
+		Arts:    plan.Arts,
+		Lock:    plan.Draft,
 		ToStore: toStore,
 		afterLock: func() error {
 			now, err := readFileSnapshot(lp)
@@ -161,16 +172,41 @@ func runFetchAdopt(ctx context.Context, c *cmdContext, req adoptReq) error {
 			}
 			return nil
 		},
+		afterStage: func() error {
+			p, w, err := applyAdoptManifest(c.GalePath, plan)
+			if err != nil {
+				return err
+			}
+			if w.Exists || p.Exists {
+				prior, wrote, edited = p, w, !p.Same(w)
+			}
+			if adoptFailAfterManifest != nil {
+				return adoptFailAfterManifest()
+			}
+			return nil
+		},
 	})
+	if err != nil && edited {
+		return errors.Join(err, config.RestoreUnderLock(c.GalePath, prior, wrote))
+	}
+	return err
 }
 
 func refuseHostOverlays(cfg *config.GaleConfig) error {
-	for _, h := range cfg.Hosts {
+	var names []string
+	for k, h := range cfg.Hosts {
 		if len(h.Packages) > 0 {
-			return errAdoptHosts
+			names = append(names, k)
 		}
 	}
-	return nil
+	if len(names) == 0 {
+		return nil
+	}
+	slices.Sort(names)
+	return fmt.Errorf(
+		"%w: move pins from [hosts.%s] into [packages] and delete the [hosts.*] tables",
+		errAdoptHosts, strings.Join(names, "], [hosts."),
+	)
 }
 
 func oldLockRoots(lp string, snap FileSnapshot) ([]string, error) {
@@ -191,6 +227,22 @@ func oldLockRoots(lp string, snap FileSnapshot) ([]string, error) {
 		return nil, nil
 	}
 	return append([]string(nil), doc.Targets.Default.Roots...), nil
+}
+
+type adoptDrop struct {
+	Name, Pin, Reason string
+}
+
+type adoptBump struct {
+	Name, From, To string
+}
+
+type adoptPlan struct {
+	Draft  *lockfile.V2
+	Arts   []fetchArt
+	Drops  []adoptDrop
+	Bumps  []adoptBump
+	Commit string
 }
 
 func planAdopt(
@@ -237,26 +289,113 @@ func planAdopt(
 	return draft, arts, nil
 }
 
-func printAdoptDiff(w io.Writer, old []string, draft *lockfile.V2) {
+func planMigrate(
+	ctx context.Context, src index.Source, declared map[string]string,
+) (adoptPlan, error) {
+	sess, err := index.Open(ctx, src)
+	if err != nil {
+		return adoptPlan{}, fmt.Errorf("opening index: %w", err)
+	}
+	names := slices.Sorted(maps.Keys(declared))
+	draft := &lockfile.V2{
+		Version: lockfile.SchemaV2,
+		Targets: lockfile.Targets{
+			Default: &lockfile.Target{},
+		},
+		Packages: make(map[string]lockfile.V2Package, len(names)),
+	}
+	plan := adoptPlan{Draft: draft, Commit: sess.Commit}
+	plat := currentPlatform()
+	for _, name := range names {
+		pin := stripNumericRevision(declared[name])
+		got, err := resolveAdoptPin(ctx, sess, name, pin)
+		if err != nil {
+			return adoptPlan{}, err
+		}
+		if got.Kind == adoptKindDrop {
+			plan.Drops = append(plan.Drops, adoptDrop{
+				Name: name, Pin: pin, Reason: got.Version,
+			})
+			continue
+		}
+		art, ok := got.Doc.Artifacts[plat]
+		if !ok {
+			plan.Drops = append(plan.Drops, adoptDrop{
+				Name: name, Pin: pin, Reason: "no " + plat,
+			})
+			continue
+		}
+		if got.Kind == adoptKindBump {
+			plan.Bumps = append(plan.Bumps, adoptBump{
+				Name: name, From: pin, To: got.Version,
+			})
+		}
+		key := name + "@" + got.Version
+		draft.Targets.Default.Roots = append(draft.Targets.Default.Roots, key)
+		v2Arts, err := v2ArtifactsFromIndex(name, got.Doc.Artifacts, sess.Commit)
+		if err != nil {
+			return adoptPlan{}, err
+		}
+		draft.Packages[key] = lockfile.V2Package{Artifacts: v2Arts}
+		plan.Arts = append(plan.Arts, fetchArt{Name: name, Version: got.Version, Art: art})
+	}
+	if _, err := pkgsFromV2Lock(draft); err != nil {
+		return adoptPlan{}, err
+	}
+	return plan, nil
+}
+
+const (
+	adoptKindKeep = iota
+	adoptKindBump
+	adoptKindDrop
+)
+
+type adoptResolve struct {
+	Version string
+	Doc     index.Version
+	Kind    int
+}
+
+func resolveAdoptPin(
+	ctx context.Context, sess *index.Session, name, pin string,
+) (adoptResolve, error) {
+	got, ver, err := sess.Resolve(ctx, name, pin)
+	if err == nil {
+		return adoptResolve{Version: got, Doc: ver, Kind: adoptKindKeep}, nil
+	}
+	if errors.Is(err, index.ErrNotFound) {
+		return adoptResolve{Version: "not in index", Kind: adoptKindDrop}, nil
+	}
+	if pin == "" {
+		return adoptResolve{}, fmt.Errorf("resolving %s: %w", name, err)
+	}
+	latest, ver, lerr := sess.Resolve(ctx, name, "")
+	if lerr == nil {
+		return adoptResolve{Version: latest, Doc: ver, Kind: adoptKindBump}, nil
+	}
+	if errors.Is(lerr, index.ErrNotFound) {
+		return adoptResolve{Version: "not in index", Kind: adoptKindDrop}, nil
+	}
+	return adoptResolve{}, fmt.Errorf("resolving %s: %w", name, err)
+}
+
+func printAdoptDiff(w io.Writer, old []string, plan adoptPlan) {
 	if w == nil {
 		w = os.Stdout
 	}
-	var commit string
-	for _, pkg := range draft.Packages {
-		for _, art := range pkg.Artifacts {
-			commit = art.IndexCommit
-			break
-		}
-		if commit != "" {
-			break
-		}
+	fmt.Fprintf(w, "index_commit %s\n", plan.Commit)
+	for _, d := range plan.Drops {
+		fmt.Fprintf(w, "- %s (%s)\n", d.Name, d.Reason)
 	}
-	fmt.Fprintf(w, "index_commit %s\n", commit)
+	for _, b := range plan.Bumps {
+		fmt.Fprintf(w, "~ %s %s -> %s\n", b.Name, b.From, b.To)
+	}
 	oldSet := make(map[string]struct{}, len(old))
 	for _, r := range old {
 		oldSet[r] = struct{}{}
 	}
-	newRoots := append([]string(nil), draft.Targets.Default.Roots...)
+	newRoots := append([]string(nil), plan.Draft.Targets.Default.Roots...)
 	slices.Sort(newRoots)
 	newSet := make(map[string]struct{}, len(newRoots))
 	for _, r := range newRoots {
@@ -272,4 +411,47 @@ func printAdoptDiff(w io.Writer, old []string, draft *lockfile.V2) {
 			fmt.Fprintln(w, "+ "+r)
 		}
 	}
+}
+
+func adoptProceedPrompt(plan adoptPlan) string {
+	var parts []string
+	if n := len(plan.Drops); n > 0 {
+		parts = append(parts, fmt.Sprintf("Drop %d packages from gale.toml", n))
+	}
+	if n := len(plan.Bumps); n > 0 {
+		parts = append(parts, fmt.Sprintf("bump %d pins", n))
+	}
+	parts = append(parts, fmt.Sprintf("fetch %d", len(plan.Arts)))
+	parts = append(parts, "write v2, swap current. Proceed? [y/N]")
+	s := strings.Join(parts, ", ")
+	return strings.ToUpper(s[:1]) + s[1:]
+}
+
+func applyAdoptManifest(path string, plan adoptPlan) (prior, wrote config.FileState, err error) {
+	first := true
+	for _, d := range plan.Drops {
+		b, a, rerr := config.RemovePackageSections(
+			path, locatePackageSections(path, d.Name), d.Name,
+		)
+		if rerr != nil {
+			return prior, wrote, fmt.Errorf("dropping %s: %w", d.Name, rerr)
+		}
+		if first {
+			prior = b
+			first = false
+		}
+		wrote = a
+	}
+	for _, b := range plan.Bumps {
+		w, uerr := config.UpsertPackageWitnessed(path, "", b.Name, b.To)
+		if uerr != nil {
+			return prior, wrote, fmt.Errorf("bumping %s: %w", b.Name, uerr)
+		}
+		if first {
+			prior = w.Before
+			first = false
+		}
+		wrote = w.After
+	}
+	return prior, wrote, nil
 }

@@ -88,10 +88,15 @@ to resolve against a local index checkout.
 .Dl $ gale update jq@1.8.1
 .It Cm migrate Op Fl -yes Op Fl -index Ar dir Op Fl g | Fl p
 Convert a v1 lock to a fetch lock.
-Prints the lock diff, then after confirmation
-fetches every root, writes a v2 lock, and swaps
+Prints a diff, then after confirmation fetches
+kept roots, rewrites
+.Pa gale.toml
+to match, writes a v2 lock, and swaps
 .Pa current
 last.
+Names the index does not have are dropped from
+the manifest.
+Pins the index has moved bump to latest.
 Refuses CI, host overlays, and an existing v2 lock.
 Use
 .Fl -yes
