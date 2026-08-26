@@ -12,7 +12,7 @@ Two repos: **gale** (this one — the CLI) and
 documents). `gale install jq` resolves
 the index, stages `pkg/fetch/`, writes the lock, and
 swaps `current` last. Not-in-index is an error. A v1
-lock migrates with `gale fetch-adopt`.
+lock migrates with `gale migrate`.
 
 `just` runs test + lint + fmt-check; `just --list` has
 the rest.

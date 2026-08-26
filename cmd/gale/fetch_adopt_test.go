@@ -51,16 +51,25 @@ func TestParseConfirm(t *testing.T) {
 	}
 }
 
-func TestFetchAdoptCommandExists(t *testing.T) {
+func TestMigrateCommandExists(t *testing.T) {
 	if rootCmd.Commands() == nil {
 		t.Fatal("rootCmd has no commands")
 	}
-	cmd, _, err := rootCmd.Find([]string{"fetch-adopt"})
+	cmd, _, err := rootCmd.Find([]string{"migrate"})
 	if err != nil {
-		t.Fatalf("find fetch-adopt: %v", err)
+		t.Fatalf("find migrate: %v", err)
 	}
-	if cmd.Name() != "fetch-adopt" {
-		t.Errorf("command = %q, want fetch-adopt", cmd.Name())
+	if cmd.Name() != "migrate" {
+		t.Errorf("command = %q, want migrate", cmd.Name())
+	}
+	if cmd.Flags().Lookup("yes") == nil {
+		t.Error("migrate must have --yes")
+	}
+	if cmd.Flags().Lookup("index") == nil {
+		t.Error("migrate must have --index")
+	}
+	if _, _, err := rootCmd.Find([]string{"fetch-adopt"}); err == nil {
+		t.Fatal("fetch-adopt must be gone")
 	}
 }
 
@@ -478,7 +487,7 @@ mode = 0o755
 	}
 }
 
-func TestFetchAdoptNotTheInstaller(t *testing.T) {
+func TestMigrateNotTheInstaller(t *testing.T) {
 	if installCmd.Flags().Lookup("index") == nil {
 		t.Fatal("install must have --index")
 	}
@@ -486,7 +495,7 @@ func TestFetchAdoptNotTheInstaller(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cmd == fetchAdoptCmd {
-		t.Fatal("install and fetch-adopt are the same command")
+	if cmd == migrateCmd {
+		t.Fatal("install and migrate are the same command")
 	}
 }

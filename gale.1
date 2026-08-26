@@ -21,7 +21,7 @@ Install and update resolve the index.
 Sync activates the v2 lock and does not rewrite it.
 A package that is not in the index is an error.
 A v1 lock migrates with
-.Cm fetch-adopt .
+.Cm migrate .
 .Pp
 .Nm
 supports both global packages
@@ -86,6 +86,21 @@ to resolve against a local index checkout.
 .Pp
 .Dl $ gale update
 .Dl $ gale update jq@1.8.1
+.It Cm migrate Op Fl -yes Op Fl -index Ar dir Op Fl g | Fl p
+Convert a v1 lock to a fetch lock.
+Prints the lock diff, then after confirmation
+fetches every root, writes a v2 lock, and swaps
+.Pa current
+last.
+Refuses CI, host overlays, and an existing v2 lock.
+Use
+.Fl -yes
+to skip the prompt.
+Use
+.Fl -index Ar dir
+to resolve against a local index checkout.
+.Pp
+.Dl $ gale migrate --yes
 .It Cm list Op Fl -scope Ar all|shared Op Fl g | Fl p | Fl a
 List packages declared in
 .Pa gale.toml
@@ -194,7 +209,7 @@ the lock is a readable v2 file,
 the active generation matches the lock roots,
 and each locked fetch tree digest matches.
 A v1 lock names
-.Cm gale fetch-adopt .
+.Cm gale migrate .
 Generation drift names
 .Cm gale sync .
 A digest mismatch names
@@ -383,7 +398,7 @@ and
 .Ss Index Flag
 .Bl -tag -width Ds
 .It Fl -index Ar dir
-Resolve install, update, lock, and fetch-adopt against
+Resolve install, update, lock, and migrate against
 a local index checkout.
 The directory must be a git repository.
 Uncommitted edits are invisible.

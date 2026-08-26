@@ -58,8 +58,8 @@ func TestDoctorLockReadable(t *testing.T) {
 			!strings.Contains(stderr, "lock") {
 			t.Fatalf("missing lock must fail lock readable, stderr=%q", stderr)
 		}
-		if strings.Count(stderr, "fetch-adopt") > 0 {
-			t.Errorf("absent lock must not name fetch-adopt, stderr=%q", stderr)
+		if strings.Count(stderr, "gale migrate") > 0 {
+			t.Errorf("absent lock must not name gale migrate, stderr=%q", stderr)
 		}
 		assertNoSecondLockRed(t, stderr, stdout)
 	})
@@ -75,8 +75,8 @@ func TestDoctorLockReadable(t *testing.T) {
 			t.Fatal(err)
 		}
 		stdout, stderr := runDoctorHome(t, h)
-		if !strings.Contains(stderr, "fetch-adopt") {
-			t.Fatalf("v1 lock must name fetch-adopt, stderr=%q", stderr)
+		if !strings.Contains(stderr, "gale migrate") {
+			t.Fatalf("v1 lock must name gale migrate, stderr=%q", stderr)
 		}
 		if strings.Contains(stderr, "gale verify") {
 			t.Errorf("doctor must not print gale verify for a v1 lock: %q", stderr)

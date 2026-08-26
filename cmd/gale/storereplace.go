@@ -45,7 +45,7 @@ type replaceQuery struct {
 	platform string
 	// machineWide marks a replacement that is part of ONE proposed
 	// state for the whole machine. gale migrate used to set it;
-	// fetch-adopt is per-scope and does not.
+	// gale migrate is per-scope and does not.
 	//
 	// It relaxes exactly one refusal, and design §13 turns on that
 	// distinction. A scope that loads the directory and names no hash
@@ -142,9 +142,8 @@ func checkReplaceable(q replaceQuery) error {
 }
 
 // postAdopt is the command that clears a legacy scope's veto.
-// gale migrate is a tombstone; fetch-adopt converts a v1 lock and
-// republishes in one pass.
-const postAdopt = "run 'gale fetch-adopt' in each scope that is still legacy"
+// gale migrate converts a v1 lock and republishes in one pass.
+const postAdopt = "run 'gale migrate' in each scope that is still legacy"
 
 // checkScopeClosure covers what a lock cannot state, and completeness
 // of the reading itself.
@@ -345,7 +344,7 @@ type scopeClaim struct {
 //
 // Failing closed on any legacy lock was the other candidate and it
 // deadlocks the upgrade, since no scope can mint a v1 lock before a
-// replacement has happened. The escape is gale fetch-adopt in each
+// replacement has happened. The escape is gale migrate in each
 // scope.
 func lockedSHA(lockPath string, q replaceQuery) (scopeClaim, error) {
 	view, err := lockfile.Load(lockPath)

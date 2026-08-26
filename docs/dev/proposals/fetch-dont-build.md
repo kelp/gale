@@ -951,7 +951,7 @@ Each is another finalize-adjacent path.
 lock, when present and matching), fetches,
 finalizes. `gale lock` writes the lock only. Delete
 `--refresh`. Unprovenanced refetch is
-`fetch-adopt`.
+`gale migrate`.
 
 `outdated` / `update` talk to the index, not to
 GHCR ledgers.
@@ -979,16 +979,17 @@ fetched `just@1.56.0` is not the gale-built
 `just@1.56.0-3`. Ignoring a revision is
 replacement, not equivalence.
 
-`gale migrate` already means "refetch
-unprovenanced binary-method dirs"
-(`lockfile.md`). Use a new verb
-(`gale migrate --to-fetch` is still a
-collision). The verb is `gale fetch-adopt`.
-It ships unused with the fetch path, and
-is available in the same cutover that
-makes source unreachable. A window where
-source is dead and adopt does not exist
-strands every v1 lock.
+The bottle-pour `gale migrate` is gone
+and never co-shipped with fetch. The
+cutover verb is `gale migrate`: plan
+every root, print a lock diff, require
+confirmation, refuse CI and host
+overlays, stage `pkg/fetch/`, write v2,
+swap `current` last. `gale fetch-adopt`
+was an unreleased name for the same
+path and is deleted. A window where
+source is dead and migrate does not
+exist strands every v1 lock.
 
 Plan:
 
@@ -1037,7 +1038,7 @@ adopt command.** `jq`, `ripgrep`, `fd`,
 `golangci-lint`, `direnv`, `uv`. Each
 passes the §5 admission gate. **Index all
 ten first.** Land `internal/fetch`, the
-index client, `gale fetch-adopt`, and the
+index client, `gale migrate`, and the
 v2 lock writer as unused code. Source
 install stays the only installer. Do not
 ship `backend = "fetch"`. Mixed
@@ -1049,7 +1050,7 @@ lock` writes the lock only.
 
 **Phase 2 — one cutover.** Fetch is the
 only installer. Source build is
-unreachable. `fetch-adopt` is the
+unreachable. `gale migrate` is the
 migration path, so v1 locks are not
 stranded. Not-in-index is an error, not a
 build. Amend `design.md`, `CLAUDE.md`,
@@ -1184,7 +1185,7 @@ stays.
 
 1. **One installer, one cutover.** No
    `backend = "fetch"` flag. Fetch, the
-   index, and `fetch-adopt` land unused.
+   index, and `gale migrate` land unused.
    The switch PR makes fetch the only
    installer and makes adopt available in
    the same release. A jq-only cutover is
@@ -1257,7 +1258,7 @@ stays.
     function: one `index_commit`, write
     the lock, no fetch, no `current` swap.
     Delete `--refresh`. Unprovenanced
-    refetch is `fetch-adopt`. One test
+    refetch is `gale migrate`. One test
     family. `context.go` is the smell.
 14. **Bin collisions are a hard error.**
     No `[bin]` overlay, no per-host winner.

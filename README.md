@@ -114,7 +114,7 @@ gale remove <pkg>         Remove a package
 gale sync                 Activate the v2 lock (does not write it)
 gale update [pkg...]      Fetch latest from the index
 gale lock                 Rewrite the v2 lock from the index
-gale fetch-adopt          Convert a v1 lock to v2
+gale migrate              Convert a v1 lock to v2
 gale list                 List packages in the manifest
 gale outdated             Show available updates
 gale which <binary>       Find which package owns it
@@ -131,9 +131,6 @@ gale admit                Record an index artifact from an archive
 gale completion <shell>   Generate shell completions
 ```
 
-`gale migrate` is gone. It names `gale install` or
-`gale fetch-adopt` and exits.
-
 See `man gale` for the full reference.
 
 ## Index
@@ -147,7 +144,7 @@ index. `--index <dir>` pins a local git checkout
 (uncommitted edits are invisible).
 
 A package that is not in the index is an error. A v1
-lock migrates with `gale fetch-adopt`.
+lock migrates with `gale migrate`.
 
 ```toml
 [package]

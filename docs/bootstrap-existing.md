@@ -56,7 +56,7 @@ gale sync
 
 Sync lands the trees the v2 lock names and rebuilds
 the generation. If this machine has no v2 lock yet,
-run `gale lock` (or `gale fetch-adopt` for a v1
+run `gale lock` (or `gale migrate` for a v1
 file) first. After sync completes, the tools are on
 PATH.
 

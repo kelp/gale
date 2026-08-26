@@ -36,7 +36,7 @@ gale sync
 
 Sync lands the trees the v2 lock names and rebuilds
 the generation. It does not write the lock. If there
-is no v2 lock, run `gale lock` or `gale fetch-adopt`.
+is no v2 lock, run `gale lock` or `gale migrate`.
 
 ### Broken symlinks
 

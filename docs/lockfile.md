@@ -48,8 +48,7 @@ gone. A mixed lock is refused.
 The v2 guard (`[packages."!gale-lock-v2"]`) stops an
 older gale from rewriting the file as v1.
 
-A v1 lock migrates with `gale fetch-adopt`. `gale
-migrate` is a tombstone.
+A v1 lock migrates with `gale migrate`.
 
 ## The v1 downgrade guard
 
@@ -131,7 +130,7 @@ reason.
 was removed with the fetch cutover. A lock gale cannot
 honor is refused, and the refusal names the writer that
 replaces it — `gale lock` for an absent or unparseable
-one, `gale fetch-adopt` for a legacy or v1 one. Nothing
+one, `gale migrate` for a legacy or v1 one. Nothing
 downgrades to unlocked mode, by flag or on its own.
 
 ## Remedies
@@ -161,18 +160,16 @@ that leftover and the fix: move leftover
 **The lock cannot be read at all** — legacy schema,
 unknown version, malformed TOML, unknown field, missing
 or malformed guard. A legacy lock names
-`gale fetch-adopt`. An unreadable file reports the
+`gale migrate`. An unreadable file reports the
 load error. `gale doctor` reports this state in
 either scope. `gale gc` does not rebuild
 a generation.
 
 **A store directory attests nothing.** Every package
 installed before enforcement is unprovenanced, so the
-activation gate refuses it. `gale fetch-adopt`
+activation gate refuses it. `gale migrate`
 refetches, verifies, writes v2, and swaps the
-generation. `gale migrate` is a tombstone: it names
-install and fetch-adopt, and does not replace
-directories.
+generation.
 
 **The active generation does not match the lock.** Run
 `gale sync`. This is drift, not tampering: it is what a
@@ -203,12 +200,10 @@ on the first run after the upgrade — including
 inside direnv.
 
 1. Upgrade gale everywhere first.
-2. Run `gale fetch-adopt` in each scope. It reads
+2. Run `gale migrate` in each scope. It reads
    the old lock, fetches, verifies, writes v2, and
    swaps the generation. Plain `gale lock` cannot
    finish the job on upgrade day: it does not fetch.
-3. `gale migrate` is gone. It names `gale install`
-   or `gale fetch-adopt` and exits.
 
 `gale doctor` reports each of these states, and names
 the same commands.

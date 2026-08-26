@@ -262,7 +262,7 @@ Nothing rewrites one in place. **No command replaces a bare
 directory — two commands retire it** (gh#329):
 
 1. **Republish the scope onto the fetch namespace**, with
-   `gale install`, `gale fetch-adopt`, or `gale sync` under a
+   `gale install`, `gale migrate`, or `gale sync` under a
    usable v2 lock. The new generation links
    `pkg/fetch/<name>/<version>-<sha12>/` instead: store
    resolution short-circuits to the fetch tree whenever a SHA
@@ -277,7 +277,7 @@ first republish by design and falls out on the second. That
 is expected, not a stalled migration.
 
 Which command step 1 is depends on the scope's lock. `gale
-sync` needs a live v2 lock. `gale fetch-adopt` migrates a
+sync` needs a live v2 lock. `gale migrate` migrates a
 legacy or v1 one and republishes in the same pass. An absent
 or unparseable lock takes **two** commands, `gale lock &&
 gale sync`: `gale lock` is the only writer that survives a
@@ -294,9 +294,9 @@ Step 1 moves declared roots. A bare dir no scope declares — a
 dependency, or a package dropped from gale.toml but still
 linked by a retained generation — stays bare, and since it
 carries no provenance record a locked environment refuses to
-activate it. `gale migrate` cannot converge one either: it is
-a tombstone, and a source-method package has nothing to
-refetch in any case.
+activate it. `gale migrate` cannot converge one either: it
+only republishes declared roots, and a source-method
+package has nothing to refetch in any case.
 
 - **Nothing links it.** It is an orphan; `gale gc` sweeps it.
 - **One scope declares it.** The two steps above.

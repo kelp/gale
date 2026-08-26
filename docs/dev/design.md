@@ -24,7 +24,7 @@ and
 `update`, and `remove` resolve against the catalog
 and stage `pkg/fetch/<name>/<version>-<sha12>/`.
 `--index <dir>` is the only local override. A mixed
-source/fetch lock is refused. `gale fetch-adopt`
+source/fetch lock is refused. `gale migrate`
 migrates a v1 lock.
 
 **Declarative over imperative.** The state of your
@@ -227,7 +227,7 @@ We chose direnv over custom shell hooks because:
 rebuilds the generation. It does not write the
 lock. Leftover `[hosts.*]` overlays refuse.
 There is no `--host` flag. A v1 lock names
-`gale fetch-adopt`.
+`gale migrate`.
 
 ## Build Environment
 

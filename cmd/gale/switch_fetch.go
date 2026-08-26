@@ -20,9 +20,9 @@ import (
 var (
 	errSwitchMixed  = errors.New("mixed source/fetch lock")
 	errSwitchNoLock = errors.New(
-		"gale sync requires a v2 lock; run gale lock, gale install, or gale fetch-adopt",
+		"gale sync requires a v2 lock; run gale lock, gale install, or gale migrate",
 	)
-	errSwitchV1       = errors.New("this lock is v1; run gale fetch-adopt")
+	errSwitchV1       = errors.New("this lock is v1; run gale migrate")
 	errSwitchOccupied = errors.New(
 		"occupied fetch directory disagrees with the lock",
 	)

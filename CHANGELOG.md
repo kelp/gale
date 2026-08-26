@@ -11,6 +11,13 @@
 
 ### Changed
 
+- `gale migrate` converts a v1 lock to a fetch
+  lock. It is the command `gale fetch-adopt`
+  implemented, never shipped, and now deleted.
+  0.21.3 users already know migrate. Live
+  refusals, doctor, and product docs name
+  `gale migrate`.
+
 - `just install` and `just bootstrap` install gale
   from the index. Local `--path` self-install is
   gone.

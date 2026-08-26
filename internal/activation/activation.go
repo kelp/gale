@@ -86,12 +86,12 @@ func Check(req Request) error {
 		return nil
 	case lockfile.KindLegacy:
 		return fmt.Errorf(
-			"%s: %w: run gale fetch-adopt",
+			"%s: %w: run gale migrate",
 			req.LockPath, lockfile.ErrLegacySchema,
 		)
 	case lockfile.KindV1:
 		return fmt.Errorf(
-			"%s: this lock is v1; run gale fetch-adopt",
+			"%s: this lock is v1; run gale migrate",
 			req.LockPath,
 		)
 	case lockfile.KindV2:

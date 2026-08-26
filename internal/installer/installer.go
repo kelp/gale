@@ -45,12 +45,12 @@ var ErrUnlockedSource = errors.New(
 
 // ErrSourceGone reports a source compile, which fetch replaced.
 var ErrSourceGone = errors.New(
-	"source install is gone; use gale install or gale fetch-adopt",
+	"source install is gone; use gale install or gale migrate",
 )
 
 // ErrBottleGone reports a leftover GHCR bottle pour, which fetch replaced.
 var ErrBottleGone = errors.New(
-	"bottle install is gone; use gale install or gale fetch-adopt",
+	"bottle install is gone; use gale install or gale migrate",
 )
 
 // ErrReplaceUnwired reports a staged replace of an occupied

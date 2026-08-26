@@ -64,17 +64,17 @@ func init() {
 }
 
 // errLockTakesNoPackages reports package names given to gale lock.
-// Unprovenanced refetch is gale fetch-adopt, not a lock argument.
+// Unprovenanced refetch is gale migrate, not a lock argument.
 var errLockTakesNoPackages = errors.New("gale lock takes no package names")
 
 // checkLockArgs refuses positional package names. Those named the
-// deleted --refresh subset; unprovenanced refetch is fetch-adopt.
+// deleted --refresh subset; unprovenanced refetch is gale migrate.
 func checkLockArgs(args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
 	return fmt.Errorf(
-		"gale lock %s: %w; unprovenanced refetch is gale fetch-adopt",
+		"gale lock %s: %w; unprovenanced refetch is gale migrate",
 		strings.Join(args, " "), errLockTakesNoPackages,
 	)
 }
@@ -287,7 +287,7 @@ func lockRoot(ctx *cmdContext, r *recipe.Recipe) error {
 		// could only describe what happened to be installed, and a
 		// package `gale add` just declared could never be locked at all.
 		return fmt.Errorf(
-			"locking %s@%s: store is empty; use gale install or gale fetch-adopt",
+			"locking %s@%s: store is empty; use gale install or gale migrate",
 			name, full,
 		)
 	}
@@ -341,7 +341,7 @@ func checkRecipeBacks(r *recipe.Recipe, rec provenance.Record) error {
 	}
 	name, full := r.Package.Name, r.Package.Full()
 	return fmt.Errorf(
-		"locking leftover bottle %s@%s: use gale install or gale fetch-adopt",
+		"locking leftover bottle %s@%s: use gale install or gale migrate",
 		name, full,
 	)
 }
@@ -351,7 +351,7 @@ func checkRecipeBacks(r *recipe.Recipe, rec provenance.Record) error {
 // the recipe re-pinned without a revision bump.
 //
 // It offers no replacement command. A provenanced disagreement is
-// not the unprovenanced refetch case, so naming fetch-adopt would
+// not the unprovenanced refetch case, so naming gale migrate would
 // send the user to a command that must refuse.
 func recipeDisagrees(name, version, field, installed, declared string) error {
 	return fmt.Errorf(
@@ -384,14 +384,14 @@ type unprovenancedDir struct {
 // beside bytes it never fetched would attest a directory on the
 // strength of it being in the right place, which is exactly the
 // unverified marker §13 rejected; replacement is an explicit user
-// action (`gale fetch-adopt`). A pre-revision bare directory is not
-// replaced in place: fetch-adopt lands the canonical tree, and gc
+// action (`gale migrate`). A pre-revision bare directory is not
+// replaced in place: gale migrate lands the canonical tree, and gc
 // removes the bare dir once no generation links it.
 func unprovenanced(u unprovenancedDir) error {
-	remedy := fmt.Sprintf("`gale fetch-adopt` for %s", u.name)
+	remedy := fmt.Sprintf("`gale migrate` for %s", u.name)
 	if u.dir != u.canonical {
 		remedy = fmt.Sprintf(
-			"`gale fetch-adopt` for %s; %s predates revisions, so a "+
+			"`gale migrate` for %s; %s predates revisions, so a "+
 				"fetch lands at %s and gale gc removes the bare "+
 				"directory once no generation links it",
 			u.name, u.dir, u.canonical,

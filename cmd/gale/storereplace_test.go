@@ -650,9 +650,9 @@ func TestCheckReplaceableV1ScopeDoesNotVetoOnMissingMetadata(t *testing.T) {
 }
 
 // A legacy scope's veto must name the command that republishes it.
-// gale migrate is a tombstone; fetch-adopt converts a v1 lock and
+// gale migrate converts a v1 lock and
 // swaps the generation.
-func TestLegacyScopeRefusalNamesFetchAdopt(t *testing.T) {
+func TestLegacyScopeRefusalNamesMigrate(t *testing.T) {
 	for _, tt := range []struct {
 		name     string
 		withMeta bool
@@ -685,11 +685,11 @@ func TestLegacyScopeRefusalNamesFetchAdopt(t *testing.T) {
 			if !errors.Is(err, errScopeDisagrees) {
 				t.Fatalf("err = %v, want errScopeDisagrees", err)
 			}
-			if !strings.Contains(err.Error(), "fetch-adopt") {
-				t.Fatalf("legacy-scope refusal must name fetch-adopt: %v", err)
+			if !strings.Contains(err.Error(), "gale migrate") {
+				t.Fatalf("legacy-scope refusal must name gale migrate: %v", err)
 			}
-			if strings.Contains(err.Error(), "gale migrate") {
-				t.Fatalf("legacy-scope refusal names tombstone gale migrate: %v", err)
+			if strings.Contains(err.Error(), "fetch-adopt") {
+				t.Fatalf("legacy-scope refusal names deleted fetch-adopt: %v", err)
 			}
 			assertGaleCommandsRegistered(t, err.Error())
 		})

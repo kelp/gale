@@ -242,7 +242,7 @@ func doctorLockErr(err error) string {
 	case errors.Is(err, errVerifyNoLock):
 		return "no v2 lock; run gale install <pkg>"
 	case errors.Is(err, errVerifyV1):
-		return "lock is v1; run gale fetch-adopt"
+		return "lock is v1; run gale migrate"
 	default:
 		return err.Error()
 	}

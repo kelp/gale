@@ -12,7 +12,6 @@ import (
 	"strings"
 
 	"github.com/mattn/go-isatty"
-	"github.com/spf13/cobra"
 
 	"github.com/kelp/gale/internal/config"
 	"github.com/kelp/gale/internal/fetch"
@@ -35,69 +34,24 @@ var adoptTTY = stdinIsTTY
 var adoptAfterDiff func()
 
 var (
-	errAdoptCI      = errors.New("gale fetch-adopt refuses CI")
+	errAdoptCI      = errors.New("gale migrate refuses CI")
 	errAdoptNeedYes = errors.New(
-		"gale fetch-adopt requires --yes when stdin is not a TTY",
+		"gale migrate requires --yes when stdin is not a TTY",
 	)
-	errAdoptAborted   = errors.New("gale fetch-adopt aborted")
+	errAdoptAborted   = errors.New("gale migrate aborted")
 	errAdoptAlreadyV2 = errors.New(
-		"gale fetch-adopt refuses an existing v2 lock",
+		"gale migrate refuses an existing v2 lock",
 	)
 	errAdoptHosts = errors.New(
-		"gale fetch-adopt refuses host overlays",
+		"gale migrate refuses host overlays",
 	)
 	errAdoptNoPlatform = errors.New(
-		"gale fetch-adopt: no current-platform artifact",
+		"gale migrate: no current-platform artifact",
 	)
 	errAdoptLockMoved = errors.New(
-		"gale fetch-adopt: lock changed after the printed diff",
+		"gale migrate: lock changed after the printed diff",
 	)
 )
-
-var fetchAdoptCmd = &cobra.Command{
-	Use:   "fetch-adopt",
-	Short: "Plan a fetch lock from gale.toml and publish it unused",
-	Long: "Resolve every default-target root against one index " +
-		"commit, print a lock diff, and after confirmation stage " +
-		"fetch trees, write a v2 lock, and swap current last. " +
-		"Migrates a v1 lock. Not a second installer: gale install " +
-		"already fetches.",
-	Args: cobra.NoArgs,
-	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := validateScopeFlags(adoptGlobal, adoptProject); err != nil {
-			return err
-		}
-		c, err := newCmdContext("", adoptGlobal, adoptProject)
-		if err != nil {
-			return err
-		}
-		src := index.Source{}
-		if adoptIndex != "" {
-			src.Dir = adoptIndex
-		}
-		return runFetchAdopt(cmd.Context(), c, adoptReq{
-			Source: src,
-			Yes:    adoptYes,
-			DryRun: dryRun,
-			TTY:    adoptTTY(),
-			In:     cmd.InOrStdin(),
-			Out:    cmd.OutOrStdout(),
-			Err:    cmd.ErrOrStderr(),
-		})
-	},
-}
-
-func init() {
-	fetchAdoptCmd.Flags().BoolVarP(&adoptGlobal, "global", "g",
-		false, "Adopt the global config")
-	fetchAdoptCmd.Flags().BoolVarP(&adoptProject, "project", "p",
-		false, "Adopt the project config")
-	fetchAdoptCmd.Flags().BoolVar(&adoptYes, "yes",
-		false, "Skip the confirmation prompt")
-	fetchAdoptCmd.Flags().StringVar(&adoptIndex, "index",
-		"", "Resolve against a local index checkout")
-	rootCmd.AddCommand(fetchAdoptCmd)
-}
 
 func stdinIsTTY() bool {
 	return isatty.IsTerminal(os.Stdin.Fd()) ||

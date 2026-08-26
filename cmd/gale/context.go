@@ -1254,7 +1254,7 @@ func lockedRebuildPkgs(lockPath, _ string) (map[string]string, bool, error) {
 		return nil, false, nil
 	case lockfile.KindLegacy:
 		return nil, false, fmt.Errorf(
-			"%s: %w: run gale fetch-adopt",
+			"%s: %w: run gale migrate",
 			lockPath, lockfile.ErrLegacySchema,
 		)
 	case lockfile.KindV1:

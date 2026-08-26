@@ -22,8 +22,8 @@ func TestLockRefusesPackageArgs(t *testing.T) {
 	if !errors.Is(err, errLockTakesNoPackages) {
 		t.Errorf("err = %v, want errLockTakesNoPackages", err)
 	}
-	if !strings.Contains(err.Error(), "fetch-adopt") {
-		t.Errorf("refusal must name fetch-adopt: %v", err)
+	if !strings.Contains(err.Error(), "gale migrate") {
+		t.Errorf("refusal must name gale migrate: %v", err)
 	}
 	if err := checkLockArgs(nil); err != nil {
 		t.Errorf("plain `gale lock` refused: %v", err)
@@ -49,11 +49,11 @@ func TestLockDoesNotReplaceUnprovenanced(t *testing.T) {
 	if strings.Contains(err.Error(), "--refresh") {
 		t.Errorf("dead --refresh named as a remedy: %v", err)
 	}
-	if !strings.Contains(err.Error(), "fetch-adopt") {
-		t.Errorf("unprovenanced remedy must name fetch-adopt: %v", err)
+	if !strings.Contains(err.Error(), "gale migrate") {
+		t.Errorf("unprovenanced remedy must name gale migrate: %v", err)
 	}
-	if strings.Contains(err.Error(), "gale migrate") {
-		t.Errorf("unprovenanced remedy names tombstone gale migrate: %v", err)
+	if strings.Contains(err.Error(), "fetch-adopt") {
+		t.Errorf("unprovenanced remedy names deleted fetch-adopt: %v", err)
 	}
 	assertGaleCommandsRegistered(t, err.Error())
 	kept, rerr := os.ReadFile(marker)
@@ -68,16 +68,16 @@ func TestLockDoesNotReplaceUnprovenanced(t *testing.T) {
 	}
 }
 
-func TestUnprovenancedBareDirNamesFetchAdoptNotMigrate(t *testing.T) {
+func TestUnprovenancedBareDirNamesMigrate(t *testing.T) {
 	err := unprovenanced(unprovenancedDir{
 		dir: "/store/jq/1.7", canonical: "/store/jq/1.7-1",
 		name: "jq", version: "1.7", cause: os.ErrNotExist,
 	})
-	if !strings.Contains(err.Error(), "fetch-adopt") {
-		t.Errorf("bare-dir remedy must name fetch-adopt: %v", err)
+	if !strings.Contains(err.Error(), "gale migrate") {
+		t.Errorf("bare-dir remedy must name gale migrate: %v", err)
 	}
-	if strings.Contains(err.Error(), "gale migrate") {
-		t.Errorf("bare-dir remedy names tombstone gale migrate: %v", err)
+	if strings.Contains(err.Error(), "fetch-adopt") {
+		t.Errorf("bare-dir remedy names deleted fetch-adopt: %v", err)
 	}
 	assertGaleCommandsRegistered(t, err.Error())
 }

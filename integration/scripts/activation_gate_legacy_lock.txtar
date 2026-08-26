@@ -1,7 +1,7 @@
 # Acceptance 21 and 22 (design §12): the activation gate runs on
 # every activation, not only when a file changed.
 #
-# A legacy lock must refuse PATH. The gate names fetch-adopt.
+# A legacy lock must refuse PATH. The gate names gale migrate.
 
 gale-fixture index $WORK/index
 gale-fixture fetch-setup
@@ -18,7 +18,7 @@ cp $WORK/legacy.lock $WORK/proj/gale.lock
 exec sh -c 'gale env --check; echo status=$?'
 stdout 'status=4'
 stderr 'legacy'
-stderr 'fetch-adopt'
+stderr 'gale migrate'
 
 ! exec gale env
 ! stdout 'export PATH'

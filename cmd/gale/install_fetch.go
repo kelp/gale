@@ -92,7 +92,7 @@ func readExistingV2(lp string) (*lockfile.V2, error) {
 	}
 	if errors.Is(err, lockfile.ErrUnknownVersion) ||
 		errors.Is(err, lockfile.ErrLegacySchema) {
-		return nil, fmt.Errorf("%w: run gale fetch-adopt", errVerifyV1)
+		return nil, fmt.Errorf("%w: run gale migrate", errVerifyV1)
 	}
 	// v1 ReadV2 reports unknown version
 	if v, lerr := lockfile.Load(lp); lerr == nil {
@@ -102,7 +102,7 @@ func readExistingV2(lp string) (*lockfile.V2, error) {
 		case lockfile.KindV2:
 			return v.V2, nil
 		case lockfile.KindV1, lockfile.KindLegacy:
-			return nil, fmt.Errorf("%w: run gale fetch-adopt", errVerifyV1)
+			return nil, fmt.Errorf("%w: run gale migrate", errVerifyV1)
 		}
 	}
 	return nil, err

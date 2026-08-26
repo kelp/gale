@@ -220,8 +220,8 @@ func TestRebuildGenerationRefusesV1Lock(t *testing.T) {
 		if !errors.Is(err, errSwitchV1) {
 			t.Fatalf("err = %v, want errSwitchV1", err)
 		}
-		if !strings.Contains(err.Error(), "gale fetch-adopt") {
-			t.Errorf("v1 refuse must name fetch-adopt, got %v", err)
+		if !strings.Contains(err.Error(), "gale migrate") {
+			t.Errorf("v1 refuse must name gale migrate, got %v", err)
 		}
 		if after := fx.versions(t); !maps.Equal(after, before) {
 			t.Errorf("generation moved: before %v after %v", before, after)
@@ -279,8 +279,8 @@ func TestRebuildGenerationRefusesIncompleteV2(t *testing.T) {
 			if !errors.Is(err, lockfile.ErrMissingArtifact) {
 				t.Fatalf("err = %v, want ErrMissingArtifact", err)
 			}
-			if strings.Contains(err.Error(), "gale fetch-adopt") {
-				t.Errorf("incomplete v2 must not name fetch-adopt, got %v", err)
+			if strings.Contains(err.Error(), "gale migrate") {
+				t.Errorf("incomplete v2 must not name gale migrate, got %v", err)
 			}
 			if got := fx.versions(t); len(got) != 0 {
 				t.Errorf("generation moved on incomplete v2: %v", got)

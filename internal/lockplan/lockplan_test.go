@@ -601,8 +601,8 @@ func TestBuildPlan_LeftoverBinaryRefusesFetchAdopt(t *testing.T) {
 	if !strings.Contains(err.Error(), "gale install") {
 		t.Errorf("refusal must name gale install: %v", err)
 	}
-	if !strings.Contains(err.Error(), "fetch-adopt") {
-		t.Errorf("refusal must name fetch-adopt: %v", err)
+	if !strings.Contains(err.Error(), "gale migrate") {
+		t.Errorf("refusal must name gale migrate: %v", err)
 	}
 }
 

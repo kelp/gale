@@ -606,8 +606,8 @@ func TestCheckV1RefusesAndNamesFetchAdopt(t *testing.T) {
 	if err == nil {
 		t.Fatal("v1 lock must refuse")
 	}
-	if !strings.Contains(err.Error(), "fetch-adopt") {
-		t.Errorf("error must name fetch-adopt, got %v", err)
+	if !strings.Contains(err.Error(), "gale migrate") {
+		t.Errorf("error must name gale migrate, got %v", err)
 	}
 }
 
