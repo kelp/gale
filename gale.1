@@ -154,7 +154,10 @@ retention.
 .It Cm info Ar pkg Op Fl g | Fl p
 Show package metadata: version, store path, scope,
 and config path.
-For uninstalled packages, shows registry information.
+For uninstalled packages, shows the index document.
+Use
+.Fl -index Ar dir
+to resolve against a local index checkout.
 With
 .Fl g ,
 read only the global
@@ -175,14 +178,12 @@ is searched.
 .Dl $ gale which jq
 .Dl jq@1.8.1
 .Dl /Users/you/.gale/pkg/jq/1.8.1/bin/jq
-.It Cm outdated Op Fl -recipes Ar dir Op Fl -no-refresh Op Fl g | Fl p
+.It Cm outdated Op Fl -index Ar dir Op Fl g | Fl p
 Show packages that have newer versions available in
-the registry.
-Pass
-.Fl -recipes
-to resolve against a local recipes checkout instead, or
-.Fl -no-refresh
-to skip the automatic tap refresh.
+the index.
+Use
+.Fl -index Ar dir
+to resolve against a local index checkout.
 .Pp
 .Dl $ gale outdated
 .Dl jq 1.7.1 -> 1.8.1

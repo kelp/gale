@@ -9,13 +9,13 @@ import (
 	"path/filepath"
 
 	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/recipe"
-	"github.com/kelp/gale/internal/registry"
+	"github.com/kelp/gale/internal/index"
 	"github.com/kelp/gale/internal/store"
 	"github.com/spf13/cobra"
 )
 
 var (
+	infoIndex   string
 	infoGlobal  bool
 	infoProject bool
 )
@@ -25,42 +25,26 @@ var infoCmd = &cobra.Command{
 	Short: "Show package information",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		reg, err := newRegistry()
-		if err != nil {
+		if err := validateScopeFlags(infoGlobal, infoProject); err != nil {
 			return err
 		}
-		return runInfo(cmd.OutOrStdout(), reg, args[0])
+		ctx := cmd.Context()
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		return runInfo(ctx, cmd.OutOrStdout(), indexSource(infoIndex), args[0])
 	},
 }
 
 // runInfo prints package metadata for arg (which may be
 // "<name>" or "<name>@<version>") to w. The version form
-// resolves through FetchRecipeVersion; the bare form checks
-// project/global config first, then falls back to a single
-// metadata fetch from the registry. Validation of <name>
-// happens inside the registry layer (registry.ValidName).
-//
-// Scope flags (--global / --project) narrow the installed
-// lookup to a single config — `info -g jq` from inside a
-// project reads ~/.gale/gale.toml directly, bypassing the
-// project-shadowing default.
-func runInfo(w io.Writer, reg *registry.Registry, arg string) error {
-	if err := validateScopeFlags(infoGlobal, infoProject); err != nil {
-		return err
-	}
-
+// resolves through the index. The bare form checks
+// project/global config first, then the index.
+func runInfo(
+	ctx context.Context, w io.Writer, src index.Source, arg string,
+) error {
 	name, version, err := parsePackageArg(arg)
 	if err != nil {
-		return err
-	}
-
-	// Pin the name validation contract here — `info` is the
-	// canonical reproducer for audit/readonly/bad-input/0002
-	// and pre-validating gives a clean error before any config
-	// lookups touch the filesystem. parsePackageArg now rejects
-	// malformed @version segments at the parser level (F-1), so
-	// the previous "name@"/"name@@" workaround is gone.
-	if err := registry.ValidName(name); err != nil {
 		return err
 	}
 
@@ -69,9 +53,6 @@ func runInfo(w io.Writer, reg *registry.Registry, arg string) error {
 		return fmt.Errorf("getting working dir: %w", err)
 	}
 
-	// Scope-flag fast path: consult only the requested config.
-	// Versioned form always defers to the registry, so flags
-	// only affect the unversioned lookup.
 	if version == "" && (infoGlobal || infoProject) {
 		configPath, err := resolveReadOnlyConfigPath(
 			infoGlobal, infoProject,
@@ -94,9 +75,6 @@ func runInfo(w io.Writer, reg *registry.Registry, arg string) error {
 		return nil
 	}
 
-	// Versioned form bypasses the installed-config lookup —
-	// users asking for a specific @version want registry
-	// metadata, not whatever happens to be pinned locally.
 	if version == "" {
 		found, err := findInstalledInfo(w, name, cwd)
 		if err != nil {
@@ -107,11 +85,7 @@ func runInfo(w io.Writer, reg *registry.Registry, arg string) error {
 		}
 	}
 
-	// Not installed (or versioned form requested) — fetch from
-	// registry. FetchRecipeMetadata skips the .binaries.toml
-	// roundtrip the legacy code paid on every invocation; see
-	// audit/readonly/network-perf/0005.
-	return fetchAndPrintRegistryInfo(w, reg, name, version)
+	return fetchAndPrintIndexInfo(ctx, w, src, name, version)
 }
 
 // findInstalledInfo searches the project config (if present) then
@@ -134,38 +108,45 @@ func findInstalledInfo(w io.Writer, name, cwd string) (bool, error) {
 	return printConfigInfo(w, name, globalPath, "global")
 }
 
-// fetchAndPrintRegistryInfo fetches recipe metadata from the
-// registry and prints it to w. When version is non-empty the
-// exact version is fetched; otherwise the latest metadata is used.
-func fetchAndPrintRegistryInfo(
-	w io.Writer, reg *registry.Registry, name, version string,
+// fetchAndPrintIndexInfo loads one index document and prints it.
+func fetchAndPrintIndexInfo(
+	ctx context.Context, w io.Writer, src index.Source, name, version string,
 ) error {
-	var r *recipe.Recipe
-	var err error
-	if version != "" {
-		r, err = reg.FetchRecipeVersion(context.Background(), name, version)
-		if err != nil {
+	sess, err := index.Open(ctx, src)
+	if err != nil {
+		return fmt.Errorf("opening index: %w", err)
+	}
+	f, err := sess.Get(ctx, name)
+	if err != nil {
+		if version != "" {
 			return fmt.Errorf("%s@%s: %w", name, version, err)
 		}
-	} else {
-		r, err = reg.FetchRecipeMetadata(context.Background(), name)
-		if err != nil {
-			return fmt.Errorf("%s: %w", name, err)
-		}
+		return fmt.Errorf("%s: %w", name, err)
 	}
-
-	versionLabel := r.Package.Version
 	if version == "" {
-		versionLabel += " (latest)"
+		version = f.Package.Latest
+	}
+	ver, ok := f.Versions[version]
+	if !ok {
+		return fmt.Errorf("index %s: version %s not found", name, version)
 	}
 
-	fmt.Fprintf(w, "Name:    %s\n", r.Package.Name)
-	fmt.Fprintf(w, "Version: %s\n", versionLabel)
-	if r.Package.Description != "" {
-		fmt.Fprintf(w, "About:   %s\n", r.Package.Description)
+	fmt.Fprintf(w, "Name:    %s\n", f.Package.Name)
+	fmt.Fprintf(w, "Version: %s\n", version)
+	if version == f.Package.Latest {
+		fmt.Fprintf(w, "Latest:  %s\n", f.Package.Latest)
 	}
-	if r.Source.URL != "" {
-		fmt.Fprintf(w, "Source:  %s\n", r.Source.URL)
+	if f.Package.Description != "" {
+		fmt.Fprintf(w, "About:   %s\n", f.Package.Description)
+	}
+	if f.Package.Homepage != "" {
+		fmt.Fprintf(w, "Home:    %s\n", f.Package.Homepage)
+	}
+	if f.Package.Repo != "" {
+		fmt.Fprintf(w, "Repo:    %s\n", f.Package.Repo)
+	}
+	if art, ok := ver.Artifacts[currentPlatform()]; ok && art.URL != "" {
+		fmt.Fprintf(w, "URL:     %s\n", art.URL)
 	}
 	fmt.Fprintln(w, "(not installed)")
 	return nil
@@ -216,6 +197,8 @@ func printConfigInfo(w io.Writer, name, configPath, scope string) (bool, error) 
 }
 
 func init() {
+	infoCmd.Flags().StringVar(&infoIndex, "index", "",
+		"Resolve against a local index checkout")
 	infoCmd.Flags().BoolVarP(&infoGlobal, "global", "g", false,
 		"Look up the package in the global gale.toml")
 	infoCmd.Flags().BoolVarP(&infoProject, "project", "p", false,

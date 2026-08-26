@@ -196,7 +196,7 @@ follows the umbrella `Breaking-Change Workflow`:
 1. **Land gale changes** behind tolerance: new gale bakes
    relative rpaths for source builds AND still relocates
    legacy absolute rpaths from old prebuilts. Tag + release.
-2. **Bump `gale-recipes/recipes/g/gale.toml`** and
+2. **Bump `gale-recipes/index/g/gale.toml`** and
    `gale/gale.toml` to the new version.
 3. **Rebuild the binary catalog** in gale-recipes with a
    `[package] revision` bump per package, so CI republishes

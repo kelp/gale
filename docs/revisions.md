@@ -161,8 +161,8 @@ Farm invariants:
 ### GHCR bottles are gone
 
 Leftover GHCR prebuilts and sibling `.binaries.toml`
-ledgers are not a live install path. `gale fetch` reads
-the index. Leftover `[binary]` TOML is ignored.
+ledgers are not a live install path. `gale install`
+reads the index. Leftover `[binary]` TOML is ignored.
 
 ## Staleness and `.gale-deps.toml`
 

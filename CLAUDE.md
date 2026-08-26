@@ -34,12 +34,14 @@ gale.toml (first install).
 gen. Users put `~/.gale/current/bin` on PATH, so one
 symlink swap updates bin and man together.
 
-**Index client**: resolve verbs open one session pinned to one
-commit (`--index <dir>` pins checkout HEAD) and hard-fail on
-fetch errors. The legacy registry cache (GitHub raw recipe
-TOMLs, letter-bucketed `recipes/j/jq.toml`, stale-on-error,
-negative-404 TTL) survives only behind transitional commands
-(`migrate`, `info`) and must never serve a resolve verb.
+**Index client**: resolve verbs (`install`, `update`,
+`lock`, `outdated`, `info`) open one session pinned to
+one commit (`--index <dir>` pins checkout HEAD) and
+hard-fail on fetch errors. The legacy registry cache
+(GitHub raw recipe TOMLs, letter-bucketed
+`recipes/j/jq.toml`, stale-on-error, negative-404 TTL)
+survives only behind leftover commands and must never
+serve a resolve verb.
 
 **Revision**: Debian-style `[package] revision = N`,
 default 1. Store identity is

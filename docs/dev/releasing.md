@@ -120,20 +120,20 @@ After the release is live, bump TWO files. Both are
 load-bearing — skipping either leaves users (or the dev
 env in this very repo) on the old version.
 
-**1. The recipe in `gale-recipes`** — so users get the
-new version on install / sync:
+**1. The index document in `gale-recipes`** — so users
+get the new version on install / sync:
 
 ```sh
 # In ../gale-recipes/
-$EDITOR recipes/g/gale.toml      # set version = "0.16.0"
-git add recipes/g/gale.toml
+$EDITOR index/g/gale.toml        # set latest and the version block
+git add index/g/gale.toml
 git commit -m "gale: 0.16.0"
 git push
 ```
 
-The recipes CI will build the new version, push binaries
-to GHCR, and `gale install gale` from any machine will
-pick up the update.
+Admit the new release archive, lint the document, and
+push. `gale install gale` from any machine will pick
+up the update.
 
 **2. This repo's own `gale/gale.toml`** — so direnv's
 `use gale` activates the new version inside the gale dev

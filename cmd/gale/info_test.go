@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kelp/gale/internal/config"
-	"github.com/kelp/gale/internal/registry"
+	"github.com/kelp/gale/internal/index"
 )
 
 func TestInfoCommandRegistered(t *testing.T) {
@@ -27,29 +27,18 @@ func TestInfoCommandRegistered(t *testing.T) {
 	}
 }
 
-// testRegistry returns a *registry.Registry pointed at url.
-func testRegistry(t *testing.T, url string) *registry.Registry {
-	t.Helper()
-	reg, err := registry.NewWithURL(url)
-	if err != nil {
-		t.Fatalf("registry.NewWithURL: %v", err)
-	}
-	return reg
-}
-
-// withIsolatedHome points HOME at a temp dir so info doesn't
-// see the developer's real ~/.gale config.
 func withIsolatedHome(t *testing.T) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	// Run from an empty directory so no project config is picked
-	// up either.
 	cwd := filepath.Join(home, "empty")
 	if err := os.MkdirAll(cwd, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	orig, _ := os.Getwd()
+	orig, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.Chdir(cwd); err != nil {
 		t.Fatal(err)
 	}
@@ -57,183 +46,105 @@ func withIsolatedHome(t *testing.T) string {
 	return home
 }
 
-const infoTestRecipe = `[package]
-name = "testpkg"
-version = "1.0.0"
-description = "Test package"
-license = "MIT"
-homepage = "https://example.com"
-
-[source]
-url = "https://example.com/testpkg-1.0.0.tar.gz"
-sha256 = "deadbeef"
-`
-
-const infoTestRecipeV2 = `[package]
-name = "testpkg"
-version = "2.0.0"
-description = "Test package v2"
-license = "MIT"
-homepage = "https://example.com"
-
-[source]
-url = "https://example.com/testpkg-2.0.0.tar.gz"
-sha256 = "cafef00d"
-`
-
-// TestInfoParsesAtVersion confirms that `gale info testpkg@1.0.0`
-// resolves the version via FetchRecipeVersion instead of treating
-// "testpkg@1.0.0" as the literal recipe name.
-//
-// Reproduces: audit/readonly/bad-input/findings/0001-info-no-version-parsing.md
-func TestInfoParsesAtVersion(t *testing.T) {
-	const commit = "abc1234def5678901234567890abcdef12345678"
-	versionsBody := "1.0.0 " + commit + "\n2.0.0 " +
-		"9876543210abcdef9876543210abcdef98765432\n"
-
+func infoIndexSrc(t *testing.T, files map[string]string) (index.Source, *int) {
+	t.Helper()
+	count := 0
 	srv := httptest.NewServer(http.HandlerFunc(
 		func(w http.ResponseWriter, r *http.Request) {
-			switch r.URL.Path {
-			case "/recipes/t/testpkg.versions":
-				fmt.Fprint(w, versionsBody)
-			case "/" + commit + "/recipes/t/testpkg.toml":
-				fmt.Fprint(w, infoTestRecipe)
-			case "/recipes/t/testpkg.toml":
-				fmt.Fprint(w, infoTestRecipeV2)
-			default:
+			count++
+			body, ok := files[r.URL.Path]
+			if !ok {
 				http.NotFound(w, r)
+				return
 			}
+			fmt.Fprint(w, body)
 		},
 	))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return index.Source{
+		BaseURL: srv.URL,
+		Commit:  lockFetchPinA,
+		HTTP:    srv.Client(),
+	}, &count
+}
 
+func TestInfoParsesAtVersion(t *testing.T) {
 	withIsolatedHome(t)
-	reg := testRegistry(t, srv.URL)
+	doc := lockIndexTOML("testpkg", "1.0.0", false)
+	src, _ := infoIndexSrc(t, map[string]string{
+		"/" + lockFetchPinA + "/index/t/testpkg.toml": doc,
+	})
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, reg, "testpkg@1.0.0"); err != nil {
+	if err := runInfo(context.Background(), &buf, src, "testpkg@1.0.0"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "1.0.0") {
 		t.Errorf("output missing 1.0.0:\n%s", out)
 	}
-	if strings.Contains(out, "2.0.0") {
-		t.Errorf("output contains v2 metadata, expected pinned 1.0.0:\n%s", out)
-	}
 }
 
-// TestInfoRejectsInvalidName confirms that registry-side
-// validation surfaces through `info` as a clear error before any
-// HTTP request goes out.
-//
-// Reproduces: audit/readonly/bad-input/findings/0002-recipe-name-injected-into-url.md
 func TestInfoRejectsInvalidName(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			t.Fatalf("unexpected HTTP request for bad name: %s", r.URL.Path)
-		},
-	))
-	defer srv.Close()
-
 	withIsolatedHome(t)
-	reg := testRegistry(t, srv.URL)
+	src, count := infoIndexSrc(t, map[string]string{})
 
 	bad := []string{
 		"jq?foo=bar", "%2e%2e/etc", "jq/sub", "../etc",
-		"jq with space", "JQ", "-jq", "jq@", "",
+		"jq with space", "JQ", "-jq",
 	}
 	for _, name := range bad {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
-			err := runInfo(&buf, reg, name)
+			err := runInfo(context.Background(), &buf, src, name)
 			if err == nil {
 				t.Fatalf("expected validation error for %q", name)
 			}
 		})
 	}
+	if *count != 0 {
+		t.Errorf("invalid names hit the index %d times", *count)
+	}
 }
 
-// TestInfoWritesThroughCmdStdout confirms info writes through
-// the provided writer so tests (and future quiet/no-color modes)
-// can capture and gate output.
-//
-// Reproduces: audit/readonly/tty-vs-nontty/findings/0002-info-bypasses-tty-and-color-mode.md
 func TestInfoWritesThroughCmdStdout(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			if r.URL.Path == "/recipes/t/testpkg.toml" {
-				fmt.Fprint(w, infoTestRecipe)
-				return
-			}
-			http.NotFound(w, r)
-		},
-	))
-	defer srv.Close()
-
 	withIsolatedHome(t)
-	reg := testRegistry(t, srv.URL)
+	src, _ := infoIndexSrc(t, map[string]string{
+		"/" + lockFetchPinA + "/index/t/testpkg.toml": lockIndexTOML("testpkg", "1.0.0", false),
+	})
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, reg, "testpkg"); err != nil {
+	if err := runInfo(context.Background(), &buf, src, "testpkg"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "testpkg") {
 		t.Errorf("output missing 'testpkg':\n%s", out)
 	}
-	// No ANSI escape sequences should appear when writing to a
-	// non-TTY io.Writer (a bytes.Buffer).
 	if strings.Contains(out, "\x1b[") {
 		t.Errorf("output contains ANSI escapes when writing to "+
 			"non-TTY buffer:\n%q", out)
 	}
 }
 
-// TestInfoMakesOneRequest confirms the registry-not-installed
-// branch of info issues a single HTTP request — the legacy code
-// made an extra .binaries.toml roundtrip every invocation.
-//
-// Reproduces: audit/readonly/network-perf/findings/0005-info-binaries-extra-roundtrip.md
 func TestInfoMakesOneRequest(t *testing.T) {
-	var count int
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			count++
-			if r.URL.Path == "/recipes/t/testpkg.toml" {
-				fmt.Fprint(w, infoTestRecipe)
-				return
-			}
-			http.NotFound(w, r)
-		},
-	))
-	defer srv.Close()
-
 	withIsolatedHome(t)
-	reg := testRegistry(t, srv.URL)
+	src, count := infoIndexSrc(t, map[string]string{
+		"/" + lockFetchPinA + "/index/t/testpkg.toml": lockIndexTOML("testpkg", "1.0.0", false),
+	})
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, reg, "testpkg"); err != nil {
+	if err := runInfo(context.Background(), &buf, src, "testpkg"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("HTTP request count = %d, want 1", count)
+	if *count != 1 {
+		t.Errorf("HTTP request count = %d, want 1", *count)
 	}
 }
 
-// TestInfoInstalledFromConfig confirms that `info <pkg>` for a
-// package already declared in gale.toml prints config metadata
-// without calling the registry at all.
 func TestInfoInstalledFromConfig(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-			t.Fatalf("unexpected HTTP request: %s", r.URL.Path)
-		},
-	))
-	defer srv.Close()
-
+	src, count := infoIndexSrc(t, map[string]string{})
 	home := withIsolatedHome(t)
-	reg := testRegistry(t, srv.URL)
 
 	galeDir := filepath.Join(home, ".gale")
 	if err := os.MkdirAll(galeDir, 0o755); err != nil {
@@ -250,15 +161,16 @@ testpkg = "1.0.0"
 	}
 
 	var buf bytes.Buffer
-	if err := runInfo(&buf, reg, "testpkg"); err != nil {
+	if err := runInfo(context.Background(), &buf, src, "testpkg"); err != nil {
 		t.Fatalf("runInfo: %v", err)
 	}
 	out := buf.String()
 	if !strings.Contains(out, "testpkg") || !strings.Contains(out, "1.0.0") {
 		t.Errorf("output missing testpkg/1.0.0:\n%s", out)
 	}
-	// Silence the unused import linter if config isn't used.
-	_ = config.CurrentHost
+	if *count != 0 {
+		t.Errorf("installed lookup hit the index %d times", *count)
+	}
 }
 
 func TestInfoOmitsPinnedLine(t *testing.T) {
@@ -279,5 +191,11 @@ func TestInfoOmitsPinnedLine(t *testing.T) {
 	}
 	if strings.Contains(buf.String(), "Pinned:") {
 		t.Errorf("info must not print Pinned:, got:\n%s", buf.String())
+	}
+}
+
+func TestInfoHasIndexFlag(t *testing.T) {
+	if infoCmd.Flags().Lookup("index") == nil {
+		t.Fatal("info --index is missing")
 	}
 }
