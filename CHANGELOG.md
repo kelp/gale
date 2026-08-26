@@ -11,6 +11,10 @@
 
 ### Changed
 
+- `just install` and `just bootstrap` install gale
+  from the index. Local `--path` self-install is
+  gone.
+
 - `gale info` resolves the index, not the leftover
   recipe registry. It takes `--index` like the other
   resolve verbs. Leftover advice that named

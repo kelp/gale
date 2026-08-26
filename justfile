@@ -262,18 +262,18 @@ integration-slow:
 # Run all checks (test + lint + format + integration)
 check: test lint fmt-check integration
 
-# Install gale from local source using a freshly-built local
-# binary. Always uses ./gale (just rebuilt) rather than whatever
-# is on PATH — direnv's `use gale` activates this repo's pinned
-# project gale, which may be older than current source and lack
-# the resolver/install changes we're testing. See CLAUDE.md
-# "Stale Local gale Binary".
+# Install the indexed gale using a freshly-built local CLI.
+# Always uses ./gale (just rebuilt) rather than whatever is
+# on PATH — direnv's `use gale` activates this repo's pinned
+# project gale, which may be older than current source.
+# See CLAUDE.md "Stale Local gale Binary".
 install: build
-    ./gale install --path . -g gale
+    ./gale install -g gale
 
-# Bootstrap gale (first-time: build with go, self-install, install hooks)
+# Bootstrap gale (first-time: build with go, install from the
+# index, install hooks)
 bootstrap: build hooks
-    ./gale install --path . -g gale
+    ./gale install -g gale
 
 # Tag a release (formats, runs checks first)
 tag version: fmt check
@@ -291,7 +291,7 @@ tag version: fmt check
     git tag "v{{version}}"
     echo "Tagged v{{version}} — run 'just release {{version}}' to publish"
     echo "Reminder: after the release is published, bump:"
-    echo "  - gale-recipes/recipes/g/gale.toml  (so users get v{{version}})"
+    echo "  - gale-recipes/index/g/gale.toml    (so users get v{{version}})"
     echo "  - gale/gale.toml                    (so this repo's dev env"
     echo "                                       activates v{{version}}; otherwise"
     echo "                                       'just install' runs a stale binary"
@@ -314,7 +314,7 @@ release version:
     echo "Pushed v{{version}}. Release workflow will build, draft, and publish."
     echo "Watch: https://github.com/kelp/gale/actions/workflows/release.yml"
     echo "Reminder: once the release is live, bump:"
-    echo "  - gale-recipes/recipes/g/gale.toml  (so users get v{{version}})"
+    echo "  - gale-recipes/index/g/gale.toml    (so users get v{{version}})"
     echo "  - gale/gale.toml                    (so this repo's dev env"
     echo "                                       activates v{{version}}; otherwise"
     echo "                                       'just install' runs a stale binary"

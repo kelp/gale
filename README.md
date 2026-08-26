@@ -185,8 +185,8 @@ gale sync
 direnv allow
 ```
 
-After bootstrap, `just install` rebuilds gale from
-source using gale itself.
+After bootstrap, `just install` installs the indexed
+gale using the freshly-built CLI.
 
 ```sh
 just            # test + lint

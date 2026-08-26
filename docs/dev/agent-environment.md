@@ -129,10 +129,10 @@ A `PreToolUse` hook (`.claude/hooks/block-gale-install.sh`) blocks
 reason. Prefix a command with `GALE_ALLOW_NETWORK_INSTALL=1` to override.
 
 `just install` and `just bootstrap` are blocked for the same reason: both end
-in `./gale install --path . -g gale`. There is no sandbox equivalent and you
-do not need one — nothing here requires gale to be *installed into a
-generation*. What `just bootstrap` would have given you, the bootstrap script
-already did:
+in `./gale install -g gale`, which fetches the index artifact. There is no
+sandbox equivalent and you do not need one — nothing here requires gale to
+be *installed into a generation*. What `just bootstrap` would have given you,
+the bootstrap script already did:
 
 | `just bootstrap` step | Sandbox equivalent |
 | --- | --- |
